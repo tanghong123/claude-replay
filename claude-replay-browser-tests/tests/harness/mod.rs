@@ -820,3 +820,69 @@ pub fn resize(tab: &headless_chrome::Tab, width: f64, height: f64) {
     })
     .expect("resize");
 }
+
+/// The scroller's scrollTop, in pixels — for the assertions that must be exact.
+pub fn scroll_top(tab: &headless_chrome::Tab, surface: Surface) -> f64 {
+    let s = surface.scroller();
+    eval(
+        tab,
+        &format!("(function(){{ var s = {s}; return s ? s.scrollTop : -1; }})()"),
+    )
+    .as_f64()
+    .unwrap_or(-1.0)
+}
+
+/// A session whose LAST turn is long and still open: `head_turns` ordinary turns, then one user
+/// turn followed by `tail_steps` tool call/result pairs with thinking between — the shape of a
+/// working agent's tail, where a reader scrolled back a few screens is still inside the open
+/// turn. Growth appended to it stays inside that turn (no new user turn).
+pub fn long_open_turn_session(head_turns: u32, tail_steps: u32) -> String {
+    let mut out = long_session(head_turns, Shape::default());
+    out += &user(
+        &format!(
+            "the long last question: {}",
+            "please do the whole thing. ".repeat(6)
+        ),
+        50,
+    );
+    for k in 0..tail_steps {
+        out += &thinking(
+            &format!(
+                "step {k} deliberation: {}",
+                "considering the next move carefully. ".repeat(10)
+            ),
+            50 + (k % 9),
+        );
+        out += &tool_open(&format!("tail{k}"), 50 + (k % 9));
+        out += &tool_result(&format!("tail{k}"), 50 + (k % 9));
+        out += &assistant(
+            &format!(
+                "step {k} note: {}",
+                "what the result means and what comes next. ".repeat(8)
+            ),
+            50 + (k % 9),
+        );
+    }
+    out
+}
+
+/// More of the same open turn: `steps` further tool call/result pairs with notes, stamped now.
+pub fn open_turn_growth(from_step: u32, steps: u32) -> Vec<String> {
+    let mut script = Vec::new();
+    for k in from_step..from_step + steps {
+        script.push(thinking_at(
+            &format!(
+                "late step {k} deliberation: {}",
+                "still weighing it. ".repeat(10)
+            ),
+            &now_minus(40),
+        ));
+        script.push(tool_open_at(&format!("late{k}"), &now_minus(35)));
+        script.push(tool_result_at(&format!("late{k}"), &now_minus(30)));
+        script.push(assistant_at(
+            &format!("late step {k} note: {}", "and on it goes. ".repeat(8)),
+            &now_minus(25),
+        ));
+    }
+    script
+}

@@ -69,7 +69,7 @@ fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
             // and a few turns mounted, not every turn in the DOM.
             harness::until(
                 &tab,
-                "document.querySelectorAll('#stream [data-turn]').length >= 3 && document.body.scrollHeight > window.innerHeight * 3",
+                "document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3",
                 "the classic page to render the fixture",
                 Duration::from_secs(30),
                 "document.querySelectorAll('#stream [data-turn]').length",
@@ -90,7 +90,7 @@ fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
             monitor.open(&tab, &format!("?ui=app&session={SID}"));
             harness::until(
                 &tab,
-                "document.querySelectorAll('.virtual-window [data-turn]').length >= 3",
+                "document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3",
                 "the app shell to mount the fixture",
                 Duration::from_secs(30),
                 "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : 'no window'",
@@ -117,8 +117,8 @@ fn open_on_v2(surface: Surface, fx: &Fixture, port: u16) -> Opened {
     let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
     monitor.pair(&tab);
     let (query, ready, diag) = match surface {
-        Surface::Classic => (format!("?ui=classic&session={SID}"), "document.querySelectorAll('#stream [data-turn]').length >= 3 && document.body.scrollHeight > window.innerHeight * 3", "document.querySelectorAll('#stream [data-turn]').length"),
-        Surface::AppShell => (format!("?ui=app&session={SID}"), "document.querySelectorAll('.virtual-window [data-turn]').length >= 3", "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : 'no window'"),
+        Surface::Classic => (format!("?ui=classic&session={SID}"), "document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3", "document.querySelectorAll('#stream [data-turn]').length"),
+        Surface::AppShell => (format!("?ui=app&session={SID}"), "document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3", "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : 'no window'"),
     };
     monitor.open(&tab, &query);
     harness::until(
@@ -673,4 +673,223 @@ fn app_shell_resumes_after_a_server_restart() {
     let fx = fixture("scenario-restart-app", 40);
     let mut page = open_on_v2(Surface::AppShell, &fx, 2860);
     scenario_restart_resumes(&mut page, Surface::AppShell, &fx, 2860);
+}
+
+// ── scenario: an unpinned reader holds to the PIXEL through growth (#51's reproduced part) ──
+
+/// Scrolled up and left alone, the reader's scroll position does not move by more than a few
+/// pixels while records arrive — checked after every apply, not only at the end. The turn-level
+/// scenario above passes while the position drifts by hundreds of pixels; this one does not.
+fn scenario_unpinned_holds_to_the_pixel(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    scroll_by(tab, surface, -700);
+    scroll_by(tab, surface, -700);
+    settle();
+    let held = harness::scroll_top(tab, surface);
+    assert!(
+        held > 0.0 && !at_tail(tab, surface),
+        "the reader scrolled up ({held}px)"
+    );
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        growth_script(),
+        Duration::from_millis(2600),
+    );
+    let t0 = std::time::Instant::now();
+    let mut worst = 0.0f64;
+    let mut worst_at = String::new();
+    while t0.elapsed() < Duration::from_secs(26) {
+        std::thread::sleep(Duration::from_millis(250));
+        let now = harness::scroll_top(tab, surface);
+        let drift = (now - held).abs();
+        if drift > worst {
+            worst = drift;
+            worst_at = format!(
+                "{:.1}s, appended {}",
+                t0.elapsed().as_secs_f64(),
+                growth.count()
+            );
+        }
+    }
+    let appended = growth.finish(Duration::from_secs(10));
+    assert_eq!(appended, 8, "the driver appended the whole script");
+    assert!(
+        worst <= 4.0,
+        "unpinned: the reader's position moved by {worst:.0}px during growth (at {worst_at}); held {held}px, now {}px",
+        harness::scroll_top(tab, surface)
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_holds_to_the_pixel_when_unpinned_through_growth() {
+    let _serial = serial();
+    let fx = fixture("scenario-pixel-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_unpinned_holds_to_the_pixel(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_holds_to_the_pixel_when_unpinned_through_growth() {
+    let _serial = serial();
+    let fx = fixture("scenario-pixel-app", 40);
+    let page = open(Surface::AppShell, &fx, 2861);
+    scenario_unpinned_holds_to_the_pixel(&page.tab, Surface::AppShell, &fx);
+}
+
+/// The real-transcript shape (#51): the reader is scrolled a few screens back INSIDE a long open
+/// turn while that turn keeps growing. Same pixel rule as above.
+fn fixture_open_turn(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let path = stores.claude_session(SID, &harness::long_open_turn_session(12, 40));
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+fn scenario_unpinned_inside_an_open_turn_holds_to_the_pixel(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    for _ in 0..3 {
+        scroll_by(tab, surface, -700);
+    }
+    settle();
+    let held = harness::scroll_top(tab, surface);
+    assert!(
+        held > 0.0 && !at_tail(tab, surface),
+        "the reader scrolled up inside the open turn ({held}px)"
+    );
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        harness::open_turn_growth(40, 3),
+        Duration::from_millis(2600),
+    );
+    let t0 = std::time::Instant::now();
+    let mut worst = 0.0f64;
+    let mut worst_at = String::new();
+    while t0.elapsed() < Duration::from_secs(36) {
+        std::thread::sleep(Duration::from_millis(250));
+        let now = harness::scroll_top(tab, surface);
+        let drift = (now - held).abs();
+        if drift > worst {
+            worst = drift;
+            worst_at = format!(
+                "{:.1}s, appended {}",
+                t0.elapsed().as_secs_f64(),
+                growth.count()
+            );
+        }
+    }
+    let appended = growth.finish(Duration::from_secs(10));
+    assert_eq!(appended, 12, "the driver appended the whole script");
+    assert!(
+        worst <= 4.0,
+        "unpinned inside the open turn: the reader's position moved by {worst:.0}px during growth (at {worst_at}); held {held}px, now {}px",
+        harness::scroll_top(tab, surface)
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_holds_to_the_pixel_inside_an_open_turn_known_red_73() {
+    let _serial = serial();
+    let fx = fixture_open_turn("scenario-openturn-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_unpinned_inside_an_open_turn_holds_to_the_pixel(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_holds_to_the_pixel_inside_an_open_turn() {
+    let _serial = serial();
+    let fx = fixture_open_turn("scenario-openturn-app");
+    let page = open(Surface::AppShell, &fx, 2862);
+    scenario_unpinned_inside_an_open_turn_holds_to_the_pixel(&page.tab, Surface::AppShell, &fx);
+}
+
+/// The probe's shape (#51): the reader keeps scrolling back INSIDE the open turn while it grows.
+/// Between two deliberate scrolls the position must not move (±4px); each scroll resets the
+/// expectation.
+fn scenario_scrolling_back_during_growth_holds_between_scrolls(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    for _ in 0..3 {
+        scroll_by(tab, surface, -700);
+    }
+    settle();
+    assert!(
+        !at_tail(tab, surface),
+        "the reader scrolled up inside the open turn"
+    );
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        harness::open_turn_growth(40, 4),
+        Duration::from_millis(2600),
+    );
+    let t0 = std::time::Instant::now();
+    let mut expect = harness::scroll_top(tab, surface);
+    let mut worst = 0.0f64;
+    let mut worst_at = String::new();
+    let mut ticks = 0u32;
+    while t0.elapsed() < Duration::from_secs(44) {
+        std::thread::sleep(Duration::from_millis(250));
+        ticks += 1;
+        if ticks % 9 == 0 {
+            scroll_by(tab, surface, -400);
+            std::thread::sleep(Duration::from_millis(150));
+            expect = harness::scroll_top(tab, surface);
+            continue;
+        }
+        let now = harness::scroll_top(tab, surface);
+        let drift = (now - expect).abs();
+        if drift > worst {
+            worst = drift;
+            worst_at = format!(
+                "{:.1}s, appended {}",
+                t0.elapsed().as_secs_f64(),
+                growth.count()
+            );
+        }
+    }
+    let appended = growth.finish(Duration::from_secs(10));
+    assert_eq!(appended, 16, "the driver appended the whole script");
+    assert!(
+        worst <= 4.0,
+        "between the reader's own scrolls the position moved by {worst:.0}px during growth (at {worst_at})"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_holds_between_scrolls_while_the_open_turn_grows_known_red_73() {
+    let _serial = serial();
+    let fx = fixture_open_turn("scenario-scrollgrow-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_scrolling_back_during_growth_holds_between_scrolls(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_holds_between_scrolls_while_the_open_turn_grows() {
+    let _serial = serial();
+    let fx = fixture_open_turn("scenario-scrollgrow-app");
+    let page = open(Surface::AppShell, &fx, 2863);
+    scenario_scrolling_back_during_growth_holds_between_scrolls(&page.tab, Surface::AppShell, &fx);
 }
