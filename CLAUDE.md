@@ -86,24 +86,36 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   `tmux -L` server with no controlling TTY and drives it via `send-keys` /
   `capture-pane` (`tmux new-session -d` works without a TTY). `#[ignore]`d; run
   `cargo test --test tmux_smoke -- --ignored`.
-- **Browser (HTML live page):** `claude-replay-browser-tests/tests/browser_follow.rs` drives
-  the real `--html` server in headless Chrome over CDP — the follow/anchor viewport contract
-  lives in renderer-fired scroll events, layout clamping and native scroll anchoring, which
-  only a real engine has. `#[ignore]`d (needs a local Chrome); run
-  `cargo test -p claude-replay-browser-tests --test browser_follow -- --ignored`.
-  Scroll/viewport changes to `export.js` must extend this harness. The same file holds the
-  APP SHELL's cases (`the_app_shell_*`: layout, hide/restore, child→parent, scroll memory, the
-  keymap) against `agent-monitor-v2 --release` on ports 2831–2836 with scratch state; a
-  behaviour change in `codex-ui/` extends those the same way, and a served module the shell
-  imports must be registered in `ui::asset()` (an import-closure test walks the graph). The classic-rail
-  case (`the_classic_rail_*`) needs `agent-monitor --release` (v1) on ports 2837–2838 and builds hermetic
-  stores (`qoderwork_family_store`, `claude_finished_store`, `store_envs`); without the v1 binary it SKIPS, and a
-  skip passes vacuously. The crate sits OUTSIDE
-  `default-members` — its `headless_chrome` dep is the heaviest thing the workspace compiles,
-  so the LOCAL root gates (`cargo test`, `cargo clippy --all-targets`) never resolve it and
-  never compile-check it. CI's `cargo test --all` does span every member, so a break in the
-  harness surfaces there rather than under you; build it explicitly (`--no-run` is enough) if
-  you would rather not learn that from CI.
+- **Browser (real Chrome):** `claude-replay-browser-tests/` drives the pages in headless Chrome
+  over CDP — the follow/anchor viewport contract lives in renderer-fired scroll events, layout
+  clamping and native scroll anchoring, which only a real engine has, and twice in one day a
+  shell that failed to LINK passed every static gate and was caught only here. Everything is
+  `#[ignore]`d; the gate is
+  `cargo build --release -p claude-monitor -p claude-monitor-v2 && cargo test -p claude-replay-browser-tests -- --ignored --skip known_red`
+  (a local Chrome; CI runs the same in its `browser` job). `tests/harness/mod.rs` is the kit
+  every case uses: `Stores` (a hermetic world of agent stores under the case's scratch root —
+  nothing a case measures comes from this machine's sessions), record builders and
+  `long_session`, `Monitor::spawn` (v1 or v2 on a fixed port, reaped on drop; a missing binary
+  PANICS naming the build — never a silent skip, which is how a blank shell once passed as
+  13/16), `chrome()` with timer throttling off, `until` (panics with what it saw), and the
+  two-surface vocabulary (`Surface::{Classic, AppShell}`, `turn_at_top`, `at_tail`, `scroll_by`,
+  `jump_to_end`, `open_last_fold`, `LiveGrowth`). `tests/browser_follow.rs` holds the
+  structural cases (the html server's viewport contract; `the_app_shell_*` on ports 2831–2836;
+  `the_classic_rail_*` on 2837–2838 against v1; `the_v2_shell_*`, the compose affordance on
+  2841–2842). `tests/scenarios.rs` holds scenarios written ONCE and run against BOTH pages —
+  the classic page (the html server's `export.js`) is the reference, the app shell is held to
+  the same assertions (ports 2851+). A case on EITHER surface whose failure is a QUEUED bug carries
+  `known_red_<task>` in its name: the gate skips it, the fix removes the marker, and the case
+  is never weakened (the classic page is the reference, not an oracle — #71 is a classic-page
+  bug the harness found). Scroll/viewport changes to `export.js` or `codex-ui/` extend the
+  scenarios; a served module the shell imports must be registered in `ui::asset()` (an
+  import-closure test walks the graph and checks every named import exists). The crate sits
+  OUTSIDE `default-members` — its `headless_chrome` dep is the heaviest thing the workspace
+  compiles, so the LOCAL root gates (`cargo test`, `cargo clippy --all-targets`) never resolve
+  it; CI's `cargo test --all` compiles it, and the `browser` job runs it (visible, not yet a
+  required check — it becomes one once it has been stable for a while). Read Chrome's console
+  before diagnosing a "timed out waiting for …" on a shell:
+  `chrome --headless=new --enable-logging=stderr --v=0 <url>` prints `CONSOLE … Uncaught …`.
 - **Quick plain check:** `agent-replay <path|--latest> --dump -` renders to stdout
   (no TUI) — good for verifying parsing/markdown/diffs in a pipe. (`--dump <stem>` or
   bare `--dump` instead write `<stem>.txt` + `<stem>.ansi` at the terminal width or

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "The browser-level viewport harness for the HTML frontend — a crate of its own so its headless-Chrome dependency is never built by an ordinary `cargo test`."
+description = "The real-Chrome harness for the HTML frontend and the monitor shells — a crate of its own so its headless-Chrome dependency is never built by an ordinary `cargo test`."
 
 # A crate that exists only to hold `tests/`. It is a workspace MEMBER but deliberately NOT a
 # default-member, which is the whole gate: `cargo build`/`cargo test`/`cargo clippy` at the repo
@@ -17,8 +17,10 @@ description = "The browser-level viewport harness for the HTML frontend — a cr
 #
 # The cost of the gate: the root's `cargo clippy --all-targets` no longer compile-checks this
 # harness, so a change to `export.js`'s scroll contract must build it explicitly —
-# `cargo test -p claude-replay-browser-tests --test browser_follow -- --ignored`, which needs a
-# local Chrome. See CLAUDE.md.
+# `cargo test -p claude-replay-browser-tests -- --ignored --skip known_red`, which needs a
+# local Chrome and the two monitor binaries built in release. See README.md and CLAUDE.md:
+# `tests/harness/` is the kit, `tests/browser_follow.rs` the structural cases,
+# `tests/scenarios.rs` the scenarios run against both pages.
 [lib]
 path = "src/lib.rs"
 

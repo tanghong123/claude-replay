@@ -34,6 +34,27 @@ jobs:
       - name: Frontend contract
         run: node claude-monitor-v2/tests/ui_contract.mjs
 
+  # The real-Chrome harness (claude-replay-browser-tests): hermetic fixtures, both pages,
+  # the classic page as the reference. Visible on every PR; NOT yet a required check — it
+  # becomes one once it has been stable for a while (CLAUDE.md, "Browser (real Chrome)").
+  # `known_red_<task>` cases are queued bugs' repros and are skipped by the gate on purpose.
+  browser:
+    name: browser (real Chrome)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Chrome
+        run: google-chrome --version
+      - name: Build the monitors
+        run: cargo build --release -p claude-monitor -p claude-monitor-v2
+      - name: Browser suite
+        # headless_chrome honours $CHROME, then searches PATH for google-chrome-stable & co.
+        env:
+          CHROME: /usr/bin/google-chrome
+        run: cargo test -p claude-replay-browser-tests -- --ignored --skip known_red
+
   guard:
     name: secrets · blocked emails
     runs-on: ubuntu-latest

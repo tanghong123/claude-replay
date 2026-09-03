@@ -625,21 +625,37 @@ pub fn scroll_by(tab: &headless_chrome::Tab, surface: Surface, dy: i64) {
 /// Jump to the end the way the page offers it: the classic page's pill / a scroll to the
 /// bottom with intent; the app shell's jump-to-bottom control.
 pub fn jump_to_end(tab: &headless_chrome::Tab, surface: Surface) {
+    let s = surface.scroller();
     match surface {
         Surface::Classic => {
-            eval(tab, "(function(){ window.dispatchEvent(new WheelEvent('wheel', {deltaY: 120})); window.scrollTo(0, document.scrollingElement.scrollHeight); return 'ok'; })()");
+            eval(tab, "(function(){ window.dispatchEvent(new WheelEvent('wheel', {deltaY: 120})); window.scrollTo(0, document.scrollingElement.scrollHeight); var b = document.getElementById('newbadge'); if (b) b.click(); return 'ok'; })()");
         }
         Surface::AppShell => {
-            eval(tab, "(function(){ var b = document.getElementById('jumpToBottom'); if (b) b.click(); else { var s = document.querySelector('.transcript'); s.scrollTop = s.scrollHeight; } return 'ok'; })()");
+            eval(tab, &format!("(function(){{ var b = document.getElementById('jumpToBottom'); if (b) b.click(); var s = {s}; s.scrollTop = s.scrollHeight; return 'ok'; }})()"));
         }
     }
 }
 
-/// Open the LAST fold header currently in the DOM (near the end after a jump) and return the
-/// turn it belongs to, or -1 when there is none mounted.
+/// The largest user-turn ordinal mounted right now — grows as the transcript grows.
+pub fn last_mounted_turn(tab: &headless_chrome::Tab, surface: Surface) -> i64 {
+    let root = surface.turns_root();
+    eval(tab, &format!("(function(){{ var r = {root}; if (!r) return -1; var m = -1; r.querySelectorAll('[data-turn]').forEach(function(e){{ m = Math.max(m, Number(e.dataset.turn)); }}); return m; }})()"))
+        .as_i64()
+        .unwrap_or(-1)
+}
+
+/// Open the LAST fold header currently in the DOM (near the end after a jump), preferring a
+/// THINKING block — the owner's sequence (#51) opens one — over any other fold. Returns the
+/// turn it belongs to, -2 when the fold carries no turn of its own, -1 when none is mounted.
 pub fn open_last_fold(tab: &headless_chrome::Tab, surface: Surface) -> i64 {
-    let head = surface.fold_head();
-    eval(tab, &format!("(function(){{ var hs = document.querySelectorAll('{head}'); if (!hs.length) return -1; var h = hs[hs.length - 1]; var t = h.closest('[data-turn]'); h.click(); return t ? Number(t.dataset.turn) : -2; }})()"))
+    let (thinking, any) = match surface {
+        Surface::Classic => (".fold[data-kind=\"think\"] .fold-h", ".fold-h"),
+        Surface::AppShell => (
+            ".renderer-turn[data-kind=\"thinking\"] button.renderer-head",
+            "button.renderer-head",
+        ),
+    };
+    eval(tab, &format!("(function(){{ var hs = document.querySelectorAll('{thinking}'); if (!hs.length) hs = document.querySelectorAll('{any}'); if (!hs.length) return -1; var h = hs[hs.length - 1]; var t = h.closest('[data-turn]'); h.click(); return t ? Number(t.dataset.turn) : -2; }})()"))
         .as_i64()
         .unwrap_or(-1)
 }
@@ -717,4 +733,67 @@ impl Drop for LiveGrowth {
             let _ = t.join();
         }
     }
+}
+
+/// The turn the PANE says the reader is at: the classic page's sticky bar ("Turn N — …", the
+/// scroll spy's verdict, mirrored by `.side-item.active`); the app shell's outline row marked
+/// current, if it marks one (a leading number in its text). -1 when the pane names none.
+pub fn pane_focus_turn(tab: &headless_chrome::Tab, surface: Surface) -> i64 {
+    let js = match surface {
+        Surface::Classic => "(function(){ var t = (document.getElementById('stickytext') || {}).textContent || ''; var m = t.match(/Turn (\\d+)/); if (m) return Number(m[1]); var a = document.querySelector('.side-item.active'); if (!a) return -1; var n = (a.textContent || '').match(/^(\\d+)/); return n ? Number(n[1]) : -1; })()",
+        Surface::AppShell => "(function(){ var r = document.querySelector('#navigatorTurns .outline-turn-row.is-current, #navigatorTurns .outline-turn-row[aria-current=\"true\"], #navigatorTurns .outline-turn-row.current'); if (!r) return -1; if (r.dataset.turn) return Number(r.dataset.turn); var n = (r.textContent || '').match(/(\\d+)/); return n ? Number(n[1]) : -1; })()",
+    };
+    eval(tab, js).as_i64().unwrap_or(-1)
+}
+
+/// Type a search query the way the page takes it (its own box), and return the hit count the
+/// page reports ("N hits" / "N matches").
+pub fn search(tab: &headless_chrome::Tab, surface: Surface, query: &str) -> i64 {
+    let (input, count) = match surface {
+        Surface::Classic => ("q", "qcount"),
+        Surface::AppShell => ("transcriptSearchInput", "transcriptSearchCount"),
+    };
+    eval(tab, &format!("(function(){{ var i = document.getElementById('{input}'); i.focus(); i.value = {query:?}; i.dispatchEvent(new Event('input', {{bubbles: true}})); return 'ok'; }})()"));
+    std::thread::sleep(Duration::from_millis(600));
+    search_count(tab, surface, count)
+}
+
+fn search_count(tab: &headless_chrome::Tab, _surface: Surface, count_id: &str) -> i64 {
+    eval(tab, &format!("(function(){{ var t = (document.getElementById('{count_id}') || {{}}).textContent || ''; var m = t.match(/(\\d+)/); return m ? Number(m[1]) : -1; }})()"))
+        .as_i64()
+        .unwrap_or(-1)
+}
+
+/// The hit count the page reports right now.
+pub fn search_hits(tab: &headless_chrome::Tab, surface: Surface) -> i64 {
+    let count = match surface {
+        Surface::Classic => "qcount",
+        Surface::AppShell => "transcriptSearchCount",
+    };
+    search_count(tab, surface, count)
+}
+
+/// How many search highlights are mounted (`mark.hl` / `mark.search-mark`).
+pub fn search_marks(tab: &headless_chrome::Tab, surface: Surface) -> i64 {
+    let sel = match surface {
+        Surface::Classic => "mark.hl",
+        Surface::AppShell => "mark.search-mark",
+    };
+    eval(tab, &format!("document.querySelectorAll('{sel}').length"))
+        .as_i64()
+        .unwrap_or(-1)
+}
+
+/// Step to the next search hit the way the page offers it: Enter in the classic box, the
+/// app shell's "next" control.
+pub fn search_next(tab: &headless_chrome::Tab, surface: Surface) {
+    match surface {
+        Surface::Classic => {
+            eval(tab, "(function(){ var q = document.getElementById('q'); q.focus(); q.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true})); return 'ok'; })()");
+        }
+        Surface::AppShell => {
+            eval(tab, "(function(){ var b = document.getElementById('findNext'); if (b) b.click(); return 'ok'; })()");
+        }
+    }
+    std::thread::sleep(Duration::from_millis(500));
 }
