@@ -155,6 +155,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/preview.js").as_slice(),
         ),
+        "monitor-ui/sandbox.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/sandbox.js").as_slice(),
+        ),
         "monitor-ui/attachment-viewer.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/attachment-viewer.js").as_slice(),

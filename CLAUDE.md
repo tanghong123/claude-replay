@@ -116,22 +116,29 @@ shipped a tag pointing at the wrong commit.
 (`tanghong123/tap`) on its own; the corp tap is a separate, manual step and does not happen
 by itself:
 
-1. Download the release's `agent-replay` / `agent-monitor` / `agent-monitor-fleet` tarballs
-   for all four targets and **verify each against its published `.sha256`** before
+1. Download the release's `agent-replay` / `agent-monitor` / `agent-monitor-fleet` /
+   `agent-jdi` tarballs (four tools — the tap's history publishes all four) for all four
+   targets and **verify each against its published `.sha256`** (`shasum -a 256 -c`) before
    republishing anything.
-2. Copy them into a clone of `alibrew/artifacts` at `<tool>/<version>-<os>-<arch>/`, keeping
-   the release's own filename. **Exactly two levels** — brew writes a single-line cone
+2. Copy them into a clone of `alibrew/artifacts` at `<tool>/<version>-<os>-<arch>/`
+   (`darwin|linux` × `arm64|amd64`), keeping the release's own filename. Clone it
+   `--filter=blob:none --no-checkout`, then `sparse-checkout init --cone` + `set` the sixteen
+   NEW directories and check out `master` — a plain clone pulls every binary ever published. **Exactly two levels** — brew writes a single-line cone
    sparse-checkout pattern and cone mode materializes NOTHING deeper. Never LFS-track that
    repo. Push to `master` and take the commit sha.
-3. Update `Formula/<tool>.rb` in `alibrew/homebrew-core` (branch `main`) with the new version
-   and that sha as `revision:` — a git url takes no `sha256` and no `using: :git`. Verify with
+3. Update `Formula/<tool>.rb` in `alibrew/homebrew-core` (branch `main`) — the installed tap
+   at `$(brew --repository alibrew/core)` IS that clone, already on `main` with the corporate
+   identity set, and `brew audit` reads it — with the new version (it is also inside each
+   `only_path:`) and that sha as `revision:` — a git url takes no `sha256` and no `using: :git`. Verify with
    `ruby -c`, `brew style --except-cops=FormulaAudit/Urls`, then `brew audit --strict
    alibrew/core/<name>` (audit takes a NAME, not a path).
 
 Both corp repos **reject a commit authored from a non-corporate email** — set the owner's
-corporate address repo-locally in those clones only. Do not guess it: `a1 staff list --query
-hongtang` reports it, and the existing commits in `alibrew/homebrew-core` carry the same
-identity. It must never appear in THIS repo — not in a commit and not in a file, which
+corporate address repo-locally in those clones only. Do not guess it: read it off the
+existing commits in `alibrew/homebrew-core` (`git log --format='%an <%ae>'`). `a1 staff list
+--query hongtang` does NOT report it — measured 2026-09-03, it returns five other people whose
+nicknames romanize the same way, and `a1 staff get <mr-assignee-id>` is a platform id, not an
+employee id, and names someone else again. It must never appear in THIS repo — not in a commit and not in a file, which
 `.githooks/pre-push` enforces on the diff as well as the metadata (it caught this very
 paragraph naming it outright). The two rules point opposite ways on purpose: one history is
 public and the other is not.

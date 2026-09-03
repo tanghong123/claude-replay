@@ -141,7 +141,7 @@ bindComponentEvents(transcript, recordState, {
     }, 1400);
   },
   openChild: id => selectSession(id, true),
-  openAttachment: (id, path, sig, action) => openAttachment(id, path, sig, action),
+  openAttachment: (id, path, fsig, action) => openAttachment(id, path, fsig, action),
   openReference: path => openReference(path),
   toast
 });
@@ -423,10 +423,10 @@ byId("searchTabs").onclick = event => { const tab = event.target.closest("[data-
 byId("searchResults").onclick = event => { const item = event.target.closest("[data-global-index]"); if (!item) return; const row = uiState.globalResults[Number(item.dataset.globalIndex)]; byId("searchLayer").classList.remove("production-open"); if (row.sid) selectSession(row.sid, true); else if (row.record != null) viewport.jumpToRecord(row.record, "search"); };
 byId("searchLayer").onclick = event => { if (event.target === byId("searchLayer")) byId("searchLayer").classList.remove("production-open"); };
 
-function openAttachment(id, path, sig, action = "preview") {
+function openAttachment(id, path, fsig, action = "preview") {
   const record = findRecord(id); const head = record?.head || {};
-  const item = { id: `attachment:${id || path}`, name: head.att_name || path.split("/").pop() || "attachment", path: head.att_path || path, sig: head.att_sig || sig, text: head.att_text, data: head.att_datauri, embedded: head.att_datauri != null || head.att_text != null };
-  item.source = item.data || (item.path && item.sig ? `/file?path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.sig)}` : "");
+  const item = { id: `attachment:${id || path}`, name: head.att_name || path.split("/").pop() || "attachment", path: head.att_path || path, fsig: head.att_fsig || fsig, text: head.att_text, data: head.att_datauri, embedded: head.att_datauri != null || head.att_text != null };
+  item.source = item.data || (item.path && item.fsig ? `/file?path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig)}` : "");
   if (action === "image") attachmentViewer.openImage(item);
   else if (action === "download") attachmentViewer.download(item);
   else if (action === "copy") attachmentViewer.copyPath(item);
@@ -442,14 +442,14 @@ function openReference(path) {
     if (!record || offered) return;
     const head = record.head || {};
     const offeredPath = head.att_path || head.path;
-    const offeredSig = head.att_sig || head.sig;
-    if (candidates.has(offeredPath) && offeredSig) offered = { record, path: offeredPath, sig: offeredSig };
+    const offeredFsig = head.att_fsig || head.fsig;
+    if (candidates.has(offeredPath) && offeredFsig) offered = { record, path: offeredPath, fsig: offeredFsig };
     for (const part of record.body || []) if (part.p === "blocks") for (const child of part.items || []) visit(child);
   };
   recordState.records.forEach(visit);
   if (offered) {
     const head = offered.record.head || {};
-    preview.open({ id: `reference:${offered.path}`, name: head.att_name || offered.path.split("/").pop() || "file", path: offered.path, sig: offered.sig, text: head.att_text, data: head.att_datauri });
+    preview.open({ id: `reference:${offered.path}`, name: head.att_name || offered.path.split("/").pop() || "file", path: offered.path, fsig: offered.fsig, text: head.att_text, data: head.att_datauri });
     return;
   }
   const copy = navigator.clipboard?.writeText(decoded);

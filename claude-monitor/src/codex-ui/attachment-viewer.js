@@ -72,7 +72,7 @@ export class AttachmentViewer {
     try {
       let response;
       if (item.data) response = await fetch(item.data);
-      else response = await fetch(`/file?path=${encodeURIComponent(item.path || "")}&sig=${encodeURIComponent(item.sig || "")}`, { cache: "no-store" });
+      else response = await fetch(`/file?path=${encodeURIComponent(item.path || "")}&sig=${encodeURIComponent(item.fsig || "")}`, { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const url = URL.createObjectURL(await response.blob());
       const link = document.createElement("a");

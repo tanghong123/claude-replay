@@ -84,7 +84,9 @@ function rendererRecord(record, renderer, name) {
     state: chipText, error: chips.some(c => /fail|error/i.test(`${c.c || ""} ${c.x || ""}`)),
     running: chips.some(c => /running|active/i.test(c.x || "")), duration: chipText,
     html: partsHtml((record.body || []).filter(p => p.p !== "blocks")), raw: record,
-    path: head.path || head.att_path, sig: head.sig || head.att_sig,
+    path: head.path || head.att_path,
+    revealSig: head.sig || head.att_sig,
+    fileSig: head.fsig || head.att_fsig,
     attachment: record.kind === "attachment" ? head : null,
     interaction: head.interaction || null,
     childId: head.child_id || childFrom(head.child), children

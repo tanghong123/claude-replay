@@ -1,5 +1,6 @@
 import { escapeText } from "./view-model.js";
 import { uiState } from "./state.js";
+import { sandboxDocument } from "./sandbox.js";
 
 const byId = id => document.getElementById(id);
 const SESSION_CACHE_LIMIT = 6;
@@ -59,7 +60,7 @@ export class Preview {
     if (!item) { byId("previewBody").innerHTML = '<div class="preview-empty"><div class="preview-empty-icon">◇</div><strong>No artifact open</strong><span>Open a file, image or HTML page from the transcript.</span></div>'; return; }
     if (item.text != null || item.data) { this.show(item, item.text, item.data); return; }
     byId("previewBody").classList.add("production-loading"); byId("previewBody").textContent = "Reading securely…";
-    const query = `path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.sig || "")}`;
+    const query = `path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig || "")}`;
     fetch(`/file?${query}`, { cache: "no-store" }).then(response => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const type = response.headers.get("content-type") || "";
@@ -83,13 +84,9 @@ export class Preview {
     if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = ""; }
     if (data) { this.objectUrl = data.startsWith("blob:") ? data : ""; body.innerHTML = `<div class="artifact-surface"><img class="artifact-image" alt="${escapeText(item.name)}"></div>`; body.querySelector("img").src = data; return; }
     const html = /\.html?$/i.test(item.name || "");
-    if (html && document.body.dataset.paired === "true") { body.innerHTML = '<iframe class="artifact-html-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; body.querySelector("iframe").srcdoc = sandbox(text || ""); return; }
+    if (html && document.body.dataset.paired === "true") { body.innerHTML = '<iframe class="artifact-html-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; body.querySelector("iframe").srcdoc = sandboxDocument(text || ""); return; }
     body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="artifact-surface"><pre class="artifact-text"></pre></div>`;
     body.querySelector("pre").textContent = text || "";
   }
 }
 
-const sandbox = html => {
-  const csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data: blob:; style-src \'unsafe-inline\'; script-src \'unsafe-inline\'; font-src data:; media-src data: blob:; connect-src \'none\'; form-action \'none\'; base-uri \'none\'">';
-  return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, value => value + csp) : csp + html;
-};

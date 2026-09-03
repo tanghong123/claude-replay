@@ -4,6 +4,7 @@ import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
 import { attachmentCapability, promptShouldCollapse, rendererStartsClosed } from "../../claude-monitor/src/codex-ui/components.js";
 import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
+import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 
 const demo = readFileSync(new URL("../../design/agent-monitor-codex-demo.html", import.meta.url), "utf8");
 const referenceCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/reference.css", import.meta.url), "utf8");
@@ -50,9 +51,10 @@ assert.equal(rendererStartsClosed({ renderer: "queue", running: false, interacti
 const embeddedImage = attachmentCapability({ att_kind: "image", att_name: "shot.png", att_datauri: "data:image/png;base64," });
 assert.equal(embeddedImage.action, "image");
 assert.match(embeddedImage.hint, /saved with the session/);
-assert.match(attachmentCapability({ att_kind: "image", att_name: "shot.png", att_path: "/tmp/shot.png", att_sig: "signed" }).hint, /temporary file/);
-assert.equal(attachmentCapability({ att_name: "notes.md", att_path: "/tmp/notes.md", att_sig: "signed" }).action, "preview");
-assert.equal(attachmentCapability({ att_name: "sample.tgz", att_path: "/tmp/sample.tgz", att_sig: "signed" }).action, "download");
+assert.match(attachmentCapability({ att_kind: "image", att_name: "shot.png", att_path: "/tmp/shot.png", att_fsig: "file-signed" }).hint, /temporary file/);
+assert.equal(attachmentCapability({ att_name: "notes.md", att_path: "/tmp/notes.md", att_fsig: "file-signed" }).action, "preview");
+assert.equal(attachmentCapability({ att_name: "sample.tgz", att_path: "/tmp/sample.tgz", att_fsig: "file-signed" }).action, "download");
+assert.equal(attachmentCapability({ att_name: "notes.md", att_path: "/tmp/notes.md", att_sig: "reveal-only" }).action, "copy", "a reveal signature must never authorize /file");
 assert.equal(attachmentCapability({ att_name: "sample.tgz", att_path: "/tmp/sample.tgz" }).action, "copy");
 
 for (const moduleName of ["app.js", "control-store.js", "preview.js"]) {
@@ -102,7 +104,7 @@ assert.deepEqual(claudeNested.children.map(child => child.renderer), ["read", "b
 const richProjection = new Projection();
 richProjection.rebuild([
   { kind: "user", id: "prompt", turn: 1, label: "Inspect this", body: [{ p: "md", h: "<p>Inspect this</p>" }] },
-  { kind: "attachment", id: "image", head: { att_kind: "image", att_name: "shot.png", att_path: "/tmp/shot.png", att_sig: "signed" }, body: [] },
+  { kind: "attachment", id: "image", head: { att_kind: "image", att_name: "shot.png", att_path: "/tmp/shot.png", att_fsig: "file-signed", att_sig: "reveal-signed" }, body: [] },
   { kind: "assistant", id: "plan", phase: "final", head: { presentation: "proposed_plan" }, body: [{ p: "md", h: "<p>Plan</p>" }] },
   { kind: "tool", id: "input", head: { name: "request_user_input", interaction: { kind: "request_user_input", resolved: true, answers: [{ id: "choice", label: "Use v2" }] } }, body: [{ p: "pre", x: "raw" }] }
 ], 0);
@@ -151,3 +153,31 @@ assert.equal(navigationState.promptExpanded.has("user:1"), true, "search reveals
 assert.ok(updates.length >= 4);
 
 console.log("ui contract fixtures passed");
+
+// The HTML preview's policy is placed by rule, never by searching the artifact. The case that
+// found the bug: a `<head>` inside a leading comment made the old regex drop the policy INTO
+// the comment, and the frame ran with none.
+const META = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">`;
+const policyIndex = html => sandboxDocument(html).indexOf(META);
+assert.equal(policyIndex("<html><head><title>x</title></head><body>hi</body></html>"), 0, "no doctype: policy first");
+assert.equal(policyIndex("<!-- <head> --><html><head></head><body>x</body></html>"), 0, "a <head> in a comment never becomes the insertion point");
+{
+  // A COMPLETE comment may precede the doctype (the tokenizer ends it exactly where the rule
+  // does), so the policy lands after the doctype — outside the comment, standards mode kept.
+  const src = "<!--\n<head>\n--><!DOCTYPE html><html><head></head></html>";
+  const at = policyIndex(src);
+  assert.equal(at, "<!--\n<head>\n--><!DOCTYPE html>".length, "a complete comment then a doctype: policy right after the doctype");
+  assert.ok(at > src.indexOf("-->"), "…and never inside the comment");
+  assert.equal(sandboxDocument(src).indexOf("<!--"), 0, "the artifact's own bytes are untouched");
+}
+assert.equal(policyIndex("<!-- x --!><!doctype html><html></html>"), 0, "an unusual comment terminator falls back to first, never inside");
+{
+  const doc = sandboxDocument("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"></head><body>y</body></html>");
+  assert.equal(doc.indexOf(META), "<!DOCTYPE html>".length, "a leading doctype is kept ahead of the policy so the artifact stays in standards mode");
+  assert.equal(doc.indexOf("<!DOCTYPE html>"), 0);
+}
+assert.equal(policyIndex("\uFEFF  <!doctype HTML SYSTEM 'about:legacy-compat'><html></html>"), "\uFEFF  <!doctype HTML SYSTEM 'about:legacy-compat'>".length, "BOM, whitespace and a legacy doctype are all still 'the doctype first'");
+assert.equal(policyIndex(""), 0, "an empty artifact is just the policy");
+assert.match(PREVIEW_CSP, /connect-src 'none'/);
+assert.match(PREVIEW_CSP, /default-src 'none'/);
+console.log("sandbox document cases passed");

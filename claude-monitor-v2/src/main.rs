@@ -377,8 +377,14 @@ mod tests {
     #[test]
     fn interactive_html_preview_is_opaque_and_network_denied() {
         let preview = include_str!("../../claude-monitor/src/codex-ui/preview.js");
+        let sandbox = include_str!("../../claude-monitor/src/codex-ui/sandbox.js");
         assert!(preview.contains("sandbox=\"allow-scripts\""));
-        assert!(preview.contains("connect-src \\'none\\'"));
         assert!(!preview.contains("allow-same-origin"));
+        assert!(sandbox.contains("connect-src 'none'"));
+        // Placement is by rule, never by searching the artifact — the regex that looked for
+        // `<head>` is what a `<head>` inside a comment defeated. `ui_contract.mjs` holds the
+        // behavioural cases; this pins that the search is gone.
+        assert!(!sandbox.contains("<head[^>]*>"));
+        assert!(!preview.contains("<head"));
     }
 }

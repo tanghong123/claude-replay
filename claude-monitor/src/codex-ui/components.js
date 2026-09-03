@@ -35,7 +35,7 @@ function rendererBody(view) {
   if (view.attachment) {
     const h = view.attachment;
     const capability = attachmentCapability(h);
-    return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button></div>`;
+    return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}">${escapeText(capability.label)} →</button></div>`;
   }
   if (view.renderer === "bash") return `<div class="renderer-terminal ${view.error ? "error" : ""}"><span class="output">${view.html || "No output recorded"}</span></div>`;
   return view.html || `<div class="renderer-note"><p>No additional details recorded.</p></div>`;
@@ -114,8 +114,8 @@ function renderPromptAttachments(attachments = []) {
     const h = view.attachment || {};
     const capability = attachmentCapability(h);
     const isImage = capability.action === "image";
-    const source = h.att_datauri || (h.att_path && h.att_sig ? `/file?path=${encodeURIComponent(h.att_path)}&sig=${encodeURIComponent(h.att_sig)}` : "");
-    const action = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
+    const source = h.att_datauri || (h.att_path && h.att_fsig ? `/file?path=${encodeURIComponent(h.att_path)}&sig=${encodeURIComponent(h.att_fsig)}` : "");
+    const action = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}"`;
     if (isImage && source) return `<button class="prompt-attachment prompt-image" type="button" ${action} title="Enlarge ${escapeText(h.att_name || "image")}"><span class="prompt-image-thumb"><img src="${escapeText(source)}" alt=""></span><span class="prompt-file-copy"><strong>${escapeText(h.att_name || "image")}</strong><small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">⤢</span></button>`;
     const ext = String(h.att_name || "file").split(".").pop().slice(0, 4).toUpperCase();
     const glyph = capability.action === "download" ? "↓" : capability.action === "copy" ? "⎘" : "↗";
@@ -130,10 +130,10 @@ const TEXT_FILE = /\.(txt|md|mdx|rs|js|mjs|cjs|ts|tsx|jsx|json|jsonl|toml|ya?ml|
 export function attachmentCapability(head = {}) {
   const name = head.att_name || head.att_path || "";
   const image = head.att_kind === "image" || IMAGE_FILE.test(name);
-  const hasSource = head.att_datauri != null || (head.att_path && head.att_sig);
+  const hasSource = head.att_datauri != null || (head.att_path && head.att_fsig);
   if (image && hasSource) return { action: "image", label: "Enlarge", hint: head.att_datauri != null ? "image · saved with the session" : "image · temporary file" };
-  if (head.att_text != null || (TEXT_FILE.test(name) && head.att_path && head.att_sig)) return { action: "preview", label: "Open preview", hint: "opens in the preview pane" };
-  if (head.att_datauri != null || (head.att_path && head.att_sig)) return { action: "download", label: "Download", hint: "no inline preview · click to download" };
+  if (head.att_text != null || (TEXT_FILE.test(name) && head.att_path && head.att_fsig)) return { action: "preview", label: "Open preview", hint: "opens in the preview pane" };
+  if (head.att_datauri != null || (head.att_path && head.att_fsig)) return { action: "download", label: "Download", hint: "no inline preview · click to download" };
   return { action: "copy", label: "Copy path", hint: head.att_path ? "path only · click to copy" : "attachment record only" };
 }
 
@@ -169,7 +169,7 @@ export function bindComponentEvents(root, state, actions) {
     const child = event.target.closest("[data-child-session]");
     if (child) { actions.openChild(child.dataset.childSession); return; }
     const attachment = event.target.closest("[data-attachment]");
-    if (attachment) { actions.openAttachment(attachment.dataset.attachment, attachment.dataset.path, attachment.dataset.sig, attachment.dataset.attachmentAction); return; }
+    if (attachment) { actions.openAttachment(attachment.dataset.attachment, attachment.dataset.path, attachment.dataset.fsig, attachment.dataset.attachmentAction); return; }
     const prompt = event.target.closest("[data-prompt-toggle]");
     if (prompt) { const key = prompt.dataset.promptToggle; state.promptExpanded.has(key) ? state.promptExpanded.delete(key) : state.promptExpanded.add(key); actions.rerender(); return; }
     const process = event.target.closest("[data-process-surface]");
