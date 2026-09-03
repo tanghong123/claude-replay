@@ -161,6 +161,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&state);
         std::fs::create_dir_all(&state).unwrap();
         std::env::set_var("CLAUDE_MONITOR_STATE", &state);
+        // Hermetic: every store points into the scratch root, so `api/sessions` scans the
+        // fixture world (empty here), never this machine's sessions.
+        for var in [
+            "CLAUDE_PROJECTS_DIR",
+            "QODERWORK_PROJECTS_DIR",
+            "QODER_PROJECTS_DIR",
+            "CODEX_HOME",
+        ] {
+            std::env::set_var(var, state.join(var.to_ascii_lowercase()));
+        }
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
         let front = Frontend {
             version: "0.0.0-test",
