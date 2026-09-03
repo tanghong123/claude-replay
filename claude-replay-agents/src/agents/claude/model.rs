@@ -392,6 +392,24 @@ fn push_user_string(
 }
 
 pub(crate) fn tool_target(input: &Value, cwd: &str) -> String {
+    // A question put to the person IS the tool's target (#41): `AskUserQuestion()` told the
+    // reader nothing in the default (folded) view, where Codex's `request_user_input(<question>)`
+    // does. Several questions show the first and a count, like the Codex adapter's lift.
+    if let Some(questions) = input.get("questions").and_then(Value::as_array) {
+        if let Some(first) = questions
+            .iter()
+            .find_map(|q| q.get("question").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+        {
+            let more = questions.len().saturating_sub(1);
+            return if more > 0 {
+                format!("{first} +{more}")
+            } else {
+                first.to_string()
+            };
+        }
+    }
     for k in ["file_path", "path"] {
         if let Some(v) = input.get(k).and_then(|v| v.as_str()) {
             return relativize(v, cwd);
@@ -4056,6 +4074,20 @@ mod tests {
     fn caveat_only_message_is_dropped() {
         let jsonl = r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>just noise</local-command-caveat>"}}"#;
         assert!(parse(jsonl).is_empty(), "caveat-only should yield nothing");
+    }
+
+    #[test]
+    fn tool_target_lifts_a_question_put_to_the_person() {
+        let one = serde_json::json!({ "questions": [{ "question": " Which UI should be the default? ", "header": "Default", "options": [] }] });
+        assert_eq!(tool_target(&one, "/w"), "Which UI should be the default?");
+        let two = serde_json::json!({ "questions": [{ "question": "Ship now?" }, { "question": "Tag it?" }] });
+        assert_eq!(tool_target(&two, "/w"), "Ship now? +1");
+        let empty = serde_json::json!({ "questions": [{ "header": "x" }] });
+        assert_eq!(
+            tool_target(&empty, "/w"),
+            "",
+            "no question text, no invented target"
+        );
     }
 
     #[test]

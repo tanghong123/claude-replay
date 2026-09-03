@@ -159,7 +159,11 @@ pub const COMPACT_AFTER: usize = 256;
 /// would stay unphased and everything after would be phased, inside one session. The `inferred`
 /// flag is what keeps the change invisible in the TUI and in `export.css` — only a phase the
 /// transcript STATES (Codex) restyles the prose.
-pub const FOLD_VERSION: u16 = 26;
+///
+/// v27: a Claude `AskUserQuestion` block's target is the question put to the person (the
+/// first, plus a count), where a v26 stream holds an empty target — the folded view then
+/// named the tool and nothing else, while Codex's equivalent showed its question.
+pub const FOLD_VERSION: u16 = 27;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

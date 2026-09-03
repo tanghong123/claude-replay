@@ -2024,12 +2024,16 @@ fn a_codex_desktop_envelope_lands_on_the_same_vocabulary_as_a_claude_reference()
             .expect("a question tool block")
     };
     let (cname, ctarget, cout) = question(&codex);
-    let (rname, _rtarget, rout) = question(&claude);
+    let (rname, rtarget, rout) = question(&claude);
     assert_eq!(cname, "request_user_input");
     assert_eq!(rname, "AskUserQuestion");
     assert_eq!(
         ctarget, "Which UI should be the default?",
         "the question is the tool's target"
+    );
+    assert_eq!(
+        rtarget, ctarget,
+        "…on both sides (#41): the folded view names what was asked"
     );
     assert!(
         cout.contains("Use v2") && rout.contains("Use v2"),
