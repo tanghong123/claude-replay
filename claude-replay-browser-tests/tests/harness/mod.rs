@@ -797,3 +797,26 @@ pub fn search_next(tab: &headless_chrome::Tab, surface: Surface) {
     }
     std::thread::sleep(Duration::from_millis(500));
 }
+
+/// Jump to user turn `n` the way the page offers it: a click on the pane's entry for it (the
+/// classic sidebar's `.side-item` "N · …", the app shell's outline row "NN ·"). Returns
+/// whether an entry was found.
+pub fn jump_to_turn(tab: &headless_chrome::Tab, surface: Surface, n: u32) -> bool {
+    let js = match surface {
+        Surface::Classic => format!("(function(){{ var e = [...document.querySelectorAll('.side-item')].find(function(x){{ return (x.textContent || '').trim().startsWith('{n} ·'); }}); if (!e) return false; e.click(); return true; }})()"),
+        Surface::AppShell => format!("(function(){{ var want = String({n}).padStart(2, '0') + ' ·'; var e = [...document.querySelectorAll('#navigatorTurns .outline-turn-row')].find(function(x){{ var num = x.querySelector('.outline-number'); return num && num.textContent.trim() === want; }}); if (!e) return false; e.click(); return true; }})()"),
+    };
+    eval(tab, &js).as_bool().unwrap_or(false)
+}
+
+/// Resize the window (the classic case's idiom): every measured height was taken at the old
+/// width and is now a guess.
+pub fn resize(tab: &headless_chrome::Tab, width: f64, height: f64) {
+    tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: None,
+        top: None,
+        width: Some(width),
+        height: Some(height),
+    })
+    .expect("resize");
+}

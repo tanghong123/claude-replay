@@ -408,3 +408,108 @@ fn app_shell_search_survives_growth() {
     let page = open(Surface::AppShell, &fx, 2855);
     scenario_search_through_growth(&page.tab, Surface::AppShell, &fx);
 }
+
+// ── scenario: a deep jump, then paging and stepping around it ───────────────────────────────
+
+/// Jump to a turn deep in the session through the pane, then page down twice and step with
+/// `]` and `[`: every move is relative to where the jump landed, never a leap elsewhere.
+fn scenario_deep_jump_then_page_and_step(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    let target = fx.turns / 2;
+    assert!(
+        harness::jump_to_turn(tab, surface, target),
+        "the pane lists turn {target}"
+    );
+    settle();
+    settle();
+    let landed = turn_at_top(tab, surface);
+    assert!(
+        (landed - target as i64).abs() <= 1,
+        "the jump landed on turn {target}: top {landed}"
+    );
+    key(tab, " ", false);
+    settle();
+    key(tab, " ", false);
+    settle();
+    let paged = turn_at_top(tab, surface);
+    assert!(
+        paged >= landed && paged <= landed + 12,
+        "two pages down stay near the landing: {landed} -> {paged}"
+    );
+    key(tab, "]", false);
+    settle();
+    let next = turn_at_top(tab, surface);
+    assert!(
+        next > paged && next <= paged + 3,
+        "`]` steps to the next turn: {paged} -> {next}"
+    );
+    key(tab, "[", false);
+    settle();
+    let back = turn_at_top(tab, surface);
+    assert!(
+        back < next && back + 3 >= next,
+        "`[` steps back: {next} -> {back}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_pages_and_steps_around_a_deep_jump() {
+    let _serial = serial();
+    let fx = fixture("scenario-deep-classic", 120);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_deep_jump_then_page_and_step(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_pages_and_steps_around_a_deep_jump() {
+    let _serial = serial();
+    let fx = fixture("scenario-deep-app", 120);
+    let page = open(Surface::AppShell, &fx, 2856);
+    scenario_deep_jump_then_page_and_step(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a resize while pinned keeps the tail ──────────────────────────────────────────
+
+/// Pinned at the tail, a narrower then a wider window: every measured height is a guess
+/// again, and the reader must still be at the tail after each.
+fn scenario_resize_while_pinned(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    harness::resize(tab, 1000.0, 700.0);
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(
+        at_tail(tab, surface),
+        "narrower: still at the tail (top turn {})",
+        turn_at_top(tab, surface)
+    );
+    harness::resize(tab, 1400.0, 900.0);
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(
+        at_tail(tab, surface),
+        "wider again: still at the tail (top turn {})",
+        turn_at_top(tab, surface)
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_keeps_the_tail_through_a_resize() {
+    let _serial = serial();
+    let fx = fixture("scenario-resize-classic", 60);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_resize_while_pinned(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_keeps_the_tail_through_a_resize() {
+    let _serial = serial();
+    let fx = fixture("scenario-resize-app", 60);
+    let page = open(Surface::AppShell, &fx, 2857);
+    scenario_resize_while_pinned(&page.tab, Surface::AppShell, &fx);
+}
