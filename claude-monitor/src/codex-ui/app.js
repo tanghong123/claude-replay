@@ -8,6 +8,7 @@ import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./session-visibility.js";
 import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./reading.js";
+import { bindKeymap, hintFor } from "./keymap.js";
 import { agentRecordTargets, escapeText, plainText, Projection, taskRecordTargets, taskStatus } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -621,6 +622,66 @@ byId("mobileBack").onclick = () => app.classList.remove("mobile-detail");
 addEventListener("popstate", () => { const id = new URLSearchParams(location.search).get("session"); if (id && id !== indexState.selected) selectSession(id, false); });
 addEventListener("hashchange", () => { landedHash = ""; landOnHash(); });
 addEventListener("resize", () => { viewport.remeasure(); updateStickyHeaders(); }, { passive: true });
+// The keymap (parity #11): the classic view's keys, resolved by keymap.js, acted on here.
+const userUnits = () => recordState.units.filter(unit => unit.type === "user");
+// The unit the reader is "at": the first mounted unit that starts at (or within a line above)
+// the viewport top. A landed turn sits 18px down, so the element ending just above it must
+// not count as current — that made `]` land on the same turn twice.
+function unitAtTop() {
+  const top = viewport.scroller.getBoundingClientRect().top;
+  for (const child of viewport.window.children) if (child.getBoundingClientRect().top >= top - 24) return child.dataset.unitKey;
+  return null;
+}
+function currentUserUnitIndex() {
+  const key = unitAtTop();
+  const at = key ? recordState.units.findIndex(unit => unit.key === key) : -1;
+  const turns = userUnits(); if (!turns.length) return -1;
+  let current = -1;
+  for (let i = 0; i < turns.length; i++) if (recordState.units.indexOf(turns[i]) <= at) current = i; else break;
+  return current;
+}
+function stepTurn(delta) {
+  const turns = userUnits(); if (!turns.length) return;
+  const next = Math.max(0, Math.min(turns.length - 1, currentUserUnitIndex() + delta));
+  viewport.jumpToRecord(turns[next].from, "turn");
+}
+function stepHead(delta) {
+  const heads = [...transcript.querySelectorAll("button.renderer-head")].filter(head => head.offsetParent !== null);
+  if (!heads.length) return;
+  const at = heads.indexOf(document.activeElement);
+  const next = at < 0 ? (delta > 0 ? 0 : heads.length - 1) : Math.max(0, Math.min(heads.length - 1, at + delta));
+  viewport.lastUserInput = performance.now();
+  heads[next].focus({ preventScroll: true }); heads[next].scrollIntoView({ block: "nearest" });
+}
+function stepList(delta) {
+  const rows = [...tree.querySelectorAll(".tree-row.session")];
+  const at = rows.indexOf(document.activeElement); if (at < 0) return;
+  const next = Math.max(0, Math.min(rows.length - 1, at + delta));
+  rows[next].focus(); selectSession(rows[next].dataset.session, true);
+}
+function pageTranscript(direction) {
+  viewport.lastUserInput = performance.now();
+  viewport.scroller.scrollBy({ top: direction * Math.round(viewport.scroller.clientHeight * 0.85), behavior: "auto" });
+}
+const keyActions = {
+  "search": () => { if (indexState.selected) byId("transcriptSearchInput").focus(); else openGlobalSearch(); },
+  "turn-next": () => stepTurn(1), "turn-prev": () => stepTurn(-1),
+  "head-next": () => stepHead(1), "head-prev": () => stepHead(-1),
+  "hit-next": () => stepSearch(1), "hit-prev": () => stepSearch(-1),
+  "wrap": () => setReading({ wrap: !uiState.reading.wrap }),
+  "size-down": () => setReading({ size: uiState.reading.size - SIZE_STEP }), "size-up": () => setReading({ size: uiState.reading.size + SIZE_STEP }),
+  "page-down": () => pageTranscript(1), "page-up": () => pageTranscript(-1),
+  "list-next": () => stepList(1), "list-prev": () => stepList(-1)
+};
+bindKeymap(document, target => (target?.closest?.(".tree-row") ? "list" : "view"), action => keyActions[action]?.());
+// Discoverability in the shell's idiom: the key in the control's own title / hint.
+byId("transcriptSearchInput").placeholder = `Search this session  ( ${hintFor("search")} )`;
+byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNext").title = `Next match (${hintFor("hit-next")})`;
+byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNext").title = `Next turn (${hintFor("turn-next")})`;
+// The header's own turn steppers were in the design but never bound; they step the same way the keys do.
+byId("turnPrev").onclick = () => stepTurn(-1); byId("turnNext").onclick = () => stepTurn(1);
+readingSection.querySelector('[data-reading-toggle="wrap"]').title = `Wrap long lines (${hintFor("wrap")})`;
+readingSection.querySelector('[data-reading-size="-1"]').title = `Smaller code (${hintFor("size-down")})`; readingSection.querySelector('[data-reading-size="1"]').title = `Larger code (${hintFor("size-up")})`;
 addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openGlobalSearch(); } else if (event.key === "Escape") { setSessionCopyMenu(false); byId("searchLayer").classList.remove("production-open"); byId("navigatorOptions").classList.remove("open"); } });
 
 app.classList.toggle("sidebar-off", !indexState.sidebarOpen);

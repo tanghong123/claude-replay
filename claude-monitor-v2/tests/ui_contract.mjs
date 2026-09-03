@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
 import { attachmentCapability, promptShouldCollapse, rawTurnHtml, referenceAction, rendererStartsClosed, revealQuery } from "../../claude-monitor/src/codex-ui/components.js";
 import { DEFAULT_READING, clampSize, parseReading, readingVars } from "../../claude-monitor/src/codex-ui/reading.js";
+import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-monitor/src/codex-ui/keymap.js";
 import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
@@ -299,4 +300,27 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8"), /am-prod-reading/, "reading preferences persist with the other production preferences");
   assert.match(appSource, /recordState\.rawTurns\.clear\(\)/, "raw turns reset when a session opens");
   console.log("reading + raw cases passed");
+}
+
+// Keyboard (parity #11): one table, the classic keys, never while typing.
+{
+  const seen = new Set();
+  for (const b of KEYMAP) { const id = `${b.key}|${!!b.shift}|${b.when}`; assert.ok(!seen.has(id), `bound twice: ${id}`); seen.add(id); }
+  for (const key of ["/", "[", "]", "j", "k", "n", "N", "w", "-", "+", "=", " ", "ArrowDown", "ArrowUp"]) assert.ok(KEYMAP.some(b => b.key === key), `classic key ${JSON.stringify(key)} is bound`);
+  const ev = (key, extra = {}) => ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...extra });
+  assert.equal(resolveKey(ev("]"), "view").action, "turn-next");
+  assert.equal(resolveKey(ev("]"), "list"), null, "view keys do not fire while the list has focus");
+  assert.equal(resolveKey(ev("ArrowDown"), "list").action, "list-next");
+  assert.equal(resolveKey(ev("ArrowDown"), "view"), null, "arrow keys are the list's alone");
+  assert.equal(resolveKey(ev("/"), "list").action, "search", "search works from anywhere");
+  assert.equal(resolveKey(ev(" "), "view").action, "page-down"); assert.equal(resolveKey(ev(" ", { shiftKey: true }), "view").action, "page-up");
+  assert.equal(resolveKey(ev(" "), "view", { tagName: "BUTTON" }), null, "Space on a button is the button's");
+  assert.equal(resolveKey(ev("j"), "view", { tagName: "INPUT" }), null, "never while typing");
+  assert.equal(resolveKey(ev("j"), "view", { tagName: "DIV", isContentEditable: true }), null);
+  assert.equal(resolveKey(ev("k", { metaKey: true }), "view"), null, "platform shortcuts pass through");
+  assert.ok(isEditable({ tagName: "TEXTAREA" }) && !isEditable({ tagName: "DIV" }));
+  assert.equal(hintFor("hit-prev"), "N"); assert.equal(hintFor("page-up"), "⇧Space"); assert.equal(hintFor("nope"), "");
+  assert.match(appSource, /bindKeymap\(document, /, "the shell binds the keymap once, at the document");
+  assert.match(appSource, /viewport\.lastUserInput = performance\.now\(\)/, "key-driven scrolling counts as the reader's own, so following releases instead of snapping back");
+  console.log("keymap cases passed");
 }

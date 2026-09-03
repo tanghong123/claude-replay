@@ -1649,6 +1649,154 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
     );
 }
 
+/// The keymap lands where it says (parity #11): `]` moves to the next turn, `[` back, `j`
+/// puts focus on a tool head — and none of it fires while typing in the search box. Only a
+/// real engine can say where a key-driven jump actually scrolled to.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_keys_step_turns_and_heads() {
+    let _serial = serial();
+    let base = base("appshell-keys");
+    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target/release/agent-monitor-v2");
+    if !bin.is_file() {
+        eprintln!("skip: build agent-monitor-v2 --release first");
+        return;
+    }
+    let state = base.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let child = std::process::Command::new(&bin)
+        .args(["--port", "2835", "--pair"])
+        .env("XDG_CACHE_HOME", &base)
+        .env("CLAUDE_MONITOR_STATE", &state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("v2 starts");
+    let child = Reap(child);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches");
+    let tab = browser.new_tab().unwrap();
+    let token = std::fs::read_to_string(state.join("auth-token"))
+        .expect("--pair minted a token")
+        .trim()
+        .to_string();
+    tab.navigate_to(&format!("http://127.0.0.1:2835/?token={token}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
+        tab.evaluate(js, true)
+            .ok()
+            .and_then(|r| r.value)
+            .unwrap_or(serde_json::Value::Null)
+    };
+    tab.navigate_to("http://127.0.0.1:2835/api/sessions")
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let listing = eval(&tab, "document.body.innerText");
+    let ids: Vec<String> =
+        serde_json::from_str::<serde_json::Value>(listing.as_str().unwrap_or("null"))
+            .ok()
+            .and_then(|v| {
+                v["groups"].as_array().map(|g| {
+                    g.iter()
+                        .flat_map(|x| x["rows"].as_array().cloned().unwrap_or_default())
+                        .filter_map(|r| r["id"].as_str().map(str::to_string))
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+    if ids.is_empty() {
+        eprintln!("skip: no sessions on this machine");
+        return;
+    }
+    // A session with several turns and at least one tool head.
+    let ready = "(function(){ var u=document.querySelectorAll('.virtual-window .turn.user').length, h=document.querySelectorAll('.virtual-window button.renderer-head').length; return u >= 3 && h >= 1; })()";
+    let mut sid = String::new();
+    for id in ids.iter().take(6) {
+        tab.navigate_to(&format!("http://127.0.0.1:2835/?ui=app&session={id}"))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        for _ in 0..40 {
+            if eval(&tab, ready).as_bool() == Some(true) {
+                sid = id.clone();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        if !sid.is_empty() {
+            break;
+        }
+    }
+    if sid.is_empty() {
+        eprintln!("skip: none of the newest sessions has three turns and a tool head mounted");
+        return;
+    }
+    let key = |k: &str, shift: bool| {
+        format!("document.dispatchEvent(new KeyboardEvent('keydown', {{key: {k:?}, shiftKey: {shift}, bubbles: true, cancelable: true}})); 'ok'")
+    };
+    // Start at the top, then `]` twice: the anchor must move to a LATER user turn each time.
+    let top_turn = "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { var r=c.getBoundingClientRect(); if (r.bottom > top + 1) return c.dataset.unitKey || ''; } return ''; })()";
+    eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1})); s.scrollTop = 0; return 'ok'; })()");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Position is the unit's RECORD index (`data-unit-from`), never its place among the
+    // mounted children: the window is virtualized and re-mounted around every jump.
+    let unit_index = |tab: &headless_chrome::Tab| -> i64 {
+        eval(tab, "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { if (c.getBoundingClientRect().top >= top - 24) return Number(c.dataset.unitFrom); } return -1; })()")
+            .as_i64()
+            .unwrap_or(-1)
+    };
+    let start = unit_index(&tab);
+    eval(&tab, &key("]", false));
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let after_one = unit_index(&tab);
+    eval(&tab, &key("]", false));
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let after_two = unit_index(&tab);
+    let top_after_two = eval(&tab, top_turn);
+    eval(&tab, &key("[", false));
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let back = unit_index(&tab);
+    // `j` focuses a tool head; typing into the search box must not step anything.
+    eval(&tab, &key("j", false));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let focused = eval(
+        &tab,
+        "document.activeElement && document.activeElement.classList.contains('renderer-head')",
+    );
+    eval(
+        &tab,
+        "document.getElementById('transcriptSearchInput').focus(); 'ok'",
+    );
+    let before_typing = unit_index(&tab);
+    eval(&tab, "document.getElementById('transcriptSearchInput').dispatchEvent(new KeyboardEvent('keydown', {key: ']', bubbles: true, cancelable: true})); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let while_typing = unit_index(&tab);
+    drop(child);
+    assert!(
+        after_one > start,
+        "`]` moved to a later unit: {start} -> {after_one}"
+    );
+    assert!(
+        after_two > after_one,
+        "…and again: {after_one} -> {after_two} (top {top_after_two})"
+    );
+    assert!(back < after_two, "`[` moved back: {after_two} -> {back}");
+    assert_eq!(focused, true, "`j` put focus on a tool head");
+    assert_eq!(
+        while_typing, before_typing,
+        "keys do nothing while typing in the search box"
+    );
+}
+
 /// Browser-served artifacts: on a page whose host asked for them (`artifacts=1` ⇒
 /// `data-artifacts` on `<body>`), clicking a file path in a tool header SHOWS the file's
 /// bytes over the page instead of asking the server to open a Finder window.
