@@ -166,14 +166,6 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/preview.js").as_slice(),
         ),
-        "monitor-ui/keymap.js" => (
-            "text/javascript; charset=utf-8",
-            include_bytes!("codex-ui/keymap.js").as_slice(),
-        ),
-        "monitor-ui/reading.js" => (
-            "text/javascript; charset=utf-8",
-            include_bytes!("codex-ui/reading.js").as_slice(),
-        ),
         "monitor-ui/view-memory.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/view-memory.js").as_slice(),
@@ -267,9 +259,7 @@ mod tests {
                 include_str!("codex-ui/control-store.js"),
             ),
             ("icons.js", include_str!("codex-ui/icons.js")),
-            ("keymap.js", include_str!("codex-ui/keymap.js")),
             ("preview.js", include_str!("codex-ui/preview.js")),
-            ("reading.js", include_str!("codex-ui/reading.js")),
             ("record-store.js", include_str!("codex-ui/record-store.js")),
             ("sandbox.js", include_str!("codex-ui/sandbox.js")),
             (
@@ -283,6 +273,14 @@ mod tests {
             (
                 "shared/state-labels.js",
                 claude_replay_html::shared_source("state-labels").unwrap(),
+            ),
+            (
+                "shared/keymap.js",
+                claude_replay_html::shared_source("keymap").unwrap(),
+            ),
+            (
+                "shared/reading.js",
+                claude_replay_html::shared_source("reading").unwrap(),
             ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),

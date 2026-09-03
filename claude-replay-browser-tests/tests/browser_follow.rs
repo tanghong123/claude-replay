@@ -2558,3 +2558,115 @@ fn the_classic_rail_clusters_a_family_and_hides_and_restores_a_row() {
     );
     drop(child);
 }
+
+/// The classic page after #45: `]` still steps to the next turn, `w` still toggles wrapping —
+/// resolved through the shared key table — and the preferences persist under the one key the
+/// app shell uses (`am-prod-reading`), with a pre-#45 size folded in once.
+#[test]
+#[ignore]
+fn the_classic_page_keys_resolve_through_the_shared_table() {
+    let _serial = serial();
+    let base = base("classic-keys");
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    let src = base.join("keys.jsonl");
+    {
+        let mut s = String::new();
+        for i in 0..40u32 {
+            s.push_str(&user(
+                &format!("question {i}: {}", "lorem ipsum dolor sit amet. ".repeat(6)),
+                i % 60,
+            ));
+            s.push_str(&assistant(
+                &format!("answer {i}: {}", "sed do eiusmod tempor. ".repeat(12)),
+                i % 60,
+            ));
+        }
+        std::fs::write(&src, s).unwrap();
+    }
+    let args = Args {
+        no_cache: true,
+        ..Default::default()
+    };
+    let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
+    let url = server.url_for_root(0).expect("hosted");
+    let browser = headless_chrome::Browser::new(
+        headless_chrome::LaunchOptions::default_builder()
+            .headless(true)
+            .window_size(Some((1200, 800)))
+            .build()
+            .unwrap(),
+    )
+    .expect("chrome launches");
+    let tab = browser.new_tab().unwrap();
+    let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
+        tab.evaluate(js, true)
+            .ok()
+            .and_then(|r| r.value)
+            .unwrap_or(serde_json::Value::Null)
+    };
+    // A pre-#45 reader: a stored size and wrapping turned off, under the classic page's old keys.
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    eval(&tab, "localStorage.clear(); localStorage.setItem('claude-replay-export-ms', '14'); localStorage.setItem('claude-replay-export-wrap', '0'); 'ok'");
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    for _ in 0..40 {
+        if eval(&tab, "document.querySelectorAll('.turn').length >= 10").as_bool() == Some(true) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let migrated = eval(&tab, "JSON.stringify({ms: getComputedStyle(document.documentElement).getPropertyValue('--ms').trim(), key: localStorage.getItem('am-prod-reading'), old: localStorage.getItem('claude-replay-export-ms')})");
+    let migrated: serde_json::Value =
+        serde_json::from_str(migrated.as_str().unwrap_or("null")).unwrap_or_default();
+    assert_eq!(
+        migrated["ms"], "14px",
+        "the pre-#45 size is applied: {migrated}"
+    );
+    assert_eq!(
+        migrated["old"],
+        serde_json::Value::Null,
+        "the legacy key is gone after the one-time fold: {migrated}"
+    );
+    let prefs: serde_json::Value =
+        serde_json::from_str(migrated["key"].as_str().unwrap_or("null")).unwrap_or_default();
+    assert_eq!(
+        prefs["size"], 14.0,
+        "…and lives under the one key: {migrated}"
+    );
+    assert_eq!(prefs["wrap"], false, "{migrated}");
+    // `]` steps to a later turn; `w` toggles wrapping and persists it.
+    let key = |k: &str| {
+        format!("document.dispatchEvent(new KeyboardEvent('keydown', {{key: {k:?}, bubbles: true, cancelable: true}})); 'ok'")
+    };
+    // A served page opens at its tail (it always follows), so start from the top, where a
+    // later turn exists for `]` to reach.
+    // A programmatic scroll reads as the renderer's own and the follow logic re-pins the tail;
+    // a wheel event first is the reader's intent, which unpins (the contract every classic
+    // case relies on).
+    eval(&tab, "window.dispatchEvent(new WheelEvent('wheel', {deltaY: -120})); window.scrollTo(0, 0); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let before = eval(&tab, "window.scrollY").as_f64().unwrap_or(0.0);
+    eval(&tab, &key("]"));
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    eval(&tab, &key("]"));
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let after = eval(&tab, "window.scrollY").as_f64().unwrap_or(0.0);
+    assert!(
+        after > before,
+        "`]` moved down the page: {before} -> {after}"
+    );
+    eval(&tab, &key("w"));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let wrapped: serde_json::Value = serde_json::from_str(
+        eval(&tab, "localStorage.getItem('am-prod-reading')")
+            .as_str()
+            .unwrap_or("null"),
+    )
+    .unwrap_or_default();
+    assert_eq!(
+        wrapped["wrap"], true,
+        "`w` turned wrapping on and persisted it under the one key: {wrapped}"
+    );
+    drop(server);
+}

@@ -1,4 +1,4 @@
-import { DEFAULT_READING, parseReading } from "./reading.js";
+import { DEFAULT_READING, READING_KEY, parseReading } from "./shared/reading.js";
 
 const json = (key, fallback) => {
   try { return JSON.parse(localStorage.getItem(key) || "") || fallback; }
@@ -32,7 +32,12 @@ export const uiState = {
   navCards: new Set(json("am-prod-nav-cards", ["turns"])),
   searchTab: "all", searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), toolFilters: new Set(),
   globalResults: [], globalIndex: 0,
-  reading: parseReading(localStorage.getItem("am-prod-reading")) || { ...DEFAULT_READING }
+  reading: parseReading(localStorage.getItem(READING_KEY)) || { ...DEFAULT_READING },
+  // #45: the reading key is SHARED with the classic page. It is written only once a reader has
+  // chosen something (here, or on the classic page — an existing value keeps being maintained),
+  // never with this shell's defaults on an unrelated persist(), which would flip the classic
+  // page to them.
+  readingChosen: localStorage.getItem(READING_KEY) != null
 };
 
 export const controlState = {
@@ -47,7 +52,7 @@ export function persist() {
   localStorage.setItem("am-demo-navigator", uiState.navigatorOpen ? "1" : "0");
   localStorage.setItem("am-prod-nav-cards", JSON.stringify([...uiState.navCards]));
   localStorage.setItem("am-prod-read", JSON.stringify(indexState.read));
-  localStorage.setItem("am-prod-reading", JSON.stringify(uiState.reading));
+  if (uiState.readingChosen) localStorage.setItem(READING_KEY, JSON.stringify(uiState.reading));
 }
 
 export const selectedRow = () => indexState.rows.get(indexState.selected) || null;

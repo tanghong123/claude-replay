@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
 import { attachmentCapability, promptShouldCollapse, rawTurnHtml, referenceAction, rendererStartsClosed, revealQuery } from "../../claude-monitor/src/codex-ui/components.js";
-import { DEFAULT_READING, clampSize, parseReading, readingVars } from "../../claude-monitor/src/codex-ui/reading.js";
-import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-monitor/src/codex-ui/keymap.js";
+import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
+import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { agentRecordTargets, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
@@ -291,14 +291,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   assert.deepEqual(parseReading(""), DEFAULT_READING); assert.deepEqual(parseReading("garbage"), DEFAULT_READING);
   assert.deepEqual(parseReading('{"size":"14.3","wrap":true,"wide":"yes"}'), { size: 14.5, wrap: true, wide: false }, "size snaps to half steps; flags must be real booleans");
-  assert.equal(clampSize(3), 10); assert.equal(clampSize(99), 16); assert.equal(clampSize(undefined), 12);
+  assert.equal(clampSize(3), 8, "#45: the range is the classic page's, 8–16"); assert.equal(clampSize(99), 16); assert.equal(clampSize(undefined), 12);
   assert.deepEqual(readingVars({ size: 11, wide: true }), { "--code-size": "11px", "--measure": "1240px" });
   assert.deepEqual(readingVars(DEFAULT_READING), { "--code-size": "12px", "--measure": "820px" });
   const raw = rawTurnHtml({ kind: "user", body: [{ p: "md", h: "<p>x</p>" }] });
   assert.match(raw, /^<pre class="turn-raw">/); assert.ok(raw.includes("&lt;p&gt;x&lt;\/p&gt;") || raw.includes("&lt;p&gt;x&lt;/p&gt;"), "the raw record is escaped, never re-entered as markup");
   assert.match(productionCss, /#app\{--code-size:12px;--measure:820px\}/, "reading preferences are custom properties on the app root");
   assert.match(productionCss, /#app\.wrap-code \.markdown pre/, "wrap is a class on the app root");
-  assert.match(readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8"), /am-prod-reading/, "reading preferences persist with the other production preferences");
+  assert.match(readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8"), /if \(uiState\.readingChosen\) localStorage\.setItem\(READING_KEY, JSON\.stringify\(uiState\.reading\)\)/, "reading preferences persist with the other production preferences — once chosen (#45)");
   assert.match(appSource, /recordState\.rawTurns\.clear\(\)/, "raw turns reset when a session opens");
   console.log("reading + raw cases passed");
 }
@@ -396,4 +396,41 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const spliceSrc = readFileSync(new URL("../src/shell.html", import.meta.url), "utf8");
   assert.match(spliceSrc, /__shared\.stateTip\(/, "the splice's tooltip is the shared one");
   console.log("seam (f) cases passed");
+}
+
+// Seam (d) (#45): keymap.js and reading.js are shared; the classic page and the rail resolve
+// keys through the one table and keep reading preferences under the one key.
+{
+  assert.equal(SIZE_MIN, 8, "the range is the classic page's (8–16 in half steps)");
+  assert.equal(clampSize(7), 8); assert.equal(clampSize(12.3), 12.5); assert.equal(clampSize(99), 16);
+  assert.deepEqual(parseReading(null, { size: 12.5, wrap: true, wide: false }), { size: 12.5, wrap: true, wide: false }, "a page's own defaults apply");
+  assert.deepEqual(parseReading('{"size":14}', { size: 12.5, wrap: true, wide: false }), { size: 14, wrap: true, wide: false }, "missing fields fall back to the defaults, not to false");
+  assert.deepEqual(parseReading('{"size":14,"wrap":false}'), { size: 14, wrap: false, wide: false });
+  const store = new Map([["claude-replay-export-ms", "14"], ["claude-replay-export-wrap", "0"]]);
+  const get = k => (store.has(k) ? store.get(k) : null), set = (k, v) => store.set(k, v), del = k => store.delete(k);
+  const legacy = { size: "claude-replay-export-ms", wrap: "claude-replay-export-wrap", wide: "claude-replay-export-wide" };
+  const migrated = loadReading(get, set, { size: 12.5, wrap: true, wide: false }, legacy, del);
+  assert.deepEqual(migrated, { size: 14, wrap: false, wide: false }, "the pre-#45 keys are folded in once");
+  assert.equal(store.get(READING_KEY), JSON.stringify({ size: 14, wrap: false, wide: false }), "…and written under the one key");
+  assert.equal(store.has("claude-replay-export-ms"), false, "…and the legacy keys are removed");
+  assert.deepEqual(loadReading(get, set, { size: 12.5, wrap: true, wide: false }, legacy, del), migrated, "the one key wins from then on");
+  const empty = new Map();
+  assert.deepEqual(loadReading(k => empty.get(k) ?? null, (k, v) => empty.set(k, v), { size: 12.5, wrap: true, wide: false }, legacy), { size: 12.5, wrap: true, wide: false }, "nothing stored → the page's defaults");
+  assert.equal(empty.size, 0, "…and nothing is written until the reader chooses");
+  const exportSource = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(exportSource, /shared\.resolveKey\(e, "view", e\.target\)/, "the classic page resolves keys through the shared table");
+  assert.doesNotMatch(exportSource, /e\.key === "\]"|e\.key === "w"|e\.key === "j"/, "the classic page keeps no key chain of its own");
+  assert.match(exportSource, /shared\.loadReading\(/, "the classic page loads prefs through the shared loader");
+  assert.doesNotMatch(exportSource, /var MS_KEY|var WRAP_KEY|var WIDE_KEY/, "the classic page keeps no pref keys of its own");
+  const railSrc2 = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
+  assert.match(railSrc2, /shared\.resolveKey\(/, "the rail resolves keys through the shared table");
+  assert.match(appSource, /from "\.\/shared\/keymap\.js"/); assert.match(appSource, /from "\.\/shared\/reading\.js"/);
+  // The shared key is written only by a CHOICE, in either shell — never by a load or by an
+  // unrelated persist() carrying one shell's defaults into the other.
+  const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  assert.match(stateSrc, /if \(uiState\.readingChosen\) localStorage\.setItem\(READING_KEY/, "the app shell persists reading prefs only once chosen");
+  assert.match(appSource, /uiState\.readingChosen = true; persist\(\)/, "…and setReading is the choice");
+  assert.match(exportSource, /\n  applyMono\(ms\);\n  applyWide\(wide\);/, "the classic page applies stored prefs at load without persisting them");
+  assert.doesNotMatch(exportSource, /\n  setMono\(ms\);|\n  setWide\(wide\);/, "…never through the persisting setters");
+  console.log("seam (d) cases passed");
 }

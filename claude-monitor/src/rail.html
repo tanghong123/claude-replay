@@ -713,13 +713,18 @@
     state.showHidden=!state.showHidden;render();
   });
   search.addEventListener("input",function(){state.q=search.value.trim().toLowerCase();render();});
+  // #45: the key table is the shared module's (html/shared/keymap.js) — "/" focuses the search
+  // box, ↑/↓ walk the rows while one has focus; the actions stay this rail's.
   document.addEventListener("keydown",function(e){
-    if(e.key==="/"&&document.activeElement!==search){e.preventDefault();search.focus();return;}
-    if((e.key==="ArrowDown"||e.key==="ArrowUp")&&document.activeElement&&document.activeElement.classList.contains("row")){
+    var onRow=!!document.activeElement&&document.activeElement.classList.contains("row");
+    var b=shared.resolveKey(e,onRow?"list":"view",e.target);
+    if(!b)return;
+    if(b.action==="search"){if(document.activeElement!==search){e.preventDefault();search.focus();}return;}
+    if((b.action==="list-next"||b.action==="list-prev")&&onRow){
       e.preventDefault();
       var rows=[].slice.call(list.querySelectorAll(".row"));
       var i=rows.indexOf(document.activeElement);
-      var ni=e.key==="ArrowDown"?Math.min(rows.length-1,i+1):Math.max(0,i-1);
+      var ni=b.action==="list-next"?Math.min(rows.length-1,i+1):Math.max(0,i-1);
       if(rows[ni])select(rows[ni].dataset.id);
     }
   });

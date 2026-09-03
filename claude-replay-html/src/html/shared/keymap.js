@@ -1,3 +1,7 @@
+// SHARED between the app shell (served as an ES module at /monitor-ui/shared/…), the classic
+// rail and the v2 splice (inlined at serve time through {{SHARED}}) and the html crate's pages
+// (inlined by html_export/shared.rs). Conventions the inliner relies on: no imports, exactly
+// one trailing `export { … };` line.
 // The app shell's keyboard, as one table (parity #11) — the classic view's keys, so muscle
 // memory transfers, in one place rather than handlers scattered across modules. DOM-free: the
 // contract test checks the table (no key bound twice, every classic key present) and the guard
@@ -6,7 +10,7 @@
 // `when` scopes a binding: "view" applies while nothing in the session list has focus, "list"
 // only while a session-tree row does, "any" always. A binding never fires while the focus is in
 // a text field — typing is typing — nor with a platform modifier held (⌘K stays the shell's own).
-export const KEYMAP = Object.freeze([
+const KEYMAP = Object.freeze([
   { key: "/", when: "any", action: "search", hint: "/" },
   { key: "]", when: "view", action: "turn-next", hint: "]" },
   { key: "[", when: "view", action: "turn-prev", hint: "[" },
@@ -25,11 +29,11 @@ export const KEYMAP = Object.freeze([
   { key: "ArrowUp", when: "list", action: "list-prev", hint: "↑" },
 ]);
 
-export const isEditable = target => !!target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName || "") || target.isContentEditable === true);
+const isEditable = target => !!target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName || "") || target.isContentEditable === true);
 
 /** The binding an event resolves to, or null. `context` is "list" while a tree row has focus,
  *  else "view"; a button or link with focus takes Space/Enter itself, so Space is left alone there. */
-export function resolveKey(event, context, target = null) {
+function resolveKey(event, context, target = null) {
   if (event.metaKey || event.ctrlKey || event.altKey) return null;
   if (isEditable(target)) return null;
   if (event.key === " " && target && /^(BUTTON|A|SUMMARY)$/.test(target.tagName || "")) return null;
@@ -43,9 +47,9 @@ export function resolveKey(event, context, target = null) {
 }
 
 /** The hint to show beside a control for an action, e.g. "n" — or "" when it has none. */
-export const hintFor = action => KEYMAP.find(binding => binding.action === action && binding.hint)?.hint || "";
+const hintFor = action => KEYMAP.find(binding => binding.action === action && binding.hint)?.hint || "";
 
-export function bindKeymap(root, contextOf, dispatch) {
+function bindKeymap(root, contextOf, dispatch) {
   root.addEventListener("keydown", event => {
     const target = event.target;
     const binding = resolveKey(event, contextOf(target), target);
@@ -53,3 +57,5 @@ export function bindKeymap(root, contextOf, dispatch) {
     if (dispatch(binding.action, event) !== false) event.preventDefault();
   });
 }
+
+export { KEYMAP, isEditable, resolveKey, hintFor, bindKeymap };

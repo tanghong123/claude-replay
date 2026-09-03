@@ -8,8 +8,8 @@ import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
 import { displayState, needsPerson as needs, denoteState } from "./shared/state-labels.js";
-import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./reading.js";
-import { bindKeymap, hintFor } from "./keymap.js";
+import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
+import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { agentRecordTargets, escapeText, plainText, Projection, taskRecordTargets, taskStatus } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -516,7 +516,7 @@ function applyReading() {
   readingSection.querySelector('[data-reading-size="1"]').disabled = prefs.size >= SIZE_MAX;
   viewport.remeasure();
 }
-function setReading(patch) { uiState.reading = { ...uiState.reading, ...patch, size: clampSize(patch.size ?? uiState.reading.size) }; persist(); applyReading(); }
+function setReading(patch) { uiState.reading = { ...uiState.reading, ...patch, size: clampSize(patch.size ?? uiState.reading.size) }; uiState.readingChosen = true; persist(); applyReading(); }
 readingSection.onclick = event => {
   const step = event.target.closest("[data-reading-size]"); if (step) { setReading({ size: uiState.reading.size + Number(step.dataset.readingSize) * SIZE_STEP }); return; }
   const toggle = event.target.closest("[data-reading-toggle]"); if (toggle) { const key = toggle.dataset.readingToggle; setReading({ [key]: !uiState.reading[key] }); return; }

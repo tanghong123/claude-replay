@@ -14,15 +14,22 @@
 
   var THEME_KEY = "claude-replay-export-theme";
   // §8.3/§8.8 code-density + width prefs — global and persisted.
-  var MS_KEY = "claude-replay-export-ms";
-  var WRAP_KEY = "claude-replay-export-wrap";
-  var WIDE_KEY = "claude-replay-export-wide";
   var RAW_KEY = "claude-replay-export-rawuser";
   function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
-  var ms = parseFloat(lsGet(MS_KEY)) || 12.5;
-  var wrap = lsGet(WRAP_KEY) !== "0"; // wrap by default
-  var wide = lsGet(WIDE_KEY) === "1";
+  function lsDel(k) { try { localStorage.removeItem(k); } catch (e) { /* private mode */ } }
+  // #45: the shared modules (html/shared/*.js), inlined ahead of this script — the key table
+  // and the reading preferences are theirs. Prefs live under ONE key with the app shell
+  // (`am-prod-reading`); this page keeps its own defaults (12.5 px, wrapped) and folds its
+  // pre-#45 keys in once.
+  var shared = window.__shared;
+  var CLASSIC_READING = { size: 12.5, wrap: true, wide: false };
+  var reading = shared.loadReading(lsGet, lsSet, CLASSIC_READING,
+    { size: "claude-replay-export-ms", wrap: "claude-replay-export-wrap", wide: "claude-replay-export-wide" }, lsDel);
+  var ms = reading.size;
+  var wrap = reading.wrap;
+  var wide = reading.wide;
+  function saveReading() { lsSet(shared.READING_KEY, JSON.stringify({ size: ms, wrap: wrap, wide: wide })); }
   // "Show user turns as raw": markdown rendering is lossy (padding collapses, indentation
   // is stripped), and the Rust-side detector only lifts pasted art it is SURE about. This
   // is the reader's escape hatch for the rest — global as a durable preference, and
@@ -2309,7 +2316,10 @@
   })();
 
   // §8.8/§8.6 apply persisted width mode and size the fixed bar to the window.
-  setWide(wide);
+  // #45: the stored code size is applied at load, as wide always was — before, a saved size
+  // took effect only after the next −/+ keystroke. Applied, not persisted (see applyMono).
+  applyMono(ms);
+  applyWide(wide);
   fitBar();
 
   // ── single-file live companion (`--dump-html -f`) ─────────────────────
@@ -2397,7 +2407,7 @@
       bar.appendChild(b("ms-dn", "A−", "Smaller code (−) — applies to all code blocks"));
       bar.appendChild(el("span", "ms-val", String(ms)));
       bar.appendChild(b("ms-up", "A+", "Larger code (+) — applies to all code blocks"));
-      bar.appendChild(b("ms-wrap", wrap ? "⤶" : "↔", "Long lines: wrap / scroll (w)"));
+      bar.appendChild(b("ms-wrap", wrap ? "⤶" : "↔", "Long lines: wrap / scroll (" + shared.hintFor("wrap") + ")"));
       bar.appendChild(b("cpy-code", "copy", "Copy this block"));
       var foot = el("div", "codefoot");
       var next = wrapEl.nextElementSibling; // the "⋯ N more lines" expander, if any
@@ -2406,15 +2416,18 @@
       wrapEl.appendChild(foot);
     });
   }
-  function setMono(v) {
-    ms = Math.max(8, Math.min(16, Math.round(v * 2) / 2));
+  // Apply and persist are separate on purpose: a load APPLIES the stored (or default) prefs
+  // without writing them, so a reader who never chose anything leaves the shared key alone
+  // and the app shell keeps its own defaults; a keystroke or click persists.
+  function applyMono(v) {
+    ms = shared.clampSize(v);
     root.style.setProperty("--ms", ms + "px");
     all(".ms-val").forEach(function (n) { n.textContent = ms; });
-    lsSet(MS_KEY, ms);
   }
+  function setMono(v) { applyMono(v); saveReading(); }
   function setWrap(on) {
     wrap = on;
-    lsSet(WRAP_KEY, on ? "1" : "0");
+    saveReading();
     all(".ms-wrap").forEach(function (b) {
       b.textContent = on ? "⤶" : "↔";
       b.title = on
@@ -2456,9 +2469,8 @@
       b.classList.toggle("on", !wrap);
     });
   }
-  function setWide(on) {
+  function applyWide(on) {
     wide = on;
-    lsSet(WIDE_KEY, on ? "1" : "0");
     var lay = $("layout"), mn = $("main");
     if (lay) lay.style.maxWidth = on ? "none" : "1160px";
     if (mn) mn.style.maxWidth = on ? "none" : "820px";
@@ -2470,6 +2482,7 @@
       b.title = on ? "Back to reading width" : "Wide mode — drop the reading-width cap for diff-heavy sessions";
     }
   }
+  function setWide(on) { applyWide(on); saveReading(); }
   // §8.6 kept the bar from clipping its trailing control by shedding button labels as the
   // window narrowed. #127 removed the cause: two rows, and those buttons are icons at every
   // width. Only the version chip still earns its keep by stepping aside.
@@ -3347,9 +3360,52 @@
   });
 
   // ── keyboard ─────────────────────────────────────────────────────────
+  // #45: the KEY TABLE is the shared module's (html/shared/keymap.js — the same bindings and
+  // hints as the app shell); the ACTIONS stay this page's own. Escape and the fold-header keys
+  // are this page's alone and resolve first; Space is left to the page's native scrolling.
+  function stepHead(dir) {
+    // Only VISIBLE fold headers — a header inside a collapsed group (or hidden by
+    // the tool filter) has `offsetParent === null`, so it's skipped. Move relative
+    // to whatever's focused now, so every stroke lands on the next visible one.
+    var hs = all(".fold-h").filter(function (x) { return x.offsetParent !== null; });
+    if (!hs.length) return;
+    var cur = hs.indexOf(document.activeElement);
+    var next = cur < 0 ? (dir > 0 ? 0 : hs.length - 1) : cur + dir;
+    var h = hs[Math.max(0, Math.min(hs.length - 1, next))];
+    h.focus({ preventScroll: true });
+    var r = h.getBoundingClientRect();
+    if (r.top < 100 || r.bottom > window.innerHeight - 60) {
+      window.scrollTo({ top: r.top + window.scrollY - 160, behavior: "smooth" });
+    }
+  }
+  function stepTurn(dir) {
+    // Position-based over the RECORDS (#50 — turns outside the DOM window count
+    // too): `]` goes to the first turn below the goTo landing line, `[` to the
+    // last turn above it, with a ±dead-zone so a just-navigated turn doesn't
+    // re-select itself.
+    var dest = null;
+    if (dir > 0) {
+      for (var i = 0; i < records.length; i++) {
+        if (records[i].turn == null) continue;
+        dest = i; // falls back to the last turn if none lies below the line
+        if (turnTop(i) > GOTO_Y + 8) break;
+      }
+    } else {
+      for (var j = 0; j < records.length; j++) {
+        if (records[j].turn == null) continue;
+        if (turnTop(j) < GOTO_Y - 8) dest = j;
+        else break;
+      }
+      if (dest == null) {
+        for (var j0 = 0; j0 < records.length; j0++) {
+          if (records[j0].turn != null) { dest = j0; break; }
+        }
+      }
+    }
+    if (dest != null) goToId(records[dest].id);
+  }
   document.addEventListener("keydown", function (e) {
-    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
-    if (e.key === "/") { e.preventDefault(); q.focus(); return; }
+    if (shared.isEditable(e.target)) return;
     if (e.key === "Escape") {
       toolMenu(false);
       agentMenu(false);
@@ -3360,32 +3416,6 @@
       if (document.activeElement) document.activeElement.blur();
       return;
     }
-    if ((e.key === "n" || e.key === "N") && filter) {
-      e.preventDefault();
-      filterNav(e.key === "n" ? 1 : -1); // #49 next/prev filtered hit
-      return;
-    }
-    if (e.key === "j" || e.key === "k") {
-      e.preventDefault();
-      // Only VISIBLE fold headers — a header inside a collapsed group (or hidden by
-      // the tool filter) has `offsetParent === null`, so it's skipped. Move relative
-      // to whatever's focused now, so every stroke lands on the next visible one.
-      var hs = all(".fold-h").filter(function (x) { return x.offsetParent !== null; });
-      if (!hs.length) return;
-      var cur = hs.indexOf(document.activeElement);
-      var next = cur < 0 ? (e.key === "j" ? 0 : hs.length - 1) : cur + (e.key === "j" ? 1 : -1);
-      var h = hs[Math.max(0, Math.min(hs.length - 1, next))];
-      h.focus({ preventScroll: true });
-      var r = h.getBoundingClientRect();
-      if (r.top < 100 || r.bottom > window.innerHeight - 60) {
-        window.scrollTo({ top: r.top + window.scrollY - 160, behavior: "smooth" });
-      }
-      return;
-    }
-    // §8.3 code-density keys (global): size −/+, wrap w.
-    if (e.key === "-" || e.key === "_") { setMono(ms - 0.5); return; }
-    if (e.key === "+" || e.key === "=") { setMono(ms + 0.5); return; }
-    if (e.key === "w") { setWrap(!wrap); return; }
     var active = document.activeElement;
     if ((e.key === " " || e.key === "Enter") && active && active.classList.contains("fold-h")) {
       e.preventDefault();
@@ -3393,32 +3423,24 @@
       toggleFold(f, f.dataset.open !== "1");
       return;
     }
-    if (e.key === "[" || e.key === "]") {
-      e.preventDefault();
-      // Position-based over the RECORDS (#50 — turns outside the DOM window count
-      // too): `]` goes to the first turn below the goTo landing line, `[` to the
-      // last turn above it, with a ±dead-zone so a just-navigated turn doesn't
-      // re-select itself.
-      var dest = null;
-      if (e.key === "]") {
-        for (var i = 0; i < records.length; i++) {
-          if (records[i].turn == null) continue;
-          dest = i; // falls back to the last turn if none lies below the line
-          if (turnTop(i) > GOTO_Y + 8) break;
-        }
-      } else {
-        for (var j = 0; j < records.length; j++) {
-          if (records[j].turn == null) continue;
-          if (turnTop(j) < GOTO_Y - 8) dest = j;
-          else break;
-        }
-        if (dest == null) {
-          for (var j0 = 0; j0 < records.length; j0++) {
-            if (records[j0].turn != null) { dest = j0; break; }
-          }
-        }
-      }
-      if (dest != null) goToId(records[dest].id);
+    var binding = shared.resolveKey(e, "view", e.target);
+    if (!binding) return;
+    switch (binding.action) {
+      case "search": e.preventDefault(); q.focus(); return;
+      case "hit-next":
+      case "hit-prev":
+        if (filter) { e.preventDefault(); filterNav(binding.action === "hit-next" ? 1 : -1); } // #49 next/prev filtered hit
+        return;
+      case "head-next":
+      case "head-prev":
+        e.preventDefault(); stepHead(binding.action === "head-next" ? 1 : -1); return;
+      case "size-down": setMono(ms - 0.5); return; // §8.3 code-density keys (global)
+      case "size-up": setMono(ms + 0.5); return;
+      case "wrap": setWrap(!wrap); return;
+      case "turn-next":
+      case "turn-prev":
+        e.preventDefault(); stepTurn(binding.action === "turn-next" ? 1 : -1); return;
+      default: return; // page-down / page-up: this page scrolls natively on Space
     }
   });
 

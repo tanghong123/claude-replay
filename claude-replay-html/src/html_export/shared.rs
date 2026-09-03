@@ -23,6 +23,8 @@ pub const SHARED: &[(&str, &str)] = &[
         "state-labels",
         include_str!("../html/shared/state-labels.js"),
     ),
+    ("keymap", include_str!("../html/shared/keymap.js")),
+    ("reading", include_str!("../html/shared/reading.js")),
 ];
 
 /// The source of one shared module, for serving it as a module.
