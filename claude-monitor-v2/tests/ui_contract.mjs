@@ -830,3 +830,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   for (const name of ["moon", "collapseStack", "sidebar"]) assert.ok(iconsSrc.includes(name + ":'"), `the ${name} glyph exists — svg() would otherwise draw the info glyph`);
   console.log("#75/#76 sidebar head controls cases passed");
 }
+
+// #84: the records a session opens with are never "new"; only later growth counts.
+{
+  assert.match(appSource, /const opening = lastRecordCount < 0;/, "the first apply after a reset is the open");
+  assert.match(appSource, /if \(!wasFollowing && delta && !opening\) recordState\.newRecords \+= delta;/, "…and is not counted");
+  assert.match(appSource, /reset: \(\) => \{ lastRecordCount = -1;/, "a reset re-arms the open");
+  console.log("#84 first-open cases passed");
+}

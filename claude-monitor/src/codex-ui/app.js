@@ -221,7 +221,7 @@ const sessionIndex = new SessionIndexStore({
   error: () => toast("Session scan failed — retrying")
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = 0; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   error: (error, hasRecords) => hasRecords ? toast(`${error.message}；retrying`) : viewport.showEmpty("Cannot read this session", `${error.message}；The monitor will retry.`, true)
 });
@@ -430,7 +430,7 @@ function renderHeader() {
   showSessionId(sid, path);
 }
 
-let lastRecordCount = 0;
+let lastRecordCount = -1; // -1: nothing applied since the last reset — the next apply is the open, not growth
 function updateRecords({ records, meta, changedFrom }) {
   const before = lastRecordCount; const wasFollowing = recordState.following;
   const metaArrived = meta && meta !== recordState.meta;
@@ -442,9 +442,14 @@ function updateRecords({ records, meta, changedFrom }) {
   recordState.units = projection.units;
   viewport.setUnits(recordState.units, changedUnit);
   landOnHash();
+  // What arrived since the last apply is "new" only once the session is OPEN (#84): the first
+  // apply after a reset is the session's own content — a re-open restored to a remembered
+  // position is not following, and counting that batch said "11696 new messages" on a session
+  // that had none. The classic page counts only what arrives after the open; so does this.
   const delta = Math.max(0, records.length - before);
+  const opening = lastRecordCount < 0;
   lastRecordCount = records.length;
-  if (!wasFollowing && delta) recordState.newRecords += delta;
+  if (!wasFollowing && delta && !opening) recordState.newRecords += delta;
   paintJump(); renderHeader(); renderNavigator(); updateSearch(false);
 }
 

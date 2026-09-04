@@ -3490,3 +3490,92 @@ fn the_app_shell_theme_toggle_is_visible_and_works() {
     );
     drop(monitor);
 }
+
+/// #84: the records a session opens with are never "new". A fresh open lands at the tail with
+/// no count; scrolled up and reloaded, the remembered position comes back and still nothing is
+/// counted; eight records arriving afterwards are "8 new".
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_open_counts_nothing_as_new() {
+    let _serial = serial();
+    let base = base("appshell-open-count");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000084".to_string();
+    let path = stores.claude_session(&sid, &harness::long_session(40, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2871, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    let url = format!("http://127.0.0.1:2871/?ui=app&session={sid}");
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3";
+    harness::until(
+        &tab,
+        mounted,
+        "the app shell to mount the fixture",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    harness::until(&tab, "(function(){ var s = document.querySelector('.transcript'); return s.scrollHeight - s.clientHeight - s.scrollTop <= 2; })()", "a fresh open to land at the tail", std::time::Duration::from_secs(10), "document.querySelector('.transcript').scrollTop");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(
+        harness::new_messages_pill(&tab, harness::Surface::AppShell) <= 0,
+        "a fresh open counts nothing: {}",
+        harness::new_messages_pill(&tab, harness::Surface::AppShell)
+    );
+    // Scroll up, let the position be remembered, reload.
+    harness::scroll_by(&tab, harness::Surface::AppShell, -1500);
+    harness::scroll_by(&tab, harness::Surface::AppShell, -1500);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let anchor = harness::view_anchor(&tab, harness::Surface::AppShell);
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        mounted,
+        "the reloaded shell to mount",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    let restored = harness::view_anchor(&tab, harness::Surface::AppShell);
+    assert_eq!(
+        restored.0, anchor.0,
+        "the reload restored the remembered position (the same unit at the top)"
+    );
+    assert!(
+        harness::new_messages_pill(&tab, harness::Surface::AppShell) <= 0,
+        "a re-open at a remembered position counts nothing: {}",
+        harness::new_messages_pill(&tab, harness::Surface::AppShell)
+    );
+    // Growth after the open is what the pill is for.
+    let script: Vec<String> = (0..4)
+        .flat_map(|k| {
+            vec![
+                harness::user_at(
+                    &format!("question {}: after the open", 900 + k),
+                    &harness::now_minus(30 - k * 6),
+                ),
+                harness::assistant_at(
+                    &format!("answer {}: after the open", 900 + k),
+                    &harness::now_minus(27 - k * 6),
+                ),
+            ]
+        })
+        .collect();
+    let growth =
+        harness::LiveGrowth::start(path.clone(), script, std::time::Duration::from_millis(2600));
+    assert_eq!(
+        growth.finish(std::time::Duration::from_secs(40)),
+        8,
+        "the driver appended the whole script"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(4000));
+    assert_eq!(
+        harness::new_messages_pill(&tab, harness::Surface::AppShell),
+        8,
+        "only the eight that arrived count"
+    );
+    drop(monitor);
+}
