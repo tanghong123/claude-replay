@@ -3721,3 +3721,114 @@ fn the_app_shell_expands_every_group_again() {
     );
     drop(monitor);
 }
+
+/// #78: the header's artifact roster lists what the session published — one row per URL,
+/// the republish counted, in a new-tab link — and jumps to the publishing record.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_lists_the_published_artifacts() {
+    let _serial = serial();
+    let base = base("appshell-artifacts");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000078".to_string();
+    let mut transcript = harness::long_session(6, harness::Shape::default());
+    transcript += &harness::user_at("question 6: publish the decks", &harness::now_minus(80));
+    transcript += &harness::assistant_at("answer 6a: publishing", &harness::now_minus(78));
+    transcript += &harness::artifact_publish_at(
+        "art1",
+        "/w/deck.html",
+        "One Deck",
+        "📊",
+        "https://claude.ai/code/artifact/aaaa-1",
+        &harness::now_minus(76),
+    );
+    transcript += &harness::artifact_publish_at(
+        "art2",
+        "/w/notes.html",
+        "Notes",
+        "📝",
+        "https://claude.ai/code/artifact/bbbb-2",
+        &harness::now_minus(70),
+    );
+    transcript += &harness::artifact_publish_at(
+        "art3",
+        "/w/deck.html",
+        "One Deck",
+        "📊",
+        "https://claude.ai/code/artifact/aaaa-1",
+        &harness::now_minus(64),
+    );
+    transcript += &harness::assistant_at("answer 6: both published", &harness::now_minus(60));
+    stores.claude_session(&sid, &transcript);
+    let monitor = Monitor::spawn(Kind::V2, 2875, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:2875/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    harness::until(
+        &tab,
+        "(document.getElementById('artifactsBtn') || {}).textContent === 'Artifacts (2) ▾'",
+        "the roster control to count two artifacts",
+        std::time::Duration::from_secs(20),
+        "(document.getElementById('artifactsBtn') || {textContent: 'no control'}).textContent",
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('artifactsBtn').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!document.getElementById('artifactsMenu').hidden",
+        "the menu to open",
+        std::time::Duration::from_secs(5),
+        "document.getElementById('artifactsMenu').hidden",
+    );
+    let rows = harness::probe(&tab, "(function(){ return [...document.querySelectorAll('#artifactsMenu .artifacts-row')].map(function (r) { var a = r.querySelector('a'); return { href: a.getAttribute('href'), target: a.getAttribute('target'), name: (r.querySelector('.artifacts-name') || {}).textContent, count: (r.querySelector('.artifacts-count') || {}).textContent || '', at: r.querySelector('[data-artifact-record]').dataset.artifactRecord }; }); })()");
+    assert_eq!(
+        rows.as_array().map(|r| r.len()),
+        Some(2),
+        "one row per URL: {rows}"
+    );
+    assert_eq!(
+        rows[0]["href"], "https://claude.ai/code/artifact/aaaa-1",
+        "first-seen first: {rows}"
+    );
+    assert_eq!(rows[0]["count"], "×2", "the republish is counted: {rows}");
+    assert_eq!(rows[0]["name"], "One Deck", "{rows}");
+    assert_eq!(
+        rows[0]["target"], "_blank",
+        "a row opens in a new tab: {rows}"
+    );
+    assert_eq!(
+        rows[1]["href"], "https://claude.ai/code/artifact/bbbb-2",
+        "{rows}"
+    );
+    assert_eq!(
+        rows[1]["count"], "",
+        "a single publish carries no count: {rows}"
+    );
+    // The jump lands the transcript on the publishing record, not the tail.
+    harness::jump_to_end(&tab, harness::Surface::AppShell);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let at_tail = harness::eval(&tab, "document.querySelector('.transcript').scrollTop");
+    harness::eval(&tab, "document.getElementById('artifactsBtn').click(); document.querySelector('#artifactsMenu .artifacts-jump').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('artifactsMenu').hidden",
+        "the jump to close the menu",
+        std::time::Duration::from_secs(5),
+        "document.getElementById('artifactsMenu').hidden",
+    );
+    let _ = at_tail;
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .artifact-link, .virtual-window [data-kind]')",
+        "the transcript to show the publishing turn",
+        std::time::Duration::from_secs(10),
+        "document.querySelector('.transcript').scrollTop",
+    );
+    drop(monitor);
+}

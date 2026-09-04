@@ -151,6 +151,29 @@ export function taskDetails(task = {}, target = null) {
   };
 }
 
+/** The session's published artifacts (#78), as the classic page's `collectArtifacts` groups
+ *  them: one entry per URL — the stable identity; a republish keeps it — in first-seen order,
+ *  with how many times it was published, the latest name / icon / description, and the index
+ *  of the record that published it last. Walks nested blocks the way the classic page does. */
+export function artifactRoster(records = []) {
+  const by = new Map();
+  const scan = (block, at) => {
+    const a = block?.head?.artifact;
+    if (a && a.url) {
+      const e = by.get(a.url) || { url: a.url, count: 0, name: "", icon: "", desc: "", at };
+      e.count += 1;
+      e.name = a.name || e.name;
+      e.icon = a.icon || e.icon;
+      e.desc = a.desc || e.desc;
+      e.at = at;
+      by.set(a.url, e);
+    }
+    for (const part of block?.body || []) if (part.p === "blocks") for (const item of part.items || []) scan(item, at);
+  };
+  records.forEach((record, i) => scan(record, i));
+  return [...by.values()];
+}
+
 export function viewRecord(record) {
   const head = record.head || {};
   if (record.kind === "user") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record };

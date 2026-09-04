@@ -119,6 +119,20 @@ pub fn image_result_at(call_id: &str, ts: &str) -> String {
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":[{{\"type\":\"image\",\"source\":{{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"{TINY_PNG_B64}\"}}}}]}}]}},\"timestamp\":\"{ts}\"}}\n"
     )
 }
+/// An artifact publish, as Claude Code records it: the `Artifact` call and its
+/// "Published … at <url>" result.
+pub fn artifact_publish_at(
+    call_id: &str,
+    path: &str,
+    title: &str,
+    icon: &str,
+    url: &str,
+    ts: &str,
+) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{call_id}\",\"name\":\"Artifact\",\"input\":{{\"file_path\":\"{path}\",\"title\":\"{title}\",\"favicon\":\"{icon}\",\"description\":\"a page\"}}}}]}},\"timestamp\":\"{ts}\"}}\n{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":\"Published {path} at {url}\"}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
 pub fn assistant_at(t: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}],\"usage\":{{\"input_tokens\":10,\"output_tokens\":20}}}},\"timestamp\":\"{ts}\"}}\n"

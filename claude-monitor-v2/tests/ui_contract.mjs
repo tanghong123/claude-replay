@@ -10,7 +10,7 @@ import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-ht
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
-import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails } from "../../claude-monitor/src/codex-ui/view-model.js";
+import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
@@ -885,4 +885,25 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const iconsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/icons.js", import.meta.url), "utf8");
   assert.ok(iconsSrc.includes("expandStack:'"), "the expandStack glyph exists");
   console.log("#77 expand-all cases passed");
+}
+
+// #78: the published-artifact roster — grouped by URL, republishes counted, first-seen order,
+// nested blocks walked — and the always-present header control.
+{
+  const pub = (url, name, extra = {}) => ({ kind: "tool", head: { artifact: { url, name, ...extra } } });
+  const records = [
+    { kind: "user" },
+    pub("https://a/1", "deck", { icon: "📊", desc: "first" }),
+    { kind: "act", body: [{ p: "blocks", items: [pub("https://a/2", "notes")] }] },
+    pub("https://a/1", "deck v2", { desc: "again" }),
+    { kind: "assistant" },
+  ];
+  const rows = artifactRoster(records);
+  assert.deepEqual(rows.map(r => [r.url, r.count, r.name, r.icon, r.desc, r.at]), [["https://a/1", 2, "deck v2", "📊", "again", 3], ["https://a/2", 1, "notes", "", "", 2]], "one row per URL, first-seen order, republishes counted, latest name kept, nested blocks walked, last publishing record kept");
+  assert.deepEqual(artifactRoster([]), []);
+  assert.match(appSource, /artifactsBtn\.textContent = rows\.length \? `Artifacts \(\$\{rows\.length\}\) ▾` : "Artifacts ▾";/, "the control is always present, counted when there is something");
+  assert.match(appSource, /artifactsBtn\.classList\.toggle\("disabled", rows\.length === 0\);/, "…grayed when the session published nothing");
+  assert.match(appSource, /<a href="\$\{escapeText\(r\.url\)\}" target="_blank" rel="noopener"/, "a row is a link in a new tab");
+  assert.match(appSource, /viewport\.jumpToRecord\(Number\(jump\.dataset\.artifactRecord\), "artifact"\)/, "…with a jump to the publishing record");
+  console.log("#78 artifact roster cases passed");
 }

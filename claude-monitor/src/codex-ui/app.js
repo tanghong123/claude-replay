@@ -12,7 +12,7 @@ import { displayState, needsPerson as needs, denoteState } from "./shared/state-
 import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskOrder, taskCenterTarget, taskDetails } from "./view-model.js";
+import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskOrder, taskCenterTarget, taskDetails, artifactRoster } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
@@ -358,6 +358,7 @@ function renderParent(meta) {
   return parent;
 }
 function renderHeader() {
+  renderArtifacts();
   const row = selectedRow();
   const liveMeta = recordState.session === indexState.selected ? recordState.meta : null;
   const parent = renderParent(liveMeta);
@@ -730,6 +731,36 @@ navigatorRailHide.onclick = () => setNavigatorHidden(true);
 byId("navigatorClose").onclick = () => toggleNavigator(false);
 byId("navigatorRailExpand").onclick = () => toggleNavigator(true);
 byId("navigatorToggle").title = `Show, collapse or bring back the outline  ( ${hintFor("navigator-toggle")} hides it )`;
+// The published-artifact roster (#78): every artifact this session published, one row per
+// URL with its republish count — twenty calls for two decks read as two rows. Always present
+// and grayed when the session published nothing (the classic page's rule: a control that
+// comes and goes cannot be found, and its absence is indistinguishable from a bug).
+const artifactsBtn = document.createElement("button");
+artifactsBtn.type = "button";
+artifactsBtn.className = "artifacts-btn";
+artifactsBtn.id = "artifactsBtn";
+artifactsBtn.setAttribute("aria-haspopup", "menu");
+artifactsBtn.setAttribute("aria-expanded", "false");
+const artifactsMenu = document.createElement("div");
+artifactsMenu.className = "artifacts-menu";
+artifactsMenu.id = "artifactsMenu";
+artifactsMenu.setAttribute("role", "menu");
+artifactsMenu.hidden = true;
+document.querySelector(".session-heading").append(artifactsBtn, artifactsMenu);
+function renderArtifacts() {
+  const rows = recordState.session === indexState.selected ? artifactRoster(recordState.records) : [];
+  artifactsBtn.textContent = rows.length ? `Artifacts (${rows.length}) ▾` : "Artifacts ▾";
+  artifactsBtn.classList.toggle("disabled", rows.length === 0);
+  artifactsBtn.title = rows.length ? "What this session published" : "This session published nothing";
+  artifactsMenu.innerHTML = rows.map(r => `<div class="artifacts-row" role="menuitem"><a href="${escapeText(r.url)}" target="_blank" rel="noopener" title="${escapeText(r.desc || r.url)}">${r.icon ? `<span class="artifacts-icon">${escapeText(r.icon)}</span>` : ""}<span class="artifacts-name">${escapeText(r.name || r.url)}</span>${r.desc ? `<span class="artifacts-desc">${escapeText(r.desc)}</span>` : ""}${r.count > 1 ? `<span class="artifacts-count">×${r.count}</span>` : ""}</a><button type="button" class="artifacts-jump" data-artifact-record="${r.at}" title="Go to where it was last published" aria-label="Go to where ${escapeText(r.name || r.url)} was last published">↳</button></div>`).join("");
+  if (!rows.length) { artifactsMenu.hidden = true; artifactsBtn.setAttribute("aria-expanded", "false"); }
+}
+artifactsBtn.onclick = () => { if (artifactsBtn.classList.contains("disabled")) return; const open = artifactsMenu.hidden; artifactsMenu.hidden = !open; artifactsBtn.setAttribute("aria-expanded", String(open)); };
+artifactsMenu.addEventListener("click", event => {
+  const jump = event.target.closest("[data-artifact-record]");
+  if (jump) { artifactsMenu.hidden = true; artifactsBtn.setAttribute("aria-expanded", "false"); viewport.jumpToRecord(Number(jump.dataset.artifactRecord), "artifact"); }
+});
+document.addEventListener("pointerdown", event => { if (!artifactsMenu.hidden && !artifactsMenu.contains(event.target) && event.target !== artifactsBtn) { artifactsMenu.hidden = true; artifactsBtn.setAttribute("aria-expanded", "false"); } });
 // The task details popover (#60): one element, filled per task, anchored beside the row;
 // Escape and its close control dismiss it and focus returns to the row it came from.
 const taskPopover = document.createElement("div");
