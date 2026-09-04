@@ -10,7 +10,7 @@ import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-ht
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
-import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget } from "../../claude-monitor/src/codex-ui/view-model.js";
+import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
@@ -773,4 +773,21 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /!node\.contains\(transcript\)/, "…never the transcript's");
   assert.match(appSource, /hintFor\("tasks-center"\)/, "the key is discoverable on the control");
   console.log("#57 tasks center cases passed");
+}
+
+// #60: a task's details, as the popover shows them — DOM-free.
+{
+  const d = taskDetails({ id: "52", subject: "Fix the parser", description: "First paragraph\nwraps here.\n\nSecond paragraph.", active_form: "Fixing the parser", status: "in_progress", blocked_by: ["54"], blocks: ["57", "58"] }, 41);
+  assert.equal(d.subject, "Fix the parser"); assert.equal(d.label, "Running"); assert.equal(d.status, "in_progress");
+  assert.deepEqual(d.paragraphs, ["First paragraph wraps here.", "Second paragraph."], "blank lines split paragraphs, single newlines join");
+  assert.equal(d.activeForm, "Fixing the parser"); assert.deepEqual(d.blockedBy, ["54"]); assert.deepEqual(d.blocks, ["57", "58"]); assert.equal(d.target, 41);
+  const bare = taskDetails({ id: "7", status: "completed" }, null);
+  assert.equal(bare.subject, "Task 7"); assert.equal(bare.label, "Completed"); assert.deepEqual(bare.paragraphs, []); assert.equal(bare.target, null);
+  assert.equal(taskDetails({ id: "1", status: "parked" }).label, "parked", "an unknown status shows as itself");
+  assert.match(appSource, /data-task-open="\$\{index\}" title="Task details" aria-haspopup="dialog"/, "a row opens the details");
+  assert.doesNotMatch(appSource, /class="work-task-head" \$\{nav\}/, "…and no longer jumps by itself");
+  assert.match(appSource, /class="task-popover-jump" data-task-record="\$\{d\.target\}"/, "the jump is an action inside the popover");
+  assert.match(appSource, /if \(event\.key === "Escape" && !taskPopover\.hidden\)/, "Escape dismisses it");
+  assert.match(appSource, /if \(restoreFocus && taskPopoverOpener\?\.isConnected\) taskPopoverOpener\.focus\(\);/, "focus returns to the row");
+  console.log("#60 task details cases passed");
 }

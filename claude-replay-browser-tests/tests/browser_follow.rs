@@ -2956,3 +2956,84 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     );
     drop(monitor2);
 }
+
+/// #60: a click on a task opens its details — subject, status, the description's paragraphs,
+/// blocked-by — without moving the transcript; Escape closes it and focus returns to the row;
+/// the jump is an explicit action, disabled when the stream kept no target.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_opens_a_task_details_popover() {
+    let _serial = serial();
+    let base = base("appshell-task-popover");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000060".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let dir = stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, running", "in_progress"),
+            ("3", "three, pending", "pending"),
+        ],
+    );
+    // Give the running task a two-paragraph description and a dependency, as taskq writes them.
+    std::fs::write(dir.join("2.json"), r#"{"id":"2","subject":"two, running","description":"First paragraph of the task.\n\nSecond paragraph, with detail.","activeForm":"Doing two","status":"in_progress","blocks":["3"],"blockedBy":["1"]}"#).unwrap();
+    let monitor = Monitor::spawn(Kind::V2, 2867, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:2867/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 3",
+        "the tasks to render",
+        std::time::Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 200)",
+    );
+    harness::jump_to_end(&tab, harness::Surface::AppShell);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let before = harness::eval(&tab, "document.querySelector('.transcript').scrollTop");
+    // The running task is the second row (completed, running, pending).
+    harness::eval(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task-head')[1].click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!document.getElementById('taskPopover').hidden",
+        "the details to open",
+        std::time::Duration::from_secs(5),
+        "document.getElementById('taskPopover') ? 'hidden' : 'no popover'",
+    );
+    let shown = harness::probe(&tab, "(function(){ var p = document.getElementById('taskPopover'); return { subject: p.querySelector('.task-popover-head strong').textContent, status: p.querySelector('.task-popover-facts dd').textContent, paragraphs: p.querySelectorAll('.task-popover-body p').length, blockedBy: [...p.querySelectorAll('.task-popover-facts code')].map(function (c) { return c.textContent; }), jumpDisabled: p.querySelector('.task-popover-jump').disabled, transcriptTop: document.querySelector('.transcript').scrollTop, focusInside: p.contains(document.activeElement) }; })()");
+    assert_eq!(shown["subject"], "two, running", "{shown}");
+    assert_eq!(shown["status"], "Running", "{shown}");
+    assert_eq!(
+        shown["paragraphs"], 2,
+        "the description's two paragraphs: {shown}"
+    );
+    assert_eq!(
+        shown["blockedBy"],
+        serde_json::json!(["#1", "#3"]),
+        "blocked-by and blocks as ids: {shown}"
+    );
+    assert_eq!(
+        shown["jumpDisabled"], true,
+        "tasks from the disk store have no record target, so the jump says so: {shown}"
+    );
+    assert_eq!(
+        shown["transcriptTop"], before,
+        "the transcript did not move: {shown}"
+    );
+    assert_eq!(
+        shown["focusInside"], true,
+        "focus moved into the dialog: {shown}"
+    );
+    harness::eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 'ok'");
+    harness::until(&tab, "document.getElementById('taskPopover').hidden && document.activeElement === document.querySelectorAll('#navigatorWork .work-task-head')[1]", "Escape to close it and return focus to the row", std::time::Duration::from_secs(5), "String(document.getElementById('taskPopover').hidden) + ' ' + (document.activeElement && document.activeElement.className)");
+    drop(monitor);
+}

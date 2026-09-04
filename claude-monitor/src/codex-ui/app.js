@@ -13,7 +13,7 @@ import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { snipId } from "./shared/ids.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskOrder, taskCenterTarget } from "./view-model.js";
+import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskOrder, taskCenterTarget, taskDetails } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
@@ -469,10 +469,10 @@ function renderNavigator() {
   // Grouped and ordered (#56): completed, running, pending — then by id within a group; the
   // stream's index rides along on each row because the record targets are keyed by it.
   const taskRow = ({ task, index }) => {
-    const key = String(task.id ?? index), target = recordState.taskTargets.get(key), status = taskStatus(task.status);
-    const nav = target == null ? 'disabled aria-disabled="true" title="This record stream did not keep where the task was set"' : `data-task-record="${target}" title="Jump to where this task's status was recorded"`;
-    const statusClass = status === "in_progress" ? "running" : status;
-    return `<div class="work-task"><button class="work-task-head" ${nav}><span class="task-state ${escapeText(statusClass)}"></span><span class="work-copy"><strong>${escapeText(task.subject || task.title || `Task ${index + 1}`)}</strong></span><span class="work-tail">#${escapeText(task.id || index + 1)}</span></button></div>`;
+    // The row opens the task's details (#60); the jump to where its status was recorded is an
+    // action inside the popover, so a click never moves the transcript by surprise.
+    const status = taskStatus(task.status), statusClass = status === "in_progress" ? "running" : status;
+    return `<div class="work-task"><button class="work-task-head" type="button" data-task-open="${index}" title="Task details" aria-haspopup="dialog"><span class="task-state ${escapeText(statusClass)}"></span><span class="work-copy"><strong>${escapeText(task.subject || task.title || `Task ${index + 1}`)}</strong></span><span class="work-tail">#${escapeText(task.id || index + 1)}</span></button></div>`;
   };
   byId("navigatorWork").innerHTML = taskGroups(tasks).map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("") || '<div class="activity-empty">No session tasks</div>';
   const agents = directAgents(), activeAgents = agents.filter(agent => agent.running).length;
@@ -503,7 +503,8 @@ function renderSessionInfo(turns, agents) {
 
 byId("sessionNavigator").onclick = event => {
   const turn = event.target.closest("[data-turn-record]"); if (turn) { viewport.jumpToRecord(Number(turn.dataset.turnRecord), "turn"); return; }
-  const task = event.target.closest("[data-task-record]"); if (task) { viewport.jumpToRecord(Number(task.dataset.taskRecord), "task"); return; }
+  const open = event.target.closest("[data-task-open]"); if (open) { openTaskPopover(Number(open.dataset.taskOpen), open); return; }
+  const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); viewport.jumpToRecord(Number(task.dataset.taskRecord), "task"); return; }
   const agent = event.target.closest("[data-agent-record]"); if (agent) { viewport.jumpToRecord(Number(agent.dataset.agentRecord), "agent"); return; }
   const child = event.target.closest("[data-child-outline]"); if (child) { selectSession(child.dataset.childOutline, true); return; }
   const card = event.target.closest("[data-nav-card-toggle]"); if (card) { const key = card.dataset.navCardToggle; uiState.navCards.has(key) ? uiState.navCards.delete(key) : uiState.navCards.add(key); persist(); renderNavigator(); return; }
@@ -695,6 +696,52 @@ navigatorRailHide.onclick = () => setNavigatorHidden(true);
 byId("navigatorClose").onclick = () => toggleNavigator(false);
 byId("navigatorRailExpand").onclick = () => toggleNavigator(true);
 byId("navigatorToggle").title = `Show, collapse or bring back the outline  ( ${hintFor("navigator-toggle")} hides it )`;
+// The task details popover (#60): one element, filled per task, anchored beside the row;
+// Escape and its close control dismiss it and focus returns to the row it came from.
+const taskPopover = document.createElement("div");
+taskPopover.className = "task-popover";
+taskPopover.id = "taskPopover";
+taskPopover.setAttribute("role", "dialog");
+taskPopover.setAttribute("aria-modal", "false");
+taskPopover.hidden = true;
+document.body.append(taskPopover);
+let taskPopoverOpener = null;
+function closeTaskPopover(restoreFocus = true) {
+  if (taskPopover.hidden) return;
+  taskPopover.hidden = true;
+  taskPopover.innerHTML = "";
+  if (restoreFocus && taskPopoverOpener?.isConnected) taskPopoverOpener.focus();
+  taskPopoverOpener = null;
+}
+function openTaskPopover(index, opener) {
+  const tasks = recordState.meta?.tasks || [];
+  const task = tasks[index];
+  if (!task) return;
+  const key = String(task.id ?? index);
+  const d = taskDetails(task, recordState.taskTargets.get(key) ?? null);
+  const list = (items, empty) => items.length ? items.map(i => `<code>#${escapeText(i)}</code>`).join(" ") : `<span class="task-popover-none">${empty}</span>`;
+  const jump = d.target == null
+    ? `<button type="button" class="task-popover-jump" disabled title="This record stream did not keep where the task's status was set">Go to the turn — not kept in this stream</button>`
+    : `<button type="button" class="task-popover-jump" data-task-record="${d.target}">Go to the turn where this task's status was recorded</button>`;
+  taskPopover.innerHTML = `<div class="task-popover-head"><span class="task-state ${escapeText(d.status === "in_progress" ? "running" : d.status)}"></span><strong>${escapeText(d.subject)}</strong><span class="task-popover-id">#${escapeText(d.id)}</span><button type="button" class="task-popover-close" aria-label="Close">×</button></div>
+    <dl class="task-popover-facts"><dt>Status</dt><dd>${escapeText(d.label)}</dd>${d.activeForm ? `<dt>While running</dt><dd>${escapeText(d.activeForm)}</dd>` : ""}<dt>Blocked by</dt><dd>${list(d.blockedBy, "nothing")}</dd><dt>Blocks</dt><dd>${list(d.blocks, "nothing")}</dd></dl>
+    <div class="task-popover-body">${d.paragraphs.length ? d.paragraphs.map(p => `<p>${escapeText(p)}</p>`).join("") : '<p class="task-popover-none">No description recorded.</p>'}</div>
+    <div class="task-popover-actions">${jump}</div>`;
+  taskPopoverOpener = opener;
+  taskPopover.hidden = false;
+  const r = opener.getBoundingClientRect(), w = Math.min(440, window.innerWidth - 24);
+  const left = Math.min(window.innerWidth - w - 12, r.right + 8);
+  taskPopover.style.left = `${Math.max(12, left)}px`;
+  taskPopover.style.top = `${Math.max(12, Math.min(window.innerHeight - 24 - taskPopover.offsetHeight, r.top))}px`;
+  taskPopover.querySelector(".task-popover-close").focus();
+}
+taskPopover.addEventListener("click", event => {
+  if (event.target.closest(".task-popover-close")) { closeTaskPopover(); return; }
+  const jump = event.target.closest("[data-task-record]");
+  if (jump) { const at = Number(jump.dataset.taskRecord); closeTaskPopover(false); viewport.jumpToRecord(at, "task"); }
+});
+document.addEventListener("keydown", event => { if (event.key === "Escape" && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, true);
+document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false); });
 // The tasks pane centered on the running tasks (#57), or on the done/pending boundary: the
 // target row is the pure function's, the scroll is the PANE's own scroller — never the
 // transcript's. Runtime chrome on the card's head, so the generated shell stays exact.

@@ -131,6 +131,26 @@ export function taskCenterTarget(rows = []) {
   return { index: firstOpen, edge: "top", why: "boundary" };
 }
 
+/** What a task's details popover shows (#60), from the meta record's task and the record index
+ *  where its status was last recorded (null when the stream did not keep it). The description
+ *  is split into paragraphs on blank lines — the meta record carries it as text, not markup. */
+export function taskDetails(task = {}, target = null) {
+  const status = taskGroupKey(task.status);
+  const label = { completed: "Completed", in_progress: "Running", pending: "Pending", other: String(task.status || "unknown") }[status];
+  const text = String(task.description || "").trim();
+  const paragraphs = text ? text.split(/\n\s*\n/).map(p => p.replace(/\s*\n\s*/g, " ").trim()).filter(Boolean) : [];
+  return {
+    id: String(task.id ?? ""),
+    subject: String(task.subject || task.title || "").trim() || `Task ${task.id ?? ""}`.trim(),
+    status, label,
+    activeForm: String(task.active_form || task.activeForm || "").trim(),
+    paragraphs,
+    blockedBy: Array.isArray(task.blocked_by) ? task.blocked_by.map(String) : Array.isArray(task.blockedBy) ? task.blockedBy.map(String) : [],
+    blocks: Array.isArray(task.blocks) ? task.blocks.map(String) : [],
+    target: target == null ? null : Number(target),
+  };
+}
+
 export function viewRecord(record) {
   const head = record.head || {};
   if (record.kind === "user") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record };
