@@ -821,3 +821,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /<button class="outline-epoch" type="button" data-turn-record="\$\{r\.at\}"/, "…that jumps to the compaction record");
   console.log("#67/#68/#69 info and turns pane cases passed");
 }
+
+// #75 / #76: the sidebar head's three controls carry a glyph and a name.
+{
+  assert.match(appSource, /\["themeBtn", "moon", "Toggle light and dark"\], \["collapseBtn", "collapseStack", "Collapse every group"\], \["sidebarCollapse", "sidebar", "Collapse the session list into its icon rail"\]/, "theme, collapse-all and the sidebar collapse are drawn and named");
+  assert.match(appSource, /if \(!button\.querySelector\("svg"\)\) button\.innerHTML = svg\(icon\);/, "…a glyph where the shell left none");
+  const iconsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/icons.js", import.meta.url), "utf8");
+  for (const name of ["moon", "collapseStack", "sidebar"]) assert.ok(iconsSrc.includes(name + ":'"), `the ${name} glyph exists — svg() would otherwise draw the info glyph`);
+  console.log("#75/#76 sidebar head controls cases passed");
+}

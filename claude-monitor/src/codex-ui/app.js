@@ -29,6 +29,16 @@ let toastTimer = 0;
 let landedHash = "";
 
 document.querySelectorAll("[data-icon]").forEach(element => { element.innerHTML = svg(element.dataset.icon); });
+// The sidebar head's controls (#75, #76): the generated shell gives the theme toggle and
+// collapse-all no glyph — an empty 34px button each, invisible until hovered — and the sidebar
+// collapse beside them was easy to miss in that company. Each is named and drawn here.
+for (const [id, icon, label] of [["themeBtn", "moon", "Toggle light and dark"], ["collapseBtn", "collapseStack", "Collapse every group"], ["sidebarCollapse", "sidebar", "Collapse the session list into its icon rail"]]) {
+  const button = byId(id);
+  if (!button) continue;
+  if (!button.querySelector("svg")) button.innerHTML = svg(icon);
+  button.setAttribute("aria-label", label);
+  if (id !== "sidebarCollapse") button.title = label;
+}
 const filterIcon = document.querySelector("#filterTranscriptBtn [data-icon]");
 if (filterIcon) filterIcon.innerHTML = svg("filterLines");
 document.querySelector(".brand small").textContent = `v${document.body.dataset.version || "dev"}`;

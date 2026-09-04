@@ -2334,6 +2334,20 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
         false,
         "a fresh shell opens with the sidebar expanded"
     );
+    // #76: the control is there to be seen — a glyph, a size, a name — before it is clicked.
+    let control = harness::probe(&tab, "(function(){ var b = document.getElementById('sidebarCollapse'); var r = b.getBoundingClientRect(); return { visible: b.offsetParent !== null && r.width >= 24 && r.height >= 24, glyph: !!b.querySelector('svg'), label: b.getAttribute('aria-label') || '' }; })()");
+    assert_eq!(
+        control["visible"], true,
+        "the sidebar collapse control is visible: {control}"
+    );
+    assert_eq!(control["glyph"], true, "…with a glyph: {control}");
+    assert!(
+        control["label"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Collapse the session list"),
+        "…and a name: {control}"
+    );
     harness::eval(
         &tab,
         "document.getElementById('sidebarCollapse').click(); 'ok'",
@@ -3417,6 +3431,62 @@ fn the_app_shell_info_and_turns_panes_show_the_compaction() {
         "the tick to jump the transcript",
         std::time::Duration::from_secs(5),
         "document.querySelector('.transcript').scrollTop",
+    );
+    drop(monitor);
+}
+
+/// #75: the theme toggle in the sidebar head is a visible button with a glyph, and it toggles
+/// the theme.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_theme_toggle_is_visible_and_works() {
+    let _serial = serial();
+    let base = base("appshell-theme-toggle");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000075".to_string();
+    stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2870, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:2870/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!document.getElementById('themeBtn')",
+        "the shell to render",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let probe = "(function(){ var b = document.getElementById('themeBtn'); var r = b.getBoundingClientRect(); return { visible: b.offsetParent !== null && r.width >= 24 && r.height >= 24, glyph: !!b.querySelector('svg'), label: b.getAttribute('aria-label') || '', theme: document.documentElement.dataset.theme || '' }; })()";
+    let before = harness::probe(&tab, probe);
+    assert_eq!(
+        before["visible"], true,
+        "the theme toggle is visible: {before}"
+    );
+    assert_eq!(before["glyph"], true, "…with a glyph: {before}");
+    assert!(
+        before["label"].as_str().unwrap_or("").contains("Toggle"),
+        "…and a name: {before}"
+    );
+    let was_dark = before["theme"] == "dark";
+    harness::eval(&tab, "document.getElementById('themeBtn').click(); 'ok'");
+    harness::until(
+        &tab,
+        &format!(
+            "(document.documentElement.dataset.theme || '') {} 'dark'",
+            if was_dark { "!==" } else { "===" }
+        ),
+        "the click to toggle the theme",
+        std::time::Duration::from_secs(5),
+        "document.documentElement.dataset.theme",
+    );
+    // The collapse-all control beside it is drawn too (#75 covers both empty buttons).
+    let collapse_all = harness::probe(&tab, "(function(){ var b = document.getElementById('collapseBtn'); return { glyph: !!b.querySelector('svg'), label: b.getAttribute('aria-label') || '' }; })()");
+    assert_eq!(
+        collapse_all["glyph"], true,
+        "collapse-all has its glyph too: {collapse_all}"
     );
     drop(monitor);
 }
