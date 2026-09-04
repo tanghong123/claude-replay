@@ -791,3 +791,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /if \(restoreFocus && taskPopoverOpener\?\.isConnected\) taskPopoverOpener\.focus\(\);/, "focus returns to the row");
   console.log("#60 task details cases passed");
 }
+
+// #61: the agents pane's row switches the view to the sub-agent; the spawn jump is secondary.
+{
+  assert.match(appSource, /<button class="outline-agent" type="button" data-child-outline="\$\{escapeText\(agent\.id\)\}" title="Open the sub-agent's transcript">/, "the row itself opens the child's transcript");
+  assert.match(appSource, /<button class="outline-agent-spawn" type="button" data-agent-record="\$\{target\}"/, "…and the spawn point is a control of its own");
+  assert.match(appSource, /const spawn = target == null \? "" : /, "shown only when the record stream kept the spawn point");
+  console.log("#61 agents pane cases passed");
+}

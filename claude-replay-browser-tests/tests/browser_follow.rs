@@ -3037,3 +3037,73 @@ fn the_app_shell_opens_a_task_details_popover() {
     harness::until(&tab, "document.getElementById('taskPopover').hidden && document.activeElement === document.querySelectorAll('#navigatorWork .work-task-head')[1]", "Escape to close it and return focus to the row", std::time::Duration::from_secs(5), "String(document.getElementById('taskPopover').hidden) + ' ' + (document.activeElement && document.activeElement.className)");
     drop(monitor);
 }
+
+/// #61: clicking a sub-agent in the agents pane switches the whole view to that sub-agent's
+/// transcript (the header names the child and its parent); the row's secondary control jumps
+/// to the spawn point in the parent instead.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_agents_pane_switches_to_the_sub_agent() {
+    let _serial = serial();
+    let base = base("appshell-agent-switch");
+    let stores = Stores::new(&base);
+    let parent = "dddddddd-0000-4000-8000-000000000061".to_string();
+    let mut transcript = harness::long_session(20, harness::Shape::default());
+    transcript += &harness::agent_spawn("call_61", "Explore", 27);
+    transcript += &harness::agent_result("call_61", "aExplore-61", "Explore", 27);
+    transcript += &harness::long_session(20, harness::Shape::default());
+    stores.claude_session(&parent, &transcript);
+    stores.claude_child(
+        &parent,
+        "aExplore-61",
+        &harness::long_session(6, harness::Shape::default()),
+    );
+    let monitor = Monitor::spawn(Kind::V2, 2850, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    let url = format!("http://127.0.0.1:2850/?ui=app&session={parent}");
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the parent to mount", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"agents\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"agents\"]').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorAgents .outline-agent').length === 1",
+        "the one sub-agent to list",
+        std::time::Duration::from_secs(20),
+        "document.getElementById('navigatorAgents').innerText.slice(0, 200)",
+    );
+    let row = harness::probe(&tab, "(function(){ var r = document.querySelector('#navigatorAgents .outline-agent'); var s = document.querySelector('#navigatorAgents .outline-agent-spawn'); return { child: r.dataset.childOutline, spawn: s ? s.dataset.agentRecord : null }; })()");
+    let child = row["child"].as_str().unwrap_or("").to_string();
+    assert!(!child.is_empty(), "the row names the child session: {row}");
+    assert!(
+        row["spawn"].is_string(),
+        "the record stream kept the spawn point, so the secondary control shows: {row}"
+    );
+    // The primary click: the whole view is the child's now.
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorAgents .outline-agent').click(); 'ok'",
+    );
+    harness::until(&tab, &format!("new URLSearchParams(location.search).get('session') === {child:?} && /sub-agent of/.test(document.getElementById('sessionCrumb').textContent)"), "the view to switch to the sub-agent", std::time::Duration::from_secs(20), "location.search + ' | ' + document.getElementById('sessionCrumb').textContent");
+    // Back on the parent, the secondary control jumps to the spawn point instead.
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0 && document.querySelectorAll('#navigatorAgents .outline-agent-spawn').length === 1", "the parent again, with the spawn control", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    harness::jump_to_end(&tab, harness::Surface::AppShell);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorAgents .outline-agent-spawn').click(); 'ok'",
+    );
+    harness::until(&tab, "(function(){ var a = document.querySelector('.virtual-window .renderer-agent, .virtual-window [data-kind=\"agent\"]'); if (!a) return false; var r = a.getBoundingClientRect(), t = document.querySelector('.transcript').getBoundingClientRect(); return r.top >= t.top - 2 && r.top < t.top + t.height * 0.6; })()", "the spawn point to be brought into view in the parent", std::time::Duration::from_secs(10), "location.search");
+    assert_eq!(
+        harness::eval(&tab, "new URLSearchParams(location.search).get('session')")
+            .as_str()
+            .unwrap_or(""),
+        parent,
+        "the secondary control stays in the parent"
+    );
+    drop(monitor);
+}

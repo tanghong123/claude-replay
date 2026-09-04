@@ -133,3 +133,9 @@
 .task-popover-jump{padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);cursor:pointer;font-size:12.5px}
 .task-popover-jump:hover:not([disabled]),.task-popover-jump:focus-visible{border-color:var(--sub);outline:0}
 .task-popover-jump[disabled]{color:var(--faint);cursor:default}
+/* #61: an agent row is the switch to the sub-agent's transcript; the spawn point is a small
+   secondary control at its tail. */
+.outline-agent-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:2px}
+.outline-agent-row>.outline-agent{min-width:0}
+.outline-agent-spawn{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;background:transparent;color:var(--faint);cursor:pointer;font-size:13px;line-height:1}
+.outline-agent-spawn:hover,.outline-agent-spawn:focus-visible{color:var(--ink);background:var(--hover);outline:0}

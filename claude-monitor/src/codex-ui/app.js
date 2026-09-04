@@ -477,7 +477,14 @@ function renderNavigator() {
   byId("navigatorWork").innerHTML = taskGroups(tasks).map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("") || '<div class="activity-empty">No session tasks</div>';
   const agents = directAgents(), activeAgents = agents.filter(agent => agent.running).length;
   byId("navigatorAgentCount").innerHTML = outlineSummary(activeAgents, agents.length - activeAgents, agents.length);
-  byId("navigatorAgents").innerHTML = agents.map(agent => { const target = recordState.agentTargets.get(String(agent.id)); const nav = target == null ? `data-child-outline="${escapeText(agent.id)}" title="Open the sub-agent transcript"` : `data-agent-record="${target}" title="Jump to the agent execution block in the parent session"`; return `<button class="outline-agent" ${nav}><span class="agent-state ${agent.running ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(agent.title || agent.description || agent.id)}</strong><small>${escapeText(agent.type || agent.agent_type || "agent")}</small></span><span class="outline-agent-tail"></span></button>`; }).join("") || '<div class="activity-empty">No direct children</div>';
+  // A sub-agent row (#61): the click opens the sub-agent's OWN transcript — the whole view
+  // switches, the header shows the child with its way back to the parent — and the spawn point
+  // in the parent stays reachable as a small secondary control when the record stream kept it.
+  byId("navigatorAgents").innerHTML = agents.map(agent => {
+    const target = recordState.agentTargets.get(String(agent.id));
+    const spawn = target == null ? "" : `<button class="outline-agent-spawn" type="button" data-agent-record="${target}" title="Jump to where the parent launched this agent" aria-label="Jump to where the parent launched ${escapeText(agent.title || agent.id)}"><span aria-hidden="true">↳</span></button>`;
+    return `<div class="outline-agent-row"><button class="outline-agent" type="button" data-child-outline="${escapeText(agent.id)}" title="Open the sub-agent's transcript"><span class="agent-state ${agent.running ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(agent.title || agent.description || agent.id)}</strong><small>${escapeText(agent.type || agent.agent_type || "agent")}</small></span><span class="outline-agent-tail"></span></button>${spawn}</div>`;
+  }).join("") || '<div class="activity-empty">No direct children</div>';
   renderSessionInfo(turns.length, agents.length);
   document.querySelectorAll("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   document.querySelector(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
