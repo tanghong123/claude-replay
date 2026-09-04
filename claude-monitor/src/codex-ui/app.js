@@ -11,7 +11,6 @@ import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session
 import { displayState, needsPerson as needs, denoteState } from "./shared/state-labels.js";
 import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
-import { snipId } from "./shared/ids.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskOrder, taskCenterTarget, taskDetails } from "./view-model.js";
 import { Viewport } from "./viewport.js";
@@ -71,40 +70,6 @@ sessionCopyMenu.setAttribute("role", "menu");
 sessionCopyMenu.setAttribute("aria-label", "Copy session details");
 sessionCopyMenu.innerHTML = `<div class="session-copy-caption">Copy session details</div><button type="button" role="menuitem" data-copy-session="id">${svg("copy")}<span><strong>Session ID</strong><small data-session-copy-value="id">—</small></span></button><button type="button" role="menuitem" data-copy-session="path">${svg("copy")}<span><strong>Transcript path</strong><small data-session-copy-value="path">Loading…</small></span></button>`;
 sessionTitle.insertAdjacentElement("afterend", sessionCopyMenu);
-// The session id, visible in the header, and one click copies the transcript path (#50) —
-// what the classic page's `#sid` does, in this shell's idiom: a chip after the title, layered
-// on at runtime so the generated shell stays an exact extraction. The full id is the tooltip;
-// the copy menu beside it still offers the id itself.
-const sessionIdChip = document.createElement("button");
-sessionIdChip.type = "button";
-sessionIdChip.className = "session-id";
-sessionIdChip.id = "sessionId";
-sessionIdChip.hidden = true;
-sessionCopyMenu.insertAdjacentElement("afterend", sessionIdChip);
-function showSessionId(sid, path) {
-  if (!sid) { sessionIdChip.hidden = true; return; }
-  clearTimeout(sessionIdChip._flash);
-  sessionIdChip.hidden = false;
-  sessionIdChip.textContent = snipId(sid);
-  sessionIdChip.dataset.sid = sid;
-  sessionIdChip.dataset.path = path || "";
-  const what = path ? "click to copy transcript path" : "transcript path not loaded yet";
-  sessionIdChip.title = `${sid} — ${what}`;
-  sessionIdChip.setAttribute("aria-label", `Session ${sid} — ${what}`);
-}
-sessionIdChip.addEventListener("click", async event => {
-  event.stopPropagation();
-  const path = sessionIdChip.dataset.path;
-  const shown = snipId(sessionIdChip.dataset.sid || "");
-  const flash = text => {
-    clearTimeout(sessionIdChip._flash);
-    sessionIdChip.textContent = text;
-    sessionIdChip._flash = setTimeout(() => { sessionIdChip.textContent = shown; }, 1400);
-  };
-  if (!path) { flash("path not loaded yet"); return; }
-  const copied = await copyText(path);
-  flash(copied ? "copied transcript path" : "copy blocked — ⌘C the path");
-});
 sessionTitle.tabIndex = 0;
 sessionTitle.setAttribute("role", "button");
 sessionTitle.setAttribute("aria-haspopup", "menu");
@@ -398,7 +363,6 @@ function renderHeader() {
     sessionCopyMenu.hidden = false;
     sessionCopyMenu.querySelector('[data-session-copy-value="id"]').textContent = liveMeta.sid || indexState.selected;
     sessionCopyMenu.querySelector('[data-session-copy-value="path"]').textContent = liveMeta.path || "available once the session loads";
-    showSessionId(liveMeta.sid || indexState.selected, liveMeta.path || "");
     return;
   }
   if (!row) {
@@ -407,7 +371,6 @@ function renderHeader() {
     byId("statusChip").className = "status-chip idle";
     byId("statusChip").textContent = "None selected";
     sessionTitle.tabIndex = -1;
-    showSessionId(null, "");
     sessionCopyMenu.hidden = true;
     setSessionCopyMenu(false);
     return;
@@ -427,7 +390,6 @@ function renderHeader() {
   sessionCopyMenu.querySelector('[data-session-copy-value="path"]').textContent = path || "available once the session loads";
   sessionCopyMenu.querySelector('[data-copy-session="id"]').disabled = !sid;
   sessionCopyMenu.querySelector('[data-copy-session="path"]').disabled = !path;
-  showSessionId(sid, path);
 }
 
 let lastRecordCount = -1; // -1: nothing applied since the last reset — the next apply is the open, not growth

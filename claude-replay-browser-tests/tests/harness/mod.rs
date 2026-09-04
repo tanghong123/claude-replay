@@ -966,15 +966,14 @@ pub fn queued_text(tab: &headless_chrome::Tab, surface: Surface) -> String {
     eval(tab, js).as_str().unwrap_or("").to_string()
 }
 
-/// The header's session-id element: its visible text (the short id), or "" when none shows.
-/// The classic page's `#sid`; the app shell's `#sessionId` chip.
+/// Where the page shows the session id: the classic page's `#sid` (the short form); the app
+/// shell's title menu, which carries the full id (#83 dropped the chip). "" when none shows.
 pub fn session_id_chip(tab: &headless_chrome::Tab, surface: Surface) -> String {
-    let id = match surface {
-        Surface::Classic => "sid",
-        Surface::AppShell => "sessionId",
+    let js = match surface {
+        Surface::Classic => "(function(){ var e = document.getElementById('sid'); return e && !e.hidden ? (e.textContent || '').trim() : ''; })()",
+        Surface::AppShell => "(function(){ var e = document.querySelector('[data-session-copy-value=\"id\"]'); return e ? (e.textContent || '').trim() : ''; })()",
     };
-    eval(tab, &format!("(function(){{ var e = document.getElementById('{id}'); return e && !e.hidden ? (e.textContent || '').trim() : ''; }})()"))
-        .as_str().unwrap_or("").to_string()
+    eval(tab, js).as_str().unwrap_or("").to_string()
 }
 
 /// Replace the page's clipboard with a recorder, so a copy can be read back without the
@@ -992,11 +991,12 @@ pub fn copied_text(tab: &headless_chrome::Tab) -> String {
     .to_string()
 }
 
-/// Click the header's session-id element.
+/// Copy the transcript path the way each page offers it: the classic page's `#sid` click; the
+/// app shell's title menu item.
 pub fn click_session_id(tab: &headless_chrome::Tab, surface: Surface) {
-    let id = match surface {
-        Surface::Classic => "sid",
-        Surface::AppShell => "sessionId",
+    let js = match surface {
+        Surface::Classic => "(function(){ var e = document.getElementById('sid'); if (e) e.click(); return 'ok'; })()",
+        Surface::AppShell => "(function(){ var e = document.querySelector('[data-copy-session=\"path\"]'); if (e) e.click(); return 'ok'; })()",
     };
-    eval(tab, &format!("(function(){{ var e = document.getElementById('{id}'); if (e) e.click(); return 'ok'; }})()"));
+    eval(tab, js);
 }

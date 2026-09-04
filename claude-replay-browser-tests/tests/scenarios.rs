@@ -1032,37 +1032,31 @@ fn app_shell_shows_a_queued_prompts_text() {
 
 // ── scenario: the session id in the header copies the transcript path (#50) ─────────────
 
-/// The header shows the session id short (the shared form: the UUID's first eight hex
-/// digits); a click copies the transcript's path on disk and says so for a moment.
+/// The page shows the session id — the classic page's short form, the app shell's full id in
+/// its title menu (#83 dropped the header chip) — and the page's own control copies the
+/// transcript's path on disk.
 fn scenario_session_id_copies_the_transcript_path(
     tab: &headless_chrome::Tab,
     surface: Surface,
     fx: &Fixture,
 ) {
+    let shown = match surface {
+        Surface::Classic => "document.getElementById('sid')",
+        Surface::AppShell => "document.querySelector('[data-session-copy-value=\"id\"]')",
+    };
     until(
         tab,
         &format!(
-            "(document.getElementById('{}') || {{}}).textContent === '{}'",
-            match surface {
-                Surface::Classic => "sid",
-                Surface::AppShell => "sessionId",
-            },
+            "(({shown}) || {{textContent: ''}}).textContent.trim().indexOf('{}') === 0",
             &SID[..8]
         ),
-        "the header to show the short session id",
+        "the page to show the session id",
         Duration::from_secs(20),
-        &format!(
-            "(document.getElementById('{}') || {{textContent: 'no element'}}).textContent",
-            match surface {
-                Surface::Classic => "sid",
-                Surface::AppShell => "sessionId",
-            }
-        ),
+        &format!("(({shown}) || {{textContent: 'no element'}}).textContent"),
     );
-    assert_eq!(
-        session_id_chip(tab, surface),
-        &SID[..8],
-        "the short id is the UUID's first eight hex digits"
+    assert!(
+        session_id_chip(tab, surface).starts_with(&SID[..8]),
+        "the id shown begins with the UUID's first eight hex digits"
     );
     stub_clipboard(tab);
     click_session_id(tab, surface);
@@ -1078,25 +1072,15 @@ fn scenario_session_id_copies_the_transcript_path(
         fx.path.to_string_lossy(),
         "what was copied is the transcript's path"
     );
-    until(
-        tab,
-        &format!(
-            "(document.getElementById('{}') || {{}}).textContent === 'copied transcript path'",
-            match surface {
-                Surface::Classic => "sid",
-                Surface::AppShell => "sessionId",
-            }
-        ),
-        "the chip to say it copied",
-        Duration::from_secs(5),
-        &format!(
-            "(document.getElementById('{}') || {{}}).textContent",
-            match surface {
-                Surface::Classic => "sid",
-                Surface::AppShell => "sessionId",
-            }
-        ),
-    );
+    if surface == Surface::Classic {
+        until(
+            tab,
+            "(document.getElementById('sid') || {}).textContent === 'copied transcript path'",
+            "the classic chip to say it copied",
+            Duration::from_secs(5),
+            "(document.getElementById('sid') || {}).textContent",
+        );
+    }
 }
 
 #[test]

@@ -27,7 +27,7 @@ at v1.129.1.
 | 12 | **Expand all** groups | `rail.html #expandall` | Collapse-all only (`collapseBtn`). |
 | 13 | **Resizable session list** | `rail.html #drag` | Only the preview pane resizes (`preview.js:22`). |
 | 14 | **Step between tool-filter hits** (▲▼ on a filter) | `export.js:1770 filterNav` | Filters hide; find prev/next exists for search only. Minor. |
-| 15 | **Session id in the header, click copies the transcript path** (`#sid`, owner-reported after this audit) | `export.js renderHead` (`#sid`, `snipId`) | A copy menu on the title offered both values; the id itself was not shown. Closed by #50 (v1.156.0): an id chip after the title, one click copies the path, the shortener shared (`html/shared/ids.js`). |
+| 15 | **Session id in the header, click copies the transcript path** (`#sid`, owner-reported after this audit) | `export.js renderHead` (`#sid`, `snipId`) | A copy menu on the title offered both values; the id itself was not shown. Closed by #50 (v1.156.0) with an id chip; the owner then found the title's copy menu (id + path) enough and #83 dropped the chip again — the shortener stays shared (`html/shared/ids.js`) for the classic page. |
 
 Not gaps: theme sync into the embedded view (one document now), the collapsed "strip" mode
 (the mini rail is its analogue), compose / consent / passcode (`control-store.js`), tasks,

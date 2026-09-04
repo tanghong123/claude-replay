@@ -675,21 +675,20 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#62 runtime wording cases passed");
 }
 
-// #50: the header shows the session id short — one shortener for every page — and a click
-// copies the transcript path with the classic page's wording.
+// #50 / #83: the session id's short form is one shared function (the classic page's #sid reads
+// it); the app shell shows no chip — its title menu carries the full id and the transcript path.
 {
   assert.equal(snipId("530339ac-689c-4399-bef8-fd9f64101558"), "530339ac");
   assert.equal(snipId("rollout-2026-08-09T12-00-00-019b2c4e-1111-4222-8333-444455556666"), "019b2c4e");
   assert.equal(snipId("short-id"), "short-id");
   assert.equal(snipId("a-long-opaque-identifier"), "a-long-o");
   assert.equal(snipId(null), "");
-  assert.match(appSource, /const sessionIdChip = document\.createElement\("button"\);/, "the chip is runtime chrome");
-  assert.match(appSource, /sessionIdChip\.textContent = snipId\(sid\);/, "…showing the shared short form");
-  assert.match(appSource, /flash\(copied \? "copied transcript path" : "copy blocked — ⌘C the path"\);/, "…with the classic page's wording");
+  assert.doesNotMatch(appSource, /sessionIdChip|showSessionId/, "no chip in the header (#83)");
+  assert.match(appSource, /data-session-copy-value="id"/, "the title menu carries the id");
+  assert.match(appSource, /data-copy-session="path"/, "…and copies the transcript path");
   const exportSrc = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
-  assert.match(exportSrc, /var snipId = shared\.snipId;/, "the classic page reads the same shortener");
-  assert.doesNotMatch(exportSrc, /function snipId\(/, "…and keeps no copy of its own");
-  console.log("#50 session id chip cases passed");
+  assert.match(exportSrc, /var snipId = shared\.snipId;/, "the classic page reads the shared shortener");
+  console.log("#50/#83 session id cases passed");
 }
 
 // #54: the sidebar collapses into its icon rail by key from anywhere, and the rail's buttons
