@@ -888,3 +888,21 @@ pub fn open_turn_growth(from_step: u32, steps: u32) -> Vec<String> {
     }
     script
 }
+
+/// What the reader SEES: the first visible content element and its offset from the viewport
+/// top — `{ key, top }`. A scroll offset moves legitimately whenever content above the viewport
+/// changes height (an estimate replaced by a real height, a rewrite re-measured); the reader's
+/// view has moved only when the same element sits at a different offset, or another element
+/// took its place without the reader scrolling. Assert on this, never on scrollTop.
+pub fn view_anchor(tab: &headless_chrome::Tab, surface: Surface) -> (String, f64) {
+    let js = match surface {
+        Surface::Classic => "(function(){ var els = document.querySelectorAll('#stream [data-idx]'); for (var e of els) { var r = e.getBoundingClientRect(); if (r.bottom > 0) return JSON.stringify({key: 'idx:' + e.dataset.idx, top: r.top}); } return JSON.stringify({key: '', top: 0}); })()",
+        Surface::AppShell => "(function(){ var s = document.querySelector('.transcript'); var top = s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { var r = c.getBoundingClientRect(); if (r.bottom > top + 1) return JSON.stringify({key: c.dataset.unitKey || '', top: r.top - top}); } return JSON.stringify({key: '', top: 0}); })()",
+    };
+    let v: serde_json::Value =
+        serde_json::from_str(eval(tab, js).as_str().unwrap_or("{}")).unwrap_or_default();
+    (
+        v["key"].as_str().unwrap_or("").to_string(),
+        v["top"].as_f64().unwrap_or(0.0),
+    )
+}

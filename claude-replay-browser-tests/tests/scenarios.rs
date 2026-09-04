@@ -677,9 +677,9 @@ fn app_shell_resumes_after_a_server_restart() {
 
 // ── scenario: an unpinned reader holds to the PIXEL through growth (#51's reproduced part) ──
 
-/// Scrolled up and left alone, the reader's scroll position does not move by more than a few
-/// pixels while records arrive — checked after every apply, not only at the end. The turn-level
-/// scenario above passes while the position drifts by hundreds of pixels; this one does not.
+/// Scrolled up and left alone, WHAT THE READER SEES does not move while records arrive —
+/// the first visible element keeps its offset (±4px), checked after every apply. (The scroll
+/// offset itself moves legitimately whenever content above the viewport changes height.)
 fn scenario_unpinned_holds_to_the_pixel(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -690,10 +690,10 @@ fn scenario_unpinned_holds_to_the_pixel(
     scroll_by(tab, surface, -700);
     scroll_by(tab, surface, -700);
     settle();
-    let held = harness::scroll_top(tab, surface);
+    let (held_key, held_top) = harness::view_anchor(tab, surface);
     assert!(
-        held > 0.0 && !at_tail(tab, surface),
-        "the reader scrolled up ({held}px)"
+        !held_key.is_empty() && !at_tail(tab, surface),
+        "the reader scrolled up (looking at {held_key})"
     );
     let growth = LiveGrowth::start(
         fx.path.clone(),
@@ -705,12 +705,16 @@ fn scenario_unpinned_holds_to_the_pixel(
     let mut worst_at = String::new();
     while t0.elapsed() < Duration::from_secs(26) {
         std::thread::sleep(Duration::from_millis(250));
-        let now = harness::scroll_top(tab, surface);
-        let drift = (now - held).abs();
+        let (key, top) = harness::view_anchor(tab, surface);
+        let drift = if key == held_key {
+            (top - held_top).abs()
+        } else {
+            1e6
+        };
         if drift > worst {
             worst = drift;
             worst_at = format!(
-                "{:.1}s, appended {}",
+                "{:.1}s, appended {}, looking at {key} @ {top:.0}",
                 t0.elapsed().as_secs_f64(),
                 growth.count()
             );
@@ -720,8 +724,7 @@ fn scenario_unpinned_holds_to_the_pixel(
     assert_eq!(appended, 8, "the driver appended the whole script");
     assert!(
         worst <= 4.0,
-        "unpinned: the reader's position moved by {worst:.0}px during growth (at {worst_at}); held {held}px, now {}px",
-        harness::scroll_top(tab, surface)
+        "unpinned: what the reader sees moved during growth (worst {worst:.0}px at {worst_at}); held {held_key} @ {held_top:.0}px"
     );
 }
 
@@ -756,6 +759,8 @@ fn fixture_open_turn(name: &str) -> Fixture {
     }
 }
 
+/// The same rule with the reader INSIDE a long open turn while it grows (the real-transcript
+/// shape, #51): the first visible element keeps its offset through every rewrite of the tail.
 fn scenario_unpinned_inside_an_open_turn_holds_to_the_pixel(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -767,10 +772,10 @@ fn scenario_unpinned_inside_an_open_turn_holds_to_the_pixel(
         scroll_by(tab, surface, -700);
     }
     settle();
-    let held = harness::scroll_top(tab, surface);
+    let (held_key, held_top) = harness::view_anchor(tab, surface);
     assert!(
-        held > 0.0 && !at_tail(tab, surface),
-        "the reader scrolled up inside the open turn ({held}px)"
+        !held_key.is_empty() && !at_tail(tab, surface),
+        "the reader scrolled up inside the open turn (looking at {held_key})"
     );
     let growth = LiveGrowth::start(
         fx.path.clone(),
@@ -782,12 +787,16 @@ fn scenario_unpinned_inside_an_open_turn_holds_to_the_pixel(
     let mut worst_at = String::new();
     while t0.elapsed() < Duration::from_secs(36) {
         std::thread::sleep(Duration::from_millis(250));
-        let now = harness::scroll_top(tab, surface);
-        let drift = (now - held).abs();
+        let (key, top) = harness::view_anchor(tab, surface);
+        let drift = if key == held_key {
+            (top - held_top).abs()
+        } else {
+            1e6
+        };
         if drift > worst {
             worst = drift;
             worst_at = format!(
-                "{:.1}s, appended {}",
+                "{:.1}s, appended {}, looking at {key} @ {top:.0}",
                 t0.elapsed().as_secs_f64(),
                 growth.count()
             );
@@ -797,14 +806,13 @@ fn scenario_unpinned_inside_an_open_turn_holds_to_the_pixel(
     assert_eq!(appended, 12, "the driver appended the whole script");
     assert!(
         worst <= 4.0,
-        "unpinned inside the open turn: the reader's position moved by {worst:.0}px during growth (at {worst_at}); held {held}px, now {}px",
-        harness::scroll_top(tab, surface)
+        "unpinned inside the open turn: what the reader sees moved during growth (worst {worst:.0}px at {worst_at}); held {held_key} @ {held_top:.0}px"
     );
 }
 
 #[test]
 #[ignore = "needs a local Chrome"]
-fn classic_page_holds_to_the_pixel_inside_an_open_turn_known_red_73() {
+fn classic_page_holds_to_the_pixel_inside_an_open_turn() {
     let _serial = serial();
     let fx = fixture_open_turn("scenario-openturn-classic");
     let page = open(Surface::Classic, &fx, 0);
@@ -821,8 +829,8 @@ fn app_shell_holds_to_the_pixel_inside_an_open_turn() {
 }
 
 /// The probe's shape (#51): the reader keeps scrolling back INSIDE the open turn while it grows.
-/// Between two deliberate scrolls the position must not move (±4px); each scroll resets the
-/// expectation.
+/// Between two of the reader's own scrolls, what they see must not move (±4px); each scroll
+/// resets the expectation.
 fn scenario_scrolling_back_during_growth_holds_between_scrolls(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -844,7 +852,7 @@ fn scenario_scrolling_back_during_growth_holds_between_scrolls(
         Duration::from_millis(2600),
     );
     let t0 = std::time::Instant::now();
-    let mut expect = harness::scroll_top(tab, surface);
+    let mut expect = harness::view_anchor(tab, surface);
     let mut worst = 0.0f64;
     let mut worst_at = String::new();
     let mut ticks = 0u32;
@@ -854,17 +862,23 @@ fn scenario_scrolling_back_during_growth_holds_between_scrolls(
         if ticks % 9 == 0 {
             scroll_by(tab, surface, -400);
             std::thread::sleep(Duration::from_millis(150));
-            expect = harness::scroll_top(tab, surface);
+            expect = harness::view_anchor(tab, surface);
             continue;
         }
-        let now = harness::scroll_top(tab, surface);
-        let drift = (now - expect).abs();
+        let (key, top) = harness::view_anchor(tab, surface);
+        let drift = if key == expect.0 {
+            (top - expect.1).abs()
+        } else {
+            1e6
+        };
         if drift > worst {
             worst = drift;
             worst_at = format!(
-                "{:.1}s, appended {}",
+                "{:.1}s, appended {}, looking at {key} @ {top:.0} (expected {} @ {:.0})",
                 t0.elapsed().as_secs_f64(),
-                growth.count()
+                growth.count(),
+                expect.0,
+                expect.1
             );
         }
     }
@@ -872,13 +886,13 @@ fn scenario_scrolling_back_during_growth_holds_between_scrolls(
     assert_eq!(appended, 16, "the driver appended the whole script");
     assert!(
         worst <= 4.0,
-        "between the reader's own scrolls the position moved by {worst:.0}px during growth (at {worst_at})"
+        "between the reader's own scrolls what the reader sees moved during growth (worst {worst:.0}px at {worst_at})"
     );
 }
 
 #[test]
 #[ignore = "needs a local Chrome"]
-fn classic_page_holds_between_scrolls_while_the_open_turn_grows_known_red_73() {
+fn classic_page_holds_between_scrolls_while_the_open_turn_grows() {
     let _serial = serial();
     let fx = fixture_open_turn("scenario-scrollgrow-classic");
     let page = open(Surface::Classic, &fx, 0);
