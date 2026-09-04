@@ -3107,3 +3107,159 @@ fn the_app_shell_agents_pane_switches_to_the_sub_agent() {
     );
     drop(monitor);
 }
+
+/// #63: at a short window with every card open, all four heads stay visible; a head click gives
+/// its card the lion's share of the pane; the chevron still collapses.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_keeps_every_pane_head_in_reach() {
+    let _serial = serial();
+    let base = base("appshell-pane-heads");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000063".to_string();
+    let mut transcript = harness::long_session(40, harness::Shape::default());
+    transcript += &harness::agent_spawn("call_63", "Explore", 47);
+    transcript += &harness::agent_result("call_63", "aExplore-63", "Explore", 47);
+    stores.claude_session(&sid, &transcript);
+    stores.claude_child(
+        &sid,
+        "aExplore-63",
+        &harness::long_session(4, harness::Shape::default()),
+    );
+    let mut tasks: Vec<(String, String, &str)> = Vec::new();
+    for i in 1..=24 {
+        tasks.push((
+            format!("{i}"),
+            format!("task {i}"),
+            if i <= 12 { "completed" } else { "pending" },
+        ));
+    }
+    let borrowed: Vec<(&str, &str, &str)> = tasks
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), *c))
+        .collect();
+    stores.claude_tasks(&sid, &borrowed);
+    let monitor = Monitor::spawn(Kind::V2, 2869, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: Some(0),
+        top: Some(0),
+        width: Some(1400.0),
+        height: Some(620.0),
+    })
+    .unwrap();
+    monitor.pair(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:2869/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length >= 40",
+        "the turns to list",
+        std::time::Duration::from_secs(30),
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+    );
+    // Open every card.
+    harness::eval(&tab, "['tasks', 'agents', 'session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (c && !c.classList.contains('open')) c.querySelector('.outline-card-chevron').click(); }); 'ok'");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('.outline-card.open').length === 4",
+        "all four cards to open",
+        std::time::Duration::from_secs(5),
+        "document.querySelectorAll('.outline-card.open').length",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let heads = r#"(function(){ var pane = document.querySelector('.session-navigator').getBoundingClientRect(); return [...document.querySelectorAll('.outline-card')].map(function (c) { var h = c.querySelector('.outline-card-head').getBoundingClientRect(), b = c.querySelector('.outline-card-body').getBoundingClientRect(); var cs = getComputedStyle(c), ps = getComputedStyle(document.querySelector('.session-navigator')); return { key: c.dataset.navCard, headVisible: h.top >= pane.top - 1 && h.bottom <= pane.bottom + 1, body: Math.round(b.height), focus: c.classList.contains('focus'), flex: cs.flexGrow + '/' + cs.flexShrink + '/' + cs.flexBasis, card: Math.round(c.getBoundingClientRect().height), paneDisplay: ps.display, paneH: Math.round(pane.height), win: window.innerHeight }; }); })()"#;
+    let before = harness::probe(&tab, heads);
+    assert!(
+        before
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["headVisible"] == true),
+        "every head is visible with all four cards open at 620px: {before}"
+    );
+    // With room to share — a taller window — a head click gives its card the lion's share.
+    tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: Some(0),
+        top: Some(0),
+        width: Some(1400.0),
+        height: Some(900.0),
+    })
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-nav-card-toggle=\"tasks\"] strong').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let after = harness::probe(&tab, heads);
+    let body = |v: &serde_json::Value, key: &str| {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["key"] == key)
+            .map(|c| c["body"].as_f64().unwrap_or(0.0))
+            .unwrap_or(0.0)
+    };
+    assert!(
+        after
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["key"] == "tasks" && c["focus"] == true),
+        "the tasks card is the focused one: {after}"
+    );
+    assert!(
+        body(&after, "tasks") >= 2.0 * body(&after, "turns"),
+        "…and it has the lion's share over the turns card: {after}"
+    );
+    assert!(
+        after
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["headVisible"] == true),
+        "every head still visible: {after}"
+    );
+    assert_eq!(
+        after
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["body"].as_f64().unwrap_or(0.0) > 0.0)
+            .count(),
+        4,
+        "every card keeps its floor: {after}"
+    );
+    // The chevron still collapses.
+    harness::eval(&tab, "document.querySelector('[data-nav-card-toggle=\"agents\"] .outline-card-chevron').click(); 'ok'");
+    harness::until(
+        &tab,
+        "!document.querySelector('[data-nav-card=\"agents\"]').classList.contains('open')",
+        "the chevron to collapse the agents card",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('[data-nav-card=\"agents\"]').className",
+    );
+    // Remembered across a reload.
+    tab.navigate_to(&format!("http://127.0.0.1:2869/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length >= 40",
+        "the reloaded shell",
+        std::time::Duration::from_secs(30),
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+    );
+    assert!(
+        harness::probe(&tab, heads)
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["key"] == "tasks" && c["focus"] == true),
+        "the focus is remembered"
+    );
+    drop(monitor);
+}

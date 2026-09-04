@@ -103,7 +103,7 @@
 .workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator{display:flex;flex-direction:column;min-height:0}
 .workspace:not(.navigator-off) .session-navigator>.outline-caption,.workspace:not(.navigator-off) .session-navigator>.outline-rail{flex:0 0 auto}
 .workspace:not(.navigator-off) .session-navigator>.outline-card{flex:0 0 auto;min-height:0;display:flex;flex-direction:column}
-.workspace:not(.navigator-off) .session-navigator>.outline-card.open{flex:1 1 auto;min-height:96px}
+.workspace:not(.navigator-off) .session-navigator>.outline-card.open{flex:1 1 0;min-height:96px}
 .workspace:not(.navigator-off) .session-navigator>.outline-card>.outline-card-head{flex:0 0 auto}
 .workspace:not(.navigator-off) .session-navigator>.outline-card.open>.outline-card-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 .workspace:not(.navigator-off) .session-navigator>.outline-card.open>.outline-card-body>.navigator-list{flex:1 1 auto;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-gutter:stable;scrollbar-color:color-mix(in srgb,var(--sub) 45%,transparent) transparent}
@@ -139,3 +139,10 @@
 .outline-agent-row>.outline-agent{min-width:0}
 .outline-agent-spawn{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;background:transparent;color:var(--faint);cursor:pointer;font-size:13px;line-height:1}
 .outline-agent-spawn:hover,.outline-agent-spawn:focus-visible{color:var(--ink);background:var(--hover);outline:0}
+/* #63: the focused card takes the lion's share of the pane; when even the floors do not fit, the
+   pane scrolls as a whole and every head sticks — to the top for the cards above, to the bottom
+   for the cards below — so each head is always in reach. */
+.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator{overflow-y:auto;scrollbar-width:thin}
+.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-card.open.focus{flex:4 1 0}
+.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-card>.outline-card-head{position:sticky;top:0;bottom:0;z-index:2;background:var(--outline-surface,var(--panel))}
+.outline-card-head .outline-card-chevron,.outline-card-head .outline-card-stat{cursor:pointer}

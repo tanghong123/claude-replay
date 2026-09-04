@@ -750,7 +750,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(css, /\.session-navigator>\.outline-card\.open>\.outline-card-body>\.navigator-list\{flex:1 1 auto;min-height:0;overflow-y:auto;/, "each open card's list scrolls itself");
-  assert.match(css, /\.session-navigator>\.outline-card\.open\{flex:1 1 auto;min-height:96px\}/, "open cards share the pane's height down to a floor");
+  assert.match(css, /\.session-navigator>\.outline-card\.open\{flex:1 1 0;min-height:96px\}/, "open cards share the pane's height down to a floor");
   assert.match(appSource, /function revealInPane\(/, "the focused turn is revealed in the pane");
   assert.match(appSource, /revealInPane\(row\)/, "…through the pane's own scroller, never the window");
   console.log("#58/#59 pane scroller cases passed");
@@ -798,4 +798,18 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /<button class="outline-agent-spawn" type="button" data-agent-record="\$\{target\}"/, "…and the spawn point is a control of its own");
   assert.match(appSource, /const spawn = target == null \? "" : /, "shown only when the record stream kept the spawn point");
   console.log("#61 agents pane cases passed");
+}
+
+// #63: a head click focuses its card (opening it); the chevron and the count still collapse; the
+// focused card takes the lion's share; heads stick when the pane must scroll.
+{
+  assert.match(appSource, /if \(event\.target\.closest\("\.outline-card-chevron, \.outline-card-stat"\)\) \{ uiState\.navCards\.has\(key\) \? uiState\.navCards\.delete\(key\) : uiState\.navCards\.add\(key\); \}/, "the chevron and the count keep the toggle");
+  assert.match(appSource, /else \{ uiState\.navCards\.add\(key\); uiState\.navFocus = key; \}/, "the head focuses and opens");
+  assert.match(appSource, /card\.classList\.toggle\("focus", uiState\.navFocus === card\.dataset\.navCard\)/, "the focus is rendered");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.session-navigator>\.outline-card\.open\.focus\{flex:4 1 0\}/, "the focused card takes the lion's share");
+  assert.match(css, /\.outline-card>\.outline-card-head\{position:sticky;top:0;bottom:0;/, "heads stick at both ends");
+  const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  assert.match(stateSrc, /navFocus: localStorage\.getItem\("am-prod-nav-focus"\) \|\| "turns"/, "remembered per viewer");
+  console.log("#63 pane heads cases passed");
 }
