@@ -458,7 +458,16 @@ function directAgents(source = recordState.meta) {
 function renderNavigator() {
   const turns = recordState.units.filter(unit => unit.type === "user");
   byId("navigatorTurnCount").textContent = turns.length;
-  byId("navigatorTurns").innerHTML = turns.map(unit => `<button class="outline-turn-row" data-turn-record="${unit.from}" title="${escapeText(unit.label)}"><span class="outline-number">${String(unit.turn).padStart(2, "0")} ·</span><span class="outline-label">${escapeText(unit.label)}</span></button>`).join("") || '<div class="activity-empty">No turns</div>';
+  // A compaction is an epoch tick between turns (#69), as the classic sidebar shows it: not a
+  // turn — unnumbered, styled as a seam — so a session that compacted fifteen times reads as
+  // fifteen chapters. The tick jumps to the compaction record like a turn row jumps to its turn.
+  const epochs = [];
+  recordState.records.forEach((record, i) => { if (record.kind === "compaction") epochs.push({ at: i, label: record.head?.summary || "context compacted" }); });
+  const rows = [...turns.map(unit => ({ at: unit.from, unit })), ...epochs].sort((a, b) => a.at - b.at);
+  byId("navigatorTurns").innerHTML = rows.map(r => r.unit
+    ? `<button class="outline-turn-row" data-turn-record="${r.unit.from}" title="${escapeText(r.unit.label)}"><span class="outline-number">${String(r.unit.turn).padStart(2, "0")} ·</span><span class="outline-label">${escapeText(r.unit.label)}</span></button>`
+    : `<button class="outline-epoch" type="button" data-turn-record="${r.at}" title="Jump to the compaction">${escapeText(r.label)}</button>`
+  ).join("") || '<div class="activity-empty">No turns</div>';
   const tasks = recordState.meta?.tasks || [];
   const runningTasks = tasks.filter(task => taskStatus(task.status) === "in_progress").length;
   const doneTasks = tasks.filter(task => taskStatus(task.status) === "completed").length;
@@ -492,6 +501,10 @@ function renderNavigator() {
   byId("navigatorToggle").classList.toggle("active", uiState.navigatorOpen);
 }
 const outlineSummary = (active, done, total) => !total ? "0" : `${active ? `<span class="outline-stat-item active"><i class="outline-stat-dot"></i>${active} active</span>` : ""}<span class="outline-stat-item done"><i class="outline-stat-dot"></i>${done}/${total} done</span>`;
+// The info pane (#67, #68): only what the shell does not already show — the title, the agent and
+// the project are in the header and the tree row, so the Session group carries status and
+// counts; the Usage group has the cached-read tokens and, when the session compacted, the
+// classic panel's summary ("24× compacted, 4.0M dropped" — a real fact even at zero tokens).
 function renderSessionInfo(turns, agents) {
   const row = selectedRow(), meta = recordState.meta || {}, usage = meta.usage || {};
   if (!row) {
@@ -505,7 +518,7 @@ function renderSessionInfo(turns, agents) {
   if (row.cost != null && row.costSubs) { const own = Number(row.cost) - Number(row.costSubs); summary.textContent = `~$${own.toFixed(2)} + $${Number(row.costSubs).toFixed(2)} sub-agents`; summary.title = `total ~$${Number(row.cost).toFixed(2)} = this session $${own.toFixed(2)} + sub-agents $${Number(row.costSubs).toFixed(2)}`; }
   else { summary.textContent = row.cost != null ? `~$${Number(row.cost).toFixed(2)}` : usage.cost || "—"; summary.title = ""; }
   const group = (label, rows) => `<div class="session-info-group"><div class="session-info-label">${label}</div>${rows.map(([key, value]) => `<div class="session-info-row"><span>${escapeText(key)}</span><strong>${escapeText(value ?? "—")}</strong></div>`).join("")}</div>`;
-  byId("navigatorSession").innerHTML = `<div class="session-info">${group("Session", [["title", row.name || row.id], ["agent", agentName(row.agent)], ["project", row._group?.label], ["status", displayState(row).label], ["turns", turns], ["children", agents]])}${group("Usage", [["model", usage.model], ["input", usage.input || usage.input_tokens], ["output", usage.output || usage.output_tokens], ["est. cost", usage.cost || (row.cost != null ? `~$${Number(row.cost).toFixed(2)}` : "—")]])}${group("Runtime", [["cwd", meta.cwd || row._group?.secondary], ...runtimeRows(usage.runtime).filter(r => r.state !== "absent" || RUNTIME_ALWAYS.includes(r.key)).map(r => [r.label, runtimeText(r, agentName(row.agent))])])}</div>`;
+  byId("navigatorSession").innerHTML = `<div class="session-info">${group("Session", [["status", displayState(row).label], ["turns", turns], ["children", agents]])}${group("Usage", [["model", usage.model], ["input", usage.input || usage.input_tokens], ["output", usage.output || usage.output_tokens], ["cache read", usage.cache_read], ...(usage.compacted ? [["compacted", usage.compacted]] : []), ["est. cost", usage.cost || (row.cost != null ? `~$${Number(row.cost).toFixed(2)}` : "—")]])}${group("Runtime", [["cwd", meta.cwd || row._group?.secondary], ...runtimeRows(usage.runtime).filter(r => r.state !== "absent" || RUNTIME_ALWAYS.includes(r.key)).map(r => [r.label, runtimeText(r, agentName(row.agent))])])}</div>`;
 }
 
 byId("sessionNavigator").onclick = event => {

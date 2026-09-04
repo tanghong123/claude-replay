@@ -146,3 +146,8 @@
 .workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-card.open.focus{flex:4 1 0}
 .workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-card>.outline-card-head{position:sticky;top:0;bottom:0;z-index:2;background:var(--outline-surface,var(--panel))}
 .outline-card-head .outline-card-chevron,.outline-card-head .outline-card-stat{cursor:pointer}
+/* #69: a compaction epoch tick in the turns pane — a seam between chapters, not a numbered turn. */
+.outline-epoch{display:flex;align-items:center;gap:8px;width:100%;margin:4px 0;padding:3px 8px;background:transparent;color:var(--faint);font:500 11px/1.3 var(--mono);letter-spacing:.02em;text-align:left;cursor:pointer;border-radius:6px}
+.outline-epoch::before,.outline-epoch::after{content:"";flex:1 1 auto;height:1px;background:color-mix(in srgb,var(--line) 85%,transparent)}
+.outline-epoch::before{flex:0 0 10px}
+.outline-epoch:hover,.outline-epoch:focus-visible{color:var(--sub);background:var(--hover);outline:0}

@@ -813,3 +813,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(stateSrc, /navFocus: localStorage\.getItem\("am-prod-nav-focus"\) \|\| "turns"/, "remembered per viewer");
   console.log("#63 pane heads cases passed");
 }
+
+// #67 / #68 / #69: the info pane shows only what the shell does not, with the cached-read and
+// compaction facts; the turns pane shows compactions as epoch ticks.
+{
+  assert.match(appSource, /group\("Session", \[\["status", displayState\(row\)\.label\], \["turns", turns\], \["children", agents\]\]\)/, "no title / agent / project rows — the header and the tree row show them");
+  assert.match(appSource, /\["cache read", usage\.cache_read\], \.\.\.\(usage\.compacted \? \[\["compacted", usage\.compacted\]\] : \[\]\)/, "cached-read tokens and the compaction summary, when there is one");
+  assert.match(appSource, /if \(record\.kind === "compaction"\) epochs\.push\(\{ at: i, label: record\.head\?\.summary \|\| "context compacted" \}\)/, "a compaction becomes an epoch tick with the classic wording");
+  assert.match(appSource, /<button class="outline-epoch" type="button" data-turn-record="\$\{r\.at\}"/, "…that jumps to the compaction record");
+  console.log("#67/#68/#69 info and turns pane cases passed");
+}

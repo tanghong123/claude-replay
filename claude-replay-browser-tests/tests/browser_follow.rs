@@ -3263,3 +3263,117 @@ fn the_app_shell_keeps_every_pane_head_in_reach() {
     );
     drop(monitor);
 }
+
+/// #67 / #68 / #69: the info pane carries status, counts, tokens with the cached reads and the
+/// compaction summary — and none of the title / agent / project the header already shows; the
+/// turns pane shows the compaction as an epoch tick between the tenth and eleventh turns.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_info_and_turns_panes_show_the_compaction() {
+    let _serial = serial();
+    let base = base("appshell-compaction-panes");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000069".to_string();
+    let mut transcript = String::new();
+    for i in 0..10u64 {
+        transcript += &harness::user_at(
+            &format!("question {i}: before the compaction"),
+            &harness::now_minus(600 - i * 20),
+        );
+        transcript += &harness::assistant_at(
+            &format!("answer {i}: before"),
+            &harness::now_minus(590 - i * 20),
+        );
+    }
+    transcript += &harness::compaction_at(&harness::now_minus(395));
+    for i in 10..20u64 {
+        transcript += &harness::user_at(
+            &format!("question {i}: after the compaction"),
+            &harness::now_minus(600 - i * 20),
+        );
+        transcript += &harness::assistant_at(
+            &format!("answer {i}: after"),
+            &harness::now_minus(590 - i * 20),
+        );
+    }
+    stores.claude_session(&sid, &transcript);
+    let monitor = Monitor::spawn(Kind::V2, 2868, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:2868/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length === 20",
+        "the turns to list",
+        std::time::Duration::from_secs(30),
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+    );
+    let turns = harness::probe(&tab, "(function(){ var rows = [...document.querySelectorAll('#navigatorTurns > *')]; return { kinds: rows.map(function (r) { return r.classList.contains('outline-epoch') ? 'epoch' : 'turn'; }), epochText: (document.querySelector('#navigatorTurns .outline-epoch') || {}).textContent || null }; })()");
+    let kinds: Vec<String> = turns["kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds.len(), 21, "twenty turns and one tick: {turns}");
+    assert_eq!(
+        kinds.iter().position(|k| k == "epoch"),
+        Some(10),
+        "the tick sits between the tenth and the eleventh turn: {turns}"
+    );
+    assert!(
+        !turns["epochText"].as_str().unwrap_or("").is_empty(),
+        "the tick has its label: {turns}"
+    );
+    // The info pane: open its card and read the rows.
+    harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"session\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"session\"]').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorSession .session-info-row').length > 0",
+        "the info pane to render",
+        std::time::Duration::from_secs(10),
+        "document.getElementById('navigatorSession').innerText.slice(0, 200)",
+    );
+    let info = harness::probe(&tab, "(function(){ var rows = {}; document.querySelectorAll('#navigatorSession .session-info-row').forEach(function (r) { rows[r.querySelector('span').textContent] = r.querySelector('strong').textContent; }); return rows; })()");
+    for gone in ["title", "agent", "project"] {
+        assert!(
+            info.get(gone).is_none(),
+            "the {gone} row is gone — the header shows it: {info}"
+        );
+    }
+    assert!(
+        info.get("status").is_some() && info.get("turns").is_some(),
+        "status and counts stay: {info}"
+    );
+    assert!(
+        info.get("cache read").is_some(),
+        "the cached-read row is there: {info}"
+    );
+    let compacted = info.get("compacted").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        compacted.contains("compacted"),
+        "the compaction summary reads as the classic panel's: {info}"
+    );
+    // The tick jumps to the compaction record: the transcript leaves the tail.
+    harness::jump_to_end(&tab, harness::Surface::AppShell);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let at_tail = harness::eval(&tab, "document.querySelector('.transcript').scrollTop");
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorTurns .outline-epoch').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        &format!(
+            "document.querySelector('.transcript').scrollTop < {} - 200",
+            at_tail.as_f64().unwrap_or(0.0)
+        ),
+        "the tick to jump the transcript",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('.transcript').scrollTop",
+    );
+    drop(monitor);
+}

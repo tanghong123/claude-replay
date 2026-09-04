@@ -106,6 +106,10 @@ pub fn user_at(t: &str, ts: &str) -> String {
 pub fn queued_at(t: &str, ts: &str) -> String {
     format!("{{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"{ts}\",\"content\":\"{t}\"}}\n")
 }
+/// A context compaction (Claude's `system` / `compact_boundary` record), as the client writes it.
+pub fn compaction_at(ts: &str) -> String {
+    format!("{{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"timestamp\":\"{ts}\",\"content\":\"Conversation compacted\",\"compactMetadata\":{{\"trigger\":\"auto\",\"preTokens\":594718,\"postTokens\":8617}}}}\n")
+}
 pub fn assistant_at(t: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}],\"usage\":{{\"input_tokens\":10,\"output_tokens\":20}}}},\"timestamp\":\"{ts}\"}}\n"
