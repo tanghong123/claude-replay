@@ -478,6 +478,7 @@ function renderNavigator() {
   renderSessionInfo(turns.length, agents.length);
   document.querySelectorAll("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   document.querySelector(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
+  document.querySelector(".workspace").classList.toggle("navigator-hidden", uiState.navigatorHidden);
   byId("navigatorToggle").classList.toggle("active", uiState.navigatorOpen);
 }
 const outlineSummary = (active, done, total) => !total ? "0" : `${active ? `<span class="outline-stat-item active"><i class="outline-stat-dot"></i>${active} active</span>` : ""}<span class="outline-stat-item done"><i class="outline-stat-dot"></i>${done}/${total} done</span>`;
@@ -672,9 +673,25 @@ byId("sidebarCollapse").onclick = () => toggleSidebar(false); byId("sidebarMiniE
 byId("sidebarMiniWrite").onclick = () => byId("writeSwitch").click();
 byId("sidebarCollapse").title = `Collapse the sidebar into its icon rail  ( ${hintFor("sidebar-toggle")} )`;
 byId("sidebarMiniExpand").title = `Expand the sidebar  ( ${hintFor("sidebar-toggle")} )`;
-byId("navigatorToggle").onclick = () => { uiState.navigatorOpen = !uiState.navigatorOpen; persist(); renderNavigator(); viewport.remeasure(); };
-byId("navigatorClose").onclick = () => { uiState.navigatorOpen = false; persist(); renderNavigator(); viewport.remeasure(); };
-byId("navigatorRailExpand").onclick = () => { uiState.navigatorOpen = true; persist(); renderNavigator(); viewport.remeasure(); };
+// The outline pane has three states (#55): open, collapsed to its icon rail ("off"), and
+// HIDDEN — gone altogether, the transcript taking the whole remaining width. The header's
+// toggle walks open ↔ rail as before and brings a hidden pane back; `o` and the rail's own
+// button hide it. Each change re-measures the transcript at its new width holding the unit at
+// the top of the view, so the reader's place does not move with the reflow.
+function toggleNavigator(open) { uiState.navigatorOpen = open; if (open) uiState.navigatorHidden = false; persist(); renderNavigator(); viewport.remeasure(); }
+function setNavigatorHidden(hidden) { uiState.navigatorHidden = hidden; persist(); renderNavigator(); viewport.remeasure(); }
+byId("navigatorToggle").onclick = () => (uiState.navigatorHidden ? setNavigatorHidden(false) : toggleNavigator(!uiState.navigatorOpen));
+const navigatorRailHide = document.createElement("button");
+navigatorRailHide.type = "button";
+navigatorRailHide.id = "navigatorRailHide";
+navigatorRailHide.title = `Hide the outline — the transcript takes the whole width  ( ${hintFor("navigator-toggle")} )`;
+navigatorRailHide.setAttribute("aria-label", navigatorRailHide.title);
+navigatorRailHide.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+byId("navigatorRailExpand").insertAdjacentElement("afterend", navigatorRailHide);
+navigatorRailHide.onclick = () => setNavigatorHidden(true);
+byId("navigatorClose").onclick = () => toggleNavigator(false);
+byId("navigatorRailExpand").onclick = () => toggleNavigator(true);
+byId("navigatorToggle").title = `Show, collapse or bring back the outline  ( ${hintFor("navigator-toggle")} hides it )`;
 byId("sessionFoldAll").onclick = () => { const close = recordState.units.some(unit => unit.type === "process" && !recordState.processFolds.get(unit.key)); for (const unit of recordState.units) if (unit.type === "process") recordState.processFolds.set(unit.key, close); viewport.render(); };
 byId("collapseBtn").onclick = () => { for (const agent of groupedSessions()) { indexState.collapsed.add(`a:${agent.id}`); for (const project of agent.projects) indexState.collapsed.add(`p:${project.id}`); } persist(); renderTree(); };
 byId("mobileBack").onclick = () => app.classList.remove("mobile-detail");
@@ -759,7 +776,8 @@ const keyActions = {
   "size-down": () => setReading({ size: uiState.reading.size - SIZE_STEP }), "size-up": () => setReading({ size: uiState.reading.size + SIZE_STEP }),
   "page-down": () => pageTranscript(1), "page-up": () => pageTranscript(-1),
   "list-next": () => stepList(1), "list-prev": () => stepList(-1),
-  "sidebar-toggle": () => toggleSidebar(!indexState.sidebarOpen)
+  "sidebar-toggle": () => toggleSidebar(!indexState.sidebarOpen),
+  "navigator-toggle": () => setNavigatorHidden(!uiState.navigatorHidden)
 };
 bindKeymap(document, target => (target?.closest?.(".tree-row") ? "list" : "view"), action => keyActions[action]?.());
 // Discoverability in the shell's idiom: the key in the control's own title / hint.

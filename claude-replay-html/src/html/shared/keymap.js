@@ -30,6 +30,9 @@ const KEYMAP = Object.freeze([
   // The sidebar's collapse into its icon rail, and back (#54) — from anywhere, since the rail
   // is what a reader reaches for when the list is in the way. Pages without a rail ignore it.
   { key: "\\", when: "any", action: "sidebar-toggle", hint: "\\" },
+  // The outline (navigator) pane beside the transcript, hidden and back (#55): with the
+  // sidebar on its rail, the transcript then has the whole window.
+  { key: "o", when: "any", action: "navigator-toggle", hint: "o" },
 ]);
 
 const isEditable = target => !!target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName || "") || target.isContentEditable === true);

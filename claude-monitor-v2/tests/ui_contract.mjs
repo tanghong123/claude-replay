@@ -706,3 +706,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /hintFor\("sidebar-toggle"\)/, "the key is discoverable on the control");
   console.log("#54 sidebar rail cases passed");
 }
+
+// #55: the outline pane's third state — hidden outright by key from anywhere, the transcript
+// taking the whole remaining width; the header's toggle brings it back.
+{
+  const ev = (key, extra = {}) => ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...extra });
+  assert.equal(resolveKey(ev("o"), "view").action, "navigator-toggle");
+  assert.equal(resolveKey(ev("o"), "list").action, "navigator-toggle", "from the list too");
+  assert.equal(resolveKey(ev("o"), "view", { tagName: "TEXTAREA" }), null, "never while typing");
+  assert.match(appSource, /"navigator-toggle": \(\) => setNavigatorHidden\(!uiState\.navigatorHidden\)/, "the key hides and shows");
+  assert.match(appSource, /function setNavigatorHidden\(hidden\) \{ uiState\.navigatorHidden = hidden; persist\(\); renderNavigator\(\); viewport\.remeasure\(\); \}/, "one path, remembered, re-measured");
+  assert.match(appSource, /uiState\.navigatorHidden \? setNavigatorHidden\(false\) : toggleNavigator\(!uiState\.navigatorOpen\)/, "the header's toggle brings a hidden pane back");
+  assert.match(appSource, /if \(open\) uiState\.navigatorHidden = false;/, "opening the pane un-hides it");
+  assert.match(appSource, /hintFor\("navigator-toggle"\)/, "the key is discoverable on the controls");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.workspace\.navigator-hidden \.session-main\{grid-template-columns:0 minmax\(0,1fr\)\}/, "hidden: the transcript has the whole width");
+  assert.match(css, /\.workspace\.navigator-hidden \.session-navigator\{display:none\}/, "…and no rail remains");
+  const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  assert.match(stateSrc, /navigatorHidden: localStorage\.getItem\("am-prod-navigator-hidden"\) === "1"/, "remembered per viewer");
+  console.log("#55 outline pane cases passed");
+}

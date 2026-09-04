@@ -2451,3 +2451,147 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
     );
     drop(monitor);
 }
+
+/// #55: the outline pane hides OUTRIGHT — not to its icon rail — and the transcript takes the
+/// whole remaining width, with the reader's view held through the reflow; the choice survives a
+/// reload; the key brings the pane back at its width.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_gives_the_transcript_the_whole_width() {
+    let _serial = serial();
+    let base = base("appshell-whole-width");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000055".to_string();
+    stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2844, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    let url = format!("http://127.0.0.1:2844/?ui=app&session={sid}");
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3";
+    harness::until(
+        &tab,
+        mounted,
+        "the app shell to mount the fixture",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let hidden = "document.querySelector('.workspace').classList.contains('navigator-hidden')";
+    assert_eq!(
+        harness::eval(&tab, hidden),
+        false,
+        "a fresh shell opens with the outline pane shown"
+    );
+    let widths = "(function(){ var t = document.querySelector('.transcript').getBoundingClientRect(), m = document.querySelector('.session-main').getBoundingClientRect(), n = document.querySelector('.session-navigator'); var nr = n.getBoundingClientRect(); return { transcript: Math.round(t.width), main: Math.round(m.width), navigator: getComputedStyle(n).display === 'none' ? 0 : Math.round(nr.width) }; })()";
+    let before = harness::probe(&tab, widths);
+    assert!(
+        before["navigator"].as_f64().unwrap_or(0.0) > 150.0,
+        "the pane has its width to begin with: {before}"
+    );
+    // Read from the middle of the session, so the anchor is a real unit and not the tail.
+    harness::scroll_by(&tab, harness::Surface::AppShell, -2400);
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let anchor_before = harness::view_anchor(&tab, harness::Surface::AppShell);
+    let press = "document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', bubbles: true, cancelable: true })); 'ok'";
+    harness::eval(&tab, press);
+    harness::until(
+        &tab,
+        hidden,
+        "the key to hide the outline pane",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('.workspace').className",
+    );
+    harness::until(&tab, "Math.abs(document.querySelector('.transcript').getBoundingClientRect().width - document.querySelector('.session-main').getBoundingClientRect().width) <= 2", "the transcript to take the whole width", std::time::Duration::from_secs(5), widths);
+    let after = harness::probe(&tab, widths);
+    assert_eq!(after["navigator"], 0, "no rail remains: {after}");
+    assert!(
+        after["transcript"].as_f64().unwrap() > before["transcript"].as_f64().unwrap() + 100.0,
+        "the transcript grew by the pane's width: {before} → {after}"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let anchor_after = harness::view_anchor(&tab, harness::Surface::AppShell);
+    assert_eq!(
+        anchor_after.0, anchor_before.0,
+        "the unit at the top of the view is the same one through the reflow"
+    );
+    assert!(
+        (anchor_after.1 - anchor_before.1).abs() <= 24.0,
+        "…at its place (±24px): {} → {}",
+        anchor_before.1,
+        anchor_after.1
+    );
+    // The choice survives a reload.
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        mounted,
+        "the reloaded shell to mount",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    assert_eq!(
+        harness::eval(&tab, hidden),
+        true,
+        "the hidden pane is remembered across a reload"
+    );
+    assert_eq!(
+        harness::probe(&tab, widths)["navigator"],
+        0,
+        "…with no rail"
+    );
+    // The key brings the pane back at its width.
+    harness::eval(&tab, press);
+    harness::until(
+        &tab,
+        &format!("!({hidden})"),
+        "the key to show the pane again",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('.workspace').className",
+    );
+    harness::until(
+        &tab,
+        "document.querySelector('.session-navigator').getBoundingClientRect().width > 150",
+        "the pane back at its width",
+        std::time::Duration::from_secs(5),
+        widths,
+    );
+    // The rail's own hide button hides it too.
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorClose').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.querySelector('.workspace').classList.contains('navigator-off')",
+        "the pane to collapse to its rail",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('.workspace').className",
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorRailHide').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        hidden,
+        "the rail's hide button",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('.workspace').className",
+    );
+    // And the header's toggle brings a hidden pane back.
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorToggle').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        &format!("!({hidden})"),
+        "the header's toggle to bring the pane back",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('.workspace').className",
+    );
+    drop(monitor);
+}

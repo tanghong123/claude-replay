@@ -30,6 +30,7 @@ export const recordState = {
 export const uiState = {
   preview: false, previewTabs: [], previewId: null,
   navigatorOpen: localStorage.getItem("am-demo-navigator") !== "0",
+  navigatorHidden: localStorage.getItem("am-prod-navigator-hidden") === "1",
   navCards: new Set(json("am-prod-nav-cards", ["turns"])),
   searchTab: "all", searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), toolFilters: new Set(),
   globalResults: [], globalIndex: 0,
@@ -51,6 +52,7 @@ export function persist() {
   localStorage.setItem("am-prod-expanded-projects", JSON.stringify([...indexState.expandedProjects]));
   localStorage.setItem("am-demo-sidebar", indexState.sidebarOpen ? "1" : "0");
   localStorage.setItem("am-demo-navigator", uiState.navigatorOpen ? "1" : "0");
+  localStorage.setItem("am-prod-navigator-hidden", uiState.navigatorHidden ? "1" : "0");
   localStorage.setItem("am-prod-nav-cards", JSON.stringify([...uiState.navCards]));
   localStorage.setItem("am-prod-read", JSON.stringify(indexState.read));
   if (uiState.readingChosen) localStorage.setItem(READING_KEY, JSON.stringify(uiState.reading));

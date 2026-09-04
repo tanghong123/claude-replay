@@ -86,3 +86,6 @@
 /* #50: the session id chip in the header — the classic page's #sid in this shell's idiom. */
 .session-heading>.session-id{font:500 11.5px/1 var(--mono);letter-spacing:.01em;color:var(--sub);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:4px 9px;margin:0 2px 0 8px;cursor:pointer;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis}
 .session-heading>.session-id:hover,.session-heading>.session-id:focus-visible{color:var(--ink);border-color:var(--sub);outline:0}
+/* #55: the outline pane hidden outright — no rail — so the transcript has the whole remaining width. */
+.workspace.navigator-hidden .session-main{grid-template-columns:0 minmax(0,1fr)}
+.workspace.navigator-hidden .session-navigator{display:none}
