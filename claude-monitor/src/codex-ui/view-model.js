@@ -1,9 +1,12 @@
 // Row caps are the shared module's (html/shared/parts.js, #108): the split, the label, the row
 // markup and the expansion memory — one implementation with the classic page.
 import { capSplit, capLabel, preLines, toLineOf, numRowsHtml, diffRowsHtml, capOpenHas } from "./shared/parts.js";
+import { recordText, stripTags } from "./shared/search.js";
 
 export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
-export const plainText = record => JSON.stringify(record).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+// A record's searchable text is what a reader can see of it (#111, shared/search.js): heads and
+// body parts, nested records included — not its JSON, whose field names matched every record.
+export const plainText = record => recordText(record, stripTags).replace(/\s+/g, " ").trim();
 
 /** The user-turn index the reader is AT: the last user turn at or before the unit `atKey`
  *  (the unit at the viewport top), or -1 when none is. DOM-free — the outline's focus (#52)

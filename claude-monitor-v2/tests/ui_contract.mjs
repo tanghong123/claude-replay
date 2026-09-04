@@ -8,6 +8,7 @@ import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../c
 import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-html/src/html/shared/runtime.js";
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
+import { recordText, stripTags, countOcc, wholeAt, directMask, CLASS_BIT } from "../../claude-monitor/src/codex-ui/shared/search.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
@@ -996,4 +997,20 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(css, /\.filter-hidden\{display:none!important\}/, "hidden is hidden");
   console.log("#110 tool filter cases passed");
+}
+
+// #111: the haystack is the record's text, shared; every hit in the window is marked.
+{
+  const record = { kind: "assistant", id: "b1", head: { name: "Bash", target: "echo hi" }, body: [{ p: "md", h: "<p>the <b>needle</b> &amp; more</p>" }, { p: "blocks", items: [{ kind: "bash", head: {}, body: [{ p: "pre", x: "needle in output" }] }] }] };
+  assert.equal(recordText(record, stripTags).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").trim(), "Bash\necho hi\nthe needle & more\nneedle in output", "heads, stripped markdown and nested parts; never JSON field names");
+  assert.equal(countOcc(recordText(record, stripTags).toLowerCase(), "needle", false), 2);
+  assert.equal(countOcc("needles needle", "needle", true), 1, "whole words");
+  assert.ok(wholeAt("a needle b", 2, 6) && !wholeAt("needles", 0, 6));
+  assert.equal(directMask("bash"), CLASS_BIT.o | CLASS_BIT.b);
+  const vm = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
+  assert.match(vm, /export const plainText = record => recordText\(record, stripTags\)/, "the app shell searches the record's text");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /if \(!Number\.isInteger\(index\) \|\| !matched\.has\(index\) \|\| root\.parentElement\?\.closest\("\[data-block-index\]"\)\) continue;/, "every matched top-level record in the window is marked");
+  assert.match(app, /mark\.className = "search-mark" \+ \(first \? " current" : ""\);/, "…the current record's first mark stronger");
+  console.log("#111 search haystack cases passed");
 }

@@ -1825,3 +1825,104 @@ fn filter_fixture(name: &str) -> Fixture {
         turns: 13,
     }
 }
+
+// ── scenario: every hit in the window is marked; a JSON field name finds nothing (#111) ────
+
+/// Rows 5.3 and 5.4 of design/rendering-parity-audit.md. Searching a word present in a prompt
+/// and twice in the answer marks all three on screen, one of them current after a step; a query
+/// that is only a JSON field name of the records matches nothing on either page.
+fn scenario_every_hit_marked_and_text_haystack(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (type_query, next, marks, current) = match surface {
+        Surface::Classic => (
+            "(function(q){ var i = document.getElementById('q'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(){ var b = document.getElementById('qnext'); if (b) { b.click(); return 'next'; } var i = document.getElementById('q'); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return 'enter'; })()",
+            "document.querySelectorAll('#stream mark.hl').length",
+            "document.querySelectorAll('#stream mark.hl.cur').length",
+        ),
+        Surface::AppShell => (
+            "(function(q){ var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(){ document.getElementById('findNext').click(); return 'next'; })()",
+            "document.querySelectorAll('.virtual-window mark.search-mark').length",
+            "document.querySelectorAll('.virtual-window mark.search-mark.current').length",
+        ),
+    };
+    eval(tab, &format!("{type_query}('needle')"));
+    settle();
+    settle();
+    let n = eval(tab, marks).as_i64().unwrap_or(0);
+    assert!(
+        n >= 3,
+        "every occurrence on screen is marked (prompt + twice in the answer): {n}"
+    );
+    eval(tab, next);
+    settle();
+    assert_eq!(
+        eval(tab, current),
+        1,
+        "after a step exactly one mark is the current one"
+    );
+    assert!(
+        eval(tab, marks).as_i64().unwrap_or(0) >= 3,
+        "…and the others stay marked"
+    );
+    // A JSON field name every record carries ("label", "kind") is not text a reader can see: no
+    // marks, and the count says none.
+    let count = match surface {
+        Surface::Classic => "(function(){ var c = document.getElementById('qcount'); return c ? c.textContent.trim() : ''; })()",
+        Surface::AppShell => "document.getElementById('transcriptSearchCount').textContent.trim()",
+    };
+    for field in ["label", "kind"] {
+        eval(tab, &format!("{type_query}('{field}')"));
+        settle();
+        settle();
+        assert_eq!(eval(tab, marks), 0, "the field name {field} marks nothing");
+        let c = eval(tab, count).as_str().unwrap_or("").to_string();
+        assert!(
+            c.is_empty() || c.starts_with('0'),
+            "…and the count says none for {field}: {c:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_marks_every_hit_and_searches_text() {
+    let _serial = serial();
+    let fx = search_fixture("scenario-search-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_every_hit_marked_and_text_haystack(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_marks_every_hit_and_searches_text() {
+    let _serial = serial();
+    let fx = search_fixture("scenario-search-app");
+    let page = open(Surface::AppShell, &fx, 2885);
+    scenario_every_hit_marked_and_text_haystack(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Twelve turns, then a prompt with the word once and an answer with it twice.
+fn search_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("question search: find the needle here", &now_minus(40));
+    transcript += &assistant_at(
+        "answer search: the needle and the needle again",
+        &now_minus(30),
+    );
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}

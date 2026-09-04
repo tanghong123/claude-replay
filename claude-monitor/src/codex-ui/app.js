@@ -556,12 +556,29 @@ function updateSearch(reset) {
 function stepSearch(delta) { if (!recordState.matches.length) return; recordState.match = (recordState.match + delta + recordState.matches.length) % recordState.matches.length; viewport.jumpToRecord(recordState.matches[recordState.match], "search"); markSearch(); }
 function markSearch() {
   viewport.window.querySelectorAll("mark.search-mark").forEach(mark => mark.replaceWith(mark.textContent));
+  viewport.window.normalize();
   if (!recordState.search) return;
-  const current = recordState.matches[recordState.match];
-  const root = viewport.window.querySelector(`[data-block-index="${current}"]`); if (!root) return;
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const texts = [];
-  while (walker.nextNode()) if (walker.currentNode.parentElement && !["SCRIPT", "STYLE", "MARK"].includes(walker.currentNode.parentElement.tagName) && walker.currentNode.nodeValue.toLowerCase().includes(recordState.search)) texts.push(walker.currentNode);
-  for (const text of texts) { const value = text.nodeValue, at = value.toLowerCase().indexOf(recordState.search); if (at < 0) continue; const mark = document.createElement("mark"); mark.className = "search-mark"; mark.textContent = value.slice(at, at + recordState.search.length); text.replaceWith(value.slice(0, at), mark, value.slice(at + recordState.search.length)); }
+  // Every hit in the mounted window is marked, the current record's first one stronger (#111,
+  // the classic page's rule): a reader sees how many hits a screen holds, not one at a time.
+  const needle = recordState.search, matched = new Set(recordState.matches), current = recordState.matches[recordState.match];
+  for (const root of viewport.window.querySelectorAll("[data-block-index]")) {
+    const index = Number(root.dataset.blockIndex);
+    if (!Number.isInteger(index) || !matched.has(index) || root.parentElement?.closest("[data-block-index]")) continue;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const texts = [];
+    while (walker.nextNode()) if (walker.currentNode.parentElement && !["SCRIPT", "STYLE", "MARK"].includes(walker.currentNode.parentElement.tagName) && walker.currentNode.nodeValue.toLowerCase().includes(needle)) texts.push(walker.currentNode);
+    let first = index === current;
+    for (const text of texts) {
+      const value = text.nodeValue, lower = value.toLowerCase(), frag = document.createDocumentFragment();
+      let at = 0, from = 0;
+      while ((at = lower.indexOf(needle, from)) !== -1) {
+        if (at > from) frag.appendChild(document.createTextNode(value.slice(from, at)));
+        const mark = document.createElement("mark"); mark.className = "search-mark" + (first ? " current" : ""); mark.textContent = value.slice(at, at + needle.length); frag.appendChild(mark);
+        first = false; from = at + needle.length;
+      }
+      if (from < value.length) frag.appendChild(document.createTextNode(value.slice(from)));
+      text.replaceWith(frag);
+    }
+  }
 }
 byId("transcriptSearchInput").oninput = () => updateSearch(true); byId("findNext").onclick = () => stepSearch(1); byId("findPrev").onclick = () => stepSearch(-1);
 

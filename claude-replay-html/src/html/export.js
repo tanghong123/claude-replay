@@ -2946,31 +2946,12 @@
     stripDiv.textContent = "";
     return t;
   }
-  function ownTextParts(b) {
-    var parts = [], h = b.head || {};
-    ["summary", "badge", "preview", "name", "target", "att_name"].forEach(function (k) {
-      if (h[k]) parts.push(String(h[k]));
-    });
-    (b.body || []).forEach(function (p) {
-      if (p.p === "md" || p.p === "think") parts.push(stripHtml(p.h));
-      else if (p.p === "pre" || p.p === "note") parts.push(String(p.x));
-      else if (p.p === "num") p.rows.forEach(function (r) { parts.push(stripHtml(String(r[1]))); });
-      else if (p.p === "diff") p.rows.forEach(function (r) { parts.push(String(r[2])); });
-    });
-    return parts;
-  }
-  var CLASS_BIT = { u: 1, a: 2, t: 4, o: 8, b: 16, r: 32, e: 64 };
-  function directMask(k) {
-    if (k === "user" || k === "command") return CLASS_BIT.u;
-    if (k === "assistant") return CLASS_BIT.a;
-    if (k === "think" || k === "act") return CLASS_BIT.t;
-    if (!/^(bash|edit|write|read|skill|tool)$/.test(k)) return 0;
-    var mask = CLASS_BIT.o;
-    if (k === "bash") mask |= CLASS_BIT.b;
-    if (k === "read") mask |= CLASS_BIT.r;
-    if (k === "edit" || k === "write") mask |= CLASS_BIT.e;
-    return mask;
-  }
+  // The haystack and the scope classes are the shared module's (html/shared/search.js, #111):
+  // one definition of "a record's text" with the app shell. This page strips HTML with a
+  // scratch element (`stripHtml`), and hands it to the module.
+  function ownTextParts(b) { return shared.ownTextParts(b, stripHtml); }
+  var CLASS_BIT = shared.CLASS_BIT;
+  var directMask = shared.directMask;
   function scopeMask(set) {
     var mask = 0;
     scopeLetters(set).forEach(function (k) { mask |= CLASS_BIT[k]; });
@@ -3009,19 +2990,8 @@
     });
     return n;
   }
-  var WORD_LEFT = /[\p{L}\p{N}\p{M}_]$/u;
-  var WORD_RIGHT = /^[\p{L}\p{N}\p{M}_]/u;
-  function wholeAt(t, start, len) {
-    return !WORD_LEFT.test(t.slice(0, start)) && !WORD_RIGHT.test(t.slice(start + len));
-  }
-  function countOcc(t, lc, whole) {
-    var n = 0, i = 0;
-    while ((i = t.indexOf(lc, i)) !== -1) {
-      if (!whole || wholeAt(t, i, lc.length)) n++;
-      i += lc.length;
-    }
-    return n;
-  }
+  var wholeAt = shared.wholeAt;
+  var countOcc = shared.countOcc;
   function kindInScope(k, set) {
     var wanted = scopeMask(set);
     return !wanted || !!(directMask(k) & wanted);

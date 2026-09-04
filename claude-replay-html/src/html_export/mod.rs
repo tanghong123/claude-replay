@@ -3245,6 +3245,19 @@ mod tests {
     /// offset — the same body observer that heals the pinned tail. The anchor is refreshed per
     /// scroll frame and per apply, and cleared the moment a scroll begins so a resize heard
     /// between a scroll and its frame cannot undo the scroll.
+    /// #111: the classic page's haystack rules are the shared module's.
+    #[test]
+    fn search_haystack_is_the_shared_modules() {
+        assert!(
+            JS.contains("function ownTextParts(b) { return shared.ownTextParts(b, stripHtml); }")
+        );
+        assert!(JS.contains("var directMask = shared.directMask;"));
+        assert!(JS.contains("var countOcc = shared.countOcc;"));
+        assert!(super::shared::SHARED
+            .iter()
+            .any(|(name, _)| *name == "search"));
+    }
+
     /// #109: the classic page's "user turns as raw" preference is the shared reading
     /// preference (one key with the app shell), its pre-#109 key folded in once.
     #[test]
@@ -3306,6 +3319,11 @@ mod tests {
     /// gate, and a tooltip that teaches the syntax.
     #[test]
     fn search_supports_scoped_and_whole_word_prefixes() {
+        // #111: the scope classes and the word rules moved to html/shared/search.js; the
+        // scope PARSER stays the page's.
+        let search = super::shared::shared_source("search").unwrap();
+        #[allow(non_snake_case)]
+        let SEARCH = search;
         assert!(
             JS.contains(r"/^([uatobrew+]{1,15}):/i") && JS.contains("function parseScope"),
             "the order-free letter-run grammar is the one parser"
@@ -3319,11 +3337,11 @@ mod tests {
             "a pure scope run searches itself — the scope reading has nothing to search"
         );
         assert!(
-            JS.contains("function directMask")
-                && JS.contains(r#"k === "user" || k === "command""#)
-                && JS.contains(r#"k === "assistant""#)
-                && JS.contains(r"^(bash|edit|write|read|skill|tool)$")
-                && JS.contains(r#"k === "edit" || k === "write""#),
+            SEARCH.contains("function directMask")
+                && SEARCH.contains(r#"k === "user" || k === "command""#)
+                && SEARCH.contains(r#"k === "assistant""#)
+                && SEARCH.contains(r"^(bash|edit|write|read|skill|tool)$")
+                && SEARCH.contains(r#"k === "edit" || k === "write""#),
             "scope gating maps u/a/t/o/b/r/e onto the record kinds via one class table"
         );
         assert!(
@@ -3333,8 +3351,8 @@ mod tests {
             "thinking prose and absorbed tool content have independent search projections"
         );
         assert!(
-            JS.contains("function wholeAt")
-                && JS.contains("WORD_LEFT")
+            SEARCH.contains("function wholeAt")
+                && SEARCH.contains("WORD_LEFT")
                 && JS.contains("whole words"),
             "w: uses explicit Unicode-aware word boundaries"
         );
