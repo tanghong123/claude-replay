@@ -138,7 +138,13 @@ impl TranscriptAdapter for ClaudeAdapter {
         agents::claude::model::turn_ended(raw_line)
     }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
-        Box::new(agents::claude::metrics::MetricsAcc::default())
+        // What Claude Code's transcript records of the runtime snapshot (#62): the reasoning
+        // effort, the permission mode and the client version — no sandbox, no context window.
+        Box::new(agents::claude::metrics::MetricsAcc::recording(&[
+            "effort",
+            "permission",
+            "client",
+        ]))
     }
     fn load_attachment(
         &self,
@@ -221,7 +227,18 @@ impl TranscriptAdapter for CodexAdapter {
         Box::new(agents::codex::model::CodexLinePreprocessor::default())
     }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
-        Box::new(agents::codex::metrics::CodexMetricsAcc::default())
+        // Codex's `turn_context` / `thread_settings_applied` / token-count events record the
+        // whole snapshot but the client version (#62).
+        Box::new(agents::codex::metrics::CodexMetricsAcc::recording(&[
+            "context",
+            "effort",
+            "mode",
+            "sandbox",
+            "approvals",
+            "permission",
+            "tier",
+            "plan",
+        ]))
     }
     fn load_attachment(
         &self,
@@ -309,7 +326,11 @@ impl TranscriptAdapter for QoderAdapter {
         agents::claude::model::turn_ended(raw_line)
     }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
-        Box::new(agents::claude::metrics::MetricsAcc::default())
+        // The family's `runtime-config` head carries `reasoningEffort`/`contextWindow` —
+        // present-and-null in real stores, which is exactly "recorded, unknown" (#62).
+        Box::new(agents::claude::metrics::MetricsAcc::recording(&[
+            "context", "effort",
+        ]))
     }
     fn load_attachment(
         &self,
@@ -407,7 +428,11 @@ impl TranscriptAdapter for QoderWorkAdapter {
         agents::claude::model::turn_ended(raw_line)
     }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
-        Box::new(agents::claude::metrics::MetricsAcc::default())
+        // The family's `runtime-config` head carries `reasoningEffort`/`contextWindow` —
+        // present-and-null in real stores, which is exactly "recorded, unknown" (#62).
+        Box::new(agents::claude::metrics::MetricsAcc::recording(&[
+            "context", "effort",
+        ]))
     }
     fn load_attachment(
         &self,

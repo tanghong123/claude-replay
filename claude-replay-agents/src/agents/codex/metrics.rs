@@ -46,6 +46,14 @@ pub(crate) struct CodexMetricsAcc {
 }
 
 impl CodexMetricsAcc {
+    /// A fold that declares which runtime facts its FORMAT records (#62), by the wire's key
+    /// names; the Claude family has the same constructor.
+    pub(crate) fn recording(keys: &[&str]) -> Self {
+        let mut acc = Self::default();
+        acc.runtime.recorded = keys.iter().map(|k| k.to_string()).collect();
+        acc
+    }
+
     /// Fold an **agent-specific** metric into the accumulating [`Metrics::extra`] bag (sum by
     /// key). Parse diagnostics use this for skipped malformed and unsupported records.
     pub(crate) fn bump(&mut self, key: &str, n: u64) {
@@ -302,10 +310,11 @@ impl CodexMetricsAcc {
         if let Some(m) = state.get("first_model").and_then(Value::as_str) {
             self.first_model = m.to_string();
         }
-        if let Some(runtime) = state
+        if let Some(mut runtime) = state
             .get("runtime")
             .and_then(|v| serde_json::from_value::<RuntimeInfo>(v.clone()).ok())
         {
+            runtime.recorded = std::mem::take(&mut self.runtime.recorded);
             self.runtime = runtime;
         }
     }

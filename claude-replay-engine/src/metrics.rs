@@ -35,6 +35,17 @@ pub struct RuntimeInfo {
     pub collaboration_mode: Option<String>,
     pub service_tier: Option<String>,
     pub rate_limits: Option<RateLimits>,
+    /// The agent CLIENT's version, when the transcript names it (Claude Code writes
+    /// `version` on every record); last value wins, like every field here.
+    #[serde(default)]
+    pub client_version: Option<String>,
+    /// Which of this snapshot's facts the agent's transcript FORMAT records at all, by the
+    /// wire's own key names (`context`, `effort`, `mode`, `sandbox`, `approvals`, `permission`,
+    /// `tier`, `plan`, `client`) — declared by the family's accumulator, so a presenter can
+    /// tell "unknown" (recorded by this agent, not seen yet) from "not recorded by this agent"
+    /// (#62) without a per-agent table of its own. Empty for a fold that declares nothing.
+    #[serde(default)]
+    pub recorded: Vec<String>,
 }
 
 /// A session's token/cost tally.

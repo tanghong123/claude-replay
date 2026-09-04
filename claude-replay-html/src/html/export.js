@@ -1115,6 +1115,11 @@
       rrow("permission", rt.permission);
       rrow("service tier", rt.tier);
       rrow("plan", rt.plan);
+      rrow("client", rt.client);
+      // #62: a fact this agent's format records but the transcript has not said yet is
+      // "unknown" — said out loud, so it is not read as "this agent has no such thing".
+      // A fact the format never records is simply not a row here.
+      shared.runtimeRows(rt).forEach(function (r) { if (r.state === "unknown") rrow(r.label, "unknown"); });
       var limitLabel = function (w) {
         if (!w) return null;
         var mins = w.window_minutes || 0;

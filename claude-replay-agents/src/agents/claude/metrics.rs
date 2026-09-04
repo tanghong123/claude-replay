@@ -4,7 +4,7 @@
 //! formatting live in [`claude_replay_engine::seam`].
 
 use claude_replay_engine::seam::{
-    credits_cost, parse_ts, total_cost, Metrics, TimeSpan, TokenCounts,
+    credits_cost, parse_ts, total_cost, Metrics, RuntimeInfo, TimeSpan, TokenCounts,
 };
 use serde_json::Value;
 
@@ -41,9 +41,24 @@ pub(crate) struct MetricsAcc {
     /// growth. Identical repeats add nothing; a streamed/retried group that grows
     /// (`output` 6,6,6,6,6,478) credits 478 in total, never the 508 a sum would give.
     credited: TokenCounts,
+    /// The latest runtime facts the transcript recorded (#62): Claude Code writes the reasoning
+    /// `effort` on each assistant record, a `permission-mode` record whenever the mode is set,
+    /// and its `version` on every record — each changes mid-session (effort per request, the
+    /// mode per `/permissions`), so the last value wins, as in the Codex family. `recorded`
+    /// is declared by the adapter that builds this fold ([`MetricsAcc::recording`]), since the
+    /// same fold serves the Qoder family, whose format carries a different set.
+    runtime: RuntimeInfo,
 }
 
 impl MetricsAcc {
+    /// A fold that declares which runtime facts its FORMAT records, by the wire's key names —
+    /// the adapter's statement, not the fold's guess.
+    pub(crate) fn recording(keys: &[&str]) -> Self {
+        let mut acc = Self::default();
+        acc.runtime.recorded = keys.iter().map(|k| k.to_string()).collect();
+        acc
+    }
+
     /// Fold an **agent-specific** metric into the accumulating [`Metrics::extra`] bag (sum by
     /// key). The seam for a Claude-only counter: call this from [`push`](Self::push) when the
     /// relevant JSON key is seen. Its first users are the compaction counters below (#108).
@@ -53,6 +68,25 @@ impl MetricsAcc {
 
     pub(crate) fn push(&mut self, v: &Value) {
         let field = |u: &Value, k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        // The runtime snapshot (#62): last value wins. `permission-mode` is its own record type
+        // (`{"type":"permission-mode","permissionMode":"bypassPermissions"}`); `effort` rides on
+        // the assistant record (top level, beside `message`), `version` on every record. The
+        // qwork family's `runtime-config` head carries `reasoningEffort`/`contextWindow` under
+        // the same fold — present-and-null in real stores, so they usually stay unknown.
+        if v.get("type").and_then(Value::as_str) == Some("permission-mode") {
+            remember_string(
+                &mut self.runtime.permission_profile,
+                v.get("permissionMode"),
+            );
+        }
+        remember_string(&mut self.runtime.reasoning_effort, v.get("effort"));
+        remember_string(&mut self.runtime.client_version, v.get("version"));
+        if v.get("type").and_then(Value::as_str) == Some("runtime-config") {
+            remember_string(&mut self.runtime.reasoning_effort, v.get("reasoningEffort"));
+            if let Some(w) = v.get("contextWindow").and_then(Value::as_u64) {
+                self.runtime.context_window_tokens = Some(w);
+            }
+        }
         // Compactions (#108). Both are true counters, so they fold by addition exactly like
         // tokens do — which is what lets a resumed session keep counting from the meta record
         // instead of re-reading the transcript.
@@ -177,6 +211,7 @@ impl MetricsAcc {
             "last_usage_key": self.last_usage_key,
             "last_usage_model": self.last_usage_model,
             "credited": self.credited,
+            "runtime": self.runtime,
         })
     }
 
@@ -209,6 +244,13 @@ impl MetricsAcc {
             .get("credited")
             .and_then(|x| serde_json::from_value::<TokenCounts>(x.clone()).ok())
             .unwrap_or_default();
+        if let Some(mut runtime) = state
+            .get("runtime")
+            .and_then(|v| serde_json::from_value::<RuntimeInfo>(v.clone()).ok())
+        {
+            runtime.recorded = std::mem::take(&mut self.runtime.recorded);
+            self.runtime = runtime;
+        }
     }
 
     /// Re-seed a resumed accumulator (#96 §7).
@@ -255,7 +297,19 @@ impl MetricsAcc {
         m.cost_partial = cost_partial;
         m.extra = self.extra;
         m.per_model = self.per_model;
+        m.runtime = self.runtime;
         m
+    }
+}
+
+/// Last value wins; an empty or non-string value changes nothing. (The Codex family keeps its
+/// own copy — the two folds stay symmetric rather than sharing a three-line helper.)
+fn remember_string(slot: &mut Option<String>, value: Option<&Value>) {
+    if let Some(value) = value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        *slot = Some(value.to_string());
     }
 }
 
@@ -587,5 +641,75 @@ mod tests {
         let expected =
             (1500.0 + 50000.0 * 1.25 + 5_000_000.0 * 0.10) / 1e6 * 5.0 + 10000.0 / 1e6 * 25.0;
         assert!((c - expected).abs() < 1e-9, "cost {c} vs {expected}");
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    fn fold(lines: &[&str]) -> MetricsAcc {
+        let mut acc = MetricsAcc::recording(&["effort", "permission", "client"]);
+        for l in lines {
+            acc.push(&serde_json::from_str::<Value>(l).unwrap());
+        }
+        acc
+    }
+
+    /// #62: effort and the permission mode change mid-session — the last value wins — and the
+    /// client version rides on every record.
+    #[test]
+    fn runtime_records_effort_permission_and_client_last_value_wins() {
+        let acc = fold(&[
+            r#"{"type":"permission-mode","permissionMode":"bypassPermissions","timestamp":"2026-09-03T10:00:00.000Z"}"#,
+            r#"{"type":"user","version":"2.1.220","message":{"role":"user","content":"hi"},"timestamp":"2026-09-03T10:00:01.000Z"}"#,
+            r#"{"type":"assistant","effort":"xhigh","version":"2.1.220","message":{"model":"claude-opus-5","usage":{"output_tokens":5}},"timestamp":"2026-09-03T10:00:02.000Z"}"#,
+            r#"{"type":"assistant","effort":"max","version":"2.1.234","message":{"model":"claude-fable-5-1","usage":{"output_tokens":5}},"timestamp":"2026-09-03T10:00:03.000Z"}"#,
+            r#"{"type":"permission-mode","permissionMode":"default","timestamp":"2026-09-03T10:00:04.000Z"}"#,
+        ]);
+        let m = acc.finish();
+        assert_eq!(m.runtime.reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(m.runtime.permission_profile.as_deref(), Some("default"));
+        assert_eq!(m.runtime.client_version.as_deref(), Some("2.1.234"));
+        assert_eq!(m.runtime.recorded, vec!["effort", "permission", "client"]);
+        // Never Claude Code's: the format has no sandbox and no context window.
+        assert!(m.runtime.sandbox.is_none() && m.runtime.context_window_tokens.is_none());
+    }
+
+    /// A fold that saw nothing still DECLARES what it would record, so a pane can say
+    /// "unknown" rather than "not recorded".
+    #[test]
+    fn runtime_declares_what_the_format_records_before_seeing_anything() {
+        let m = fold(&[]).finish();
+        assert_eq!(m.runtime.recorded, vec!["effort", "permission", "client"]);
+        assert!(m.runtime.reasoning_effort.is_none());
+    }
+
+    /// The resume cursor carries the snapshot; the declaration stays the adapter's.
+    #[test]
+    fn runtime_survives_state_and_restore() {
+        let acc = fold(&[
+            r#"{"type":"assistant","effort":"xhigh","version":"2.1.220","message":{"model":"m","usage":{"output_tokens":1}},"timestamp":"2026-09-03T10:00:02.000Z"}"#,
+        ]);
+        let state = acc.state();
+        let mut resumed = MetricsAcc::recording(&["effort", "permission", "client"]);
+        resumed.restore(&state);
+        let m = resumed.finish();
+        assert_eq!(m.runtime.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(m.runtime.client_version.as_deref(), Some("2.1.220"));
+        assert_eq!(m.runtime.recorded, vec!["effort", "permission", "client"]);
+    }
+
+    /// The qwork family's head, under the same fold: a real head carries the keys as null.
+    #[test]
+    fn runtime_reads_the_qwork_head_when_it_says_something() {
+        let acc = fold(&[
+            r#"{"type":"runtime-config","sessionId":"q","model":"qwork","reasoningEffort":"high","contextWindow":128000,"timestamp":1784282861519}"#,
+        ]);
+        let m = acc.finish();
+        assert_eq!(m.runtime.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(m.runtime.context_window_tokens, Some(128_000));
+        let m = fold(&[r#"{"type":"runtime-config","sessionId":"q","model":"","reasoningEffort":null,"contextWindow":null,"timestamp":1}"#]).finish();
+        assert!(m.runtime.reasoning_effort.is_none() && m.runtime.context_window_tokens.is_none());
     }
 }

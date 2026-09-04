@@ -520,7 +520,20 @@ mod tests {
             "blocks identical under delegation"
         );
         assert_eq!(qw.user_times, cl.user_times);
-        assert_eq!(qw.metrics, cl.metrics);
+        // What the FORMAT records of the runtime snapshot is each adapter's own declaration
+        // (#62) — the qwork head carries context/effort, Claude Code effort/permission/client —
+        // so it is the one metric that differs by design; everything else is byte-identical.
+        let declared = |m: &claude_replay_core::Metrics| m.runtime.recorded.clone();
+        assert_eq!(declared(&qw.metrics), ["context", "effort"]);
+        assert_eq!(declared(&cl.metrics), ["effort", "permission", "client"]);
+        let undeclared = |mut m: claude_replay_core::Metrics| {
+            m.runtime.recorded.clear();
+            m
+        };
+        assert_eq!(
+            undeclared(qw.metrics.clone()),
+            undeclared(cl.metrics.clone())
+        );
         assert_eq!(
             qw.agent,
             Agent::QODERWORK,

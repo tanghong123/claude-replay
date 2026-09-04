@@ -294,6 +294,10 @@ mod tests {
                 "shared/record-stream.js",
                 claude_replay_html::shared_source("record-stream").unwrap(),
             ),
+            (
+                "shared/runtime.js",
+                claude_replay_html::shared_source("runtime").unwrap(),
+            ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),

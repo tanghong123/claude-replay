@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
 import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
+import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-html/src/html/shared/runtime.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
@@ -648,4 +649,27 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /fileview\(path, null, t, fallback\)/, "…and so does the text view");
   assert.equal((src.match(/var reveal = function \(\) \{\s*return fetch\("__reveal\?" \+ shared\.stampQuery/g) || []).length, 2, "both offered-path sites return their stamped request, so the caption can report it");
   console.log("#66 lightbox reveal cases passed");
+}
+
+// #62: the runtime snapshot's rows are phrased once — "unknown" is a recorded fact not yet
+// seen, "not recorded by <agent>" a fact the format has no room for — and both panes use it.
+{
+  const claude = runtimeRows({ effort: "xhigh", permission: null, client: "2.1.234", recorded: ["effort", "permission", "client"] });
+  const by = Object.fromEntries(claude.map(r => [r.key, r]));
+  assert.equal(by.effort.state, "value"); assert.equal(by.effort.value, "xhigh");
+  assert.equal(by.permission.state, "unknown", "recorded by Claude Code, not seen yet");
+  assert.equal(by.sandbox.state, "absent", "Claude Code has no sandbox");
+  assert.equal(by.context.state, "absent");
+  assert.equal(runtimeText(by.permission, "Claude Code"), "unknown");
+  assert.equal(runtimeText(by.sandbox, "Claude Code"), "not recorded by Claude Code");
+  assert.equal(runtimeText(by.sandbox), "not recorded by this agent");
+  const codex = Object.fromEntries(runtimeRows({ context_left: 75, sandbox: "workspace-write", recorded: ["context", "effort", "sandbox"] }).map(r => [r.key, r]));
+  assert.equal(codex.context.value, "75% left"); assert.equal(codex.effort.state, "unknown"); assert.equal(codex.client.state, "absent");
+  assert.deepEqual(runtimeRows(null).map(r => r.state), runtimeRows(null).map(() => "absent"), "no snapshot: nothing declared");
+  assert.deepEqual(RUNTIME_ALWAYS, ["context", "effort", "sandbox", "permission"]);
+  assert.match(appSource, /runtimeRows\(usage\.runtime\)\.filter\(r => r\.state !== "absent" \|\| RUNTIME_ALWAYS\.includes\(r\.key\)\)\.map\(r => \[r\.label, runtimeText\(r, agentName\(row\.agent\)\)\]\)/, "the app shell's Runtime group is the shared rows");
+  assert.doesNotMatch(appSource, /not provided by this protocol/, "the old wording is gone");
+  const exportSrc = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(exportSrc, /shared\.runtimeRows\(rt\)\.forEach\(function \(r\) \{ if \(r\.state === "unknown"\) rrow\(r\.label, "unknown"\); \}\);/, "the classic panel says unknown through the same helper");
+  console.log("#62 runtime wording cases passed");
 }

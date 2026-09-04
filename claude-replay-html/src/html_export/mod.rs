@@ -1813,6 +1813,8 @@ fn usage_json(m: &crate::metrics::Metrics, with_duration: bool) -> Value {
             "permission": m.runtime.permission_profile.as_deref(),
             "mode": m.runtime.collaboration_mode.as_deref(),
             "tier": m.runtime.service_tier.as_deref(),
+            "client": m.runtime.client_version.as_deref(),
+            "recorded": m.runtime.recorded,
             "plan": limits.and_then(|l| l.plan_type.as_deref()),
             "reached": limits.and_then(|l| l.reached.as_deref()),
             "primary": limits.and_then(|l| l.primary.as_ref()),
@@ -2219,6 +2221,24 @@ mod tests {
         assert_eq!(runtime["context_left"], json!(75));
         assert_eq!(runtime["effort"], json!("xhigh"));
         assert_eq!(runtime["primary"]["used_percent"], json!(12.5));
+    }
+
+    /// #62: the snapshot says which facts the agent's format records, and the client
+    /// version rides along — a declaration alone is enough to emit the object, so a pane
+    /// can say "unknown" for a recorded fact it has not seen.
+    #[test]
+    fn usage_json_carries_the_runtime_declaration_and_client() {
+        let mut m = crate::metrics::Metrics::default();
+        assert!(usage_json(&m, false).get("runtime").is_none());
+        m.runtime.recorded = vec!["effort".into(), "permission".into(), "client".into()];
+        m.runtime.client_version = Some("2.1.234".into());
+        let runtime = &usage_json(&m, false)["runtime"];
+        assert_eq!(
+            runtime["recorded"],
+            json!(["effort", "permission", "client"])
+        );
+        assert_eq!(runtime["client"], json!("2.1.234"));
+        assert_eq!(runtime["effort"], json!(null));
     }
 
     #[test]
