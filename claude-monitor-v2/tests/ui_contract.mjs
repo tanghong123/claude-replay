@@ -927,3 +927,21 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(modRs, /head\.insert\("compact_trigger"\.into\(\), json!\(trigger\.as_str\(\)\)\);/, "the wire carries the trigger");
   console.log("#86/#87 compaction tick cases passed");
 }
+
+// #98: the reader's anchor is the first visible ROW, kept fresh for changes nobody asked for,
+// and the scrollbar thumb owns the position while it is held.
+{
+  const src = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  assert.match(src, /for \(const row of child\.querySelectorAll\("\[data-block-index\]"\)\) \{/, "the anchor descends to the first visible row of the unit");
+  assert.match(src, /if \(rect\.top >= viewportBottom\) return null;/, "a unit below the viewport is no anchor — the scroll offset places the window");
+  assert.match(src, /const row = unit\.querySelector\(`\[data-block-index="\$\{anchor\.block\}"\]`\);/, "…and the restore puts that row back");
+  assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\)\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");
+  assert.match(src, /return this\.anchor \|\| this\.captureDomAnchor\(\);/, "the kept anchor, else a fresh one");
+  assert.match(src, /this\.anchor = null;\n    this\.actions\.afterScroll\?\.\(\);/, "a scroll invalidates the kept anchor…");
+  assert.match(src, /this\.reconcile\(range\.lo, range\.hi, Infinity, false, anchor\);\n    this\.syncAnchor\(\);/, "…and the deferred window update re-reads it once per batch");
+  assert.match(src, /scroller\.addEventListener\("pointerdown", event => \{ if \(event\.target === scroller\) this\.beginDrag\(\); \}/, "a pointer that lands on the scroller itself is on its scrollbar — no coordinate test, overlay scrollbars sit inside the client box");
+  assert.match(src, /for \(const type of \["pointerup", "pointercancel", "mouseup"\]\) addEventListener\(type, \(\) => this\.endDrag\(\)/, "…released anywhere");
+  assert.match(src, /const anchor = this\.state\.following \|\| this\.dragging \? null : this\.captureDomAnchor\(\);\n    const anchorIndex/, "while dragging the window is placed by the scroll offset and nothing corrects it");
+  assert.match(src, /this\.observer\.observe\(child, \{ box: "border-box" \}\);/, "a unit's height is its border box — padding and border changes count");
+  console.log("#98 reader anchor cases passed");
+}

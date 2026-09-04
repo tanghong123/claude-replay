@@ -1023,3 +1023,45 @@ pub fn click_session_id(tab: &headless_chrome::Tab, surface: Surface) {
     };
     eval(tab, js);
 }
+
+/// The reader's view by POSITION: the record index of the first visible element (the classic
+/// page's `data-idx`, the app shell's `data-unit-from`) and its offset from the viewport top.
+/// Record indices survive a tail rewrite that re-emits the same positions with new block ids —
+/// which element KEYS do not — so this is the metric for "did the view hold through a rewrite".
+pub fn view_anchor_index(tab: &headless_chrome::Tab, surface: Surface) -> (i64, f64) {
+    // On the app shell a unit may hold many records (a process); descend to the innermost row
+    // holding the viewport top so the metric is a RECORD on both pages.
+    let js = match surface {
+        Surface::Classic => "(function(){ var els = document.querySelectorAll('#stream [data-idx]'); for (var e of els) { var r = e.getBoundingClientRect(); if (r.bottom > 1) return JSON.stringify({ i: Number(e.dataset.idx), top: r.top }); } return JSON.stringify({ i: -1, top: 0 }); })()",
+        Surface::AppShell => "(function(){ var s = document.querySelector('.transcript'); var top = s.getBoundingClientRect().top; var hit = null; for (var e of document.querySelectorAll('.virtual-window > [data-unit-from]')) { var r = e.getBoundingClientRect(); if (r.bottom > top + 1) { hit = e; break; } } if (!hit) return JSON.stringify({ i: -1, top: 0 }); for (;;) { var inner = null; for (var c of hit.querySelectorAll('[data-block-index]')) { var rc = c.getBoundingClientRect(); if (rc.bottom > top + 1 && rc.height > 0) { inner = c; break; } } if (!inner) break; hit = inner; } var rh = hit.getBoundingClientRect(); return JSON.stringify({ i: Number(hit.dataset.blockIndex != null ? hit.dataset.blockIndex : hit.dataset.unitFrom), top: rh.top - top }); })()",
+    };
+    let v: serde_json::Value = serde_json::from_str(eval(tab, js).as_str().unwrap_or("{}"))
+        .unwrap_or(serde_json::Value::Null);
+    (
+        v["i"].as_i64().unwrap_or(-1),
+        v["top"].as_f64().unwrap_or(0.0),
+    )
+}
+
+/// A session whose LAST turn is open and long: `turns` finished turns, then one prompt followed
+/// by `tools` tool calls with results and no closing answer — the shape of an agent still at
+/// work, whose records the server re-emits (new block ids, same positions) on every rewrite.
+pub fn open_turn_session(turns: u32, tools: u32) -> String {
+    let mut out = long_session(turns, Shape::default());
+    let span = 30 * tools as u64 + 200;
+    out += &user_at(
+        "question open: keep working on the long task",
+        &now_minus(span + 100),
+    );
+    // A word of progress before each call, as a working agent writes — a bare run of identical
+    // calls would fold into one block on both pages.
+    for k in 0..tools as u64 {
+        out += &assistant_at(
+            &format!("progress {k}: checking the next file"),
+            &now_minus(span - k * 30),
+        );
+        out += &tool_open_at(&format!("open-{k}"), &now_minus(span - k * 30 - 10));
+        out += &tool_result_at(&format!("open-{k}"), &now_minus(span - k * 30 - 20));
+    }
+    out
+}

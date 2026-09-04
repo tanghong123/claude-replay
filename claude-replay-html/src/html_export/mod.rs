@@ -3240,6 +3240,19 @@ mod tests {
     /// The fixed top bar abbreviates a bare session UUID to its first group. Codex puts the
     /// same UUID at the end of `rollout-<datetime>-<uuid>`, so that trailing group must win
     /// over blindly taking the stem's first eight characters (`rollout-`).
+    /// #98: unpinned, a growth above the viewport that nobody scrolled for (an image decoding,
+    /// a late reflow) is healed by putting the last anchor the reader settled on back at its
+    /// offset — the same body observer that heals the pinned tail. The anchor is refreshed per
+    /// scroll frame and per apply, and cleared the moment a scroll begins so a resize heard
+    /// between a scroll and its frame cannot undo the scroll.
+    #[test]
+    fn unpinned_growth_is_healed_by_the_last_anchor() {
+        assert!(JS.contains("else if (!following && viewAnchor) restoreAnchor(viewAnchor);"));
+        assert!(JS.contains("viewAnchor = null; // this scroll moved the reader"));
+        assert!(JS.contains("      spy();\n      viewAnchor = captureAnchor();\n    });"));
+        assert!(JS.contains("    viewAnchor = captureAnchor();\n    spy();\n  }"));
+    }
+
     #[test]
     fn topbar_snips_codex_rollout_to_uuid_prefix() {
         // The shortener is a shared module since #50 (html/shared/ids.js), inlined into every

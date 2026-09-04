@@ -19,9 +19,10 @@ use claude_replay_html::start_server;
 use claude_replay_present::Args;
 use harness::{
     assistant_at, at_tail, base, click_session_id, copied_text, eval, image_result_at, jump_to_end,
-    key, last_mounted_turn, long_session, now_minus, open_last_fold, probe, queued_at, queued_text,
-    read_tool_at, scroll_by, serial, session_id_chip, stub_clipboard, turn_at_top, until, user_at,
-    Kind, LiveGrowth, Monitor, Shape, Stores, Surface,
+    key, last_mounted_turn, long_session, now_minus, open_last_fold, open_turn_session, probe,
+    queued_at, queued_text, read_tool_at, scroll_by, serial, session_id_chip, stub_clipboard,
+    tool_open_at, tool_result_at, turn_at_top, until, user_at, view_anchor_index, Kind, LiveGrowth,
+    Monitor, Shape, Stores, Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -1182,5 +1183,227 @@ fn image_fixture(name: &str) -> Fixture {
         base,
         path,
         turns: 13,
+    }
+}
+
+// ── scenario: reading deep inside a long OPEN turn while it is rewritten (#98) ─────────────
+
+/// The owner's case: the agent is mid-turn, the turn is long, and the reader has scrolled up
+/// inside it (the prompt is off-screen above). Every poll re-emits the open turn's records — same
+/// positions, new block ids — as more tool calls arrive. The view must hold: the same record at
+/// the same offset, and the turns pane's focus with it.
+fn scenario_reading_inside_a_long_open_turn_holds_through_rewrites(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // Up into the open turn: far enough that the prompt is above the viewport, on both pages
+    // (the classic page's records are compact; the open turn is long enough on either).
+    scroll_by(tab, surface, -900);
+    scroll_by(tab, surface, -900);
+    settle();
+    assert!(!at_tail(tab, surface), "the reader is scrolled up");
+    let before = view_anchor_index(tab, surface);
+    assert!(
+        before.0 > 0,
+        "a real record is at the top of the view: {before:?}"
+    );
+    // The turn grows by six more tool calls, each a rewrite of the provisional zone.
+    let script: Vec<String> = (0..6)
+        .flat_map(|k| {
+            vec![
+                tool_open_at(&format!("late-{k}"), &now_minus(40 - k * 6)),
+                tool_result_at(&format!("late-{k}"), &now_minus(37 - k * 6)),
+            ]
+        })
+        .collect();
+    let growth = LiveGrowth::start(fx.path.clone(), script, Duration::from_millis(2000));
+    let mut worst = 0.0f64;
+    let mut drift = None;
+    for _ in 0..14 {
+        std::thread::sleep(Duration::from_millis(1000));
+        let now = view_anchor_index(tab, surface);
+        let moved = (now.1 - before.1).abs();
+        if now.0 != before.0 || moved > 4.0 {
+            drift = Some(now);
+        }
+        if moved > worst {
+            worst = moved;
+        }
+    }
+    assert_eq!(
+        growth.finish(Duration::from_secs(30)),
+        12,
+        "the driver appended the whole script"
+    );
+    let after = view_anchor_index(tab, surface);
+    assert!(drift.is_none() && after.0 == before.0 && (after.1 - before.1).abs() <= 4.0, "the view held through the rewrites: before {before:?}, worst drift {worst:.1}px, first drift {drift:?}, after {after:?}");
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_holds_inside_a_long_open_turn_through_rewrites() {
+    let _serial = serial();
+    let fx = open_turn_fixture("scenario-open-turn-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_reading_inside_a_long_open_turn_holds_through_rewrites(
+        &page.tab,
+        Surface::Classic,
+        &fx,
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_holds_inside_a_long_open_turn_through_rewrites() {
+    let _serial = serial();
+    let fx = open_turn_fixture("scenario-open-turn-app");
+    let page = open(Surface::AppShell, &fx, 2877);
+    scenario_reading_inside_a_long_open_turn_holds_through_rewrites(
+        &page.tab,
+        Surface::AppShell,
+        &fx,
+    );
+}
+
+/// Show the open turn's whole run: the classic page folds a run of tool calls into one block,
+/// the app shell shows the first rows of a process and a "more" control for the rest.
+fn expand_open_turn(tab: &headless_chrome::Tab, surface: Surface) -> String {
+    let js = match surface {
+        // The classic page hides a long run behind a "⋯ N more" expander inside the turn.
+        Surface::Classic => "(function(){ var bs = document.querySelectorAll('#stream button[data-more]'); if (!bs.length) return 'no expander'; bs[bs.length - 1].click(); return 'expanded ' + bs.length + ' expanders, records ' + document.querySelectorAll('#stream [data-idx]').length + ', height ' + document.body.scrollHeight; })()",
+        Surface::AppShell => "(function(){ var s = [...document.querySelectorAll('[data-process-surface]')].pop(); if (!s) return 'no process'; var m = s.querySelector('[data-process-more]'); if (m) m.click(); s = [...document.querySelectorAll('[data-process-surface]')].pop(); return (m ? 'expanded' : 'no more control') + ', rows ' + s.querySelectorAll('.process-event:not(.progressive-hidden)').length + '/' + s.querySelectorAll('.process-event').length + ', height ' + document.querySelector('.transcript').scrollHeight; })()",
+    };
+    eval(tab, js).as_str().unwrap_or("").to_string()
+}
+
+/// Twelve finished turns, then an open turn of 160 tool calls (many screens on either page).
+fn open_turn_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let path = stores.claude_session(SID, &open_turn_session(12, 160));
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+// ── scenario: growth above the reader, inside the same turn, holds the view (#98) ──────────
+
+/// The owner's jump: reading up through a long turn, something above the visible region grows —
+/// a thumbnail decoding, a fold opening, a late reflow — and the content under the reader moves
+/// by that height. The rule (the classic page's): the anchor is the first visible RECORD, and
+/// every height change puts it back at the same offset, even a change inside the same turn.
+fn scenario_growth_above_the_reader_in_the_same_turn_holds(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let expanded = expand_open_turn(tab, surface);
+    settle();
+    jump_to_end(tab, surface);
+    settle();
+    scroll_by(tab, surface, -1800);
+    settle();
+    let before = view_anchor_index(tab, surface);
+    // Twelve finished turns take the first 36 records; the reader is inside the open turn.
+    assert!(
+        before.0 >= 40,
+        "a record deep in the open turn is at the top of the view: {before:?} ({expanded})"
+    );
+    let target = before.0 - 4;
+    let grow = match surface {
+        Surface::Classic => format!("(function(){{ var e = document.querySelector('#stream [data-idx=\"{target}\"]'); if (!e) return 'missing'; e.style.paddingBottom = '300px'; return 'grown'; }})()"),
+        Surface::AppShell => format!("(function(){{ var e = document.querySelector('.virtual-window [data-block-index=\"{target}\"]'); if (!e) return 'missing'; e.style.paddingBottom = '300px'; return 'grown'; }})()"),
+    };
+    assert_eq!(
+        eval(tab, &grow),
+        "grown",
+        "the record four above the reader is mounted"
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    let after = view_anchor_index(tab, surface);
+    assert!(after.0 == before.0 && (after.1 - before.1).abs() <= 4.0, "the view held through a 300px growth above it in the same turn: before {before:?}, after {after:?}");
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_holds_through_growth_above_the_reader() {
+    let _serial = serial();
+    let fx = open_turn_fixture("scenario-growth-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_growth_above_the_reader_in_the_same_turn_holds(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_holds_through_growth_above_the_reader() {
+    let _serial = serial();
+    let fx = open_turn_fixture("scenario-growth-app");
+    let page = open(Surface::AppShell, &fx, 2878);
+    scenario_growth_above_the_reader_in_the_same_turn_holds(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── the scrollbar thumb owns the position while it is held (#98, app shell) ────────────────
+
+/// Dragging the thumb into unvisited territory: units mount there with real heights that differ
+/// from the estimates, and a page that re-anchors on its old first-visible element snaps the
+/// thumb away from where the pointer holds it — the "zone the slider cannot rest in". While the
+/// pointer holds the thumb, the scroll offset is the truth: the window follows it and nothing
+/// corrects it; the anchor rule resumes on release.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_lets_the_thumb_own_the_position_while_dragged() {
+    let _serial = serial();
+    let fx = open_turn_fixture("scenario-thumb-app");
+    let page = open(Surface::AppShell, &fx, 2879);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    // The pointer lands on the scrollbar (x inside the scroller's box but past its client width).
+    eval(tab, "(function(){ var s = document.querySelector('.transcript'); var r = s.getBoundingClientRect(); s.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: r.right - 3, clientY: r.top + 40, pointerId: 1, buttons: 1 })); return 'down'; })()");
+    // …and drags to a tenth of the range in one go, then holds there.
+    let set = "(function(){ var s = document.querySelector('.transcript'); s.scrollTop = Math.round(s.scrollHeight * 0.1); return s.scrollTop; })()";
+    let wanted = eval(tab, set).as_f64().unwrap_or(0.0);
+    let mut worst = 0.0f64;
+    for _ in 0..8 {
+        std::thread::sleep(Duration::from_millis(150));
+        let st = eval(tab, "document.querySelector('.transcript').scrollTop")
+            .as_f64()
+            .unwrap_or(0.0);
+        let drift = (st - wanted).abs();
+        if drift > worst {
+            worst = drift;
+        }
+    }
+    let a = view_anchor_index(tab, Surface::AppShell);
+    assert!(
+        a.0 >= 0 && a.1 <= 2.0,
+        "the window followed the thumb: a mounted record holds the viewport top ({a:?})"
+    );
+    assert!(
+        worst <= 2.0,
+        "nothing corrected the held position (worst drift {worst:.1}px)"
+    );
+    eval(tab, "(function(){ dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 })); return 'up'; })()");
+    settle();
+    // Released: the anchor rule is back — a growth above the reader is corrected again.
+    let before = view_anchor_index(tab, Surface::AppShell);
+    let grow = format!("(function(){{ var e = document.querySelector('.virtual-window [data-block-index=\"{}\"]'); if (!e) return 'missing'; e.style.paddingBottom = '200px'; return 'grown'; }})()", before.0 - 2);
+    let probe_js = "(function(){ var s = document.querySelector('.transcript'); var pads = [...document.querySelectorAll('.virtual-pad')].map(function (p) { return p.style.height; }); var j = document.getElementById('jumpToBottom'); return JSON.stringify({ st: s.scrollTop, sh: s.scrollHeight, pads: pads, mounted: document.querySelectorAll('.virtual-window > [data-unit-key]').length, jumpHidden: j ? j.hidden : null }); })()";
+    let probe_before = eval(tab, probe_js);
+    if eval(tab, &grow) == "grown" {
+        std::thread::sleep(Duration::from_millis(1200));
+        let after = view_anchor_index(tab, Surface::AppShell);
+        let probe_after = eval(tab, probe_js);
+        assert!(after.0 == before.0 && (after.1 - before.1).abs() <= 4.0, "after release the anchor rule holds again: before {before:?} {probe_before}, after {after:?} {probe_after}");
     }
 }

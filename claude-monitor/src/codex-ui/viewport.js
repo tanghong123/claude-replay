@@ -43,6 +43,8 @@ export class Viewport {
     this.pendingScroll = false;
     this.pendingMeasure = false;
     this.lastUserInput = -1e9;
+    this.anchor = null;
+    this.dragging = false;
     this.bottomTimer = 0;
     // Per-session position memory (parity #6): the session this viewport is showing, the
     // remembered anchor still to be applied once its unit has streamed in, and a debounce.
@@ -85,6 +87,13 @@ export class Viewport {
       scroller.addEventListener(type, noteIntent, { passive: true, capture: true });
     }
     scroller.addEventListener("scroll", () => this.onScroll(), { passive: true });
+    // A pointer that lands on the scroller ITSELF is on its scrollbar: content lands on a
+    // descendant (the inner column, a pad, a unit). Not a coordinate test — an overlay
+    // scrollbar (macOS) sits inside the client box. A false positive (the border) costs one
+    // window update on release.
+    scroller.addEventListener("pointerdown", event => { if (event.target === scroller) this.beginDrag(); }, { passive: true, capture: true });
+    for (const type of ["pointerup", "pointercancel", "mouseup"]) addEventListener(type, () => this.endDrag(), { passive: true, capture: true });
+    addEventListener("blur", () => this.endDrag());
   }
 
   /** A session is opening: read what was remembered for it. A remembered anchor is applied by
@@ -186,22 +195,76 @@ export class Viewport {
     return { lo, hi };
   }
 
+  // The reader's anchor is the first visible RECORD, not the first visible unit — the classic
+  // page's rule, borrowed for #98. A unit (a process) can hold a hundred rows; anchored on the
+  // unit, a growth inside it above the visible region — a thumbnail decoding, a fold opening, a
+  // late reflow — moves everything the reader is looking at while the unit's own top never
+  // moves, and nothing corrects it. Anchored on the row, every growth above is a delta on the
+  // row and is put back. A unit that starts below the viewport is no anchor at all: the reader
+  // has left the window entirely (a dragged thumb does that) and the scroll offset places it.
   captureDomAnchor() {
     const viewportTop = this.scroller.getBoundingClientRect().top;
+    const viewportBottom = viewportTop + this.scroller.clientHeight;
     for (const child of this.window.children) {
       const rect = child.getBoundingClientRect();
-      if (rect.bottom > viewportTop + 1) return { key: child.dataset.unitKey, top: rect.top - viewportTop };
+      if (rect.bottom <= viewportTop + 1) continue;
+      if (rect.top >= viewportBottom) return null;
+      const anchor = { key: child.dataset.unitKey, top: rect.top - viewportTop, block: null, blockTop: 0 };
+      for (const row of child.querySelectorAll("[data-block-index]")) {
+        const r = row.getBoundingClientRect();
+        if (r.height > 0 && r.bottom > viewportTop + 1) { anchor.block = row.dataset.blockIndex; anchor.blockTop = r.top - viewportTop; break; }
+      }
+      return anchor;
     }
     return null;
   }
 
   restoreDomAnchor(anchor) {
     if (!anchor) return;
-    const target = [...this.window.children].find(child => child.dataset.unitKey === anchor.key);
-    if (!target) return;
+    const unit = [...this.window.children].find(child => child.dataset.unitKey === anchor.key);
+    if (!unit) return;
+    let target = unit, want = anchor.top;
+    if (anchor.block != null) {
+      const row = unit.querySelector(`[data-block-index="${anchor.block}"]`);
+      if (row && row.getBoundingClientRect().height > 0) { target = row; want = anchor.blockTop; }
+    }
     const viewportTop = this.scroller.getBoundingClientRect().top;
-    const delta = target.getBoundingClientRect().top - viewportTop - anchor.top;
+    const delta = target.getBoundingClientRect().top - viewportTop - want;
     if (Math.abs(delta) > 1) this.scroller.scrollTop += delta;
+  }
+
+  // The anchor a SPONTANEOUS change is measured against (#98). A change the viewport makes
+  // itself — an apply, a rerender, a jump — captures the anchor before it touches the DOM. A
+  // change that arrives on its own — a row resizing under the observer — has already moved the
+  // view by the time it is heard, and an anchor captured then describes the moved view and
+  // corrects nothing. So the anchor is kept: refreshed on every scroll and after every settle,
+  // and read here. While the thumb is held (`dragging`) or the tail is followed there is none.
+  readerAnchor() {
+    if (this.state.following || this.dragging) return null;
+    return this.anchor || this.captureDomAnchor();
+  }
+
+  syncAnchor() {
+    this.anchor = this.state.following || this.dragging ? null : this.captureDomAnchor();
+  }
+
+  // The scrollbar thumb owns the position while the pointer holds it (#98): the window follows
+  // the scroll offset and nothing corrects it — a page that re-anchors on its old first-visible
+  // row while units mount under the thumb with real heights snaps the thumb away from the
+  // pointer, the "zone the slider cannot rest in". The anchor rule resumes on release.
+  beginDrag() {
+    if (this.dragging) return;
+    this.dragging = true;
+    this.anchor = null;
+    this.lastUserInput = performance.now();
+  }
+
+  endDrag() {
+    if (!this.dragging) return;
+    this.dragging = false;
+    this.updateWindow();
+    this.syncAnchor();
+    this.scheduleRemember();
   }
 
   outerHeight(element) {
@@ -209,7 +272,7 @@ export class Viewport {
     return element.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
   }
 
-  measureMounted(anchor = this.state.following ? null : this.captureDomAnchor()) {
+  measureMounted(anchor = this.readerAnchor()) {
     let changed = false;
     for (const element of this.window.children) {
       const index = Number(element.dataset.unitIndex);
@@ -224,6 +287,7 @@ export class Viewport {
     this.rebuildPrefix();
     this.updatePads();
     if (!this.state.following) this.restoreDomAnchor(anchor);
+    this.syncAnchor();
     return true;
   }
 
@@ -295,17 +359,22 @@ export class Viewport {
     this.updatePads();
     this.measureMounted(anchor);
     this.restoreDomAnchor(anchor);
-    for (const child of this.window.children) this.observer.observe(child);
+    // The border box: a unit's height is its border box plus margins (`outerHeight`), and a
+    // change to its padding or border — invisible to the default content box — is a height
+    // change the reader feels like any other.
+    for (const child of this.window.children) this.observer.observe(child, { box: "border-box" });
     this.actions.afterRender?.();
+    this.syncAnchor();
     return true;
   }
 
   updateWindow(forceIndex = null) {
     if (!this.units.length) return;
-    const anchor = this.state.following ? null : this.captureDomAnchor();
+    const anchor = this.state.following || this.dragging ? null : this.captureDomAnchor();
     const anchorIndex = forceIndex == null && anchor ? this.units.findIndex(unit => unit.key === anchor.key) : -1;
     const range = forceIndex != null ? this.rangeAround(forceIndex) : anchorIndex >= 0 ? this.rangeAround(anchorIndex) : this.rangeForScroll();
     this.reconcile(range.lo, range.hi, Infinity, false, anchor);
+    this.syncAnchor(); // an unchanged window returns early above; the anchor is re-read either way
   }
 
   // Public rerender for fold/filter changes: only the mounted window is rebuilt and its
@@ -338,6 +407,9 @@ export class Viewport {
     } else if (this.state.following && this.gapToBottom() > HOLD_SLACK) {
       this.convergeBottom();
     }
+    // This scroll moved the reader: the kept anchor is stale until the deferred window update
+    // re-reads it (once per batch of scroll events, not per event — the classic page's shape).
+    this.anchor = null;
     this.actions.afterScroll?.();
     if (this.pendingScroll) return;
     this.pendingScroll = true;
@@ -391,6 +463,7 @@ export class Viewport {
     }
     this.actions.followChanged?.();
     this.window.querySelector(`[data-block-index="${recordIndex}"]`)?.classList.add("source-flash");
+    this.syncAnchor();
     this.scheduleRemember();
     return true;
   }

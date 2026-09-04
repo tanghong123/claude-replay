@@ -1925,9 +1925,14 @@
   // view above the tail. Observe the body: any size change while pinned that
   // leaves the bottom is healed on the spot. (toBottom moves scroll, not size —
   // no feedback loop.)
+  // Unpinned, the same signal heals the reader (#98): a growth above the viewport — an image
+  // decoding, a late reflow — moves what is being read by its height, and no scroll event
+  // says so. The last anchor the reader settled on (kept by the scroll handler and every apply)
+  // is put back at its offset; a growth below the viewport moves nothing and this is a no-op.
   if (window.ResizeObserver) {
     new ResizeObserver(function () {
       if (following && !atBottom()) toBottom();
+      else if (!following && viewAnchor) restoreAnchor(viewAnchor);
     }).observe(document.body);
   }
   // The pre-apply viewport anchor (#89): while unpinned, a content apply must not
@@ -1935,6 +1940,11 @@
   // element, and afterwards put it back at the exact same viewport offset (the tail
   // rewrite dropped measured heights back to estimates below it; without this the
   // resulting pad shifts + the browser's own anchoring walk the page around).
+  // The anchor the reader last settled on (#98): captured after every scroll frame and every
+  // apply, cleared the moment a scroll begins (so a resize heard between the scroll and its
+  // frame cannot undo the scroll), and read by the body observer above for changes nobody asked
+  // for.
+  var viewAnchor = null;
   function captureAnchor() {
     if (following) return null;
     var a = null;
@@ -1968,6 +1978,7 @@
       restoreAnchor(anchor);
       if (added > 0) showNew(added);
     }
+    viewAnchor = captureAnchor();
     spy();
   }
   var newCount = 0;
@@ -3584,11 +3595,13 @@
     // has to be right the moment the tab is looked at. It is guarded to a no-op unless the
     // state actually changed, so running it per scroll event costs a comparison.
     paintBadge();
+    viewAnchor = null; // this scroll moved the reader; the frame below re-reads where to
     if (raf) return;
     raf = requestAnimationFrame(function () {
       raf = null;
       updateView(); // #50: materialize the window the scroll landed on
       spy();
+      viewAnchor = captureAnchor();
     });
   }, { passive: true });
   window.addEventListener("resize", function () { updateView(); }, { passive: true });
