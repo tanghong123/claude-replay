@@ -336,12 +336,21 @@ function sessionGone() { recordStore.stop(); preview.setSession(""); indexState.
 // browser's own Back does the same (the classic view's `synthesizeBack`).
 const parentBtn = byId("sessionParent");
 parentBtn.onclick = () => { if (parentBtn.dataset.parent) selectSession(parentBtn.dataset.parent, true); };
+// The way back (#82): the control was always hidden — the reference's `compat-hidden` rule
+// (display:none !important) beat the production rule that showed it — so it is un-hidden here
+// and says what it does. The parent comes from the child's meta (its ancestors), or, when the
+// shell itself switched from a parent to this child, from what it remembers of that switch.
+parentBtn.classList.remove("compat-hidden");
+parentBtn.insertAdjacentHTML("beforeend", '<span class="session-parent-label">Parent session</span>');
+const parentHints = new Map();
 let synthesizedFor = "";
 function renderParent(meta) {
-  const parent = recordState.session === indexState.selected ? meta?.ancestors?.at(-1) : null;
+  const known = recordState.session === indexState.selected ? meta?.ancestors?.at(-1) : null;
+  const hint = parentHints.get(indexState.selected);
+  const parent = known || (hint ? { id: hint, title: indexState.rows.get(hint)?.name || hint } : null);
   parentBtn.classList.toggle("is-live", !!parent);
   parentBtn.dataset.parent = parent?.id || "";
-  parentBtn.title = parent ? `Back to the parent session: ${parent.title || parent.id}` : "Back to the parent session";
+  parentBtn.title = parent ? `Back to the parent session: ${parent.title || parent.id}  ( ${hintFor("parent")} )` : "Back to the parent session";
   if (parent && synthesizedFor !== indexState.selected && history.length <= 1) {
     try { const child = location.href; history.replaceState({}, "", sessionUrl(parent.id)); history.pushState({}, "", child); } catch (_) {}
     synthesizedFor = indexState.selected;
@@ -528,7 +537,7 @@ byId("sessionNavigator").onclick = event => {
   const open = event.target.closest("[data-task-open]"); if (open) { openTaskPopover(Number(open.dataset.taskOpen), open); return; }
   const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); viewport.jumpToRecord(Number(task.dataset.taskRecord), "task"); return; }
   const agent = event.target.closest("[data-agent-record]"); if (agent) { viewport.jumpToRecord(Number(agent.dataset.agentRecord), "agent"); return; }
-  const child = event.target.closest("[data-child-outline]"); if (child) { selectSession(child.dataset.childOutline, true); return; }
+  const child = event.target.closest("[data-child-outline]"); if (child) { parentHints.set(child.dataset.childOutline, indexState.selected); selectSession(child.dataset.childOutline, true); return; }
   // A card's head folds and unfolds ITS pane (#74) — the whole head, and nothing else changes:
   // the other panes keep their state and their height.
   const card = event.target.closest("[data-nav-card-toggle]");
@@ -889,7 +898,8 @@ const keyActions = {
   "list-next": () => stepList(1), "list-prev": () => stepList(-1),
   "sidebar-toggle": () => toggleSidebar(!indexState.sidebarOpen),
   "navigator-toggle": () => setNavigatorHidden(!uiState.navigatorHidden),
-  "tasks-center": () => centerTasks()
+  "tasks-center": () => centerTasks(),
+  "parent": () => { if (parentBtn.dataset.parent) selectSession(parentBtn.dataset.parent, true); }
 };
 bindKeymap(document, target => (target?.closest?.(".tree-row") ? "list" : "view"), action => keyActions[action]?.());
 // Discoverability in the shell's idiom: the key in the control's own title / hint.

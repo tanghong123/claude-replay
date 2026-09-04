@@ -35,6 +35,8 @@ const KEYMAP = Object.freeze([
   { key: "o", when: "any", action: "navigator-toggle", hint: "o" },
   // The tasks pane centered on what is running (#57) — or on the done/pending boundary.
   { key: "c", when: "view", action: "tasks-center", hint: "c" },
+  // Up to the parent session from a sub-agent's transcript (#82).
+  { key: "u", when: "view", action: "parent", hint: "u" },
 ]);
 
 const isEditable = target => !!target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName || "") || target.isContentEditable === true);

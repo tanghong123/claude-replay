@@ -276,7 +276,7 @@ console.log("reveal cases passed");
 assert.match(appSource, /families\(rows\)/, "the tree clusters fork families through the tested function");
 assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
 assert.match(appSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
-assert.match(productionCss, /\.session-parent\.is-live\{display:grid\}/, "the reference parent control is shown by a production state, not by editing the shell");
+assert.match(productionCss, /\.session-parent\.is-live\{display:inline-flex;/, "the reference parent control is shown by a production state, not by editing the shell");
 console.log("sub-agent navigation cases passed");
 assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.values\(\)\]/, "a ?session= deep link to a non-row id (a sub-agent child) opens that id, not the first row");
 
@@ -836,4 +836,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /if \(!wasFollowing && delta && !opening\) recordState\.newRecords \+= delta;/, "…and is not counted");
   assert.match(appSource, /reset: \(\) => \{ lastRecordCount = -1;/, "a reset re-arms the open");
   console.log("#84 first-open cases passed");
+}
+
+// #82: the way back from a sub-agent is visible and named, known even when the child was opened
+// first, and `u` goes up.
+{
+  const ev = (key, extra = {}) => ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...extra });
+  assert.equal(resolveKey(ev("u"), "view").action, "parent");
+  assert.match(appSource, /parentBtn\.classList\.remove\("compat-hidden"\);/, "the control is un-hidden — the reference's !important rule hid it");
+  assert.match(appSource, /<span class="session-parent-label">Parent session<\/span>/, "…and says what it does");
+  assert.match(appSource, /parentHints\.set\(child\.dataset\.childOutline, indexState\.selected\);/, "a switch from a parent is remembered");
+  assert.match(appSource, /const parent = known \|\| \(hint \? \{ id: hint, title: indexState\.rows\.get\(hint\)\?\.name \|\| hint \} : null\);/, "…and used when the meta has no ancestry");
+  assert.match(appSource, /"parent": \(\) => \{ if \(parentBtn\.dataset\.parent\) selectSession\(parentBtn\.dataset\.parent, true\); \}/, "the key goes up");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.session-parent\.is-live\{display:inline-flex;/, "shown as a labelled control");
+  console.log("#82 parent control cases passed");
 }

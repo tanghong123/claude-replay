@@ -580,22 +580,35 @@ impl SessionService {
         // deep link (the common path is `register_child_sources`, one batch per parent),
         // and it stops at the first hit — but it is O(roots) resolves, so keep it off the
         // hot path.
-        let (agent, source) = {
+        let (agent, source, root_id) = {
             let roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
             roots.iter().find_map(|r| {
-                discover::subagent_source(r.agent, &r.path, id).map(|path| (r.agent, path))
+                discover::subagent_source(r.agent, &r.path, id)
+                    .map(|path| (r.agent, path, r.id.clone()))
             })?
         };
         if !source.exists() {
             return None;
         }
         let src = Transcript::open(agent, source);
+        // The root the deep link was found under IS a way back (#82): name it as the ancestry,
+        // titled as the cache knows it, so a child opened first still has its parent control.
+        // (A grandchild gets the root, not its immediate parent — the parent's own pull refines
+        // it through `register_child_sources`.)
+        let root_title = self
+            .cache
+            .aux_with(&root_id, |a| a.title.clone().map(|t| t.title))
+            .unwrap_or_else(|| root_id.clone());
         let t = TitleInfo {
             title: id.to_string(),
-            ..Default::default() // unknown ancestry/type for an un-navigated deep link
+            ancestors: vec![(root_id.clone(), root_title)],
+            ..Default::default() // unknown type for an un-navigated deep link
         };
         self.cache.register(id, src.clone());
-        self.cache.aux_with(id, |a| a.title = Some(t.clone()));
+        self.cache.aux_with(id, |a| {
+            a.title = Some(t.clone());
+            a.parent = Some(root_id);
+        });
         Some((src, t))
     }
 

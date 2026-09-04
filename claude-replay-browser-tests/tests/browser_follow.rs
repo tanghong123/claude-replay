@@ -1186,6 +1186,22 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
     // Outlive one index poll (5 s): the child must still be the open session afterwards.
     std::thread::sleep(std::time::Duration::from_millis(6500));
     let survived = eval(&tab, "JSON.stringify({sel: new URLSearchParams(location.search).get('session'), title: document.getElementById('sessionTitle').textContent, gone: !!document.querySelector('.monitor-empty:not([hidden])')})");
+    // #82: the way back is VISIBLE — a size, its label — before it is used; a JavaScript click
+    // works on a hidden element, which is how this case passed while the control was hidden.
+    let control = eval(&tab, "JSON.stringify((function(){ var b = document.getElementById('sessionParent'); var r = b.getBoundingClientRect(); return { visible: b.offsetParent !== null && r.width >= 24 && r.height >= 20, label: b.textContent.trim() }; })())");
+    let control: serde_json::Value =
+        serde_json::from_str(control.as_str().unwrap_or("null")).unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        control["visible"], true,
+        "the parent control is visible: {control}"
+    );
+    assert!(
+        control["label"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Parent session"),
+        "…and labelled: {control}"
+    );
     eval(
         &tab,
         "document.getElementById('sessionParent').click(); 'ok'",
@@ -3576,6 +3592,57 @@ fn the_app_shell_open_counts_nothing_as_new() {
         harness::new_messages_pill(&tab, harness::Surface::AppShell),
         8,
         "only the eight that arrived count"
+    );
+    drop(monitor);
+}
+
+/// #82: a child opened FIRST — a deep link, no parent pulled — still has its way back: the
+/// server names the root it found the child under, the control shows, and it lands on the parent.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_finds_the_parent_from_a_child_opened_first() {
+    let _serial = serial();
+    let base = base("appshell-child-first");
+    let stores = Stores::new(&base);
+    let parent = "dddddddd-0000-4000-8000-000000000082".to_string();
+    let mut transcript = harness::long_session(8, harness::Shape::default());
+    transcript += &harness::agent_spawn("call_82", "Explore", 9);
+    transcript += &harness::agent_result("call_82", "aExplore-82", "Explore", 9);
+    transcript += &harness::long_session(4, harness::Shape::default());
+    stores.claude_session(&parent, &transcript);
+    stores.claude_child(
+        &parent,
+        "aExplore-82",
+        &harness::long_session(6, harness::Shape::default()),
+    );
+    let monitor = Monitor::spawn(Kind::V2, 2872, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    tab.navigate_to("http://127.0.0.1:2872/?ui=app&session=aExplore-82")
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the child to mount from its deep link", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 160)");
+    harness::until(&tab, "document.getElementById('sessionParent').classList.contains('is-live')", "the parent control to appear", std::time::Duration::from_secs(15), "JSON.stringify({cls: document.getElementById('sessionParent').className, crumb: document.getElementById('sessionCrumb').textContent})");
+    let control = harness::probe(&tab, "(function(){ var b = document.getElementById('sessionParent'); var r = b.getBoundingClientRect(); return { visible: b.offsetParent !== null && r.width >= 24, parent: b.dataset.parent, label: b.textContent.trim() }; })()");
+    assert_eq!(
+        control["visible"], true,
+        "the way back is visible: {control}"
+    );
+    assert_eq!(
+        control["parent"], parent,
+        "…and names the root the child was found under: {control}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('sessionParent').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        &format!("new URLSearchParams(location.search).get('session') === {parent:?}"),
+        "the click to land on the parent",
+        std::time::Duration::from_secs(15),
+        "location.search",
     );
     drop(monitor);
 }
