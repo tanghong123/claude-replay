@@ -94,3 +94,19 @@
 .work-group:first-child{margin-top:2px;padding-top:0;border-top:0}
 .work-group-count{font-weight:500;color:var(--faint)}
 .work-group[data-task-group="in_progress"]{color:var(--amber,var(--sub))}
+/* #58 / #59: the outline's cards share the pane's height and each list scrolls ITSELF. The
+   reference lays the cards out as grid rows where only one row is flexible, so a long turns list
+   grew past the pane and was clipped (the pane is overflow:hidden) with no way to reach turn
+   900. Here the pane is a flex column: every open card may shrink to a floor and grow to its
+   content, its list is the scroller (thin, always visible), and the transcript remains the
+   document's one scroller. */
+.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator{display:flex;flex-direction:column;min-height:0}
+.workspace:not(.navigator-off) .session-navigator>.outline-caption,.workspace:not(.navigator-off) .session-navigator>.outline-rail{flex:0 0 auto}
+.workspace:not(.navigator-off) .session-navigator>.outline-card{flex:0 0 auto;min-height:0;display:flex;flex-direction:column}
+.workspace:not(.navigator-off) .session-navigator>.outline-card.open{flex:1 1 auto;min-height:96px}
+.workspace:not(.navigator-off) .session-navigator>.outline-card>.outline-card-head{flex:0 0 auto}
+.workspace:not(.navigator-off) .session-navigator>.outline-card.open>.outline-card-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.workspace:not(.navigator-off) .session-navigator>.outline-card.open>.outline-card-body>.navigator-list{flex:1 1 auto;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-gutter:stable;scrollbar-color:color-mix(in srgb,var(--sub) 45%,transparent) transparent}
+.navigator-list::-webkit-scrollbar{width:8px}
+.navigator-list::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--sub) 45%,transparent);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+.navigator-list::-webkit-scrollbar-track{background:transparent}

@@ -744,3 +744,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /taskGroups\(tasks\)\.map\(group => `<div class="work-group" data-task-group="\$\{group\.key\}">/, "the pane renders the groups with a boundary");
   console.log("#56 task order cases passed");
 }
+
+// #58 / #59: the outline's lists are bounded scrollers of their own; the focused turn is kept in
+// view through the pane's scroller, never the window.
+{
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.session-navigator>\.outline-card\.open>\.outline-card-body>\.navigator-list\{flex:1 1 auto;min-height:0;overflow-y:auto;/, "each open card's list scrolls itself");
+  assert.match(css, /\.session-navigator>\.outline-card\.open\{flex:1 1 auto;min-height:96px\}/, "open cards share the pane's height down to a floor");
+  assert.match(appSource, /function revealInPane\(/, "the focused turn is revealed in the pane");
+  assert.match(appSource, /revealInPane\(row\)/, "…through the pane's own scroller, never the window");
+  console.log("#58/#59 pane scroller cases passed");
+}

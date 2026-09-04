@@ -2657,3 +2657,156 @@ fn the_app_shell_orders_tasks_by_group_then_id() {
     );
     drop(monitor);
 }
+
+/// The pane geometry probe shared by the two scroller cases: the list's own overflow, whether
+/// the current row sits inside the list's viewport, and that neither the window nor the
+/// transcript moved.
+const PANE_PROBE: &str = r#"(function (listId) {
+  var list = document.getElementById(listId), lr = list.getBoundingClientRect();
+  var cur = list.querySelector('.current') || list.querySelector('[aria-current]');
+  var cr = cur ? cur.getBoundingClientRect() : null;
+  return { overflow: list.scrollHeight - list.clientHeight, top: list.scrollTop, height: Math.round(lr.height),
+           currentInView: cr ? (cr.top >= lr.top - 1 && cr.bottom <= lr.bottom + 1) : null,
+           windowY: window.scrollY, transcriptTop: document.querySelector('.transcript').scrollTop };
+})"#;
+
+/// #58: with many turns, the turns pane scrolls itself — the list overflows inside the fixed
+/// chrome, stepping keeps the focused turn inside the pane's own viewport, and the window and
+/// the document never scroll.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_turns_pane_scrolls_itself() {
+    let _serial = serial();
+    let base = base("appshell-turns-scroller");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000058".to_string();
+    stores.claude_session(&sid, &harness::long_session(160, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2848, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:2848/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length >= 160",
+        "the turns pane to list the session",
+        std::time::Duration::from_secs(60),
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+    );
+    let probe = |tab: &headless_chrome::Tab| {
+        harness::probe(tab, &format!("({PANE_PROBE})('navigatorTurns')"))
+    };
+    let start = probe(&tab);
+    assert!(
+        start["overflow"].as_f64().unwrap_or(0.0) > 400.0,
+        "the turns list overflows its own bounded scroller: {start}"
+    );
+    assert!(
+        start["height"].as_f64().unwrap_or(0.0) > 96.0,
+        "…which has real height inside the pane: {start}"
+    );
+    harness::jump_to_end(&tab, harness::Surface::AppShell);
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let at_end = probe(&tab);
+    assert_eq!(
+        at_end["currentInView"], true,
+        "at the tail, the current (last) turn is inside the pane's viewport: {at_end}"
+    );
+    assert!(
+        at_end["top"].as_f64().unwrap_or(0.0) > 300.0,
+        "…because the PANE scrolled, not the window: {at_end}"
+    );
+    assert_eq!(at_end["windowY"], 0, "the window never scrolls: {at_end}");
+    // Step back through turns with the key: the focus stays in the pane's view.
+    for _ in 0..6 {
+        harness::eval(&tab, "document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'");
+        std::thread::sleep(std::time::Duration::from_millis(350));
+    }
+    let stepped = probe(&tab);
+    assert_eq!(
+        stepped["currentInView"], true,
+        "after stepping, the focused turn is still inside the pane's viewport: {stepped}"
+    );
+    assert_eq!(
+        stepped["windowY"], 0,
+        "the window still never scrolls: {stepped}"
+    );
+    drop(monitor);
+}
+
+/// #59: with many tasks, the tasks pane scrolls itself; scrolling it moves neither the window nor
+/// the transcript.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_tasks_pane_scrolls_itself() {
+    let _serial = serial();
+    let base = base("appshell-tasks-scroller");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000059".to_string();
+    stores.claude_session(&sid, &harness::long_session(12, harness::Shape::default()));
+    let mut tasks: Vec<(String, String, &str)> = Vec::new();
+    for i in 1..=40 {
+        tasks.push((
+            format!("{i}"),
+            format!("task number {i} with a subject long enough to wrap onto a second line"),
+            if i <= 20 {
+                "completed"
+            } else if i <= 23 {
+                "in_progress"
+            } else {
+                "pending"
+            },
+        ));
+    }
+    let borrowed: Vec<(&str, &str, &str)> = tasks
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), *c))
+        .collect();
+    stores.claude_tasks(&sid, &borrowed);
+    let monitor = Monitor::spawn(Kind::V2, 2849, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:2849/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 40",
+        "the tasks to render",
+        std::time::Duration::from_secs(20),
+        "document.querySelectorAll('#navigatorWork .work-task').length",
+    );
+    let probe = |tab: &headless_chrome::Tab| {
+        harness::probe(tab, &format!("({PANE_PROBE})('navigatorWork')"))
+    };
+    let start = probe(&tab);
+    assert!(
+        start["overflow"].as_f64().unwrap_or(0.0) > 300.0,
+        "the tasks list overflows its own bounded scroller: {start}"
+    );
+    assert!(
+        start["height"].as_f64().unwrap_or(0.0) > 96.0,
+        "…which has real height inside the pane: {start}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorWork').scrollTop = 300; 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let scrolled = probe(&tab);
+    assert!(
+        scrolled["top"].as_f64().unwrap_or(0.0) >= 250.0,
+        "the pane scrolled: {scrolled}"
+    );
+    assert_eq!(scrolled["windowY"], 0, "the window did not: {scrolled}");
+    assert_eq!(
+        scrolled["transcriptTop"], start["transcriptTop"],
+        "…nor did the transcript: {scrolled}"
+    );
+    drop(monitor);
+}
