@@ -3234,9 +3234,13 @@ mod tests {
     /// over blindly taking the stem's first eight characters (`rollout-`).
     #[test]
     fn topbar_snips_codex_rollout_to_uuid_prefix() {
+        // The shortener is a shared module since #50 (html/shared/ids.js), inlined into every
+        // page ahead of the page script; the page reads it rather than keeping a copy.
+        let ids = super::shared::shared_source("ids").expect("the ids module is in SHARED");
         assert!(
-            JS.contains(r"(?:^|-)([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-                && JS.contains("return uuid ? uuid[1]"),
+            ids.contains(r"(?:^|-)([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+                && ids.contains("return uuid ? uuid[1]")
+                && JS.contains("var snipId = shared.snipId;"),
             "the session id shortener extracts a trailing UUID's first group"
         );
     }
