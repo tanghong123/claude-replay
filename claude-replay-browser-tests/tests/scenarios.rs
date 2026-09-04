@@ -21,8 +21,8 @@ use harness::{
     assistant_at, at_tail, base, click_session_id, copied_text, eval, image_result_at, jump_to_end,
     key, last_mounted_turn, long_session, now_minus, open_last_fold, open_turn_session, probe,
     queued_at, queued_text, read_tool_at, scroll_by, serial, session_id_chip, stub_clipboard,
-    tool_open_at, tool_result_at, turn_at_top, until, user_at, view_anchor_index, Kind, LiveGrowth,
-    Monitor, Shape, Stores, Surface,
+    tool_open_at, tool_result_at, tool_result_lines, turn_at_top, until, user_at,
+    view_anchor_index, Kind, LiveGrowth, Monitor, Shape, Stores, Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -1421,5 +1421,168 @@ fn app_shell_lets_the_thumb_own_the_position_while_dragged() {
         let after = view_anchor_index(tab, Surface::AppShell);
         let probe_after = eval(tab, probe_js);
         assert!(after.0 == before.0 && (after.1 - before.1).abs() <= 4.0, "after release the anchor rule holds again: before {before:?} {probe_before}, after {after:?} {probe_after}");
+    }
+}
+
+// ── scenario: output caps — the first rows show, the rest wait, an expansion is remembered (#108)
+
+/// Row 3.1 of design/rendering-parity-audit.md. The server caps every pre/num/diff part; the
+/// reader sees the first rows and a "⋯ N more lines · to line M" control, expands in place, and
+/// a small expansion survives leaving and returning (the block re-materializes open).
+fn scenario_output_caps_expand_and_remember(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // Open the Bash and Read rows of the last turn the way a reader does: by their heads,
+    // outermost first — a tool call sits inside an activity fold on both pages.
+    let mut opened = String::new();
+    for tool in ["bash", "read"] {
+        for _ in 0..6 {
+            let step = match surface {
+                Surface::Classic => eval(tab, &format!("(function(){{ var f = [...document.querySelectorAll('#stream .fold[data-kind=\"{tool}\"]')].pop(); if (!f) return 'none'; var chain = []; for (var e = f; e; e = e.parentElement.closest('.fold')) chain.push(e); var closed = chain.reverse().find(function (x) {{ return x.dataset.open === '0'; }}); if (!closed) return 'open'; closed.querySelector('.fold-h').click(); return 'clicked'; }})()")),
+                Surface::AppShell => {
+                    let name = if tool == "bash" { "Bash" } else { "Read" };
+                    eval(tab, &format!("(function(){{ var t = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"{name}\"] > .renderer')].pop(); if (!t) return 'none'; var chain = []; for (var e = t; e; e = e.parentElement && e.parentElement.closest('.renderer')) chain.push(e); var closed = chain.reverse().find(function (x) {{ return x.classList.contains('closed'); }}); if (!closed) return 'open'; closed.querySelector('button.renderer-head').click(); return 'clicked'; }})()"))
+                }
+            };
+            let step = step.as_str().unwrap_or("").to_string();
+            opened.push_str(&format!("{tool}:{step} "));
+            settle();
+            if step == "open" || step == "none" {
+                break;
+            }
+        }
+    }
+    let (bash_lines, bash_btn, read_rows, read_btn, hidden_sel) = match surface {
+        Surface::Classic => (
+            "(function(){ var r = [...document.querySelectorAll('#stream .fold[data-kind=\"bash\"] .result')].pop(); if (!r) return -1; return [...r.querySelectorAll('pre')].filter(function (p) { return p.getBoundingClientRect().height > 0; }).map(function (p) { return p.textContent.split('\\n').length; }).reduce(function (a, b) { return a + b; }, 0); })()",
+            "(function(){ var r = [...document.querySelectorAll('#stream .fold[data-kind=\"bash\"] .result')].pop(); var b = r ? r.querySelector('button.morebtn') : null; return b ? b.textContent : ''; })()",
+            "(function(){ var n = [...document.querySelectorAll('#stream .fold[data-kind=\"read\"] .numbered')].pop(); if (!n) return -1; return [...n.querySelectorAll('.nrow')].filter(function (x) { return x.getBoundingClientRect().height > 0; }).length; })()",
+            "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-kind=\"read\"]')].pop(); var b = f ? f.querySelector('button.morebtn') : null; return b ? b.textContent : ''; })()",
+            "#stream .fold[data-kind=\"read\"] button.morebtn",
+        ),
+        Surface::AppShell => (
+            "(function(){ var t = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Bash\"] .renderer-terminal')].pop(); if (!t) return -1; return [...t.querySelectorAll('pre')].filter(function (p) { return p.getBoundingClientRect().height > 0; }).map(function (p) { return p.textContent.split('\\n').length; }).reduce(function (a, b) { return a + b; }, 0); })()",
+            "(function(){ var t = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Bash\"] .renderer-terminal')].pop(); var b = t ? t.querySelector('.cap-more-btn') : null; return b ? b.textContent : ''; })()",
+            "(function(){ var c = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Read\"] .codebox')].pop(); if (!c) return -1; return [...c.querySelectorAll('.line')].filter(function (x) { return x.getBoundingClientRect().height > 0; }).length; })()",
+            "(function(){ var c = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Read\"] .codebox')].pop(); var b = c ? c.querySelector('.cap-more-btn') : null; return b ? b.textContent : ''; })()",
+            ".renderer-turn[data-tool-name=\"Read\"] .cap-more-btn",
+        ),
+    };
+    let diag_js = match surface {
+        Surface::Classic => "(function(){ var r = [...document.querySelectorAll('#stream .fold[data-kind=\"bash\"] .result')].pop(); if (!r) return 'no result'; var chain = []; for (var e = r; e && e !== document.body; e = e.parentElement) chain.push(e.tagName.toLowerCase() + '.' + String(e.className).split(' ').slice(0, 3).join('.') + ':' + Math.round(e.getBoundingClientRect().height) + (e.dataset && e.dataset.open != null ? '[open=' + e.dataset.open + ']' : '')); return chain.join(' > ') + ' | pres=' + r.querySelectorAll('pre').length + ' h=' + [...r.querySelectorAll('pre')].map(function (x) { return Math.round(x.getBoundingClientRect().height); }).join(','); })()",
+        Surface::AppShell => "(function(){ var r = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Bash\"] .renderer-terminal')].pop(); if (!r) return 'no terminal'; var chain = []; for (var e = r; e && e !== document.body; e = e.parentElement) chain.push(e.tagName.toLowerCase() + '.' + String(e.className).split(' ').slice(0, 3).join('.') + ':' + Math.round(e.getBoundingClientRect().height)); return chain.join(' > ') + ' | pres=' + r.querySelectorAll('pre').length + ' h=' + [...r.querySelectorAll('pre')].map(function (x) { return Math.round(x.getBoundingClientRect().height); }).join(','); })()",
+    };
+    let before = (
+        eval(tab, bash_lines),
+        eval(tab, bash_btn),
+        eval(tab, read_rows),
+        eval(tab, read_btn),
+    );
+    let diag = eval(tab, diag_js);
+    assert_eq!(
+        before.0, 12,
+        "the Bash result shows its first 12 lines ({opened:?}): {before:?} {diag}"
+    );
+    assert_eq!(
+        before.1, "⋯ 188 more lines",
+        "…with the expander naming the rest: {before:?}"
+    );
+    assert_eq!(
+        before.2, 10,
+        "the Read result shows its first 10 rows: {before:?}"
+    );
+    assert_eq!(
+        before.3, "⋯ 50 more lines · to line 60",
+        "…with the range in the expander: {before:?}"
+    );
+    // Expand the Read cap in place.
+    eval(tab, &format!("(function(){{ var bs = document.querySelectorAll('{hidden_sel}'); var b = bs[bs.length - 1]; if (b) b.click(); return !!b; }})()"));
+    settle();
+    let after = (eval(tab, read_rows), eval(tab, read_btn));
+    assert_eq!(after.0, 60, "expanding shows every row: {after:?}");
+    assert_eq!(after.1, "", "…and the control is gone: {after:?}");
+    // Leave (the block dematerializes far away) and return: the expansion is remembered.
+    scroll_by(tab, surface, -40000);
+    settle();
+    settle();
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the jump back to the tail");
+    settle();
+    let back = (
+        eval(tab, read_rows),
+        eval(tab, read_btn),
+        eval(tab, bash_lines),
+    );
+    let diag_back = eval(tab, diag_js);
+    let folds_back = eval(tab, match surface {
+        Surface::Classic => "(function(){ return [...document.querySelectorAll('#stream .fold[data-kind=\"act\"], #stream .fold[data-kind=\"bash\"], #stream .fold[data-kind=\"read\"]')].slice(-4).map(function (f) { return f.dataset.kind + ':' + f.dataset.open; }).join(' '); })()",
+        Surface::AppShell => "(function(){ return [...document.querySelectorAll('.renderer-turn')].slice(-6).map(function (t) { var r = t.querySelector(':scope > .renderer'); return (t.dataset.toolName || t.dataset.kind) + ':' + (r && r.classList.contains('closed') ? 'closed' : 'open'); }).join(' '); })()",
+    });
+    assert_eq!(
+        back.0, 60,
+        "back at the tail the Read expansion holds: {back:?} {diag_back} [{folds_back}]"
+    );
+    assert_eq!(back.1, "", "…without a control: {back:?}");
+    // The Bash sits in its own unit above (the narration splits the turn); bring it into the
+    // window before asking whether its untouched cap is still a cap.
+    let mut bash_back = back.2.clone();
+    for _ in 0..6 {
+        if bash_back != -1 {
+            break;
+        }
+        scroll_by(tab, surface, -700);
+        settle();
+        bash_back = eval(tab, bash_lines);
+    }
+    assert_eq!(
+        bash_back, 12,
+        "…while the untouched Bash cap is still a cap: {back:?} {diag_back} [{folds_back}]"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_caps_output_and_remembers_an_expansion() {
+    let _serial = serial();
+    let fx = caps_fixture("scenario-caps-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_output_caps_expand_and_remember(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_caps_output_and_remembers_an_expansion() {
+    let _serial = serial();
+    let fx = caps_fixture("scenario-caps-app");
+    let page = open(Surface::AppShell, &fx, 2882);
+    scenario_output_caps_expand_and_remember(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Forty turns (tall enough that the tail dematerializes when the reader leaves), then a turn
+/// with a 200-line Bash result and a 60-line Read.
+fn caps_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(40, Shape::default());
+    // A word before each call, as a working agent writes: a bare call is absorbed into an
+    // activity fold and would sit inside a closed parent on both pages.
+    transcript += &user_at("question caps: run the long checks", &now_minus(90));
+    transcript += &assistant_at("Running the long check first.", &now_minus(85));
+    transcript += &tool_open_at("t-long-bash", &now_minus(70));
+    transcript += &tool_result_lines("t-long-bash", 200, &now_minus(60));
+    transcript += &assistant_at("Then reading the long file.", &now_minus(55));
+    transcript += &read_tool_at("t-long-read", "/tmp/long-file.txt", &now_minus(50));
+    transcript += &tool_result_lines("t-long-read", 60, &now_minus(40));
+    transcript += &assistant_at("answer caps: both outputs are long", &now_minus(30));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 41,
     }
 }

@@ -149,6 +149,13 @@ pub fn read_tool_at(id: &str, path: &str, ts: &str) -> String {
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Read\",\"input\":{{\"file_path\":\"{path}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
     )
 }
+/// A tool result of `n` numbered lines ("line 1" … "line n") — long enough to be capped.
+pub fn tool_result_lines(call_id: &str, n: usize, ts: &str) -> String {
+    let body: String = (1..=n).map(|k| format!("line {k}\\n")).collect();
+    format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":\"{body}\"}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
 pub fn tool_result_at(id: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"out line\\nout line\\nout line\\n\"}}]}},\"timestamp\":\"{ts}\"}}\n"

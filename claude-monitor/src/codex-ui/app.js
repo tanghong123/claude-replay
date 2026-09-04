@@ -186,7 +186,7 @@ const sessionIndex = new SessionIndexStore({
   error: () => toast("Session scan failed — retrying")
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.capOpen.clear(); recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   error: (error, hasRecords) => hasRecords ? toast(`${error.message}；retrying`) : viewport.showEmpty("Cannot read this session", `${error.message}；The monitor will retry.`, true)
 });

@@ -302,6 +302,10 @@ mod tests {
                 "shared/ids.js",
                 claude_replay_html::shared_source("ids").unwrap(),
             ),
+            (
+                "shared/parts.js",
+                claude_replay_html::shared_source("parts").unwrap(),
+            ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),

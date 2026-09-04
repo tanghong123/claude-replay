@@ -1,3 +1,7 @@
+// Row caps are the shared module's (html/shared/parts.js, #108): the split, the label, the row
+// markup and the expansion memory — one implementation with the classic page.
+import { capSplit, capLabel, preLines, toLineOf, numRowsHtml, diffRowsHtml, capOpenHas } from "./shared/parts.js";
+
 export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 export const plainText = record => JSON.stringify(record).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 
@@ -227,6 +231,7 @@ function rendererRecord(record, renderer, name) {
     state: chipText, error: chips.some(c => /fail|error/i.test(`${c.c || ""} ${c.x || ""}`)),
     running: chips.some(c => /running|active/i.test(c.x || "")), duration: chipText,
     html: partsHtml((record.body || []).filter(p => p.p !== "blocks")), raw: record,
+    parts: (record.body || []).filter(p => p.p !== "blocks"),
     path: head.path || head.att_path,
     revealSig: head.sig || head.att_sig,
     fileSig: head.fsig || head.att_fsig,
@@ -242,26 +247,45 @@ function childFrom(value) {
   catch (_) { return ""; }
 }
 
-export function partsHtml(parts = []) {
+const APP_ROWS = { row: "line", gut: "ln", mark: "mark", code: "codecell", add: "add", del: "del" };
+const APP_MARKS = { add: "+", del: "−", ctx: "" };
+
+/** Body parts → HTML. With a record id and the reader state, `pre`/`num`/`diff` parts honour
+ *  the server's cap: the first rows show, the rest wait behind "⋯ N more lines · to line M"
+ *  unless this expander was opened before (`state.capOpen`, keyed by record and ordinal). */
+export function partsHtml(parts = [], recordId = "", state = null) {
+  let ordinal = 0;
+  const capped = (items, cap, build, toLine) => {
+    const split = capSplit(items, cap);
+    if (!split.hidden.length) return { shown: build(split.shown), hidden: "", button: "" };
+    const ord = ordinal++;
+    const key = `${recordId}:${ord}`;
+    const opened = !!(state?.capOpen && capOpenHas(state.capOpen, recordId, ord));
+    return {
+      shown: build(split.shown),
+      hidden: `<div class="cap-more ${opened ? "shown" : ""}" data-cap-id="${escapeText(key)}">${build(split.hidden)}</div>`,
+      button: opened ? "" : `<button type="button" class="cap-more-btn" data-cap-more="${escapeText(key)}" data-cap-record="${escapeText(recordId)}" data-cap-ord="${ord}" data-cap-lines="${split.hidden.length}">${escapeText(capLabel(split.hidden.length, toLine))}</button>`
+    };
+  };
   return parts.map(part => {
     if (!part || typeof part !== "object") return `<pre class="fallback-raw">${escapeText(part)}</pre>`;
     if (part.p === "md" || part.p === "think") return part.h || "";
+    if (part.p === "pre" && part.cap) {
+      const cut = capped(preLines(part.x), part.cap, lines => `<pre>${escapeText(lines.join("\n"))}</pre>`, null);
+      return cut.shown + cut.hidden + cut.button;
+    }
     if (part.p === "pre" || part.p === "raw") return `<pre>${escapeText(part.x || "")}</pre>`;
     if (part.p === "note") return `<div class="renderer-note"><p>${escapeText(part.x || "")}</p></div>`;
-    if (part.p === "num" || part.p === "diff") return codeRows(part);
+    if (part.p === "num" || part.p === "diff") return codeRows(part, capped);
     if (part.p === "blocks") return "";
     return `<div class="renderer-fallback"><div class="renderer-fallback-row"><span>unknown part</span><code>${escapeText(JSON.stringify(part))}</code></div></div>`;
   }).join("");
 }
 
-function codeRows(part) {
-  const rows = (part.rows || []).map(row => {
-    const kind = part.p === "diff" ? row[0] || "" : "";
-    const line = part.p === "num" ? row[0] : row[1];
-    const code = part.p === "num" ? row[1] : escapeText(row[2] || "");
-    return `<div class="line ${escapeText(kind)}"><span class="ln">${escapeText(line ?? "")}</span><span class="mark">${kind === "add" ? "+" : kind === "del" ? "−" : ""}</span><span class="codecell">${code || " "}</span></div>`;
-  }).join("");
-  return `<div class="codebox" data-codebox><div class="lines wrap">${rows}</div></div>`;
+function codeRows(part, capped) {
+  const build = part.p === "num" ? rows => numRowsHtml(rows, APP_ROWS) : rows => diffRowsHtml(rows, APP_ROWS, APP_MARKS);
+  const cut = capped(part.rows || [], part.cap, build, toLineOf(part));
+  return `<div class="codebox" data-codebox><div class="lines wrap">${cut.shown}${cut.hidden}</div>${cut.button}</div>`;
 }
 
 export class Projection {

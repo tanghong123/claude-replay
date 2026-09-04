@@ -3245,6 +3245,26 @@ mod tests {
     /// offset — the same body observer that heals the pinned tail. The anchor is refreshed per
     /// scroll frame and per apply, and cleared the moment a scroll begins so a resize heard
     /// between a scroll and its frame cannot undo the scroll.
+    /// #108: the classic page's caps run on the shared module — split, label, rows, memory —
+    /// keeping its own class names and its DOM-walking ordinal stamping.
+    #[test]
+    fn caps_are_the_shared_modules() {
+        assert!(JS.contains("var split = shared.capSplit(rows, cap);"));
+        assert!(JS.contains(
+            "var btn = el(\"button\", \"morebtn\", shared.capLabel(split.hidden.length, toLine));"
+        ));
+        assert!(JS.contains(
+            "return shared.numRowsHtml(rows, CLASSIC_ROWS); // Rust-escaped + syntect spans"
+        ));
+        assert!(JS.contains("return shared.diffRowsHtml(rows, CLASSIC_ROWS, CLASSIC_MARKS);"));
+        assert!(JS.contains("var MAX_BUFFER_LINES = shared.MAX_BUFFER_LINES;"));
+        assert!(JS.contains("if (shared.capOpenHas(capOpen, recId, k)) expandMore(btns[k]);"));
+        assert!(JS.contains("shared.rememberCap(capOpen, blk67.id, more.dataset.ord, hiddenLineCount(hidden67, more));"));
+        assert!(super::shared::SHARED
+            .iter()
+            .any(|(name, _)| *name == "parts"));
+    }
+
     #[test]
     fn unpinned_growth_is_healed_by_the_last_anchor() {
         assert!(JS.contains("else if (!following && viewAnchor) restoreAnchor(viewAnchor);"));

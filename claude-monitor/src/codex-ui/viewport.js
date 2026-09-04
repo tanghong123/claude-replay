@@ -9,6 +9,9 @@ export function revealNavigationContext(units, index, state, recordIndex, reveal
     state.processExpanded.add(unit.key);
     const target = unit.views.find(item => item.index === recordIndex)?.view;
     if (target?.id && target.t !== "assistant") state.folds.set(target.id, false);
+    // A navigated-to record shows whole: every cap in it opens (#108), so a search hit or a
+    // deep link behind "⋯ N more lines" is on screen, as the classic page's revealMark does.
+    if (target?.id && state.capOpen) state.capOpen.add(`${target.id}:*`);
   } else if (reveal === "turn") {
     const process = units[index + 1];
     if (process?.type === "process" && process.turn === unit.turn) {

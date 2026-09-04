@@ -38,6 +38,7 @@ pub const SHARED: &[(&str, &str)] = &[
         include_str!("../html/shared/record-stream.js"),
     ),
     ("runtime", include_str!("../html/shared/runtime.js")),
+    ("parts", include_str!("../html/shared/parts.js")),
     ("ids", include_str!("../html/shared/ids.js")),
 ];
 

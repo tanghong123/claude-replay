@@ -2,7 +2,8 @@
 // (html/shared/capabilities.js, #46), read here and by the classic page alike.
 import { attachmentCapability, referenceAction, revealQuery } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
-import { escapeText } from "./view-model.js";
+import { escapeText, partsHtml } from "./view-model.js";
+import { rememberCap } from "./shared/parts.js";
 
 const element = html => {
   const template = document.createElement("template");
@@ -21,7 +22,13 @@ const element = html => {
  *  state, so a re-render keeps them open. */
 const openImages = new Set();
 
-function rendererBody(view) {
+/** A tool view's body with the reader's cap state applied (#108): the raw parts render at
+ *  render time, so an expander opened before comes back open. */
+function bodyHtml(view, state) {
+  return view.parts ? partsHtml(view.parts, view.id, state) : view.html;
+}
+
+function rendererBody(view, state) {
   if (view.renderer === "fallback") {
     return `<div class="renderer-fallback"><div class="renderer-fallback-row"><span>record</span><code class="fallback-raw">${escapeText(JSON.stringify(view.raw, null, 2))}</code></div></div>`;
   }
@@ -60,8 +67,8 @@ function rendererBody(view) {
     }
     return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button>${capability.action !== "reveal" && h.att_path && h.att_sig ? `<button class="artifact-link artifact-link-secondary" data-attachment="${escapeText(view.id || "")}" data-attachment-action="reveal" data-path="${escapeText(h.att_path)}" data-sig="${escapeText(h.att_sig)}">Reveal in file manager</button>` : ""}</div>`;
   }
-  if (view.renderer === "bash") return `<div class="renderer-terminal ${view.error ? "error" : ""}"><span class="output">${view.html || "No output recorded"}</span></div>`;
-  return view.html || `<div class="renderer-note"><p>No additional details recorded.</p></div>`;
+  if (view.renderer === "bash") return `<div class="renderer-terminal ${view.error ? "error" : ""}"><span class="output">${bodyHtml(view, state) || "No output recorded"}</span></div>`;
+  return bodyHtml(view, state) || `<div class="renderer-note"><p>No additional details recorded.</p></div>`;
 }
 
 function renderRenderer(view, index, state) {
@@ -78,7 +85,7 @@ function renderRenderer(view, index, state) {
     ? `<div class="renderer-head" aria-label="Thinking recorded"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span><span class="renderer-target"></span><span class="renderer-state"></span></div>`
     : `<button class="renderer-head" type="button" aria-expanded="${!closed}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${view.path && (view.fileSig || view.revealSig) ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${referenceAction(view) === "preview" ? "Open in the preview pane" : "Reveal in file manager"}">${escapeText(view.summary || "")}</span>` : `<span class="renderer-target">${escapeText(view.summary || "")}</span>`}<span class="renderer-state" title="${escapeText(status)}">${escapeText(status === "completed" ? view.duration || "" : status)}</span></button>`;
   const toolName = view.t === "tool" ? ` data-tool-name="${escapeText(view.name)}"` : "";
-  return `<div class="turn assistant renderer-turn" data-kind="${escapeText(view.t)}"${toolName} data-block-index="${escapeText(index)}"><div class="renderer ${noninteractive ? "noninteractive" : closed ? "closed" : ""}" data-renderer data-record-id="${escapeText(key)}" data-renderer-kind="${escapeText(view.renderer)}" data-state="${escapeText(status)}">${head}${view.children?.length ? `<button class="renderer-children-toggle" type="button" data-renderer-children-bulk aria-pressed="false" title="Expand all nested levels">${svg("expandStack")}</button>` : ""}${noninteractive ? "" : `<div class="renderer-body"><div class="renderer-output">${rendererBody(view)}</div>${children}</div>`}</div></div>`;
+  return `<div class="turn assistant renderer-turn" data-kind="${escapeText(view.t)}"${toolName} data-block-index="${escapeText(index)}"><div class="renderer ${noninteractive ? "noninteractive" : closed ? "closed" : ""}" data-renderer data-record-id="${escapeText(key)}" data-renderer-kind="${escapeText(view.renderer)}" data-state="${escapeText(status)}">${head}${view.children?.length ? `<button class="renderer-children-toggle" type="button" data-renderer-children-bulk aria-pressed="false" title="Expand all nested levels">${svg("expandStack")}</button>` : ""}${noninteractive ? "" : `<div class="renderer-body"><div class="renderer-output">${rendererBody(view, state)}</div>${children}</div>`}</div></div>`;
 }
 
 export const rendererStartsClosed = view => !view.running && !view.interaction && view.renderer !== "queue";
@@ -196,6 +203,18 @@ export function bindComponentEvents(root, state, actions) {
     }
     const child = event.target.closest("[data-child-session]");
     if (child) { actions.openChild(child.dataset.childSession); return; }
+    // A cap expander (#108): reveal in place — the rows are already there — and remember a
+    // small expansion so a re-render keeps it open; the viewport's observer measures the growth.
+    const capMore = event.target.closest("[data-cap-more]");
+    if (capMore) {
+      event.preventDefault(); event.stopPropagation();
+      const scope = capMore.closest(".codebox, .renderer-terminal, .renderer-body") || capMore.parentElement;
+      const hidden = scope?.querySelector(`[data-cap-id="${CSS.escape(capMore.dataset.capMore)}"]`);
+      if (hidden) hidden.classList.add("shown");
+      rememberCap(state.capOpen, capMore.dataset.capRecord, capMore.dataset.capOrd, Number(capMore.dataset.capLines) || 0);
+      capMore.remove();
+      return;
+    }
     const imageToggle = event.target.closest("[data-image-toggle]");
     if (imageToggle) { const id = imageToggle.dataset.imageToggle; openImages.has(id) ? openImages.delete(id) : openImages.add(id); actions.rerender?.(); return; }
     const attachment = event.target.closest("[data-attachment]");

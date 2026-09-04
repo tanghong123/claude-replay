@@ -24,6 +24,7 @@ export const recordState = {
   heights: new Map(), folds: new Map(), processFolds: new Map(), processExpanded: new Set(), promptExpanded: new Set(),
   following: true, newRecords: 0, search: "", matches: [], match: -1,
   rawTurns: new Set(),
+  capOpen: new Set(),
   taskTargets: new Map(), agentTargets: new Map()
 };
 

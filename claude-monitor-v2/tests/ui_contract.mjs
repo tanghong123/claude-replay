@@ -945,3 +945,24 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /this\.observer\.observe\(child, \{ box: "border-box" \}\);/, "a unit's height is its border box — padding and border changes count");
   console.log("#98 reader anchor cases passed");
 }
+
+// #108: row caps are the shared module's, on both pages.
+{
+  const parts = readFileSync(new URL("../../claude-replay-html/src/html/shared/parts.js", import.meta.url), "utf8");
+  assert.match(parts, /^export \{ MAX_BUFFER_LINES, capLabel, capSplit, preLines, toLineOf, numRowsHtml, diffRowsHtml, capKey, rememberCap, capOpenHas, hiddenLines \};\s*$/m, "the module's export line");
+  const vm = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
+  assert.match(vm, /import \{ capSplit, capLabel, preLines, toLineOf, numRowsHtml, diffRowsHtml, capOpenHas \} from "\.\/shared\/parts\.js";/, "the app shell imports the shared rules");
+  assert.match(vm, /export function partsHtml\(parts = \[\], recordId = "", state = null\) \{/, "parts render with the record id and the reader state");
+  assert.match(vm, /class="cap-more-btn" data-cap-more=/, "the expander control");
+  assert.match(vm, /parts: \(record\.body \|\| \[\]\)\.filter\(p => p\.p !== "blocks"\),/, "a tool view keeps its raw parts for render-time caps");
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /const capMore = event\.target\.closest\("\[data-cap-more\]"\);/, "the click reveals in place…");
+  assert.match(comp, /rememberCap\(state\.capOpen, capMore\.dataset\.capRecord, capMore\.dataset\.capOrd, Number\(capMore\.dataset\.capLines\) \|\| 0\);/, "…and remembers a small expansion");
+  assert.match(comp, /return view\.parts \? partsHtml\(view\.parts, view\.id, state\) : view\.html;/, "the body renders from parts with the state");
+  const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  assert.match(vp, /if \(target\?\.id && state\.capOpen\) state\.capOpen\.add\(`\$\{target\.id\}:\*`\);/, "a navigated-to record opens every cap");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.cap-more\{display:none\}\.cap-more\.shown\{display:block\}/, "hidden rows wait");
+  assert.match(css, /\.renderer \.codebox \.lines\{max-height:none\}/, "the 360px scroll box is gone");
+  console.log("#108 row cap cases passed");
+}

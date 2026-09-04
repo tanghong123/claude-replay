@@ -87,46 +87,35 @@
 
   // ── rendering ────────────────────────────────────────────────────────
 
-  // A capped list: first `cap` children stay visible, the rest go into a hidden
-  // div revealed by a "⋯ N more lines" button. All content is always present.
-  function capped(container, rows, cap, after, toLine) {
-    if (!cap || rows.length <= cap) {
-      rows.forEach(function (r) { container.appendChild(r); });
-      return;
-    }
-    rows.slice(0, cap).forEach(function (r) { container.appendChild(r); });
+  // This page's names for the shared row markup (html/shared/parts.js, #108): the rows, the
+  // split, the label and the expansion memory are the shared module's, and both pages run it.
+  var CLASSIC_ROWS = { row: "nrow", gut: "gut", mark: "mark", code: "code", add: "add", del: "del" };
+  var CLASSIC_MARKS = { add: "+", del: "−", ctx: " " };
+
+  // A capped list: the first `cap` rows stay visible, the rest go into a hidden div revealed
+  // by a "⋯ N more lines" button. All content is always present.
+  function capped(container, rows, build, cap, after, toLine) {
+    var split = shared.capSplit(rows, cap);
+    container.insertAdjacentHTML("beforeend", build(split.shown));
+    if (!split.hidden.length) return;
     var id = "more" + ++moreSeq;
     var hidden = el("div", "more");
     hidden.id = id;
-    rows.slice(cap).forEach(function (r) { hidden.appendChild(r); });
+    hidden.insertAdjacentHTML("beforeend", build(split.hidden));
     container.appendChild(hidden);
     // §8.8 name the range, not just a count: "⋯ 126 more lines · to line 132".
-    var label = "⋯ " + (rows.length - cap) + " more lines" + (toLine != null ? " · to line " + toLine : "");
-    var btn = el("button", "morebtn", label);
+    var btn = el("button", "morebtn", shared.capLabel(split.hidden.length, toLine));
     btn.dataset.more = id;
+    btn.dataset.capLines = split.hidden.length;
     after.appendChild(btn);
   }
 
   function numberedRows(rows) {
-    return rows.map(function (r) {
-      var row = el("div", "nrow");
-      row.appendChild(el("span", "gut", String(r[0])));
-      var code = el("span", "code");
-      code.innerHTML = r[1]; // Rust-escaped + syntect spans
-      row.appendChild(code);
-      return row;
-    });
+    return shared.numRowsHtml(rows, CLASSIC_ROWS); // Rust-escaped + syntect spans
   }
 
   function diffRows(rows) {
-    return rows.map(function (r) {
-      var kind = r[0];
-      var row = el("div", "nrow" + (kind === "ctx" ? "" : " " + kind));
-      row.appendChild(el("span", "gut", r[1] == null ? "" : String(r[1])));
-      row.appendChild(el("span", "mark", kind === "add" ? "+" : kind === "del" ? "−" : " "));
-      row.appendChild(el("span", "code", r[2]));
-      return row;
-    });
+    return shared.diffRowsHtml(rows, CLASSIC_ROWS, CLASSIC_MARKS);
   }
 
   function renderPart(p, into) {
@@ -153,22 +142,22 @@
     if (p.p === "pre") {
       var wrap = el("div", "result");
       wrap.appendChild(el("span", "lead", "⎿"));
-      var lines = String(p.x).split("\n");
+      var lines = shared.preLines(p.x);
       var box = el("div");
       box.style.flex = "1";
       box.style.minWidth = "0";
-      if (p.cap && lines.length > p.cap) {
-        box.appendChild(el("pre", null, lines.slice(0, p.cap).join("\n")));
+      var split = shared.capSplit(lines, p.cap);
+      box.appendChild(el("pre", null, split.shown.join("\n")));
+      if (split.hidden.length) {
         var id = "more" + ++moreSeq;
         var hidden = el("div", "more");
         hidden.id = id;
-        hidden.appendChild(el("pre", null, lines.slice(p.cap).join("\n")));
+        hidden.appendChild(el("pre", null, split.hidden.join("\n")));
         box.appendChild(hidden);
-        var btn = el("button", "morebtn", "⋯ " + (lines.length - p.cap) + " more lines");
+        var btn = el("button", "morebtn", shared.capLabel(split.hidden.length, null));
         btn.dataset.more = id;
+        btn.dataset.capLines = split.hidden.length;
         box.appendChild(btn);
-      } else {
-        box.appendChild(el("pre", null, p.x));
       }
       wrap.appendChild(box);
       into.appendChild(wrap);
@@ -178,12 +167,7 @@
       var box2 = el("div", p.p === "num" ? "numbered" : "diff");
       var holder = el("div");
       // The final rendered row's line number, for the "· to line M" expander label.
-      var toLine = null;
-      for (var i = p.rows.length - 1; i >= 0; i--) {
-        var ln = p.p === "num" ? p.rows[i][0] : p.rows[i][1];
-        if (ln != null) { toLine = ln; break; }
-      }
-      capped(box2, p.p === "num" ? numberedRows(p.rows) : diffRows(p.rows), p.cap, holder, toLine);
+      capped(box2, p.rows, p.p === "num" ? numberedRows : diffRows, p.cap, holder, shared.toLineOf(p));
       into.appendChild(box2);
       while (holder.firstChild) into.appendChild(holder.firstChild);
       return;
@@ -498,13 +482,10 @@
   // over the display cap keeps its expansion (recorded by record-id + the button's
   // ordinal within the block — stable, since re-renders are deterministic from the
   // records); LARGE expansions stay ephemeral by design (a reset is welcome there).
-  var MAX_BUFFER_LINES = 200;
-  var smallMore = {}; // "recId:ordinal" -> true
-  function hiddenLineCount(hidden) {
-    var rows = hidden.querySelectorAll(".nrow").length;
-    if (rows) return rows;
-    var t = hidden.textContent || "";
-    return t.split("\n").length;
+  var MAX_BUFFER_LINES = shared.MAX_BUFFER_LINES;
+  var capOpen = new Set(); // "recId:ordinal" — the shared module's memory keys (#108)
+  function hiddenLineCount(hidden, btn) {
+    return shared.hiddenLines(btn, hidden, "nrow");
   }
   function expandMore(btn) {
     var hidden = $(btn.dataset.more);
@@ -515,13 +496,20 @@
   // click time would shift as earlier buttons get removed), then re-apply recorded
   // small expansions.
   function reapplySmallMore(e) {
-    var recId = e.id;
-    if (!recId) return;
-    var btns = Array.prototype.slice.call(e.querySelectorAll(".morebtn:not(.clampbtn)"));
-    for (var k = btns.length - 1; k >= 0; k--) {
-      btns[k].dataset.ord = k;
-      if (smallMore[recId + ":" + k]) expandMore(btns[k]);
-    }
+    // Every block in the materialized element, each with its OWN buttons: a tool fold sits
+    // inside an activity fold, and stamping the outer block's ordinals over the inner one's
+    // recorded an expansion inside any tool call under one key and looked it up under another
+    // (#108 found it) — it was never kept. Ordinals are per block, keyed by that block's id.
+    var blocks = [e].concat(Array.prototype.slice.call(e.querySelectorAll(".blk")));
+    blocks.forEach(function (blk) {
+      var recId = blk.id;
+      if (!recId) return;
+      var btns = Array.prototype.slice.call(blk.querySelectorAll(".morebtn:not(.clampbtn)")).filter(function (b) { return b.closest(".blk") === blk; });
+      for (var k = btns.length - 1; k >= 0; k--) {
+        btns[k].dataset.ord = k;
+        if (shared.capOpenHas(capOpen, recId, k)) expandMore(btns[k]);
+      }
+    });
   }
   function applyUserFolds(b) {
     if (b.id && userFolds[b.id] !== undefined && isFoldRec(b)) b.open = userFolds[b.id];
@@ -2834,9 +2822,8 @@
       // record-id + ordinal so it survives rematerialization; large ones reset.
       var blk67 = more.closest(".blk");
       var hidden67 = $(more.dataset.more);
-      if (blk67 && blk67.id && hidden67 && more.dataset.ord != null
-          && hiddenLineCount(hidden67) <= MAX_BUFFER_LINES) {
-        smallMore[blk67.id + ":" + more.dataset.ord] = true;
+      if (blk67 && blk67.id && hidden67 && more.dataset.ord != null) {
+        shared.rememberCap(capOpen, blk67.id, more.dataset.ord, hiddenLineCount(hidden67, more));
       }
       expandMore(more);
       return;
@@ -3233,9 +3220,8 @@
         var btn = document.querySelector('.morebtn[data-more="' + p.id + '"]');
         if (btn) {
           var blk = btn.closest(".blk");
-          if (blk && blk.id && btn.dataset.ord != null
-              && hiddenLineCount(p) <= MAX_BUFFER_LINES) {
-            smallMore[blk.id + ":" + btn.dataset.ord] = true;
+          if (blk && blk.id && btn.dataset.ord != null) {
+            shared.rememberCap(capOpen, blk.id, btn.dataset.ord, hiddenLineCount(p, btn));
           }
           expandMore(btn);
         } else {

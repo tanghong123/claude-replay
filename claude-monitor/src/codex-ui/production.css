@@ -165,3 +165,10 @@
 .outline-epoch-glyph{font-size:11px;line-height:1}
 .outline-epoch-sizes{font-variant-numeric:tabular-nums;white-space:nowrap}
 .outline-epoch:hover,.outline-epoch:focus-visible{color:var(--sub);background:var(--hover);outline:0}
+/* #108: row caps — the first rows show, the rest wait behind "⋯ N more lines" (shared/parts.js);
+   the 360px scroll box that clamped every row is gone with them. */
+.cap-more{display:none}.cap-more.shown{display:block}.cap-more>pre{margin-top:0}
+.cap-more-btn{display:inline-block;margin:4px 0 2px;padding:2px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--sub);font:12px/1.4 var(--mono,ui-monospace,monospace);cursor:pointer}
+.cap-more-btn:hover,.cap-more-btn:focus-visible{color:var(--ink);border-color:var(--sub);outline:0}
+.renderer .codebox .lines{max-height:none}
+.codebox .codecell:empty::before{content:"\00a0"}
