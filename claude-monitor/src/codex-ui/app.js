@@ -141,7 +141,8 @@ const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, 
 // Delegate from the stable scroll host: the virtual window may replace all of its children
 // while a pull reconciliation is in flight, but attachment/fold interactions must survive it.
 bindComponentEvents(transcript, recordState, {
-  rerender: () => viewport.render(),
+  rerender: () => { viewport.render(); viewport.scheduleRemember(); },
+  remember: () => viewport.scheduleRemember(),
   copySpot: async (id, button) => {
     const url = new URL(location.href);
     url.hash = id;
@@ -186,7 +187,7 @@ const sessionIndex = new SessionIndexStore({
   error: () => toast("Session scan failed — retrying")
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.capOpen.clear(); recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   error: (error, hasRecords) => hasRecords ? toast(`${error.message}；retrying`) : viewport.showEmpty("Cannot read this session", `${error.message}；The monitor will retry.`, true)
 });
@@ -1050,3 +1051,7 @@ app.classList.toggle("sidebar-off", !indexState.sidebarOpen);
 tree.innerHTML = '<div class="no-results">Scanning sessions…</div>';
 byId("sidebarMiniAgents").innerHTML = "";
 renderHeader(); renderNavigator(); paintJump(); sessionIndex.start();
+// #114: a reload, a close or the tab going to the background saves the reader's choices with
+// the position (the debounced save may not have run yet).
+addEventListener("pagehide", () => viewport.remember());
+document.addEventListener("visibilitychange", () => { if (document.hidden) viewport.remember(); });

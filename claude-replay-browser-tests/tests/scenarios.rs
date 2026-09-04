@@ -21,8 +21,9 @@ use harness::{
     assistant_at, at_tail, base, click_session_id, command_at, copied_text, eval, image_result_at,
     jump_to_end, key, last_mounted_turn, long_session, now_minus, open_last_fold,
     open_turn_session, probe, queued_at, queued_text, read_tool_at, scroll_by, serial,
-    session_id_chip, stub_clipboard, tool_open_at, tool_result_at, tool_result_lines, turn_at_top,
-    until, user_at, view_anchor_index, Kind, LiveGrowth, Monitor, Shape, Stores, Surface,
+    session_id_chip, stub_clipboard, tap_console, tool_open_at, tool_result_at, tool_result_lines,
+    turn_at_top, until, user_at, view_anchor_index, Kind, LiveGrowth, Monitor, Shape, Stores,
+    Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -2074,6 +2075,180 @@ fn command_fixture(name: &str) -> Fixture {
         &now_minus(30),
     );
     let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+// ── scenario: the reader's choices survive a reload (and, on the app shell, a switch) (#114)
+
+/// Row 4.4 of design/rendering-parity-audit.md. A fold the reader opened, a cap they expanded
+/// and a turn they read raw come back after a reload — and, on the app shell, after switching
+/// to another session and back.
+fn scenario_view_state_survives(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (read_rows, read_btn, raw_toggle, raw_count, last_turn) = match surface {
+        Surface::Classic => (
+            "(function(){ var n = [...document.querySelectorAll('#stream .fold[data-kind=\"read\"] .numbered')].pop(); if (!n) return -1; return [...n.querySelectorAll('.nrow')].filter(function (x) { return x.getBoundingClientRect().height > 0; }).length; })()",
+            "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-kind=\"read\"]')].pop(); var b = f ? f.querySelector('button.morebtn') : null; if (b) b.click(); return !!b; })()",
+            "(function(){ var t = [...document.querySelectorAll('#stream .uturn .rawbtn')].pop(); if (!t) return 'none'; t.click(); return 'clicked'; })()",
+            "document.querySelectorAll('#stream .uturn pre.raw').length",
+            "(function(){ var r = [...document.querySelectorAll('#turnlist .side-item')].pop(); if (!r) return 'none'; r.click(); return 'jumped'; })()",
+        ),
+        Surface::AppShell => (
+            "(function(){ var c = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Read\"] .codebox')].pop(); if (!c) return -1; return [...c.querySelectorAll('.line')].filter(function (x) { return x.getBoundingClientRect().height > 0; }).length; })()",
+            "(function(){ var bs = document.querySelectorAll('.renderer-turn[data-tool-name=\"Read\"] .cap-more-btn'); var b = bs[bs.length - 1]; if (b) b.click(); return !!b; })()",
+            "(function(){ var t = [...document.querySelectorAll('.turn.user .raw-toggle')].pop(); if (!t) return 'none'; t.click(); return 'clicked'; })()",
+            "document.querySelectorAll('.turn.user pre.turn-raw-text').length",
+            "(function(){ var r = [...document.querySelectorAll('#navigatorTurns .outline-turn-row')].pop(); if (!r) return 'none'; r.click(); return 'jumped'; })()",
+        ),
+    };
+    // Raw the last prompt first, while it is mounted at the tail.
+    assert_eq!(
+        eval(tab, raw_toggle),
+        "clicked",
+        "the last prompt has a raw toggle"
+    );
+    settle();
+    assert_eq!(eval(tab, raw_count), 1, "the last prompt reads raw");
+    // Open the Read row's chain (activity, then the tool), then expand its cap.
+    for _ in 0..6 {
+        let step = match surface {
+            Surface::Classic => eval(tab, "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-kind=\"read\"]')].pop(); if (!f) return 'none'; var chain = []; for (var e = f; e; e = e.parentElement.closest('.fold')) chain.push(e); var closed = chain.reverse().find(function (x) { return x.dataset.open === '0'; }); if (!closed) return 'open'; closed.querySelector('.fold-h').click(); return 'clicked'; })()"),
+            Surface::AppShell => eval(tab, "(function(){ var t = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Read\"] > .renderer')].pop(); if (!t) return 'none'; var chain = []; for (var e = t; e; e = e.parentElement && e.parentElement.closest('.renderer')) chain.push(e); var closed = chain.reverse().find(function (x) { return x.classList.contains('closed'); }); if (!closed) return 'open'; closed.querySelector('button.renderer-head').click(); return 'clicked'; })()"),
+        };
+        settle();
+        if step != "clicked" {
+            break;
+        }
+    }
+    assert_eq!(eval(tab, read_rows), 10, "the Read row is open and capped");
+    assert_eq!(eval(tab, read_btn), true, "its cap expands");
+    settle();
+    assert_eq!(eval(tab, read_rows), 60, "…to every row");
+    settle();
+    // Reload, land on the last turn (the prompt at the top, the Read below it): the raw view, the
+    // fold and the expansion are as they were.
+    let _console = tap_console(tab);
+    eval(tab, "location.reload(); 'ok'");
+    std::thread::sleep(Duration::from_millis(1500));
+    // The remembered expansion makes the last process tall, so no prompt need be in the window
+    // at the tail: "back" is the turns pane listing the session again.
+    let pane_rows = match surface {
+        Surface::Classic => "document.querySelectorAll('#turnlist .side-item').length",
+        Surface::AppShell => {
+            "document.querySelectorAll('#navigatorTurns .outline-turn-row').length"
+        }
+    };
+    until(
+        tab,
+        &format!("{pane_rows} >= 13"),
+        "the page to come back after the reload",
+        Duration::from_secs(30),
+        pane_rows,
+    );
+    settle();
+    assert_eq!(
+        eval(tab, last_turn),
+        "jumped",
+        "the last turn is in the pane"
+    );
+    settle();
+    settle();
+    assert_eq!(
+        eval(tab, raw_count),
+        1,
+        "after the reload the prompt still reads raw"
+    );
+    assert_eq!(
+        eval(tab, read_rows),
+        60,
+        "…and the Read row is open with its cap expanded"
+    );
+    if surface == Surface::AppShell {
+        // Switch to the other session and back.
+        let other = format!("document.querySelector('.tree-row.session[data-session=\"{SID2}\"]')");
+        until(
+            tab,
+            &format!("!!{other}"),
+            "the second session in the tree",
+            Duration::from_secs(20),
+            "document.querySelectorAll('.tree-row.session').length",
+        );
+        eval(tab, &format!("{other}.click(); 'ok'"));
+        until(
+            tab,
+            "document.querySelectorAll('#navigatorTurns .outline-turn-row').length === 3",
+            "the second session to open",
+            Duration::from_secs(20),
+            "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+        );
+        eval(
+            tab,
+            &format!(
+                "document.querySelector('.tree-row.session[data-session=\"{SID}\"]').click(); 'ok'"
+            ),
+        );
+        until(
+            tab,
+            "document.querySelectorAll('#navigatorTurns .outline-turn-row').length === 13",
+            "the first session to open again",
+            Duration::from_secs(20),
+            "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+        );
+        settle();
+        assert_eq!(eval(tab, last_turn), "jumped");
+        settle();
+        settle();
+        assert_eq!(
+            eval(tab, raw_count),
+            1,
+            "after switching away and back the prompt still reads raw"
+        );
+        assert_eq!(
+            eval(tab, read_rows),
+            60,
+            "…and the Read row is open with its cap expanded"
+        );
+    }
+}
+
+const SID2: &str = "eeeeeeee-0000-4000-8000-000000000002";
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_keeps_view_state_across_a_reload() {
+    let _serial = serial();
+    let fx = view_state_fixture("scenario-viewstate-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_view_state_survives(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_keeps_view_state_across_a_reload_and_a_switch() {
+    let _serial = serial();
+    let fx = view_state_fixture("scenario-viewstate-app");
+    let page = open(Surface::AppShell, &fx, 2888);
+    scenario_view_state_survives(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Twelve turns then a narrated Read of 60 lines; and a second, three-turn session to switch to.
+fn view_state_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("question state: read the long file", &now_minus(80));
+    transcript += &assistant_at("Reading the long file.", &now_minus(70));
+    transcript += &read_tool_at("t-state-read", "/tmp/long-file.txt", &now_minus(60));
+    transcript += &tool_result_lines("t-state-read", 60, &now_minus(50));
+    transcript += &assistant_at("answer state: read", &now_minus(40));
+    let path = stores.claude_session(SID, &transcript);
+    stores.claude_session(SID2, &long_session(3, Shape::default()));
     Fixture {
         base,
         path,

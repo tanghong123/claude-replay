@@ -3245,6 +3245,13 @@ mod tests {
     /// offset — the same body observer that heals the pinned tail. The anchor is refreshed per
     /// scroll frame and per apply, and cleared the moment a scroll begins so a resize heard
     /// between a scroll and its frame cannot undo the scroll.
+    /// #114: the classic page's small cap expansions ride with folds and raws across a reload.
+    #[test]
+    fn cap_expansions_survive_a_reload() {
+        assert!(JS.contains("caps: Array.from(capOpen), seen: records.length"));
+        assert!(JS.contains("if (Array.isArray(vs0.caps)) capOpen = new Set(vs0.caps);"));
+    }
+
     /// #112: the classic page's time formatting is the shared module's.
     #[test]
     fn times_are_the_shared_modules() {

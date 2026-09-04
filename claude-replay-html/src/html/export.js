@@ -2006,7 +2006,7 @@
       sessionStorage.setItem(VS_KEY, JSON.stringify({
         v: 1, following: following, anchor: a && a.id, dy: a ? Math.round(a.top) : 0,
         y: Math.round(window.scrollY), // coarse fallback, for when the anchor is gone
-        folds: userFolds, raws: rawOne, seen: records.length
+        folds: userFolds, raws: rawOne, caps: Array.from(capOpen), seen: records.length
       }));
     } catch (e) { /* private mode or quota: the view just starts fresh */ }
   }
@@ -2029,6 +2029,7 @@
     if (vs0) {
       if (vs0.folds) userFolds = vs0.folds;
       if (vs0.raws) rawOne = vs0.raws;
+      if (Array.isArray(vs0.caps)) capOpen = new Set(vs0.caps); // #114: small cap expansions too
       pendingRestore = vs0;
     }
   }

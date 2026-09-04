@@ -1085,3 +1085,46 @@ pub fn open_turn_session(turns: u32, tools: u32) -> String {
     }
     out
 }
+
+/// Chrome's console for a tab, from now on: log entries and uncaught exceptions, collected
+/// across navigations (the listener stays on the tab). Read it before diagnosing a shell that
+/// "timed out waiting for …" — a blank shell is usually one uncaught error at load.
+pub fn tap_console(tab: &headless_chrome::Tab) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+    use headless_chrome::protocol::cdp::types::Event;
+    let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = lines.clone();
+    let _ = tab.enable_log();
+    let _ = tab.enable_runtime();
+    tab.add_event_listener(std::sync::Arc::new(move |event: &Event| {
+        let text = match event {
+            Event::LogEntryAdded(e) => Some(format!(
+                "{:?}: {}",
+                e.params.entry.level, e.params.entry.text
+            )),
+            Event::RuntimeExceptionThrown(e) => Some(format!(
+                "EXCEPTION: {}",
+                e.params
+                    .exception_details
+                    .exception
+                    .as_ref()
+                    .and_then(|x| x.description.clone())
+                    .unwrap_or_else(|| e.params.exception_details.text.clone())
+            )),
+            Event::RuntimeConsoleAPICalled(e) => Some(format!(
+                "console: {}",
+                e.params
+                    .args
+                    .iter()
+                    .filter_map(|a| a.value.as_ref().map(|v| v.to_string()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )),
+            _ => None,
+        };
+        if let Some(text) = text {
+            sink.lock().unwrap().push(text);
+        }
+    }))
+    .unwrap();
+    lines
+}

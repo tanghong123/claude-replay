@@ -24,7 +24,7 @@ export function revealNavigationContext(units, index, state, recordIndex, reveal
 // This adapter carries the original viewer's three scroll invariants into the demo's
 // `.transcript` scroller: incremental materialization, DOM-identity anchoring, and an
 // explicit follow mode changed only by user input.
-import { parseViewMemory, serializeViewMemory, viewMemoryKey } from "./view-memory.js";
+import { applyViewChoices, parseViewMemory, serializeViewMemory, viewChoices, viewMemoryKey } from "./view-memory.js";
 
 const ESTIMATE = 132;
 const REMEMBER_MS = 250;
@@ -111,6 +111,10 @@ export class Viewport {
     this.pending = memory && !memory.following ? memory : null;
     this.state.following = !this.pending;
     this.state.newRecords = 0;
+    // The reader's choices come back with the first batch (#114): a fold they opened, a turn
+    // they read raw, a cap they expanded, an image they showed. Applied in `setUnits`, after the
+    // record store's reset has cleared the state for the new session — not here, before it.
+    this.pendingView = memory?.view || null;
   }
 
   /** Remember the current position for this session: following, or the anchor. */
@@ -119,7 +123,8 @@ export class Viewport {
     if (!this.session || this.pending) return;
     const value = this.state.following ? { following: true } : this.captureDomAnchor();
     if (!value) return;
-    try { sessionStorage.setItem(viewMemoryKey(this.session), serializeViewMemory(value.following ? value : { following: false, key: value.key, top: value.top })); } catch (_) {}
+    const view = viewChoices(this.state);
+    try { sessionStorage.setItem(viewMemoryKey(this.session), serializeViewMemory(value.following ? { following: true, view } : { following: false, key: value.key, top: value.top, view })); } catch (_) {}
   }
 
   scheduleRemember() {
@@ -129,6 +134,7 @@ export class Viewport {
 
   setUnits(units, changedUnit = 0) {
     this.empty.hidden = true;
+    if (this.pendingView) { applyViewChoices(this.state, this.pendingView); this.pendingView = null; }
     const following = this.state.following;
     const anchor = following ? null : this.captureDomAnchor();
     const oldKeys = new Set(units.slice(0, changedUnit).map(unit => unit.key));

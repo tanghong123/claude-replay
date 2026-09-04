@@ -102,7 +102,7 @@ Scenario: the state of the guard that runs on both surfaces.
 | 4.1 | Per-block fold, keyboard toggle (Space/Enter on a focused head) | yes | yes | HAVE | none → add |
 | 4.2 | Expand all / collapse all folds | record-level, pinned as user overrides so re-emission cannot undo them | `#sessionFoldAll` (every process surface), per-process bulk, per-subtree bulk | OK-DIFF; verify re-emission keeps a user's open state on the app shell | none → add: open a fold, let the tail rewrite, still open on both |
 | 4.3 | Progressive rows inside a long process | (folds only) | first 7 events, "Show N more" | APP-ONLY (keep) | ✓ app (#98 uses it); — |
-| 4.4 | **Fold / raw / expansion state survives reload and session switch** | sessionStorage per session (folds, raw overrides, small `more` expansions, anchor, read count) | position only (`view-memory.js`); folds/raw/prompt/image sets cleared on switch | **KEEP** (port) | none → add: open a fold and raw a turn, reload, both hold |
+| 4.4 | **Fold / raw / expansion state survives reload and session switch** | sessionStorage per session (folds, raw overrides, anchor, read count; small cap expansions since #114) | was: position only. Now (#114) the reader's choices — folds, process folds and expansions, prompt expansions, raw overrides, cap expansions, shown images — ride with the position in the per-session memory, restored with the first batch and saved on every choice and on leaving | HAVE (v1.183.0) | ✓ both: `scenario_view_state_survives` (reload on both; switch away and back on the app shell) |
 | 4.5 | Navigation reveals context monotonically | `revealMark` opens caps/clamps holding a hit | `revealNavigationContext` opens process/progressive/renderer | HAVE; caps join it with 3.1 | #100 |
 
 ### 5. Navigation, search, reading aids
@@ -203,7 +203,7 @@ while running the shared code, which is what validates the module (the same patt
 | `shared/search.js` (started, #111) | the haystack (a record's text, nested included), the scope classes, the whole-word rule and occurrence counting — both pages run it; still per page: per-scope counts, the typed prefix, hit order, mark placement (#101, #104, #118) | classic `ownTextParts`/`directMask`/`countOcc`/`wholeAt` run on it; app `plainText` does | 5.3, 5.4 done; #101, #104, #118 |
 | `shared/filter.js` | type/tool filter semantics: hide vs landmark, force-open, nearest hit, snapshot restore | classic `setFilter`; app `applyFilters` | 5.8 |
 | `shared/time.js` (landed, #112) | `fmtTime` (`h:mm` today, `Mon D`, year when it differs), `fmtDur` | classic `fmtTime`/`fmtDur` run on it; the app shell's user bubble shows it | 3.19 done |
-| `shared/view-state.js` | folds, raw, expansions, prompt/image opens per session in `sessionStorage` (with position, `view-memory.js`) | classic `saveView`/`loadView`; app `view-memory.js` | 4.4 |
+| `shared/view-state.js` | folds, raw, expansions, prompt/image opens per session in `sessionStorage` (with position) | classic `saveView`/`loadView`; app `view-memory.js` (which now carries the choices, #114) — the shared form comes with the virtual-window engine (#107), which owns position memory | 4.4 done on both; the module with #107 |
 | `shared/virtual-window.js` | scrolling (#107, `design/virtual-window.md`) | | #107 |
 
 Each module follows the shared-module conventions (no imports, one trailing `export` line, a

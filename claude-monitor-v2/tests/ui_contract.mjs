@@ -19,7 +19,7 @@ import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQue
 import { REASONS, denoteState, displayState, needsPerson, stateTip } from "../../claude-replay-html/src/html/shared/state-labels.js";
 import { composeCapability, composeCopy, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "../../claude-replay-html/src/html/shared/record-stream.js";
-import { parseViewMemory, serializeViewMemory, viewMemoryKey } from "../../claude-monitor/src/codex-ui/view-memory.js";
+import { applyViewChoices, parseViewMemory, serializeViewMemory, viewChoices, viewMemoryKey } from "../../claude-monitor/src/codex-ui/view-memory.js";
 
 const demo = readFileSync(new URL("../../design/agent-monitor-codex-demo.html", import.meta.url), "utf8");
 const referenceCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/reference.css", import.meta.url), "utf8");
@@ -869,11 +869,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // #80: an image attachment is collapsed, then a thumbnail, then the lightbox.
 {
   const src = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
-  assert.match(src, /const openImages = new Set\(\);/, "the expanded images are page-session state");
+  assert.match(src, /state\.openImages\.has\(id\) \? state\.openImages\.delete\(id\) : state\.openImages\.add\(id\)/, "the expanded images are reader state (persisted with the other choices since #114)");
   assert.match(src, /if \(capability\.action === "image"\) \{/, "an image attachment has its own rendering");
   assert.match(src, /class="renderer-image-toggle" data-image-toggle="\$\{escapeText\(view\.id \|\| ""\)\}" aria-expanded="\$\{open\}"/, "…a toggle first");
   assert.match(src, /class="renderer-image-thumb" \$\{attrs\} title="Open \$\{escapeText\(name\)\} at full size"><img src="\$\{escapeText\(source\)\}"/, "…then a thumbnail that opens the lightbox");
-  assert.match(src, /openImages\.has\(id\) \? openImages\.delete\(id\) : openImages\.add\(id\); actions\.rerender\?\.\(\);/, "the toggle flips and re-renders");
+  assert.match(src, /state\.openImages\.has\(id\) \? state\.openImages\.delete\(id\) : state\.openImages\.add\(id\); actions\.rerender\?\.\(\);/, "the toggle flips and re-renders");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(css, /\.renderer-image-thumb img\{display:block;max-height:320px;/, "the thumbnail is bounded");
   console.log("#80 image attachment cases passed");
@@ -1043,4 +1043,24 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(comp, /class="command-head" type="button" data-prompt-toggle=/, "…folded until opened, through the prompt toggle");
   assert.match(comp, /<span class="command-badge">\/\$\{escapeText\(cmd\.name\)\}<\/span><span class="command-preview">/, "badge and preview");
   console.log("#113 command turn cases passed");
+}
+
+// #114: the reader's choices ride with the position and come back.
+{
+  const state = { folds: new Map([["b3", false]]), processFolds: new Map(), processExpanded: new Set(["process:b2"]), promptExpanded: new Set(), rawTurns: new Map([["user:t1", true]]), capOpen: new Set(["b5:0"]), openImages: new Set(["b9"]) };
+  const choices = viewChoices(state);
+  assert.deepEqual(choices, { folds: { b3: false }, processExpanded: ["process:b2"], rawTurns: { "user:t1": true }, capOpen: ["b5:0"], openImages: ["b9"] }, "Maps as objects, Sets as arrays, empties omitted");
+  const round = parseViewMemory(serializeViewMemory({ following: false, key: "user:t1", top: 12.4, view: choices }));
+  assert.deepEqual(round, { following: false, key: "user:t1", top: 12, view: choices }, "the choices survive the round trip");
+  assert.deepEqual(parseViewMemory('{"following":true}'), { following: true }, "an old memory without choices still parses, without a view field");
+  const fresh = { folds: new Map(), processFolds: new Map(), processExpanded: new Set(), promptExpanded: new Set(), rawTurns: new Map(), capOpen: new Set(), openImages: new Set() };
+  applyViewChoices(fresh, round.view);
+  assert.equal(fresh.folds.get("b3"), false); assert.ok(fresh.capOpen.has("b5:0") && fresh.openImages.has("b9") && fresh.rawTurns.get("user:t1") === true);
+  const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  assert.match(vp, /if \(this\.pendingView\) \{ applyViewChoices\(this\.state, this\.pendingView\); this\.pendingView = null; \}/, "restored with the first batch, after the store's reset");
+  assert.match(vp, /const view = viewChoices\(this\.state\);/, "…and saved with the position");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /rerender: \(\) => \{ viewport\.render\(\); viewport\.scheduleRemember\(\); \}/, "every choice schedules a save");
+  assert.match(app, /addEventListener\("pagehide", \(\) => viewport\.remember\(\)\);/, "…and leaving saves at once");
+  console.log("#114 view state cases passed");
 }

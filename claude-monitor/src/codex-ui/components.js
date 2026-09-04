@@ -19,9 +19,8 @@ const element = html => {
   return root;
 };
 
-/** The image attachments a reader expanded to a thumbnail (#80), by record id — page-session
- *  state, so a re-render keeps them open. */
-const openImages = new Set();
+// The image attachments a reader expanded (#80) live in the reader state (`state.openImages`,
+// #114) with the other choices, so a reload brings them back.
 
 /** A tool view's body with the reader's cap state applied (#108): the raw parts render at
  *  render time, so an expander opened before comes back open. */
@@ -62,7 +61,7 @@ function rendererBody(view, state) {
     if (capability.action === "image") {
       const source = h.att_datauri || `/file?path=${encodeURIComponent(h.att_path || "")}&sig=${encodeURIComponent(h.att_fsig || "")}`;
       const name = h.att_name || "image";
-      const open = openImages.has(view.id);
+      const open = !!state?.openImages?.has(view.id);
       const attrs = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="image" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
       return `<div class="renderer-image ${open ? "open" : ""}" data-image-block="${escapeText(view.id || "")}"><button type="button" class="renderer-image-toggle" data-image-toggle="${escapeText(view.id || "")}" aria-expanded="${open}">${open ? "Hide" : "Show"} image · ${escapeText(name)}</button>${open ? `<figure class="renderer-image-figure"><button type="button" class="renderer-image-thumb" ${attrs} title="Open ${escapeText(name)} at full size"><img src="${escapeText(source)}" alt="${escapeText(name)}" decoding="async"></button><figcaption>${escapeText(name)} · click for full size</figcaption></figure>` : ""}</div>`;
     }
@@ -242,10 +241,11 @@ export function bindComponentEvents(root, state, actions) {
       if (hidden) hidden.classList.add("shown");
       rememberCap(state.capOpen, capMore.dataset.capRecord, capMore.dataset.capOrd, Number(capMore.dataset.capLines) || 0);
       capMore.remove();
+      actions.remember?.();
       return;
     }
     const imageToggle = event.target.closest("[data-image-toggle]");
-    if (imageToggle) { const id = imageToggle.dataset.imageToggle; openImages.has(id) ? openImages.delete(id) : openImages.add(id); actions.rerender?.(); return; }
+    if (imageToggle) { const id = imageToggle.dataset.imageToggle; state.openImages.has(id) ? state.openImages.delete(id) : state.openImages.add(id); actions.rerender?.(); return; }
     const attachment = event.target.closest("[data-attachment]");
     if (attachment) { actions.openAttachment(attachment.dataset.attachment, attachment.dataset.path, attachment.dataset.fsig, attachment.dataset.attachmentAction, attachment.dataset.sig); return; }
     const prompt = event.target.closest("[data-prompt-toggle]");
