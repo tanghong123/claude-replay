@@ -10,7 +10,7 @@ import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-ht
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
-import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster } from "../../claude-monitor/src/codex-ui/view-model.js";
+import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
@@ -816,7 +816,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   assert.match(appSource, /group\("Session", \[\["status", displayState\(row\)\.label\], \["turns", turns\], \["children", agents\]\]\)/, "no title / agent / project rows — the header and the tree row show them");
   assert.match(appSource, /\["cache read", usage\.cache_read\], \.\.\.\(usage\.compacted \? \[\["compacted", usage\.compacted\]\] : \[\]\)/, "cached-read tokens and the compaction summary, when there is one");
-  assert.match(appSource, /if \(record\.kind === "compaction"\) epochs\.push\(\{ at: i, label: record\.head\?\.summary \|\| "context compacted" \}\)/, "a compaction becomes an epoch tick with the classic wording");
+  assert.match(appSource, /if \(record\.kind === "compaction"\) epochs\.push\(\{ at: i, tick: compactionTick\(record\.head \|\| \{\}\) \}\)/, "a compaction becomes an epoch tick from the record's facts");
   assert.match(appSource, /<button class="outline-epoch" type="button" data-turn-record="\$\{r\.at\}"/, "…that jumps to the compaction record");
   console.log("#67/#68/#69 info and turns pane cases passed");
 }
@@ -906,4 +906,24 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /<a href="\$\{escapeText\(r\.url\)\}" target="_blank" rel="noopener"/, "a row is a link in a new tab");
   assert.match(appSource, /viewport\.jumpToRecord\(Number\(jump\.dataset\.artifactRecord\), "artifact"\)/, "…with a jump to the publishing record");
   console.log("#78 artifact roster cases passed");
+}
+
+// #86 / #87: the tick is a glyph and "from → to" in the rows' type — no prose — from structured
+// head fields; the Outline caption takes the page background.
+{
+  assert.equal(humanTokens(0), "0"); assert.equal(humanTokens(999), "999"); assert.equal(humanTokens(8617), "8.6K"); assert.equal(humanTokens(594718), "594.7K"); assert.equal(humanTokens(1_200_000), "1.20M");
+  const auto = compactionTick({ compact_trigger: "auto", compact_pre: 594718, compact_post: 8617 });
+  assert.deepEqual(auto, { trigger: "auto", glyph: "⟳", title: "Compacted automatically — the context filled", sizes: "594.7K → 8.6K" });
+  const manual = compactionTick({ compact_trigger: "manual" });
+  assert.equal(manual.glyph, "✂"); assert.equal(manual.sizes, "", "no sizes when the record has none");
+  assert.equal(compactionTick({}).trigger, "auto", "an unknown trigger reads as automatic");
+  assert.match(appSource, /<span class="outline-epoch-glyph" aria-hidden="true">\$\{r\.tick\.glyph\}<\/span>/, "the glyph");
+  assert.match(appSource, /<span class="outline-epoch-sizes">\$\{escapeText\(r\.tick\.sizes\)\}<\/span>/, "…and the sizes");
+  assert.doesNotMatch(appSource, /context compacted/, "…and no prose");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.outline-epoch\{[^}]*font-size:11\.5px;line-height:1\.4;/, "the rows' own type (the reference's final .outline-label size)");
+  assert.match(css, /\.session-navigator>\.outline-caption\{position:sticky;top:0;z-index:3;background:var\(--bg\)\}/, "the Outline caption takes the page background (#87)");
+  const modRs = readFileSync(new URL("../../claude-replay-html/src/html_export/mod.rs", import.meta.url), "utf8");
+  assert.match(modRs, /head\.insert\("compact_trigger"\.into\(\), json!\(trigger\.as_str\(\)\)\);/, "the wire carries the trigger");
+  console.log("#86/#87 compaction tick cases passed");
 }

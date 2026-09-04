@@ -102,7 +102,7 @@
    alone. Opening or folding a pane changes nothing about the others. */
 .workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator{display:flex;flex-direction:column;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--sub) 45%,transparent) transparent}
 .workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>*{flex:0 0 auto}
-.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-caption{position:sticky;top:0;z-index:3;background:var(--outline-surface,var(--panel))}
+.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-caption{position:sticky;top:0;z-index:3;background:var(--bg)}
 .workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-card>.outline-card-head{position:relative;z-index:2;background:var(--outline-surface,var(--panel));will-change:transform}
 .workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-card.open>.outline-card-body>.navigator-list{max-height:min(48vh,560px);overflow-y:auto;scrollbar-width:thin;scrollbar-gutter:stable;scrollbar-color:color-mix(in srgb,var(--sub) 45%,transparent) transparent}
 .navigator-list::-webkit-scrollbar{width:8px}
@@ -158,3 +158,10 @@
 .artifacts-count{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--faint)}
 .artifacts-jump{width:26px;height:26px;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer;font-size:13px}
 .artifacts-jump:hover,.artifacts-jump:focus-visible{color:var(--ink);background:var(--hover);outline:0}
+/* #69 / #86: a compaction epoch tick in the turns pane — a hairline with a glyph and the context
+   size from → to, in the turn rows' own type. */
+.outline-epoch{display:flex;align-items:center;gap:6px;width:100%;margin:3px 0;padding:3px 9px;background:transparent;color:var(--faint);font-size:11.5px;line-height:1.4;text-align:left;cursor:pointer;border-radius:6px}
+.outline-epoch-line{flex:1 1 auto;height:1px;background:color-mix(in srgb,var(--line) 85%,transparent)}
+.outline-epoch-glyph{font-size:11px;line-height:1}
+.outline-epoch-sizes{font-variant-numeric:tabular-nums;white-space:nowrap}
+.outline-epoch:hover,.outline-epoch:focus-visible{color:var(--sub);background:var(--hover);outline:0}

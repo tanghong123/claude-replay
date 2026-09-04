@@ -3192,6 +3192,12 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
         "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
     );
     let state = r#"(function(){ var nav = document.querySelector('.session-navigator'), nr = nav.getBoundingClientRect(); var cap = nav.querySelector('.outline-caption'); return { open: [...document.querySelectorAll('.outline-card')].map(function (c) { return c.dataset.navCard + ':' + (c.classList.contains('open') ? 'open' : 'folded'); }), bodies: [...document.querySelectorAll('.outline-card')].map(function (c) { var body = c.querySelector('.outline-card-body'); return c.dataset.navCard + ':' + (body.offsetParent === null ? 0 : Math.round(body.getBoundingClientRect().height)); }), heads: [...document.querySelectorAll('.outline-card > .outline-card-head')].map(function (h) { var r = h.getBoundingClientRect(); return { key: h.dataset.navCardToggle, top: Math.round(r.top), bottom: Math.round(r.bottom), visible: r.top >= nr.top - 1 && r.bottom <= nr.bottom + 1 }; }), caption: cap ? { top: Math.round(cap.getBoundingClientRect().top), bottom: Math.round(cap.getBoundingClientRect().bottom) } : null, navTop: Math.round(nr.top + parseFloat(getComputedStyle(nav).paddingTop || '0')), navBottom: Math.round(nr.bottom), navScroll: nav.scrollTop, overflow: nav.scrollHeight - nav.clientHeight, windowY: window.scrollY }; })()"#;
+    // #87: the "Outline" caption row, collapse control included, sits on the page background.
+    let caption_bg = harness::eval(&tab, "getComputedStyle(document.querySelector('.session-navigator > .outline-caption')).backgroundColor");
+    assert_eq!(
+        caption_bg, "rgb(255, 255, 255)",
+        "the caption takes the page background (white in the light theme)"
+    );
     // 1 + 2: a head click folds or unfolds its own pane; the others keep their state.
     let before = harness::probe(&tab, state);
     assert_eq!(
@@ -3384,7 +3390,7 @@ fn the_app_shell_info_and_turns_panes_show_the_compaction() {
         std::time::Duration::from_secs(30),
         "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
     );
-    let turns = harness::probe(&tab, "(function(){ var rows = [...document.querySelectorAll('#navigatorTurns > *')]; return { kinds: rows.map(function (r) { return r.classList.contains('outline-epoch') ? 'epoch' : 'turn'; }), epochText: (document.querySelector('#navigatorTurns .outline-epoch') || {}).textContent || null }; })()");
+    let turns = harness::probe(&tab, "(function(){ var rows = [...document.querySelectorAll('#navigatorTurns > *')]; var tick = document.querySelector('#navigatorTurns .outline-epoch'); return { kinds: rows.map(function (r) { return r.classList.contains('outline-epoch') ? 'epoch' : 'turn'; }), glyph: tick ? (tick.querySelector('.outline-epoch-glyph') || {}).textContent : null, sizes: tick ? (tick.querySelector('.outline-epoch-sizes') || {}).textContent : null, lines: tick ? tick.querySelectorAll('.outline-epoch-line').length : 0, prose: /context compacted/i.test(document.getElementById('navigatorTurns').textContent), font: tick ? getComputedStyle(tick).fontSize + ' ' + getComputedStyle(tick).fontFamily.split(',')[0] : null, rowFont: (function(){ var l = document.querySelector('#navigatorTurns .outline-label'); return l ? getComputedStyle(l).fontSize + ' ' + getComputedStyle(l).fontFamily.split(',')[0] : null; })() }; })()");
     let kinds: Vec<String> = turns["kinds"]
         .as_array()
         .unwrap()
@@ -3397,9 +3403,23 @@ fn the_app_shell_info_and_turns_panes_show_the_compaction() {
         Some(10),
         "the tick sits between the tenth and the eleventh turn: {turns}"
     );
-    assert!(
-        !turns["epochText"].as_str().unwrap_or("").is_empty(),
-        "the tick has its label: {turns}"
+    // #86: a hairline with the auto glyph and the sizes from → to, in the rows' own type, no prose.
+    assert_eq!(
+        turns["glyph"], "⟳",
+        "an automatic compaction shows its glyph: {turns}"
+    );
+    assert_eq!(
+        turns["sizes"], "594.7K → 8.6K",
+        "…and the context size from → to: {turns}"
+    );
+    assert_eq!(turns["lines"], 2, "…between two hairlines: {turns}");
+    assert_eq!(
+        turns["prose"], false,
+        "…with no 'context compacted' text: {turns}"
+    );
+    assert_eq!(
+        turns["font"], turns["rowFont"],
+        "…in the turn rows' own type: {turns}"
     );
     // The info pane: open its card and read the rows.
     harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"session\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"session\"]').click(); 'ok'");

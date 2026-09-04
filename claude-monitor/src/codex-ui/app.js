@@ -12,7 +12,7 @@ import { displayState, needsPerson as needs, denoteState } from "./shared/state-
 import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskOrder, taskCenterTarget, taskDetails, artifactRoster } from "./view-model.js";
+import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskOrder, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
@@ -469,15 +469,16 @@ window.addEventListener("resize", stackOutlineHeads);
 function renderNavigator() {
   const turns = recordState.units.filter(unit => unit.type === "user");
   byId("navigatorTurnCount").textContent = turns.length;
-  // A compaction is an epoch tick between turns (#69), as the classic sidebar shows it: not a
-  // turn — unnumbered, styled as a seam — so a session that compacted fifteen times reads as
-  // fifteen chapters. The tick jumps to the compaction record like a turn row jumps to its turn.
+  // A compaction is an epoch tick between turns (#69, restyled in #86): a hairline with a glyph
+  // for how it happened and the context size from → to, in the rows' own type, no prose — so a
+  // session that compacted fifteen times reads as fifteen chapters. The tick jumps to the
+  // compaction record like a turn row jumps to its turn.
   const epochs = [];
-  recordState.records.forEach((record, i) => { if (record.kind === "compaction") epochs.push({ at: i, label: record.head?.summary || "context compacted" }); });
+  recordState.records.forEach((record, i) => { if (record.kind === "compaction") epochs.push({ at: i, tick: compactionTick(record.head || {}) }); });
   const rows = [...turns.map(unit => ({ at: unit.from, unit })), ...epochs].sort((a, b) => a.at - b.at);
   byId("navigatorTurns").innerHTML = rows.map(r => r.unit
     ? `<button class="outline-turn-row" data-turn-record="${r.unit.from}" title="${escapeText(r.unit.label)}"><span class="outline-number">${String(r.unit.turn).padStart(2, "0")} ·</span><span class="outline-label">${escapeText(r.unit.label)}</span></button>`
-    : `<button class="outline-epoch" type="button" data-turn-record="${r.at}" title="Jump to the compaction">${escapeText(r.label)}</button>`
+    : `<button class="outline-epoch" type="button" data-turn-record="${r.at}" title="${escapeText(r.tick.title)}${r.tick.sizes ? ` · ${escapeText(r.tick.sizes)}` : ""} — jump to the compaction" aria-label="${escapeText(r.tick.title)}${r.tick.sizes ? `, ${escapeText(r.tick.sizes)}` : ""}"><span class="outline-epoch-line" aria-hidden="true"></span><span class="outline-epoch-glyph" aria-hidden="true">${r.tick.glyph}</span>${r.tick.sizes ? `<span class="outline-epoch-sizes">${escapeText(r.tick.sizes)}</span>` : ""}<span class="outline-epoch-line" aria-hidden="true"></span></button>`
   ).join("") || '<div class="activity-empty">No turns</div>';
   const tasks = recordState.meta?.tasks || [];
   const runningTasks = tasks.filter(task => taskStatus(task.status) === "in_progress").length;

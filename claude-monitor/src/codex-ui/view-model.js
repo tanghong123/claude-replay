@@ -174,6 +174,30 @@ export function artifactRoster(records = []) {
   return [...by.values()];
 }
 
+/** Tokens as the usage panel writes them (the html crate's `human_tokens`): 0, 999, 8.6K,
+ *  594.7K, 1.20M. */
+export function humanTokens(n) {
+  const v = Number(n) || 0;
+  if (v === 0) return "0";
+  if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+  if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+  return String(v);
+}
+
+/** What the turns pane draws for a compaction record (#86): a glyph for how it happened —
+ *  automatic (the context filled) or by hand (`/compact`) — its tooltip, and the context size
+ *  from → to when the record knows both. No prose. */
+export function compactionTick(head = {}) {
+  const manual = head.compact_trigger === "manual";
+  const pre = Number(head.compact_pre) || 0, post = Number(head.compact_post) || 0;
+  return {
+    trigger: manual ? "manual" : "auto",
+    glyph: manual ? "✂" : "⟳",
+    title: manual ? "Compacted by hand (/compact)" : "Compacted automatically — the context filled",
+    sizes: pre > 0 && post > 0 ? `${humanTokens(pre)} → ${humanTokens(post)}` : "",
+  };
+}
+
 export function viewRecord(record) {
   const head = record.head || {};
   if (record.kind === "user") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record };

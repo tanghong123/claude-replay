@@ -873,6 +873,14 @@ impl Emitter<'_> {
                 // `turn`, so the turn-driven sidebar path would otherwise pass it by.
                 o.insert("epoch".into(), json!(true));
                 head.insert("summary".into(), json!(text.clone()));
+                // The facts behind the summary, structured (#86): a page that draws the epoch
+                // as a glyph and "from → to" must not parse prose. Sizes only when both are
+                // known, as the summary shows them.
+                head.insert("compact_trigger".into(), json!(trigger.as_str()));
+                if *pre_tokens > 0 && *post_tokens > 0 {
+                    head.insert("compact_pre".into(), json!(pre_tokens));
+                    head.insert("compact_post".into(), json!(post_tokens));
+                }
                 self.turns.push(SideEntry::epoch(id, text));
                 if !summary.is_empty() {
                     body.push(json!({ "p": "md", "h": md_html(summary) }));
