@@ -1699,3 +1699,129 @@ fn raw_fixture(name: &str) -> Fixture {
         turns: 13,
     }
 }
+
+// ── scenario: the tool filter hides, keeps landmarks, opens the hits, lands, restores (#110)
+
+/// Row 5.8 of design/rendering-parity-audit.md. Selecting a tool leaves only its rows (open)
+/// and the dimmed user turns; answers and other tools are gone; the view lands on the hit;
+/// clearing brings everything back with the folds as they were.
+fn scenario_tool_filter_hides_and_lands(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // A tool sits inside an activity row; visibility is the ROW's (the tool's own element has no
+    // height while the activity is folded), and "open" is the tool's fold itself.
+    let (select, clear, read_state, bash_visible, answers_visible, dimmed_turns) = match surface {
+        Surface::Classic => (
+            "(function(){ var b = document.getElementById('btn-tools'); if (b) b.click(); var it = document.querySelector('.tool-item[data-label=\"Read\"]'); if (!it) return 'no item'; it.click(); return 'selected'; })()",
+            "(function(){ var x = document.querySelector('.tf-x'); if (x) { x.click(); return 'cleared'; } var it = document.querySelector('.tool-item[data-label=\"Read\"]'); if (it) { it.click(); return 'cleared'; } return 'no clear'; })()",
+            "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-tool=\"Read\"]')].pop(); if (!f) return 'absent'; var row = f; while (row.parentElement && row.parentElement.closest('.fold')) row = row.parentElement.closest('.fold'); var r = row.getBoundingClientRect(); return (r.height > 0 ? 'visible' : 'hidden') + ':' + (f.dataset.open === '1' ? 'open' : 'closed') + ':' + (r.top >= 0 && r.top < innerHeight ? 'inview' : 'offscreen'); })()",
+            "[...document.querySelectorAll('#stream .fold[data-tool=\"Bash\"]')].map(function (f) { var row = f; while (row.parentElement && row.parentElement.closest('.fold')) row = row.parentElement.closest('.fold'); return row; }).filter(function (row) { return row.getBoundingClientRect().height > 0; }).length",
+            "[...document.querySelectorAll('#stream .ablock')].filter(function (f) { return f.getBoundingClientRect().height > 0; }).length",
+            "document.querySelectorAll('#stream .uturn.filter-dim').length",
+        ),
+        Surface::AppShell => (
+            "(function(){ var it = document.querySelector('.tool-type-option[data-tool-filter=\"Read\"]'); if (!it) { document.getElementById('filterTranscriptBtn').click(); it = document.querySelector('.tool-type-option[data-tool-filter=\"Read\"]'); } if (!it) return 'no item'; it.click(); return 'selected'; })()",
+            "(function(){ var x = document.getElementById('clearTranscriptFilters'); if (!x) return 'no clear'; x.click(); return 'cleared'; })()",
+            "(function(){ var t = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Read\"]')].pop(); if (!t) return 'absent'; var row = t.closest('.process-event') || t; var r = row.getBoundingClientRect(); var s = document.querySelector('.transcript').getBoundingClientRect(); var ren = t.querySelector(':scope > .renderer'); return (r.height > 0 ? 'visible' : 'hidden') + ':' + (ren && ren.classList.contains('closed') ? 'closed' : 'open') + ':' + (r.top >= s.top && r.top < s.bottom ? 'inview' : 'offscreen'); })()",
+            "[...document.querySelectorAll('.renderer-turn[data-tool-name=\"Bash\"]')].map(function (t) { return t.closest('.process-event') || t; }).filter(function (row) { return row.getBoundingClientRect().height > 0; }).length",
+            "[...document.querySelectorAll('.virtual-window > .turn.assistant')].filter(function (f) { return f.getBoundingClientRect().height > 0; }).length",
+            "document.querySelectorAll('.turn.user.filter-dim').length",
+        ),
+    };
+    let before = eval(tab, read_state);
+    assert!(
+        before.as_str().unwrap_or("").starts_with("hidden")
+            || before.as_str().unwrap_or("").contains(":closed:"),
+        "before filtering the Read row is a closed fold (or inside one): {before}"
+    );
+    assert!(
+        eval(tab, bash_visible).as_i64().unwrap_or(0) >= 1,
+        "Bash rows are visible before filtering"
+    );
+    assert!(
+        eval(tab, answers_visible).as_i64().unwrap_or(0) >= 1,
+        "answers are visible before filtering"
+    );
+    assert_eq!(
+        eval(tab, select),
+        "selected",
+        "the Read tool can be selected in the filter"
+    );
+    settle();
+    settle();
+    let state = eval(tab, read_state);
+    assert_eq!(
+        state, "visible:open:inview",
+        "the Read row is visible, open and landed on: {state}"
+    );
+    assert_eq!(eval(tab, bash_visible), 0, "Bash rows are hidden");
+    assert_eq!(eval(tab, answers_visible), 0, "answers are hidden");
+    assert!(
+        eval(tab, dimmed_turns).as_i64().unwrap_or(0) >= 1,
+        "user turns stay as dimmed landmarks"
+    );
+    assert_eq!(eval(tab, clear), "cleared", "the filter clears");
+    settle();
+    settle();
+    assert!(
+        eval(tab, bash_visible).as_i64().unwrap_or(0) >= 1,
+        "Bash rows are back"
+    );
+    assert!(
+        eval(tab, answers_visible).as_i64().unwrap_or(0) >= 1,
+        "answers are back"
+    );
+    assert_eq!(eval(tab, dimmed_turns), 0, "nothing is dimmed");
+    let after = eval(tab, read_state);
+    assert!(
+        after.as_str().unwrap_or("").contains(":closed:"),
+        "the Read fold is back to closed, as it was: {after}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_tool_filter_hides_and_lands() {
+    let _serial = serial();
+    let fx = filter_fixture("scenario-filter-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_tool_filter_hides_and_lands(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_tool_filter_hides_and_lands() {
+    let _serial = serial();
+    let fx = filter_fixture("scenario-filter-app");
+    let page = open(Surface::AppShell, &fx, 2884);
+    scenario_tool_filter_hides_and_lands(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Twelve turns of Bash, then a turn with one Read among the Bash calls.
+fn filter_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at(
+        "question filter: read the config then check it",
+        &now_minus(90),
+    );
+    transcript += &assistant_at("Reading the config first.", &now_minus(85));
+    transcript += &read_tool_at("t-filter-read", "/tmp/config.toml", &now_minus(70));
+    transcript += &tool_result_lines("t-filter-read", 5, &now_minus(60));
+    transcript += &assistant_at("Now checking it.", &now_minus(55));
+    transcript += &tool_open_at("t-filter-bash", &now_minus(50));
+    transcript += &tool_result_lines("t-filter-bash", 3, &now_minus(40));
+    transcript += &assistant_at("answer filter: the config is fine", &now_minus(30));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}

@@ -27,6 +27,9 @@ export const recordState = {
   // turn that is the global `rawUser` preference (the text as typed), for an assistant turn
   // the record view. Mirrored here from the reading preferences so the renderer sees one state.
   rawTurns: new Map(), rawUser: false,
+  // The tool filter (#110): the ids of every record on a hit chain while a tool is selected,
+  // and the fold state to put back when it is cleared.
+  filterHits: null, filterDirect: null, filterSnapshot: null,
   capOpen: new Set(),
   taskTargets: new Map(), agentTargets: new Map()
 };

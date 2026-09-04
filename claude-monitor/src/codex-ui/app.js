@@ -186,7 +186,7 @@ const sessionIndex = new SessionIndexStore({
   error: () => toast("Session scan failed — retrying")
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.capOpen.clear(); recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.capOpen.clear(); recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   error: (error, hasRecords) => hasRecords ? toast(`${error.message}；retrying`) : viewport.showEmpty("Cannot read this session", `${error.message}；The monitor will retry.`, true)
 });
@@ -565,22 +565,89 @@ function markSearch() {
 }
 byId("transcriptSearchInput").oninput = () => updateSearch(true); byId("findNext").onclick = () => stepSearch(1); byId("findPrev").onclick = () => stepSearch(-1);
 
+function toolNames(records, into = []) {
+  for (const record of records || []) {
+    if (["bash", "read", "write", "edit", "skill", "tool"].includes(record.kind)) into.push(record.head?.name || record.tool || record.kind);
+    for (const part of record.body || []) if (part.p === "blocks") toolNames(part.items, into);
+  }
+  return into;
+}
 function renderFilterMenu() {
   const scopes = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "All tools"], ["b", "Bash output"], ["r", "Reads"], ["e", "Edits"]];
   byId("scopeRow").innerHTML = scopes.map(([key, label]) => `<button class="scope-option ${uiState.searchScopes.has(key) ? "on" : ""}" data-scope="${key}"><span class="scope-check"></span><span>${label}</span><span class="scope-key">${key}</span></button>`).join("");
-  const tools = [...new Set(recordState.records.filter(record => ["bash", "read", "write", "edit", "skill", "tool"].includes(record.kind)).map(record => record.head?.name || record.tool || record.kind))];
+  // Every tool in the session, nested ones included — a tool call sits inside an activity
+  // record, so a top-level scan listed nothing (#110).
+  const tools = [...new Set(toolNames(recordState.records))];
   byId("filterOptions").innerHTML = tools.map(tool => `<button class="tool-type-option ${uiState.toolFilters.has(tool) ? "on" : ""}" data-tool-filter="${escapeText(tool)}"><span class="filter-dot"></span><span>${escapeText(tool)}</span></button>`).join("") || '<div class="tool-type-empty">No tool events in this session</div>';
   byId("filterBadge").textContent = uiState.toolFilters.size || "";
 }
 function applyFilters() {
+  const hits = recordState.filterHits;
   viewport.window.querySelectorAll("[data-kind]").forEach(element => {
     const kind = element.dataset.kind, tool = element.dataset.toolName;
     const scope = kind === "user" ? "u" : kind === "assistant" ? "a" : kind === "thinking" ? "t" : kind === "tool" ? (tool === "Bash" ? "b" : ["Read", "Glob", "Grep", "WebFetch", "WebSearch"].includes(tool) ? "r" : ["Write", "Edit", "NotebookEdit"].includes(tool) ? "e" : "o") : null;
     const scopeDim = scope && !uiState.searchScopes.has(scope) && !(kind === "tool" && uiState.searchScopes.has("o"));
-    const toolDim = uiState.toolFilters.size && kind === "tool" && !uiState.toolFilters.has(tool);
-    const dim = scopeDim || toolDim;
-    element.classList.toggle("filter-dim", !!dim);
+    element.classList.toggle("filter-dim", !!scopeDim || (!!hits && kind === "user" && element.classList.contains("turn")));
   });
+  // The tool filter (#110), the classic page's rule: a non-turn record that does not match is
+  // HIDDEN, user turns stay as dimmed landmarks, and a matching head is accented. Rows are
+  // hidden inside their process; a process left with nothing to show goes with them.
+  for (const element of viewport.window.querySelectorAll(".filter-hidden, .filter-hit")) element.classList.remove("filter-hidden", "filter-hit");
+  if (!hits) return;
+  for (const answer of viewport.window.querySelectorAll(":scope > .turn.assistant")) answer.classList.add("filter-hidden");
+  for (const surface of viewport.window.querySelectorAll("[data-process-surface]")) {
+    let shown = 0;
+    for (const event of surface.querySelectorAll(".process-event")) {
+      const hit = [...event.querySelectorAll("[data-record-id]")].some(r => hits.has(r.dataset.recordId));
+      event.classList.toggle("filter-hidden", !hit);
+      if (hit) shown++;
+    }
+    surface.classList.toggle("filter-hidden", shown === 0);
+    for (const renderer of surface.querySelectorAll("[data-record-id]")) {
+      if (recordState.filterDirect?.has(renderer.dataset.recordId)) renderer.querySelector(":scope > .renderer-head")?.classList.add("filter-hit");
+    }
+  }
+}
+// Does this record — or a record nested in it — carry one of the selected tools? Every record
+// on such a chain is a hit (its fold opens); the direct ones are accented.
+const toolKindsForFilter = new Set(["bash", "read", "write", "edit", "skill", "tool"]);
+function filterChain(record, wanted, hits, direct) {
+  const name = record.head?.name || record.tool || record.kind;
+  const own = toolKindsForFilter.has(record.kind) && wanted.has(name);
+  let inner = false;
+  for (const part of record.body || []) if (part.p === "blocks") for (const item of part.items || []) if (filterChain(item, wanted, hits, direct)) inner = true;
+  if (own && record.id) direct.add(record.id);
+  if ((own || inner) && record.id) hits.add(record.id);
+  return own || inner;
+}
+function applyToolFilter() {
+  const wanted = uiState.toolFilters;
+  if (wanted.size) {
+    if (!recordState.filterSnapshot) recordState.filterSnapshot = { folds: new Map(recordState.folds), processFolds: new Map(recordState.processFolds), processExpanded: new Set(recordState.processExpanded) };
+    const hits = new Set(), direct = new Set(), indices = [];
+    recordState.records.forEach((record, index) => { if (filterChain(record, wanted, hits, direct)) indices.push(index); });
+    recordState.filterHits = hits;
+    recordState.filterDirect = direct;
+    for (const id of hits) recordState.folds.set(id, false);
+    for (const unit of projection.units) {
+      if (unit.type !== "process") continue;
+      if (indices.some(index => index >= unit.from && index <= unit.to)) { recordState.processFolds.set(unit.key, false); recordState.processExpanded.add(unit.key); }
+    }
+    viewport.render();
+    viewport.remeasure();
+    // Land on the nearest hit so the filter visibly did something.
+    const top = unitAtTop();
+    const start = top ? top.from : 0;
+    const target = indices.find(index => index >= start) ?? indices[0];
+    if (target != null) viewport.jumpToRecord(target, "filter");
+  } else if (recordState.filterHits) {
+    const snapshot = recordState.filterSnapshot;
+    recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null;
+    if (snapshot) { recordState.folds = snapshot.folds; recordState.processFolds = snapshot.processFolds; recordState.processExpanded = snapshot.processExpanded; }
+    viewport.render();
+    viewport.remeasure();
+  }
+  applyFilters();
 }
 // Reading controls (parity #7), in the options popover where the shell keeps view preferences:
 // a third section after Scope and Tool types, in the popover's own row anatomy. They apply as
@@ -618,9 +685,9 @@ readingSection.onclick = event => {
 };
 applyReading();
 byId("filterTranscriptBtn").onclick = () => { byId("navigatorOptions").classList.toggle("open"); renderFilterMenu(); };
-byId("navigatorOptions").onclick = event => { const scope = event.target.closest("[data-scope]"); if (scope) { uiState.searchScopes.has(scope.dataset.scope) ? uiState.searchScopes.delete(scope.dataset.scope) : uiState.searchScopes.add(scope.dataset.scope); renderFilterMenu(); applyFilters(); } const tool = event.target.closest("[data-tool-filter]"); if (tool) { uiState.toolFilters.has(tool.dataset.toolFilter) ? uiState.toolFilters.delete(tool.dataset.toolFilter) : uiState.toolFilters.add(tool.dataset.toolFilter); renderFilterMenu(); applyFilters(); } };
+byId("navigatorOptions").onclick = event => { const scope = event.target.closest("[data-scope]"); if (scope) { uiState.searchScopes.has(scope.dataset.scope) ? uiState.searchScopes.delete(scope.dataset.scope) : uiState.searchScopes.add(scope.dataset.scope); renderFilterMenu(); applyFilters(); } const tool = event.target.closest("[data-tool-filter]"); if (tool) { uiState.toolFilters.has(tool.dataset.toolFilter) ? uiState.toolFilters.delete(tool.dataset.toolFilter) : uiState.toolFilters.add(tool.dataset.toolFilter); renderFilterMenu(); applyToolFilter(); } };
 byId("selectAllScopes").onclick = () => { uiState.searchScopes = new Set(["u", "a", "t", "o", "b", "r", "e"]); renderFilterMenu(); };
-byId("clearTranscriptFilters").onclick = () => { uiState.toolFilters.clear(); renderFilterMenu(); applyFilters(); };
+byId("clearTranscriptFilters").onclick = () => { uiState.toolFilters.clear(); renderFilterMenu(); applyToolFilter(); };
 
 function openGlobalSearch() { byId("searchLayer").classList.add("production-open"); byId("searchInput").value = ""; uiState.searchTab = "all"; renderGlobalSearch(); byId("searchInput").focus(); }
 function globalRows(query) {

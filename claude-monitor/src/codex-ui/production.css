@@ -175,3 +175,6 @@
 /* #109: a user turn as typed — pre-formatted; wrap follows the reading preference like code. */
 .turn-raw-text{white-space:pre-wrap;overflow-wrap:anywhere}
 #app:not(.wrap-code) .turn-raw-text{white-space:pre;overflow-x:auto}
+/* #110: the tool filter hides what does not match; user turns stay as dimmed landmarks. */
+.filter-hidden{display:none!important}
+.renderer-head.filter-hit{box-shadow:inset 3px 0 0 var(--blue)}

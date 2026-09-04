@@ -983,3 +983,17 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /if \(rawChanged && recordState\.records\.length\) viewport\.render\(\);/, "…and re-renders the mounted turns");
   console.log("#109 raw text cases passed");
 }
+
+// #110: the tool filter hides non-matching records, keeps turns as landmarks, opens the hits.
+{
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /function filterChain\(record, wanted, hits, direct\) \{/, "a hit chain: the record or a nested one carries a selected tool");
+  assert.match(app, /for \(const id of hits\) recordState\.folds\.set\(id, false\);/, "every record on a chain opens");
+  assert.match(app, /recordState\.filterSnapshot = \{ folds: new Map\(recordState\.folds\)/, "the fold state is snapshotted for the clear");
+  assert.match(app, /if \(target != null\) viewport\.jumpToRecord\(target, "filter"\);/, "…and the view lands on the nearest hit");
+  assert.match(app, /answer\.classList\.add\("filter-hidden"\)/, "assistant answers hide");
+  assert.match(app, /event\.classList\.toggle\("filter-hidden", !hit\);/, "non-matching rows hide inside their process");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.filter-hidden\{display:none!important\}/, "hidden is hidden");
+  console.log("#110 tool filter cases passed");
+}
