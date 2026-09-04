@@ -22,7 +22,12 @@ function rendererBody(view) {
     return `<div class="renderer-fallback"><div class="renderer-fallback-row"><span>record</span><code class="fallback-raw">${escapeText(JSON.stringify(view.raw, null, 2))}</code></div></div>`;
   }
   if (view.renderer === "queue") {
-    return `<div class="renderer-queue"><span class="renderer-queue-mark" aria-hidden="true"></span><div class="renderer-queue-copy"><strong>${escapeText(view.summary || "Queued input")}</strong><small>queued input</small></div></div>`;
+    // The queued prompt's own words, as the classic page's "⧗ queued: …" marker shows them
+    // (#65): the record's body is the text the user typed while the agent was busy, rendered as
+    // markdown by the same pipeline as a turn; a bare "Queued input" label told the reader
+    // nothing about WHAT waits. The label stays as the mark; the text follows it.
+    const text = view.html ? `<div class="renderer-queue-text">${view.html}</div>` : `<small>no text recorded</small>`;
+    return `<div class="renderer-queue"><span class="renderer-queue-mark" aria-hidden="true"></span><div class="renderer-queue-copy"><strong>${escapeText(view.summary || "Queued input")}</strong>${text}</div></div>`;
   }
   if (view.renderer === "agent") {
     return `<div class="renderer-agent"><div class="renderer-agent-section renderer-agent-result"><span class="renderer-agent-label">Agent event</span><div class="renderer-agent-copy">${view.html || "No additional details recorded."}</div></div>${view.childId ? `<button class="renderer-agent-open" type="button" data-child-session="${escapeText(view.childId)}">Open child transcript</button>` : ""}</div>`;

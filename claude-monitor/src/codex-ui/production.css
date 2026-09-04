@@ -79,3 +79,7 @@
 .jump-to-bottom.has-new{width:auto;padding:0 14px 0 10px;border-radius:17px;display:inline-flex;align-items:center;gap:7px}
 .jump-to-bottom .jump-count{display:none;font:600 12px/1 var(--font-sans,inherit);white-space:nowrap}
 .jump-to-bottom.has-new .jump-count{display:inline}
+/* #65: the queued prompt's text under the "Queued input" mark — dim, as the classic marker is. */
+.renderer-queue-text{color:var(--ink-dim,var(--muted,inherit));opacity:.85;font-size:13px;line-height:1.45;margin-top:2px;overflow-wrap:anywhere}
+.renderer-queue-text p{margin:0 0 4px}
+.renderer-queue-text p:last-child{margin-bottom:0}

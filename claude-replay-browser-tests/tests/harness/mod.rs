@@ -101,6 +101,11 @@ pub fn user_at(t: &str, ts: &str) -> String {
         "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}]}},\"timestamp\":\"{ts}\"}}\n"
     )
 }
+/// A prompt the user submitted while the agent was busy (`queue-operation` / `enqueue`), not
+/// yet picked up — both pages render it as the in-flight "queued" marker with its text.
+pub fn queued_at(t: &str, ts: &str) -> String {
+    format!("{{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"{ts}\",\"content\":\"{t}\"}}\n")
+}
 pub fn assistant_at(t: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}],\"usage\":{{\"input_tokens\":10,\"output_tokens\":20}}}},\"timestamp\":\"{ts}\"}}\n"
@@ -924,4 +929,14 @@ pub fn click_pill(tab: &headless_chrome::Tab, surface: Surface) {
         Surface::AppShell => "jumpToBottom",
     };
     eval(tab, &format!("(function(){{ var b = document.getElementById('{id}'); if (b) b.click(); return 'ok'; }})()"));
+}
+
+/// The text of the in-flight "queued" marker, or an empty string when no marker is shown. The
+/// classic page's `.qmarker .qmd`; the app shell's `.renderer-queue-text`.
+pub fn queued_text(tab: &headless_chrome::Tab, surface: Surface) -> String {
+    let js = match surface {
+        Surface::Classic => "(function(){ var m = document.querySelectorAll('.qmarker .qmd'); return m.length ? (m[m.length-1].textContent || '').trim() : ''; })()",
+        Surface::AppShell => "(function(){ var m = document.querySelectorAll('.renderer-queue-text'); return m.length ? (m[m.length-1].textContent || '').trim() : ''; })()",
+    };
+    eval(tab, js).as_str().unwrap_or("").to_string()
 }

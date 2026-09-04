@@ -629,3 +629,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(css, /\.jump-to-bottom\.has-new\{/, "the pill's shape is production chrome, not the generated reference");
   console.log("#64 new-messages pill cases passed");
 }
+
+// #65: the app shell's queue renderer prints the queued prompt's text, not only a label.
+{
+  const src = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(src, /const text = view\.html \? `<div class="renderer-queue-text">\$\{view\.html\}<\/div>` : `<small>no text recorded<\/small>`;/, "the queued text is rendered from the record's body");
+  assert.doesNotMatch(src, /<strong>\$\{escapeText\(view\.summary \|\| "Queued input"\)\}<\/strong><small>queued input<\/small>/, "the bare label is gone");
+  console.log("#65 queued text cases passed");
+}

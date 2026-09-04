@@ -19,8 +19,8 @@ use claude_replay_html::start_server;
 use claude_replay_present::Args;
 use harness::{
     assistant_at, at_tail, base, jump_to_end, key, last_mounted_turn, long_session, now_minus,
-    open_last_fold, scroll_by, serial, turn_at_top, user_at, Kind, LiveGrowth, Monitor, Shape,
-    Stores, Surface,
+    open_last_fold, queued_at, queued_text, scroll_by, serial, turn_at_top, until, user_at, Kind,
+    LiveGrowth, Monitor, Shape, Stores, Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -963,4 +963,68 @@ fn app_shell_shows_the_new_messages_pill() {
     let fx = fixture("scenario-pill-app", 40);
     let page = open(Surface::AppShell, &fx, 2864);
     scenario_new_messages_pill(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a queued prompt shows its text (#65) ─────────────────────────────────────────
+
+/// Pinned at the tail, a turn arrives and then a prompt the user queued while the agent was
+/// busy; both pages show the queued marker WITH the prompt's own words.
+fn scenario_queued_prompt_shows_its_text(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    assert_eq!(queued_text(tab, surface), "", "nothing queued yet");
+    let script = vec![
+        user_at("question 700: one more before the queue", &now_minus(30)),
+        assistant_at("answer 700: working on it", &now_minus(25)),
+        queued_at(
+            "please also run the tests when this finishes",
+            &now_minus(20),
+        ),
+    ];
+    let growth = LiveGrowth::start(fx.path.clone(), script, Duration::from_millis(2000));
+    assert_eq!(
+        growth.finish(Duration::from_secs(30)),
+        3,
+        "the driver appended the whole script"
+    );
+    until(
+        tab,
+        &format!(
+            "{}.length > 0",
+            match surface {
+                Surface::Classic => "document.querySelectorAll('.qmarker .qmd')",
+                Surface::AppShell => "document.querySelectorAll('.renderer-queue-text')",
+            }
+        ),
+        "the queued marker to render",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(-300)",
+    );
+    let text = queued_text(tab, surface);
+    assert!(
+        text.contains("please also run the tests when this finishes"),
+        "the marker shows the queued prompt's words, got {text:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_shows_a_queued_prompts_text() {
+    let _serial = serial();
+    let fx = fixture("scenario-queued-classic", 12);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_queued_prompt_shows_its_text(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_shows_a_queued_prompts_text() {
+    let _serial = serial();
+    let fx = fixture("scenario-queued-app", 12);
+    let page = open(Surface::AppShell, &fx, 2865);
+    scenario_queued_prompt_shows_its_text(&page.tab, Surface::AppShell, &fx);
 }
