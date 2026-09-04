@@ -110,6 +110,15 @@ pub fn queued_at(t: &str, ts: &str) -> String {
 pub fn compaction_at(ts: &str) -> String {
     format!("{{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"timestamp\":\"{ts}\",\"content\":\"Conversation compacted\",\"compactMetadata\":{{\"trigger\":\"auto\",\"preTokens\":594718,\"postTokens\":8617}}}}\n")
 }
+/// A one-pixel PNG, base64 — enough for a browser to decode to real dimensions.
+pub const TINY_PNG_B64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+/// A tool result carrying an embedded image (what a Read of a PNG records).
+pub fn image_result_at(call_id: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":[{{\"type\":\"image\",\"source\":{{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"{TINY_PNG_B64}\"}}}}]}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
 pub fn assistant_at(t: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}],\"usage\":{{\"input_tokens\":10,\"output_tokens\":20}}}},\"timestamp\":\"{ts}\"}}\n"

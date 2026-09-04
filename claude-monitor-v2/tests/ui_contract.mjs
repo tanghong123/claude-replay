@@ -863,3 +863,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(serve, /if let Some\(real\) = live\.revealable\(path\)/, "…is what the route asks");
   console.log("#79 reveal cases passed");
 }
+
+// #80: an image attachment is collapsed, then a thumbnail, then the lightbox.
+{
+  const src = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(src, /const openImages = new Set\(\);/, "the expanded images are page-session state");
+  assert.match(src, /if \(capability\.action === "image"\) \{/, "an image attachment has its own rendering");
+  assert.match(src, /class="renderer-image-toggle" data-image-toggle="\$\{escapeText\(view\.id \|\| ""\)\}" aria-expanded="\$\{open\}"/, "…a toggle first");
+  assert.match(src, /class="renderer-image-thumb" \$\{attrs\} title="Open \$\{escapeText\(name\)\} at full size"><img src="\$\{escapeText\(source\)\}"/, "…then a thumbnail that opens the lightbox");
+  assert.match(src, /openImages\.has\(id\) \? openImages\.delete\(id\) : openImages\.add\(id\); actions\.rerender\?\.\(\);/, "the toggle flips and re-renders");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.renderer-image-thumb img\{display:block;max-height:320px;/, "the thumbnail is bounded");
+  console.log("#80 image attachment cases passed");
+}

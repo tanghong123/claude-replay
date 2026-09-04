@@ -18,10 +18,10 @@ mod harness;
 use claude_replay_html::start_server;
 use claude_replay_present::Args;
 use harness::{
-    assistant_at, at_tail, base, click_session_id, copied_text, jump_to_end, key,
-    last_mounted_turn, long_session, now_minus, open_last_fold, queued_at, queued_text, scroll_by,
-    serial, session_id_chip, stub_clipboard, turn_at_top, until, user_at, Kind, LiveGrowth,
-    Monitor, Shape, Stores, Surface,
+    assistant_at, at_tail, base, click_session_id, copied_text, eval, image_result_at, jump_to_end,
+    key, last_mounted_turn, long_session, now_minus, open_last_fold, probe, queued_at, queued_text,
+    read_tool_at, scroll_by, serial, session_id_chip, stub_clipboard, turn_at_top, until, user_at,
+    Kind, LiveGrowth, Monitor, Shape, Stores, Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -1099,4 +1099,88 @@ fn app_shell_session_id_copies_the_transcript_path() {
     let fx = fixture("scenario-sid-app", 12);
     let page = open(Surface::AppShell, &fx, 2866);
     scenario_session_id_copies_the_transcript_path(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: an embedded image renders (#80) ──────────────────────────────────────────────
+
+/// A Read of a PNG records the image in the tool result. The classic page shows it inline; the
+/// app shell shows a line, expands it to a bounded thumbnail on the first click, and opens the
+/// full-size lightbox on the second.
+fn scenario_embedded_image_renders(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    match surface {
+        Surface::Classic => {
+            until(tab, "!!document.querySelector('.amark img') && document.querySelector('.amark img').naturalWidth >= 1", "the classic page to show the image inline", Duration::from_secs(20), "document.querySelectorAll('.amark').length + ' attachment blocks, imgs: ' + document.querySelectorAll('.amark img').length");
+        }
+        Surface::AppShell => {
+            open_last_fold(tab, surface);
+            until(tab, "!!document.querySelector('[data-image-toggle]')", "the image block to render inside the open fold", Duration::from_secs(20), "'attachments in DOM: ' + document.querySelectorAll('[data-attachment]').length + ', image blocks: ' + document.querySelectorAll('.renderer-image').length");
+            assert_eq!(
+                eval(
+                    tab,
+                    "document.querySelectorAll('.renderer-image img').length"
+                ),
+                0,
+                "collapsed: no image yet"
+            );
+            eval(
+                tab,
+                "document.querySelector('[data-image-toggle]').click(); 'ok'",
+            );
+            until(tab, "!!document.querySelector('.renderer-image-thumb img') && document.querySelector('.renderer-image-thumb img').naturalWidth >= 1", "the first click to show a thumbnail with real dimensions", Duration::from_secs(10), "(function(){ var i = document.querySelector('.renderer-image-thumb img'); return i ? JSON.stringify({ src: i.getAttribute('src').slice(0, 40), complete: i.complete, natural: i.naturalWidth, shown: i.offsetParent !== null }) : 'no img'; })()");
+            let thumb = probe(tab, "(function(){ var i = document.querySelector('.renderer-image-thumb img'); var r = i.getBoundingClientRect(); return { height: Math.round(r.height), natural: i.naturalWidth }; })()");
+            assert!(
+                thumb["height"].as_f64().unwrap_or(999.0) <= 320.0,
+                "the thumbnail is bounded: {thumb}"
+            );
+            eval(
+                tab,
+                "document.querySelector('.renderer-image-thumb').click(); 'ok'",
+            );
+            until(tab, "(function(){ var l = document.querySelector('.image-lightbox'); if (!l || l.hidden) return false; var r = l.getBoundingClientRect(); var img = l.querySelector('img'); return r.width > 0 && r.height > 0 && getComputedStyle(l).visibility !== 'hidden' && !!img && (img.getAttribute('src') || '').indexOf('data:image/png') === 0; })()", "the second click to open the lightbox", Duration::from_secs(10), "(function(){ var l = document.querySelector('.image-lightbox'); if (!l) return 'no lightbox'; var r = l.getBoundingClientRect(); return JSON.stringify({ hidden: l.hidden, w: r.width, h: r.height, vis: getComputedStyle(l).visibility, img: !!l.querySelector('img') }); })()");
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_renders_an_embedded_image() {
+    let _serial = serial();
+    let fx = image_fixture("scenario-image-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_embedded_image_renders(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_renders_an_embedded_image() {
+    let _serial = serial();
+    let fx = image_fixture("scenario-image-app");
+    let page = open(Surface::AppShell, &fx, 2873);
+    scenario_embedded_image_renders(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Twelve turns, then a Read of a PNG whose result embeds the image.
+fn image_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("question 12: read the screenshot", &now_minus(40));
+    // Assistant text and a tool call BEFORE the read: the engine places an image attachment
+    // where its result landed, so this one follows the assistant's words and lands inside the
+    // turn's process (the owner's case — a screenshot read mid-turn) rather than as a prompt
+    // attachment of the user turn, which the app shell already shows as a thumbnail card.
+    transcript += &assistant_at("answer 12a: let me look at it", &now_minus(39));
+    transcript += &harness::tool_open_at("t-pre", &now_minus(38));
+    transcript += &harness::tool_result_at("t-pre", &now_minus(37));
+    transcript += &read_tool_at("t-img", "/tmp/shot.png", &now_minus(36));
+    transcript += &image_result_at("t-img", &now_minus(32));
+    transcript += &assistant_at("answer 12: the screenshot shows the deck", &now_minus(28));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
 }

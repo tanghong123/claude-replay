@@ -17,6 +17,10 @@ const element = html => {
   return root;
 };
 
+/** The image attachments a reader expanded to a thumbnail (#80), by record id — page-session
+ *  state, so a re-render keeps them open. */
+const openImages = new Set();
+
 function rendererBody(view) {
   if (view.renderer === "fallback") {
     return `<div class="renderer-fallback"><div class="renderer-fallback-row"><span>record</span><code class="fallback-raw">${escapeText(JSON.stringify(view.raw, null, 2))}</code></div></div>`;
@@ -43,6 +47,17 @@ function rendererBody(view) {
   if (view.attachment) {
     const h = view.attachment;
     const capability = attachmentCapability(h);
+    // An image attachment (#80): collapsed to a line at first — a transcript with a hundred
+    // screenshots must not be a hundred images — the first click expands it to an inline
+    // thumbnail, and the thumbnail opens the full-size lightbox. The classic page shows the
+    // image inline; here the reader chooses, per image, and the choice holds through re-renders.
+    if (capability.action === "image") {
+      const source = h.att_datauri || `/file?path=${encodeURIComponent(h.att_path || "")}&sig=${encodeURIComponent(h.att_fsig || "")}`;
+      const name = h.att_name || "image";
+      const open = openImages.has(view.id);
+      const attrs = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="image" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
+      return `<div class="renderer-image ${open ? "open" : ""}" data-image-block="${escapeText(view.id || "")}"><button type="button" class="renderer-image-toggle" data-image-toggle="${escapeText(view.id || "")}" aria-expanded="${open}">${open ? "Hide" : "Show"} image · ${escapeText(name)}</button>${open ? `<figure class="renderer-image-figure"><button type="button" class="renderer-image-thumb" ${attrs} title="Open ${escapeText(name)} at full size"><img src="${escapeText(source)}" alt="${escapeText(name)}" decoding="async"></button><figcaption>${escapeText(name)} · click for full size</figcaption></figure>` : ""}</div>`;
+    }
     return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button>${capability.action !== "reveal" && h.att_path && h.att_sig ? `<button class="artifact-link artifact-link-secondary" data-attachment="${escapeText(view.id || "")}" data-attachment-action="reveal" data-path="${escapeText(h.att_path)}" data-sig="${escapeText(h.att_sig)}">Reveal in file manager</button>` : ""}</div>`;
   }
   if (view.renderer === "bash") return `<div class="renderer-terminal ${view.error ? "error" : ""}"><span class="output">${view.html || "No output recorded"}</span></div>`;
@@ -181,6 +196,8 @@ export function bindComponentEvents(root, state, actions) {
     }
     const child = event.target.closest("[data-child-session]");
     if (child) { actions.openChild(child.dataset.childSession); return; }
+    const imageToggle = event.target.closest("[data-image-toggle]");
+    if (imageToggle) { const id = imageToggle.dataset.imageToggle; openImages.has(id) ? openImages.delete(id) : openImages.add(id); actions.rerender?.(); return; }
     const attachment = event.target.closest("[data-attachment]");
     if (attachment) { actions.openAttachment(attachment.dataset.attachment, attachment.dataset.path, attachment.dataset.fsig, attachment.dataset.attachmentAction, attachment.dataset.sig); return; }
     const prompt = event.target.closest("[data-prompt-toggle]");
