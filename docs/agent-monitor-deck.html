@@ -38,7 +38,7 @@
 html{scroll-snap-type:y proximity;scroll-behavior:smooth}
 @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
-:lang(zh-CN) body,body:lang(zh-CN){line-height:1.7}
+[data-lang="zh"]{line-height:1.7}
 a{color:var(--accent-ink);text-decoration:none;border-bottom:1px solid var(--line-strong)}
 a:hover{border-bottom-color:var(--accent)}
 code,kbd,.mono{font-family:var(--mono);font-size:.92em}
@@ -51,7 +51,7 @@ p{margin:0}
 .bar .name{font-weight:700;letter-spacing:-.01em;white-space:nowrap}
 .bar .name span{color:var(--muted);font-weight:500}
 .bar .where{flex:1;color:var(--muted);text-align:center;text-transform:uppercase;letter-spacing:.08em;font-size:11.5px;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-:lang(zh-CN) .bar .where{text-transform:none;letter-spacing:.04em;font-family:var(--sans);font-size:12.5px}
+[data-lang="zh"] .bar .where{text-transform:none;letter-spacing:.04em;font-family:var(--sans);font-size:12.5px}
 .bar .count{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);min-width:5ch;text-align:right}
 .bar .keys{color:var(--faint);white-space:nowrap}
 .bar .keys kbd{margin:0 1px}
@@ -69,7 +69,7 @@ p{margin:0}
 @media (max-width:920px){.slide{grid-template-columns:1fr;padding-top:76px}}
 .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-ink);margin-bottom:18px;display:flex;align-items:center;gap:10px}
 .eyebrow::before{content:"";width:22px;height:2px;background:var(--accent)}
-:lang(zh-CN) .eyebrow{letter-spacing:.06em;text-transform:none}
+[data-lang="zh"] .eyebrow{letter-spacing:.06em;text-transform:none}
 .slide h2{font-size:clamp(30px,4.2vw,52px);line-height:1.04;margin-bottom:18px}
 .lede{font-size:17px;color:var(--muted);max-width:44ch}
 .lede strong{color:var(--ink);font-weight:600}
@@ -132,7 +132,7 @@ ul.facts strong{font-weight:600}
 .zones{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .zones .z{border:1px solid var(--line-strong);border-radius:8px;padding:12px 14px;background:var(--surface)}
 .zones .z b{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
-:lang(zh-CN) .zones .z b{text-transform:none;letter-spacing:.03em}
+[data-lang="zh"] .zones .z b{text-transform:none;letter-spacing:.03em}
 .zones .z.open{border-color:var(--accent)}
 .zones .z.open b{color:var(--accent-ink)}
 .zones .z p{font-size:13.5px}
@@ -140,7 +140,7 @@ ul.facts strong{font-weight:600}
 .tbl{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:var(--shadow)}
 .tbl th,.tbl td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
 .tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:600;background:color-mix(in srgb,var(--paper) 60%,var(--surface))}
-:lang(zh-CN) .tbl th{text-transform:none;letter-spacing:.03em;font-family:var(--sans);font-size:12px}
+[data-lang="zh"] .tbl th{text-transform:none;letter-spacing:.03em;font-family:var(--sans);font-size:12px}
 .tbl tr:last-child td{border-bottom:0}
 .tbl td.k{font-family:var(--mono);font-size:12.5px;white-space:nowrap;color:var(--accent-ink)}
 .tbl td.k small{display:block;color:var(--faint);font-size:11px;white-space:normal}
@@ -175,6 +175,7 @@ ul.facts strong{font-weight:600}
 </head>
 <body>
 
+<div class="deck" data-lang="en">
 <header class="bar" role="banner">
   <div class="name">agent-monitor <span>· one loopback page</span></div>
   <div class="where" id="where"></div>
@@ -188,7 +189,7 @@ ul.facts strong{font-weight:600}
   <h1 class="wordmark">agent<em>-</em>monitor</h1>
   <p class="tag"><strong>Every coding-agent session on this machine, on one loopback page</strong> — what each one is doing, what it has cost, and a way to answer the one that is waiting on you.</p>
   <div class="bins" title="the four binaries of the agent-replay workspace"><span>agent-replay</span><span class="me">agent-monitor</span><span>agent-monitor-fleet</span><span>agent-jdi</span></div>
-  <div class="meta"><span>sources: docs/architecture.html · docs/developer-guide.html</span><span>v1.154.0 · 2026-09-03</span></div>
+  <div class="meta"><span>sources: docs/architecture.html · docs/developer-guide.html</span><span>v1.165.0 · 2026-09-03</span></div>
 </section>
 
 <section class="slide" id="s2" data-where="02 · What it is">
@@ -315,7 +316,7 @@ ul.facts strong{font-weight:600}
 </section>
 
 <section class="slide" id="s11" data-where="11 · Reusable · the frontend half">
-  <div><div class="eyebrow">11 · Reusable · the frontend half</div><h2>Seven shared modules, one source, three consumers</h2><p class="lede">The rail, the splice shell and the app shell used to fork the same logic. Now each concern lives once in <code>claude-replay-html/src/html/shared/</code>, and how it reaches a page is the consumer's business.</p></div>
+  <div><div class="eyebrow">11 · Reusable · the frontend half</div><h2>Nine shared modules, one source, three consumers</h2><p class="lede">The rail, the splice shell and the app shell used to fork the same logic. Now each concern lives once in <code>claude-replay-html/src/html/shared/</code>, and how it reaches a page is the consumer's business.</p></div>
   <div class="col">
     <table class="tbl"><thead><tr><th>module</th><th>the concern it owns</th></tr></thead><tbody>
       <tr><td class="k">session-visibility</td><td>families (a root and its sub-agents), hide and ignore, which rows and groups are visible</td></tr>
@@ -325,6 +326,8 @@ ul.facts strong{font-weight:600}
       <tr><td class="k">capabilities</td><td>the two-stamp rule: preview, reveal, or copy, from which stamps a path carries</td></tr>
       <tr><td class="k">control-protocol</td><td>compose, send and revoke against the control plane, passcode prompts included</td></tr>
       <tr><td class="k">record-stream</td><td>the cursor, the pull and records queries, and the reducer that mirrors <code>PullClient</code></td></tr>
+      <tr><td class="k">runtime</td><td>the runtime snapshot's rows — context, effort, sandbox, permission… — phrased once: "unknown" versus "not recorded by this agent"</td></tr>
+      <tr><td class="k">ids</td><td>the session id's short form (the UUID's first eight hex digits), the same on a rail row, a header chip and a title</td></tr>
     </tbody></table>
     <ul class="facts"><li><strong>Served</strong> unchanged as ES modules at <code>/monitor-ui/shared/&lt;name&gt;.js</code> for the app shell.</li><li><strong>Inlined</strong> into every self-contained page ahead of the page script, which reads them as <code>window.__shared</code> — the offline export and the served session view alike.</li><li><strong>Two conventions, held by tests:</strong> a shared module imports nothing and ends in exactly one <code>export { … }</code> line; adding one is one row in a table, and the import-closure and convention tests cover the rest.</li></ul>
   </div>
@@ -366,7 +369,7 @@ agent-replay &lt;path&gt; --dump - --json</div>
       <tr><td class="k">claude-monitor/src/{index,consent,control,cost,state,routes,ui}.rs</td><td>the library half: the index, the control plane, the route table, the shell choice</td></tr>
       <tr><td class="k">claude-monitor/src/codex-ui/ · src/rail.html</td><td>the app shell (viewport, record store, components) · the classic rail</td></tr>
       <tr><td class="k">claude-monitor-v2/ · claude-monitor-fleet/</td><td>the second front-end over the same library · several machines behind one page</td></tr>
-      <tr><td class="k">claude-replay-html/src/html/shared/*.js</td><td>the seven shared frontend modules</td></tr>
+      <tr><td class="k">claude-replay-html/src/html/shared/*.js</td><td>the nine shared frontend modules</td></tr>
       <tr><td class="k">claude-replay-html/src/html_export/{serve,record_store,sig}.rs</td><td>the live server · the wire-projection store · capability stamps</td></tr>
       <tr><td class="k">claude-replay-present/src/{cache/,pull.rs}</td><td>SessionCache and the entry providers · the pull protocol, both halves</td></tr>
       <tr><td class="k">claude-replay-engine/src/{engine/builder.rs,adapter.rs,engine/seam.rs}</td><td>the sans-io fold · the adapter trait · the audited seam</td></tr>
@@ -374,10 +377,11 @@ agent-replay &lt;path&gt; --dump - --json</div>
       <tr><td class="k">docs/architecture.html · docs/developer-guide.html</td><td>the system design · build, test, and the three levels of reuse</td></tr>
     </tbody></table></div>
   </div>
-  <div class="foot"><span>agent-replay workspace</span><span>v1.154.0 · 2026-09-03</span><span>built from the two docs pages; every fact on these slides has a path</span></div>
+  <div class="foot"><span>agent-replay workspace</span><span>v1.165.0 · 2026-09-03</span><span>built from the two docs pages; every fact on these slides has a path</span></div>
 </section>
 
 </main>
+</div>
 
 <script>
 (function () {

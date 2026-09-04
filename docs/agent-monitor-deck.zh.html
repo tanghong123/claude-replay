@@ -38,7 +38,7 @@
 html{scroll-snap-type:y proximity;scroll-behavior:smooth}
 @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
-:lang(zh-CN) body,body:lang(zh-CN){line-height:1.7}
+[data-lang="zh"]{line-height:1.7}
 a{color:var(--accent-ink);text-decoration:none;border-bottom:1px solid var(--line-strong)}
 a:hover{border-bottom-color:var(--accent)}
 code,kbd,.mono{font-family:var(--mono);font-size:.92em}
@@ -51,7 +51,7 @@ p{margin:0}
 .bar .name{font-weight:700;letter-spacing:-.01em;white-space:nowrap}
 .bar .name span{color:var(--muted);font-weight:500}
 .bar .where{flex:1;color:var(--muted);text-align:center;text-transform:uppercase;letter-spacing:.08em;font-size:11.5px;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-:lang(zh-CN) .bar .where{text-transform:none;letter-spacing:.04em;font-family:var(--sans);font-size:12.5px}
+[data-lang="zh"] .bar .where{text-transform:none;letter-spacing:.04em;font-family:var(--sans);font-size:12.5px}
 .bar .count{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);min-width:5ch;text-align:right}
 .bar .keys{color:var(--faint);white-space:nowrap}
 .bar .keys kbd{margin:0 1px}
@@ -69,7 +69,7 @@ p{margin:0}
 @media (max-width:920px){.slide{grid-template-columns:1fr;padding-top:76px}}
 .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-ink);margin-bottom:18px;display:flex;align-items:center;gap:10px}
 .eyebrow::before{content:"";width:22px;height:2px;background:var(--accent)}
-:lang(zh-CN) .eyebrow{letter-spacing:.06em;text-transform:none}
+[data-lang="zh"] .eyebrow{letter-spacing:.06em;text-transform:none}
 .slide h2{font-size:clamp(30px,4.2vw,52px);line-height:1.04;margin-bottom:18px}
 .lede{font-size:17px;color:var(--muted);max-width:44ch}
 .lede strong{color:var(--ink);font-weight:600}
@@ -132,7 +132,7 @@ ul.facts strong{font-weight:600}
 .zones{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .zones .z{border:1px solid var(--line-strong);border-radius:8px;padding:12px 14px;background:var(--surface)}
 .zones .z b{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
-:lang(zh-CN) .zones .z b{text-transform:none;letter-spacing:.03em}
+[data-lang="zh"] .zones .z b{text-transform:none;letter-spacing:.03em}
 .zones .z.open{border-color:var(--accent)}
 .zones .z.open b{color:var(--accent-ink)}
 .zones .z p{font-size:13.5px}
@@ -140,7 +140,7 @@ ul.facts strong{font-weight:600}
 .tbl{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:var(--shadow)}
 .tbl th,.tbl td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
 .tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:600;background:color-mix(in srgb,var(--paper) 60%,var(--surface))}
-:lang(zh-CN) .tbl th{text-transform:none;letter-spacing:.03em;font-family:var(--sans);font-size:12px}
+[data-lang="zh"] .tbl th{text-transform:none;letter-spacing:.03em;font-family:var(--sans);font-size:12px}
 .tbl tr:last-child td{border-bottom:0}
 .tbl td.k{font-family:var(--mono);font-size:12.5px;white-space:nowrap;color:var(--accent-ink)}
 .tbl td.k small{display:block;color:var(--faint);font-size:11px;white-space:normal}
@@ -175,6 +175,7 @@ ul.facts strong{font-weight:600}
 </head>
 <body>
 
+<div class="deck" data-lang="zh">
 <header class="bar" role="banner">
   <div class="name">agent-monitor <span>· 一页看尽本机会话</span></div>
   <div class="where" id="where"></div>
@@ -188,7 +189,7 @@ ul.facts strong{font-weight:600}
   <h1 class="wordmark">agent<em>-</em>monitor</h1>
   <p class="tag"><strong>本机上每一个编码智能体会话，都在一个环回页面里</strong>——每个会话在做什么、花了多少钱，以及回应那个正在等你的会话的办法。</p>
   <div class="bins" title="agent-replay 工作区的四个二进制"><span>agent-replay</span><span class="me">agent-monitor</span><span>agent-monitor-fleet</span><span>agent-jdi</span></div>
-  <div class="meta"><span>资料来源：docs/architecture.html · docs/developer-guide.html</span><span>v1.154.0 · 2026-09-03</span></div>
+  <div class="meta"><span>资料来源：docs/architecture.html · docs/developer-guide.html</span><span>v1.165.0 · 2026-09-03</span></div>
 </section>
 
 <section class="slide" id="s2" data-where="02 · 它是什么">
@@ -315,7 +316,7 @@ ul.facts strong{font-weight:600}
 </section>
 
 <section class="slide" id="s11" data-where="11 · 可复用 · 前端的一半">
-  <div><div class="eyebrow">11 · 可复用 · 前端的一半</div><h2>七个共享模块，一份源码，三个消费者</h2><p class="lede">侧栏、拼接壳和应用壳曾经各自复制同一套逻辑。现在每个关注点只在 <code>claude-replay-html/src/html/shared/</code> 里存在一次，至于它如何到达页面，是消费者自己的事。</p></div>
+  <div><div class="eyebrow">11 · 可复用 · 前端的一半</div><h2>九个共享模块，一份源码，三个消费者</h2><p class="lede">侧栏、拼接壳和应用壳曾经各自复制同一套逻辑。现在每个关注点只在 <code>claude-replay-html/src/html/shared/</code> 里存在一次，至于它如何到达页面，是消费者自己的事。</p></div>
   <div class="col">
     <table class="tbl"><thead><tr><th>模块</th><th>它负责的关注点</th></tr></thead><tbody>
       <tr><td class="k">session-visibility</td><td>家族（根会话及其子智能体）、隐藏与忽略、哪些行和组可见</td></tr>
@@ -325,6 +326,8 @@ ul.facts strong{font-weight:600}
       <tr><td class="k">capabilities</td><td>双戳规则：根据路径携带的戳决定预览、显示还是复制</td></tr>
       <tr><td class="k">control-protocol</td><td>面向控制面的撰写、发送与撤销，含口令提示</td></tr>
       <tr><td class="k">record-stream</td><td>游标、拉取与记录查询，以及镜像 <code>PullClient</code> 的 reducer</td></tr>
+      <tr><td class="k">runtime</td><td>运行时快照的各行——上下文、推理强度、沙箱、权限……——只措辞一次：“未知”与“此智能体不记录”</td></tr>
+      <tr><td class="k">ids</td><td>会话 id 的短形式（UUID 的前八位十六进制），在侧栏行、标题芯片与标题上一致</td></tr>
     </tbody></table>
     <ul class="facts"><li><strong>原样服务</strong>：作为 ES 模块在 <code>/monitor-ui/shared/&lt;name&gt;.js</code> 提供给应用壳。</li><li><strong>内联</strong>进每个自包含页面，置于页面脚本之前，脚本通过 <code>window.__shared</code> 读取——离线导出与在线会话视图一视同仁。</li><li><strong>两条约定，由测试守住：</strong>共享模块不导入任何东西，并以恰好一行 <code>export { … }</code> 结尾；新增一个模块只是表里加一行，导入闭包测试与约定测试覆盖其余。</li></ul>
   </div>
@@ -366,7 +369,7 @@ agent-replay &lt;path&gt; --dump - --json</div>
       <tr><td class="k">claude-monitor/src/{index,consent,control,cost,state,routes,ui}.rs</td><td>库的一半：索引、控制面、路由表、外壳选择</td></tr>
       <tr><td class="k">claude-monitor/src/codex-ui/ · src/rail.html</td><td>应用壳（视口、记录存储、组件）· 经典侧栏</td></tr>
       <tr><td class="k">claude-monitor-v2/ · claude-monitor-fleet/</td><td>同一库之上的第二个前端 · 多台机器共一页</td></tr>
-      <tr><td class="k">claude-replay-html/src/html/shared/*.js</td><td>七个共享前端模块</td></tr>
+      <tr><td class="k">claude-replay-html/src/html/shared/*.js</td><td>九个共享前端模块</td></tr>
       <tr><td class="k">claude-replay-html/src/html_export/{serve,record_store,sig}.rs</td><td>实时服务器 · 线上投影存储 · 能力戳</td></tr>
       <tr><td class="k">claude-replay-present/src/{cache/,pull.rs}</td><td>SessionCache 与条目提供者 · 拉取协议的两个半边</td></tr>
       <tr><td class="k">claude-replay-engine/src/{engine/builder.rs,adapter.rs,engine/seam.rs}</td><td>sans-io 折叠 · 适配器 trait · 经审计的接缝</td></tr>
@@ -374,10 +377,11 @@ agent-replay &lt;path&gt; --dump - --json</div>
       <tr><td class="k">docs/architecture.html · docs/developer-guide.html</td><td>系统设计 · 构建、测试与三个复用层级</td></tr>
     </tbody></table></div>
   </div>
-  <div class="foot"><span>agent-replay 工作区</span><span>v1.154.0 · 2026-09-03</span><span>根据两份文档页面编写；这些幻灯片上的每条事实都有对应路径</span></div>
+  <div class="foot"><span>agent-replay 工作区</span><span>v1.165.0 · 2026-09-03</span><span>根据两份文档页面编写；这些幻灯片上的每条事实都有对应路径</span></div>
 </section>
 
 </main>
+</div>
 
 <script>
 (function () {
