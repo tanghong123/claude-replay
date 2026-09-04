@@ -745,15 +745,27 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#56 task order cases passed");
 }
 
-// #58 / #59: the outline's lists are bounded scrollers of their own; the focused turn is kept in
-// view through the pane's scroller, never the window.
+// #58 / #59 / #74: plain outline panes — each list scrolls itself under a max-height, the
+// column scrolls as a whole with the caption and the heads sticking in a stack, a head click
+// toggles its own pane only, and nothing is shared between panes.
 {
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
-  assert.match(css, /\.session-navigator>\.outline-card\.open>\.outline-card-body>\.navigator-list\{flex:1 1 auto;min-height:0;overflow-y:auto;/, "each open card's list scrolls itself");
-  assert.match(css, /\.session-navigator>\.outline-card\.open\{flex:1 1 0;min-height:96px\}/, "open cards share the pane's height down to a floor");
-  assert.match(appSource, /function revealInPane\(/, "the focused turn is revealed in the pane");
-  assert.match(appSource, /revealInPane\(row\)/, "…through the pane's own scroller, never the window");
-  console.log("#58/#59 pane scroller cases passed");
+  assert.match(css, /\.session-navigator\{display:flex;flex-direction:column;min-height:0;overflow-y:auto;/, "the column scrolls as a whole");
+  assert.match(css, /\.session-navigator>\*\{flex:0 0 auto\}/, "every pane sits at its own height — nothing is shared");
+  assert.match(css, /\.session-navigator>\.outline-caption\{position:sticky;top:0;/, "the caption sticks at the top");
+  assert.match(css, /\.session-navigator>\.outline-card>\.outline-card-head\{position:relative;z-index:2;/, "the heads are shifted into a stack by app.js — not CSS-sticky, which cannot leave the pane");
+  assert.doesNotMatch(css, /outline-card-head\{position:sticky/, "…and never stick to the bottom");
+  assert.match(css, /\.navigator-list\{max-height:min\(48vh,560px\);overflow-y:auto;/, "a long list scrolls itself under a max-height");
+  assert.doesNotMatch(css, /outline-card\.open\{flex:|\.focus\{flex:/, "no shared height, no focus share");
+  assert.match(appSource, /function stackOutlineHeads\(\) \{/, "the stack offsets are measured");
+  assert.match(appSource, /const shift = Math\.max\(0, slot - cardTop\);\n\s*if \(shift > 0\) head\.style\.transform = `translateY\(\$\{shift\}px\)`;\n\s*slot \+= head\.offsetHeight;/, "…each head shifted to its slot under the ones above it");
+  assert.match(appSource, /byId\("sessionNavigator"\)\.addEventListener\("scroll", stackOutlineHeads, \{ passive: true \}\);/, "…on every scroll of the column");
+  assert.match(appSource, /if \(card\) \{ const key = card\.dataset\.navCardToggle; uiState\.navCards\.has\(key\) \? uiState\.navCards\.delete\(key\) : uiState\.navCards\.add\(key\); persist\(\); renderNavigator\(\); return; \}/, "a head click toggles its own pane, whole head");
+  assert.doesNotMatch(appSource, /navFocus|classList\.toggle\("focus"/, "no focus state");
+  const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  assert.doesNotMatch(stateSrc, /navFocus/, "…nor remembered");
+  assert.match(appSource, /revealInPane\(row\)/, "the focused turn is revealed through the pane's own scroller");
+  console.log("#58/#59/#74 outline pane cases passed");
 }
 
 // #57: where the tasks pane centers — the running run's middle, else the done/pending boundary.
@@ -798,20 +810,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /<button class="outline-agent-spawn" type="button" data-agent-record="\$\{target\}"/, "…and the spawn point is a control of its own");
   assert.match(appSource, /const spawn = target == null \? "" : /, "shown only when the record stream kept the spawn point");
   console.log("#61 agents pane cases passed");
-}
-
-// #63: a head click focuses its card (opening it); the chevron and the count still collapse; the
-// focused card takes the lion's share; heads stick when the pane must scroll.
-{
-  assert.match(appSource, /if \(event\.target\.closest\("\.outline-card-chevron, \.outline-card-stat"\)\) \{ uiState\.navCards\.has\(key\) \? uiState\.navCards\.delete\(key\) : uiState\.navCards\.add\(key\); \}/, "the chevron and the count keep the toggle");
-  assert.match(appSource, /else \{ uiState\.navCards\.add\(key\); uiState\.navFocus = key; \}/, "the head focuses and opens");
-  assert.match(appSource, /card\.classList\.toggle\("focus", uiState\.navFocus === card\.dataset\.navCard\)/, "the focus is rendered");
-  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
-  assert.match(css, /\.session-navigator>\.outline-card\.open\.focus\{flex:4 1 0\}/, "the focused card takes the lion's share");
-  assert.match(css, /\.outline-card>\.outline-card-head\{position:sticky;top:0;bottom:0;/, "heads stick at both ends");
-  const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
-  assert.match(stateSrc, /navFocus: localStorage\.getItem\("am-prod-nav-focus"\) \|\| "turns"/, "remembered per viewer");
-  console.log("#63 pane heads cases passed");
 }
 
 // #67 / #68 / #69: the info pane shows only what the shell does not, with the cached-read and

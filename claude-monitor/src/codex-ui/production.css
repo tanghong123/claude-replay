@@ -94,19 +94,18 @@
 .work-group:first-child{margin-top:2px;padding-top:0;border-top:0}
 .work-group-count{font-weight:500;color:var(--faint)}
 .work-group[data-task-group="in_progress"]{color:var(--amber,var(--sub))}
-/* #58 / #59: the outline's cards share the pane's height and each list scrolls ITSELF. The
-   reference lays the cards out as grid rows where only one row is flexible, so a long turns list
-   grew past the pane and was clipped (the pane is overflow:hidden) with no way to reach turn
-   900. Here the pane is a flex column: every open card may shrink to a floor and grow to its
-   content, its list is the scroller (thin, always visible), and the transcript remains the
-   document's one scroller. */
-.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator{display:flex;flex-direction:column;min-height:0}
-.workspace:not(.navigator-off) .session-navigator>.outline-caption,.workspace:not(.navigator-off) .session-navigator>.outline-rail{flex:0 0 auto}
-.workspace:not(.navigator-off) .session-navigator>.outline-card{flex:0 0 auto;min-height:0;display:flex;flex-direction:column}
-.workspace:not(.navigator-off) .session-navigator>.outline-card.open{flex:1 1 0;min-height:96px}
-.workspace:not(.navigator-off) .session-navigator>.outline-card>.outline-card-head{flex:0 0 auto}
-.workspace:not(.navigator-off) .session-navigator>.outline-card.open>.outline-card-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
-.workspace:not(.navigator-off) .session-navigator>.outline-card.open>.outline-card-body>.navigator-list{flex:1 1 auto;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-gutter:stable;scrollbar-color:color-mix(in srgb,var(--sub) 45%,transparent) transparent}
+/* #58 / #59 / #74: the outline is a plain column. Every pane sits at its own height — a long
+   list scrolls ITSELF under a max-height, so one pane cannot push the others out of reach —
+   the panes stack top to bottom, and when they exceed the space the column scrolls as a whole
+   (the space between the session list and the panes), the transcript still the document's one
+   scroller. The "Outline" caption sticks at the top and every head sticks in a stack under it
+   (shifted into its slot on scroll by app.js: the caption plus the heads above it). Folded means the head
+   alone. Opening or folding a pane changes nothing about the others. */
+.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator{display:flex;flex-direction:column;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--sub) 45%,transparent) transparent}
+.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>*{flex:0 0 auto}
+.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-caption{position:sticky;top:0;z-index:3;background:var(--outline-surface,var(--panel))}
+.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-card>.outline-card-head{position:relative;z-index:2;background:var(--outline-surface,var(--panel));will-change:transform}
+.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-card.open>.outline-card-body>.navigator-list{max-height:min(48vh,560px);overflow-y:auto;scrollbar-width:thin;scrollbar-gutter:stable;scrollbar-color:color-mix(in srgb,var(--sub) 45%,transparent) transparent}
 .navigator-list::-webkit-scrollbar{width:8px}
 .navigator-list::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--sub) 45%,transparent);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
 .navigator-list::-webkit-scrollbar-track{background:transparent}
@@ -139,15 +138,3 @@
 .outline-agent-row>.outline-agent{min-width:0}
 .outline-agent-spawn{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;background:transparent;color:var(--faint);cursor:pointer;font-size:13px;line-height:1}
 .outline-agent-spawn:hover,.outline-agent-spawn:focus-visible{color:var(--ink);background:var(--hover);outline:0}
-/* #63: the focused card takes the lion's share of the pane; when even the floors do not fit, the
-   pane scrolls as a whole and every head sticks — to the top for the cards above, to the bottom
-   for the cards below — so each head is always in reach. */
-.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator{overflow-y:auto;scrollbar-width:thin}
-.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-card.open.focus{flex:4 1 0}
-.workspace:not(.navigator-off):not(.navigator-hidden) .session-navigator>.outline-card>.outline-card-head{position:sticky;top:0;bottom:0;z-index:2;background:var(--outline-surface,var(--panel))}
-.outline-card-head .outline-card-chevron,.outline-card-head .outline-card-stat{cursor:pointer}
-/* #69: a compaction epoch tick in the turns pane — a seam between chapters, not a numbered turn. */
-.outline-epoch{display:flex;align-items:center;gap:8px;width:100%;margin:4px 0;padding:3px 8px;background:transparent;color:var(--faint);font:500 11px/1.3 var(--mono);letter-spacing:.02em;text-align:left;cursor:pointer;border-radius:6px}
-.outline-epoch::before,.outline-epoch::after{content:"";flex:1 1 auto;height:1px;background:color-mix(in srgb,var(--line) 85%,transparent)}
-.outline-epoch::before{flex:0 0 10px}
-.outline-epoch:hover,.outline-epoch:focus-visible{color:var(--sub);background:var(--hover);outline:0}

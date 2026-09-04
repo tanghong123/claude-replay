@@ -455,6 +455,30 @@ function directAgents(source = recordState.meta) {
   for (const run of meta.runs || []) for (const member of run.members || []) if (!ids.has(member.id)) { ids.add(member.id); result.push(member); }
   return result;
 }
+// The outline column scrolls as a whole (#74); the "Outline" caption sticks at its top and every
+// pane's head sits in a stack under it: the slot of a head is the caption plus the heads above
+// it, and on every scroll a head whose pane has moved above its slot is shifted down to the
+// slot — so the Turns head stays under "Outline" however far the column scrolls, and each
+// following head moves up until it sits under the one before it. (CSS sticky cannot do this:
+// a sticky head may not leave its own pane, and a pane scrolled past takes its head along.)
+// Folded panes count: their heads are in the stack too.
+function stackOutlineHeads() {
+  const nav = byId("sessionNavigator");
+  const caption = nav.querySelector(":scope > .outline-caption");
+  const navTop = nav.getBoundingClientRect().top;
+  let slot = caption ? caption.getBoundingClientRect().bottom - navTop : 0;
+  nav.querySelectorAll(":scope > .outline-card").forEach(card => {
+    const head = card.querySelector(":scope > .outline-card-head");
+    if (!head) return;
+    head.style.transform = "";
+    const cardTop = card.getBoundingClientRect().top - navTop;
+    const shift = Math.max(0, slot - cardTop);
+    if (shift > 0) head.style.transform = `translateY(${shift}px)`;
+    slot += head.offsetHeight;
+  });
+}
+byId("sessionNavigator").addEventListener("scroll", stackOutlineHeads, { passive: true });
+window.addEventListener("resize", stackOutlineHeads);
 function renderNavigator() {
   const turns = recordState.units.filter(unit => unit.type === "user");
   byId("navigatorTurnCount").textContent = turns.length;
@@ -495,7 +519,8 @@ function renderNavigator() {
     return `<div class="outline-agent-row"><button class="outline-agent" type="button" data-child-outline="${escapeText(agent.id)}" title="Open the sub-agent's transcript"><span class="agent-state ${agent.running ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(agent.title || agent.description || agent.id)}</strong><small>${escapeText(agent.type || agent.agent_type || "agent")}</small></span><span class="outline-agent-tail"></span></button>${spawn}</div>`;
   }).join("") || '<div class="activity-empty">No direct children</div>';
   renderSessionInfo(turns.length, agents.length);
-  document.querySelectorAll("[data-nav-card]").forEach(card => { card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)); card.classList.toggle("focus", uiState.navFocus === card.dataset.navCard); });
+  document.querySelectorAll("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
+  stackOutlineHeads();
   document.querySelector(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
   document.querySelector(".workspace").classList.toggle("navigator-hidden", uiState.navigatorHidden);
   byId("navigatorToggle").classList.toggle("active", uiState.navigatorOpen);
@@ -527,16 +552,10 @@ byId("sessionNavigator").onclick = event => {
   const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); viewport.jumpToRecord(Number(task.dataset.taskRecord), "task"); return; }
   const agent = event.target.closest("[data-agent-record]"); if (agent) { viewport.jumpToRecord(Number(agent.dataset.agentRecord), "agent"); return; }
   const child = event.target.closest("[data-child-outline]"); if (child) { selectSession(child.dataset.childOutline, true); return; }
-  // A card's head (#63): the chevron and the count keep the collapse toggle; the rest of the
-  // head gives THIS card the lion's share of the pane — and opens it — so a pane whose body was
-  // squeezed out is one click away. Heads themselves never leave the pane (#58/#59's layout).
+  // A card's head folds and unfolds ITS pane (#74) — the whole head, and nothing else changes:
+  // the other panes keep their state and their height.
   const card = event.target.closest("[data-nav-card-toggle]");
-  if (card) {
-    const key = card.dataset.navCardToggle;
-    if (event.target.closest(".outline-card-chevron, .outline-card-stat")) { uiState.navCards.has(key) ? uiState.navCards.delete(key) : uiState.navCards.add(key); }
-    else { uiState.navCards.add(key); uiState.navFocus = key; }
-    persist(); renderNavigator(); return;
-  }
+  if (card) { const key = card.dataset.navCardToggle; uiState.navCards.has(key) ? uiState.navCards.delete(key) : uiState.navCards.add(key); persist(); renderNavigator(); return; }
   const rail = event.target.closest("[data-nav-card-open]"); if (rail) { uiState.navCards.add(rail.dataset.navCardOpen); uiState.navigatorOpen = true; persist(); renderNavigator(); }
 };
 

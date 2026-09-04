@@ -3108,22 +3108,23 @@ fn the_app_shell_agents_pane_switches_to_the_sub_agent() {
     drop(monitor);
 }
 
-/// #63: at a short window with every card open, all four heads stay visible; a head click gives
-/// its card the lion's share of the pane; the chevron still collapses.
+/// #74: the outline panes are plain — a head click folds or unfolds ITS pane and nothing else,
+/// a folded pane is its head alone, the panes stack top to bottom, and at a short window the
+/// column scrolls as a whole with the caption and the heads sticking in a stack under it.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn the_app_shell_keeps_every_pane_head_in_reach() {
+fn the_app_shell_outline_panes_toggle_independently_and_stack() {
     let _serial = serial();
-    let base = base("appshell-pane-heads");
+    let base = base("appshell-outline-panes");
     let stores = Stores::new(&base);
-    let sid = "cccccccc-0000-4000-8000-000000000063".to_string();
+    let sid = "cccccccc-0000-4000-8000-000000000074".to_string();
     let mut transcript = harness::long_session(40, harness::Shape::default());
-    transcript += &harness::agent_spawn("call_63", "Explore", 47);
-    transcript += &harness::agent_result("call_63", "aExplore-63", "Explore", 47);
+    transcript += &harness::agent_spawn("call_74", "Explore", 47);
+    transcript += &harness::agent_result("call_74", "aExplore-74", "Explore", 47);
     stores.claude_session(&sid, &transcript);
     stores.claude_child(
         &sid,
-        "aExplore-63",
+        "aExplore-74",
         &harness::long_session(4, harness::Shape::default()),
     );
     let mut tasks: Vec<(String, String, &str)> = Vec::new();
@@ -3160,106 +3161,148 @@ fn the_app_shell_keeps_every_pane_head_in_reach() {
         std::time::Duration::from_secs(30),
         "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
     );
-    // Open every card.
-    harness::eval(&tab, "['tasks', 'agents', 'session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (c && !c.classList.contains('open')) c.querySelector('.outline-card-chevron').click(); }); 'ok'");
+    let state = r#"(function(){ var nav = document.querySelector('.session-navigator'), nr = nav.getBoundingClientRect(); var cap = nav.querySelector('.outline-caption'); return { open: [...document.querySelectorAll('.outline-card')].map(function (c) { return c.dataset.navCard + ':' + (c.classList.contains('open') ? 'open' : 'folded'); }), bodies: [...document.querySelectorAll('.outline-card')].map(function (c) { var body = c.querySelector('.outline-card-body'); return c.dataset.navCard + ':' + (body.offsetParent === null ? 0 : Math.round(body.getBoundingClientRect().height)); }), heads: [...document.querySelectorAll('.outline-card > .outline-card-head')].map(function (h) { var r = h.getBoundingClientRect(); return { key: h.dataset.navCardToggle, top: Math.round(r.top), bottom: Math.round(r.bottom), visible: r.top >= nr.top - 1 && r.bottom <= nr.bottom + 1 }; }), caption: cap ? { top: Math.round(cap.getBoundingClientRect().top), bottom: Math.round(cap.getBoundingClientRect().bottom) } : null, navTop: Math.round(nr.top + parseFloat(getComputedStyle(nav).paddingTop || '0')), navBottom: Math.round(nr.bottom), navScroll: nav.scrollTop, overflow: nav.scrollHeight - nav.clientHeight, windowY: window.scrollY }; })()"#;
+    // 1 + 2: a head click folds or unfolds its own pane; the others keep their state.
+    let before = harness::probe(&tab, state);
+    assert_eq!(
+        before["open"],
+        serde_json::json!([
+            "turns:open",
+            "tasks:folded",
+            "agents:folded",
+            "session:folded"
+        ]),
+        "a fresh shell: the turns pane open, the others folded: {before}"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.querySelector('[data-nav-card=\"tasks\"]').classList.contains('open')",
+        "the tasks head to unfold its pane",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('[data-nav-card=\"tasks\"]').className",
+    );
+    let opened = harness::probe(&tab, state);
+    assert_eq!(
+        opened["open"],
+        serde_json::json!([
+            "turns:open",
+            "tasks:open",
+            "agents:folded",
+            "session:folded"
+        ]),
+        "only the tasks pane changed: {opened}"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-nav-card-toggle=\"turns\"] strong').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!document.querySelector('[data-nav-card=\"turns\"]').classList.contains('open')",
+        "the turns head (its label) to fold its pane",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('[data-nav-card=\"turns\"]').className",
+    );
+    let folded = harness::probe(&tab, state);
+    assert_eq!(
+        folded["open"],
+        serde_json::json!([
+            "turns:folded",
+            "tasks:open",
+            "agents:folded",
+            "session:folded"
+        ]),
+        "folding turns left tasks open: {folded}"
+    );
+    // 3 + 4: a folded pane is its head alone — no body, no rows.
+    let bodies: Vec<String> = folded["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        bodies.iter().any(|b| b == "turns:0")
+            && bodies.iter().any(|b| b == "agents:0")
+            && bodies.iter().any(|b| b == "session:0"),
+        "folded panes show nothing: {folded}"
+    );
+    assert!(
+        bodies
+            .iter()
+            .any(|b| b.starts_with("tasks:") && b != "tasks:0"),
+        "the open pane shows its body: {folded}"
+    );
+    // Open every pane: 5, they stack top to bottom in order; 6, the column scrolls as a whole.
+    harness::eval(&tab, "['turns', 'agents', 'session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (!c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"' + k + '\"]').click(); }); 'ok'");
     harness::until(
         &tab,
         "document.querySelectorAll('.outline-card.open').length === 4",
-        "all four cards to open",
+        "all four panes to open",
         std::time::Duration::from_secs(5),
         "document.querySelectorAll('.outline-card.open').length",
     );
     std::thread::sleep(std::time::Duration::from_millis(400));
-    let heads = r#"(function(){ var pane = document.querySelector('.session-navigator').getBoundingClientRect(); return [...document.querySelectorAll('.outline-card')].map(function (c) { var h = c.querySelector('.outline-card-head').getBoundingClientRect(), b = c.querySelector('.outline-card-body').getBoundingClientRect(); var cs = getComputedStyle(c), ps = getComputedStyle(document.querySelector('.session-navigator')); return { key: c.dataset.navCard, headVisible: h.top >= pane.top - 1 && h.bottom <= pane.bottom + 1, body: Math.round(b.height), focus: c.classList.contains('focus'), flex: cs.flexGrow + '/' + cs.flexShrink + '/' + cs.flexBasis, card: Math.round(c.getBoundingClientRect().height), paneDisplay: ps.display, paneH: Math.round(pane.height), win: window.innerHeight }; }); })()"#;
-    let before = harness::probe(&tab, heads);
+    let all = harness::probe(&tab, state);
+    let heads = all["heads"].as_array().unwrap();
+    for w in heads.windows(2) {
+        assert!(
+            w[1]["top"].as_f64().unwrap() >= w[0]["bottom"].as_f64().unwrap() - 1.0,
+            "heads stack top to bottom in order: {all}"
+        );
+    }
     assert!(
-        before
+        all["overflow"].as_f64().unwrap_or(0.0) > 100.0,
+        "at a short window with every pane open the column overflows, so it scrolls: {all}"
+    );
+    assert!(
+        all["bodies"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|c| c["headVisible"] == true),
-        "every head is visible with all four cards open at 620px: {before}"
+            .all(|b| !b.as_str().unwrap().ends_with(":0")),
+        "every open pane shows its body: {all}"
     );
-    // With room to share — a taller window — a head click gives its card the lion's share.
-    tab.set_bounds(headless_chrome::types::Bounds::Normal {
-        left: Some(0),
-        top: Some(0),
-        width: Some(1400.0),
-        height: Some(900.0),
-    })
-    .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Scroll the column: the caption sticks at the top, the turns head sticks under it, and the
+    // next head sits under the previous one; the window never scrolls.
     harness::eval(
         &tab,
-        "document.querySelector('[data-nav-card-toggle=\"tasks\"] strong').click(); 'ok'",
+        "document.querySelector('.session-navigator').scrollTop = 400; 'ok'",
     );
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let after = harness::probe(&tab, heads);
-    let body = |v: &serde_json::Value, key: &str| {
-        v.as_array()
-            .unwrap()
-            .iter()
-            .find(|c| c["key"] == key)
-            .map(|c| c["body"].as_f64().unwrap_or(0.0))
-            .unwrap_or(0.0)
-    };
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let scrolled = harness::probe(&tab, state);
     assert!(
-        after
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c["key"] == "tasks" && c["focus"] == true),
-        "the tasks card is the focused one: {after}"
+        scrolled["navScroll"].as_f64().unwrap_or(0.0) >= 200.0,
+        "the column scrolled: {scrolled}"
     );
+    assert_eq!(scrolled["windowY"], 0, "the window did not: {scrolled}");
+    let cap = &scrolled["caption"];
     assert!(
-        body(&after, "tasks") >= 2.0 * body(&after, "turns"),
-        "…and it has the lion's share over the turns card: {after}"
+        (cap["top"].as_f64().unwrap() - scrolled["navTop"].as_f64().unwrap()).abs() <= 1.0,
+        "the caption is stuck at the top of the column: {scrolled}"
     );
+    let heads = scrolled["heads"].as_array().unwrap();
     assert!(
-        after
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|c| c["headVisible"] == true),
-        "every head still visible: {after}"
+        (heads[0]["top"].as_f64().unwrap() - cap["bottom"].as_f64().unwrap()).abs() <= 1.0,
+        "the turns head is stuck right under the caption: {scrolled}"
     );
-    assert_eq!(
-        after
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|c| c["body"].as_f64().unwrap_or(0.0) > 0.0)
-            .count(),
-        4,
-        "every card keeps its floor: {after}"
-    );
-    // The chevron still collapses.
-    harness::eval(&tab, "document.querySelector('[data-nav-card-toggle=\"agents\"] .outline-card-chevron').click(); 'ok'");
-    harness::until(
-        &tab,
-        "!document.querySelector('[data-nav-card=\"agents\"]').classList.contains('open')",
-        "the chevron to collapse the agents card",
-        std::time::Duration::from_secs(5),
-        "document.querySelector('[data-nav-card=\"agents\"]').className",
-    );
-    // Remembered across a reload.
-    tab.navigate_to(&format!("http://127.0.0.1:2869/?ui=app&session={sid}"))
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
-    harness::until(
-        &tab,
-        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length >= 40",
-        "the reloaded shell",
-        std::time::Duration::from_secs(30),
-        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
-    );
+    for w in heads.windows(2) {
+        assert!(
+            w[1]["top"].as_f64().unwrap() >= w[0]["bottom"].as_f64().unwrap() - 1.0,
+            "each head sits under the one before it: {scrolled}"
+        );
+    }
+    // A head is never lost above the fold: what is not visible lies below, reachable by scrolling on.
+    let nav_bottom = scrolled["navBottom"].as_f64().unwrap();
     assert!(
-        harness::probe(&tab, heads)
-            .as_array()
-            .unwrap()
+        heads
             .iter()
-            .any(|c| c["key"] == "tasks" && c["focus"] == true),
-        "the focus is remembered"
+            .all(|h| h["visible"] == true || h["top"].as_f64().unwrap() > nav_bottom - 1.0),
+        "a head is either in the stack or still below, never scrolled out at the top: {scrolled}"
     );
     drop(monitor);
 }

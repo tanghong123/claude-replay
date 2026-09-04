@@ -32,7 +32,6 @@ export const uiState = {
   navigatorOpen: localStorage.getItem("am-demo-navigator") !== "0",
   navigatorHidden: localStorage.getItem("am-prod-navigator-hidden") === "1",
   navCards: new Set(json("am-prod-nav-cards", ["turns"])),
-  navFocus: localStorage.getItem("am-prod-nav-focus") || "turns",
   searchTab: "all", searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), toolFilters: new Set(),
   globalResults: [], globalIndex: 0,
   reading: parseReading(localStorage.getItem(READING_KEY)) || { ...DEFAULT_READING },
@@ -55,7 +54,6 @@ export function persist() {
   localStorage.setItem("am-demo-navigator", uiState.navigatorOpen ? "1" : "0");
   localStorage.setItem("am-prod-navigator-hidden", uiState.navigatorHidden ? "1" : "0");
   localStorage.setItem("am-prod-nav-cards", JSON.stringify([...uiState.navCards]));
-  localStorage.setItem("am-prod-nav-focus", uiState.navFocus || "turns");
   localStorage.setItem("am-prod-read", JSON.stringify(indexState.read));
   if (uiState.readingChosen) localStorage.setItem(READING_KEY, JSON.stringify(uiState.reading));
 }
