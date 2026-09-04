@@ -178,3 +178,5 @@
 /* #110: the tool filter hides what does not match; user turns stay as dimmed landmarks. */
 .filter-hidden{display:none!important}
 .renderer-head.filter-hit{box-shadow:inset 3px 0 0 var(--blue)}
+/* #112: when a user turn was sent — beside the bubble, faint; the date joins it on older turns. */
+.turn.user .turn-time{align-self:flex-end;margin:0 4px 4px 8px;font-size:11px;line-height:1.3;color:var(--faint);white-space:nowrap}

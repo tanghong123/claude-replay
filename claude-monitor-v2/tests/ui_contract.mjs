@@ -9,6 +9,7 @@ import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-html/src/html/shared/runtime.js";
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { recordText, stripTags, countOcc, wholeAt, directMask, CLASS_BIT } from "../../claude-monitor/src/codex-ui/shared/search.js";
+import { fmtTime, fmtDur } from "../../claude-monitor/src/codex-ui/shared/time.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
@@ -1013,4 +1014,21 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /if \(!Number\.isInteger\(index\) \|\| !matched\.has\(index\) \|\| root\.parentElement\?\.closest\("\[data-block-index\]"\)\) continue;/, "every matched top-level record in the window is marked");
   assert.match(app, /mark\.className = "search-mark" \+ \(first \? " current" : ""\);/, "…the current record's first mark stronger");
   console.log("#111 search haystack cases passed");
+}
+
+// #112: times, one rule for both pages.
+{
+  const now = new Date(2026, 8, 4, 15, 0, 0);
+  const today = new Date(2026, 8, 4, 9, 41, 0).getTime() / 1000;
+  const thisYear = new Date(2026, 2, 9, 10, 20, 0).getTime() / 1000;
+  const otherYear = new Date(2025, 2, 9, 10, 20, 0).getTime() / 1000;
+  assert.match(fmtTime(today, now), /^\d{1,2}:\d{2}/, "today: a bare clock time");
+  assert.ok(!/2026/.test(fmtTime(today, now)), "…without a date");
+  assert.ok(/Mar/.test(fmtTime(thisYear, now)) && !/2026/.test(fmtTime(thisYear, now)), "this year: month and day, no year");
+  assert.ok(/2025/.test(fmtTime(otherYear, now)), "another year: the year too");
+  assert.equal(fmtDur(3725), "1h 2m"); assert.equal(fmtDur(90), "2m"); assert.equal(fmtDur(0), "");
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /import \{ fmtTime \} from "\.\/shared\/time\.js";/, "the app shell imports the rule");
+  assert.match(comp, /\$\{turnTime\(unit\)\}\$\{spot\}\$\{rawToggle\}/, "…and shows it beside the user bubble");
+  console.log("#112 time cases passed");
 }

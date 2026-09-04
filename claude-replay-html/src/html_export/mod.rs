@@ -3245,6 +3245,16 @@ mod tests {
     /// offset — the same body observer that heals the pinned tail. The anchor is refreshed per
     /// scroll frame and per apply, and cleared the moment a scroll begins so a resize heard
     /// between a scroll and its frame cannot undo the scroll.
+    /// #112: the classic page's time formatting is the shared module's.
+    #[test]
+    fn times_are_the_shared_modules() {
+        assert!(JS.contains("var fmtTime = shared.fmtTime;"));
+        assert!(JS.contains("var fmtDur = shared.fmtDur;"));
+        assert!(super::shared::SHARED
+            .iter()
+            .any(|(name, _)| *name == "time"));
+    }
+
     /// #111: the classic page's haystack rules are the shared module's.
     #[test]
     fn search_haystack_is_the_shared_modules() {

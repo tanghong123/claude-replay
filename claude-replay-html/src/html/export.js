@@ -55,25 +55,10 @@
     if (text != null) n.textContent = text;
     return n;
   }
-  function fmtTime(ts) {
-    // hh:mm alone for TODAY's turns; older turns carry their date (and year when it
-    // differs) — a bare clock time on a week-old turn identifies nothing. Client-side
-    // "now" on purpose: the page renders live in a browser, so a dump's bytes carry this
-    // code, never a baked render date.
-    try {
-      var d = new Date(ts * 1000), now = new Date();
-      var t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-      if (d.toDateString() === now.toDateString()) return t;
-      var opts = { month: "short", day: "numeric" };
-      if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
-      return d.toLocaleDateString([], opts) + " " + t;
-    } catch (e) { return ""; }
-  }
-  function fmtDur(s) {
-    if (!s || s < 0) return "";
-    var h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
-    return h ? h + "h " + m + "m" : m + "m";
-  }
+  // hh:mm alone for TODAY's turns; older turns carry their date (and year when it differs).
+  // The rule is the shared module's (html/shared/time.js, #112) — one with the app shell.
+  var fmtTime = shared.fmtTime;
+  var fmtDur = shared.fmtDur;
 
   // ── theme ────────────────────────────────────────────────────────────
   function applyTheme(name) {

@@ -4,6 +4,7 @@ import { attachmentCapability, referenceAction, revealQuery } from "./shared/cap
 import { svg } from "./icons.js";
 import { escapeText, partsHtml } from "./view-model.js";
 import { rememberCap } from "./shared/parts.js";
+import { fmtTime } from "./shared/time.js";
 
 const element = html => {
   const template = document.createElement("template");
@@ -130,6 +131,13 @@ export function rawFor(unit, state) {
   return unit.type === "user" && !!state.rawUser;
 }
 
+/** When the turn was typed (#112): the wire's `ts` on the user record, in the shared form —
+ *  a clock time today, the date on older turns. */
+function turnTime(unit) {
+  const ts = unit.view?.source?.ts;
+  return typeof ts === "number" && ts > 0 ? `<span class="turn-time" title="When this turn was sent">${escapeText(fmtTime(ts))}</span>` : "";
+}
+
 export function renderUnit(unit, state) {
   const spot = unit.view?.id
     ? `<button class="spot-link" type="button" data-spot-link="${escapeText(unit.view.id)}" aria-label="Copy a link to here" title="Copy a link to here"><span aria-hidden="true">#</span></button>`
@@ -144,7 +152,7 @@ export function renderUnit(unit, state) {
   if (unit.type === "user") {
     const long = promptShouldCollapse(unit.view.html);
     const expanded = state.promptExpanded.has(unit.key);
-    html = `<div class="turn user" data-kind="user" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt ${long ? "prompt-collapsible" : ""}"><div class="prompt-copy-shell ${long && !expanded ? "collapsed" : "expanded"}"><div class="body markdown">${body}</div>${long ? `<button class="prompt-expand" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}">${expanded ? "Show fewer" : "Show the whole prompt"}<span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>` : ""}</div>${renderPromptAttachments(unit.attachments)}</div>${spot}${rawToggle}</div>`;
+    html = `<div class="turn user" data-kind="user" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt ${long ? "prompt-collapsible" : ""}"><div class="prompt-copy-shell ${long && !expanded ? "collapsed" : "expanded"}"><div class="body markdown">${body}</div>${long ? `<button class="prompt-expand" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}">${expanded ? "Show fewer" : "Show the whole prompt"}<span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>` : ""}</div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
   }
   else if (unit.type === "assistant") {
     const final = unit.view.phase === "final";

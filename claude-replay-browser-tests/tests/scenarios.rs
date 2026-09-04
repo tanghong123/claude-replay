@@ -1926,3 +1926,69 @@ fn search_fixture(name: &str) -> Fixture {
         turns: 13,
     }
 }
+
+// ── scenario: timestamps on user turns — a clock today, the date on older turns (#112) ────
+
+/// Row 3.19 of design/rendering-parity-audit.md. Both pages show when a user turn was sent:
+/// a bare clock time for today, the date (and the year when it differs) for older turns.
+fn scenario_user_turn_timestamps(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let times = match surface {
+        Surface::Classic => "JSON.stringify([...document.querySelectorAll('#stream .uturn .ts')].slice(-2).map(function (e) { return e.textContent; }))",
+        Surface::AppShell => "JSON.stringify([...document.querySelectorAll('.turn.user .turn-time')].slice(-2).map(function (e) { return e.textContent; }))",
+    };
+    let v: Vec<String> =
+        serde_json::from_str(eval(tab, times).as_str().unwrap_or("[]")).unwrap_or_default();
+    assert_eq!(v.len(), 2, "the last two user turns carry a time: {v:?}");
+    let (today, old) = (&v[0], &v[1]);
+    assert!(
+        regex_lite_time(today) && !today.contains("2025") && !today.contains("2026"),
+        "today's turn shows a bare clock time: {today:?}"
+    );
+    assert!(
+        old.contains("2025") && regex_lite_time(old),
+        "an older turn carries its date and year: {old:?}"
+    );
+}
+
+/// Something that looks like `h:mm` is in the text (locale-agnostic on the hour form).
+fn regex_lite_time(s: &str) -> bool {
+    let b = s.as_bytes();
+    (0..b.len().saturating_sub(2))
+        .any(|i| b[i].is_ascii_digit() && b[i + 1] == b':' && b[i + 2].is_ascii_digit())
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_shows_user_turn_timestamps() {
+    let _serial = serial();
+    let fx = time_fixture("scenario-time-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_user_turn_timestamps(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_shows_user_turn_timestamps() {
+    let _serial = serial();
+    let fx = time_fixture("scenario-time-app");
+    let page = open(Surface::AppShell, &fx, 2886);
+    scenario_user_turn_timestamps(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Twelve turns from today, then a turn dated in another year.
+fn time_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("question time: an old one", "2025-03-09T10:20:00Z");
+    transcript += &assistant_at("answer time: noted", "2025-03-09T10:21:00Z");
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}

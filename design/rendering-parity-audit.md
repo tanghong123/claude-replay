@@ -92,7 +92,7 @@ Scenario: the state of the guard that runs on both surfaces.
 | 3.16 | MCP calls grouped in the filter | `MCP → server → tool` tree | flat tool names | DEFERRED task (owner review): the flat list works until a session has dozens of MCP tools; undefer when one does | — |
 | 3.17 | `request_user_input` card | ignored (`head.interaction` on the wire, a generic fold) | waiting/resolved card with answers | **KEEP** (port to the classic page — owner review; the card as a shared module both pages render) | ✓ app; classic → add |
 | 3.18 | Bare tool result | fold named `Result`, the first 70 chars as target, a `⎿ pre` body | generic renderer (name from the kind) | **KEEP** (match the classic shape — owner review) | none → add |
-| 3.19 | Timestamps on user turns | `h:mm` today, `Mon D` older (+ year) | none; the wire carries `ts` | **KEEP** (port) | none → add: a turn from yesterday shows its date on both |
+| 3.19 | Timestamps on user turns | `h:mm` today, `Mon D` older (+ year) | was: none. Now (#112) `shared/time.js` holds the rule for both pages; the app shell shows it beside the user bubble | HAVE (v1.181.0) | ✓ both: `scenario_user_turn_timestamps` |
 | 3.20 | "Turn NN" labels and the sticky turn bar | sticky bar under the top bar `Turn N — label`, click jumps back to the turn; sidebar rows | pane rows; a label on process surfaces whose ordinal is wrong (#103) | **KEEP** the sticky turn bar (port — owner review: the bar and the pane serve different purposes); #103 fixes the ordinal, and the header's own "Turn NN" text may go once the pane's current-turn focus is reliable | none → add: scrolled into a turn, the bar names it and a click returns to its card, on both |
 
 ### 4. Folding and disclosure
@@ -202,7 +202,7 @@ while running the shared code, which is what validates the module (the same patt
 | `shared/tool-head.js` | name/target/chips → state (failed/running/completed), exit and duration chips, the display-name rule | classic fold header pieces; app `viewRecord` chip regexes | 3.4 |
 | `shared/search.js` (started, #111) | the haystack (a record's text, nested included), the scope classes, the whole-word rule and occurrence counting — both pages run it; still per page: per-scope counts, the typed prefix, hit order, mark placement (#101, #104, #118) | classic `ownTextParts`/`directMask`/`countOcc`/`wholeAt` run on it; app `plainText` does | 5.3, 5.4 done; #101, #104, #118 |
 | `shared/filter.js` | type/tool filter semantics: hide vs landmark, force-open, nearest hit, snapshot restore | classic `setFilter`; app `applyFilters` | 5.8 |
-| `shared/time.js` | `fmtTime` (`h:mm` today, `Mon D`, year when it differs), durations | classic `fmtTime`/`fmtDur`; app none | 3.19 |
+| `shared/time.js` (landed, #112) | `fmtTime` (`h:mm` today, `Mon D`, year when it differs), `fmtDur` | classic `fmtTime`/`fmtDur` run on it; the app shell's user bubble shows it | 3.19 done |
 | `shared/view-state.js` | folds, raw, expansions, prompt/image opens per session in `sessionStorage` (with position, `view-memory.js`) | classic `saveView`/`loadView`; app `view-memory.js` | 4.4 |
 | `shared/virtual-window.js` | scrolling (#107, `design/virtual-window.md`) | | #107 |
 
