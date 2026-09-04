@@ -852,3 +852,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(css, /\.session-parent\.is-live\{display:inline-flex;/, "shown as a labelled control");
   console.log("#82 parent control cases passed");
 }
+
+// #79: a stamped reveal opens any existing offered path; the refusal blames nothing but a gone path.
+{
+  const viewer = readFileSync(new URL("../../claude-monitor/src/codex-ui/attachment-viewer.js", import.meta.url), "utf8");
+  assert.match(viewer, /"Nothing to reveal — the path is gone"/, "the message names the one remaining reason");
+  assert.doesNotMatch(viewer, /outside what this monitor may reveal/, "…and no longer a containment that is gone");
+  const serve = readFileSync(new URL("../../claude-replay-html/src/html_export/serve.rs", import.meta.url), "utf8");
+  assert.match(serve, /fn revealable\(&self, want: &Path\) -> Option<PathBuf>/, "the stamped reveal's own rule");
+  assert.match(serve, /if let Some\(real\) = live\.revealable\(path\)/, "…is what the route asks");
+  console.log("#79 reveal cases passed");
+}

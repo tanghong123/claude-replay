@@ -518,6 +518,28 @@ impl SessionService {
         self.contained_kind(want, true)
     }
 
+    /// What a STAMPED reveal may open (#79): the path as recorded, when it still exists as a
+    /// file or a directory — wherever it is on the machine. The reveal stamp is the
+    /// authorization: only this server's renderer mints one, for a path a hosted transcript
+    /// offered, and revealing hands over no bytes. The owner's scratchpad, a `/tmp` file the
+    /// agent wrote, a path outside every root: all real files the transcript touched, and all
+    /// refused before this by the containment rule that `/file` needs and reveal does not.
+    /// Containment remains the FALLBACK — it re-roots a moved repository to its live location
+    /// when the recorded path is gone.
+    fn revealable(&self, want: &Path) -> Option<PathBuf> {
+        if !want.is_absolute() {
+            return None;
+        }
+        if let Some(real) = want
+            .canonicalize()
+            .ok()
+            .filter(|real| real.is_file() || real.is_dir())
+        {
+            return Some(real);
+        }
+        self.contained_revealable(want)
+    }
+
     fn contained_kind(&self, want: &Path, dirs_ok: bool) -> Option<PathBuf> {
         if !want.is_absolute() {
             return None;
@@ -2044,15 +2066,14 @@ pub fn service_routes(
                 return HttpResponse::not_found("no such path");
             }
             let path = Path::new(&p);
-            // CONTAINED, like `/file` — and for the same reason, which this route used to
-            // duck: its test was `exists()` alone, so any caller that reached the loopback
-            // port could make the monitor open a file-manager window on any path on the
-            // machine. It hands over no bytes, which is why it was tolerable, but "spawn a
-            // GUI action on an arbitrary path" is not a capability to leave lying open.
-            // `contained` also re-roots a moved repo, so the `remap_reveal` retry below is
-            // now only reached when nothing explains the path at all.
+            // The STAMP is the gate (#79): the route once tested `exists()` alone, so any
+            // caller on the loopback port could open a file-manager window on any path; then
+            // it was contained like `/file`, which refused the owner's own scratchpad files
+            // ("the path is gone") though they existed. Now a valid reveal stamp — minted by
+            // this server for a path a hosted transcript offered — reveals the path wherever
+            // it is, and containment is the fallback that re-roots a moved repository.
             if let Some(live) = live {
-                if let Some(real) = live.contained_revealable(path) {
+                if let Some(real) = live.revealable(path) {
                     crate::sys::reveal_in_file_manager(&real);
                     return HttpResponse::ok("text/plain", b"revealed".to_vec());
                 }
@@ -3454,7 +3475,27 @@ mod tests {
             )
             .code
         };
-        assert_eq!(reveal(&outside.join("secret")), "404 Not Found");
+        // A stamped path that EXISTS is revealable wherever it is (#79) — decided through
+        // `revealable` rather than the route, whose hit branch would open a window here — and
+        // a path that is gone, stamped or not, is a 404 with no window.
+        assert!(
+            live.revealable(&outside.join("secret")).is_some(),
+            "a stamped file outside every root is revealable: the stamp is the authorization"
+        );
+        assert!(
+            live.revealable(&outside).is_some(),
+            "…and so is a directory outside every root"
+        );
+        assert_eq!(
+            reveal(&outside.join("never-written")),
+            "404 Not Found",
+            "a stamped path that is gone reveals nothing"
+        );
+        assert_eq!(
+            reveal(Path::new("relative/secret")),
+            "404 Not Found",
+            "a relative path is never revealed"
+        );
         // A CONTAINED directory is revealable — the affordance the v1 monitor and
         // `agent-replay --html` depend on, where a path click has nowhere else to go. Tested
         // through `contained_revealable` rather than the route, because the route's hit

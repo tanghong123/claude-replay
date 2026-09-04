@@ -72,7 +72,7 @@ export class AttachmentViewer {
     try {
       const response = await fetch(revealQuery({ path: item.path, sig: item.sig }), { cache: "no-store" });
       if (response.ok) { this.actions.toast?.("Revealed in the file manager"); return; }
-      this.actions.toast?.(response.status === 404 ? "Nothing to reveal — the path is gone, or outside what this monitor may reveal" : `Could not reveal: HTTP ${response.status}`);
+      this.actions.toast?.(response.status === 404 ? "Nothing to reveal — the path is gone" : `Could not reveal: HTTP ${response.status}`);
     } catch (error) { this.actions.toast?.(`Could not reveal: ${error.message}`); }
   }
 
