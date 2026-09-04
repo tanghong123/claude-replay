@@ -906,3 +906,22 @@ pub fn view_anchor(tab: &headless_chrome::Tab, surface: Surface) -> (String, f64
         v["top"].as_f64().unwrap_or(0.0),
     )
 }
+
+/// The "new messages" pill: how many it says, or -1 when it is not shown. The classic page's
+/// `#newbadge` ("↓ N new messages" while on); the app shell's jump control once it widens.
+pub fn new_messages_pill(tab: &headless_chrome::Tab, surface: Surface) -> i64 {
+    let js = match surface {
+        Surface::Classic => "(function(){ var b = document.getElementById('newbadge'); if (!b || !/\\bon\\b/.test(b.className)) return -1; var m = (b.textContent || '').match(/(\\d+) new message/); return m ? Number(m[1]) : 0; })()",
+        Surface::AppShell => "(function(){ var b = document.getElementById('jumpToBottom'); if (!b || !b.classList.contains('show')) return -1; var m = (b.textContent || '').match(/(\\d+) new message/); return m ? Number(m[1]) : 0; })()",
+    };
+    eval(tab, js).as_i64().unwrap_or(-1)
+}
+
+/// Click the pill / jump control.
+pub fn click_pill(tab: &headless_chrome::Tab, surface: Surface) {
+    let id = match surface {
+        Surface::Classic => "newbadge",
+        Surface::AppShell => "jumpToBottom",
+    };
+    eval(tab, &format!("(function(){{ var b = document.getElementById('{id}'); if (b) b.click(); return 'ok'; }})()"));
+}

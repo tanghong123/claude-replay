@@ -907,3 +907,60 @@ fn app_shell_holds_between_scrolls_while_the_open_turn_grows() {
     let page = open(Surface::AppShell, &fx, 2863);
     scenario_scrolling_back_during_growth_holds_between_scrolls(&page.tab, Surface::AppShell, &fx);
 }
+
+// ── scenario: the "N new messages" pill (#64) ───────────────────────────────────────────────
+
+/// Scrolled up, the reader sees no count; eight records arrive and the pill says "8 new
+/// messages" (records, as the classic page counts); clicking it lands at the tail and the count
+/// is gone.
+fn scenario_new_messages_pill(tab: &headless_chrome::Tab, surface: Surface, fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    scroll_by(tab, surface, -900);
+    scroll_by(tab, surface, -900);
+    settle();
+    assert!(
+        harness::new_messages_pill(tab, surface) <= 0,
+        "nothing new yet: no count ({})",
+        harness::new_messages_pill(tab, surface)
+    );
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        growth_script(),
+        Duration::from_millis(2600),
+    );
+    assert_eq!(
+        growth.finish(Duration::from_secs(40)),
+        8,
+        "the driver appended the whole script"
+    );
+    std::thread::sleep(Duration::from_millis(4000));
+    let said = harness::new_messages_pill(tab, surface);
+    assert_eq!(said, 8, "the pill says how many records arrived");
+    harness::click_pill(tab, surface);
+    await_tail(tab, surface, "the pill's click to land at the tail");
+    settle();
+    assert!(
+        harness::new_messages_pill(tab, surface) <= 0,
+        "at the tail the count is gone ({})",
+        harness::new_messages_pill(tab, surface)
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_shows_the_new_messages_pill() {
+    let _serial = serial();
+    let fx = fixture("scenario-pill-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_new_messages_pill(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_shows_the_new_messages_pill() {
+    let _serial = serial();
+    let fx = fixture("scenario-pill-app", 40);
+    let page = open(Surface::AppShell, &fx, 2864);
+    scenario_new_messages_pill(&page.tab, Surface::AppShell, &fx);
+}

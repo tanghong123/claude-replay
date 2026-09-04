@@ -620,3 +620,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(src, /\$\("qcount"\)\.textContent =\n\s*\(hr\.start/, "stepHit paints through it too");
   console.log("#71 hit-count cases passed");
 }
+
+// #64: the app shell's jump control carries the classic page's "N new messages" count as text.
+{
+  assert.match(appSource, /count\.textContent = n \? `\$\{n\} new message\$\{n === 1 \? "" : "s"\}` : "";/, "the pill says how many");
+  assert.match(appSource, /button\.classList\.toggle\("has-new", n > 0\)/, "…and widens only when there is something to say");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.jump-to-bottom\.has-new\{/, "the pill's shape is production chrome, not the generated reference");
+  console.log("#64 new-messages pill cases passed");
+}

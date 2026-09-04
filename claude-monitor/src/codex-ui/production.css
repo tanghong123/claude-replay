@@ -74,3 +74,8 @@
 .spot-link.raw-toggle{right:-54px;font-size:11px}
 .spot-link.raw-toggle.on{opacity:1;color:var(--ink);border-color:var(--line)}
 .turn-raw{margin:0;padding:12px 14px;border:1px solid var(--line);border-radius:9px;background:var(--panel);font:12px/1.6 var(--mono);color:var(--ink);white-space:pre-wrap;word-break:break-word;max-height:70vh;overflow:auto}
+/* #64: the jump control widens into the classic page's "N new messages" pill once records arrive
+   while the reader is scrolled up; the circle is the reference's, the pill is production's. */
+.jump-to-bottom.has-new{width:auto;padding:0 14px 0 10px;border-radius:17px;display:inline-flex;align-items:center;gap:7px}
+.jump-to-bottom .jump-count{display:none;font:600 12px/1 var(--font-sans,inherit);white-space:nowrap}
+.jump-to-bottom.has-new .jump-count{display:inline}

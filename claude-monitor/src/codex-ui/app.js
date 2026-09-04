@@ -603,7 +603,22 @@ function openReference(path) {
 }
 function findRecord(id) { let found = null; const visit = record => { if (!record || found) return; if (record.id === id) { found = record; return; } for (const part of record.body || []) if (part.p === "blocks") for (const child of part.items || []) visit(child); }; recordState.records.forEach(visit); return found; }
 
-function paintJump() { const button = byId("jumpToBottom"); button.classList.toggle("show", !recordState.following); button.setAttribute("aria-hidden", String(recordState.following)); button.title = recordState.newRecords ? `${recordState.newRecords} new records` : "Jump to the latest"; }
+// The jump control is the classic page's "↓ N new messages" pill as well (#64): a circle with
+// the arrow while nothing new arrived; once records arrive with the reader scrolled up, it
+// widens into a pill that SAYS how many, so the count is readable and not a tooltip. The count
+// is records, as the classic page counts them; a jump or a scroll to the tail clears it.
+function paintJump() {
+  const button = byId("jumpToBottom");
+  const n = recordState.newRecords;
+  button.classList.toggle("show", !recordState.following);
+  button.classList.toggle("has-new", n > 0);
+  button.setAttribute("aria-hidden", String(recordState.following));
+  let count = button.querySelector(".jump-count");
+  if (!count) { count = document.createElement("span"); count.className = "jump-count"; button.append(count); }
+  count.textContent = n ? `${n} new message${n === 1 ? "" : "s"}` : "";
+  const label = n ? `${n} new message${n === 1 ? "" : "s"} — jump to the latest` : "Jump to the latest";
+  button.title = label; button.setAttribute("aria-label", label);
+}
 byId("jumpToBottom").onclick = () => viewport.toBottom(true);
 function updateStickyHeaders() { const top = transcript.getBoundingClientRect().top; viewport.window.querySelectorAll("[data-process-surface]").forEach(surface => { const rect = surface.getBoundingClientRect(); surface.dataset.prodSticky = String(rect.top < top && rect.bottom > top + 40); }); }
 
