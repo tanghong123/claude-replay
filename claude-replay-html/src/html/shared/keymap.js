@@ -33,6 +33,8 @@ const KEYMAP = Object.freeze([
   // The outline (navigator) pane beside the transcript, hidden and back (#55): with the
   // sidebar on its rail, the transcript then has the whole window.
   { key: "o", when: "any", action: "navigator-toggle", hint: "o" },
+  // The tasks pane centered on what is running (#57) — or on the done/pending boundary.
+  { key: "c", when: "view", action: "tasks-center", hint: "c" },
 ]);
 
 const isEditable = target => !!target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName || "") || target.isContentEditable === true);

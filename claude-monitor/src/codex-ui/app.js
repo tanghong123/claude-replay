@@ -13,7 +13,7 @@ import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { snipId } from "./shared/ids.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups } from "./view-model.js";
+import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskOrder, taskCenterTarget } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
@@ -695,6 +695,42 @@ navigatorRailHide.onclick = () => setNavigatorHidden(true);
 byId("navigatorClose").onclick = () => toggleNavigator(false);
 byId("navigatorRailExpand").onclick = () => toggleNavigator(true);
 byId("navigatorToggle").title = `Show, collapse or bring back the outline  ( ${hintFor("navigator-toggle")} hides it )`;
+// The tasks pane centered on the running tasks (#57), or on the done/pending boundary: the
+// target row is the pure function's, the scroll is the PANE's own scroller — never the
+// transcript's. Runtime chrome on the card's head, so the generated shell stays exact.
+const tasksCenter = document.createElement("button");
+tasksCenter.type = "button";
+tasksCenter.className = "outline-card-action";
+tasksCenter.id = "tasksCenter";
+tasksCenter.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none"/><path d="M8 0.8v2.4M8 12.8v2.4M0.8 8h2.4M12.8 8h2.4"/></svg>';
+tasksCenter.title = `Center the pane on the running tasks — or on the boundary between done and pending  ( ${hintFor("tasks-center")} )`;
+tasksCenter.setAttribute("aria-label", tasksCenter.title);
+document.querySelector('[data-nav-card="tasks"] .outline-card-head').insertAdjacentElement("afterend", tasksCenter);
+function paneScroller(el) {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    const o = getComputedStyle(node).overflowY;
+    if ((o === "auto" || o === "scroll") && node.scrollHeight > node.clientHeight && !node.contains(transcript)) return node;
+  }
+  return null;
+}
+function centerTasks() {
+  const tasks = recordState.meta?.tasks || [];
+  const target = taskCenterTarget(taskOrder(tasks));
+  if (!target) return false;
+  if (!uiState.navCards.has("tasks")) { uiState.navCards.add("tasks"); persist(); renderNavigator(); }
+  if (uiState.navigatorHidden) setNavigatorHidden(false);
+  if (!uiState.navigatorOpen) toggleNavigator(true);
+  const row = document.querySelectorAll("#navigatorWork .work-task")[target.index];
+  if (!row) return false;
+  const pane = paneScroller(row);
+  if (!pane) return false;
+  const r = row.getBoundingClientRect(), p = pane.getBoundingClientRect();
+  const edge = target.edge === "top" ? r.top : target.edge === "bottom" ? r.bottom : (r.top + r.bottom) / 2;
+  pane.scrollTop += edge - (p.top + p.height / 2);
+  tasksCenter.dataset.centered = target.why;
+  return true;
+}
+tasksCenter.onclick = event => { event.stopPropagation(); centerTasks(); };
 byId("sessionFoldAll").onclick = () => { const close = recordState.units.some(unit => unit.type === "process" && !recordState.processFolds.get(unit.key)); for (const unit of recordState.units) if (unit.type === "process") recordState.processFolds.set(unit.key, close); viewport.render(); };
 byId("collapseBtn").onclick = () => { for (const agent of groupedSessions()) { indexState.collapsed.add(`a:${agent.id}`); for (const project of agent.projects) indexState.collapsed.add(`p:${project.id}`); } persist(); renderTree(); };
 byId("mobileBack").onclick = () => app.classList.remove("mobile-detail");
@@ -780,7 +816,8 @@ const keyActions = {
   "page-down": () => pageTranscript(1), "page-up": () => pageTranscript(-1),
   "list-next": () => stepList(1), "list-prev": () => stepList(-1),
   "sidebar-toggle": () => toggleSidebar(!indexState.sidebarOpen),
-  "navigator-toggle": () => setNavigatorHidden(!uiState.navigatorHidden)
+  "navigator-toggle": () => setNavigatorHidden(!uiState.navigatorHidden),
+  "tasks-center": () => centerTasks()
 };
 bindKeymap(document, target => (target?.closest?.(".tree-row") ? "list" : "view"), action => keyActions[action]?.());
 // Discoverability in the shell's idiom: the key in the control's own title / hint.

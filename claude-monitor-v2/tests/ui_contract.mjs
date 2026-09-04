@@ -10,7 +10,7 @@ import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-ht
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
-import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey } from "../../claude-monitor/src/codex-ui/view-model.js";
+import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
@@ -754,4 +754,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /function revealInPane\(/, "the focused turn is revealed in the pane");
   assert.match(appSource, /revealInPane\(row\)/, "…through the pane's own scroller, never the window");
   console.log("#58/#59 pane scroller cases passed");
+}
+
+// #57: where the tasks pane centers — the running run's middle, else the done/pending boundary.
+{
+  const rows = statuses => taskOrder(statuses.map((status, i) => ({ id: String(i + 1), status })));
+  assert.deepEqual(taskCenterTarget(rows(["completed", "completed", "in_progress", "in_progress", "in_progress", "pending"])), { index: 3, edge: "middle", why: "running" });
+  assert.deepEqual(taskCenterTarget(rows(["completed", "in_progress", "pending", "pending"])), { index: 1, edge: "middle", why: "running" }, "one running row is its own middle");
+  assert.deepEqual(taskCenterTarget(rows(["completed", "completed", "pending", "pending", "pending"])), { index: 2, edge: "top", why: "boundary" }, "none running: the first pending row's top is the boundary");
+  assert.deepEqual(taskCenterTarget(rows(["completed", "completed"])), { index: 1, edge: "bottom", why: "all-done" });
+  assert.deepEqual(taskCenterTarget(rows(["pending", "pending"])), { index: 0, edge: "top", why: "all-pending" });
+  assert.equal(taskCenterTarget([]), null);
+  const ev = (key, extra = {}) => ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...extra });
+  assert.equal(resolveKey(ev("c"), "view").action, "tasks-center");
+  assert.equal(resolveKey(ev("c"), "list"), null, "a view key");
+  assert.match(appSource, /"tasks-center": \(\) => centerTasks\(\)/, "the shell acts on it");
+  assert.match(appSource, /pane\.scrollTop \+= edge - \(p\.top \+ p\.height \/ 2\);/, "the pane's own scroller moves");
+  assert.match(appSource, /!node\.contains\(transcript\)/, "…never the transcript's");
+  assert.match(appSource, /hintFor\("tasks-center"\)/, "the key is discoverable on the control");
+  console.log("#57 tasks center cases passed");
 }

@@ -2810,3 +2810,149 @@ fn the_app_shell_tasks_pane_scrolls_itself() {
     );
     drop(monitor);
 }
+
+/// #57: the tasks pane's control scrolls the pane so the running tasks sit at its center — and,
+/// with none running, the boundary between done and pending — without touching the transcript.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
+    let _serial = serial();
+    let base = base("appshell-task-center");
+    let stores = Stores::new(&base);
+    // Enough tasks to overflow the pane: 14 done, 3 running, 16 pending.
+    let sid = "cccccccc-0000-4000-8000-000000000057".to_string();
+    stores.claude_session(&sid, &harness::long_session(12, harness::Shape::default()));
+    let mut tasks: Vec<(String, String, &str)> = Vec::new();
+    for i in 1..=14 {
+        tasks.push((format!("{i}"), format!("done task {i}"), "completed"));
+    }
+    for i in 15..=17 {
+        tasks.push((format!("{i}"), format!("running task {i}"), "in_progress"));
+    }
+    for i in 18..=33 {
+        tasks.push((format!("{i}"), format!("pending task {i}"), "pending"));
+    }
+    let borrowed: Vec<(&str, &str, &str)> = tasks
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), *c))
+        .collect();
+    stores.claude_tasks(&sid, &borrowed);
+    let monitor = Monitor::spawn(Kind::V2, 2846, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:2846/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 33",
+        "the tasks to render",
+        std::time::Duration::from_secs(20),
+        "document.querySelectorAll('#navigatorWork .work-task').length",
+    );
+    let geometry = r#"(function(){
+      var rows = [...document.querySelectorAll('#navigatorWork .work-task')];
+      var running = rows.filter(function (r) { return r.querySelector('.task-state.running'); });
+      var pane = null; for (var n = rows[0].parentElement; n; n = n.parentElement) { var o = getComputedStyle(n).overflowY; if ((o === 'auto' || o === 'scroll') && n.scrollHeight > n.clientHeight) { pane = n; break; } }
+      if (!pane) return { pane: false };
+      var p = pane.getBoundingClientRect(), mid = p.top + p.height / 2;
+      var firstRun = running[0].getBoundingClientRect(), lastRun = running[running.length - 1].getBoundingClientRect();
+      var boundary = rows[14].getBoundingClientRect().top;
+      return { pane: true, overflow: pane.scrollHeight - pane.clientHeight, rowH: rows[0].getBoundingClientRect().height, runMid: (firstRun.top + lastRun.bottom) / 2 - mid, boundary: boundary - mid, transcriptTop: document.querySelector('.transcript').scrollTop, centered: (document.getElementById('tasksCenter') || {}).dataset ? document.getElementById('tasksCenter').dataset.centered : null };
+    })()"#;
+    let before = harness::probe(&tab, geometry);
+    assert_eq!(
+        before["pane"], true,
+        "the tasks pane has its own scroller: {before}"
+    );
+    assert!(
+        before["overflow"].as_f64().unwrap_or(0.0) > 200.0,
+        "the fixture overflows the pane: {before}"
+    );
+    let transcript_before = before["transcriptTop"].clone();
+    harness::eval(&tab, "document.getElementById('tasksCenter').click(); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let after = harness::probe(&tab, geometry);
+    let row_h = after["rowH"].as_f64().unwrap_or(38.0);
+    assert!(
+        after["runMid"].as_f64().unwrap().abs() <= row_h,
+        "the running rows' middle sits at the pane's center, within a row: {after}"
+    );
+    assert_eq!(
+        after["centered"], "running",
+        "…and the control says why: {after}"
+    );
+    assert_eq!(
+        after["transcriptTop"], transcript_before,
+        "the transcript did not move: {after}"
+    );
+    // The key does the same after the pane is scrolled away.
+    harness::eval(&tab, "(function(){ var r = document.querySelectorAll('#navigatorWork .work-task')[0]; for (var n = r.parentElement; n; n = n.parentElement) { var o = getComputedStyle(n).overflowY; if ((o === 'auto' || o === 'scroll') && n.scrollHeight > n.clientHeight) { n.scrollTop = 0; break; } } })(); document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', bubbles: true, cancelable: true })); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let keyed = harness::probe(&tab, geometry);
+    assert!(
+        keyed["runMid"].as_f64().unwrap().abs() <= row_h,
+        "the key centers the running rows too: {keyed}"
+    );
+    drop(monitor);
+    // The boundary case: no running task — the first pending row's top edge is the center.
+    let base2 = base.join("boundary");
+    let stores2 = Stores::new(&base2);
+    let sid2 = "cccccccc-0000-4000-8000-000000000058".to_string();
+    stores2.claude_session(&sid2, &harness::long_session(12, harness::Shape::default()));
+    let mut tasks2: Vec<(String, String, &str)> = Vec::new();
+    for i in 1..=14 {
+        tasks2.push((format!("{i}"), format!("done task {i}"), "completed"));
+    }
+    for i in 15..=33 {
+        tasks2.push((format!("{i}"), format!("pending task {i}"), "pending"));
+    }
+    let borrowed2: Vec<(&str, &str, &str)> = tasks2
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), *c))
+        .collect();
+    stores2.claude_tasks(&sid2, &borrowed2);
+    let monitor2 = Monitor::spawn(Kind::V2, 2847, &base2, Some(&stores2), true);
+    let tab2 = browser.new_tab().unwrap();
+    monitor2.pair(&tab2);
+    tab2.navigate_to(&format!("http://127.0.0.1:2847/?ui=app&session={sid2}"))
+        .unwrap();
+    tab2.wait_until_navigated().unwrap();
+    harness::until(&tab2, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the second shell to mount", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    harness::eval(&tab2, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    harness::until(
+        &tab2,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 33",
+        "the tasks to render",
+        std::time::Duration::from_secs(20),
+        "document.querySelectorAll('#navigatorWork .work-task').length",
+    );
+    harness::eval(
+        &tab2,
+        "document.getElementById('tasksCenter').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let boundary = harness::probe(
+        &tab2,
+        geometry
+            .replace(
+                "running[0].getBoundingClientRect()",
+                "rows[14].getBoundingClientRect()",
+            )
+            .replace(
+                "running[running.length - 1].getBoundingClientRect()",
+                "rows[14].getBoundingClientRect()",
+            )
+            .as_str(),
+    );
+    let row_h2 = boundary["rowH"].as_f64().unwrap_or(38.0);
+    assert!(boundary["boundary"].as_f64().unwrap().abs() <= row_h2, "with nothing running, the done/pending boundary sits at the center, within a row: {boundary}");
+    assert_eq!(
+        boundary["centered"], "boundary",
+        "…and the control says why: {boundary}"
+    );
+    drop(monitor2);
+}

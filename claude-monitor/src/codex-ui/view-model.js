@@ -116,6 +116,21 @@ export function taskGroups(tasks = []) {
   return TASK_GROUPS.map(g => ({ ...g, rows: rows.filter(r => r.group === g.key) })).filter(g => g.rows.length);
 }
 
+/** Where the tasks pane should center (#57), over the rows `taskOrder` produced: the middle of
+ *  the running run when there is one; otherwise the boundary between the completed rows and
+ *  the rest — the first row after the completed ones, by its top edge — so a reader sees what
+ *  is done above and what waits below. All done → the last row's bottom; all pending → the
+ *  first row's top; no rows → null. `edge` says which edge of the row goes to the center. */
+export function taskCenterTarget(rows = []) {
+  if (!rows.length) return null;
+  const running = rows.map((r, i) => (r.group === "in_progress" ? i : -1)).filter(i => i >= 0);
+  if (running.length) return { index: running[Math.floor((running.length - 1) / 2)], edge: "middle", why: "running" };
+  const firstOpen = rows.findIndex(r => r.group !== "completed");
+  if (firstOpen < 0) return { index: rows.length - 1, edge: "bottom", why: "all-done" };
+  if (firstOpen === 0) return { index: 0, edge: "top", why: "all-pending" };
+  return { index: firstOpen, edge: "top", why: "boundary" };
+}
+
 export function viewRecord(record) {
   const head = record.head || {};
   if (record.kind === "user") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record };

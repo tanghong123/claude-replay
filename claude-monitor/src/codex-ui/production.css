@@ -110,3 +110,8 @@
 .navigator-list::-webkit-scrollbar{width:8px}
 .navigator-list::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--sub) 45%,transparent);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
 .navigator-list::-webkit-scrollbar-track{background:transparent}
+/* #57: the tasks card's centering control, beside the chevron in the card's head. */
+.outline-card{position:relative}
+.outline-card>.outline-card-action{position:absolute;right:30px;top:7px;width:24px;height:24px;border-radius:6px;display:grid;place-items:center;background:transparent;color:var(--faint);cursor:pointer;z-index:1}
+.outline-card>.outline-card-action:hover,.outline-card>.outline-card-action:focus-visible{color:var(--ink);background:var(--hover);outline:0}
+.outline-card>.outline-card-action svg{width:14px;height:14px}
