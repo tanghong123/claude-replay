@@ -7,6 +7,7 @@ import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
 import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-html/src/html/shared/runtime.js";
+import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
@@ -672,4 +673,21 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const exportSrc = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
   assert.match(exportSrc, /shared\.runtimeRows\(rt\)\.forEach\(function \(r\) \{ if \(r\.state === "unknown"\) rrow\(r\.label, "unknown"\); \}\);/, "the classic panel says unknown through the same helper");
   console.log("#62 runtime wording cases passed");
+}
+
+// #50: the header shows the session id short — one shortener for every page — and a click
+// copies the transcript path with the classic page's wording.
+{
+  assert.equal(snipId("530339ac-689c-4399-bef8-fd9f64101558"), "530339ac");
+  assert.equal(snipId("rollout-2026-08-09T12-00-00-019b2c4e-1111-4222-8333-444455556666"), "019b2c4e");
+  assert.equal(snipId("short-id"), "short-id");
+  assert.equal(snipId("a-long-opaque-identifier"), "a-long-o");
+  assert.equal(snipId(null), "");
+  assert.match(appSource, /const sessionIdChip = document\.createElement\("button"\);/, "the chip is runtime chrome");
+  assert.match(appSource, /sessionIdChip\.textContent = snipId\(sid\);/, "…showing the shared short form");
+  assert.match(appSource, /flash\(copied \? "copied transcript path" : "copy blocked — ⌘C the path"\);/, "…with the classic page's wording");
+  const exportSrc = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(exportSrc, /var snipId = shared\.snipId;/, "the classic page reads the same shortener");
+  assert.doesNotMatch(exportSrc, /function snipId\(/, "…and keeps no copy of its own");
+  console.log("#50 session id chip cases passed");
 }

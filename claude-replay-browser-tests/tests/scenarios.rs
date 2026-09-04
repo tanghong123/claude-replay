@@ -18,9 +18,10 @@ mod harness;
 use claude_replay_html::start_server;
 use claude_replay_present::Args;
 use harness::{
-    assistant_at, at_tail, base, jump_to_end, key, last_mounted_turn, long_session, now_minus,
-    open_last_fold, queued_at, queued_text, scroll_by, serial, turn_at_top, until, user_at, Kind,
-    LiveGrowth, Monitor, Shape, Stores, Surface,
+    assistant_at, at_tail, base, click_session_id, copied_text, jump_to_end, key,
+    last_mounted_turn, long_session, now_minus, open_last_fold, queued_at, queued_text, scroll_by,
+    serial, session_id_chip, stub_clipboard, turn_at_top, until, user_at, Kind, LiveGrowth,
+    Monitor, Shape, Stores, Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -1027,4 +1028,91 @@ fn app_shell_shows_a_queued_prompts_text() {
     let fx = fixture("scenario-queued-app", 12);
     let page = open(Surface::AppShell, &fx, 2865);
     scenario_queued_prompt_shows_its_text(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: the session id in the header copies the transcript path (#50) ─────────────
+
+/// The header shows the session id short (the shared form: the UUID's first eight hex
+/// digits); a click copies the transcript's path on disk and says so for a moment.
+fn scenario_session_id_copies_the_transcript_path(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    until(
+        tab,
+        &format!(
+            "(document.getElementById('{}') || {{}}).textContent === '{}'",
+            match surface {
+                Surface::Classic => "sid",
+                Surface::AppShell => "sessionId",
+            },
+            &SID[..8]
+        ),
+        "the header to show the short session id",
+        Duration::from_secs(20),
+        &format!(
+            "(document.getElementById('{}') || {{textContent: 'no element'}}).textContent",
+            match surface {
+                Surface::Classic => "sid",
+                Surface::AppShell => "sessionId",
+            }
+        ),
+    );
+    assert_eq!(
+        session_id_chip(tab, surface),
+        &SID[..8],
+        "the short id is the UUID's first eight hex digits"
+    );
+    stub_clipboard(tab);
+    click_session_id(tab, surface);
+    until(
+        tab,
+        "window.__copied != null",
+        "the click to copy",
+        Duration::from_secs(5),
+        "String(window.__copied)",
+    );
+    assert_eq!(
+        copied_text(tab),
+        fx.path.to_string_lossy(),
+        "what was copied is the transcript's path"
+    );
+    until(
+        tab,
+        &format!(
+            "(document.getElementById('{}') || {{}}).textContent === 'copied transcript path'",
+            match surface {
+                Surface::Classic => "sid",
+                Surface::AppShell => "sessionId",
+            }
+        ),
+        "the chip to say it copied",
+        Duration::from_secs(5),
+        &format!(
+            "(document.getElementById('{}') || {{}}).textContent",
+            match surface {
+                Surface::Classic => "sid",
+                Surface::AppShell => "sessionId",
+            }
+        ),
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_session_id_copies_the_transcript_path() {
+    let _serial = serial();
+    let fx = fixture("scenario-sid-classic", 12);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_session_id_copies_the_transcript_path(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_session_id_copies_the_transcript_path() {
+    let _serial = serial();
+    let fx = fixture("scenario-sid-app", 12);
+    let page = open(Surface::AppShell, &fx, 2866);
+    scenario_session_id_copies_the_transcript_path(&page.tab, Surface::AppShell, &fx);
 }

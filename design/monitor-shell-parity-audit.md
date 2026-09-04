@@ -27,6 +27,7 @@ at v1.129.1.
 | 12 | **Expand all** groups | `rail.html #expandall` | Collapse-all only (`collapseBtn`). |
 | 13 | **Resizable session list** | `rail.html #drag` | Only the preview pane resizes (`preview.js:22`). |
 | 14 | **Step between tool-filter hits** (▲▼ on a filter) | `export.js:1770 filterNav` | Filters hide; find prev/next exists for search only. Minor. |
+| 15 | **Session id in the header, click copies the transcript path** (`#sid`, owner-reported after this audit) | `export.js renderHead` (`#sid`, `snipId`) | A copy menu on the title offered both values; the id itself was not shown. Closed by #50 (v1.156.0): an id chip after the title, one click copies the path, the shortener shared (`html/shared/ids.js`). |
 
 Not gaps: theme sync into the embedded view (one document now), the collapsed "strip" mode
 (the mini rail is its analogue), compose / consent / passcode (`control-store.js`), tasks,
@@ -44,8 +45,8 @@ headers; spot links; a mobile layout; and the shell switch itself.
 
 ## Decisions (owner, 2026-09-03)
 
-Yes → queued: 1 (#32), 2 (#33), 3 + 4 (#34), 6 (#35), 7 + 8 (#36), 11 (#37) — each pinned to
-the app shell's own surfaces and idiom, execution on the owner's go. Deferred, held on #31:
+Yes → queued: 1 (#32), 2 (#33), 3 + 4 (#34), 6 (#35), 7 + 8 (#36), 11 (#37), 15 (#50) — each
+pinned to the app shell's own surfaces and idiom, execution on the owner's go. Deferred, held on #31:
 5, 9, 10, 12, 13, 14.
 
 ## Suggested order for closing the gaps before "validated"

@@ -946,3 +946,38 @@ pub fn queued_text(tab: &headless_chrome::Tab, surface: Surface) -> String {
     };
     eval(tab, js).as_str().unwrap_or("").to_string()
 }
+
+/// The header's session-id element: its visible text (the short id), or "" when none shows.
+/// The classic page's `#sid`; the app shell's `#sessionId` chip.
+pub fn session_id_chip(tab: &headless_chrome::Tab, surface: Surface) -> String {
+    let id = match surface {
+        Surface::Classic => "sid",
+        Surface::AppShell => "sessionId",
+    };
+    eval(tab, &format!("(function(){{ var e = document.getElementById('{id}'); return e && !e.hidden ? (e.textContent || '').trim() : ''; }})()"))
+        .as_str().unwrap_or("").to_string()
+}
+
+/// Replace the page's clipboard with a recorder, so a copy can be read back without the
+/// permission a real clipboard needs; `copied_text` returns what was last written.
+pub fn stub_clipboard(tab: &headless_chrome::Tab) {
+    eval(tab, "window.__copied = null; Object.defineProperty(navigator, 'clipboard', { value: { writeText: function (t) { window.__copied = String(t); return Promise.resolve(); } }, configurable: true }); 'ok'");
+}
+pub fn copied_text(tab: &headless_chrome::Tab) -> String {
+    eval(
+        tab,
+        "window.__copied == null ? '' : String(window.__copied)",
+    )
+    .as_str()
+    .unwrap_or("")
+    .to_string()
+}
+
+/// Click the header's session-id element.
+pub fn click_session_id(tab: &headless_chrome::Tab, surface: Surface) {
+    let id = match surface {
+        Surface::Classic => "sid",
+        Surface::AppShell => "sessionId",
+    };
+    eval(tab, &format!("(function(){{ var e = document.getElementById('{id}'); if (e) e.click(); return 'ok'; }})()"));
+}

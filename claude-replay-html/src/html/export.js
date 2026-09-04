@@ -855,10 +855,9 @@
   // without eating the bar. Codex wraps that uuid in `rollout-<datetime>-<uuid>`, so
   // find a trailing uuid before shortening instead of rendering every Codex id as
   // the identical `rollout-`. The full value stays in the title and on the clipboard.
-  function snipId(s) {
-    var uuid = s.match(/(?:^|-)([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
-    return uuid ? uuid[1] : (s.length > 12 ? s.slice(0, 8) : s);
-  }
+  // The short form of a session id is shared with the app shell (html/shared/ids.js, #50),
+  // so a rail row, this header and that header agree on what a reader sees.
+  var snipId = shared.snipId;
 
   // #139: show an image at full size over the page. Built on demand and torn down on
   // close, so a session with hundreds of screenshots carries no standing DOM for them.
