@@ -13,7 +13,7 @@ that end the fork. It is a **test matrix**: a row is closed by a scenario in
 
 Method: two independent code inventories (one per page, every rendering path and control read
 with file and line), spot-verified against the code and, for the owner-named items, against the
-browser. Line numbers are as of v1.176.0.
+browser. Line numbers are as of v1.176.0. Revised 2026-09-04 after the owner's review (eight notes, all applied: per-pane bar, in-flow roster, MCP tree deferred, request-user-input on classic, bare results, sticky turn bar, viewport-relative hit entry, typed scope prefix).
 
 ## What is already shared, and therefore identical
 
@@ -76,7 +76,7 @@ Scenario: the state of the guard that runs on both surfaces.
 |---|---|---|---|---|---|
 | 3.1 | **Output caps** (`⋯ N more lines · to line M`) on `pre`/`num`/`diff` parts | first 12 (pre, diff) / 10 (num) rows, the rest behind a button; small expansions remembered per record | was: the server's `cap` ignored, every row in the DOM behind a 360 px scroll box. Now `shared/parts.js` (#108): both pages run one split, label, row markup and memory; the classic page's memory inside a nested fold (every tool call sits in an activity fold) was never re-applied and is fixed by the same scenario | HAVE (v1.177.0) | ✓ both: `scenario_output_caps_expand_and_remember` |
 | 3.2 | Line-number gutters unselectable | `.gut{user-select:none}` | `.ln` selectable — a copied block carries its numbers | **KEEP** (port, one rule) | none → add: selecting two rows copies two lines on both |
-| 3.3 | Per-pane code bar: copy the pane (no gutters/marks), size, wrap | per `.numbered`/`.diff` pane | global reading controls only; no "copy this pane" | KEEP the copy; FORGO the per-pane size/wrap (global is enough) | none → add: copying a diff pane yields the lines without `+`/`−` on both |
+| 3.3 | Per-pane code bar: copy the pane (no gutters/marks), size, wrap | per `.numbered`/`.diff` pane: `A−`, size, `A+`, wrap, copy | global reading controls only; no per-pane bar | **KEEP** (port the whole bar — owner review: per-pane size and wrap matter, a diff and a log want different settings) | none → add: a pane's own size and wrap change only that pane; copying a diff pane yields the lines without `+`/`−` on both |
 | 3.4 | Tool head: name, target, chips, state | name/target/chips; failure chip red | name/target; chips fold into a state pill (failed/running/completed via regex on chip text) | HAVE, verify the `N lines` and duration chips reach the head | none → add: a failed Bash shows `failed` and its exit on both |
 | 3.5 | Edit diff open by default, others closed | fold policy `open` | `rendererStartsClosed`: closed unless running / interaction / queue — an Edit diff starts closed | OK-DIFF (the app shell's process rows are compact by design; the reader opens a diff) | none → add |
 | 3.6 | Diff rendering (unified, marks, tinted code column) | `.nrow.add/.del` | `.line.add/.del` with marks | HAVE | none → add |
@@ -86,14 +86,14 @@ Scenario: the state of the guard that runs on both surfaces.
 | 3.10 | Attachments (non-image) | `▤ kind name` card, download/reveal | `renderer-note` with capability button | HAVE | none → add |
 | 3.11 | **Deep links to tool records** | `#b7` lands on any block, opening its fold chain | spot links and hash landing only for user/assistant units | **KEEP** (port) | none → add |
 | 3.12 | Sub-agent spawn: badge, `N tools · launched`, open child | fold + `↵ child` + `⧉` new tab | "Agent event" + "Open child transcript"; parent button `u` | HAVE; FORGO `⧉` (a single-page app; the session list opens any session) | `the_app_shell_*` child cases ✓ (app); both-surface → add |
-| 3.13 | Workflow fleet roster under the launching block | in-flow roster with running dots | agents pane (+ run members) | FORGO in-flow (the pane covers it) | — |
+| 3.13 | Workflow fleet roster under the launching block | in-flow roster with running dots, names linking to the children | agents pane (+ run members) | **KEEP** (port — owner review: both are needed, the pane for the session and the in-flow roster at the call that launched them) | none → add: a workflow call shows its members under it with a running dot on both |
 | 3.14 | Artifact link on the publishing tool's head | header target becomes the link | roster + `↳` jump (#78; moving to the right pane, #95) | OK-DIFF; verify the head link exists on the app shell | none → add with #95 |
 | 3.15 | Compaction | hairline seam in flow + sidebar tick | tick in the turns pane (#86) + a folded "Context compacted" renderer in flow | HAVE | ✓ app (#86); classic tick case → add |
-| 3.16 | MCP calls grouped in the filter | `MCP → server → tool` tree | flat tool names | FORGO for now (the flat list works until a session has dozens of MCP tools) | — |
-| 3.17 | `request_user_input` card | ignored | waiting/resolved card with answers | APP-ONLY | ✓ app |
-| 3.18 | Bare tool result | fold `Result` | generic renderer | HAVE | — |
+| 3.16 | MCP calls grouped in the filter | `MCP → server → tool` tree | flat tool names | DEFERRED task (owner review): the flat list works until a session has dozens of MCP tools; undefer when one does | — |
+| 3.17 | `request_user_input` card | ignored (`head.interaction` on the wire, a generic fold) | waiting/resolved card with answers | **KEEP** (port to the classic page — owner review; the card as a shared module both pages render) | ✓ app; classic → add |
+| 3.18 | Bare tool result | fold named `Result`, the first 70 chars as target, a `⎿ pre` body | generic renderer (name from the kind) | **KEEP** (match the classic shape — owner review) | none → add |
 | 3.19 | Timestamps on user turns | `h:mm` today, `Mon D` older (+ year) | none; the wire carries `ts` | **KEEP** (port) | none → add: a turn from yesterday shows its date on both |
-| 3.20 | "Turn NN" labels | sticky bar `Turn N — label`; sidebar rows | pane rows; a label on process surfaces whose ordinal is wrong (#103) | #103 fixes the ordinal; FORGO the sticky turn bar (the pane's current-turn row covers it) | #103 |
+| 3.20 | "Turn NN" labels and the sticky turn bar | sticky bar under the top bar `Turn N — label`, click jumps back to the turn; sidebar rows | pane rows; a label on process surfaces whose ordinal is wrong (#103) | **KEEP** the sticky turn bar (port — owner review: the bar and the pane serve different purposes); #103 fixes the ordinal, and the header's own "Turn NN" text may go once the pane's current-turn focus is reliable | none → add: scrolled into a turn, the bar names it and a click returns to its card, on both |
 
 ### 4. Folding and disclosure
 
@@ -113,10 +113,10 @@ Scenario: the state of the guard that runs on both surfaces.
 | 5.2 | Turn stepping `]`/`[`, head stepping `j`/`k`, page Space | yes | yes | HAVE | none → add |
 | 5.3 | Search haystack | the records' text | `JSON.stringify(record)` with tags stripped — matches keys and head metadata too | **KEEP** (port: search text, not JSON) | none → add: a query that is only a JSON key finds nothing on both |
 | 5.4 | Hit highlighting | every occurrence marked, the current one stronger | only the current hit's block marked | **KEEP** (port) | none → add |
-| 5.5 | Hit stepping with reveal | record-first order, wrap, on-screen hit highlighted in place | wraps; reveal misses caps (#100) | #100 | #100 |
-| 5.6 | Scope filter with per-class counts; scope prefix `uatobrew:`; whole words | dropdown + typed prefix + counts | dropdown without counts, scope not honoured while stepping (#101) | #101 for counts and scope; FORGO the typed prefix; whole-words: KEEP (cheap, useful for short identifiers) | #101 |
+| 5.5 | Hit stepping with reveal | record-first order, wrap, on-screen hit highlighted in place; **entry is from the viewport**: after scrolling away, next/previous is the hit nearest the reader, not the one after the old current | wraps from the old current; reveal misses caps (#100) | **KEEP** (port the viewport-relative entry — owner review; with #100) | none → add: scroll away from the current hit, press next, the hit nearest the view is the one landed on, on both |
+| 5.6 | Scope filter with per-class counts; scope prefix `uatobrew:`; whole words | dropdown + typed prefix (order-free letters then `:`, a leading `:` escapes) + counts | dropdown without counts, scope not honoured while stepping (#101) | **KEEP** all three: counts and scope (#101), the typed prefix (owner review: fast search), whole words | #101 |
 | 5.7 | Search on large transcripts | incremental | incremental (sluggish above ~10 MB, #104) | #104 | #104 |
-| 5.8 | **Type / tool filter** | non-matching records hidden, turns dimmed as landmarks, matching folds force-open, lands on the nearest hit, ✕ restores the fold snapshot | non-matching rows dimmed only | **KEEP** (port hide + force-open + land) | none → add |
+| 5.8 | **Type / tool filter** | non-matching records hidden, turns dimmed as landmarks, matching folds force-open, lands on the nearest hit, ✕ restores the fold snapshot | was: dimmed only. Now (#110): a selected tool hides every non-turn row that does not carry it (nested calls inside activities included, and the tool list now sees nested calls), user turns stay dimmed landmarks, the hit chains open, the view lands on the nearest hit, clearing restores the fold snapshot | HAVE (v1.179.0) | ✓ both: `scenario_tool_filter_hides_and_lands` |
 | 5.9 | Filter-hit stepping ‹ › and `n`/`N` | yes | no (#94, owner-deferred) | #94 | — |
 | 5.10 | Jump-to-bottom / new-messages pill | one pill | one pill (#64) | HAVE | ✓ both |
 | 5.11 | Follow indicator `⤓ following live` | chip | the pill is a circle while following | FORGO (the pill states it) | — |
@@ -160,18 +160,29 @@ Scenario: the state of the guard that runs on both surfaces.
 8. **3.2 + 3.3 Gutters and pane copy.** One CSS rule and one button; both about what ends up on
    the clipboard.
 9. **3.11 Deep links to tool records.** Spot links on renderer heads; hash landing on any record.
+10. **3.3 The per-pane code bar** (owner review): size, wrap and copy per numbered/diff pane —
+    a diff and a log want different settings.
+11. **3.20 The sticky turn bar** (owner review): the bar and the turns pane serve different
+    purposes; the process header's own "Turn NN" text may go once the pane's focus is reliable.
+12. **3.13 The in-flow fleet roster** (owner review): both the agents pane and the roster under
+    the launching call.
+13. **5.6 The typed scope prefix** `uatobrew:` (owner review: fast search) and **5.5 the
+    viewport-relative hit entry**: after scrolling away, next/previous starts from the hit
+    nearest the reader — the classic rule, to be held by a scenario with #100.
+14. **3.18 Bare tool results** in the classic shape (owner review).
+15. **3.17 The request-user-input card on the classic page** (owner review): the app shell's
+    card, as a shared module.
 
-**Forgo, and why:** the typed scope prefix (the dropdown is the same control), the sticky turn
-bar (the pane's current row), the follow chip (the pill), the in-flow fleet roster (the agents
-pane), `⧉` new-tab links (the session list), the MCP tree (premature), per-pane size/wrap
-controls (global reading controls), per-kind keyline colours (the app shell has its own design
-language; failure and running tones are what matter), the custom drag auto-scroll (native in an
-inner scroller), inline-by-default images (#80 was a deliberate choice for screenshot-heavy
-sessions).
+**Forgo, and why:** the follow chip (the pill states it), `⧉` new-tab links (the session list
+opens any session), per-kind keyline colours (the app shell has its own design language; failure
+and running tones are what matter), the custom drag auto-scroll (native in an inner scroller),
+inline-by-default images (#80 was a deliberate choice for screenshot-heavy sessions).
 
-**App-only features** (2.5 proposed plan card, 3.17 request-user-input card, 4.3 progressive
-rows, 5.14/5.15 shell controls) stay; whether the classic page adopts the two cards is the
-owner's call and not part of parity.
+**Deferred, with reason:** 3.16 the MCP `server → tool` tree in the filter — the flat list works
+until a session has dozens of MCP tools; the task is filed deferred and undeferred when one does.
+
+**App-only features** (2.5 proposed plan card, 4.3 progressive rows, 5.14/5.15 shell controls)
+stay; the request-user-input card (3.17) crosses to the classic page per the review above.
 
 ## Shared rendering modules
 
@@ -210,9 +221,13 @@ below each carry their rows; a task is done when its rows are ✓ on both surfac
 
 ## Follow-up tasks (filed with this audit)
 
-In priority order, all under "content rendering first": output caps as `shared/parts.js` ·
-raw text of a user turn · filter hides · search haystack and marks · timestamps · command turns
-· state across reload · gutters and pane copy · deep links to tool records · then the remaining
-shared modules (`tool-head.js`, `search.js` with #101/#104, `filter.js`, `time.js`,
-`view-state.js`) as their rows are ported. #103, #100, #101, #104, #99 stay as filed and are
-referenced by their rows.
+In priority order, all under "content rendering first": output caps as `shared/parts.js`
+(done, v1.177.0) · raw text of a user turn (done, v1.178.0) · filter hides · search haystack
+and marks · timestamps · command turns · state across reload · gutters and the per-pane code bar
+(#115, widened per the review) · deep links to tool records · the sticky turn bar (#123) · the
+in-flow fleet roster (#119) · bare results in the classic shape (#122) · the request-user-input
+card on the classic page (#121) · then the remaining shared modules (`tool-head.js`,
+`search.js` with #101/#104 and the typed prefix, `filter.js`, `time.js`, `view-state.js`) as
+their rows are ported. #103, #100 (now carrying the viewport-relative entry rule), #101 (now
+carrying the typed prefix), #104, #99 stay as filed and are referenced by their rows; #120 (the
+MCP tree) is deferred with its reason.
