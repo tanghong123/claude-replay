@@ -2178,3 +2178,126 @@ fn the_classic_rail_composes_through_the_shared_protocol() {
     );
     drop(monitor);
 }
+
+/// #66: the classic page's file preview (the lightbox) offers "Reveal in file manager" in its
+/// caption; the request it sends must carry the path's reveal STAMP, or the server refuses it
+/// by design. `fetch` is stubbed in the page: `file?` answers with text so the preview opens
+/// without touching the disk, `__reveal` records what was asked and answers ok, and everything
+/// else (the feed) passes through.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_classic_lightbox_reveal_carries_the_stamp() {
+    let _serial = serial();
+    let base = base("classic-lightbox-reveal");
+    let stores = Stores::new(&base);
+    let note = base.join("note.txt");
+    std::fs::write(&note, "a note the page may preview\n").unwrap();
+    let note_s = note.to_string_lossy().to_string();
+    let sid = "cccccccc-0000-4000-8000-000000000066";
+    let mut jsonl = String::new();
+    jsonl.push_str(&harness::user_at(
+        "question 0: read the note",
+        &harness::now_minus(60),
+    ));
+    jsonl.push_str(&harness::read_tool_at(
+        "t-read",
+        &note_s,
+        &harness::now_minus(55),
+    ));
+    jsonl.push_str(&harness::tool_result_at("t-read", &harness::now_minus(50)));
+    jsonl.push_str(&harness::assistant_at(
+        "answer 0: read it",
+        &harness::now_minus(45),
+    ));
+    stores.claude_session(sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V2, 2839, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=classic&session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('a.tool-path')",
+        "the offered path to render",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let offered = harness::probe(&tab, "(function(){ var a = document.querySelector('a.tool-path'); return {path: a.dataset.path, sig: !!a.dataset.sig, fsig: !!a.dataset.fsig, artifacts: document.body.dataset.artifacts, title: a.title}; })()");
+    assert_eq!(
+        offered["sig"], true,
+        "the path was offered with a reveal stamp: {offered}"
+    );
+    assert_eq!(
+        offered["fsig"], true,
+        "…and a file stamp (default render policy): {offered}"
+    );
+    assert_eq!(
+        offered["artifacts"], "1",
+        "the served page offers artifacts: {offered}"
+    );
+    harness::eval(&tab, "window.__reqs = []; var real = window.fetch; window.fetch = function (u, o) { var s = String(u); window.__reqs.push(s); if (/^file\\?/.test(s)) return Promise.resolve(new Response('a note', {status: 200, headers: {'content-type': 'text/plain'}})); if (/__reveal\\?/.test(s)) return Promise.resolve(new Response('', {status: 200})); return real(u, o); }; 'ok'");
+    harness::eval(&tab, "document.querySelector('a.tool-path').click(); 'ok'");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.lightbox .lb-act')",
+        "the preview to open",
+        std::time::Duration::from_secs(15),
+        "JSON.stringify(window.__reqs)",
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('.lightbox .lb-act').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "window.__reqs.some(function (s) { return /__reveal\\?/.test(s); })",
+        "the caption's reveal request",
+        std::time::Duration::from_secs(10),
+        "JSON.stringify(window.__reqs)",
+    );
+    let reveal = harness::eval(
+        &tab,
+        "window.__reqs.filter(function (s) { return /__reveal\\?/.test(s); }).pop()",
+    );
+    let reveal = reveal.as_str().unwrap_or("").to_string();
+    let sig = reveal.split("sig=").nth(1).unwrap_or("").to_string();
+    assert!(
+        !sig.is_empty(),
+        "the caption's reveal carries the path's stamp, got {reveal:?}"
+    );
+    assert!(
+        reveal.contains(&format!("path={}", urlencoding(&note_s))),
+        "…for the previewed path, got {reveal:?}"
+    );
+    harness::until(
+        &tab,
+        "document.querySelector('.lightbox .lb-act').textContent === 'revealed ✓'",
+        "the caption to report the outcome",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('.lightbox .lb-act').textContent",
+    );
+    drop(monitor);
+}
+
+/// `encodeURIComponent` for a path, as the page writes it into a query.
+fn urlencoding(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}

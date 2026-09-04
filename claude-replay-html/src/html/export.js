@@ -645,7 +645,7 @@
                 // edited from one capability into the other. Which one a click uses is the
                 // shared rule's call (html/shared/capabilities.js, #46) — the same rule the
                 // app shell applies; a host that serves no artifacts offers no file stamp.
-                var reveal = function () { fetch("__reveal?" + shared.stampQuery({ path: path, sig: sig })); };
+                var reveal = function () { return fetch("__reveal?" + shared.stampQuery({ path: path, sig: sig })); };
                 var action = shared.referenceAction({ fileSig: ARTIFACTS ? fsig : null, revealSig: sig });
                 if (action === "preview") openArtifact(shared.stampQuery({ path: path, sig: fsig }), reveal); else reveal();
             };
@@ -892,7 +892,12 @@
   // Show one file over the page: an image, or its text. Built on demand and torn down on
   // close, like `lightbox` — and the Blob URL an image rides on is revoked with it, so
   // browsing a hundred screenshots leaks neither DOM nor object URLs.
-  function fileview(path, imgUrl, text) {
+  // The caption's "Reveal in file manager" runs the CALLER's reveal (#66): every path that
+  // reaches a lightbox was offered with its reveal stamp, and the caller already holds the
+  // stamped request (the same one it runs when the bytes cannot be shown). Building an
+  // unstamped `__reveal?path=` here — as this did after capability stamping landed — sent a
+  // request the server refuses by design, so the button read "not found" on every click.
+  function fileview(path, imgUrl, text, reveal) {
     var box = el("div", "lightbox");
     var panel;
     if (imgUrl != null) {
@@ -909,9 +914,9 @@
     var rev = el("button", "lb-act", "Reveal in file manager");
     rev.onclick = function (ev) {
       ev.stopPropagation();
-      fetch("__reveal?path=" + encodeURIComponent(path)).then(function (r) {
-        rev.textContent = r.ok ? "revealed ✓" : "not found";
-      });
+      var p = reveal ? reveal() : null;
+      if (!p || !p.then) { rev.textContent = reveal ? "revealed ✓" : "not offered"; return; }
+      p.then(function (r) { rev.textContent = r && r.ok ? "revealed ✓" : "not found"; }, function () { rev.textContent = "not found"; });
     };
     cap.appendChild(rev);
     box.appendChild(cap);
@@ -960,9 +965,9 @@
         return r.blob().then(function (b) { saveBlob(path, b); });
       }
       if (ct.indexOf("image/") === 0) {
-        return r.blob().then(function (b) { fileview(path, URL.createObjectURL(b), null); });
+        return r.blob().then(function (b) { fileview(path, URL.createObjectURL(b), null, fallback); });
       }
-      return r.text().then(function (t) { fileview(path, null, t); });
+      return r.text().then(function (t) { fileview(path, null, t, fallback); });
     }).catch(function () { fallback(0); });
   }
 
@@ -2852,10 +2857,11 @@
       e.preventDefault(); // served page: http→file:// is blocked, so ask the server
       var orig = tp.textContent;
       var reveal = function () {
-        fetch("__reveal?" + shared.stampQuery({ path: tp.dataset.path, sig: tp.dataset.sig }))
+        return fetch("__reveal?" + shared.stampQuery({ path: tp.dataset.path, sig: tp.dataset.sig }))
           .then(function (r) {
             tp.textContent = r.ok ? "revealed ✓" : "not found";
             setTimeout(function () { tp.textContent = orig; }, 1000);
+            return r;
           })
           .catch(function () { /* server gone */ });
       };

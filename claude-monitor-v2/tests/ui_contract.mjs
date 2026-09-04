@@ -637,3 +637,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(src, /<strong>\$\{escapeText\(view\.summary \|\| "Queued input"\)\}<\/strong><small>queued input<\/small>/, "the bare label is gone");
   console.log("#65 queued text cases passed");
 }
+
+// #66: the classic lightbox's "Reveal in file manager" runs the caller's STAMPED reveal; it
+// never builds an unstamped __reveal of its own.
+{
+  const src = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(src, /function fileview\(path, imgUrl, text, reveal\) \{/, "the lightbox takes the reveal action");
+  assert.doesNotMatch(src, /"__reveal\?path=" \+ encodeURIComponent\(path\)/, "…and builds no unstamped request");
+  assert.match(src, /fileview\(path, URL\.createObjectURL\(b\), null, fallback\)/, "the image view gets it from openArtifact");
+  assert.match(src, /fileview\(path, null, t, fallback\)/, "…and so does the text view");
+  assert.equal((src.match(/var reveal = function \(\) \{\s*return fetch\("__reveal\?" \+ shared\.stampQuery/g) || []).length, 2, "both offered-path sites return their stamped request, so the caption can report it");
+  console.log("#66 lightbox reveal cases passed");
+}
