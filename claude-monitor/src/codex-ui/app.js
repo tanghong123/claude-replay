@@ -13,7 +13,7 @@ import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { snipId } from "./shared/ids.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus } from "./view-model.js";
+import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
@@ -466,12 +466,15 @@ function renderNavigator() {
   outlineCurrent = null; // the rows were rebuilt: mark and reveal the current one afresh
   updateOutlineFocus();
   byId("outlineTaskDot").hidden = !runningTasks;
-  byId("navigatorWork").innerHTML = tasks.map((task, index) => {
+  // Grouped and ordered (#56): completed, running, pending — then by id within a group; the
+  // stream's index rides along on each row because the record targets are keyed by it.
+  const taskRow = ({ task, index }) => {
     const key = String(task.id ?? index), target = recordState.taskTargets.get(key), status = taskStatus(task.status);
     const nav = target == null ? 'disabled aria-disabled="true" title="This record stream did not keep where the task was set"' : `data-task-record="${target}" title="Jump to where this task's status was recorded"`;
     const statusClass = status === "in_progress" ? "running" : status;
     return `<div class="work-task"><button class="work-task-head" ${nav}><span class="task-state ${escapeText(statusClass)}"></span><span class="work-copy"><strong>${escapeText(task.subject || task.title || `Task ${index + 1}`)}</strong></span><span class="work-tail">#${escapeText(task.id || index + 1)}</span></button></div>`;
-  }).join("") || '<div class="activity-empty">No session tasks</div>';
+  };
+  byId("navigatorWork").innerHTML = taskGroups(tasks).map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("") || '<div class="activity-empty">No session tasks</div>';
   const agents = directAgents(), activeAgents = agents.filter(agent => agent.running).length;
   byId("navigatorAgentCount").innerHTML = outlineSummary(activeAgents, agents.length - activeAgents, agents.length);
   byId("navigatorAgents").innerHTML = agents.map(agent => { const target = recordState.agentTargets.get(String(agent.id)); const nav = target == null ? `data-child-outline="${escapeText(agent.id)}" title="Open the sub-agent transcript"` : `data-agent-record="${target}" title="Jump to the agent execution block in the parent session"`; return `<button class="outline-agent" ${nav}><span class="agent-state ${agent.running ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(agent.title || agent.description || agent.id)}</strong><small>${escapeText(agent.type || agent.agent_type || "agent")}</small></span><span class="outline-agent-tail"></span></button>`; }).join("") || '<div class="activity-empty">No direct children</div>';

@@ -71,6 +71,51 @@ export function agentRecordTargets(agents = [], records = []) {
 const toolKinds = new Set(["bash", "read", "write", "edit", "skill", "tool"]);
 const processKinds = new Set(["think", "act", "bash", "read", "write", "edit", "skill", "tool", "agent", "task", "queue", "command", "compaction", "attachment", "system", "context", "record", "file"]);
 
+// The tasks pane's order (#56): three groups — completed, running, pending — and anything the
+// status vocabulary does not know last, each group by id: numeric ids as numbers (2 before 10),
+// taskq's plain ids before the user tier's `u12`, non-numeric ids after both by their text, and
+// ties by the order the record stream carried them. Pure, so the contract pins it.
+const TASK_GROUPS = Object.freeze([
+  { key: "completed", label: "Completed" },
+  { key: "in_progress", label: "Running" },
+  { key: "pending", label: "Pending" },
+  { key: "other", label: "Other" },
+]);
+
+export function taskGroupKey(status) {
+  const s = String(status ?? "pending").replace(/[\s-]+/g, "_").toLowerCase();
+  if (s === "completed" || s === "done") return "completed";
+  if (s === "inprogress" || s === "in_progress" || s === "running") return "in_progress";
+  if (s === "pending" || s === "") return "pending";
+  return "other";
+}
+
+function taskIdKey(id) {
+  const m = /^(u?)(\d+)$/i.exec(String(id ?? "").trim());
+  return m ? [0, m[1] ? 1 : 0, Number(m[2]), ""] : [1, 0, 0, String(id ?? "")];
+}
+
+function compareIds(a, b) {
+  const ka = taskIdKey(a), kb = taskIdKey(b);
+  for (let i = 0; i < 3; i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
+  return ka[3] < kb[3] ? -1 : ka[3] > kb[3] ? 1 : 0;
+}
+
+/** The tasks as `{ task, index }` rows (the stream's index kept for the record targets), in
+ *  the pane's order. */
+export function taskOrder(tasks = []) {
+  const rank = Object.fromEntries(TASK_GROUPS.map((g, i) => [g.key, i]));
+  return tasks
+    .map((task, index) => ({ task, index, group: taskGroupKey(task?.status) }))
+    .sort((a, b) => rank[a.group] - rank[b.group] || compareIds(a.task?.id, b.task?.id) || a.index - b.index);
+}
+
+/** The non-empty groups, in order, each with its rows. */
+export function taskGroups(tasks = []) {
+  const rows = taskOrder(tasks);
+  return TASK_GROUPS.map(g => ({ ...g, rows: rows.filter(r => r.group === g.key) })).filter(g => g.rows.length);
+}
+
 export function viewRecord(record) {
   const head = record.head || {};
   if (record.kind === "user") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record };

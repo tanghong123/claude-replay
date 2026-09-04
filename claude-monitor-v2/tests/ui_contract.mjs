@@ -10,7 +10,7 @@ import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-ht
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
-import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord } from "../../claude-monitor/src/codex-ui/view-model.js";
+import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
@@ -725,4 +725,22 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
   assert.match(stateSrc, /navigatorHidden: localStorage\.getItem\("am-prod-navigator-hidden"\) === "1"/, "remembered per viewer");
   console.log("#55 outline pane cases passed");
+}
+
+// #56: the tasks pane's order — by group, then by id — as a pure function.
+{
+  const tasks = [
+    { id: "10", status: "pending" }, { id: "2", status: "completed" }, { id: "u4", status: "pending" },
+    { id: "7", status: "in_progress" }, { id: "1", status: "completed" }, { id: "3", status: "pending" },
+    { id: "zeta", status: "pending" }, { id: "9", status: "parked" }, { id: "u1", status: "completed" },
+  ];
+  assert.deepEqual(taskOrder(tasks).map(r => r.task.id), ["1", "2", "u1", "7", "3", "10", "u4", "zeta", "9"], "completed, running, pending, other; numbers as numbers; plain before u; text after");
+  assert.deepEqual(taskGroups(tasks).map(g => [g.key, g.rows.length]), [["completed", 3], ["in_progress", 1], ["pending", 4], ["other", 1]]);
+  assert.deepEqual(taskOrder(tasks).map(r => r.index).slice(0, 2), [4, 1], "each row keeps the stream's index for its record target");
+  assert.equal(taskGroupKey("Done"), "completed"); assert.equal(taskGroupKey("in-progress"), "in_progress"); assert.equal(taskGroupKey(undefined), "pending"); assert.equal(taskGroupKey("weird"), "other");
+  const same = [{ id: "x", status: "pending" }, { id: "x", status: "pending" }];
+  assert.deepEqual(taskOrder(same).map(r => r.index), [0, 1], "ties keep the stream's order");
+  assert.deepEqual(taskGroups([]), [], "no tasks, no groups");
+  assert.match(appSource, /taskGroups\(tasks\)\.map\(group => `<div class="work-group" data-task-group="\$\{group\.key\}">/, "the pane renders the groups with a boundary");
+  console.log("#56 task order cases passed");
 }

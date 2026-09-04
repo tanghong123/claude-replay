@@ -2595,3 +2595,65 @@ fn the_app_shell_gives_the_transcript_the_whole_width() {
     );
     drop(monitor);
 }
+
+/// #56: the tasks pane orders a session's tasks by group — completed, running, pending — and by
+/// id within a group, with a boundary between groups, whatever order the store filed them in.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_orders_tasks_by_group_then_id() {
+    let _serial = serial();
+    let base = base("appshell-task-order");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000056".to_string();
+    stores.claude_session(&sid, &harness::long_session(12, harness::Shape::default()));
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("10", "ten, pending", "pending"),
+            ("2", "two, done", "completed"),
+            ("u4", "user four, pending", "pending"),
+            ("7", "seven, running", "in_progress"),
+            ("1", "one, done", "completed"),
+            ("3", "three, pending", "pending"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V2, 2845, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:2845/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    // The tasks card is closed by default; open it.
+    harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 6",
+        "the six tasks to render",
+        std::time::Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 200)",
+    );
+    let seen = harness::probe(&tab, "(function(){ var rows = [...document.querySelectorAll('#navigatorWork > *')]; return { order: rows.map(function (r) { return r.classList.contains('work-group') ? r.dataset.taskGroup : (r.querySelector('.work-tail') || {}).textContent; }), groups: [...document.querySelectorAll('#navigatorWork .work-group')].map(function (g) { return g.textContent.trim(); }) }; })()");
+    assert_eq!(
+        seen["order"],
+        serde_json::json!([
+            "completed",
+            "#1",
+            "#2",
+            "in_progress",
+            "#7",
+            "pending",
+            "#3",
+            "#10",
+            "#u4"
+        ]),
+        "groups in order, ids as numbers within a group, the user tier after: {seen}"
+    );
+    assert_eq!(
+        seen["groups"].as_array().map(|g| g.len()),
+        Some(3),
+        "three visible boundaries: {seen}"
+    );
+    drop(monitor);
+}

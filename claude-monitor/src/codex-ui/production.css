@@ -89,3 +89,8 @@
 /* #55: the outline pane hidden outright — no rail — so the transcript has the whole remaining width. */
 .workspace.navigator-hidden .session-main{grid-template-columns:0 minmax(0,1fr)}
 .workspace.navigator-hidden .session-navigator{display:none}
+/* #56: the tasks pane's group boundaries — a quiet caption between completed, running and pending. */
+.work-group{display:flex;align-items:center;gap:6px;margin:8px 4px 3px;padding-top:6px;border-top:1px solid color-mix(in srgb,var(--line) 80%,transparent);font:600 10.5px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.work-group:first-child{margin-top:2px;padding-top:0;border-top:0}
+.work-group-count{font-weight:500;color:var(--faint)}
+.work-group[data-task-group="in_progress"]{color:var(--amber,var(--sub))}

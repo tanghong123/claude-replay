@@ -257,11 +257,26 @@ impl Stores {
             ("QODERWORK_PROJECTS_DIR", self.root.join("qoderwork")),
             ("QODER_PROJECTS_DIR", self.root.join("qoder")),
             ("CODEX_HOME", self.root.join("codex")),
+            ("CLAUDE_JDI_TASKS_ROOT", self.root.join("claude-tasks")),
         ]
     }
 
     /// A Claude session `sid` under the project slug `-r` (the builders' cwd), with `jsonl`.
     /// Returns the transcript path — a live-growth scenario appends to it.
+    /// A Claude session's LIVE task store (`<tasks root>/<sid>/<n>.json`, one file per task, the
+    /// shape Claude Code writes), filed in the order given — which is the order the pane must
+    /// NOT rely on.
+    pub fn claude_tasks(&self, sid: &str, tasks: &[(&str, &str, &str)]) -> PathBuf {
+        let dir = self.root.join("claude-tasks").join(sid);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (n, (id, subject, status)) in tasks.iter().enumerate() {
+            let json = format!(
+                "{{\"id\":\"{id}\",\"subject\":\"{subject}\",\"description\":\"{subject}\",\"activeForm\":\"{subject}\",\"status\":\"{status}\",\"blocks\":[],\"blockedBy\":[]}}"
+            );
+            std::fs::write(dir.join(format!("{}.json", n + 1)), json).unwrap();
+        }
+        dir
+    }
     pub fn claude_session(&self, sid: &str, jsonl: &str) -> PathBuf {
         let proj = self.root.join("claude").join("-r");
         std::fs::create_dir_all(&proj).unwrap();
