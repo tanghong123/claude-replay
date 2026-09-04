@@ -27,6 +27,9 @@ const KEYMAP = Object.freeze([
   { key: " ", shift: true, when: "view", action: "page-up", hint: "⇧Space" },
   { key: "ArrowDown", when: "list", action: "list-next", hint: "↓" },
   { key: "ArrowUp", when: "list", action: "list-prev", hint: "↑" },
+  // The sidebar's collapse into its icon rail, and back (#54) — from anywhere, since the rail
+  // is what a reader reaches for when the list is in the way. Pages without a rail ignore it.
+  { key: "\\", when: "any", action: "sidebar-toggle", hint: "\\" },
 ]);
 
 const isEditable = target => !!target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName || "") || target.isContentEditable === true);

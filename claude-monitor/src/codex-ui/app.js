@@ -667,6 +667,11 @@ byId("themeBtn").onclick = () => { const dark = document.documentElement.dataset
 if (localStorage.getItem("am-demo-theme") === "dark") document.documentElement.dataset.theme = "dark";
 function toggleSidebar(open) { indexState.sidebarOpen = open; app.classList.toggle("sidebar-off", !open); persist(); viewport.remeasure(); }
 byId("sidebarCollapse").onclick = () => toggleSidebar(false); byId("sidebarMiniExpand").onclick = () => toggleSidebar(true); byId("sidebarReopen").onclick = () => toggleSidebar(true);
+// The rail's write button reaches the write switch itself (#54): the demo clicks the write
+// BUTTON, whose handler ignores a click that lands on a button — a programmatic click does.
+byId("sidebarMiniWrite").onclick = () => byId("writeSwitch").click();
+byId("sidebarCollapse").title = `Collapse the sidebar into its icon rail  ( ${hintFor("sidebar-toggle")} )`;
+byId("sidebarMiniExpand").title = `Expand the sidebar  ( ${hintFor("sidebar-toggle")} )`;
 byId("navigatorToggle").onclick = () => { uiState.navigatorOpen = !uiState.navigatorOpen; persist(); renderNavigator(); viewport.remeasure(); };
 byId("navigatorClose").onclick = () => { uiState.navigatorOpen = false; persist(); renderNavigator(); viewport.remeasure(); };
 byId("navigatorRailExpand").onclick = () => { uiState.navigatorOpen = true; persist(); renderNavigator(); viewport.remeasure(); };
@@ -753,7 +758,8 @@ const keyActions = {
   "wrap": () => setReading({ wrap: !uiState.reading.wrap }),
   "size-down": () => setReading({ size: uiState.reading.size - SIZE_STEP }), "size-up": () => setReading({ size: uiState.reading.size + SIZE_STEP }),
   "page-down": () => pageTranscript(1), "page-up": () => pageTranscript(-1),
-  "list-next": () => stepList(1), "list-prev": () => stepList(-1)
+  "list-next": () => stepList(1), "list-prev": () => stepList(-1),
+  "sidebar-toggle": () => toggleSidebar(!indexState.sidebarOpen)
 };
 bindKeymap(document, target => (target?.closest?.(".tree-row") ? "list" : "view"), action => keyActions[action]?.());
 // Discoverability in the shell's idiom: the key in the control's own title / hint.

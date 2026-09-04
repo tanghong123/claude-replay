@@ -691,3 +691,18 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(exportSrc, /function snipId\(/, "…and keeps no copy of its own");
   console.log("#50 session id chip cases passed");
 }
+
+// #54: the sidebar collapses into its icon rail by key from anywhere, and the rail's buttons
+// all lead somewhere.
+{
+  const ev = (key, extra = {}) => ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...extra });
+  assert.equal(resolveKey(ev("\\"), "view").action, "sidebar-toggle");
+  assert.equal(resolveKey(ev("\\"), "list").action, "sidebar-toggle", "from the list too");
+  assert.equal(resolveKey(ev("\\"), "view", { tagName: "INPUT" }), null, "never while typing");
+  assert.match(appSource, /"sidebar-toggle": \(\) => toggleSidebar\(!indexState\.sidebarOpen\)/, "the shell acts on it");
+  assert.match(appSource, /byId\("sidebarMiniWrite"\)\.onclick = \(\) => byId\("writeSwitch"\)\.click\(\);/, "the rail's write button reaches the switch");
+  assert.match(appSource, /byId\("sidebarMiniSearch"\)\.onclick = openGlobalSearch;/, "…its search button the global search");
+  assert.match(appSource, /byId\("sidebarMiniAttention"\)\.onclick = \(\) => byId\("attentionBtn"\)\.click\(\);/, "…its attention button the filter");
+  assert.match(appSource, /hintFor\("sidebar-toggle"\)/, "the key is discoverable on the control");
+  console.log("#54 sidebar rail cases passed");
+}

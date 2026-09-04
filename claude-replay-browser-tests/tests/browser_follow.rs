@@ -2301,3 +2301,153 @@ fn urlencoding(s: &str) -> String {
     }
     out
 }
+
+/// #54: the sidebar collapses into a 64px rail of icons — expand, write, search, attention and
+/// one button per agent — the layout stays one scroller under fixed chrome, the choice
+/// survives a reload, and the rail expands back by key and by click.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_collapses_the_sidebar_into_a_rail() {
+    let _serial = serial();
+    let base = base("appshell-rail");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000054".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2843, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    let url = format!("http://127.0.0.1:2843/?ui=app&session={sid}");
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0";
+    harness::until(
+        &tab,
+        mounted,
+        "the app shell to mount the fixture",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let collapsed = "document.getElementById('app').classList.contains('sidebar-off')";
+    assert_eq!(
+        harness::eval(&tab, collapsed),
+        false,
+        "a fresh shell opens with the sidebar expanded"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('sidebarCollapse').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        collapsed,
+        "the sidebar to collapse",
+        std::time::Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    // The grid animates its columns (.2s); measure once the rail has settled.
+    let settled = |w: &str| {
+        format!("Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) {w}")
+    };
+    harness::until(
+        &tab,
+        &settled("=== 64"),
+        "the rail to settle at 64px",
+        std::time::Duration::from_secs(5),
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
+    );
+    let rail = harness::probe(&tab, "(function(){ var side = document.querySelector('.sidebar'), mini = document.getElementById('sidebarMini'); var buttons = [...mini.querySelectorAll('button')].filter(function (b) { return !b.hidden && b.offsetParent !== null; }); return { width: Math.round(side.getBoundingClientRect().width), display: getComputedStyle(mini).display, buttons: buttons.length, ids: buttons.map(function (b) { return b.id || b.className; }), agents: mini.querySelectorAll('.sidebar-mini-agent').length, titles: buttons.map(function (b) { return b.title || b.getAttribute('aria-label') || ''; }) }; })()");
+    assert_eq!(rail["width"], 64, "the rail is 64px wide: {rail}");
+    assert_eq!(rail["display"], "flex", "the rail shows: {rail}");
+    assert!(
+        rail["buttons"].as_u64().unwrap_or(0) >= 5,
+        "expand, write, search, attention and one agent: {rail}"
+    );
+    assert_eq!(
+        rail["agents"], 1,
+        "one agent button for the one agent with sessions: {rail}"
+    );
+    assert!(
+        rail["titles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| !t.as_str().unwrap_or("").is_empty()),
+        "every rail button names itself: {rail}"
+    );
+    // One scroller under fixed chrome, collapsed as well as expanded.
+    let probe = r#"(function () {
+      var s = document.querySelector('.transcript'), side = document.querySelector('.sidebar'), head = document.querySelector('header');
+      var before = { side: side.getBoundingClientRect().top, head: head.getBoundingClientRect().top, doc: window.scrollY };
+      s.scrollTop = Math.max(0, s.scrollTop - 600);
+      var after = { side: side.getBoundingClientRect().top, head: head.getBoundingClientRect().top, doc: window.scrollY };
+      return { documentStill: before.doc === 0 && after.doc === 0, sideFixed: Math.abs(after.side - before.side) < 1, headFixed: Math.abs(after.head - before.head) < 1 };
+    })()"#;
+    let v = harness::probe(&tab, probe);
+    assert_eq!(
+        v["documentStill"], true,
+        "the document does not scroll: {v}"
+    );
+    assert_eq!(v["sideFixed"], true, "the rail stays put: {v}");
+    assert_eq!(v["headFixed"], true, "the header stays put: {v}");
+    // The choice survives a reload.
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        mounted,
+        "the reloaded shell to mount",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    assert_eq!(
+        harness::eval(&tab, collapsed),
+        true,
+        "the rail is remembered across a reload"
+    );
+    harness::until(
+        &tab,
+        &settled("=== 64"),
+        "the remembered rail at its width",
+        std::time::Duration::from_secs(5),
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
+    );
+    // The key expands it — and collapses it again — from the view.
+    let press = r#"document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: '\\', bubbles: true, cancelable: true })); 'ok'"#;
+    harness::eval(&tab, press);
+    harness::until(
+        &tab,
+        &format!("!({collapsed})"),
+        "the key to expand the sidebar",
+        std::time::Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    harness::eval(&tab, press);
+    harness::until(
+        &tab,
+        collapsed,
+        "the key to collapse it again",
+        std::time::Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    // The rail's own expand button.
+    harness::eval(
+        &tab,
+        "document.getElementById('sidebarMiniExpand').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        &format!("!({collapsed})"),
+        "the rail's expand button",
+        std::time::Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    harness::until(
+        &tab,
+        &settled("> 200"),
+        "the sidebar back at its width",
+        std::time::Duration::from_secs(5),
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
+    );
+    drop(monitor);
+}
