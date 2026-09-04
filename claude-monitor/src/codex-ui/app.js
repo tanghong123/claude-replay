@@ -814,6 +814,17 @@ function centerTasks() {
 tasksCenter.onclick = event => { event.stopPropagation(); centerTasks(); };
 byId("sessionFoldAll").onclick = () => { const close = recordState.units.some(unit => unit.type === "process" && !recordState.processFolds.get(unit.key)); for (const unit of recordState.units) if (unit.type === "process") recordState.processFolds.set(unit.key, close); viewport.render(); };
 byId("collapseBtn").onclick = () => { for (const agent of groupedSessions()) { indexState.collapsed.add(`a:${agent.id}`); for (const project of agent.projects) indexState.collapsed.add(`p:${project.id}`); } persist(); renderTree(); };
+// Expand-all (#77, parity item 12): the counterpart of collapse-all — every agent and project
+// group open again, remembered like the folds are. Runtime chrome beside its counterpart.
+const expandBtn = document.createElement("button");
+expandBtn.type = "button";
+expandBtn.className = "iconbtn";
+expandBtn.id = "expandBtn";
+expandBtn.innerHTML = svg("expandStack");
+expandBtn.title = "Expand every group";
+expandBtn.setAttribute("aria-label", "Expand every group");
+byId("collapseBtn").insertAdjacentElement("afterend", expandBtn);
+expandBtn.onclick = () => { indexState.collapsed.clear(); persist(); renderTree(); };
 byId("mobileBack").onclick = () => app.classList.remove("mobile-detail");
 addEventListener("popstate", () => { const id = new URLSearchParams(location.search).get("session"); if (id && id !== indexState.selected) selectSession(id, false); });
 addEventListener("hashchange", () => { landedHash = ""; landOnHash(); });

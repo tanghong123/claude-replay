@@ -3646,3 +3646,78 @@ fn the_app_shell_finds_the_parent_from_a_child_opened_first() {
     );
     drop(monitor);
 }
+
+/// #77: collapse-all folds every group of the session list; expand-all opens them again; the
+/// choice survives a reload.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_expands_every_group_again() {
+    let _serial = serial();
+    let base = base("appshell-expand-all");
+    let stores = Stores::new(&base);
+    for n in 1..=3u32 {
+        stores.claude_session(
+            &format!("cccccccc-0000-4000-8000-0000000000{n:02}"),
+            &harness::long_session(4, harness::Shape::default()),
+        );
+    }
+    let monitor = Monitor::spawn(Kind::V2, 2874, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    let url = "http://127.0.0.1:2874/?ui=app";
+    tab.navigate_to(url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    let toggles = "document.querySelectorAll('[data-toggle]').length";
+    harness::until(
+        &tab,
+        &format!("{toggles} >= 2"),
+        "the tree to list an agent and a project",
+        std::time::Duration::from_secs(30),
+        toggles,
+    );
+    let state = "(function(){ var t = [...document.querySelectorAll('[data-toggle]')]; return { total: t.length, open: t.filter(function (e) { return e.getAttribute('aria-expanded') === 'true'; }).length, expandVisible: !!document.getElementById('expandBtn') && document.getElementById('expandBtn').offsetParent !== null && !!document.getElementById('expandBtn').querySelector('svg') }; })()";
+    let start = harness::probe(&tab, state);
+    assert_eq!(
+        start["expandVisible"], true,
+        "the expand-all control is there with its glyph: {start}"
+    );
+    harness::eval(&tab, "document.getElementById('collapseBtn').click(); 'ok'");
+    harness::until(&tab, "[...document.querySelectorAll('[data-toggle]')].every(function (e) { return e.getAttribute('aria-expanded') === 'false'; })", "collapse-all to fold every group", std::time::Duration::from_secs(5), state);
+    harness::eval(&tab, "document.getElementById('expandBtn').click(); 'ok'");
+    harness::until(&tab, "[...document.querySelectorAll('[data-toggle]')].every(function (e) { return e.getAttribute('aria-expanded') === 'true'; })", "expand-all to open every group", std::time::Duration::from_secs(5), state);
+    // Remembered: fold all, reload, still folded; expand all, reload, still open.
+    harness::eval(&tab, "document.getElementById('collapseBtn').click(); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    tab.navigate_to(url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        &format!("{toggles} >= 1"),
+        "the reloaded tree",
+        std::time::Duration::from_secs(30),
+        toggles,
+    );
+    assert_eq!(
+        harness::probe(&tab, state)["open"],
+        0,
+        "the folds are remembered across a reload"
+    );
+    harness::eval(&tab, "document.getElementById('expandBtn').click(); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    tab.navigate_to(url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        &format!("{toggles} >= 2"),
+        "the reloaded tree again",
+        std::time::Duration::from_secs(30),
+        toggles,
+    );
+    let after = harness::probe(&tab, state);
+    assert_eq!(
+        after["open"], after["total"],
+        "expand-all is remembered across a reload: {after}"
+    );
+    drop(monitor);
+}

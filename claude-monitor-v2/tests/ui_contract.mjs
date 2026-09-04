@@ -876,3 +876,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(css, /\.renderer-image-thumb img\{display:block;max-height:320px;/, "the thumbnail is bounded");
   console.log("#80 image attachment cases passed");
 }
+
+// #77: expand-all beside collapse-all.
+{
+  assert.match(appSource, /expandBtn\.onclick = \(\) => \{ indexState\.collapsed\.clear\(\); persist\(\); renderTree\(\); \};/, "expand-all clears every fold and remembers it");
+  assert.match(appSource, /byId\("collapseBtn"\)\.insertAdjacentElement\("afterend", expandBtn\);/, "…beside collapse-all");
+  assert.match(appSource, /expandBtn\.innerHTML = svg\("expandStack"\);/, "…with a glyph the sprite has");
+  const iconsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/icons.js", import.meta.url), "utf8");
+  assert.ok(iconsSrc.includes("expandStack:'"), "the expandStack glyph exists");
+  console.log("#77 expand-all cases passed");
+}
