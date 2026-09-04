@@ -1032,3 +1032,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(comp, /\$\{turnTime\(unit\)\}\$\{spot\}\$\{rawToggle\}/, "…and shows it beside the user bubble");
   console.log("#112 time cases passed");
 }
+
+// #113: a slash command is a turn card and a turns-pane row.
+{
+  const vm = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
+  assert.match(vm, /if \(record\.kind === "user" \|\| record\.kind === "command"\) \{/, "a command starts a turn unit");
+  assert.match(vm, /if \(record\.kind === "command"\) return \{ t: "user", id: record\.id/, "…as a user view with the command's badge and preview");
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /class="turn user command" data-kind="user"/, "the card is the user's turn for filters and the spy");
+  assert.match(comp, /class="command-head" type="button" data-prompt-toggle=/, "…folded until opened, through the prompt toggle");
+  assert.match(comp, /<span class="command-badge">\/\$\{escapeText\(cmd\.name\)\}<\/span><span class="command-preview">/, "badge and preview");
+  console.log("#113 command turn cases passed");
+}

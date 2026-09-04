@@ -215,7 +215,9 @@ export function viewRecord(record) {
   if (record.kind === "queue") return rendererRecord(record, "queue", "Queued input");
   if (record.kind === "attachment") return rendererRecord(record, "attachment", head.att_name || "Attachment");
   if (record.kind === "compaction") return rendererRecord(record, "context", "Context compacted");
-  if (record.kind === "command") return rendererRecord(record, "system", head.name || "Command");
+  // A slash command is the user speaking (#113, the classic page's turn card): a user view with
+  // the command's badge, its argument preview and the `N lines` chip from the wire.
+  if (record.kind === "command") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record, command: { name: String(head.badge || head.name || "command").replace(/^\//, ""), preview: head.preview || "", lines: (head.chips || []).map(c => c.x || "").find(x => /lines$/.test(x)) || "" } };
   if (record.kind === "task") return rendererRecord(record, "task", head.name || "Task");
   if (toolKinds.has(record.kind)) return rendererRecord(record, record.kind, head.name || record.tool || record.kind);
   if (processKinds.has(record.kind)) return rendererRecord(record, record.kind, head.name || record.kind);
@@ -319,7 +321,7 @@ function buildUnits(records, from, turn) {
   for (let i = from; i < records.length; i++) {
     const record = records[i];
     const view = viewRecord(record);
-    if (record.kind === "user") {
+    if (record.kind === "user" || record.kind === "command") {
       flush(); turn = Number(record.turn || turn + 1);
       units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: record.label || plainText(record).slice(0, 80) });
     } else if (record.kind === "attachment" && !process && units.at(-1)?.type === "user") {

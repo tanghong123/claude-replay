@@ -156,6 +156,19 @@ pub fn tool_result_lines(call_id: &str, n: usize, ts: &str) -> String {
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":\"{body}\"}}]}},\"timestamp\":\"{ts}\"}}\n"
     )
 }
+/// A slash command as Claude Code records typed input: a plain STRING content (the adapter
+/// classifies commands on that path, not on text-block arrays), with its args and its local
+/// stdout inline (a standalone stdout message's attachment to the command is #124's question).
+pub fn command_at(name: &str, args: &str, stdout: &str, ts: &str) -> String {
+    let out = if stdout.is_empty() {
+        String::new()
+    } else {
+        format!("\\n<local-command-stdout>{stdout}</local-command-stdout>")
+    };
+    format!(
+        "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":\"<command-message>{name}</command-message>\\n<command-name>/{name}</command-name>\\n<command-args>{args}</command-args>{out}\"}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
 pub fn tool_result_at(id: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"out line\\nout line\\nout line\\n\"}}]}},\"timestamp\":\"{ts}\"}}\n"

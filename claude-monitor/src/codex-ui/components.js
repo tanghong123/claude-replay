@@ -149,7 +149,14 @@ export function renderUnit(unit, state) {
     : "";
   const body = raw ? (unit.type === "user" ? rawTextHtml(unit.view.source) : rawTurnHtml(unit.view.source)) : unit.view?.html;
   let html;
-  if (unit.type === "user") {
+  if (unit.type === "user" && unit.view.command) {
+    // A slash command (#113): a turn card, folded to its badge and argument preview until the
+    // reader opens it — the classic page's command fold — with the outputs inside.
+    const cmd = unit.view.command;
+    const expanded = state.promptExpanded.has(unit.key);
+    html = `<div class="turn user command" data-kind="user" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt command-card"><button class="command-head" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}" title="${expanded ? "Fold this command" : "Show this command's arguments and output"}"><span class="command-badge">/${escapeText(cmd.name)}</span><span class="command-preview">${escapeText(cmd.preview)}</span>${cmd.lines ? `<span class="command-chip">${escapeText(cmd.lines)}</span>` : ""}<span class="command-chevron" aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>${expanded ? `<div class="prompt-copy-shell expanded"><div class="body markdown">${body}</div></div>` : ""}${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
+  }
+  else if (unit.type === "user") {
     const long = promptShouldCollapse(unit.view.html);
     const expanded = state.promptExpanded.has(unit.key);
     html = `<div class="turn user" data-kind="user" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt ${long ? "prompt-collapsible" : ""}"><div class="prompt-copy-shell ${long && !expanded ? "collapsed" : "expanded"}"><div class="body markdown">${body}</div>${long ? `<button class="prompt-expand" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}">${expanded ? "Show fewer" : "Show the whole prompt"}<span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>` : ""}</div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;

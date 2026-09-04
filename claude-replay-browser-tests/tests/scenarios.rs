@@ -18,11 +18,11 @@ mod harness;
 use claude_replay_html::start_server;
 use claude_replay_present::Args;
 use harness::{
-    assistant_at, at_tail, base, click_session_id, copied_text, eval, image_result_at, jump_to_end,
-    key, last_mounted_turn, long_session, now_minus, open_last_fold, open_turn_session, probe,
-    queued_at, queued_text, read_tool_at, scroll_by, serial, session_id_chip, stub_clipboard,
-    tool_open_at, tool_result_at, tool_result_lines, turn_at_top, until, user_at,
-    view_anchor_index, Kind, LiveGrowth, Monitor, Shape, Stores, Surface,
+    assistant_at, at_tail, base, click_session_id, command_at, copied_text, eval, image_result_at,
+    jump_to_end, key, last_mounted_turn, long_session, now_minus, open_last_fold,
+    open_turn_session, probe, queued_at, queued_text, read_tool_at, scroll_by, serial,
+    session_id_chip, stub_clipboard, tool_open_at, tool_result_at, tool_result_lines, turn_at_top,
+    until, user_at, view_anchor_index, Kind, LiveGrowth, Monitor, Shape, Stores, Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -1985,6 +1985,94 @@ fn time_fixture(name: &str) -> Fixture {
     let mut transcript = long_session(12, Shape::default());
     transcript += &user_at("question time: an old one", "2025-03-09T10:20:00Z");
     transcript += &assistant_at("answer time: noted", "2025-03-09T10:21:00Z");
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+// ── scenario: a slash command is a turn — a card with badge and preview, a pane row (#113) ──
+
+/// Row 1.5 of design/rendering-parity-audit.md. A `/command` is the user speaking: it shows as
+/// a turn card carrying the command's badge and argument preview, folded until opened (the
+/// output inside), and the turns pane lists it like any turn.
+fn scenario_command_turn_is_a_turn(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (rows, card, open, out_visible) = match surface {
+        Surface::Classic => (
+            "document.querySelectorAll('#turnlist .side-item').length",
+            "(function(){ var c = [...document.querySelectorAll('#stream .uturn[data-kind=\"command\"]')].pop(); if (!c) return 'none'; var b = c.querySelector('.cmd-badge'), p = c.querySelector('.cmd-preview'); return (b ? b.textContent : '') + '|' + (p ? p.textContent : ''); })()",
+            "(function(){ var c = [...document.querySelectorAll('#stream .uturn[data-kind=\"command\"]')].pop(); var h = c && c.querySelector('.fold-h'); if (!h) return 'none'; h.click(); return 'opened'; })()",
+            "[...document.querySelectorAll('#stream pre')].some(function (p) { return p.textContent.includes('Compacted 12 turns') && p.getBoundingClientRect().height > 0; })",
+        ),
+        Surface::AppShell => (
+            "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+            "(function(){ var c = [...document.querySelectorAll('.turn.user.command')].pop(); if (!c) return 'none'; var b = c.querySelector('.command-badge'), p = c.querySelector('.command-preview'); return (b ? b.textContent : '') + '|' + (p ? p.textContent : ''); })()",
+            "(function(){ var c = [...document.querySelectorAll('.turn.user.command')].pop(); var h = c && c.querySelector('.command-head'); if (!h) return 'none'; h.click(); return 'opened'; })()",
+            "[...document.querySelectorAll('.virtual-window pre')].some(function (p) { return p.textContent.includes('Compacted 12 turns') && p.getBoundingClientRect().height > 0; })",
+        ),
+    };
+    assert_eq!(
+        eval(tab, rows),
+        13,
+        "the turns pane lists the command as the 13th turn"
+    );
+    let c = eval(tab, card).as_str().unwrap_or("").to_string();
+    assert!(
+        c.contains("compact") && c.contains("focus on the plan"),
+        "the card carries the badge and the argument preview: {c:?}"
+    );
+    assert_eq!(
+        eval(tab, out_visible),
+        false,
+        "folded by default: the output is not on screen"
+    );
+    assert_eq!(eval(tab, open), "opened", "the card opens from its head");
+    settle();
+    assert_eq!(
+        eval(tab, out_visible),
+        true,
+        "…and shows the command's output"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_shows_a_command_turn() {
+    let _serial = serial();
+    let fx = command_fixture("scenario-command-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_command_turn_is_a_turn(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_shows_a_command_turn() {
+    let _serial = serial();
+    let fx = command_fixture("scenario-command-app");
+    let page = open(Surface::AppShell, &fx, 2887);
+    scenario_command_turn_is_a_turn(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Twelve turns, then `/compact focus on the plan` with its stdout, and an answer.
+fn command_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &command_at(
+        "compact",
+        "focus on the plan",
+        "Compacted 12 turns",
+        &now_minus(40),
+    );
+    transcript += &assistant_at(
+        "answer command: continuing from the summary",
+        &now_minus(30),
+    );
     let path = stores.claude_session(SID, &transcript);
     Fixture {
         base,
