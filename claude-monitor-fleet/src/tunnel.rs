@@ -318,10 +318,22 @@ mod tests {
 
     #[test]
     fn a_free_port_is_actually_free() {
-        let p = free_port().unwrap();
-        assert!(p > 0);
-        // Nothing is holding it, so it can be bound — which is the property `ssh -L` needs.
-        std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, p)).expect("the port is free");
+        // `free_port` hands back a number the kernel just released, and a sibling test in this
+        // binary (or a browser case's monitor on the machine) may take it between that release
+        // and this bind — the very race `port_preferring`'s fallback exists for, and the
+        // reason the whole-workspace run failed this test twice on 2026-09-04 while it passed
+        // alone every time. A lost round is retried, as the re-open test does; ten losses in a
+        // row would mean the number was never free.
+        let bound = (0..10).any(|_| {
+            let p = free_port().unwrap();
+            assert!(p > 0);
+            // Nothing is holding it, so it can be bound — which is the property `ssh -L` needs.
+            std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, p)).is_ok()
+        });
+        assert!(
+            bound,
+            "a port free_port reported is bindable (within ten races)"
+        );
     }
 
     /// What makes a re-open invisible to the browser: the page's URL for a machine is rendered once,
