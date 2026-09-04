@@ -298,7 +298,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // Reading controls (parity #7) and the raw toggle (parity #8).
 {
   assert.deepEqual(parseReading(""), DEFAULT_READING); assert.deepEqual(parseReading("garbage"), DEFAULT_READING);
-  assert.deepEqual(parseReading('{"size":"14.3","wrap":true,"wide":"yes"}'), { size: 14.5, wrap: true, wide: false }, "size snaps to half steps; flags must be real booleans");
+  assert.deepEqual(parseReading('{"size":"14.3","wrap":true,"wide":"yes"}'), { size: 14.5, wrap: true, wide: false, rawUser: false }, "size snaps to half steps; flags must be real booleans");
   assert.equal(clampSize(3), 8, "#45: the range is the classic page's, 8–16"); assert.equal(clampSize(99), 16); assert.equal(clampSize(undefined), 12);
   assert.deepEqual(readingVars({ size: 11, wide: true }), { "--code-size": "11px", "--measure": "1240px" });
   assert.deepEqual(readingVars(DEFAULT_READING), { "--code-size": "12px", "--measure": "820px" });
@@ -411,19 +411,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   assert.equal(SIZE_MIN, 8, "the range is the classic page's (8–16 in half steps)");
   assert.equal(clampSize(7), 8); assert.equal(clampSize(12.3), 12.5); assert.equal(clampSize(99), 16);
-  assert.deepEqual(parseReading(null, { size: 12.5, wrap: true, wide: false }), { size: 12.5, wrap: true, wide: false }, "a page's own defaults apply");
-  assert.deepEqual(parseReading('{"size":14}', { size: 12.5, wrap: true, wide: false }), { size: 14, wrap: true, wide: false }, "missing fields fall back to the defaults, not to false");
-  assert.deepEqual(parseReading('{"size":14,"wrap":false}'), { size: 14, wrap: false, wide: false });
+  assert.deepEqual(parseReading(null, { size: 12.5, wrap: true, wide: false }), { size: 12.5, wrap: true, wide: false, rawUser: false }, "a page's own defaults apply");
+  assert.deepEqual(parseReading('{"size":14}', { size: 12.5, wrap: true, wide: false }), { size: 14, wrap: true, wide: false, rawUser: false }, "missing fields fall back to the defaults, not to false");
+  assert.deepEqual(parseReading('{"size":14,"wrap":false}'), { size: 14, wrap: false, wide: false, rawUser: false });
   const store = new Map([["claude-replay-export-ms", "14"], ["claude-replay-export-wrap", "0"]]);
   const get = k => (store.has(k) ? store.get(k) : null), set = (k, v) => store.set(k, v), del = k => store.delete(k);
   const legacy = { size: "claude-replay-export-ms", wrap: "claude-replay-export-wrap", wide: "claude-replay-export-wide" };
   const migrated = loadReading(get, set, { size: 12.5, wrap: true, wide: false }, legacy, del);
-  assert.deepEqual(migrated, { size: 14, wrap: false, wide: false }, "the pre-#45 keys are folded in once");
-  assert.equal(store.get(READING_KEY), JSON.stringify({ size: 14, wrap: false, wide: false }), "…and written under the one key");
+  assert.deepEqual(migrated, { size: 14, wrap: false, wide: false, rawUser: false }, "the pre-#45 keys are folded in once");
+  assert.equal(store.get(READING_KEY), JSON.stringify({ size: 14, wrap: false, wide: false, rawUser: false }), "…and written under the one key");
   assert.equal(store.has("claude-replay-export-ms"), false, "…and the legacy keys are removed");
   assert.deepEqual(loadReading(get, set, { size: 12.5, wrap: true, wide: false }, legacy, del), migrated, "the one key wins from then on");
   const empty = new Map();
-  assert.deepEqual(loadReading(k => empty.get(k) ?? null, (k, v) => empty.set(k, v), { size: 12.5, wrap: true, wide: false }, legacy), { size: 12.5, wrap: true, wide: false }, "nothing stored → the page's defaults");
+  assert.deepEqual(loadReading(k => empty.get(k) ?? null, (k, v) => empty.set(k, v), { size: 12.5, wrap: true, wide: false }, legacy), { size: 12.5, wrap: true, wide: false, rawUser: false }, "nothing stored → the page's defaults");
   assert.equal(empty.size, 0, "…and nothing is written until the reader chooses");
   const exportSource = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
   assert.match(exportSource, /shared\.resolveKey\(e, "view", e\.target\)/, "the classic page resolves keys through the shared table");
@@ -965,4 +965,21 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(css, /\.cap-more\{display:none\}\.cap-more\.shown\{display:block\}/, "hidden rows wait");
   assert.match(css, /\.renderer \.codebox \.lines\{max-height:none\}/, "the 360px scroll box is gone");
   console.log("#108 row cap cases passed");
+}
+
+// #109: the raw TEXT of a user turn, per turn and globally, one preference with the classic page.
+{
+  assert.deepEqual(parseReading('{"rawUser":true}'), { size: 12, wrap: false, wide: false, rawUser: true }, "the preference parses");
+  const store = new Map([["claude-replay-export-rawuser", "1"]]);
+  const migrated = loadReading(k => store.get(k) ?? null, (k, v) => store.set(k, v), { size: 12.5, wrap: true, wide: false, rawUser: false }, { size: "a", wrap: "b", wide: "c", rawUser: "claude-replay-export-rawuser" }, k => store.delete(k));
+  assert.equal(migrated.rawUser, true, "the classic page's old key folds in once");
+  assert.ok(!store.has("claude-replay-export-rawuser") && store.has(READING_KEY), "…and is removed");
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /export const rawTextHtml = record => typeof record\?\.src === "string"/, "a user turn's raw view is its src");
+  assert.match(comp, /return unit\.type === "user" && !!state\.rawUser;/, "…globally for user turns");
+  assert.match(comp, /state\.rawTurns\.set\(key, rawToggle\.getAttribute\("aria-pressed"\) !== "true"\);/, "a per-turn override flips away from what the turn shows");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /data-reading-toggle="rawUser"/, "the global switch sits with the reading controls");
+  assert.match(app, /if \(rawChanged && recordState\.records\.length\) viewport\.render\(\);/, "…and re-renders the mounted turns");
+  console.log("#109 raw text cases passed");
 }

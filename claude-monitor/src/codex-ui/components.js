@@ -117,15 +117,29 @@ function renderProcess(unit, state) {
  *  fallback renderer already shows an unknown kind. */
 export const rawTurnHtml = record => `<pre class="turn-raw">${escapeText(JSON.stringify(record ?? {}, null, 2))}</pre>`;
 
+/** A user turn as the text the reader typed (#109): the wire's `src`, exactly, whitespace
+ *  intact — the classic page's `{}`. A record without one falls back to the record view. */
+export const rawTextHtml = record => typeof record?.src === "string"
+  ? `<pre class="turn-raw turn-raw-text">${escapeText(record.src)}</pre>`
+  : rawTurnHtml(record);
+
+/** Whether this turn shows raw: the per-turn override if there is one, else — for a user turn —
+ *  the global preference; an assistant turn has no global. */
+export function rawFor(unit, state) {
+  if (state.rawTurns?.has(unit.key)) return !!state.rawTurns.get(unit.key);
+  return unit.type === "user" && !!state.rawUser;
+}
+
 export function renderUnit(unit, state) {
   const spot = unit.view?.id
     ? `<button class="spot-link" type="button" data-spot-link="${escapeText(unit.view.id)}" aria-label="Copy a link to here" title="Copy a link to here"><span aria-hidden="true">#</span></button>`
     : "";
-  const raw = !!state.rawTurns?.has(unit.key);
+  const raw = rawFor(unit, state);
+  const rawWhat = unit.type === "user" ? "as raw text — exactly as typed" : "as the raw record";
   const rawToggle = unit.view?.source && (unit.type === "user" || unit.type === "assistant")
-    ? `<button class="spot-link raw-toggle ${raw ? "on" : ""}" type="button" data-raw-toggle="${escapeText(unit.key)}" aria-pressed="${raw}" aria-label="${raw ? "Show this turn rendered" : "Show this turn as the raw record"}" title="${raw ? "Show this turn rendered" : "Show this turn as the raw record"}"><span aria-hidden="true">{}</span></button>`
+    ? `<button class="spot-link raw-toggle ${raw ? "on" : ""}" type="button" data-raw-toggle="${escapeText(unit.key)}" aria-pressed="${raw}" aria-label="${raw ? "Show this turn rendered" : `Show this turn ${rawWhat}`}" title="${raw ? "Show this turn rendered" : `Show this turn ${rawWhat}`}"><span aria-hidden="true">{}</span></button>`
     : "";
-  const body = raw ? rawTurnHtml(unit.view.source) : unit.view?.html;
+  const body = raw ? (unit.type === "user" ? rawTextHtml(unit.view.source) : rawTurnHtml(unit.view.source)) : unit.view?.html;
   let html;
   if (unit.type === "user") {
     const long = promptShouldCollapse(unit.view.html);
@@ -169,7 +183,7 @@ const strip = html => String(html || "").replace(/<[^>]*>/g, " ").replace(/\s+/g
 export function bindComponentEvents(root, state, actions) {
   root.addEventListener("click", event => {
     const rawToggle = event.target.closest("[data-raw-toggle]");
-    if (rawToggle) { event.preventDefault(); event.stopPropagation(); const key = rawToggle.dataset.rawToggle; state.rawTurns.has(key) ? state.rawTurns.delete(key) : state.rawTurns.add(key); actions.rerender(); return; }
+    if (rawToggle) { event.preventDefault(); event.stopPropagation(); const key = rawToggle.dataset.rawToggle; state.rawTurns.set(key, rawToggle.getAttribute("aria-pressed") !== "true"); actions.rerender(); return; }
     const spot = event.target.closest("[data-spot-link]");
     if (spot) { event.preventDefault(); event.stopPropagation(); actions.copySpot?.(spot.dataset.spotLink, spot); return; }
     const copy = event.target.closest(".cpy");

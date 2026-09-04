@@ -23,7 +23,10 @@ export const recordState = {
   cursor: { epoch: 0, committed: 0, gen: 0, index: 0 },
   heights: new Map(), folds: new Map(), processFolds: new Map(), processExpanded: new Set(), promptExpanded: new Set(),
   following: true, newRecords: 0, search: "", matches: [], match: -1,
-  rawTurns: new Set(),
+  // Per-turn raw overrides (#109): a value FLIPS away from what the turn shows — for a user
+  // turn that is the global `rawUser` preference (the text as typed), for an assistant turn
+  // the record view. Mirrored here from the reading preferences so the renderer sees one state.
+  rawTurns: new Map(), rawUser: false,
   capOpen: new Set(),
   taskTargets: new Map(), agentTargets: new Map()
 };

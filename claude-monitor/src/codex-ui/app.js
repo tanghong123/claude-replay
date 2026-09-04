@@ -591,10 +591,17 @@ readingSection.className = "reading-section";
 readingSection.innerHTML = `<div class="scope-menu-divider"></div><div class="scope-menu-head"><strong>Reading</strong><button class="scope-menu-action" type="button" data-reading-reset>Reset</button></div>
 <div class="reading-row"><span>Code size</span><span class="reading-step"><button type="button" data-reading-size="-1" aria-label="Smaller code">−</button><span class="reading-value" data-reading-value></span><button type="button" data-reading-size="1" aria-label="Larger code">+</button></span></div>
 <div class="reading-row"><span>Wrap long lines</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wrap" aria-label="Wrap long lines" aria-checked="false"><span></span></button></div>
-<div class="reading-row"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>`;
+<div class="reading-row"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>
+<div class="reading-row"><span>User turns as raw text</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="rawUser" aria-label="Show user turns as raw text — exactly as typed, whitespace intact" aria-checked="false"><span></span></button></div>`;
 byId("navigatorOptions").append(readingSection);
 function applyReading() {
   const prefs = uiState.reading;
+  // #109: the raw-text preference is the renderer's business — mirror it and re-render the
+  // mounted turns when it changes (the first application, before any session, renders nothing).
+  const rawChanged = recordState.rawUser !== !!prefs.rawUser;
+  recordState.rawUser = !!prefs.rawUser;
+  if (rawChanged) recordState.rawTurns.clear(); // a global change clears per-turn overrides, as the classic page does
+  if (rawChanged && recordState.records.length) viewport.render();
   for (const [name, value] of Object.entries(readingVars(prefs))) app.style.setProperty(name, value);
   app.classList.toggle("wrap-code", !!prefs.wrap); app.classList.toggle("wide", !!prefs.wide);
   readingSection.querySelector("[data-reading-value]").textContent = `${clampSize(prefs.size)} px`;

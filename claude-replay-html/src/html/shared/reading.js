@@ -9,21 +9,30 @@
 // The range is the classic page's: 8–16 px in half steps. Each page keeps its own defaults
 // (the classic page: 12.5 px, wrapped; the app shell: 12 px, unwrapped).
 const READING_KEY = "am-prod-reading";
-const DEFAULT_READING = Object.freeze({ size: 12, wrap: false, wide: false });
+// `rawUser` (#109): user turns shown as the text they typed — markdown rendering is lossy
+// (padding collapses, indentation goes) and the server's detector lifts only the pasted art it
+// is sure about; this is the reader's escape hatch, global and durable, on both pages.
+const DEFAULT_READING = Object.freeze({ size: 12, wrap: false, wide: false, rawUser: false });
 const SIZE_MIN = 8, SIZE_MAX = 16, SIZE_STEP = 0.5;
 
 const clampSize = value => Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.round((Number(value) || DEFAULT_READING.size) * 2) / 2));
 
+/** A page's own defaults, in the full shape — a page may name only the fields it cares about. */
+const normalizeReading = defaults => ({
+  size: clampSize(defaults.size), wrap: defaults.wrap === true, wide: defaults.wide === true, rawUser: defaults.rawUser === true
+});
+
 function parseReading(raw, defaults = DEFAULT_READING) {
   try {
     const value = JSON.parse(raw || "");
-    if (!value || typeof value !== "object") return { ...defaults };
+    if (!value || typeof value !== "object") return normalizeReading(defaults);
     return {
       size: clampSize(value.size ?? defaults.size),
       wrap: typeof value.wrap === "boolean" ? value.wrap : defaults.wrap === true,
-      wide: typeof value.wide === "boolean" ? value.wide : defaults.wide === true
+      wide: typeof value.wide === "boolean" ? value.wide : defaults.wide === true,
+      rawUser: typeof value.rawUser === "boolean" ? value.rawUser : defaults.rawUser === true
     };
-  } catch (_) { return { ...defaults }; }
+  } catch (_) { return normalizeReading(defaults); }
 }
 
 /**
@@ -36,7 +45,7 @@ function parseReading(raw, defaults = DEFAULT_READING) {
 function loadReading(get, set, defaults = DEFAULT_READING, legacy = null, remove = null) {
   const raw = get(READING_KEY);
   if (raw != null && raw !== "") return parseReading(raw, defaults);
-  const prefs = { ...defaults };
+  const prefs = normalizeReading(defaults);
   let migrated = false;
   if (legacy) {
     const size = parseFloat(get(legacy.size));
@@ -45,10 +54,12 @@ function loadReading(get, set, defaults = DEFAULT_READING, legacy = null, remove
     if (wrap != null) { prefs.wrap = wrap !== "0"; migrated = true; }
     const wide = get(legacy.wide);
     if (wide != null) { prefs.wide = wide === "1"; migrated = true; }
+    const rawUser = legacy.rawUser ? get(legacy.rawUser) : null;
+    if (rawUser != null) { prefs.rawUser = rawUser === "1"; migrated = true; }
   }
   if (migrated) {
     set(READING_KEY, JSON.stringify(prefs));
-    if (remove) for (const key of [legacy.size, legacy.wrap, legacy.wide]) remove(key);
+    if (remove) for (const key of [legacy.size, legacy.wrap, legacy.wide, legacy.rawUser]) if (key) remove(key);
   }
   return prefs;
 }

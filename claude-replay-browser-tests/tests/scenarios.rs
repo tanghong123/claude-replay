@@ -1586,3 +1586,116 @@ fn caps_fixture(name: &str) -> Fixture {
         turns: 41,
     }
 }
+
+// ── scenario: the raw text of a user turn, per turn and globally, persisted (#109) ─────────
+
+const RAW_SOURCE: &str = "  two leading spaces\nword  gap   wider\nlast line";
+
+/// Row 1.4 of design/rendering-parity-audit.md. Markdown loses the indentation and the double
+/// spaces; the `{}` toggle shows the turn exactly as typed, the global switch does it for every
+/// user turn and survives a reload, and either can be turned back.
+fn scenario_raw_text_of_a_user_turn(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (toggle, raw_text, raw_count, user_count, global) = match surface {
+        Surface::Classic => (
+            "(function(){ var t = [...document.querySelectorAll('#stream .uturn .rawbtn')].pop(); if (!t) return 'none'; t.click(); return 'clicked'; })()",
+            "(function(){ var p = [...document.querySelectorAll('#stream .uturn pre.raw')].pop(); return p ? p.textContent : null; })()",
+            "document.querySelectorAll('#stream .uturn pre.raw').length",
+            "document.querySelectorAll('#stream .uturn').length",
+            "(function(){ var b = document.getElementById('btn-raw'); if (!b) return 'none'; b.click(); return 'clicked'; })()",
+        ),
+        Surface::AppShell => (
+            "(function(){ var t = [...document.querySelectorAll('.turn.user .raw-toggle')].pop(); if (!t) return 'none'; t.click(); return 'clicked'; })()",
+            "(function(){ var p = [...document.querySelectorAll('.turn.user pre.turn-raw-text')].pop(); return p ? p.textContent : null; })()",
+            "document.querySelectorAll('.turn.user pre.turn-raw-text').length",
+            "document.querySelectorAll('.turn.user').length",
+            "(function(){ var b = document.querySelector('[data-reading-toggle=\"rawUser\"]'); if (!b) return 'none'; b.click(); return 'clicked'; })()",
+        ),
+    };
+    assert_eq!(eval(tab, raw_count), 0, "rendered by default: no raw view");
+    assert_eq!(
+        eval(tab, toggle),
+        "clicked",
+        "the last user turn has a raw toggle"
+    );
+    settle();
+    assert_eq!(
+        eval(tab, raw_text),
+        RAW_SOURCE,
+        "the raw view is the text as typed, whitespace intact"
+    );
+    assert_eq!(eval(tab, toggle), "clicked");
+    settle();
+    assert_eq!(eval(tab, raw_count), 0, "toggled back: rendered again");
+    // Global: every mounted user turn, and it survives a reload.
+    assert_eq!(eval(tab, global), "clicked", "the global switch exists");
+    settle();
+    let (raws, users) = (eval(tab, raw_count), eval(tab, user_count));
+    assert!(
+        raws.as_i64().unwrap_or(0) >= 1 && raws == users,
+        "every mounted user turn shows raw: {raws} of {users}"
+    );
+    assert_eq!(
+        eval(tab, raw_text),
+        RAW_SOURCE,
+        "…the last one exactly as typed"
+    );
+    eval(tab, "location.reload(); 'ok'");
+    std::thread::sleep(Duration::from_millis(1500));
+    until(
+        tab,
+        &format!("{user_count} >= 1"),
+        "the page to come back after the reload",
+        Duration::from_secs(30),
+        user_count,
+    );
+    jump_to_end(tab, surface);
+    settle();
+    settle();
+    let (raws, users) = (eval(tab, raw_count), eval(tab, user_count));
+    assert!(
+        raws.as_i64().unwrap_or(0) >= 1 && raws == users,
+        "after a reload the preference holds: {raws} of {users}"
+    );
+    assert_eq!(eval(tab, global), "clicked");
+    settle();
+    assert_eq!(eval(tab, raw_count), 0, "global off: rendered again");
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_shows_a_user_turn_as_raw_text() {
+    let _serial = serial();
+    let fx = raw_fixture("scenario-raw-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_raw_text_of_a_user_turn(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_shows_a_user_turn_as_raw_text() {
+    let _serial = serial();
+    let fx = raw_fixture("scenario-raw-app");
+    let page = open(Surface::AppShell, &fx, 2883);
+    scenario_raw_text_of_a_user_turn(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Twelve turns, then a prompt whose indentation and spacing markdown would lose.
+fn raw_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at(
+        "  two leading spaces\\nword  gap   wider\\nlast line",
+        &now_minus(40),
+    );
+    transcript += &assistant_at("answer raw: noted the spacing", &now_minus(30));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}

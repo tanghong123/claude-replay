@@ -172,3 +172,6 @@
 .cap-more-btn:hover,.cap-more-btn:focus-visible{color:var(--ink);border-color:var(--sub);outline:0}
 .renderer .codebox .lines{max-height:none}
 .codebox .codecell:empty::before{content:"\00a0"}
+/* #109: a user turn as typed — pre-formatted; wrap follows the reading preference like code. */
+.turn-raw-text{white-space:pre-wrap;overflow-wrap:anywhere}
+#app:not(.wrap-code) .turn-raw-text{white-space:pre;overflow-x:auto}

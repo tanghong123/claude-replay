@@ -23,19 +23,19 @@
   // (`am-prod-reading`); this page keeps its own defaults (12.5 px, wrapped) and folds its
   // pre-#45 keys in once.
   var shared = window.__shared;
-  var CLASSIC_READING = { size: 12.5, wrap: true, wide: false };
+  var CLASSIC_READING = { size: 12.5, wrap: true, wide: false, rawUser: false };
   var reading = shared.loadReading(lsGet, lsSet, CLASSIC_READING,
-    { size: "claude-replay-export-ms", wrap: "claude-replay-export-wrap", wide: "claude-replay-export-wide" }, lsDel);
+    { size: "claude-replay-export-ms", wrap: "claude-replay-export-wrap", wide: "claude-replay-export-wide", rawUser: RAW_KEY }, lsDel);
   var ms = reading.size;
   var wrap = reading.wrap;
   var wide = reading.wide;
-  function saveReading() { lsSet(shared.READING_KEY, JSON.stringify({ size: ms, wrap: wrap, wide: wide })); }
+  function saveReading() { lsSet(shared.READING_KEY, JSON.stringify({ size: ms, wrap: wrap, wide: wide, rawUser: rawUser })); }
   // "Show user turns as raw": markdown rendering is lossy (padding collapses, indentation
   // is stripped), and the Rust-side detector only lifts pasted art it is SURE about. This
   // is the reader's escape hatch for the rest — global as a durable preference, and
   // per-turn as an override keyed by block id (never by position, which a tail reshape
   // would invalidate).
-  var rawUser = lsGet(RAW_KEY) === "1";
+  var rawUser = reading.rawUser; // #109: one preference with the app shell (the old key folded in once)
   var rawOne = {};
   var root = document.documentElement;
   var stream = document.getElementById("stream");
@@ -2896,7 +2896,7 @@
   function setRawUser(on) {
     rawUser = on;
     rawOne = {};
-    lsSet(RAW_KEY, on ? "1" : "0");
+    saveReading();
     var b = $("btn-raw");
     if (b) {
       b.style.color = on ? "var(--tool)" : "";

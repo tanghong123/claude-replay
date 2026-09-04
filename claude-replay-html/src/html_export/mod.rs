@@ -3245,6 +3245,18 @@ mod tests {
     /// offset — the same body observer that heals the pinned tail. The anchor is refreshed per
     /// scroll frame and per apply, and cleared the moment a scroll begins so a resize heard
     /// between a scroll and its frame cannot undo the scroll.
+    /// #109: the classic page's "user turns as raw" preference is the shared reading
+    /// preference (one key with the app shell), its pre-#109 key folded in once.
+    #[test]
+    fn raw_user_turns_is_a_shared_reading_preference() {
+        assert!(JS.contains("var rawUser = reading.rawUser;"));
+        assert!(JS.contains("wide: \"claude-replay-export-wide\", rawUser: RAW_KEY }, lsDel);"));
+        assert!(
+            JS.contains("JSON.stringify({ size: ms, wrap: wrap, wide: wide, rawUser: rawUser })")
+        );
+        assert!(!JS.contains("lsSet(RAW_KEY"));
+    }
+
     /// #108: the classic page's caps run on the shared module — split, label, rows, memory —
     /// keeping its own class names and its DOM-walking ordinal stamping.
     #[test]
