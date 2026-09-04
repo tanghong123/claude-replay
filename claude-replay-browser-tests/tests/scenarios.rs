@@ -1112,11 +1112,19 @@ fn scenario_embedded_image_renders(tab: &headless_chrome::Tab, surface: Surface,
     await_tail(tab, surface, "a fresh open to land at the tail");
     match surface {
         Surface::Classic => {
-            until(tab, "!!document.querySelector('.amark img') && document.querySelector('.amark img').naturalWidth >= 1", "the classic page to show the image inline", Duration::from_secs(20), "document.querySelectorAll('.amark').length + ' attachment blocks, imgs: ' + document.querySelectorAll('.amark img').length");
+            until(tab, "!!document.querySelector('.amark img') && document.querySelector('.amark img').naturalWidth >= 1 && document.querySelector('.amark img').getBoundingClientRect().height > 0", "the classic page to show the image inline and visible", Duration::from_secs(20), "document.querySelectorAll('.amark').length + ' attachment blocks, imgs: ' + document.querySelectorAll('.amark img').length");
         }
         Surface::AppShell => {
-            open_last_fold(tab, surface);
-            until(tab, "!!document.querySelector('[data-image-toggle]')", "the image block to render inside the open fold", Duration::from_secs(20), "'attachments in DOM: ' + document.querySelectorAll('[data-attachment]').length + ', image blocks: ' + document.querySelectorAll('.renderer-image').length");
+            // The reader's flow (#106): the image is a row of its own inside the process; its
+            // fold is opened by ITS head — not whichever fold happens to be last — and the
+            // toggle is clicked only once it has a rect, as a reader would see it.
+            until(tab, "!!document.querySelector('[data-image-toggle]')", "the image block to render inside the process", Duration::from_secs(20), "document.querySelectorAll('.renderer-note, .renderer-image').length + ' attachment views'");
+            let opened = eval(tab, "(function(){ var t = document.querySelector('[data-image-toggle]'); var r = t.closest('.renderer'); if (!r) return 'no renderer'; if (!r.classList.contains('closed')) return 'already open'; var h = r.querySelector('button.renderer-head'); if (!h) return 'no head button'; h.click(); return 'opened'; })()");
+            assert!(
+                opened == "opened" || opened == "already open",
+                "the image row's fold opens from its own head: {opened}"
+            );
+            until(tab, "(function(){ var t = document.querySelector('[data-image-toggle]'); return !!t && t.getBoundingClientRect().height > 0; })()", "the Show image control to be visible in its open row", Duration::from_secs(10), "document.querySelector('[data-image-toggle]') ? document.querySelector('[data-image-toggle]').closest('.renderer').className : 'no toggle'");
             assert_eq!(
                 eval(
                     tab,
@@ -1130,7 +1138,15 @@ fn scenario_embedded_image_renders(tab: &headless_chrome::Tab, surface: Surface,
                 "document.querySelector('[data-image-toggle]').click(); 'ok'",
             );
             until(tab, "!!document.querySelector('.renderer-image-thumb img') && document.querySelector('.renderer-image-thumb img').naturalWidth >= 1", "the first click to show a thumbnail with real dimensions", Duration::from_secs(10), "(function(){ var i = document.querySelector('.renderer-image-thumb img'); return i ? JSON.stringify({ src: i.getAttribute('src').slice(0, 40), complete: i.complete, natural: i.naturalWidth, shown: i.offsetParent !== null }) : 'no img'; })()");
-            let thumb = probe(tab, "(function(){ var i = document.querySelector('.renderer-image-thumb img'); var r = i.getBoundingClientRect(); return { height: Math.round(r.height), natural: i.naturalWidth }; })()");
+            // Visible, not merely decoded (#106): the click re-renders the window, and the tool
+            // fold holding the image must come back open — a thumbnail inside a closed fold has
+            // its natural size and no rect, which is what "Show image is broken" looked like.
+            let thumb = probe(tab, "(function(){ var i = document.querySelector('.renderer-image-thumb img'); var r = i.getBoundingClientRect(); var t = document.querySelector('[data-image-toggle]'); return { height: Math.round(r.height), width: Math.round(r.width), natural: i.naturalWidth, toggle: t ? t.textContent : null, foldOpen: !!i.closest('.renderer') && !i.closest('.renderer').classList.contains('closed') }; })()");
+            assert!(
+                thumb["height"].as_f64().unwrap_or(0.0) > 0.0
+                    && thumb["width"].as_f64().unwrap_or(0.0) > 0.0,
+                "the thumbnail is visible after the click: {thumb}"
+            );
             assert!(
                 thumb["height"].as_f64().unwrap_or(999.0) <= 320.0,
                 "the thumbnail is bounded: {thumb}"
