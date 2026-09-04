@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="agent-monitor: an overview deck of the machine-wide session index and the reusable modules it offers.">
+<title>一页看尽本机会话</title>
+<style>
+:root{
+  --paper:#f2f3f5; --surface:#ffffff; --ink:#191c22; --muted:#5c6675; --faint:#8b94a2;
+  --line:#e2e5ea; --line-strong:#cfd4dc; --grid:rgba(25,28,34,.045);
+  --accent:#b9741f; --accent-ink:#8a560f; --accent-wash:#f5ead9;
+  --ok:#3f9163; --ok-wash:#e3f1e8; --bad:#c0564f; --bad-wash:#f7e3e1; --think:#7a5bd0;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,"Cascadia Code","Liberation Mono",Consolas,monospace;
+  --sans:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --shadow:0 1px 2px rgba(20,25,35,.05),0 8px 28px -14px rgba(20,25,35,.18);
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0e1116; --surface:#151a21; --ink:#dfe4ec; --muted:#98a3b3; --faint:#6f7a89;
+    --line:#252c36; --line-strong:#333c48; --grid:rgba(223,228,236,.05);
+    --accent:#d9a04a; --accent-ink:#f0c47a; --accent-wash:#2a2216;
+    --ok:#6cbb8a; --ok-wash:#17281e; --bad:#e0837c; --bad-wash:#2f1c1a; --think:#a893e6;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 28px -14px rgba(0,0,0,.6);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0e1116; --surface:#151a21; --ink:#dfe4ec; --muted:#98a3b3; --faint:#6f7a89;
+  --line:#252c36; --line-strong:#333c48; --grid:rgba(223,228,236,.05);
+  --accent:#d9a04a; --accent-ink:#f0c47a; --accent-wash:#2a2216;
+  --ok:#6cbb8a; --ok-wash:#17281e; --bad:#e0837c; --bad-wash:#2f1c1a; --think:#a893e6;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 28px -14px rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-snap-type:y proximity;scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+:lang(zh-CN) body,body:lang(zh-CN){line-height:1.7}
+a{color:var(--accent-ink);text-decoration:none;border-bottom:1px solid var(--line-strong)}
+a:hover{border-bottom-color:var(--accent)}
+code,kbd,.mono{font-family:var(--mono);font-size:.92em}
+code{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:.05em .35em;white-space:nowrap}
+kbd{border:1px solid var(--line-strong);border-bottom-width:2px;border-radius:4px;padding:0 .4em;background:var(--surface);font-size:.85em}
+h1,h2,h3{margin:0;text-wrap:balance;font-weight:800;letter-spacing:-.02em}
+p{margin:0}
+/* ── the fixed rail ─────────────────────────────────────────────────────────── */
+.bar{position:fixed;inset:0 0 auto 0;height:46px;z-index:10;display:flex;align-items:center;gap:18px;padding:0 max(24px,4vw);background:color-mix(in srgb,var(--paper) 86%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);font-size:13px}
+.bar .name{font-weight:700;letter-spacing:-.01em;white-space:nowrap}
+.bar .name span{color:var(--muted);font-weight:500}
+.bar .where{flex:1;color:var(--muted);text-align:center;text-transform:uppercase;letter-spacing:.08em;font-size:11.5px;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:lang(zh-CN) .bar .where{text-transform:none;letter-spacing:.04em;font-family:var(--sans);font-size:12.5px}
+.bar .count{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);min-width:5ch;text-align:right}
+.bar .keys{color:var(--faint);white-space:nowrap}
+.bar .keys kbd{margin:0 1px}
+@media (max-width:720px){.bar .keys{display:none}}
+/* ── dots ───────────────────────────────────────────────────────────────────── */
+.dots{position:fixed;right:max(12px,1.6vw);top:50%;transform:translateY(-50%);z-index:10;display:flex;flex-direction:column;gap:9px;margin:0;padding:0;list-style:none}
+.dots a{display:block;width:8px;height:8px;border-radius:50%;background:var(--line-strong);border:0;transition:transform .15s,background .15s}
+.dots a:hover,.dots a:focus-visible{transform:scale(1.5);outline:none;background:var(--accent-ink)}
+.dots a.on{background:var(--accent);transform:scale(1.35)}
+@media (max-width:720px){.dots{display:none}}
+/* ── slides ─────────────────────────────────────────────────────────────────── */
+.slide{min-height:100vh;scroll-snap-align:start;padding:88px max(24px,6vw) 64px;display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:clamp(24px,4vw,64px);align-items:start;position:relative;
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:48px 48px;background-position:0 46px}
+.slide+.slide{border-top:1px solid var(--line)}
+@media (max-width:920px){.slide{grid-template-columns:1fr;padding-top:76px}}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-ink);margin-bottom:18px;display:flex;align-items:center;gap:10px}
+.eyebrow::before{content:"";width:22px;height:2px;background:var(--accent)}
+:lang(zh-CN) .eyebrow{letter-spacing:.06em;text-transform:none}
+.slide h2{font-size:clamp(30px,4.2vw,52px);line-height:1.04;margin-bottom:18px}
+.lede{font-size:17px;color:var(--muted);max-width:44ch}
+.lede strong{color:var(--ink);font-weight:600}
+.note{margin-top:22px;font-size:13.5px;color:var(--faint);max-width:44ch}
+.note code{font-size:.9em}
+/* ── title slide ────────────────────────────────────────────────────────────── */
+.slide.title{grid-template-columns:1fr;align-content:center;min-height:100vh}
+.title .wordmark{font-size:clamp(52px,10vw,132px);line-height:.95;letter-spacing:-.045em;font-weight:800;margin:0 0 22px}
+.title .wordmark em{font-style:normal;color:var(--accent)}
+.title .tag{font-size:clamp(19px,2.3vw,28px);color:var(--muted);max-width:30ch;line-height:1.35;text-wrap:balance}
+.title .tag strong{color:var(--ink);font-weight:600}
+.bins{display:flex;flex-wrap:wrap;gap:10px;margin-top:34px}
+.bins span{font-family:var(--mono);font-size:13px;padding:6px 12px;border:1px solid var(--line-strong);border-radius:999px;background:var(--surface);color:var(--muted)}
+.bins span.me{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-wash)}
+.title .meta{margin-top:56px;font-family:var(--mono);font-size:12.5px;color:var(--faint);display:flex;flex-wrap:wrap;gap:6px 22px}
+/* ── content components ──────────────────────────────────────────────────────── */
+.col{display:flex;flex-direction:column;gap:18px;min-width:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px 20px;box-shadow:var(--shadow)}
+.card h3{font-size:14px;font-weight:700;letter-spacing:.02em;margin-bottom:10px;color:var(--ink)}
+ul.facts{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px;font-size:15px}
+ul.facts li{padding-left:18px;position:relative}
+ul.facts li::before{content:"";position:absolute;left:0;top:.62em;width:8px;height:2px;background:var(--accent)}
+ul.facts strong{font-weight:600}
+.chip{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;padding:2px 9px;border-radius:999px;border:1px solid var(--line-strong);background:var(--surface);color:var(--muted);white-space:nowrap;vertical-align:middle}
+.chip::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--faint)}
+.chip.run{border-color:var(--ok);color:var(--ok);background:var(--ok-wash)}.chip.run::before{background:var(--ok)}
+.chip.wait{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-wash)}.chip.wait::before{background:var(--accent)}
+.chip.fail{border-color:var(--bad);color:var(--bad);background:var(--bad-wash)}.chip.fail::before{background:var(--bad)}
+.chip.done::before{background:var(--line-strong)}
+/* the mock page */
+.mock{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);border:1px solid var(--line-strong);border-radius:10px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow);font-size:12.5px}
+.mock .rail{border-right:1px solid var(--line);display:flex;flex-direction:column}
+.mock .rail .head,.mock .view .head{padding:8px 12px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted);display:flex;justify-content:space-between;gap:8px;background:color-mix(in srgb,var(--paper) 60%,var(--surface))}
+.mock .row{padding:8px 12px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr auto;gap:4px 10px;align-items:center}
+.mock .row.sub{padding-left:26px;background:color-mix(in srgb,var(--paper) 45%,var(--surface))}
+.mock .row .t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mock .row .m{grid-column:1/-1;color:var(--faint);font-family:var(--mono);font-size:11px;display:flex;gap:10px}
+.mock .view{position:relative;display:flex;flex-direction:column;min-height:260px}
+.mock .rec{padding:8px 12px;border-bottom:1px solid var(--line);line-height:1.45}
+.mock .rec .k{font-family:var(--mono);font-size:10.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em;margin-right:8px}
+.mock .rec.q{color:var(--muted);font-style:italic}
+.mock .rec.q .k{color:var(--accent-ink);font-style:normal}
+.mock .pill{position:absolute;right:12px;bottom:12px;background:var(--ink);color:var(--paper);border-radius:999px;padding:5px 12px;font-family:var(--mono);font-size:11.5px;box-shadow:var(--shadow)}
+/* the pipeline */
+.pipe{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;align-items:stretch}
+.pipe .st{background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;padding:10px 10px 12px;display:flex;flex-direction:column;gap:6px;position:relative;min-width:0}
+.pipe .st.me{border-color:var(--accent);background:var(--accent-wash)}
+.pipe .st b{font-size:13px;letter-spacing:-.01em}
+.pipe .st small{font-size:11px;color:var(--muted);line-height:1.35}
+.pipe .st code{font-size:10.5px;white-space:normal;word-break:break-all;align-self:flex-start}
+.pipe .st:not(:last-child)::after{content:"→";position:absolute;right:-9px;top:10px;color:var(--faint);font-family:var(--mono);font-size:12px;z-index:1}
+.pipe-rail{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;margin-top:6px}
+.pipe-rail span{font-family:var(--mono);font-size:10.5px;color:var(--faint);text-align:center;border-top:2px solid var(--line-strong);padding-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pipe-rail span.me{color:var(--accent-ink);border-top-color:var(--accent)}
+@media (max-width:920px){.pipe,.pipe-rail{grid-template-columns:repeat(4,minmax(0,1fr))}.pipe .st:nth-child(4)::after{display:none}}
+/* the cursor tuple */
+.tuple{font-family:var(--mono);font-size:clamp(15px,1.6vw,20px);background:var(--surface);border:1px solid var(--line-strong);border-radius:10px;padding:16px 18px;line-height:1.5;box-shadow:var(--shadow);overflow-x:auto}
+.tuple .f{color:var(--accent-ink)}
+.tuple .c{color:var(--faint)}
+.zones{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.zones .z{border:1px solid var(--line-strong);border-radius:8px;padding:12px 14px;background:var(--surface)}
+.zones .z b{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+:lang(zh-CN) .zones .z b{text-transform:none;letter-spacing:.03em}
+.zones .z.open{border-color:var(--accent)}
+.zones .z.open b{color:var(--accent-ink)}
+.zones .z p{font-size:13.5px}
+/* tables */
+.tbl{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:var(--shadow)}
+.tbl th,.tbl td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:600;background:color-mix(in srgb,var(--paper) 60%,var(--surface))}
+:lang(zh-CN) .tbl th{text-transform:none;letter-spacing:.03em;font-family:var(--sans);font-size:12px}
+.tbl tr:last-child td{border-bottom:0}
+.tbl td.k{font-family:var(--mono);font-size:12.5px;white-space:nowrap;color:var(--accent-ink)}
+.tbl td.k small{display:block;color:var(--faint);font-size:11px;white-space:normal}
+.tbl.x{display:block;overflow-x:auto}
+.tbl.x table{min-width:520px}
+/* the stack of tiers / levels */
+.tiers{display:flex;flex-direction:column;gap:8px}
+.tier{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 14px;align-items:baseline;background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;padding:10px 14px}
+.tier.me{border-color:var(--accent);background:var(--accent-wash)}
+.tier b{font-size:14px}
+.tier .deps{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap}
+.tier p{grid-column:1/-1;font-size:13px;color:var(--muted)}
+.tier.me p{color:var(--ink)}
+/* the stamp diagram */
+.stamps{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.stamp{background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;padding:12px 14px}
+.stamp .route{font-family:var(--mono);font-size:14px;color:var(--ink);font-weight:600}
+.stamp .cap{display:inline-block;margin:6px 0 8px;font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:4px;background:var(--accent-wash);color:var(--accent-ink);border:1px solid var(--accent)}
+.stamp p{font-size:13px;color:var(--muted)}
+.shell{font-family:var(--mono);font-size:12.5px;background:var(--ink);color:var(--paper);border-radius:8px;padding:12px 14px;overflow-x:auto;white-space:pre;line-height:1.6}
+.shell .c{opacity:.55}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:920px){.two,.zones,.stamps{grid-template-columns:1fr}}
+.foot{grid-column:1/-1;font-size:12.5px;color:var(--faint);border-top:1px solid var(--line);padding-top:12px;margin-top:8px;display:flex;flex-wrap:wrap;gap:6px 22px}
+@media print{
+  html{scroll-snap-type:none}
+  .bar,.dots{display:none}
+  .slide{min-height:auto;page-break-after:always;padding:36px 28px;background-image:none;grid-template-columns:minmax(0,5fr) minmax(0,7fr)}
+  .card,.tbl,.mock,.tuple{box-shadow:none}
+}
+</style>
+</head>
+<body>
+
+<header class="bar" role="banner">
+  <div class="name">agent-monitor <span>· 一页看尽本机会话</span></div>
+  <div class="where" id="where"></div>
+  <div class="count" id="count">1/14</div>
+  <div class="keys"><kbd>←</kbd><kbd>→</kbd> 翻页</div>
+</header>
+<ul class="dots" id="dots" aria-label="slides"></ul>
+<main>
+
+<section class="slide title" id="s1" data-where="agent-monitor">
+  <h1 class="wordmark">agent<em>-</em>monitor</h1>
+  <p class="tag"><strong>本机上每一个编码智能体会话，都在一个环回页面里</strong>——每个会话在做什么、花了多少钱，以及回应那个正在等你的会话的办法。</p>
+  <div class="bins" title="agent-replay 工作区的四个二进制"><span>agent-replay</span><span class="me">agent-monitor</span><span>agent-monitor-fleet</span><span>agent-jdi</span></div>
+  <div class="meta"><span>资料来源：docs/architecture.html · docs/developer-guide.html</span><span>v1.154.0 · 2026-09-03</span></div>
+</section>
+
+<section class="slide" id="s2" data-where="02 · 它是什么">
+  <div><div class="eyebrow">02 · 它是什么</div><h2>全机范围的会话索引，查看器内置其中</h2><p class="lede">它扫描本机上每个智能体的转录存储——Claude Code、Codex、Qoder、QoderWork——并只提供一个页面：左侧是会话栏，右侧是你选中那个会话的实时视图。</p><p class="note"><code>agent-monitor</code> 与 <code>agent-monitor-v2</code> 两个二进制共用同一个库的一半，各自都能提供两套外壳；它们可以在不同端口、不同缓存根目录下并排运行。</p></div>
+  <div class="col"><ul class="facts"><li><strong>只读，且只走环回地址。</strong>它按智能体写入的原样读取转录，只监听 127.0.0.1；默认启动时在 2727 端口打开应用壳。</li><li><strong>刻意的惰性。</strong>会话在监视器自己缓存根目录下的持久条目，只在<em>访问</em>它时写入，从不靠全盘扫描——机器上有几千个会话，索引依然便宜。</li><li><strong>两套外壳，都受支持。</strong>应用壳（一个文档直接消费结构化索引与记录流）是默认；经典的“侧栏 + iframe”页面保留到应用壳在真实使用中被验证为止。两者各有一个切换按钮，选择记在 <code>&lt;state&gt;/ui.json</code>；<code>?ui=classic</code> 或 <code>?ui=app</code> 只覆盖一次请求，不改动记忆。</li><li><strong>有意只管一台机器。</strong>一个文件系统、一张进程表。多机由 <code>agent-monitor-fleet</code> 负责：每台机器一条 SSH 隧道，加一个切换页，各标签页就是那些监视器自己的页面，原样嵌在 iframe 里——每个监视器的端口从它自己的锁文件读出，从不猜测。</li></ul></div>
+</section>
+
+<section class="slide" id="s3" data-where="03 · 页面">
+  <div><div class="eyebrow">03 · 页面</div><h2>读者看到什么，这些词又是什么意思</h2><p class="lede">会话栏把根会话和它的子智能体聚成一族，并用同一套小词汇表给每个会话贴标签——应用壳、经典页、fleet 页共用这套词汇。视图就是实时转录：轮次、工具、思考，以及你阅读期间新到的内容。</p></div>
+  <div class="col">
+    <div class="mock" aria-label="a sketch of the page">
+      <div class="rail">
+        <div class="head"><span>会话</span><span>4 · 本机</span></div>
+        <div class="row"><span class="t">修复 pull reducer 的重绘门</span><span class="chip run">运行中</span><span class="m">claude · ~/personal/claude-replay · $4.12</span></div>
+        <div class="row sub"><span class="t">验证尾部重写后的锚点</span><span class="chip done">完成</span><span class="m">子智能体 · 计入根会话</span></div>
+        <div class="row"><span class="t">迁移 fleet 配置</span><span class="chip wait">等待输入</span><span class="m">codex · ~/code/fleet · $0.88</span></div>
+        <div class="row"><span class="t">重命名状态标签</span><span class="chip">空闲</span><span class="m">qoderwork · ~/code/labels · $0.31</span></div>
+      </div>
+      <div class="view">
+        <div class="head"><span>会话 · 918 轮</span><span>搜索 3/29</span></div>
+        <div class="rec"><span class="k">用户</span>向上滚动，展开思考块，检查视图是否保持不动</div>
+        <div class="rec"><span class="k">思考 · 12s</span>经典页锚定第一个可见元素……</div>
+        <div class="rec"><span class="k">工具 · Read</span><span class="mono">claude-replay-html/src/html/export.js</span></div>
+        <div class="rec q"><span class="k">⧗ 已排队：</span>这一步完成后请顺便跑一下浏览器门禁</div>
+        <div class="pill">↓ 8 条新消息</div>
+      </div>
+    </div>
+    <ul class="facts"><li><strong>状态标签</strong>——运行中、等待输入、空闲、完成、失败——同一张表、同一套提示措辞，三个页面不可能对“会话在做什么”各说各话。</li><li><strong>成本向上汇总。</strong>Claude 或 Qoder 子智能体的转录计入它的根会话，所以一族的数字就是你实际支付的数字。</li><li><strong>阅读时不会漏掉任何东西。</strong>向上滚动后，新到的记录变成一个写明数量的药丸；智能体忙碌时你排队的提示会显示它自己的文字；转录增长时搜索计数保持正确。</li></ul>
+  </div>
+</section>
+
+<section class="slide" id="s4" data-where="04 · 对会话采取行动">
+  <div><div class="eyebrow">04 · 对会话采取行动</div><h2>回应那个正在等你的会话</h2><p class="lede">在页面里输入的提示会被注入到智能体自己的终端窗格。这是对一个运行中进程的写入，所以监视器把它当作安全面来对待——而且只有一份实现。</p></div>
+  <div class="col">
+    <ul class="facts"><li><strong>配对。</strong>写路由需要配对令牌；它设置的 <code>cmauth</code> cookie 以主机为作用域而非端口，因此一台机器上的两个监视器共用一个状态目录来存放令牌、口令和授权。</li><li><strong>同意。</strong>按窗格授权，再加一道口令；“这条提示可以注入到那个窗格吗”这个判断——会话到窗格的归属，以及两种发送通道——只存在一处，在库的那一半里，两个前端都调用它。</li><li><strong>只走环回。</strong>页面从不离开本机；fleet 页面只能通过你自己打开的 SSH 隧道触达远端监视器。</li></ul>
+    <div class="card"><h3>库的这一半回答什么</h3>
+      <table class="tbl"><tbody>
+        <tr><td class="k">index</td><td>扫描，以及发送判断：哪个会话住在哪个窗格里</td></tr>
+        <tr><td class="k">consent</td><td>授权与口令</td></tr>
+        <tr><td class="k">control</td><td>配对令牌与两种发送通道</td></tr>
+        <tr><td class="k">state</td><td>共享的状态目录：令牌 · 口令 · 授权 · <code>ui.json</code></td></tr>
+      </tbody></table>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="s5" data-where="05 · 它如何构建">
+  <div><div class="eyebrow">05 · 它如何构建</div><h2>一条数据通路，监视器是它的最后一级</h2><p class="lede">agent-replay 工作区里的一切都是同一条流水线上的一级。特定于智能体的代码只存在于解码级；其上每一级都与智能体无关、与呈现无关，而 crate 边界让箭头只能这样指。</p><p class="note">一个子智能体块会指名一份子转录，它递归地走同一条流水线——这条回到“发现”的边，正是会话栏里家族聚类的来源。</p></div>
+  <div class="col">
+    <div class="pipe">
+      <div class="st"><b>发现</b><small>哪些会话存在、属于谁、如何分组</small><code>engine · core</code></div>
+      <div class="st"><b>读取</b><small>有界省略的行读取器：兆字节级的行从不驻留内存</small><code>LineSource</code></div>
+      <div class="st"><b>解码</b><small>一行原始日志 → 规范消息，按智能体</small><code>TranscriptAdapter</code></div>
+      <div class="st"><b>折叠</b><small>结果归位、片段合并、已提交 ∣ 开放轮次的切分</small><code>Replayer</code></div>
+      <div class="st"><b>存储</b><small>每个已提交块只写入一次，存入前端选定的存储</small><code>BlockStore</code></div>
+      <div class="st"><b>呈现</b><small>会话缓存、拉取协议、线上记录</small><code>present · html</code></div>
+      <div class="st me"><b>监视</b><small>索引、外壳、控制面</small><code>claude-monitor</code></div>
+    </div>
+    <div class="pipe-rail"><span>engine</span><span>engine</span><span>agents</span><span>engine</span><span>engine</span><span>present · html</span><span class="me">claude-monitor</span></div>
+  </div>
+</section>
+
+<section class="slide" id="s6" data-where="06 · 实时">
+  <div><div class="eyebrow">06 · 实时</div><h2>实时，却没有一个尾随线程</h2><p class="lede">没有线程在等转录增长。折叠在发出请求的那个页面的请求线程上推进——页面空闲，服务器就空闲；页面关闭后不花任何成本，直到 30 秒回收。</p></div>
+  <div class="col">
+    <ul class="facts"><li><strong>每个被跟随的会话只占 O(开放轮次) 的内存。</strong>完成的轮次越过一道持久性前沿、一次性写入存储；只有开放轮次会随事件到来而重新推导。</li><li><strong>已提交内容一生只发送一次。</strong>html crate 的 <code>RecordStore</code> 在每个块提交时就把它渲染成线上记录，追加进只写日志；页面自己按字节范围读取这份日志——磁盘上一份序列化，内存里零份，读者数量不限。</li><li><strong>下一次运行接着上次继续。</strong>持久条目保存已提交块与元数据流，后续进程从上次停下的地方折叠，而不是从第 0 字节开始——在一份 107 MB 的转录上实测，99.99% 的内容不再重读。</li></ul>
+    <div class="card"><h3>每个会话的驻留层级</h3>
+      <div class="tiers">
+        <div class="tier"><b>已登记</b><span class="deps">~0</span><p>智能体 + 路径——被发现但未打开的会话的默认状态</p></div>
+        <div class="tier me"><b>实时驻留</b><span class="deps">O(open turn)</span><p>一个 SharedSession：开放轮次 + 各种表；空闲 30 秒后回收</p></div>
+        <div class="tier"><b>持久</b><span class="deps">bytes on disk</span><p>监视器根目录下磁盘上的已提交流与元数据流；闲置两周后清除</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="s7" data-where="07 · 线上协议">
+  <div><div class="eyebrow">07 · 线上协议</div><h2>四个数字的游标，服务器不保存任何客户端状态</h2><p class="lede">每个请求都带着读者的完整位置。已提交内容是纯追加；只有开放轮次会重发，而它的重写只是提升一个代号，而不是重发整个世界。</p></div>
+  <div class="col">
+    <div class="tuple">Cursor { <span class="f">epoch</span>, <span class="f">committed_id</span>, <span class="f">provisional_gen</span>, <span class="f">provisional_index</span> }<br><span class="c">// the whole position, in every request</span></div>
+    <div class="zones">
+      <div class="z"><b>已提交区</b><p>这个读者在只追加日志里读到了哪里；以指向记录日志的字节范围指针形式提供</p></div>
+      <div class="z open"><b>临时区</b><p>开放轮次的代号，以及读者在其中的位置；一次回填或一次定稿会提升代号，页面替换这个很小的区域</p></div>
+    </div>
+    <ul class="facts"><li><strong>每个区只有一条规则：</strong>截断到 <code>from</code>，再延伸。两个半边都用 Rust 实现——服务端的 <code>pull</code>，以及作为可执行规范的 <code>PullClient</code>——内嵌页面在共享的 <code>record-stream.js</code> reducer 里逐个转换地镜像它。</li><li><strong>Epoch</strong> 是会话有效性：截断或重写会提升它，过期的游标从零重新同步，由保留的副本提供——从不重新解析。</li><li>N 个标签页、卡顿的标签页、新加入的标签页，都按各自的节奏读同一份共享日志。</li></ul>
+  </div>
+</section>
+
+<section class="slide" id="s8" data-where="08 · 数据层">
+  <div><div class="eyebrow">08 · 数据层</div><h2>一个会话缓存，前端要做的三个决定</h2><p class="lede"><code>SessionCache&lt;P, A, E&gt;</code> 是任何呈现层赖以构建的一层：哪些会话存在、哪些驻留、以何种表示、附带什么派生状态、每个会话的持久条目如何守护。监视器的三个回答：</p><p class="note">TUI 用 <code>ArcLog</code>、一个视图边车和逐会话条目实例化同一个类型；<code>--no-cache</code> 选择 <code>Transient</code>——仍是真正的缓存，只是不持久。同一个类型，两个前端。</p></div>
+  <div class="col">
+    <div class="tiers">
+      <div class="tier me"><b>P · 实时存储</b><span class="deps">RecordStore</span><p>已提交块就是线上记录——存储与会话是同一个对象，不可能失步</p></div>
+      <div class="tier"><b>A · 边车</b><span class="deps">ServeAux</span><p>一次性写入的存储装不下的、按会话的呈现状态：标题、父级、基线</p></div>
+      <div class="tier"><b>E · 条目</b><span class="deps">SingleWriter</span><p>监视器启动时一次性认领整个缓存根目录，于是逐条目的锁不会有竞争、干脆不存在；第二个监视器在任何缓存产生之前就被重定向到第一个</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="s9" data-where="09 · 环回上的安全">
+  <div><div class="eyebrow">09 · 环回上的安全</div><h2>链接只能做页面提供过的事</h2><p class="lede">被服务的页面会链接到转录触及过的文件。每条提供出去的路径都用 HMAC 签名（密钥在 <code>&lt;state&gt;/file-sig-key</code>，权限 0600），每种能力一枚戳——于是路由只对提供过的东西起作用，而一个“显示”链接无法被改成读字节。</p></div>
+  <div class="col">
+    <div class="stamps">
+      <div class="stamp"><div class="route">/file</div><span class="cap">文件戳</span><p>把字节渲染进页面——只为渲染策略允许的路径铸造；不盖戳本身就是限制</p></div>
+      <div class="stamp"><div class="route">/__reveal</div><span class="cap">显示戳</span><p>在文件管理器里打开该路径——不交出任何字节，所以总会铸造，也是任何内容都不内联渲染的页面上点击唯一能做的事</p></div>
+    </div>
+    <ul class="facts"><li><strong>哪些路径可以渲染是一项设置</strong>，<code>&lt;state&gt;/render-policy.json</code>：<code>never</code>、<code>offered</code>（文件不存在时的默认）或带目录列表的 <code>allowlist</code>。它折进渲染风味里，所以改动它会触发重新渲染，而不是继续提供按旧策略盖戳的页面。</li><li><strong>发现的范围限定在 $HOME 之内。</strong>位于其外的 cwd 什么都不探测，探测也从不触及 $HOME 自己的 slug，所以被行为不端的智能体污染的存储不会泄漏进另一个目录的列表。</li></ul>
+  </div>
+</section>
+
+<section class="slide" id="s10" data-where="10 · 可复用 · Rust 的一半">
+  <div><div class="eyebrow">10 · 可复用 · Rust 的一半</div><h2>库的一半：一份实现，两个前端</h2><p class="lede"><code>claude-monitor</code> 既是库也是二进制。<code>agent-monitor-v2</code> 在同一组模块之上组合出另一个会话页面——“是一个前端，不是第二份实现”——第三个前端需要的一切都已经是公开的。</p></div>
+  <div class="col">
+    <table class="tbl"><thead><tr><th>模块</th><th>它回答什么</th></tr></thead><tbody>
+      <tr><td class="k">index</td><td>对每个智能体存储的扫描、会话卡片及其状态，以及发送判断——哪个会话归属于哪个终端窗格</td></tr>
+      <tr><td class="k">consent</td><td>授权存储与口令：谁可以向哪个窗格注入</td></tr>
+      <tr><td class="k">control</td><td>配对令牌与两种发送通道</td></tr>
+      <tr><td class="k">cost</td><td>按会话、按家族的令牌与成本汇总，子智能体折入其根会话</td></tr>
+      <tr><td class="k">state</td><td>两个监视器共同读取的状态目录：令牌、口令、授权、记住的外壳</td></tr>
+      <tr><td class="k">routes</td><td>路由表——后端一半与前端一半——加一个分发器，新外壳添加页面时无需重新决定路由能做什么</td></tr>
+      <tr><td class="k">ui</td><td>记住的外壳选择、<code>?ui=</code> 覆盖，以及包含共享模块在内的静态资源服务</td></tr>
+    </tbody></table>
+  </div>
+</section>
+
+<section class="slide" id="s11" data-where="11 · 可复用 · 前端的一半">
+  <div><div class="eyebrow">11 · 可复用 · 前端的一半</div><h2>七个共享模块，一份源码，三个消费者</h2><p class="lede">侧栏、拼接壳和应用壳曾经各自复制同一套逻辑。现在每个关注点只在 <code>claude-replay-html/src/html/shared/</code> 里存在一次，至于它如何到达页面，是消费者自己的事。</p></div>
+  <div class="col">
+    <table class="tbl"><thead><tr><th>模块</th><th>它负责的关注点</th></tr></thead><tbody>
+      <tr><td class="k">session-visibility</td><td>家族（根会话及其子智能体）、隐藏与忽略、哪些行和组可见</td></tr>
+      <tr><td class="k">state-labels</td><td>状态词汇及其提示措辞，来自跟踪器的类型化原因</td></tr>
+      <tr><td class="k">keymap</td><td>所有页面共用的一张按键表，以同样的方式解析</td></tr>
+      <tr><td class="k">reading</td><td>阅读偏好——等宽、宽幅——加载并应用，而不会被意外持久化</td></tr>
+      <tr><td class="k">capabilities</td><td>双戳规则：根据路径携带的戳决定预览、显示还是复制</td></tr>
+      <tr><td class="k">control-protocol</td><td>面向控制面的撰写、发送与撤销，含口令提示</td></tr>
+      <tr><td class="k">record-stream</td><td>游标、拉取与记录查询，以及镜像 <code>PullClient</code> 的 reducer</td></tr>
+    </tbody></table>
+    <ul class="facts"><li><strong>原样服务</strong>：作为 ES 模块在 <code>/monitor-ui/shared/&lt;name&gt;.js</code> 提供给应用壳。</li><li><strong>内联</strong>进每个自包含页面，置于页面脚本之前，脚本通过 <code>window.__shared</code> 读取——离线导出与在线会话视图一视同仁。</li><li><strong>两条约定，由测试守住：</strong>共享模块不导入任何东西，并以恰好一行 <code>export { … }</code> 结尾；新增一个模块只是表里加一行，导入闭包测试与约定测试覆盖其余。</li></ul>
+  </div>
+</section>
+
+<section class="slide" id="s12" data-where="12 · 可复用 · 更底下的层">
+  <div><div class="eyebrow">12 · 可复用 · 更底下的层</div><h2>三个入口，从最小的开始</h2><p class="lede">监视器是工作区库最大的消费者；同样的各层向任何程序开放。按任务选依赖。</p></div>
+  <div class="col">
+    <div class="tiers">
+      <div class="tier"><b>只用 core</b><span class="deps">serde_json + anyhow</span><p>解析、跟随、发现任何受支持智能体的转录：Block、Session、Metrics、派生索引——用于统计、ETL、CI 检查</p></div>
+      <div class="tier"><b>+ present</b><span class="deps">core + syntect</span><p>构建一个前端：会话缓存、双半边的拉取协议、折叠策略、摘要与高亮——原生应用、机器人、笔记本组件</p></div>
+      <div class="tier"><b>+ tui / html</b><span class="deps">成品查看器</span><p>从你自己的二进制里嵌入终端查看器，或 HTML 导出器与实时服务器</p></div>
+    </div>
+    <div class="shell"><span class="c"># 发现：跨每个智能体的存储，在打开任何转录之前先按时间窗口筛选</span>
+agent-replay --paths --all --since 24h
+<span class="c"># 内容：每个块一个 JSON 对象，来自每个前端所渲染的同一次折叠</span>
+agent-replay &lt;path&gt; --dump - --json</div>
+    <ul class="facts"><li><strong>新增一个智能体不触碰任何共享代码。</strong>在经过审计的接缝之上实现 <code>TranscriptAdapter</code>，用 <code>Agent::new("gemini")</code> 铸造一个 id——它是开放的驻留 id，不是枚举——然后注册；监视器通过发现机制列出新的存储，自身无需任何改动。</li></ul>
+  </div>
+</section>
+
+<section class="slide" id="s13" data-where="13 · 保持诚实">
+  <div><div class="eyebrow">13 · 保持诚实</div><h2>每次改动都过门禁，浏览器是门禁之一</h2><p class="lede">整个工作区无需终端即可完整测试，而监视器的行为——定位、增长中的搜索、尾部钉住、虚拟 DOM——由真实引擎的用例针对两套外壳钉死。</p><p class="note">排队中的 bug 的复现以 <code>known_red_&lt;task&gt;</code> 命名签入并被门禁跳过；修复时去掉标记。经典页是衡量应用壳的行为基准。</p></div>
+  <div class="col">
+    <table class="tbl"><thead><tr><th>门禁</th><th>它守住什么</th></tr></thead><tbody>
+      <tr><td class="k">fmt · clippy · test · doc</td><td>格式、零警告、每个 crate 的确定性测试套件、拒绝警告的 rustdoc</td></tr>
+      <tr><td class="k">字节一致门禁</td><td>一组冻结的转录经 dump、HTML 导出与打包写入器渲染后与基线比对——重构必须打印 <code>BYTE-IDENTICAL: PASS</code></td></tr>
+      <tr><td class="k">node 契约</td><td>每个前端模块按 ESM 解析；共享模块与其消费者之间的接缝在源码层面断言</td></tr>
+      <tr><td class="k">浏览器测试台</td><td>密闭的 Chrome 用例——临时存储、临时状态、一个实时追加记录的驱动器——在经典页与应用壳上跑同一个场景：增长中钉住与不钉住的阅读、搜索计数、新消息药丸、排队提示、盖戳的显示</td></tr>
+      <tr><td class="k">无 TTY 的 TUI</td><td>视图在 ratatui 的 TestBackend 下驱动；可选的端到端运行在私有 tmux 服务器内</td></tr>
+    </tbody></table>
+  </div>
+</section>
+
+<section class="slide" id="s14" data-where="14 · 去哪里看">
+  <div><div class="eyebrow">14 · 去哪里看</div><h2>各部分在哪里</h2><p class="lede">读者需要的路径，按本讲稿使用它们的顺序。</p></div>
+  <div class="col">
+    <div class="tbl x"><table class="tbl" style="border:0;box-shadow:none"><thead><tr><th>路径</th><th>内容</th></tr></thead><tbody>
+      <tr><td class="k">claude-monitor/src/{index,consent,control,cost,state,routes,ui}.rs</td><td>库的一半：索引、控制面、路由表、外壳选择</td></tr>
+      <tr><td class="k">claude-monitor/src/codex-ui/ · src/rail.html</td><td>应用壳（视口、记录存储、组件）· 经典侧栏</td></tr>
+      <tr><td class="k">claude-monitor-v2/ · claude-monitor-fleet/</td><td>同一库之上的第二个前端 · 多台机器共一页</td></tr>
+      <tr><td class="k">claude-replay-html/src/html/shared/*.js</td><td>七个共享前端模块</td></tr>
+      <tr><td class="k">claude-replay-html/src/html_export/{serve,record_store,sig}.rs</td><td>实时服务器 · 线上投影存储 · 能力戳</td></tr>
+      <tr><td class="k">claude-replay-present/src/{cache/,pull.rs}</td><td>SessionCache 与条目提供者 · 拉取协议的两个半边</td></tr>
+      <tr><td class="k">claude-replay-engine/src/{engine/builder.rs,adapter.rs,engine/seam.rs}</td><td>sans-io 折叠 · 适配器 trait · 经审计的接缝</td></tr>
+      <tr><td class="k">claude-replay-browser-tests/tests/</td><td>浏览器测试台及其场景</td></tr>
+      <tr><td class="k">docs/architecture.html · docs/developer-guide.html</td><td>系统设计 · 构建、测试与三个复用层级</td></tr>
+    </tbody></table></div>
+  </div>
+  <div class="foot"><span>agent-replay 工作区</span><span>v1.154.0 · 2026-09-03</span><span>根据两份文档页面编写；这些幻灯片上的每条事实都有对应路径</span></div>
+</section>
+
+</main>
+
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll(".slide"));
+  var count = document.getElementById("count");
+  var where = document.getElementById("where");
+  var dots = document.getElementById("dots");
+  var total = slides.length;
+  slides.forEach(function (s, i) {
+    var li = document.createElement("li");
+    var a = document.createElement("a");
+    a.href = "#" + s.id;
+    a.setAttribute("aria-label", (i + 1) + " / " + total + " · " + (s.dataset.where || s.id));
+    a.addEventListener("click", function (ev) { ev.preventDefault(); go(i); });
+    li.appendChild(a);
+    dots.appendChild(li);
+  });
+  var current = 0;
+  function paint(i) {
+    current = i;
+    count.textContent = (i + 1) + "/" + total;
+    where.textContent = slides[i].dataset.where || "";
+    Array.prototype.forEach.call(dots.querySelectorAll("a"), function (a, j) { a.classList.toggle("on", j === i); });
+  }
+  function go(i) {
+    i = Math.max(0, Math.min(total - 1, i));
+    slides[i].scrollIntoView({ block: "start" });
+    paint(i);
+  }
+  var obs = new IntersectionObserver(function (entries) {
+    var best = null;
+    entries.forEach(function (e) { if (e.isIntersecting && (!best || e.intersectionRatio > best.intersectionRatio)) best = e; });
+    if (best) paint(slides.indexOf(best.target));
+  }, { threshold: [0.35, 0.6] });
+  slides.forEach(function (s) { obs.observe(s); });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    var t = ev.target; if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+    switch (ev.key) {
+      case "ArrowRight": case "ArrowDown": case "PageDown": case " ": case "j": ev.preventDefault(); go(current + 1); break;
+      case "ArrowLeft": case "ArrowUp": case "PageUp": case "k": ev.preventDefault(); go(current - 1); break;
+      case "Home": ev.preventDefault(); go(0); break;
+      case "End": ev.preventDefault(); go(total - 1); break;
+    }
+  });
+  paint(0);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="agent-monitor: an overview deck of the machine-wide session index and the reusable modules it offers.">
+<title>One Loopback Page</title>
+<style>
+:root{
+  --paper:#f2f3f5; --surface:#ffffff; --ink:#191c22; --muted:#5c6675; --faint:#8b94a2;
+  --line:#e2e5ea; --line-strong:#cfd4dc; --grid:rgba(25,28,34,.045);
+  --accent:#b9741f; --accent-ink:#8a560f; --accent-wash:#f5ead9;
+  --ok:#3f9163; --ok-wash:#e3f1e8; --bad:#c0564f; --bad-wash:#f7e3e1; --think:#7a5bd0;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,"Cascadia Code","Liberation Mono",Consolas,monospace;
+  --sans:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --shadow:0 1px 2px rgba(20,25,35,.05),0 8px 28px -14px rgba(20,25,35,.18);
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0e1116; --surface:#151a21; --ink:#dfe4ec; --muted:#98a3b3; --faint:#6f7a89;
+    --line:#252c36; --line-strong:#333c48; --grid:rgba(223,228,236,.05);
+    --accent:#d9a04a; --accent-ink:#f0c47a; --accent-wash:#2a2216;
+    --ok:#6cbb8a; --ok-wash:#17281e; --bad:#e0837c; --bad-wash:#2f1c1a; --think:#a893e6;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 28px -14px rgba(0,0,0,.6);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0e1116; --surface:#151a21; --ink:#dfe4ec; --muted:#98a3b3; --faint:#6f7a89;
+  --line:#252c36; --line-strong:#333c48; --grid:rgba(223,228,236,.05);
+  --accent:#d9a04a; --accent-ink:#f0c47a; --accent-wash:#2a2216;
+  --ok:#6cbb8a; --ok-wash:#17281e; --bad:#e0837c; --bad-wash:#2f1c1a; --think:#a893e6;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 28px -14px rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-snap-type:y proximity;scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+:lang(zh-CN) body,body:lang(zh-CN){line-height:1.7}
+a{color:var(--accent-ink);text-decoration:none;border-bottom:1px solid var(--line-strong)}
+a:hover{border-bottom-color:var(--accent)}
+code,kbd,.mono{font-family:var(--mono);font-size:.92em}
+code{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:.05em .35em;white-space:nowrap}
+kbd{border:1px solid var(--line-strong);border-bottom-width:2px;border-radius:4px;padding:0 .4em;background:var(--surface);font-size:.85em}
+h1,h2,h3{margin:0;text-wrap:balance;font-weight:800;letter-spacing:-.02em}
+p{margin:0}
+/* ── the fixed rail ─────────────────────────────────────────────────────────── */
+.bar{position:fixed;inset:0 0 auto 0;height:46px;z-index:10;display:flex;align-items:center;gap:18px;padding:0 max(24px,4vw);background:color-mix(in srgb,var(--paper) 86%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);font-size:13px}
+.bar .name{font-weight:700;letter-spacing:-.01em;white-space:nowrap}
+.bar .name span{color:var(--muted);font-weight:500}
+.bar .where{flex:1;color:var(--muted);text-align:center;text-transform:uppercase;letter-spacing:.08em;font-size:11.5px;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:lang(zh-CN) .bar .where{text-transform:none;letter-spacing:.04em;font-family:var(--sans);font-size:12.5px}
+.bar .count{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);min-width:5ch;text-align:right}
+.bar .keys{color:var(--faint);white-space:nowrap}
+.bar .keys kbd{margin:0 1px}
+@media (max-width:720px){.bar .keys{display:none}}
+/* ── dots ───────────────────────────────────────────────────────────────────── */
+.dots{position:fixed;right:max(12px,1.6vw);top:50%;transform:translateY(-50%);z-index:10;display:flex;flex-direction:column;gap:9px;margin:0;padding:0;list-style:none}
+.dots a{display:block;width:8px;height:8px;border-radius:50%;background:var(--line-strong);border:0;transition:transform .15s,background .15s}
+.dots a:hover,.dots a:focus-visible{transform:scale(1.5);outline:none;background:var(--accent-ink)}
+.dots a.on{background:var(--accent);transform:scale(1.35)}
+@media (max-width:720px){.dots{display:none}}
+/* ── slides ─────────────────────────────────────────────────────────────────── */
+.slide{min-height:100vh;scroll-snap-align:start;padding:88px max(24px,6vw) 64px;display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:clamp(24px,4vw,64px);align-items:start;position:relative;
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:48px 48px;background-position:0 46px}
+.slide+.slide{border-top:1px solid var(--line)}
+@media (max-width:920px){.slide{grid-template-columns:1fr;padding-top:76px}}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-ink);margin-bottom:18px;display:flex;align-items:center;gap:10px}
+.eyebrow::before{content:"";width:22px;height:2px;background:var(--accent)}
+:lang(zh-CN) .eyebrow{letter-spacing:.06em;text-transform:none}
+.slide h2{font-size:clamp(30px,4.2vw,52px);line-height:1.04;margin-bottom:18px}
+.lede{font-size:17px;color:var(--muted);max-width:44ch}
+.lede strong{color:var(--ink);font-weight:600}
+.note{margin-top:22px;font-size:13.5px;color:var(--faint);max-width:44ch}
+.note code{font-size:.9em}
+/* ── title slide ────────────────────────────────────────────────────────────── */
+.slide.title{grid-template-columns:1fr;align-content:center;min-height:100vh}
+.title .wordmark{font-size:clamp(52px,10vw,132px);line-height:.95;letter-spacing:-.045em;font-weight:800;margin:0 0 22px}
+.title .wordmark em{font-style:normal;color:var(--accent)}
+.title .tag{font-size:clamp(19px,2.3vw,28px);color:var(--muted);max-width:30ch;line-height:1.35;text-wrap:balance}
+.title .tag strong{color:var(--ink);font-weight:600}
+.bins{display:flex;flex-wrap:wrap;gap:10px;margin-top:34px}
+.bins span{font-family:var(--mono);font-size:13px;padding:6px 12px;border:1px solid var(--line-strong);border-radius:999px;background:var(--surface);color:var(--muted)}
+.bins span.me{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-wash)}
+.title .meta{margin-top:56px;font-family:var(--mono);font-size:12.5px;color:var(--faint);display:flex;flex-wrap:wrap;gap:6px 22px}
+/* ── content components ──────────────────────────────────────────────────────── */
+.col{display:flex;flex-direction:column;gap:18px;min-width:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px 20px;box-shadow:var(--shadow)}
+.card h3{font-size:14px;font-weight:700;letter-spacing:.02em;margin-bottom:10px;color:var(--ink)}
+ul.facts{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px;font-size:15px}
+ul.facts li{padding-left:18px;position:relative}
+ul.facts li::before{content:"";position:absolute;left:0;top:.62em;width:8px;height:2px;background:var(--accent)}
+ul.facts strong{font-weight:600}
+.chip{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;padding:2px 9px;border-radius:999px;border:1px solid var(--line-strong);background:var(--surface);color:var(--muted);white-space:nowrap;vertical-align:middle}
+.chip::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--faint)}
+.chip.run{border-color:var(--ok);color:var(--ok);background:var(--ok-wash)}.chip.run::before{background:var(--ok)}
+.chip.wait{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-wash)}.chip.wait::before{background:var(--accent)}
+.chip.fail{border-color:var(--bad);color:var(--bad);background:var(--bad-wash)}.chip.fail::before{background:var(--bad)}
+.chip.done::before{background:var(--line-strong)}
+/* the mock page */
+.mock{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);border:1px solid var(--line-strong);border-radius:10px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow);font-size:12.5px}
+.mock .rail{border-right:1px solid var(--line);display:flex;flex-direction:column}
+.mock .rail .head,.mock .view .head{padding:8px 12px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted);display:flex;justify-content:space-between;gap:8px;background:color-mix(in srgb,var(--paper) 60%,var(--surface))}
+.mock .row{padding:8px 12px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr auto;gap:4px 10px;align-items:center}
+.mock .row.sub{padding-left:26px;background:color-mix(in srgb,var(--paper) 45%,var(--surface))}
+.mock .row .t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mock .row .m{grid-column:1/-1;color:var(--faint);font-family:var(--mono);font-size:11px;display:flex;gap:10px}
+.mock .view{position:relative;display:flex;flex-direction:column;min-height:260px}
+.mock .rec{padding:8px 12px;border-bottom:1px solid var(--line);line-height:1.45}
+.mock .rec .k{font-family:var(--mono);font-size:10.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em;margin-right:8px}
+.mock .rec.q{color:var(--muted);font-style:italic}
+.mock .rec.q .k{color:var(--accent-ink);font-style:normal}
+.mock .pill{position:absolute;right:12px;bottom:12px;background:var(--ink);color:var(--paper);border-radius:999px;padding:5px 12px;font-family:var(--mono);font-size:11.5px;box-shadow:var(--shadow)}
+/* the pipeline */
+.pipe{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;align-items:stretch}
+.pipe .st{background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;padding:10px 10px 12px;display:flex;flex-direction:column;gap:6px;position:relative;min-width:0}
+.pipe .st.me{border-color:var(--accent);background:var(--accent-wash)}
+.pipe .st b{font-size:13px;letter-spacing:-.01em}
+.pipe .st small{font-size:11px;color:var(--muted);line-height:1.35}
+.pipe .st code{font-size:10.5px;white-space:normal;word-break:break-all;align-self:flex-start}
+.pipe .st:not(:last-child)::after{content:"→";position:absolute;right:-9px;top:10px;color:var(--faint);font-family:var(--mono);font-size:12px;z-index:1}
+.pipe-rail{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;margin-top:6px}
+.pipe-rail span{font-family:var(--mono);font-size:10.5px;color:var(--faint);text-align:center;border-top:2px solid var(--line-strong);padding-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pipe-rail span.me{color:var(--accent-ink);border-top-color:var(--accent)}
+@media (max-width:920px){.pipe,.pipe-rail{grid-template-columns:repeat(4,minmax(0,1fr))}.pipe .st:nth-child(4)::after{display:none}}
+/* the cursor tuple */
+.tuple{font-family:var(--mono);font-size:clamp(15px,1.6vw,20px);background:var(--surface);border:1px solid var(--line-strong);border-radius:10px;padding:16px 18px;line-height:1.5;box-shadow:var(--shadow);overflow-x:auto}
+.tuple .f{color:var(--accent-ink)}
+.tuple .c{color:var(--faint)}
+.zones{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.zones .z{border:1px solid var(--line-strong);border-radius:8px;padding:12px 14px;background:var(--surface)}
+.zones .z b{display:block;font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+:lang(zh-CN) .zones .z b{text-transform:none;letter-spacing:.03em}
+.zones .z.open{border-color:var(--accent)}
+.zones .z.open b{color:var(--accent-ink)}
+.zones .z p{font-size:13.5px}
+/* tables */
+.tbl{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:var(--shadow)}
+.tbl th,.tbl td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:600;background:color-mix(in srgb,var(--paper) 60%,var(--surface))}
+:lang(zh-CN) .tbl th{text-transform:none;letter-spacing:.03em;font-family:var(--sans);font-size:12px}
+.tbl tr:last-child td{border-bottom:0}
+.tbl td.k{font-family:var(--mono);font-size:12.5px;white-space:nowrap;color:var(--accent-ink)}
+.tbl td.k small{display:block;color:var(--faint);font-size:11px;white-space:normal}
+.tbl.x{display:block;overflow-x:auto}
+.tbl.x table{min-width:520px}
+/* the stack of tiers / levels */
+.tiers{display:flex;flex-direction:column;gap:8px}
+.tier{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 14px;align-items:baseline;background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;padding:10px 14px}
+.tier.me{border-color:var(--accent);background:var(--accent-wash)}
+.tier b{font-size:14px}
+.tier .deps{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap}
+.tier p{grid-column:1/-1;font-size:13px;color:var(--muted)}
+.tier.me p{color:var(--ink)}
+/* the stamp diagram */
+.stamps{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.stamp{background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;padding:12px 14px}
+.stamp .route{font-family:var(--mono);font-size:14px;color:var(--ink);font-weight:600}
+.stamp .cap{display:inline-block;margin:6px 0 8px;font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:4px;background:var(--accent-wash);color:var(--accent-ink);border:1px solid var(--accent)}
+.stamp p{font-size:13px;color:var(--muted)}
+.shell{font-family:var(--mono);font-size:12.5px;background:var(--ink);color:var(--paper);border-radius:8px;padding:12px 14px;overflow-x:auto;white-space:pre;line-height:1.6}
+.shell .c{opacity:.55}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:920px){.two,.zones,.stamps{grid-template-columns:1fr}}
+.foot{grid-column:1/-1;font-size:12.5px;color:var(--faint);border-top:1px solid var(--line);padding-top:12px;margin-top:8px;display:flex;flex-wrap:wrap;gap:6px 22px}
+@media print{
+  html{scroll-snap-type:none}
+  .bar,.dots{display:none}
+  .slide{min-height:auto;page-break-after:always;padding:36px 28px;background-image:none;grid-template-columns:minmax(0,5fr) minmax(0,7fr)}
+  .card,.tbl,.mock,.tuple{box-shadow:none}
+}
+</style>
+</head>
+<body>
+
+<header class="bar" role="banner">
+  <div class="name">agent-monitor <span>· one loopback page</span></div>
+  <div class="where" id="where"></div>
+  <div class="count" id="count">1/14</div>
+  <div class="keys"><kbd>←</kbd><kbd>→</kbd> navigate</div>
+</header>
+<ul class="dots" id="dots" aria-label="slides"></ul>
+<main>
+
+<section class="slide title" id="s1" data-where="agent-monitor">
+  <h1 class="wordmark">agent<em>-</em>monitor</h1>
+  <p class="tag"><strong>Every coding-agent session on this machine, on one loopback page</strong> — what each one is doing, what it has cost, and a way to answer the one that is waiting on you.</p>
+  <div class="bins" title="the four binaries of the agent-replay workspace"><span>agent-replay</span><span class="me">agent-monitor</span><span>agent-monitor-fleet</span><span>agent-jdi</span></div>
+  <div class="meta"><span>sources: docs/architecture.html · docs/developer-guide.html</span><span>v1.154.0 · 2026-09-03</span></div>
+</section>
+
+<section class="slide" id="s2" data-where="02 · What it is">
+  <div><div class="eyebrow">02 · What it is</div><h2>A machine-wide session index, with the viewer built in</h2><p class="lede">It scans every agent's transcript store on this machine — Claude Code, Codex, Qoder, QoderWork — and serves one page: a rail of sessions beside a live view of the one you picked.</p><p class="note">Two binaries, <code>agent-monitor</code> and <code>agent-monitor-v2</code>, share one library half and each serves both shells; they can run side by side on different ports and cache roots.</p></div>
+  <div class="col"><ul class="facts"><li><strong>Read-only and loopback.</strong> It reads transcripts as the agents write them and listens on 127.0.0.1 only; the default run opens the app shell at port 2727.</li><li><strong>Lazy by design.</strong> A session's durable entry under the monitor's own cache root is written by <em>visiting</em> it, never by a sweep — the index stays cheap on a machine with thousands of sessions.</li><li><strong>Two shells, both supported.</strong> The app shell (one document over the structured index and record stream) is the default; the classic rail-and-iframe page stays until the app shell is validated in real use. A switch in each remembers the choice at <code>&lt;state&gt;/ui.json</code>; <code>?ui=classic</code> or <code>?ui=app</code> overrides one request without disturbing it.</li><li><strong>Single-machine on purpose.</strong> One filesystem, one process table. <code>agent-monitor-fleet</code> is the multi-machine story: one SSH tunnel per machine and a switcher whose tabs are those monitors' own pages, unmodified, in iframes — each monitor's port read from its own lock file, never guessed.</li></ul></div>
+</section>
+
+<section class="slide" id="s3" data-where="03 · The page">
+  <div><div class="eyebrow">03 · The page</div><h2>What a reader sees, and what the words mean</h2><p class="lede">The rail clusters a root session with its sub-agents and labels each with the same small vocabulary the app shell, the classic page and the fleet page all share. The view is the live transcript: turns, tools, thinking, and what arrived while you were reading.</p></div>
+  <div class="col">
+    <div class="mock" aria-label="a sketch of the page">
+      <div class="rail">
+        <div class="head"><span>sessions</span><span>4 · this machine</span></div>
+        <div class="row"><span class="t">fix the pull reducer's repaint gate</span><span class="chip run">running</span><span class="m">claude · ~/personal/claude-replay · $4.12</span></div>
+        <div class="row sub"><span class="t">verify the anchor after a tail rewrite</span><span class="chip done">done</span><span class="m">sub-agent · rolls into the root</span></div>
+        <div class="row"><span class="t">migrate the fleet config</span><span class="chip wait">waiting for input</span><span class="m">codex · ~/code/fleet · $0.88</span></div>
+        <div class="row"><span class="t">rename the state labels</span><span class="chip">idle</span><span class="m">qoderwork · ~/code/labels · $0.31</span></div>
+      </div>
+      <div class="view">
+        <div class="head"><span>session · 918 turns</span><span>search 3/29</span></div>
+        <div class="rec"><span class="k">user</span>scroll back, open the thinking, and check the view holds</div>
+        <div class="rec"><span class="k">thinking · 12s</span>The classic page anchors the first visible element…</div>
+        <div class="rec"><span class="k">tool · Read</span><span class="mono">claude-replay-html/src/html/export.js</span></div>
+        <div class="rec q"><span class="k">⧗ queued:</span>please also run the browser gate when this finishes</div>
+        <div class="pill">↓ 8 new messages</div>
+      </div>
+    </div>
+    <ul class="facts"><li><strong>State labels</strong> — running, waiting for input, idle, done, failed — one shared table, one tooltip wording, so the three pages cannot disagree about what a session is doing.</li><li><strong>Cost rolls up.</strong> A Claude or Qoder sub-agent's transcript is counted into its root session, so the family's number is the number you paid.</li><li><strong>Nothing is lost while you read.</strong> Scrolled up, arriving records become a pill that says how many; a prompt you queued while the agent was busy shows its own words; a search count stays right as the transcript grows.</li></ul>
+  </div>
+</section>
+
+<section class="slide" id="s4" data-where="04 · Acting on a session">
+  <div><div class="eyebrow">04 · Acting on a session</div><h2>Answer the session that is waiting on you</h2><p class="lede">A prompt typed into the page is injected into the agent's own terminal pane. That is a write into a running process, so the monitor treats it as a security surface with exactly one implementation.</p></div>
+  <div class="col">
+    <ul class="facts"><li><strong>Pairing.</strong> The write routes need a pairing token; the <code>cmauth</code> cookie it sets is host-scoped, not port-scoped, so both monitors on a machine share one state directory for the token, the passcode and the grants.</li><li><strong>Consent.</strong> A grant per pane plus a passcode gate; the decision “may this prompt be injected into that pane” — the session-to-pane attribution and the two send transports — lives once, in the library half, and both front-ends call it.</li><li><strong>Loopback only.</strong> The page never leaves the machine; a fleet page reaches a remote monitor only through the SSH tunnel you opened.</li></ul>
+    <div class="card"><h3>What the library half answers</h3>
+      <table class="tbl"><tbody>
+        <tr><td class="k">index</td><td>the scan, and the send decisions: which session lives in which pane</td></tr>
+        <tr><td class="k">consent</td><td>grants and the passcode</td></tr>
+        <tr><td class="k">control</td><td>the pairing token and the two send transports</td></tr>
+        <tr><td class="k">state</td><td>the shared state directory: token · passcode · consent · <code>ui.json</code></td></tr>
+      </tbody></table>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="s5" data-where="05 · How it is built">
+  <div><div class="eyebrow">05 · How it is built</div><h2>One data path, and the monitor is its last stage</h2><p class="lede">Everything in the agent-replay workspace is a stage on one pipeline. Agent-specific code exists only in the decode stage; every stage above it is agent-neutral and presentation-neutral, and the crate boundaries make that the only way the arrows can point.</p><p class="note">A sub-agent block names a child transcript, which runs the same pipeline recursively — that return edge into discover is what makes the family clusters in the rail.</p></div>
+  <div class="col">
+    <div class="pipe">
+      <div class="st"><b>discover</b><small>which sessions exist, whose, grouped how</small><code>engine · core</code></div>
+      <div class="st"><b>read</b><small>the bounded eliding line reader: megabyte lines never sit in RAM</small><code>LineSource</code></div>
+      <div class="st"><b>decode</b><small>one raw line → canonical messages, per agent</small><code>TranscriptAdapter</code></div>
+      <div class="st"><b>fold</b><small>results joined, spans coalesced, the committed ∣ open split</small><code>Replayer</code></div>
+      <div class="st"><b>store</b><small>each committed block put once, into a store the frontend chose</small><code>BlockStore</code></div>
+      <div class="st"><b>present</b><small>the session cache, the pull protocol, the wire records</small><code>present · html</code></div>
+      <div class="st me"><b>monitor</b><small>the index, the shells, the control plane</small><code>claude-monitor</code></div>
+    </div>
+    <div class="pipe-rail"><span>engine</span><span>engine</span><span>agents</span><span>engine</span><span>engine</span><span>present · html</span><span class="me">claude-monitor</span></div>
+  </div>
+</section>
+
+<section class="slide" id="s6" data-where="06 · Live">
+  <div><div class="eyebrow">06 · Live</div><h2>Live without a single tailer thread</h2><p class="lede">No thread waits for a transcript to grow. The fold advances on the request thread of whichever page asked — an idle page is an idle server, and a closed page costs nothing until the 30-second reap.</p></div>
+  <div class="col">
+    <ul class="facts"><li><strong>O(open turn) RAM per followed session.</strong> Finished turns cross a durability frontier and are stored put-once; only the open turn is re-derived as events arrive.</li><li><strong>Committed content is sent once, ever.</strong> The html crate's <code>RecordStore</code> renders each committed block to its wire record as it commits, into an append-only log; the page range-reads that log itself — one serialization on disk, zero in RAM, any number of readers.</li><li><strong>The next run resumes.</strong> A durable entry keeps the committed blocks and a meta stream, so a later process folds from where the last one stopped rather than from byte 0 — measured on a 107 MB transcript, 99.99 % of it is never re-read.</li></ul>
+    <div class="card"><h3>Residency, per session</h3>
+      <div class="tiers">
+        <div class="tier"><b>registered</b><span class="deps">~0</span><p>agent + path — the default for a discovered-but-unopened session</p></div>
+        <div class="tier me"><b>live resident</b><span class="deps">O(open turn)</span><p>a SharedSession: the open turn + tables; reaped after 30 s idle</p></div>
+        <div class="tier"><b>durable</b><span class="deps">bytes on disk</span><p>the committed and meta streams on disk under the monitor's root; swept after two weeks idle</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="s7" data-where="07 · The wire">
+  <div><div class="eyebrow">07 · The wire</div><h2>A four-number cursor, and a server that keeps no client state</h2><p class="lede">Each request carries the reader's whole position. Committed content is a pure append; only the open turn ever re-sends, and a rewrite of it bumps a generation instead of re-sending the world.</p></div>
+  <div class="col">
+    <div class="tuple">Cursor { <span class="f">epoch</span>, <span class="f">committed_id</span>, <span class="f">provisional_gen</span>, <span class="f">provisional_index</span> }<br><span class="c">// the whole position, in every request</span></div>
+    <div class="zones">
+      <div class="z"><b>committed zone</b><p>how far into the append-only log this reader has read; served as a byte-range pointer into the record log</p></div>
+      <div class="z open"><b>provisional zone</b><p>the open turn's generation and the reader's index within it; a back-patch or a finalization bumps the generation and the page replaces the small zone</p></div>
+    </div>
+    <ul class="facts"><li><strong>One rule per zone:</strong> truncate to <code>from</code>, then extend. Both halves ship in Rust — <code>pull</code> on the server, <code>PullClient</code> as the executable specification — and the embedded page mirrors it transition for transition in the shared <code>record-stream.js</code> reducer.</li><li><strong>Epoch</strong> is session validity: a truncation or rewrite bumps it and a stale cursor resyncs from zero, served from the retained copy — never by re-parsing.</li><li>N tabs, laggy tabs and fresh joiners all read one shared log at their own pace.</li></ul>
+  </div>
+</section>
+
+<section class="slide" id="s8" data-where="08 · The data layer">
+  <div><div class="eyebrow">08 · The data layer</div><h2>One session cache, three decisions a frontend makes</h2><p class="lede"><code>SessionCache&lt;P, A, E&gt;</code> is the layer any presentation builds on: which sessions exist, which are resident, in what representation, with what derived state, and how each one's durable entry is guarded. The monitor's three answers:</p><p class="note">The TUI instantiates the same type with <code>ArcLog</code>, a view sidecar and per-session entries; <code>--no-cache</code> selects <code>Transient</code> — still a real cache, nothing durable. Same type, both frontends.</p></div>
+  <div class="col">
+    <div class="tiers">
+      <div class="tier me"><b>P · the live store</b><span class="deps">RecordStore</span><p>committed blocks ARE the wire records — the store and the session are one object and cannot desync</p></div>
+      <div class="tier"><b>A · the sidecar</b><span class="deps">ServeAux</span><p>per-session presentation state the put-once store cannot hold: titles, parents, baselines</p></div>
+      <div class="tier"><b>E · the entries</b><span class="deps">SingleWriter</span><p>the monitor claims its whole cache root once at startup, so per-entry locks are uncontendable and simply do not exist; a second monitor is redirected to the first before any cache exists</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="s9" data-where="09 · Safety on loopback">
+  <div><div class="eyebrow">09 · Safety on loopback</div><h2>A link can do only what the page offered</h2><p class="lede">A served page links to files a transcript touched. Each offered path is signed with an HMAC (the key at <code>&lt;state&gt;/file-sig-key</code>, mode 0600), one stamp per capability — so a route acts only on what was offered, and a reveal link cannot be edited into a byte read.</p></div>
+  <div class="col">
+    <div class="stamps">
+      <div class="stamp"><div class="route">/file</div><span class="cap">file stamp</span><p>renders the bytes into the page — minted only for a path the render policy allows; not stamping is the restriction</p></div>
+      <div class="stamp"><div class="route">/__reveal</div><span class="cap">reveal stamp</span><p>opens the path in the file manager — hands over no bytes, so it is always minted and is the only thing a click can do where nothing renders inline</p></div>
+    </div>
+    <ul class="facts"><li><strong>Which paths may render is a setting</strong>, <code>&lt;state&gt;/render-policy.json</code>: <code>never</code>, <code>offered</code> (the default when the file is absent) or <code>allowlist</code> with directories. It folds into the render flavor, so changing it re-renders rather than serving pages stamped under the old policy.</li><li><strong>Discovery is scoped inside $HOME.</strong> A cwd outside it probes nothing, and the probe never reaches $HOME's own slug, so a store polluted by a misbehaving agent cannot leak into another directory's list.</li></ul>
+  </div>
+</section>
+
+<section class="slide" id="s10" data-where="10 · Reusable · the Rust half">
+  <div><div class="eyebrow">10 · Reusable · the Rust half</div><h2>The library half: one implementation, two front-ends</h2><p class="lede"><code>claude-monitor</code> is a library and a binary. <code>agent-monitor-v2</code> composes a different session page over the same modules — “a front-end, not a second implementation” — and everything a third front-end would need is already public.</p></div>
+  <div class="col">
+    <table class="tbl"><thead><tr><th>module</th><th>what it answers</th></tr></thead><tbody>
+      <tr><td class="k">index</td><td>the scan of every agent's store, the session cards and their state, and the send decisions — which session is attributed to which terminal pane</td></tr>
+      <tr><td class="k">consent</td><td>the grant store and the passcode: who may inject into which pane</td></tr>
+      <tr><td class="k">control</td><td>the pairing token and the two send transports</td></tr>
+      <tr><td class="k">cost</td><td>token and cost roll-ups per session and per family, sub-agents folded into their root</td></tr>
+      <tr><td class="k">state</td><td>the shared state directory both monitors read: token, passcode, consent, the remembered shell</td></tr>
+      <tr><td class="k">routes</td><td>the route table — a backend half and a frontend half — with one dispatcher, so a new shell adds pages without re-deciding what a route may do</td></tr>
+      <tr><td class="k">ui</td><td>the remembered shell choice, the <code>?ui=</code> override, and the served assets including the shared modules</td></tr>
+    </tbody></table>
+  </div>
+</section>
+
+<section class="slide" id="s11" data-where="11 · Reusable · the frontend half">
+  <div><div class="eyebrow">11 · Reusable · the frontend half</div><h2>Seven shared modules, one source, three consumers</h2><p class="lede">The rail, the splice shell and the app shell used to fork the same logic. Now each concern lives once in <code>claude-replay-html/src/html/shared/</code>, and how it reaches a page is the consumer's business.</p></div>
+  <div class="col">
+    <table class="tbl"><thead><tr><th>module</th><th>the concern it owns</th></tr></thead><tbody>
+      <tr><td class="k">session-visibility</td><td>families (a root and its sub-agents), hide and ignore, which rows and groups are visible</td></tr>
+      <tr><td class="k">state-labels</td><td>the state vocabulary and its tooltip wording, from the tracker's typed reasons</td></tr>
+      <tr><td class="k">keymap</td><td>one key table for every page, resolved the same way</td></tr>
+      <tr><td class="k">reading</td><td>reading preferences — monospace, wide — loaded and applied without being persisted by accident</td></tr>
+      <tr><td class="k">capabilities</td><td>the two-stamp rule: preview, reveal, or copy, from which stamps a path carries</td></tr>
+      <tr><td class="k">control-protocol</td><td>compose, send and revoke against the control plane, passcode prompts included</td></tr>
+      <tr><td class="k">record-stream</td><td>the cursor, the pull and records queries, and the reducer that mirrors <code>PullClient</code></td></tr>
+    </tbody></table>
+    <ul class="facts"><li><strong>Served</strong> unchanged as ES modules at <code>/monitor-ui/shared/&lt;name&gt;.js</code> for the app shell.</li><li><strong>Inlined</strong> into every self-contained page ahead of the page script, which reads them as <code>window.__shared</code> — the offline export and the served session view alike.</li><li><strong>Two conventions, held by tests:</strong> a shared module imports nothing and ends in exactly one <code>export { … }</code> line; adding one is one row in a table, and the import-closure and convention tests cover the rest.</li></ul>
+  </div>
+</section>
+
+<section class="slide" id="s12" data-where="12 · Reusable · the layers below">
+  <div><div class="eyebrow">12 · Reusable · the layers below</div><h2>Three ways in, smallest first</h2><p class="lede">The monitor is the largest consumer of the workspace library; the same layers are open to any program. Pick the dependency by the job.</p></div>
+  <div class="col">
+    <div class="tiers">
+      <div class="tier"><b>core alone</b><span class="deps">serde_json + anyhow</span><p>parse, follow and discover transcripts of any supported agent: Block, Session, Metrics, the derived index — for stats, ETL, CI checks</p></div>
+      <div class="tier"><b>+ present</b><span class="deps">core + syntect</span><p>build a frontend: the session cache, the pull protocol with both halves, fold policy, summaries and highlighting — a native app, a bot, a notebook widget</p></div>
+      <div class="tier"><b>+ tui / html</b><span class="deps">the finished viewers</span><p>embed the terminal viewer or the HTML exporter and live server from your own binary</p></div>
+    </div>
+    <div class="shell"><span class="c"># discovery, across every agent's store, windowed before any transcript is opened</span>
+agent-replay --paths --all --since 24h
+<span class="c"># content: one JSON object per block, from the same fold every frontend renders</span>
+agent-replay &lt;path&gt; --dump - --json</div>
+    <ul class="facts"><li><strong>Adding an agent touches no shared code.</strong> Implement <code>TranscriptAdapter</code> over the audited seam, mint an id with <code>Agent::new("gemini")</code> — an open interned id, not an enum — and register it; the monitor lists the new store through discovery with no change of its own.</li></ul>
+  </div>
+</section>
+
+<section class="slide" id="s13" data-where="13 · Kept honest">
+  <div><div class="eyebrow">13 · Kept honest</div><h2>Every change is gated, and the browser is one of the gates</h2><p class="lede">The workspace is fully testable without a terminal, and the monitor's behaviour — positioning, search through growth, the tail pin, the virtual DOM — is pinned by real-engine cases against both shells.</p><p class="note">A queued bug's reproduction is checked in under a <code>known_red_&lt;task&gt;</code> name and skipped by the gate; the fix removes the marker. The classic page is the behavioural reference the app shell is measured against.</p></div>
+  <div class="col">
+    <table class="tbl"><thead><tr><th>gate</th><th>what it holds</th></tr></thead><tbody>
+      <tr><td class="k">fmt · clippy · test · doc</td><td>formatting, zero warnings, the deterministic suite of every crate, rustdoc with warnings denied</td></tr>
+      <tr><td class="k">the byte-identical gate</td><td>a frozen transcript set rendered through dump, HTML export and the bundle writer, diffed against a baseline — refactors must print <code>BYTE-IDENTICAL: PASS</code></td></tr>
+      <tr><td class="k">the node contract</td><td>every frontend module parsed as ESM; the seams between shared modules and their consumers asserted in source</td></tr>
+      <tr><td class="k">the browser harness</td><td>hermetic Chrome cases — scratch stores, scratch state, a driver that appends records live — run the same scenario on the classic page and the app shell: pinned and unpinned reading through growth, search counts, the new-messages pill, queued prompts, stamped reveals</td></tr>
+      <tr><td class="k">the TUI without a TTY</td><td>the view driven under ratatui's TestBackend; an opt-in end-to-end run inside a private tmux server</td></tr>
+    </tbody></table>
+  </div>
+</section>
+
+<section class="slide" id="s14" data-where="14 · Where to look">
+  <div><div class="eyebrow">14 · Where to look</div><h2>Where things live</h2><p class="lede">Paths a reader needs, in the order the deck used them.</p></div>
+  <div class="col">
+    <div class="tbl x"><table class="tbl" style="border:0;box-shadow:none"><thead><tr><th>path</th><th>what</th></tr></thead><tbody>
+      <tr><td class="k">claude-monitor/src/{index,consent,control,cost,state,routes,ui}.rs</td><td>the library half: the index, the control plane, the route table, the shell choice</td></tr>
+      <tr><td class="k">claude-monitor/src/codex-ui/ · src/rail.html</td><td>the app shell (viewport, record store, components) · the classic rail</td></tr>
+      <tr><td class="k">claude-monitor-v2/ · claude-monitor-fleet/</td><td>the second front-end over the same library · several machines behind one page</td></tr>
+      <tr><td class="k">claude-replay-html/src/html/shared/*.js</td><td>the seven shared frontend modules</td></tr>
+      <tr><td class="k">claude-replay-html/src/html_export/{serve,record_store,sig}.rs</td><td>the live server · the wire-projection store · capability stamps</td></tr>
+      <tr><td class="k">claude-replay-present/src/{cache/,pull.rs}</td><td>SessionCache and the entry providers · the pull protocol, both halves</td></tr>
+      <tr><td class="k">claude-replay-engine/src/{engine/builder.rs,adapter.rs,engine/seam.rs}</td><td>the sans-io fold · the adapter trait · the audited seam</td></tr>
+      <tr><td class="k">claude-replay-browser-tests/tests/</td><td>the browser harness and its scenarios</td></tr>
+      <tr><td class="k">docs/architecture.html · docs/developer-guide.html</td><td>the system design · build, test, and the three levels of reuse</td></tr>
+    </tbody></table></div>
+  </div>
+  <div class="foot"><span>agent-replay workspace</span><span>v1.154.0 · 2026-09-03</span><span>built from the two docs pages; every fact on these slides has a path</span></div>
+</section>
+
+</main>
+
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll(".slide"));
+  var count = document.getElementById("count");
+  var where = document.getElementById("where");
+  var dots = document.getElementById("dots");
+  var total = slides.length;
+  slides.forEach(function (s, i) {
+    var li = document.createElement("li");
+    var a = document.createElement("a");
+    a.href = "#" + s.id;
+    a.setAttribute("aria-label", (i + 1) + " / " + total + " · " + (s.dataset.where || s.id));
+    a.addEventListener("click", function (ev) { ev.preventDefault(); go(i); });
+    li.appendChild(a);
+    dots.appendChild(li);
+  });
+  var current = 0;
+  function paint(i) {
+    current = i;
+    count.textContent = (i + 1) + "/" + total;
+    where.textContent = slides[i].dataset.where || "";
+    Array.prototype.forEach.call(dots.querySelectorAll("a"), function (a, j) { a.classList.toggle("on", j === i); });
+  }
+  function go(i) {
+    i = Math.max(0, Math.min(total - 1, i));
+    slides[i].scrollIntoView({ block: "start" });
+    paint(i);
+  }
+  var obs = new IntersectionObserver(function (entries) {
+    var best = null;
+    entries.forEach(function (e) { if (e.isIntersecting && (!best || e.intersectionRatio > best.intersectionRatio)) best = e; });
+    if (best) paint(slides.indexOf(best.target));
+  }, { threshold: [0.35, 0.6] });
+  slides.forEach(function (s) { obs.observe(s); });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    var t = ev.target; if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+    switch (ev.key) {
+      case "ArrowRight": case "ArrowDown": case "PageDown": case " ": case "j": ev.preventDefault(); go(current + 1); break;
+      case "ArrowLeft": case "ArrowUp": case "PageUp": case "k": ev.preventDefault(); go(current - 1); break;
+      case "Home": ev.preventDefault(); go(0); break;
+      case "End": ev.preventDefault(); go(total - 1); break;
+    }
+  });
+  paint(0);
+})();
+</script>
+</body>
+</html>
