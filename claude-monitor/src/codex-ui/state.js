@@ -30,6 +30,7 @@ export const recordState = {
   // The tool filter (#110): the ids of every record on a hit chain while a tool is selected,
   // and the fold state to put back when it is cleared.
   filterHits: null, filterDirect: null, filterSnapshot: null,
+  searchMask: 0, searchWhole: false,
   capOpen: new Set(), openImages: new Set(),
   taskTargets: new Map(), agentTargets: new Map()
 };
@@ -39,7 +40,7 @@ export const uiState = {
   navigatorOpen: localStorage.getItem("am-demo-navigator") !== "0",
   navigatorHidden: localStorage.getItem("am-prod-navigator-hidden") === "1",
   navCards: new Set(json("am-prod-nav-cards", ["turns"])),
-  searchTab: "all", searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), toolFilters: new Set(),
+  searchTab: "all", searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), searchWhole: false, toolFilters: new Set(),
   globalResults: [], globalIndex: 0,
   reading: parseReading(localStorage.getItem(READING_KEY)) || { ...DEFAULT_READING },
   // #45: the reading key is SHARED with the classic page. It is written only once a reader has

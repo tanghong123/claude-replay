@@ -48,6 +48,66 @@ function recordText(b, strip) {
   return out.join("\n");
 }
 
+/** A record's searchable text with per-part OWNERSHIP (#101): each own text — the record's,
+ *  then each nested record's — as a `[start, end)` span carrying its kind's scope mask, so a
+ *  scoped search counts hits inside a thinking block's absorbed tool call as the tool's, not
+ *  the thinking's. `lower` transforms each own text before it is measured (both pages search
+ *  lowercase), so the spans index the transformed text. */
+function recordTextParts(b, strip, lower = s => s) {
+  const all = [], parts = [];
+  let length = 0;
+  (function walk(record) {
+    const own = lower(ownTextParts(record, strip).join("\n"));
+    if (own) {
+      if (all.length) { all.push("\n"); length++; }
+      const start = length;
+      all.push(own);
+      length += own.length;
+      parts.push({ start, end: length, mask: directMask(record.kind) });
+    }
+    for (const p of record.body || []) if (p.p === "blocks") for (const item of p.items || []) walk(item);
+  })(b);
+  return { text: all.join(""), parts };
+}
+
+/** The `uatobrew:` scope grammar (the same syntax as the TUI's `/` search, case-insensitive):
+ *  a run of DISTINCT letters — u (your turns), a (agent replies), t (thinking), o (all tools),
+ *  b (bash output), r (reads), e (edits/writes), w (whole words) — then a colon. Order-free, so
+ *  `aut:` ≡ `uat:`; `+` (the old separator) still parses; a repeated letter is a word, not a
+ *  scope; a leading `:` escapes a scope-shaped literal. Returns `{ set, len }` or null. */
+function parseScope(needle) {
+  if (needle.charAt(0) === ":") return { set: null, len: 1 };
+  const m = /^([uatobrew+]{1,15}):/i.exec(needle);
+  if (!m) return null;
+  const set = { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: false };
+  const run = m[1].toLowerCase();
+  for (let i = 0; i < run.length; i++) {
+    const p = run.charAt(i);
+    if (p === "+") continue;
+    if (set[p]) return null;
+    set[p] = true;
+  }
+  if (!activeLetters(set).length) return null;
+  return { set, len: m[0].length };
+}
+
+/** The scope classes of a set, in canonical order (without `w`). */
+function scopeLetters(set) {
+  return ["u", "a", "t", "o", "b", "r", "e"].filter(k => set && set[k]);
+}
+
+/** Every active letter of a set, `w` included. */
+function activeLetters(set) {
+  return ["u", "a", "t", "o", "b", "r", "e", "w"].filter(k => set && set[k]);
+}
+
+/** The bitmask of a scope set's classes; 0 means no scope (everything). */
+function scopeMask(set) {
+  let mask = 0;
+  for (const k of scopeLetters(set)) mask |= CLASS_BIT[k];
+  return mask;
+}
+
 /** A regex HTML-to-text: tags out, the five entities the renderer emits decoded. */
 function stripTags(h) {
   return String(h ?? "").replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
@@ -71,4 +131,4 @@ function countOcc(t, lc, whole) {
   return n;
 }
 
-export { CLASS_BIT, directMask, ownTextParts, recordText, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };
+export { CLASS_BIT, directMask, ownTextParts, recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };

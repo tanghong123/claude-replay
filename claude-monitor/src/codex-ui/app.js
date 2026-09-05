@@ -12,6 +12,7 @@ import { displayState, needsPerson as needs, denoteState } from "./shared/state-
 import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
+import { CLASS_BIT, activeLetters, countOcc, parseScope, recordTextParts, scopeLetters, scopeMask, stripTags } from "./shared/search.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskOrder, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -570,17 +571,100 @@ byId("sessionNavigator").onclick = event => {
   const rail = event.target.closest("[data-nav-card-open]"); if (rail) { uiState.navCards.add(rail.dataset.navCardOpen); uiState.navigatorOpen = true; persist(); renderNavigator(); }
 };
 
-function updateSearch(reset) {
-  const query = byId("transcriptSearchInput").value.trim().toLowerCase(); recordState.search = query;
-  recordState.matches = []; if (query) recordState.records.forEach((record, index) => { if (plainText(record).toLowerCase().includes(query)) recordState.matches.push(index); });
-  if (reset) recordState.match = recordState.matches.length ? 0 : -1; else recordState.match = Math.min(recordState.match, recordState.matches.length - 1);
-  byId("transcriptSearchCount").textContent = `${recordState.matches.length} matches`; markSearch();
+// A record's lowercase text with its scope ownership (#101), cached per record object — the
+// store keeps committed records and re-creates rewritten ones, so a stale entry never lingers.
+const searchTextCache = new WeakMap();
+function searchTextOf(record) {
+  let entry = searchTextCache.get(record);
+  if (!entry) { entry = recordTextParts(record, stripTags, s => s.toLowerCase()); searchTextCache.set(record, entry); }
+  return entry;
 }
-// Stepping (#100, the classic page's rule): the sequence continues only while the current hit
-// is on screen; once the reader has moved away, "next" is the first hit at or below the
-// viewport top and "previous" the one just above it (wrapping at the ends). The landing brings
-// the matched TERM into view, not only the record that holds it — a hit deep in a long output
-// sits well below its row's head.
+const ALL_SCOPES = ["u", "a", "t", "o", "b", "r", "e"];
+/** The active scope as a set for the shared grammar; null when every class is on (no scope). */
+function activeScopeSet() {
+  const scopes = uiState.searchScopes;
+  if (ALL_SCOPES.every(k => scopes.has(k)) && !uiState.searchWhole) return null;
+  const set = { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: !!uiState.searchWhole };
+  for (const k of ALL_SCOPES) if (scopes.has(k)) set[k] = true;
+  return set;
+}
+/** The box is the truth (#101, the classic page's rule): a typed `uatobrew:` prefix sets the
+ *  scope buttons; a leading `:` escapes; a pure run searches itself. Counts per class fill the
+ *  scope rows; stepping and marks honour the scope; the total reads "N hits in ub". */
+function updateSearch(reset) {
+  const raw = byId("transcriptSearchInput").value.trim();
+  const scoped = parseScope(raw);
+  let needle = raw, scope = null;
+  if (scoped) {
+    const rest = raw.slice(scoped.len);
+    if (scoped.set && !rest.length) scope = null; // a pure run searches itself, literally
+    else { needle = rest; scope = scoped.set; }
+  }
+  if (scoped && scoped.set && rest_ok(raw, scoped)) {
+    uiState.searchScopes = new Set(scopeLetters(scope || {}).length ? scopeLetters(scope) : ALL_SCOPES);
+    uiState.searchWhole = !!(scope && scope.w);
+  } else if (!scoped || scoped.set === null) {
+    // No prefix (or the escape): everything, as the classic page — the buttons follow the box.
+    uiState.searchScopes = new Set(ALL_SCOPES); uiState.searchWhole = false;
+  }
+  renderFilterMenu();
+  const query = needle.toLowerCase();
+  recordState.search = query;
+  const set = activeScopeSet();
+  const wanted = scopeMask(set), whole = !!(set && set.w);
+  recordState.searchMask = wanted; recordState.searchWhole = whole;
+  recordState.matches = [];
+  const classCounts = { u: 0, a: 0, t: 0, o: 0, b: 0, r: 0, e: 0 };
+  let total = 0;
+  if (query) recordState.records.forEach((record, index) => {
+    const { text, parts } = searchTextOf(record);
+    let inScope = 0;
+    for (const part of parts) {
+      const n = countOcc(text.slice(part.start, part.end), query, whole);
+      if (!n) continue;
+      for (const k of ALL_SCOPES) if (part.mask & CLASS_BIT[k]) classCounts[k] += n;
+      if (!wanted || (part.mask & wanted)) inScope += n;
+    }
+    if (inScope) { recordState.matches.push(index); total += inScope; }
+  });
+  for (const k of ALL_SCOPES) { const cell = byId("scopeRow").querySelector(`[data-scope-count="${k}"]`); if (cell) cell.textContent = query ? String(classCounts[k]) : ""; }
+  if (reset) recordState.match = recordState.matches.length ? 0 : -1; else recordState.match = Math.min(recordState.match, recordState.matches.length - 1);
+  const letters = scopeLetters(set);
+  byId("transcriptSearchCount").textContent = query ? `${total} hit${total === 1 ? "" : "s"}${letters.length && letters.length < ALL_SCOPES.length ? " in " + letters.join("") : ""}${whole ? " · whole words" : ""}` : "";
+  markSearch();
+  applyFilters();
+}
+function rest_ok(raw, scoped) { return raw.slice(scoped.len).length > 0; }
+/** The scope buttons rewrite the box's prefix (the classic page's applyScopeFromMenu). */
+function applyScopeFromMenu() {
+  const input = byId("transcriptSearchInput");
+  const raw = input.value.replace(/^\s+/, "");
+  const parsed = parseScope(raw);
+  const rest = parsed && parsed.set ? raw.slice(parsed.len) : parsed && parsed.set === null ? raw : raw;
+  const set = activeScopeSet();
+  const letters = set ? activeLetters(set) : [];
+  input.value = (letters.length ? letters.join("") + ":" : "") + rest;
+  updateSearch(true);
+}
+/** The scope classes of the element a text node sits in (the rendered twin of directMask). */
+function elementMask(element) {
+  const row = element.closest("[data-tool-name], .turn.user, .process-commentary, .turn.assistant, [data-kind]");
+  if (!row) return 0;
+  if (row.classList.contains("user")) return CLASS_BIT.u;
+  if (row.classList.contains("process-commentary") || (row.classList.contains("assistant") && !row.classList.contains("renderer-turn"))) return CLASS_BIT.a;
+  const tool = row.dataset.toolName, kind = row.dataset.kind;
+  if (kind === "thinking" || kind === "activity") return CLASS_BIT.t;
+  if (!tool) return kind === "tool" ? CLASS_BIT.o : 0;
+  let mask = CLASS_BIT.o;
+  if (tool === "Bash") mask |= CLASS_BIT.b;
+  if (["Read", "Glob", "Grep", "WebFetch", "WebSearch"].includes(tool)) mask |= CLASS_BIT.r;
+  if (["Write", "Edit", "NotebookEdit"].includes(tool)) mask |= CLASS_BIT.e;
+  return mask;
+}
+const WORD_CHAR = /[\p{L}\p{N}\p{M}_]/u;
+function wholeAtText(t, start, len) {
+  return !(start > 0 && WORD_CHAR.test(t.charAt(start - 1))) && !(start + len < t.length && WORD_CHAR.test(t.charAt(start + len)));
+}
 function stepSearch(delta) {
   const matches = recordState.matches;
   if (!matches.length) return;
@@ -613,16 +697,18 @@ function markSearch() {
   // Every hit in the mounted window is marked, the current record's first one stronger (#111,
   // the classic page's rule): a reader sees how many hits a screen holds, not one at a time.
   const needle = recordState.search, matched = new Set(recordState.matches), current = recordState.matches[recordState.match];
+  const wanted = recordState.searchMask || 0, whole = !!recordState.searchWhole;
   for (const root of viewport.window.querySelectorAll("[data-block-index]")) {
     const index = Number(root.dataset.blockIndex);
     if (!Number.isInteger(index) || !matched.has(index) || root.parentElement?.closest("[data-block-index]")) continue;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const texts = [];
-    while (walker.nextNode()) if (walker.currentNode.parentElement && !["SCRIPT", "STYLE", "MARK"].includes(walker.currentNode.parentElement.tagName) && walker.currentNode.nodeValue.toLowerCase().includes(needle)) texts.push(walker.currentNode);
+    while (walker.nextNode()) if (walker.currentNode.parentElement && !["SCRIPT", "STYLE", "MARK"].includes(walker.currentNode.parentElement.tagName) && walker.currentNode.nodeValue.toLowerCase().includes(needle) && (!wanted || (elementMask(walker.currentNode.parentElement) & wanted))) texts.push(walker.currentNode);
     let first = index === current;
     for (const text of texts) {
       const value = text.nodeValue, lower = value.toLowerCase(), frag = document.createDocumentFragment();
       let at = 0, from = 0;
       while ((at = lower.indexOf(needle, from)) !== -1) {
+        if (whole && !wholeAtText(lower, at, needle.length)) { from = at + needle.length; continue; }
         if (at > from) frag.appendChild(document.createTextNode(value.slice(from, at)));
         const mark = document.createElement("mark"); mark.className = "search-mark" + (first ? " current" : ""); mark.textContent = value.slice(at, at + needle.length); frag.appendChild(mark);
         first = false; from = at + needle.length;
@@ -643,7 +729,8 @@ function toolNames(records, into = []) {
 }
 function renderFilterMenu() {
   const scopes = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "All tools"], ["b", "Bash output"], ["r", "Reads"], ["e", "Edits"]];
-  byId("scopeRow").innerHTML = scopes.map(([key, label]) => `<button class="scope-option ${uiState.searchScopes.has(key) ? "on" : ""}" data-scope="${key}"><span class="scope-check"></span><span>${label}</span><span class="scope-key">${key}</span></button>`).join("");
+  byId("scopeRow").innerHTML = scopes.map(([key, label]) => `<button class="scope-option ${uiState.searchScopes.has(key) ? "on" : ""}" data-scope="${key}"><span class="scope-check"></span><span>${label}</span><span class="scope-count" data-scope-count="${key}"></span><span class="scope-key">${key}</span></button>`).join("")
+    + `<button class="scope-option scope-whole ${uiState.searchWhole ? "on" : ""}" data-scope="w"><span class="scope-check"></span><span>Whole words</span><span class="scope-key">w</span></button>`;
   // Every tool in the session, nested ones included — a tool call sits inside an activity
   // record, so a top-level scan listed nothing (#110).
   const tools = [...new Set(toolNames(recordState.records))];
@@ -763,8 +850,8 @@ readingSection.onclick = event => {
 };
 applyReading();
 byId("filterTranscriptBtn").onclick = () => { byId("navigatorOptions").classList.toggle("open"); renderFilterMenu(); };
-byId("navigatorOptions").onclick = event => { const scope = event.target.closest("[data-scope]"); if (scope) { uiState.searchScopes.has(scope.dataset.scope) ? uiState.searchScopes.delete(scope.dataset.scope) : uiState.searchScopes.add(scope.dataset.scope); renderFilterMenu(); applyFilters(); } const tool = event.target.closest("[data-tool-filter]"); if (tool) { uiState.toolFilters.has(tool.dataset.toolFilter) ? uiState.toolFilters.delete(tool.dataset.toolFilter) : uiState.toolFilters.add(tool.dataset.toolFilter); renderFilterMenu(); applyToolFilter(); } };
-byId("selectAllScopes").onclick = () => { uiState.searchScopes = new Set(["u", "a", "t", "o", "b", "r", "e"]); renderFilterMenu(); };
+byId("navigatorOptions").onclick = event => { const scope = event.target.closest("[data-scope]"); if (scope) { const key = scope.dataset.scope; if (key === "w") uiState.searchWhole = !uiState.searchWhole; else { const everything = ALL_SCOPES.every(k => uiState.searchScopes.has(k)); if (everything) uiState.searchScopes = new Set([key]); else if (uiState.searchScopes.has(key)) { uiState.searchScopes.delete(key); if (!uiState.searchScopes.size) uiState.searchScopes = new Set(ALL_SCOPES); } else uiState.searchScopes.add(key); } applyScopeFromMenu(); } const tool = event.target.closest("[data-tool-filter]"); if (tool) { uiState.toolFilters.has(tool.dataset.toolFilter) ? uiState.toolFilters.delete(tool.dataset.toolFilter) : uiState.toolFilters.add(tool.dataset.toolFilter); renderFilterMenu(); applyToolFilter(); } };
+byId("selectAllScopes").onclick = () => { uiState.searchScopes = new Set(ALL_SCOPES); uiState.searchWhole = false; applyScopeFromMenu(); };
 byId("clearTranscriptFilters").onclick = () => { uiState.toolFilters.clear(); renderFilterMenu(); applyToolFilter(); };
 
 function openGlobalSearch() { byId("searchLayer").classList.add("production-open"); byId("searchInput").value = ""; uiState.searchTab = "all"; renderGlobalSearch(); byId("searchInput").focus(); }

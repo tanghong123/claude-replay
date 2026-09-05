@@ -2538,3 +2538,142 @@ fn hits_fixture(name: &str) -> Fixture {
         turns: 13,
     }
 }
+
+// ── scenario: scope counts, a typed scope prefix, scoped stepping, the escape (#101) ─────
+
+/// Row 5.6 of design/rendering-parity-audit.md and the owner's report. A query shows how many
+/// hits each class holds; a typed `u:` prefix checks the User box and limits stepping to
+/// prompts; a leading `:` searches the literal; clicking a scope button writes the prefix.
+fn scenario_scope_counts_prefix_and_gating(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (type_query, count_of, next, current_kind, box_value, scope_on, click_scope, open_menu) = match surface {
+        Surface::Classic => (
+            "(function(q){ var i = document.getElementById('q'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(k){ var e = document.getElementById('qsn-' + k); return e ? e.textContent.trim() : 'none'; })",
+            "(function(){ var b = document.getElementById('qnext'); if (b) { b.click(); return 'next'; } return 'none'; })()",
+            "(function(){ var m = document.querySelector('#stream mark.hl.cur'); if (!m) return 'no current'; var blk = m.closest('.blk'); return blk && blk.classList.contains('uturn') ? 'prompt' : 'other'; })()",
+            "document.getElementById('q').value",
+            "(function(k){ var cb = document.getElementById('qs-' + k); return cb ? cb.checked : null; })",
+            "(function(k){ var cb = document.getElementById('qs-' + k); if (!cb) return 'none'; cb.checked = !cb.checked; cb.dispatchEvent(new Event('change', { bubbles: true })); return 'clicked'; })",
+            "(function(){ var q = document.getElementById('qscope'); if (q) q.click(); return 'ok'; })()",
+        ),
+        Surface::AppShell => (
+            "(function(q){ var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(k){ var e = document.querySelector('[data-scope-count=\"' + k + '\"]'); return e ? e.textContent.trim() : 'none'; })",
+            "(function(){ document.getElementById('findNext').click(); return 'next'; })()",
+            "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); if (!m) return 'no current'; var t = m.closest('.turn'); return t && t.classList.contains('user') ? 'prompt' : 'other'; })()",
+            "document.getElementById('transcriptSearchInput').value",
+            "(function(k){ var b = document.querySelector('.scope-option[data-scope=\"' + k + '\"]'); return b ? b.classList.contains('on') : null; })",
+            "(function(k){ var b = document.querySelector('.scope-option[data-scope=\"' + k + '\"]'); if (!b) return 'none'; b.click(); return 'clicked'; })",
+            "(function(){ var b = document.getElementById('filterTranscriptBtn'); if (b && !document.getElementById('navigatorOptions').classList.contains('open')) b.click(); return 'ok'; })()",
+        ),
+    };
+    eval(tab, open_menu);
+    eval(tab, &format!("{type_query}('needle')"));
+    settle();
+    settle();
+    assert_eq!(
+        eval(tab, &format!("{count_of}('u')")),
+        "1",
+        "one hit in prompts"
+    );
+    assert_eq!(
+        eval(tab, &format!("{count_of}('b')")),
+        "2",
+        "two hits in Bash output"
+    );
+    // A typed prefix: the User box checks, the others do not, and stepping stays in prompts.
+    eval(tab, &format!("{type_query}('u:needle')"));
+    settle();
+    settle();
+    assert_eq!(
+        eval(tab, &format!("{scope_on}('u')")),
+        true,
+        "u: checks the User box"
+    );
+    assert_eq!(
+        eval(tab, &format!("{scope_on}('b')")),
+        false,
+        "…and not Bash"
+    );
+    for _ in 0..3 {
+        eval(tab, next);
+        settle();
+        assert_eq!(
+            eval(tab, current_kind),
+            "prompt",
+            "stepping under u: stays in prompts"
+        );
+    }
+    // The escape: the literal "u:needle" is nowhere.
+    eval(tab, &format!("{type_query}(':u:needle')"));
+    settle();
+    settle();
+    assert_eq!(
+        eval(tab, &format!("{count_of}('u')")),
+        "0",
+        "an escaped prefix is searched literally"
+    );
+    // A scope button writes the prefix into the box.
+    eval(tab, &format!("{type_query}('needle')"));
+    settle();
+    eval(tab, open_menu);
+    assert_eq!(
+        eval(tab, &format!("{click_scope}('b')")),
+        "clicked",
+        "the Bash scope button exists"
+    );
+    settle();
+    let value = eval(tab, box_value).as_str().unwrap_or("").to_string();
+    let prefix = value.split(':').next().unwrap_or("").to_string();
+    assert!(
+        value.contains(':') && prefix.contains('b') && value.ends_with("needle"),
+        "the button wrote a prefix with b: {value:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_scope_counts_prefix_and_gating() {
+    let _serial = serial();
+    let fx = scope_fixture("scenario-scope-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_scope_counts_prefix_and_gating(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_scope_counts_prefix_and_gating() {
+    let _serial = serial();
+    let fx = scope_fixture("scenario-scope-app");
+    let page = open(Surface::AppShell, &fx, 2892);
+    scenario_scope_counts_prefix_and_gating(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Twelve turns, then a prompt with the word once and a Bash output with it twice.
+fn scope_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("question scope: find the needle", &now_minus(90));
+    transcript += &assistant_at("Running the search.", &now_minus(85));
+    transcript += &tool_open_at("t-scope-bash", &now_minus(70));
+    transcript += &tool_result_text(
+        "t-scope-bash",
+        "a needle here\\nanother needle there\\n",
+        &now_minus(60),
+    );
+    transcript += &assistant_at("answer scope: two in the output", &now_minus(30));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}

@@ -2938,29 +2938,13 @@
   function ownTextParts(b) { return shared.ownTextParts(b, stripHtml); }
   var CLASS_BIT = shared.CLASS_BIT;
   var directMask = shared.directMask;
-  function scopeMask(set) {
-    var mask = 0;
-    scopeLetters(set).forEach(function (k) { mask |= CLASS_BIT[k]; });
-    return mask;
-  }
+  var scopeMask = shared.scopeMask;
   function ensureRecText(i) {
     if (recText[i] != null && recSearchParts[i] != null) return;
-    var allParts = [], ownership = [], length = 0;
-    (function walk(b) {
-      var own = ownTextParts(b).join("\n").toLowerCase();
-      if (own) {
-        if (allParts.length) { allParts.push("\n"); length++; }
-        var start = length;
-        allParts.push(own);
-        length += own.length;
-        ownership.push({ start: start, end: length, mask: directMask(b.kind) });
-      }
-      (b.body || []).forEach(function (p) {
-        if (p.p === "blocks") p.items.forEach(walk);
-      });
-    })(records[i]);
-    recText[i] = allParts.join("");
-    recSearchParts[i] = ownership;
+    // The text and its ownership spans are the shared module's (#101), lowercased per own text.
+    var r = shared.recordTextParts(records[i], stripHtml, function (s) { return s.toLowerCase(); });
+    recText[i] = r.text;
+    recSearchParts[i] = r.parts;
   }
   function textOfRec(i) {
     ensureRecText(i);
@@ -3018,30 +3002,13 @@
   // `:rate:limit` searches the literal `rate:limit`. Returns {set, len}; {set:null}
   // for the escape; null when the text has no prefix (repeats, foreign letters —
   // including the dropped `user:` alias — and colons in ordinary text like `http://`).
-  function parseScope(needle) {
-    if (needle.charAt(0) === ":") return { set: null, len: 1 };
-    var m = /^([uatobrew+]{1,15}):/i.exec(needle);
-    if (!m) return null;
-    var set = { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: false };
-    var run = m[1].toLowerCase();
-    for (var i = 0; i < run.length; i++) {
-      var p = run.charAt(i);
-      if (p === "+") continue; // the v1.73 separator, still accepted
-      if (set[p]) return null; // a repeated letter is a word, not a scope
-      set[p] = true;
-    }
-    if (!activeLetters(set).length) return null;
-    return { set: set, len: m[0].length };
-  }
+  // The `uatobrew:` grammar is the shared module's (#101) — one parser with the app shell.
+  var parseScope = shared.parseScope;
   function searchInScope(i) {
     return !searchScope || countRec(i, searchScope, searchNeedle, !!searchScope.w) > 0;
   }
-  function scopeLetters(set) {
-    return ["u", "a", "t", "o", "b", "r", "e"].filter(function (k) { return set && set[k]; });
-  }
-  function activeLetters(set) {
-    return ["u", "a", "t", "o", "b", "r", "e", "w"].filter(function (k) { return set && set[k]; });
-  }
+  var scopeLetters = shared.scopeLetters;
+  var activeLetters = shared.activeLetters;
   function search(v) {
     var qc = $("qcount");
     showQNav(false);

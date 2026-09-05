@@ -202,3 +202,7 @@
 /* #116: a link to a tool call — beside its head, shown on hover like the turns' spot links. */
 .renderer>.renderer-spot{position:absolute;top:3px;right:6px;opacity:0;transition:opacity .12s}
 .renderer:hover>.renderer-spot,.renderer:focus-within>.renderer-spot,.renderer>.renderer-spot.copied{opacity:1}
+/* #101: per-scope hit counts in the scope rows, and the whole-words row. */
+.scope-option .scope-count{margin-left:auto;font:11px/1.4 var(--mono,ui-monospace,monospace);color:var(--faint);min-width:2ch;text-align:right}
+.scope-option .scope-count:empty{display:none}
+.scope-option.scope-whole{margin-top:4px;border-top:1px solid var(--line);padding-top:6px}

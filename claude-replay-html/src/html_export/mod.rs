@@ -3342,11 +3342,13 @@ mod tests {
         #[allow(non_snake_case)]
         let SEARCH = search;
         assert!(
-            JS.contains(r"/^([uatobrew+]{1,15}):/i") && JS.contains("function parseScope"),
-            "the order-free letter-run grammar is the one parser"
+            SEARCH.contains(r"/^([uatobrew+]{1,15}):/i")
+                && SEARCH.contains("function parseScope")
+                && JS.contains("var parseScope = shared.parseScope;"),
+            "the order-free letter-run grammar is the one parser — the shared module's (#101)"
         );
         assert!(
-            JS.contains(r#"if (needle.charAt(0) === ":") return { set: null, len: 1 };"#),
+            SEARCH.contains(r#"if (needle.charAt(0) === ":") return { set: null, len: 1 };"#),
             "a leading colon escapes a scope-shaped literal"
         );
         assert!(

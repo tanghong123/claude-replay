@@ -8,7 +8,7 @@ import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../c
 import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-html/src/html/shared/runtime.js";
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
-import { recordText, stripTags, countOcc, wholeAt, directMask, CLASS_BIT } from "../../claude-monitor/src/codex-ui/shared/search.js";
+import { recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, countOcc, wholeAt, directMask, CLASS_BIT } from "../../claude-monitor/src/codex-ui/shared/search.js";
 import { fmtTime, fmtDur } from "../../claude-monitor/src/codex-ui/shared/time.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
@@ -1100,4 +1100,26 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(vp, /if \(reveal === "search" \|\| reveal === "hash"\) \{\n\s*const openAll = view =>/, "a search or deep-link reveal opens the nested chain and its caps");
   console.log("#100 hit stepping cases passed");
+}
+
+// #101: the scope grammar and per-part ownership are shared; the app shell counts per class.
+{
+  assert.deepEqual(parseScope("ub:x"), { set: { u: true, a: false, t: false, o: false, b: true, r: false, e: false, w: false }, len: 3 }, "an order-free letter run then a colon");
+  assert.deepEqual(parseScope("BU:x").set, parseScope("ub:x").set, "case-insensitive, order-free");
+  assert.deepEqual(parseScope(":u:x"), { set: null, len: 1 }, "a leading colon escapes");
+  assert.equal(parseScope("uu:x"), null, "a repeated letter is a word");
+  assert.equal(parseScope("needle"), null);
+  assert.deepEqual(scopeLetters(parseScope("wbu:x").set), ["u", "b"]); assert.deepEqual(activeLetters(parseScope("wbu:x").set), ["u", "b", "w"]);
+  assert.equal(scopeMask(parseScope("ub:x").set), CLASS_BIT.u | CLASS_BIT.b);
+  const record = { kind: "act", id: "b1", head: {}, body: [{ p: "md", h: "<p>Thinking</p>" }, { p: "blocks", items: [{ kind: "bash", id: "b2", head: { name: "Bash" }, body: [{ p: "pre", x: "NEEDLE out" }] }] }] };
+  const tp = recordTextParts(record, stripTags, s => s.toLowerCase());
+  assert.equal(tp.text.includes("needle out"), true, "lowercased per own text");
+  assert.equal(tp.parts.length, 2); assert.equal(tp.parts[0].mask, CLASS_BIT.t); assert.equal(tp.parts[1].mask, CLASS_BIT.o | CLASS_BIT.b, "a nested tool owns its text");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /if \(!wanted \|\| \(part\.mask & wanted\)\) inScope \+= n;/, "stepping is gated by the scope");
+  assert.match(app, /data-scope-count="\$\{key\}"/, "the scope rows carry counts");
+  assert.match(app, /function applyScopeFromMenu\(\) \{/, "the buttons rewrite the box's prefix");
+  const search = readFileSync(new URL("../../claude-replay-html/src/html/shared/search.js", import.meta.url), "utf8");
+  assert.match(search, /^export \{ CLASS_BIT, directMask, ownTextParts, recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc \};\s*$/m);
+  console.log("#101 scope cases passed");
 }
