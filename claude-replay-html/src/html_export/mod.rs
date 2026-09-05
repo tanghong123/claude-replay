@@ -3280,6 +3280,23 @@ mod tests {
             .any(|(name, _)| *name == "time"));
     }
 
+    /// #121: the request-for-input card is the shared module's on the classic page too — the
+    /// words live in `shared/interaction.js`, not in either page.
+    #[test]
+    fn the_request_for_input_card_is_the_shared_modules() {
+        assert!(JS.contains("if (shared.isInteraction(head.interaction)) {"));
+        assert!(JS.contains(
+            "fb.insertAdjacentHTML(\"beforeend\", shared.interactionHtml(head.interaction, head.target, CLASSIC_INTERACTION));"
+        ));
+        assert!(
+            !JS.contains("Waiting for user input"),
+            "the classic page takes the card's words from the shared module"
+        );
+        let module = super::shared::shared_source("interaction").unwrap();
+        assert!(module.contains(r#"const WAITING_TITLE = "Waiting for user input";"#));
+        assert!(CSS.contains(".irq-answers {"));
+    }
+
     /// #122: the result body — the ⎿ gutter and the output beside it — is one rule in
     /// `shared/parts.js`, and the classic page (the reference for the shape) runs it.
     #[test]

@@ -698,6 +698,25 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 .result pre { margin: 0; font: inherit; white-space: pre-wrap; word-break: break-word; }
 .note { display: flex; gap: 8px; font: 11.5px var(--mono); color: var(--muted); margin: 2px 0 6px; }
 
+/* ── an agent's question to the reader (#121, shared/interaction.js) ─────── */
+.irq {
+  display: flex; align-items: flex-start; gap: 10px; margin: 3px 0; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+  font-family: var(--sans); font-size: var(--ms); line-height: 1.55;
+}
+.irq.waiting { border-color: color-mix(in srgb, var(--link) 45%, var(--border)); }
+.irq > .irq-icon { flex: none; width: 18px; height: 18px; border-radius: 50%; text-align: center;
+  line-height: 18px; font-size: 11px; background: var(--hover); color: var(--muted); }
+.irq.waiting > .irq-icon { background: color-mix(in srgb, var(--link) 22%, transparent); color: var(--link); }
+.irq-copy { flex: 1; min-width: 0; }
+.irq-copy > strong { display: block; color: var(--fg); }
+.irq-copy > p { margin: 2px 0 0; color: var(--muted); }
+.irq-meta { display: block; margin-top: 4px; color: var(--muted); font-size: 11.5px; }
+.irq-answers { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.irq-answer { display: inline-flex; align-items: baseline; gap: 6px; padding: 2px 8px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--bg); }
+.irq-answer > small { color: var(--muted); font-size: 11px; }
+
 /* ── numbered code + diffs ───────────────────────────────────────────── */
 
 .numbered, .diff {

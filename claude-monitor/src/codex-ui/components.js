@@ -4,6 +4,7 @@ import { attachmentCapability, referenceAction, revealQuery } from "./shared/cap
 import { svg } from "./icons.js";
 import { escapeText, partsHtml } from "./view-model.js";
 import { rememberCap, resultBodyHtml } from "./shared/parts.js";
+import { interactionHtml } from "./shared/interaction.js";
 import { fmtTime } from "./shared/time.js";
 
 const element = html => {
@@ -31,6 +32,9 @@ function bodyHtml(view, state) {
   return view.bare ? resultBodyHtml(html, APP_RESULT) : html;
 }
 
+/** This shell's names for the shared request-for-input card (html/shared/interaction.js). */
+const APP_INTERACTION = { card: "input-request", icon: "input-request-icon", copy: "input-request-copy", meta: "input-request-meta", answers: "input-answers", answer: "input-answer" };
+
 /** This shell's names for the shared result body (html/shared/parts.js). */
 const APP_RESULT = { result: "renderer-result", lead: "renderer-result-lead", box: "renderer-result-box" };
 
@@ -52,10 +56,10 @@ function rendererBody(view, state) {
   if (view.renderer === "task") {
     return `<div class="renderer-task"><div class="renderer-task-head"><span class="renderer-task-state ${view.running ? "running" : "completed"}"></span><strong>${escapeText(view.summary || view.name)}</strong></div>${view.html ? `<div class="renderer-task-detail">${view.html}</div>` : ""}</div>`;
   }
+  // The card an agent's own question wears — its words, its two states and its markup — is the
+  // shared module's (#121), so the classic page draws the same one.
   if (view.interaction?.kind === "request_user_input") {
-    const answers = (view.interaction.answers || []).map(answer => `<span class="input-answer"><span>${escapeText(answer.label)}</span><small>${escapeText(answer.id)}</small></span>`).join("");
-    const fallback = view.interaction.resolved ? "Answered in the agent client" : "Please return to the agent client to answer; Monitor cannot submit this native prompt.";
-    return `<div class="input-request ${view.interaction.resolved ? "resolved" : "waiting"}"><span class="input-request-icon" aria-hidden="true">${view.interaction.resolved ? "✓" : "?"}</span><div class="input-request-copy"><strong>${view.interaction.resolved ? "User input received" : "Waiting for user input"}</strong><p>${escapeText(view.summary || fallback)}</p>${view.summary ? `<small class="input-request-meta">${escapeText(fallback)}</small>` : ""}${answers ? `<div class="input-answers">${answers}</div>` : ""}</div></div>`;
+    return interactionHtml(view.interaction, view.summary, APP_INTERACTION);
   }
   if (view.attachment) {
     const h = view.attachment;

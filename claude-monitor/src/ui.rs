@@ -318,6 +318,10 @@ mod tests {
                 "shared/tool-head.js",
                 claude_replay_html::shared_source("tool-head").unwrap(),
             ),
+            (
+                "shared/interaction.js",
+                claude_replay_html::shared_source("interaction").unwrap(),
+            ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),

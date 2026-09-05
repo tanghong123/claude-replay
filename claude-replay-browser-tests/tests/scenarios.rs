@@ -90,6 +90,21 @@ fn fixture_bare_result(name: &str, turns: u32) -> Fixture {
     Fixture { base, path, turns }
 }
 
+/// A fixture whose tail carries two questions an agent asked through its own client (#121):
+/// one still waiting, one answered.
+fn fixture_input_requests(name: &str, turns: u32) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(turns, Shape::default());
+    jsonl +=
+        &harness::input_request_at("ask-1", "Which shell should stay?", "2026-08-21T10:15:01Z");
+    jsonl += &harness::input_request_at("ask-2", "Ship the release now?", "2026-08-21T10:15:02Z");
+    jsonl +=
+        &harness::input_request_answer("ask-2", "ship", "Yes, ship it", "2026-08-21T10:15:03Z");
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture { base, path, turns }
+}
+
 /// The surface, opened on the fixture: the html server for the classic page (in-process, one
 /// root), a paired v2 monitor for the app shell. Returns the tab and what keeps the page alive.
 struct Opened {
@@ -3222,6 +3237,82 @@ fn scenario_a_bare_result_reads_as_a_result_row(
             && row["body"].as_str().unwrap_or("").ends_with("third line"),
         "…with the whole text beside it: {row:?}"
     );
+}
+
+/// An agent's own question to the reader wears the same card on both pages (#121, parity row
+/// 3.17): waiting says where the answer goes, answered shows what it was.
+fn scenario_a_request_for_input_is_a_card(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    if surface == Surface::AppShell {
+        eval(
+            tab,
+            "document.querySelectorAll('[data-process-more][aria-expanded=\"false\"]').forEach(b => b.click())",
+        );
+        settle();
+    }
+    let (card, strong, answer) = match surface {
+        Surface::Classic => (".irq", ".irq-copy > strong", ".irq-answer"),
+        Surface::AppShell => (
+            ".input-request",
+            ".input-request-copy > strong",
+            ".input-answer",
+        ),
+    };
+    let cards = probe(
+        tab,
+        &format!(
+            "[...document.querySelectorAll('{card}')].map(c => ({{ state: c.className.replace('{}', '').trim(), title: (c.querySelector('{strong}') || {{}}).textContent || '', text: (c.querySelector('p') || {{}}).textContent || '', answers: [...c.querySelectorAll('{answer}')].map(a => a.textContent) }}))",
+            card.trim_start_matches('.')
+        ),
+    );
+    let cards = cards.as_array().cloned().unwrap_or_default();
+    assert_eq!(cards.len(), 2, "both questions drew a card: {cards:?}");
+    let waiting = cards
+        .iter()
+        .find(|c| c["state"] == "waiting")
+        .unwrap_or_else(|| panic!("no waiting card among {cards:?}"));
+    assert_eq!(waiting["title"], "Waiting for user input");
+    assert!(
+        waiting["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Monitor cannot submit this native prompt"),
+        "…and says where the answer goes: {waiting:?}"
+    );
+    assert_eq!(waiting["answers"].as_array().map(Vec::len), Some(0));
+    let resolved = cards
+        .iter()
+        .find(|c| c["state"] == "resolved")
+        .unwrap_or_else(|| panic!("no resolved card among {cards:?}"));
+    assert_eq!(resolved["title"], "User input received");
+    assert_eq!(
+        resolved["answers"][0], "Yes, ship itship",
+        "the answer and the field it belongs to: {resolved:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_request_for_input_is_a_card() {
+    let _serial = serial();
+    let fx = fixture_input_requests("scenario-input-classic", 14);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_request_for_input_is_a_card(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_request_for_input_is_a_card() {
+    let _serial = serial();
+    let fx = fixture_input_requests("scenario-input-app", 14);
+    let page = open(Surface::AppShell, &fx, 2899);
+    scenario_a_request_for_input_is_a_card(&page.tab, Surface::AppShell, &fx);
 }
 
 #[test]

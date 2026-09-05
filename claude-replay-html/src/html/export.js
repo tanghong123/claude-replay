@@ -77,6 +77,7 @@
   var CLASSIC_ROWS = { row: "nrow", gut: "gut", mark: "mark", code: "code", add: "add", del: "del" };
   var CLASSIC_MARKS = { add: "+", del: "−", ctx: " " };
   var CLASSIC_RESULT = { result: "result", lead: "lead", box: "resultbox" };
+  var CLASSIC_INTERACTION = { card: "irq", icon: "irq-icon", copy: "irq-copy", meta: "irq-meta", answers: "irq-answers", answer: "irq-answer" };
 
   // A capped list: the first `cap` rows stay visible, the rest go into a hidden div revealed
   // by a "⋯ N more lines" button. All content is always present.
@@ -791,6 +792,11 @@
     f.appendChild(h);
 
     var fb = el("div", "fold-b");
+    // An agent's own question to the reader (#121): the card — its words, its two states and
+    // its markup — is the shared module's, the same one the app shell draws.
+    if (shared.isInteraction(head.interaction)) {
+      fb.insertAdjacentHTML("beforeend", shared.interactionHtml(head.interaction, head.target, CLASSIC_INTERACTION));
+    }
     body.forEach(function (p) { renderPart(p, fb); });
     f.appendChild(fb);
     // §8.2 an authored-open fold emits its header target in the expanded (pre-wrap)

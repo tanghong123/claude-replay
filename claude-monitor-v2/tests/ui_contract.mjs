@@ -11,6 +11,7 @@ import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { recordTextSize, LIVE_SEARCH_LIMIT, recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, countOcc, wholeAt, directMask, CLASS_BIT } from "../../claude-monitor/src/codex-ui/shared/search.js";
 import { fmtTime, fmtDur } from "../../claude-monitor/src/codex-ui/shared/time.js";
 import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/shared/parts.js";
+import { isInteraction, interactionCard, interactionHtml } from "../../claude-replay-html/src/html/shared/interaction.js";
 import { displayName, toolHead, stateLabel } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
@@ -1218,4 +1219,25 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(css, /\.renderer-result\{display:flex;gap:8px\}/, "…and styles it beside the output");
   console.log("#122 bare result cases passed");
+}
+
+// #121: an agent's own question to the reader is one card, drawn by both pages.
+{
+  assert.equal(isInteraction({ kind: "request_user_input" }), true);
+  assert.equal(isInteraction({ kind: "something_else" }), false);
+  assert.equal(isInteraction(null), false);
+  const waiting = interactionCard({ kind: "request_user_input", resolved: false, answers: [] }, "Which shell should stay?");
+  assert.deepEqual([waiting.state, waiting.icon, waiting.title, waiting.text], ["waiting", "?", "Waiting for user input", "Which shell should stay?"]);
+  assert.match(waiting.meta, /Monitor cannot submit this native prompt/, "the question is the body; where to answer is the note");
+  const bare = interactionCard({ kind: "request_user_input", resolved: false, answers: [] }, "");
+  assert.equal(bare.meta, "", "…and the note is not said twice when there is no question");
+  const done = interactionCard({ kind: "request_user_input", resolved: true, answers: [{ id: "shell", label: "Keep classic" }] }, "Which shell should stay?");
+  assert.deepEqual([done.state, done.icon, done.title, done.answers.length], ["resolved", "✓", "User input received", 1]);
+  const html = interactionHtml({ kind: "request_user_input", resolved: true, answers: [{ id: "shell", label: "Keep <classic>" }] }, "", { card: "c", icon: "i", copy: "p", meta: "m", answers: "as", answer: "a" });
+  assert.match(html, /^<div class="c resolved"><span class="i" aria-hidden="true">✓<\/span>/);
+  assert.match(html, /<span class="a"><span>Keep &lt;classic&gt;<\/span><small>shell<\/small><\/span>/, "an answer's label is escaped");
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /return interactionHtml\(view\.interaction, view\.summary, APP_INTERACTION\);/, "the app shell draws the shared card");
+  assert.doesNotMatch(comp, /Waiting for user input|Monitor cannot submit/, "…and holds none of the words itself");
+  console.log("#121 request-for-input cases passed");
 }

@@ -186,6 +186,22 @@ pub fn thinking_at(t: &str, ts: &str) -> String {
     )
 }
 
+/// An agent asking the reader a question through its own client (#121): the `request_user_input`
+/// call the server projects into `head.interaction`. Unanswered on its own; pair it with
+/// `input_request_answer` for the resolved card.
+pub fn input_request_at(id: &str, question: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"request_user_input\",\"input\":{{\"question\":\"{question}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
+/// The answer that came back through the agent's client, as the tool's own output.
+pub fn input_request_answer(id: &str, field: &str, label: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"{{\\\"answers\\\":{{\\\"{field}\\\":{{\\\"answers\\\":[\\\"{label}\\\"]}}}}}}\"}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
 /// A sub-agent spawn: the `Agent` tool call the parent makes (the spawn chip).
 pub fn agent_spawn(call_id: &str, subagent_type: &str, s: u32) -> String {
     format!(
