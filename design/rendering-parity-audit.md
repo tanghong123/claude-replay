@@ -56,7 +56,7 @@ Scenario: the state of the guard that runs on both surfaces.
 | 1.5 | Slash-command turn is a turn | foldable card with badge, arg preview, `N lines`, outputs; a sidebar row | was: a "system" row inside the process. Now (#113): a turn card with the badge, the argument preview and the `N lines` chip, folded until opened, a turns-pane row, the user's turn for filters and the spy | HAVE (v1.182.0) | ✓ both: `scenario_command_turn_is_a_turn` |
 | 1.6 | Queued prompt marker | `⧗ queued:` line | "Queued input" renderer, never folded | HAVE | `scenario_queued_prompt_text` ✓ both |
 | 1.7 | Prompt attachments (images, files) | attachment cards after the turn (`amark`) | cards under the prompt (`prompt-attachments`) with capability glyphs | OK-DIFF | image scenario ✓ both |
-| 1.8 | Spot / deep link on a turn | `#` copies URL+`#id` | same | HAVE | none → add (with 3.11) |
+| 1.8 | Spot / deep link on a turn | `#` copies URL+`#id` | same | HAVE | ✓ both, through 3.11's scenario (the same link mechanics) |
 | 1.9 | Copy the message text | none (select text) | none | — | owner's #99 (a selected one-line prompt pastes as three): fix there; a "copy message" control is the durable answer, propose with #99 |
 
 ### 2. Assistant text
@@ -84,7 +84,7 @@ Scenario: the state of the guard that runs on both surfaces.
 | 3.8 | File path links with reveal/render stamps; in-page viewer | `a.tool-path`; modal viewer | `.renderer-target-link`; preview pane; lightbox | HAVE | `the_app_shell_*` reveal cases ✓ (app), classic has `browser_follow` file cases; a both-surface scenario → add |
 | 3.9 | Images | inline ≤520 px, lightbox | collapsed → thumbnail → lightbox (#80, deliberate) | OK-DIFF | ✓ both (#106 tightened) |
 | 3.10 | Attachments (non-image) | `▤ kind name` card, download/reveal | `renderer-note` with capability button | HAVE | none → add |
-| 3.11 | **Deep links to tool records** | `#b7` lands on any block, opening its fold chain | spot links and hash landing only for user/assistant units | **KEEP** (port) | none → add |
+| 3.11 | **Deep links to tool records** | `#b7` lands on any block, opening its fold chain | was: user/assistant units only. Now (#116) every tool row carries a spot link, and a hash resolves through nested records, opens the chain and lands the row | HAVE (v1.185.0) | ✓ both: `scenario_deep_link_to_a_tool_row` |
 | 3.12 | Sub-agent spawn: badge, `N tools · launched`, open child | fold + `↵ child` + `⧉` new tab | "Agent event" + "Open child transcript"; parent button `u` | HAVE; FORGO `⧉` (a single-page app; the session list opens any session) | `the_app_shell_*` child cases ✓ (app); both-surface → add |
 | 3.13 | Workflow fleet roster under the launching block | in-flow roster with running dots, names linking to the children | agents pane (+ run members) | **KEEP** (port — owner review: both are needed, the pane for the session and the in-flow roster at the call that launched them) | none → add: a workflow call shows its members under it with a running dot on both |
 | 3.14 | Artifact link on the publishing tool's head | header target becomes the link | roster + `↳` jump (#78; moving to the right pane, #95) | OK-DIFF; verify the head link exists on the app shell | none → add with #95 |

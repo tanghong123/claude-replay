@@ -199,3 +199,6 @@
 .codebox .codebar button{padding:1px 6px;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--sub);font:11px/1.6 var(--mono,ui-monospace,monospace);cursor:pointer}
 .codebox .codebar button:hover,.codebox .codebar button:focus-visible{border-color:var(--line);color:var(--ink);outline:0}
 .codebox .code-size-val{min-width:2.4em;text-align:center;font:11px/1.6 var(--mono,ui-monospace,monospace);color:var(--faint)}
+/* #116: a link to a tool call — beside its head, shown on hover like the turns' spot links. */
+.renderer>.renderer-spot{position:absolute;top:3px;right:6px;opacity:0;transition:opacity .12s}
+.renderer:hover>.renderer-spot,.renderer:focus-within>.renderer-spot,.renderer>.renderer-spot.copied{opacity:1}

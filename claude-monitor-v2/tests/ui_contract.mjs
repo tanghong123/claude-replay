@@ -1078,3 +1078,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /readingStep: delta => setReading\(\{ size: uiState\.reading\.size \+ delta \* SIZE_STEP \}\)/, "the bar drives the reading size");
   console.log("#115 code pane cases passed");
 }
+
+// #116: a tool row has a spot link and a hash lands on any record, its chain opened.
+{
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /class="spot-link renderer-spot" type="button" data-spot-link="\$\{escapeText\(view\.id\)\}"/, "a tool row's spot link");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /const index = recordState\.records\.findIndex\(record => recordChain\(record, id, chain\)\);/, "a hash resolves through nested records");
+  assert.match(app, /for \(const rid of chain\) recordState\.folds\.set\(rid, false\);/, "…opening the chain to it");
+  assert.match(app, /if \(!viewport\.jumpToRecord\(index, "hash"\)\) return false;/, "…and lands there");
+  console.log("#116 deep link cases passed");
+}

@@ -434,10 +434,30 @@ function landOnHash() {
   if (!id) { landedHash = ""; return false; }
   const identity = `${recordState.session}:${id}`;
   if (identity === landedHash) return true;
-  const index = recordState.records.findIndex(record => record.id === id && (record.kind === "user" || record.kind === "assistant"));
-  if (index < 0 || !viewport.jumpToRecord(index)) return false;
+  // Any record lands (#116, the classic page's `#b7`): a tool call nested in an activity too —
+  // its chain opens first, the jump lands the record that holds it, then the row itself is
+  // brought to the top and flashed.
+  const chain = [];
+  const index = recordState.records.findIndex(record => recordChain(record, id, chain));
+  if (index < 0) return false;
+  for (const rid of chain) recordState.folds.set(rid, false);
+  if (!viewport.jumpToRecord(index, "hash")) return false;
   landedHash = identity;
+  const nested = chain.length > 1 ? viewport.window.querySelector(`[data-record-id="${CSS.escape(id)}"]`) : null;
+  if (nested) {
+    const top = nested.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top - 18;
+    if (Math.abs(top) > 2) viewport.scroller.scrollTop += top;
+    nested.closest(".renderer-turn")?.classList.add("source-flash");
+  }
   return true;
+}
+/** The ids from `record` down to the record with `id` (itself included), or false. */
+function recordChain(record, id, chain) {
+  if (record.id === id) { chain.push(record.id); return true; }
+  for (const part of record.body || []) if (part.p === "blocks") for (const item of part.items || []) {
+    if (recordChain(item, id, chain)) { if (record.id) chain.unshift(record.id); return true; }
+  }
+  return false;
 }
 
 function directAgents(source = recordState.meta) {

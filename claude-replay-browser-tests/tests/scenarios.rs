@@ -2357,3 +2357,71 @@ fn app_shell_code_pane_bar_and_gutters() {
     let page = open(Surface::AppShell, &fx, 2889);
     scenario_code_pane_bar_and_gutters(&page.tab, Surface::AppShell, &fx);
 }
+
+// ── scenario: a deep link to a tool call — copied from its row, landed on with its chain open (#116)
+
+/// Row 3.11 of design/rendering-parity-audit.md. A tool row offers a link to itself; opening
+/// the page at that link lands on the row with its fold chain open, on both pages.
+fn scenario_deep_link_to_a_tool_row(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // The Read sits inside an activity: open the chain so its row (and its link) is visible.
+    for _ in 0..6 {
+        let step = match surface {
+            Surface::Classic => eval(tab, "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-kind=\"read\"]')].pop(); if (!f) return 'none'; var chain = []; for (var e = f; e; e = e.parentElement.closest('.fold')) chain.push(e); var closed = chain.reverse().find(function (x) { return x.dataset.open === '0'; }); if (!closed) return 'open'; closed.querySelector('.fold-h').click(); return 'clicked'; })()"),
+            Surface::AppShell => eval(tab, "(function(){ var t = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Read\"] > .renderer')].pop(); if (!t) return 'none'; var chain = []; for (var e = t; e; e = e.parentElement && e.parentElement.closest('.renderer')) chain.push(e); var closed = chain.reverse().find(function (x) { return x.classList.contains('closed'); }); if (!closed) return 'open'; closed.querySelector('button.renderer-head').click(); return 'clicked'; })()"),
+        };
+        settle();
+        if step != "clicked" {
+            break;
+        }
+    }
+    stub_clipboard(tab);
+    let copied = match surface {
+        Surface::Classic => eval(tab, "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-tool=\"Read\"]')].pop(); var a = f && f.querySelector(':scope > .fold-h a.alink'); if (!a) return 'none'; a.click(); return 'clicked'; })()"),
+        Surface::AppShell => eval(tab, "(function(){ var r = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Read\"] > .renderer')].pop(); var b = r && r.querySelector(':scope > .renderer-spot'); if (!b) return 'none'; b.click(); return 'clicked'; })()"),
+    };
+    assert_eq!(copied, "clicked", "the Read row offers a link to itself");
+    settle();
+    let link = copied_text(tab);
+    assert!(
+        link.contains('#'),
+        "the link carries the record id: {link:?}"
+    );
+    // Open the page at the link — a real load, not a same-document hash change (which fires no
+    // navigation event): leave the page first. The row is on screen with its chain open.
+    tab.navigate_to("about:blank").unwrap();
+    tab.wait_until_navigated().unwrap();
+    tab.navigate_to(&link).unwrap();
+    tab.wait_until_navigated().unwrap();
+    let landed = match surface {
+        Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-tool=\"Read\"]')].pop(); if (!f) return 'absent'; var row = f; while (row.parentElement && row.parentElement.closest('.fold')) row = row.parentElement.closest('.fold'); var r = f.getBoundingClientRect(); return (f.dataset.open === '1' ? 'open' : 'closed') + ':' + (row.dataset.open === '1' ? 'chain-open' : 'chain-closed') + ':' + (r.height > 0 && r.top >= -2 && r.top < innerHeight ? 'inview' : 'offscreen'); })()",
+        Surface::AppShell => "(function(){ var t = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Read\"]')].pop(); if (!t) return 'absent'; var ren = t.querySelector(':scope > .renderer'); var outer = t.parentElement && t.parentElement.closest('.renderer'); var r = t.getBoundingClientRect(); var s = document.querySelector('.transcript').getBoundingClientRect(); return (ren.classList.contains('closed') ? 'closed' : 'open') + ':' + (outer ? (outer.classList.contains('closed') ? 'chain-closed' : 'chain-open') : 'chain-open') + ':' + (r.height > 0 && r.top >= s.top - 2 && r.top < s.bottom ? 'inview' : 'offscreen'); })()",
+    };
+    until(
+        tab,
+        &format!("{landed} === 'open:chain-open:inview'"),
+        "the deep link to land on the open Read row",
+        Duration::from_secs(30),
+        landed,
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_deep_links_to_a_tool_row() {
+    let _serial = serial();
+    let fx = view_state_fixture("scenario-deeplink-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_deep_link_to_a_tool_row(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_deep_links_to_a_tool_row() {
+    let _serial = serial();
+    let fx = view_state_fixture("scenario-deeplink-app");
+    let page = open(Surface::AppShell, &fx, 2890);
+    scenario_deep_link_to_a_tool_row(&page.tab, Surface::AppShell, &fx);
+}
