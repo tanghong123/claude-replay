@@ -3381,6 +3381,55 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
     drop(monitor);
 }
 
+/// #88, the owner's report on the outline column: a pane's body must never show above its own
+/// head, and opening a pane must land its body directly under its head. Today each head is
+/// shifted down into its stack slot by a transform while the body stays in flow, so between two
+/// heads the reader sees the top of a body above the head it belongs to.
+///
+/// `known_red_88`: the requirement, written before the fix. The accordion it needs (each card
+/// sticky at its slot, opaque, rising z-index) is queued as #88 — see that task for what a first
+/// attempt measured: the column is a flex column whose sticky origin is its PADDING box, the
+/// cards' 8px margins drift the stack, and the LAST card cannot pin because a sticky item may
+/// not leave its containing block.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_outline_never_shows_a_body_above_its_head_known_red_88() {
+    let _serial = serial();
+    let base = base("appshell-outline-accordion");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000088".to_string();
+    stores.claude_session(&sid, &harness::long_session(40, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2907, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.outline-card')",
+        "the outline column to render",
+        std::time::Duration::from_secs(20),
+        "document.body.innerText.slice(0, 120)",
+    );
+    harness::eval(&tab, "['turns', 'agents', 'session', 'tasks'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (c && !c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); }); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    harness::eval(
+        &tab,
+        "document.querySelector('.session-navigator').scrollTop = 400; 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let above = harness::probe(
+        &tab,
+        "(function(){ var nav = document.querySelector('.session-navigator'); var out = []; document.querySelectorAll('.outline-card').forEach(function (c) { var h = c.querySelector(':scope > .outline-card-head'); var b = c.querySelector(':scope > .outline-card-body'); if (!h || !b || b.offsetParent === null) return; var hr = h.getBoundingClientRect(), br = b.getBoundingClientRect(), nr = nav.getBoundingClientRect(); var visibleTop = Math.max(br.top, nr.top); if (visibleTop < hr.top - 1 && br.bottom > nr.top) out.push(c.dataset.navCard + ':' + Math.round(hr.top - visibleTop)); }); return out; })()",
+    );
+    assert_eq!(
+        above.as_array().map(Vec::len),
+        Some(0),
+        "no pane shows its body above its own head: {above}"
+    );
+    drop(monitor);
+}
+
 /// #67 / #68 / #69: the info pane carries status, counts, tokens with the cached reads and the
 /// compaction summary — and none of the title / agent / project the header already shows; the
 /// turns pane shows the compaction as an epoch tick between the tenth and eleventh turns.
