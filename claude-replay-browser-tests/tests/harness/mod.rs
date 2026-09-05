@@ -186,6 +186,14 @@ pub fn thinking_at(t: &str, ts: &str) -> String {
     )
 }
 
+/// An `Edit` call on `path` — the tool the pages DISPLAY as "Update", which is why a scope that
+/// selects edits must be read from the record's kind and not from what the head is called.
+pub fn edit_tool_at(id: &str, path: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Edit\",\"input\":{{\"file_path\":\"{path}\",\"old_string\":\"before\",\"new_string\":\"after\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
 /// An agent asking the reader a question through its own client (#121): the `request_user_input`
 /// call the server projects into `head.interaction`. Unanswered on its own; pair it with
 /// `input_request_answer` for the resolved card.

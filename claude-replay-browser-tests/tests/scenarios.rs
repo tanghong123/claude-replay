@@ -19,11 +19,12 @@ use claude_replay_html::start_server;
 use claude_replay_present::Args;
 use harness::{
     agent_spawn, assistant_at, at_tail, base, click_session_id, codex_tool_session, command_at,
-    copied_text, drag_select, eval, image_result_at, jump_to_end, key, last_mounted_turn,
-    long_session, now_minus, open_last_fold, open_turn_session, probe, queued_at, queued_text,
-    read_tool_at, scroll_by, selection_text, serial, session_id_chip, stub_clipboard, tap_console,
-    tool_open_at, tool_result_at, tool_result_lines, tool_result_text, turn_at_top, until, user_at,
-    view_anchor_index, Kind, LiveGrowth, Monitor, Shape, Stores, Surface,
+    copied_text, drag_select, edit_tool_at, eval, image_result_at, jump_to_end, key,
+    last_mounted_turn, long_session, now_minus, open_last_fold, open_turn_session, probe,
+    queued_at, queued_text, read_tool_at, scroll_by, selection_text, serial, session_id_chip,
+    stub_clipboard, tap_console, tool_open_at, tool_result_at, tool_result_lines, tool_result_text,
+    turn_at_top, until, user_at, view_anchor_index, Kind, LiveGrowth, Monitor, Shape, Stores,
+    Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -2598,6 +2599,153 @@ fn hits_fixture(name: &str) -> Fixture {
         path,
         turns: 13,
     }
+}
+
+/// Twelve turns, then the three shapes the shared search rules turn on (#118): a QUEUED prompt
+/// (a record no scope class claims), an `Edit` (which both pages DISPLAY as "Update"), and hits
+/// far apart so stepping has a nearest one to find.
+fn scope_edge_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("question one: the needle is here", &now_minus(300));
+    transcript += &assistant_at("Editing the file.", &now_minus(290));
+    transcript += &edit_tool_at("t-edit", "/tmp/needle-notes.md", &now_minus(280));
+    transcript += &tool_result_text("t-edit", "updated /tmp/needle-notes.md", &now_minus(275));
+    transcript += &queued_at("queued while busy: the needle again", &now_minus(260));
+    transcript += &long_session(12, Shape::default());
+    transcript += &user_at("question two: one more needle", &now_minus(60));
+    transcript += &assistant_at("Done.", &now_minus(30));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 26,
+    }
+}
+
+/// The three rules the shared search settles, each of which the app shell read its own way
+/// (#118): `w:` alone scopes NOTHING (so a record no class claims is still counted), an edit is
+/// marked under `e:` (the gate is the record's kind, not the head's display name), and a step
+/// after scrolling re-enters at the nearest hit, not the session's first.
+fn scenario_scope_edges_count_mark_and_reenter(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (type_query, total_of, next, marks_in_edit, current_index) = match surface {
+        Surface::Classic => (
+            "(function(q){ var i = document.getElementById('q'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(){ var e = document.getElementById('qcount'); return e ? e.textContent.trim() : 'none'; })()",
+            "(function(){ var b = document.getElementById('qnext'); if (b) b.click(); return 'next'; })()",
+            "document.querySelectorAll('#stream .blk[data-kind=\"edit\"] mark.hl').length",
+            "(function(){ var m = document.querySelector('#stream mark.hl.cur'); if (!m) return -1; var blk = m.closest('.blk'); return blk ? Number(blk.dataset.idx) : -1; })()",
+        ),
+        Surface::AppShell => (
+            "(function(q){ var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(){ var e = document.getElementById('transcriptSearchCount'); return e ? e.textContent.trim() : 'none'; })()",
+            "(function(){ document.getElementById('findNext').click(); return 'next'; })()",
+            "document.querySelectorAll('.virtual-window [data-record-kind=\"edit\"] mark.search-mark').length",
+            "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); if (!m) return -1; var row = m.closest('[data-block-index]'); return row ? Math.floor(Number(row.dataset.blockIndex)) : -1; })()",
+        ),
+    };
+    // 1. `w:` is whole words EVERYWHERE — the same total as the plain needle, and no scope in
+    //    the label. A mask of all seven classes would drop the queued prompt, which no class owns.
+    eval(tab, &format!("{type_query}('needle')"));
+    settle();
+    settle();
+    let plain = eval(tab, total_of).as_str().unwrap_or("").to_string();
+    eval(tab, &format!("{type_query}('w:needle')"));
+    settle();
+    settle();
+    let whole = eval(tab, total_of).as_str().unwrap_or("").to_string();
+    let hits_of = |label: &str| -> i64 {
+        label
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(-1)
+    };
+    assert!(
+        hits_of(&plain) >= 4,
+        "the fixture holds the hits: {plain:?}"
+    );
+    assert_eq!(
+        hits_of(&whole),
+        hits_of(&plain),
+        "whole words alone scopes nothing — every record still counts ({plain:?} vs {whole:?})"
+    );
+    assert!(
+        whole.ends_with("· whole words") && !whole.contains(" in "),
+        "…and the label says so without naming a scope: {whole:?}"
+    );
+    // 2. An edit is marked under `e:` — the gate is the record's KIND, not the head's name,
+    //    which reads "Update" on both pages.
+    eval(tab, &format!("{type_query}('e:needle')"));
+    settle();
+    settle();
+    for _ in 0..2 {
+        eval(tab, next);
+        settle();
+        settle();
+    }
+    assert!(
+        eval(tab, marks_in_edit).as_i64().unwrap_or(0) >= 1,
+        "an edit shows its hits under e: (marks: {:?}, count: {:?})",
+        eval(tab, marks_in_edit),
+        eval(tab, total_of)
+    );
+    // 3. Stepping re-enters where the reader is: after scrolling to the tail, the next hit is
+    //    the last one, not the session's first.
+    eval(tab, &format!("{type_query}('needle')"));
+    settle();
+    settle();
+    jump_to_end(tab, surface);
+    settle();
+    settle();
+    eval(tab, next);
+    settle();
+    settle();
+    let landed = eval(tab, current_index).as_i64().unwrap_or(-1);
+    eval(tab, &format!("{type_query}('needle')"));
+    settle();
+    settle();
+    scroll_by(tab, surface, -400000);
+    settle();
+    settle();
+    eval(tab, next);
+    settle();
+    settle();
+    let from_top = eval(tab, current_index).as_i64().unwrap_or(-1);
+    assert!(
+        from_top >= 0 && landed >= 0,
+        "both steps landed somewhere ({from_top}, {landed})"
+    );
+    assert!(
+        landed > from_top,
+        "a step from the tail re-enters at a later hit than one from the top ({landed} vs {from_top})"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_scope_edges_count_mark_and_reenter() {
+    let _serial = serial();
+    let fx = scope_edge_fixture("scenario-scope-edge-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_scope_edges_count_mark_and_reenter(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_scope_edges_count_mark_and_reenter() {
+    let _serial = serial();
+    let fx = scope_edge_fixture("scenario-scope-edge-app");
+    let page = open(Surface::AppShell, &fx, 2900);
+    scenario_scope_edges_count_mark_and_reenter(&page.tab, Surface::AppShell, &fx);
 }
 
 // ── scenario: scope counts, a typed scope prefix, scoped stepping, the escape (#101) ─────
