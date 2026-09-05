@@ -2748,6 +2748,63 @@ fn app_shell_scope_edges_count_mark_and_reenter() {
     scenario_scope_edges_count_mark_and_reenter(&page.tab, Surface::AppShell, &fx);
 }
 
+/// Rule 5 of design/virtual-window.md (#107 step 3): an unmeasured record is ESTIMATED, and the
+/// estimate must sit UNDER the real height. Then learning heights only grows the page below the
+/// reader; over-estimate and the page SHRINKS as it is read, which above the viewport is a jump.
+fn scenario_learning_heights_only_grows_the_page(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    let total = match surface {
+        Surface::Classic => "document.body.scrollHeight",
+        Surface::AppShell => "document.querySelector('.transcript').scrollHeight",
+    };
+    // Start at the top, where almost everything below is still an estimate.
+    scroll_by(tab, surface, -400000);
+    settle();
+    settle();
+    let before = probe(tab, total).as_f64().unwrap_or(0.0);
+    assert!(
+        before > 1000.0,
+        "the fixture is long enough to estimate: {before}"
+    );
+    // Read down through it, measuring as it goes, then come back.
+    for _ in 0..8 {
+        scroll_by(tab, surface, 2000);
+        settle();
+    }
+    settle();
+    scroll_by(tab, surface, -400000);
+    settle();
+    settle();
+    let after = probe(tab, total).as_f64().unwrap_or(0.0);
+    // A couple of pixels of sub-pixel rounding across dozens of measured records is not a
+    // shrink; an over-estimate is thousands (132px guessed against a 40px note, forty times).
+    assert!(
+        after >= before - 2.0,
+        "measuring may only grow the page, never shrink it under the reader ({before} → {after})"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_learning_heights_only_grows_the_page() {
+    let _serial = serial();
+    let fx = fixture("scenario-estimate-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_learning_heights_only_grows_the_page(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_learning_heights_only_grows_the_page() {
+    let _serial = serial();
+    let fx = fixture("scenario-estimate-app", 40);
+    let page = open(Surface::AppShell, &fx, 2901);
+    scenario_learning_heights_only_grows_the_page(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: scope counts, a typed scope prefix, scoped stepping, the escape (#101) ─────
 
 /// Row 5.6 of design/rendering-parity-audit.md and the owner's report. A query shows how many

@@ -1364,6 +1364,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const module = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   // Numbers in, numbers out: `scrollTop` names a PARAMETER here, but no element is touched.
   assert.doesNotMatch(module, /document\.|ResizeObserver|\.getBoundingClientRect\(|\.scrollTop|\.style\.|performance\.now\(|setTimeout\(|addEventListener/, "the module is numbers in, numbers out — no page can hide a layout read in it");
+  // Step 3: the estimate is a FLOOR per unit type — under the real height, never over, so
+  // learning a height only grows the page below the reader (rule 5).
+  assert.match(vp, /const ESTIMATES = \{ user: 44, assistant: 40, process: 34 \};/);
+  assert.match(vp, /return this\.state\.heights\.get\(unit\.key\) \|\| ESTIMATES\[unit\.type\] \|\| ESTIMATE;/);
   // Step 2: the classic page — the reference — runs the same arithmetic, with its own numbers.
   const cls = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
   assert.match(cls, /if \(!prefix\) prefix = shared\.prefixSums\(records\.length, effH\);/, "the classic sums stay LAZY and shared");

@@ -125,7 +125,7 @@ shape:
   optional `estimate(index)`, and it calls back `onSettle(firstVisibleIndex)` for the spy.
 - **The pages keep** what is theirs: which records form a unit (the app shell's projection),
   what a fold is and how a reveal opens it, the search stepping, the outline column.
-**Steps 1 and 2 landed (v1.195.0, v1.196.0).** `shared/virtual-window.js` holds the arithmetic — `prefixSums`,
+**Steps 1, 2 and 3 landed (v1.195.0, v1.196.0, v1.197.0).** `shared/virtual-window.js` holds the arithmetic — `prefixSums`,
 `indexAt` (clamped for the app shell, raw for the classic page), `rangeForScroll`, `rangeAround`,
 `clampRange`, `padHeights`, `heightChanged`, `correction`, `firstVisible`, `classifyScroll` — and
 `viewport.js` runs it. It takes NUMBERS and returns numbers: every layout read and every DOM write
@@ -139,6 +139,15 @@ unclamped search, its pads, its anchor (captured and corrected through the share
 follow decision — which is what validates the module against the reference. What remains is the
 class: the state machine (the window range, the observers, the measure schedule, the tail
 converge, position memory) still lives twice, and moving it needs that frame adapter.
+
+Step 3 fixed rule 5's wrong side on the app shell: the estimate is a FLOOR per unit type (a
+prompt 44px, an assistant note 40, a process 34) instead of 132px for everything, so learning a
+height only grows the page below the reader. Measured on a forty-turn session: reading down and
+back used to SHRINK the page by 505px, and now it does not shrink at all
+(`scenario_learning_heights_only_grows_the_page`, both surfaces). The search-hit reveal the note
+lists beside it stays with each page on purpose — `revealNavigationContext` walks the app shell's
+projection (prompt expansions, process folds, cap state) and `revealMark` the classic page's
+folds; they are the pages' vocabulary, not the engine's.
 
 - **Migration** in three steps, each releasable: (1) the app shell's `viewport.js` becomes the
   module's first consumer (it is already class-shaped and record-agnostic); (2) the classic page

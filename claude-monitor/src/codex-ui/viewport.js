@@ -36,7 +36,15 @@ export function revealNavigationContext(units, index, state, recordIndex, reveal
 // explicit follow mode changed only by user input.
 import { applyViewChoices, parseViewMemory, serializeViewMemory, viewChoices, viewMemoryKey } from "./view-memory.js";
 
-const ESTIMATE = 132;
+// Rule 5 (#107 step 3): estimate UNDER, never over. An unmeasured unit's height is a guess, and
+// the guess is wrong in one of two directions. Guess LOW and learning the real height only ever
+// grows the page BELOW the reader, which nobody feels; guess HIGH and learning it SHRINKS the
+// page, and a shrink above the viewport is a jump unless the anchor catches it. This shell
+// guessed 132px for everything — above most prompts and every one-line assistant note — which is
+// the wrong side. The guesses below are floors: a prompt is at least one line in its card, an
+// assistant note the same, a process at least its head row. The classic page's own floor is 30.
+const ESTIMATES = { user: 44, assistant: 40, process: 34 };
+const ESTIMATE = 34;
 const REMEMBER_MS = 250;
 const OVERSCAN = 1500;
 const HOLD_SLACK = 80;
@@ -188,7 +196,8 @@ export class Viewport {
   /** One unit's height as the sums see it: what was measured, or the estimate. */
   heightOf(index) {
     const unit = this.units[index];
-    return (unit && this.state.heights.get(unit.key)) || ESTIMATE;
+    if (!unit) return ESTIMATE;
+    return this.state.heights.get(unit.key) || ESTIMATES[unit.type] || ESTIMATE;
   }
 
   rebuildPrefix() {
