@@ -2790,3 +2790,118 @@ fn large_fixture(name: &str) -> Fixture {
         turns: 13,
     }
 }
+
+// ── scenario: the turn ordinal a process header and the turn list show is the turn's own (#103)
+
+/// The owner's report: "Turn 05" on a process while the session is in its 900s. The ordinal
+/// must be the record's own turn, the same one the turns pane shows — in a 120-turn session,
+/// at the tail, after a live turn arrives, and after a reload.
+fn scenario_turn_ordinal_is_the_turns_own(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (last_row, surface_label) = match surface {
+        Surface::Classic => (
+            "(function(){ var r = [...document.querySelectorAll('#turnlist .side-item')].pop(); return r ? r.textContent.trim().split(' ')[0] : ''; })()",
+            "(function(){ var t = document.getElementById('stickytext'); return t ? t.textContent.trim() : ''; })()",
+        ),
+        Surface::AppShell => (
+            "(function(){ var r = [...document.querySelectorAll('#navigatorTurns .outline-turn-row .outline-number')].pop(); return r ? r.textContent.trim().replace(/\\s*·$/, '') : ''; })()",
+            "(function(){ var s = [...document.querySelectorAll('.virtual-window .process-surface')].pop(); if (!s) return 'no surface'; var l = s.querySelector('.process-surface-label'); if (!l) return 'no label'; var c = getComputedStyle(l, '::after').content; c = c.charAt(0) === String.fromCharCode(34) ? c.slice(1, -1) : c; return c + '|' + s.dataset.turn; })()",
+        ),
+    };
+    assert_eq!(eval(tab, last_row), "120", "the turn list ends at 120");
+    if surface == Surface::AppShell {
+        let label = eval(tab, surface_label).as_str().unwrap_or("").to_string();
+        assert!(surface_label_ok(&label), "the last process header says its own turn (three digits deep in the session), not the count of mounted prompts: {label:?}");
+    }
+    // A live turn arrives: 121 on both.
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        vec![
+            user_at("question 121: one more", &now_minus(10)),
+            assistant_at("answer 121", &now_minus(8)),
+        ],
+        Duration::from_millis(400),
+    );
+    assert_eq!(growth.finish(Duration::from_secs(20)), 2);
+    until(
+        tab,
+        &format!("{last_row} === '121'"),
+        "the turn list to reach 121",
+        Duration::from_secs(30),
+        last_row,
+    );
+    jump_to_end(tab, surface);
+    settle();
+    settle();
+    if surface == Surface::AppShell {
+        // The new turn has no process (no tool call); the last surface is still turn 120's.
+        let label = eval(tab, surface_label).as_str().unwrap_or("").to_string();
+        assert!(
+            surface_label_ok(&label),
+            "the last surface keeps its own ordinal after growth: {label:?}"
+        );
+    }
+    // After a reload the ordinals hold.
+    eval(tab, "location.reload(); 'ok'");
+    std::thread::sleep(Duration::from_millis(1500));
+    until(
+        tab,
+        &format!("{last_row} === '121'"),
+        "the page to come back with 121 turns",
+        Duration::from_secs(30),
+        last_row,
+    );
+    jump_to_end(tab, surface);
+    settle();
+    settle();
+    if surface == Surface::AppShell {
+        let label = eval(tab, surface_label).as_str().unwrap_or("").to_string();
+        assert!(surface_label_ok(&label), "…and after a reload: {label:?}");
+    }
+}
+
+/// "Turn NNN|NNN": the label names the surface's own turn, three digits into the session.
+fn surface_label_ok(label: &str) -> bool {
+    let (text, own) = match label.split_once('|') {
+        Some(p) => p,
+        None => return false,
+    };
+    let n = text.trim_start_matches("Turn ").trim();
+    n == own.trim_start_matches('0') && n.len() >= 3 && n.chars().all(|c| c.is_ascii_digit())
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_turn_ordinal_is_the_turns_own() {
+    let _serial = serial();
+    let fx = ordinal_fixture("scenario-ordinal-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_turn_ordinal_is_the_turns_own(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_turn_ordinal_is_the_turns_own() {
+    let _serial = serial();
+    let fx = ordinal_fixture("scenario-ordinal-app");
+    let page = open(Surface::AppShell, &fx, 2894);
+    scenario_turn_ordinal_is_the_turns_own(&page.tab, Surface::AppShell, &fx);
+}
+
+/// A 120-turn session, every turn with a tool call (a process surface).
+fn ordinal_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let path = stores.claude_session(SID, &long_session(120, Shape::default()));
+    Fixture {
+        base,
+        path,
+        turns: 120,
+    }
+}

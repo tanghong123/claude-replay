@@ -206,3 +206,6 @@
 .scope-option .scope-count{margin-left:auto;font:11px/1.4 var(--mono,ui-monospace,monospace);color:var(--faint);min-width:2ch;text-align:right}
 .scope-option .scope-count:empty{display:none}
 .scope-option.scope-whole{margin-top:4px;border-top:1px solid var(--line);padding-top:6px}
+/* #103: the process header's turn is the unit's own ordinal — the demo's CSS counter counts
+   mounted user turns, which in a virtual window is whatever happens to be on screen. */
+.process-surface-label[data-turn-label]:after{content:"Turn " attr(data-turn-label)}

@@ -1134,3 +1134,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /if \(recordState\.pendingSearch\) \{ recordState\.pendingSearch = false; updateSearch\(true\); return; \}\n\s*stepSearch\(event\.shiftKey \? -1 : 1\);/, "Enter runs a pending search, else steps");
   console.log("#104 large-session search cases passed");
 }
+
+// #103: the process header's turn ordinal comes from the unit, not from a CSS counter.
+{
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /data-turn="\$\{escapeText\(unit\.turn\)\}" data-turn-label="\$\{escapeText\(String\(unit\.turn\)\.padStart\(2, "0"\)\)\}"/, "the surface carries its turn");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(comp, /<span class="process-surface-label" data-turn-label="\$\{escapeText\(String\(unit\.turn\)\.padStart\(2, "0"\)\)\}"/, "the label element carries it (attr() reads the pseudo-element's own element)");
+  assert.match(css, /\.process-surface-label\[data-turn-label\]:after\{content:"Turn " attr\(data-turn-label\)\}/, "…and the label reads it, not the counter");
+  console.log("#103 turn ordinal cases passed");
+}
