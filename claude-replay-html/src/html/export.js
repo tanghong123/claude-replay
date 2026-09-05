@@ -1665,19 +1665,10 @@
     if (mk) return { kind: mk[1] };
     return {};
   }
+  // Does this record, or anything under it, answer the filter? The same walk that opens the
+  // chain, without the opening (#118, shared/filter.js chainWalk).
   function recMatch(b, want) {
-    if (want.toolPre && b.tool && b.tool.indexOf(want.toolPre) === 0) return true;
-    if (want.tool && b.tool === want.tool) return true;
-    if (want.kind && b.kind === want.kind && !b.tool && isFoldRec(b)) return true;
-    var parts = b.body || [];
-    for (var i = 0; i < parts.length; i++) {
-      if (parts[i].p !== "blocks") continue;
-      var items = parts[i].items;
-      for (var j = 0; j < items.length; j++) {
-        if (recMatch(items[j], want)) return true;
-      }
-    }
-    return false;
+    return shared.chainWalk(b, function (rec) { return filterMatchesDirect(rec, want); }, null);
   }
   // Rebuild the per-record hit map for the active filter, and open every hit's fold
   // chain (record-level, so it holds for blocks materialized later too).
@@ -1711,17 +1702,20 @@
       e.classList.toggle("disabled", n <= 1);
     });
   }
-  function openFilterChain(b, want) {
-    var direct = (want.tool && b.tool === want.tool) ||
+  /** What the selection asks of ONE record: a tool by name, a tool by prefix (an MCP family) or
+   *  a kind that is not a tool call. */
+  function filterMatchesDirect(b, want) {
+    return !!((want.tool && b.tool === want.tool) ||
       (want.toolPre && b.tool && b.tool.indexOf(want.toolPre) === 0) ||
-      (want.kind && b.kind === want.kind && !b.tool && isFoldRec(b));
-    var containsHit = false;
-    (b.body || []).forEach(function (p) {
-      if (p.p !== "blocks") return;
-      p.items.forEach(function (c) { if (openFilterChain(c, want)) containsHit = true; });
+      (want.kind && b.kind === want.kind && !b.tool && isFoldRec(b)));
+  }
+
+  // The chain — a record matches, or something under it does, and every fold on the way opens —
+  // is the shared walk (#118, shared/filter.js chainWalk). What MATCHES is this page's own.
+  function openFilterChain(b, want) {
+    return shared.chainWalk(b, function (rec) { return filterMatchesDirect(rec, want); }, function (rec) {
+      if (isFoldRec(rec)) rec.open = 1;
     });
-    if ((direct || containsHit) && isFoldRec(b)) b.open = 1;
-    return direct || containsHit;
   }
   // Accent the hit headers of a materialized element: its own header if the record
   // matches directly, plus any nested matching folds.
@@ -2968,15 +2962,11 @@
     ensureRecText(i);
     return recText[i];
   }
-  function countRec(i, set, lc, whole) {
+  // One record's hits, and — when `counts` is given — every part's hits added into the per-class
+  // rows: the shared rule (#118, shared/search.js countRecord), which both pages now run.
+  function countRec(i, set, lc, whole, counts) {
     ensureRecText(i);
-    var wanted = scopeMask(set);
-    if (!wanted) return countOcc(recText[i], lc, whole);
-    var n = 0;
-    recSearchParts[i].forEach(function (part) {
-      if (part.mask & wanted) n += countOcc(recText[i].slice(part.start, part.end), lc, whole);
-    });
-    return n;
+    return shared.countRecord(recText[i], recSearchParts[i], lc, whole, scopeMask(set), counts || null);
   }
   var wholeAt = shared.wholeAt;
   var countOcc = shared.countOcc;
@@ -3036,38 +3026,22 @@
     curHit = null;
     hitRecs = [];
     totalHits = 0;
-    var needle = v.trim();
-    var scoped = parseScope(needle);
-    if (scoped) {
-      var rest = needle.slice(scoped.len);
-      // A PURE scope run ("auto:") has nothing after it to search — it searches
-      // ITSELF, literally, no escape needed. (The parser still reports the scope, so
-      // the dropdown's armed-but-empty state keeps its icon and checkboxes; only the
-      // search falls back to the literal.)
-      if (scoped.set && !rest.length) scoped = null;
-      else needle = rest;
-    }
-    if (needle.length < 2) {
+    // The query split — the escape, the pure-scope run, the two-character floor — is the
+    // shared rule (#118, shared/search.js splitQuery).
+    var q = shared.splitQuery(v);
+    if (q.tooShort) {
       qc.textContent = "";
       classCounts = null;
       updateScopeCounts();
       return;
     }
-    searchScope = scoped && scoped.set ? scoped.set : null;
-    var lc = needle.toLowerCase();
+    searchScope = q.set;
+    var lc = q.lc;
     searchNeedle = lc;
-    classCounts = { u: 0, a: 0, t: 0, o: 0, b: 0, r: 0, e: 0 };
+    classCounts = shared.zeroCounts();
+    var whole = !!(searchScope && searchScope.w);
     for (var i = 0; i < records.length; i++) {
-      ensureRecText(i);
-      var whole = !!(searchScope && searchScope.w);
-      recSearchParts[i].forEach(function (part) {
-        var partHits = countOcc(recText[i].slice(part.start, part.end), lc, whole);
-        if (!partHits) return;
-        ["u", "a", "t", "o", "b", "r", "e"].forEach(function (k) {
-          if (part.mask & CLASS_BIT[k]) classCounts[k] += partHits;
-        });
-      });
-      var n = countRec(i, searchScope, lc, whole);
+      var n = countRec(i, searchScope, lc, whole, classCounts);
       if (n) { hitRecs.push({ rec: i, count: n, start: totalHits }); totalHits += n; }
     }
     updateScopeCounts();
@@ -3086,9 +3060,7 @@
     var hr = curHit && navPos >= 0 ? hitRecs[navPos] : null;
     qc.textContent = hr
       ? (hr.start + Math.min(navMark, hr.count - 1) + 1) + "/" + totalHits
-      : totalHits + " hit" + (totalHits === 1 ? "" : "s")
-        + (scopeLetters(searchScope).length ? " in " + scopeLetters(searchScope).join("") : "")
-        + (whole ? " · whole words" : "");
+      : shared.countLabel(totalHits, searchScope, whole);
     showQNav(totalHits > 0);
   }
   // Hits follow the RECORDS as they arrive and retreat (#71): a record appended while a
@@ -3098,17 +3070,7 @@
   function countNewRecord(i) {
     if (!searchNeedle) return;
     var whole = !!(searchScope && searchScope.w);
-    if (classCounts) {
-      ensureRecText(i);
-      recSearchParts[i].forEach(function (part) {
-        var partHits = countOcc(recText[i].slice(part.start, part.end), searchNeedle, whole);
-        if (!partHits) return;
-        ["u", "a", "t", "o", "b", "r", "e"].forEach(function (k) {
-          if (part.mask & CLASS_BIT[k]) classCounts[k] += partHits;
-        });
-      });
-    }
-    var n = countRec(i, searchScope, searchNeedle, whole);
+    var n = countRec(i, searchScope, searchNeedle, whole, classCounts);
     if (!n) return;
     hitRecs.push({ rec: i, count: n, start: totalHits });
     totalHits += n;
@@ -3123,17 +3085,12 @@
     if (navPos >= hitRecs.length) { navPos = -1; navMark = -1; curHit = null; }
     if (classCounts) {
       var whole = !!(searchScope && searchScope.w);
-      classCounts = { u: 0, a: 0, t: 0, o: 0, b: 0, r: 0, e: 0 };
-      hitRecs.forEach(function (h) {
-        ensureRecText(h.rec);
-        recSearchParts[h.rec].forEach(function (part) {
-          var partHits = countOcc(recText[h.rec].slice(part.start, part.end), searchNeedle, whole);
-          if (!partHits) return;
-          ["u", "a", "t", "o", "b", "r", "e"].forEach(function (k) {
-            if (part.mask & CLASS_BIT[k]) classCounts[k] += partHits;
-          });
-        });
-      });
+      classCounts = shared.zeroCounts();
+      // The rebuild walks the records that still HOLD hits — a record whose per-class hits all
+      // sit outside the active scope is not in that list, so a scoped row can read low until
+      // the next full run. Kept as it was: it is the classic page's number, and moving it is a
+      // change to what a reader sees, not a refactor.
+      hitRecs.forEach(function (h) { countRec(h.rec, searchScope, searchNeedle, whole, classCounts); });
       updateScopeCounts();
     }
     paintQCount();
@@ -3351,10 +3308,7 @@
       var cb = $("qs-" + k);
       return cb && cb.checked;
     });
-    var trimmed = q.value.replace(/^\s+/, "");
-    var parsed = parseScope(trimmed);
-    var rest = parsed ? trimmed.slice(parsed.len) : trimmed;
-    q.value = (letters.length ? letters.join("") + ":" : "") + rest;
+    q.value = shared.writePrefix(q.value, letters);
     search(q.value);
     syncQScope();
   }

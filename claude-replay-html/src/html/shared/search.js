@@ -153,4 +153,73 @@ function countOcc(t, lc, whole) {
   return n;
 }
 
-export { CLASS_BIT, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };
+/* ── one search, two pages (#118) ─────────────────────────────────────────
+ * Everything above is the vocabulary; what follows is the SEARCH ITSELF, as far as it can go
+ * without a DOM. Both pages ran the same arithmetic in their own words — the query split, the
+ * per-scope counts, the count label, the prefix the scope menu writes back into the box — and a
+ * rule that lives twice drifts. The pages keep what is theirs: their caches, their marks, their
+ * controls. The classic page is the reference; where the two disagreed, its rule is the one
+ * written here. */
+
+/** The scope classes in canonical order (no `w`) — the order every count row is read in. */
+const CLASS_ORDER = ["u", "a", "t", "o", "b", "r", "e"];
+
+/** A needle shorter than this searches nothing: two characters of noise would mark a page. */
+const MIN_NEEDLE = 2;
+
+/** An empty per-class accumulator. */
+function zeroCounts() {
+  return { u: 0, a: 0, t: 0, o: 0, b: 0, r: 0, e: 0 };
+}
+
+/** A raw box value → what to search: the needle (lowercased in `lc`), the scope set (null for
+ *  everything) and whether it is too short to run. A PURE scope run ("auto:") has nothing after
+ *  it, so it searches ITSELF, literally — the parser still reports the scope, so an armed but
+ *  empty menu keeps its state. A leading ":" escapes a scope-shaped literal. */
+function splitQuery(raw, minLen = MIN_NEEDLE) {
+  let needle = String(raw ?? "").trim();
+  let scoped = parseScope(needle);
+  if (scoped) {
+    const rest = needle.slice(scoped.len);
+    if (scoped.set && !rest.length) scoped = null;
+    else needle = rest;
+  }
+  const set = scoped && scoped.set ? scoped.set : null;
+  return { needle, lc: needle.toLowerCase(), set, scoped, tooShort: needle.length < minLen };
+}
+
+/** One record's hits: the total IN SCOPE, and — always, whatever the scope — every part's hits
+ *  added into `counts` by the classes that part carries. The scope decides what is COUNTED for
+ *  the reader, never what the per-class row shows, which is what makes an unscoped search still
+ *  fill the scope rows a reader is about to choose from. */
+function countRecord(text, parts, lc, whole, wanted, counts) {
+  let inScope = 0;
+  for (const part of parts || []) {
+    const n = countOcc(text.slice(part.start, part.end), lc, whole);
+    if (!n) continue;
+    if (counts) for (const k of CLASS_ORDER) if (part.mask & CLASS_BIT[k]) counts[k] += n;
+    if (!wanted || part.mask & wanted) inScope += n;
+  }
+  // Unscoped, the record's own text is the truth — a part-sum would drop the bytes no part
+  // claims (a head's summary, an agent or attachment record) that the classic page counts.
+  return wanted ? inScope : countOcc(text, lc, whole);
+}
+
+/** The count a reader sees: "12 hits", "3 hits in ua", "1 hit · whole words". */
+function countLabel(total, set, whole) {
+  const letters = scopeLetters(set);
+  return total + " hit" + (total === 1 ? "" : "s")
+    + (letters.length ? " in " + letters.join("") : "")
+    + (whole ? " · whole words" : "");
+}
+
+/** The box value the scope menu writes back: the chosen letters as a prefix, the reader's own
+ *  words kept. No letters means no prefix — the box says "everything" by saying nothing. */
+function writePrefix(raw, letters) {
+  const value = String(raw ?? "").replace(/^\s+/, "");
+  const parsed = parseScope(value);
+  const rest = parsed ? value.slice(parsed.len) : value;
+  return (letters.length ? letters.join("") + ":" : "") + rest;
+}
+
+export { CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };

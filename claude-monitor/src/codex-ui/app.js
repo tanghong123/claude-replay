@@ -2,6 +2,7 @@ import { agentLogo, svg } from "./icons.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
+import { chainWalk } from "./shared/filter.js";
 import { ControlStore } from "./control-store.js";
 import { Preview } from "./preview.js";
 import { RecordStore } from "./record-store.js";
@@ -12,7 +13,7 @@ import { displayState, needsPerson as needs, denoteState } from "./shared/state-
 import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { CLASS_BIT, LIVE_SEARCH_LIMIT, activeLetters, countOcc, parseScope, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags } from "./shared/search.js";
+import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, parseScope, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt } from "./shared/search.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskOrder, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -587,9 +588,13 @@ const ALL_SCOPES = ["u", "a", "t", "o", "b", "r", "e"];
 /** The active scope as a set for the shared grammar; null when every class is on (no scope). */
 function activeScopeSet() {
   const scopes = uiState.searchScopes;
-  if (ALL_SCOPES.every(k => scopes.has(k)) && !uiState.searchWhole) return null;
+  // Every class on is NO class scope, whole-words or not (#118): the classic page reads `w:` as
+  // "whole words, everywhere", and a mask of all seven would quietly drop the records no class
+  // claims — an agent event, an attachment, a queued prompt.
+  const all = ALL_SCOPES.every(k => scopes.has(k));
+  if (all && !uiState.searchWhole) return null;
   const set = { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: !!uiState.searchWhole };
-  for (const k of ALL_SCOPES) if (scopes.has(k)) set[k] = true;
+  if (!all) for (const k of ALL_SCOPES) if (scopes.has(k)) set[k] = true;
   return set;
 }
 /** The box is the truth (#101, the classic page's rule): a typed `uatobrew:` prefix sets the
@@ -597,77 +602,50 @@ function activeScopeSet() {
  *  scope rows; stepping and marks honour the scope; the total reads "N hits in ub". */
 function updateSearch(reset) {
   const raw = byId("transcriptSearchInput").value.trim();
-  const scoped = parseScope(raw);
-  let needle = raw, scope = null;
-  if (scoped) {
-    const rest = raw.slice(scoped.len);
-    if (scoped.set && !rest.length) scope = null; // a pure run searches itself, literally
-    else { needle = rest; scope = scoped.set; }
-  }
-  if (scoped && scoped.set && rest_ok(raw, scoped)) {
-    uiState.searchScopes = new Set(scopeLetters(scope || {}).length ? scopeLetters(scope) : ALL_SCOPES);
-    uiState.searchWhole = !!(scope && scope.w);
-  } else if (!scoped || scoped.set === null) {
+  // The split, the per-record count, the label: the shared rules (#118, shared/search.js), so a
+  // query means the same thing on both pages — including the two-character floor, which this
+  // shell did not have.
+  const q = splitQuery(raw);
+  if (q.scoped && q.set && q.needle.length) {
+    uiState.searchScopes = new Set(scopeLetters(q.set).length ? scopeLetters(q.set) : ALL_SCOPES);
+    uiState.searchWhole = !!q.set.w;
+  } else if (!q.scoped || q.scoped.set === null) {
     // No prefix (or the escape): everything, as the classic page — the buttons follow the box.
     uiState.searchScopes = new Set(ALL_SCOPES); uiState.searchWhole = false;
   }
   renderFilterMenu();
-  const query = needle.toLowerCase();
+  const query = q.tooShort ? "" : q.lc;
   recordState.search = query;
   const set = activeScopeSet();
   const wanted = scopeMask(set), whole = !!(set && set.w);
   recordState.searchMask = wanted; recordState.searchWhole = whole;
   recordState.matches = [];
-  const classCounts = { u: 0, a: 0, t: 0, o: 0, b: 0, r: 0, e: 0 };
+  const classCounts = zeroCounts();
   let total = 0;
   if (query) recordState.records.forEach((record, index) => {
     const { text, parts } = searchTextOf(record);
-    let inScope = 0;
-    for (const part of parts) {
-      const n = countOcc(text.slice(part.start, part.end), query, whole);
-      if (!n) continue;
-      for (const k of ALL_SCOPES) if (part.mask & CLASS_BIT[k]) classCounts[k] += n;
-      if (!wanted || (part.mask & wanted)) inScope += n;
-    }
+    const inScope = countRecord(text, parts, query, whole, wanted, classCounts);
     if (inScope) { recordState.matches.push(index); total += inScope; }
   });
-  for (const k of ALL_SCOPES) { const cell = byId("scopeRow").querySelector(`[data-scope-count="${k}"]`); if (cell) cell.textContent = query ? String(classCounts[k]) : ""; }
+  for (const k of CLASS_ORDER) { const cell = byId("scopeRow").querySelector(`[data-scope-count="${k}"]`); if (cell) cell.textContent = query ? String(classCounts[k]) : ""; }
   if (reset) recordState.match = recordState.matches.length ? 0 : -1; else recordState.match = Math.min(recordState.match, recordState.matches.length - 1);
-  const letters = scopeLetters(set);
-  byId("transcriptSearchCount").textContent = query ? `${total} hit${total === 1 ? "" : "s"}${letters.length && letters.length < ALL_SCOPES.length ? " in " + letters.join("") : ""}${whole ? " · whole words" : ""}` : "";
+  byId("transcriptSearchCount").textContent = query ? countLabel(total, set, whole) : "";
   markSearch();
   applyFilters();
 }
-function rest_ok(raw, scoped) { return raw.slice(scoped.len).length > 0; }
 /** The scope buttons rewrite the box's prefix (the classic page's applyScopeFromMenu). */
 function applyScopeFromMenu() {
   const input = byId("transcriptSearchInput");
-  const raw = input.value.replace(/^\s+/, "");
-  const parsed = parseScope(raw);
-  const rest = parsed && parsed.set ? raw.slice(parsed.len) : parsed && parsed.set === null ? raw : raw;
   const set = activeScopeSet();
-  const letters = set ? activeLetters(set) : [];
-  input.value = (letters.length ? letters.join("") + ":" : "") + rest;
+  input.value = writePrefix(input.value, set ? activeLetters(set) : []);
   updateSearch(true);
 }
-/** The scope classes of the element a text node sits in (the rendered twin of directMask). */
-function elementMask(element) {
-  const row = element.closest("[data-tool-name], .turn.user, .process-commentary, .turn.assistant, [data-kind]");
-  if (!row) return 0;
-  if (row.classList.contains("user")) return CLASS_BIT.u;
-  if (row.classList.contains("process-commentary") || (row.classList.contains("assistant") && !row.classList.contains("renderer-turn"))) return CLASS_BIT.a;
-  const tool = row.dataset.toolName, kind = row.dataset.kind;
-  if (kind === "thinking" || kind === "activity") return CLASS_BIT.t;
-  if (!tool) return kind === "tool" ? CLASS_BIT.o : 0;
-  let mask = CLASS_BIT.o;
-  if (tool === "Bash") mask |= CLASS_BIT.b;
-  if (["Read", "Glob", "Grep", "WebFetch", "WebSearch"].includes(tool)) mask |= CLASS_BIT.r;
-  if (["Write", "Edit", "NotebookEdit"].includes(tool)) mask |= CLASS_BIT.e;
-  return mask;
-}
-const WORD_CHAR = /[\p{L}\p{N}\p{M}_]/u;
-function wholeAtText(t, start, len) {
-  return !(start > 0 && WORD_CHAR.test(t.charAt(start - 1))) && !(start + len < t.length && WORD_CHAR.test(t.charAt(start + len)));
+/** Whether a marked text node's nearest row is in scope — the RECORD's kind through the shared
+ *  class table (#118), the same gate the classic page applies to the block a hit sits in. This
+ *  shell used to derive the mask from the row's classes and its DISPLAY name, so an Edit (shown
+ *  as "Update") was counted under `e:` and then marked nowhere. */
+function kindInScope(row, wanted) {
+  return !wanted || !!(directMask(row?.dataset.recordKind || "") & wanted);
 }
 function stepSearch(delta) {
   const matches = recordState.matches;
@@ -678,7 +656,7 @@ function stepSearch(delta) {
   if (recordState.match >= 0 && onScreen) {
     recordState.match = (recordState.match + delta + matches.length) % matches.length;
   } else {
-    const top = unitAtTop()?.from ?? 0;
+    const top = recordIndexAtTop();
     const k = matches.findIndex(index => index >= top);
     recordState.match = delta > 0 ? (k >= 0 ? k : 0) : (k > 0 ? k - 1 : matches.length - 1);
   }
@@ -706,13 +684,13 @@ function markSearch() {
     const index = Number(root.dataset.blockIndex);
     if (!Number.isInteger(index) || !matched.has(index) || root.parentElement?.closest("[data-block-index]")) continue;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const texts = [];
-    while (walker.nextNode()) if (walker.currentNode.parentElement && !["SCRIPT", "STYLE", "MARK"].includes(walker.currentNode.parentElement.tagName) && walker.currentNode.nodeValue.toLowerCase().includes(needle) && (!wanted || (elementMask(walker.currentNode.parentElement) & wanted))) texts.push(walker.currentNode);
+    while (walker.nextNode()) if (walker.currentNode.parentElement && !["SCRIPT", "STYLE", "MARK"].includes(walker.currentNode.parentElement.tagName) && walker.currentNode.nodeValue.toLowerCase().includes(needle) && (!wanted || kindInScope(walker.currentNode.parentElement.closest("[data-record-kind]"), wanted))) texts.push(walker.currentNode);
     let first = index === current;
     for (const text of texts) {
       const value = text.nodeValue, lower = value.toLowerCase(), frag = document.createDocumentFragment();
       let at = 0, from = 0;
       while ((at = lower.indexOf(needle, from)) !== -1) {
-        if (whole && !wholeAtText(lower, at, needle.length)) { from = at + needle.length; continue; }
+        if (whole && !wholeAt(lower, at, needle.length)) { from = at + needle.length; continue; }
         if (at > from) frag.appendChild(document.createTextNode(value.slice(from, at)));
         const mark = document.createElement("mark"); mark.className = "search-mark" + (first ? " current" : ""); mark.textContent = value.slice(at, at + needle.length); frag.appendChild(mark);
         first = false; from = at + needle.length;
@@ -784,14 +762,18 @@ function applyFilters() {
 // Does this record — or a record nested in it — carry one of the selected tools? Every record
 // on such a chain is a hit (its fold opens); the direct ones are accented.
 const toolKindsForFilter = new Set(["bash", "read", "write", "edit", "skill", "tool"]);
+// The chain — a record matches, or something under it does — is the shared walk (#118,
+// shared/filter.js chainWalk); what MATCHES, and what a match opens, stay this shell's own.
 function filterChain(record, wanted, hits, direct) {
-  const name = record.head?.name || record.tool || record.kind;
-  const own = toolKindsForFilter.has(record.kind) && wanted.has(name);
-  let inner = false;
-  for (const part of record.body || []) if (part.p === "blocks") for (const item of part.items || []) if (filterChain(item, wanted, hits, direct)) inner = true;
-  if (own && record.id) direct.add(record.id);
-  if ((own || inner) && record.id) hits.add(record.id);
-  return own || inner;
+  return chainWalk(
+    record,
+    rec => toolKindsForFilter.has(rec.kind) && wanted.has(rec.head?.name || rec.tool || rec.kind),
+    (rec, own) => {
+      if (!rec.id) return;
+      if (own) direct.add(rec.id);
+      hits.add(rec.id);
+    },
+  );
 }
 function applyToolFilter() {
   const wanted = uiState.toolFilters;
@@ -809,9 +791,7 @@ function applyToolFilter() {
     viewport.render();
     viewport.remeasure();
     // Land on the nearest hit so the filter visibly did something.
-    const top = unitAtTop();
-    const start = top ? top.from : 0;
-    const target = indices.find(index => index >= start) ?? indices[0];
+    const target = indices.find(index => index >= recordIndexAtTop()) ?? indices[0];
     if (target != null) viewport.jumpToRecord(target, "filter");
   } else if (recordState.filterHits) {
     const snapshot = recordState.filterSnapshot;
@@ -1126,6 +1106,13 @@ function unitAtTop() {
   const top = viewport.scroller.getBoundingClientRect().top;
   for (const child of viewport.window.children) if (child.getBoundingClientRect().top >= top - 24) return child.dataset.unitKey;
   return null;
+}
+/** The record index the viewport starts at — `unitAtTop` names a UNIT, and a unit's key is not
+ *  a record index; reading `.from` off the key gave `undefined`, so every cold step and every
+ *  filter landed on the session's first hit instead of the nearest one (#118). */
+function recordIndexAtTop() {
+  const key = unitAtTop();
+  return recordState.units.find(unit => unit.key === key)?.from ?? 0;
 }
 function currentUserUnitIndex() {
   return currentTurnIndex(recordState.units, unitAtTop());

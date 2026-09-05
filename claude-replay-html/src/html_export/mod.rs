@@ -3429,8 +3429,9 @@ mod tests {
             "a leading colon escapes a scope-shaped literal"
         );
         assert!(
-            JS.contains("if (scoped.set && !rest.length) scoped = null;"),
-            "a pure scope run searches itself — the scope reading has nothing to search"
+            SEARCH.contains("if (scoped.set && !rest.length) scoped = null;")
+                && JS.contains("var q = shared.splitQuery(v);"),
+            "a pure scope run searches itself — the rule is the shared module's, the page runs it (#118)"
         );
         assert!(
             SEARCH.contains("function directMask")

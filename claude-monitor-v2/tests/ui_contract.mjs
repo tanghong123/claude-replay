@@ -12,6 +12,8 @@ import { recordTextSize, LIVE_SEARCH_LIMIT, recordText, recordTextParts, parseSc
 import { fmtTime, fmtDur } from "../../claude-monitor/src/codex-ui/shared/time.js";
 import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/shared/parts.js";
 import { isInteraction, interactionCard, interactionHtml } from "../../claude-replay-html/src/html/shared/interaction.js";
+import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE } from "../../claude-replay-html/src/html/shared/search.js";
+import { chainWalk } from "../../claude-replay-html/src/html/shared/filter.js";
 import { displayName, toolHead, stateLabel } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
@@ -1119,11 +1121,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(tp.text.includes("needle out"), true, "lowercased per own text");
   assert.equal(tp.parts.length, 2); assert.equal(tp.parts[0].mask, CLASS_BIT.t); assert.equal(tp.parts[1].mask, CLASS_BIT.o | CLASS_BIT.b, "a nested tool owns its text");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
-  assert.match(app, /if \(!wanted \|\| \(part\.mask & wanted\)\) inScope \+= n;/, "stepping is gated by the scope");
+  // The gate itself now lives in the shared module, and BOTH pages run it (#118).
+  const searchModule = readFileSync(new URL("../../claude-replay-html/src/html/shared/search.js", import.meta.url), "utf8");
+  assert.match(searchModule, /if \(!wanted \|\| part\.mask & wanted\) inScope \+= n;/, "stepping is gated by the scope");
+  assert.match(app, /const inScope = countRecord\(text, parts, query, whole, wanted, classCounts\);/, "the app shell counts through the module");
   assert.match(app, /data-scope-count="\$\{key\}"/, "the scope rows carry counts");
   assert.match(app, /function applyScopeFromMenu\(\) \{/, "the buttons rewrite the box's prefix");
   const search = readFileSync(new URL("../../claude-replay-html/src/html/shared/search.js", import.meta.url), "utf8");
-  assert.match(search, /^export \{ CLASS_BIT, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc \};\s*$/m);
+  assert.match(search, /^export \{ CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc \};\s*$/m);
   console.log("#101 scope cases passed");
 }
 
@@ -1240,4 +1245,61 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(comp, /return interactionHtml\(view\.interaction, view\.summary, APP_INTERACTION\);/, "the app shell draws the shared card");
   assert.doesNotMatch(comp, /Waiting for user input|Monitor cannot submit/, "…and holds none of the words itself");
   console.log("#121 request-for-input cases passed");
+}
+
+// #118: the search and the filter are one set of rules, and both pages run them.
+{
+  assert.deepEqual(CLASS_ORDER, ["u", "a", "t", "o", "b", "r", "e"]);
+  assert.equal(MIN_NEEDLE, 2);
+  const scoped = splitQuery("ub:needle");
+  assert.deepEqual([scoped.needle, scoped.lc, scopeLetters(scoped.set), scoped.tooShort], ["needle", "needle", ["u", "b"], false]);
+  assert.deepEqual([splitQuery("auto:").needle, splitQuery("auto:").set], ["auto:", null], "a pure run searches itself");
+  assert.deepEqual([splitQuery(":ub:x").needle, splitQuery(":ub:x").set], ["ub:x", null], "a leading colon escapes");
+  assert.equal(splitQuery("a").tooShort, true, "one character searches nothing");
+  assert.equal(splitQuery("ab").tooShort, false);
+  // The counts row is filled whatever the scope; only the RETURN is scoped. A record's own
+  // text is the unscoped truth, so the bytes no part claims are counted too.
+  const parts = [{ start: 0, end: 6, mask: CLASS_BIT.u }, { start: 6, end: 12, mask: CLASS_BIT.o | CLASS_BIT.b }];
+  const counts = zeroCounts();
+  assert.equal(countRecord("aa aa aa aa ", parts, "aa", false, CLASS_BIT.u, counts), 2, "scoped: the parts in scope");
+  assert.deepEqual([counts.u, counts.b, counts.o, counts.t], [2, 2, 2, 0], "…and every class row still fills");
+  const open = zeroCounts();
+  assert.equal(countRecord("aa aa aa aa ", parts, "aa", false, 0, open), 4, "unscoped: the record's own text");
+  assert.deepEqual([open.u, open.b], [2, 2]);
+  assert.equal(countRecord("one two one", [{ start: 0, end: 11, mask: CLASS_BIT.u }], "one", true, CLASS_BIT.u, null), 2, "whole words");
+  assert.equal(countLabel(1, null, false), "1 hit");
+  assert.equal(countLabel(12, parseScope("ub:x").set, false), "12 hits in ub");
+  assert.equal(countLabel(3, parseScope("w:x") ? parseScope("w:x").set : null, true), "3 hits · whole words", "whole words alone scopes nothing");
+  assert.equal(writePrefix("ub:needle", ["a"]), "a:needle");
+  assert.equal(writePrefix("ub:needle", []), "needle", "no letters, no prefix");
+  assert.equal(writePrefix("  needle", ["u", "b"]), "ub:needle");
+  // The filter chain: a parent whose child matches is on the chain, and the walk says which.
+  const seen = [];
+  const tree = { id: "p", kind: "act", body: [{ p: "blocks", items: [{ id: "c1", kind: "bash", body: [] }, { id: "c2", kind: "read", body: [] }] }] };
+  assert.equal(chainWalk(tree, rec => rec.kind === "bash", (rec, direct) => seen.push([rec.id, direct])), true);
+  assert.deepEqual(seen, [["c1", true], ["p", false]], "the match, then the ancestor that contains it");
+  assert.equal(chainWalk(tree, rec => rec.kind === "write", null), false, "nothing under it, no chain");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /const q = splitQuery\(raw\);/, "the app shell splits the query through the module");
+  assert.match(app, /byId\("transcriptSearchCount"\).textContent = query \? countLabel\(total, set, whole\) : "";/);
+  assert.match(app, /input\.value = writePrefix\(input\.value, set \? activeLetters\(set\) : \[\]\);/);
+  assert.match(app, /return chainWalk\(/, "…and walks the filter chain through the module");
+  assert.doesNotMatch(app, /function elementMask|function wholeAtText/, "its own copies are gone");
+  // The mark gate is the record's KIND through the shared class table — the classic page's rule.
+  // The old gate read the row's DISPLAY name, so an Edit (shown as "Update") was counted under
+  // `e:` and marked nowhere.
+  assert.match(app, /return !wanted \|\| !!\(directMask\(row\?\.dataset\.recordKind \|\| ""\) & wanted\);/);
+  assert.match(app, /kindInScope\(walker\.currentNode\.parentElement\.closest\("\[data-record-kind\]"\), wanted\)/);
+  const comp118 = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp118, /data-record-kind="\$\{escapeText\(view\.raw\?\.kind \|\| view\.renderer\)\}"/, "every renderer row carries its record kind");
+  assert.match(comp118, /class="turn user" data-kind="user" data-record-kind="user"/);
+  assert.match(comp118, /class="turn user command" data-kind="user" data-record-kind="command"/);
+  assert.match(app, /const key = unitAtTop\(\);\n  return recordState\.units\.find\(unit => unit\.key === key\)\?\.from \?\? 0;/, "a unit key is resolved to a record index");
+  assert.doesNotMatch(app, /unitAtTop\(\)\?\.from/, "…never read as one");
+  const js = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(js, /var q = shared\.splitQuery\(v\);/, "the classic page runs the same split");
+  assert.match(js, /qc\.textContent = hr[\s\S]{0,120}shared\.countLabel\(totalHits, searchScope, whole\);/);
+  assert.match(js, /q\.value = shared\.writePrefix\(q\.value, letters\);/);
+  assert.match(js, /return shared\.chainWalk\(b, function \(rec\) \{ return filterMatchesDirect\(rec, want\); \}, null\);/);
+  console.log("#118 shared search and filter cases passed");
 }
