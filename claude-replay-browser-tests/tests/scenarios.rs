@@ -498,6 +498,92 @@ fn app_shell_a_command_output_is_plain_output() {
     scenario_a_command_output_is_plain_output(&page.tab, Surface::AppShell, &fx);
 }
 
+/// A transcript keeps growing while a tool filter is on (#126). The filter's hit set was
+/// computed once, so anything that arrived afterwards was in no set — and the paint hid every
+/// one of them: on a live session, the transcript silently stopped.
+fn scenario_the_filter_takes_in_what_arrives(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (select, visible_bash) = match surface {
+        Surface::Classic => (
+            "(function(){ var b = document.getElementById('btn-tools'); if (b) b.click(); var it = document.querySelector('.tool-item[data-label=\"Bash\"]'); if (!it) return 'no item'; it.click(); return 'selected'; })()",
+            "[...document.querySelectorAll('#stream .fold[data-tool=\"Bash\"]')].filter(function (f) { return f.getBoundingClientRect().height > 0; }).length",
+        ),
+        Surface::AppShell => (
+            "(function(){ var it = document.querySelector('.tool-type-option[data-tool-filter=\"Bash\"]'); if (!it) { document.getElementById('filterTranscriptBtn').click(); it = document.querySelector('.tool-type-option[data-tool-filter=\"Bash\"]'); } if (!it) return 'no item'; it.click(); return 'selected'; })()",
+            "[...document.querySelectorAll('.renderer-turn[data-tool-name=\"Bash\"]')].filter(function (t) { return t.getBoundingClientRect().height > 0; }).length",
+        ),
+    };
+    eval(tab, select);
+    settle();
+    settle();
+    let before = eval(tab, visible_bash).as_i64().unwrap_or(0);
+    assert!(before > 0, "the filter shows the Bash calls it already had");
+    // Two more Bash calls arrive while the filter is on.
+    let script = vec![
+        assistant_at("running one more check", &now_minus(30)),
+        tool_open_at("late-1", &now_minus(29)),
+        tool_result_at("late-1", &now_minus(28)),
+        tool_open_at("late-2", &now_minus(20)),
+        tool_result_at("late-2", &now_minus(19)),
+    ];
+    let growth = LiveGrowth::start(fx.path.clone(), script, Duration::from_millis(1200));
+    assert_eq!(
+        growth.finish(Duration::from_secs(40)),
+        5,
+        "the driver appended"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut after = before;
+    while std::time::Instant::now() < deadline {
+        after = eval(tab, visible_bash).as_i64().unwrap_or(0);
+        if after > before {
+            break;
+        }
+        settle();
+    }
+    // The transcript keeps growing under the filter — the defect was that it stopped — and
+    // nothing that answers the filter is hidden BY it. (How many of the new calls are mounted
+    // at once is the window's business, not the filter's.)
+    assert!(
+        after > before,
+        "the calls that arrived under the filter reach the page ({before} -> {after})"
+    );
+    let hidden = eval(
+        tab,
+        match surface {
+            Surface::Classic => "document.querySelectorAll('#stream .fold[data-tool=\"Bash\"].filter-hidden').length",
+            Surface::AppShell => "document.querySelectorAll('.renderer-turn[data-tool-name=\"Bash\"].filter-hidden, .renderer-turn[data-tool-name=\"Bash\"] .filter-hidden').length",
+        },
+    )
+    .as_i64()
+    .unwrap_or(-1);
+    assert_eq!(hidden, 0, "…and the filter hides none of them");
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_the_filter_takes_in_what_arrives() {
+    let _serial = serial();
+    let fx = fixture("scenario-livefilter-classic", 14);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_the_filter_takes_in_what_arrives(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_filter_takes_in_what_arrives() {
+    let _serial = serial();
+    let fx = fixture("scenario-livefilter-app", 14);
+    let page = open(Surface::AppShell, &fx, 2905);
+    scenario_the_filter_takes_in_what_arrives(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: stepping and paging from the top ──────────────────────────────────────────────
 
 /// From the top, `]` three times lands on turn 3 or later and each press moves forward; a

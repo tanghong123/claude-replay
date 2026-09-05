@@ -1003,7 +1003,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /function filterChain\(record, wanted, hits, direct\) \{/, "a hit chain: the record or a nested one carries a selected tool");
-  assert.match(app, /for \(const id of hits\) recordState\.folds\.set\(id, false\);/, "every record on a chain opens");
+  // Only what is NEWLY on the chain opens (#126): a live session must not re-open a fold the
+  // reader closed a moment ago, and a record that arrives under a filter must still be added.
+  assert.match(app, /for \(const id of hits\) if \(!before\?\.has\(id\)\) recordState\.folds\.set\(id, false\);/, "every record newly on a chain opens");
+  assert.match(app, /function refreshFilterHits\(\) \{/, "…and records arriving under a filter join it");
+  assert.match(app, /renderNavigator\(\); refreshFilterHits\(\); updateSearch\(false\);/, "…on the arrival path");
   assert.match(app, /recordState\.filterSnapshot = \{ folds: new Map\(recordState\.folds\)/, "the fold state is snapshotted for the clear");
   assert.match(app, /if \(target != null\) viewport\.jumpToRecord\(target, "filter"\);/, "…and the view lands on the nearest hit");
   assert.match(app, /answer\.classList\.add\("filter-hidden"\)/, "assistant answers hide");

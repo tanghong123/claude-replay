@@ -432,7 +432,7 @@ function updateRecords({ records, meta, changedFrom }) {
   const opening = lastRecordCount < 0;
   lastRecordCount = records.length;
   if (!wasFollowing && delta && !opening) recordState.newRecords += delta;
-  paintJump(); renderHeader(); renderNavigator(); updateSearch(false);
+  paintJump(); renderHeader(); renderNavigator(); refreshFilterHits(); updateSearch(false);
 }
 
 function landOnHash() {
@@ -741,9 +741,13 @@ function renderFilterMenu() {
 function applyFilters() {
   const hits = recordState.filterHits;
   viewport.window.querySelectorAll("[data-kind]").forEach(element => {
-    const kind = element.dataset.kind, tool = element.dataset.toolName;
-    const scope = kind === "user" ? "u" : kind === "assistant" ? "a" : kind === "thinking" ? "t" : kind === "tool" ? (tool === "Bash" ? "b" : ["Read", "Glob", "Grep", "WebFetch", "WebSearch"].includes(tool) ? "r" : ["Write", "Edit", "NotebookEdit"].includes(tool) ? "e" : "o") : null;
-    const scopeDim = scope && !uiState.searchScopes.has(scope) && !(kind === "tool" && uiState.searchScopes.has("o"));
+    const kind = element.dataset.kind;
+    // Which scope classes this row belongs to, through the SHARED table (#126) — the last
+    // hand-written kind map on this shell, and one that read a row's DISPLAY name where the
+    // record's own kind is what the classes are defined on. A row no class claims (an agent
+    // event, an attachment, a queued prompt) is never dimmed: no scope excludes it.
+    const mask = directMask(element.dataset.recordKind || "");
+    const scopeDim = mask && ![...uiState.searchScopes].some(letter => mask & CLASS_BIT[letter]);
     element.classList.toggle("filter-dim", !!scopeDim || (!!hits && kind === "user" && element.classList.contains("turn")));
   });
   // The tool filter (#110), the classic page's rule: a non-turn record that does not match is
@@ -781,23 +785,45 @@ function filterChain(record, wanted, hits, direct) {
     },
   );
 }
+/** Which records answer the active filter, and open what it takes to see them. Returns their
+ *  indices. Records that are ALREADY on the chain keep whatever the reader has done to them
+ *  since — only what is newly on it is opened, so a live session does not re-open a fold the
+ *  reader closed a moment ago (#126). */
+function computeFilterHits() {
+  const wanted = uiState.toolFilters;
+  const before = recordState.filterHits;
+  const hits = new Set(), direct = new Set(), indices = [];
+  recordState.records.forEach((record, index) => { if (filterChain(record, wanted, hits, direct)) indices.push(index); });
+  recordState.filterHits = hits;
+  recordState.filterDirect = direct;
+  for (const id of hits) if (!before?.has(id)) recordState.folds.set(id, false);
+  for (const unit of projection.units) {
+    if (unit.type !== "process" || recordState.processExpanded.has(unit.key)) continue;
+    if (indices.some(index => index >= unit.from && index <= unit.to)) { recordState.processFolds.set(unit.key, false); recordState.processExpanded.add(unit.key); }
+  }
+  return indices;
+}
+
+/** Records arrived while a filter is on (#126). Without this they are in no hit set, so
+ *  `applyFilters` hides every one of them and the transcript silently stops growing. The
+ *  snapshot is NOT retaken — it holds the pre-filter fold state — and the viewport does not
+ *  jump: nobody asked to be moved. */
+function refreshFilterHits() {
+  if (!uiState.toolFilters.size || !recordState.filterHits) return;
+  computeFilterHits();
+  applyFilters();
+}
+
 function applyToolFilter() {
   const wanted = uiState.toolFilters;
   if (wanted.size) {
     if (!recordState.filterSnapshot) recordState.filterSnapshot = { folds: new Map(recordState.folds), processFolds: new Map(recordState.processFolds), processExpanded: new Set(recordState.processExpanded) };
-    const hits = new Set(), direct = new Set(), indices = [];
-    recordState.records.forEach((record, index) => { if (filterChain(record, wanted, hits, direct)) indices.push(index); });
-    recordState.filterHits = hits;
-    recordState.filterDirect = direct;
-    for (const id of hits) recordState.folds.set(id, false);
-    for (const unit of projection.units) {
-      if (unit.type !== "process") continue;
-      if (indices.some(index => index >= unit.from && index <= unit.to)) { recordState.processFolds.set(unit.key, false); recordState.processExpanded.add(unit.key); }
-    }
+    const indices = computeFilterHits();
     viewport.render();
     viewport.remeasure();
     // Land on the nearest hit so the filter visibly did something.
-    const target = indices.find(index => index >= recordIndexAtTop()) ?? indices[0];
+    const start = recordIndexAtTop();
+    const target = indices.find(index => index >= start) ?? indices[0];
     if (target != null) viewport.jumpToRecord(target, "filter");
   } else if (recordState.filterHits) {
     const snapshot = recordState.filterSnapshot;
