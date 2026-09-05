@@ -18,12 +18,12 @@ mod harness;
 use claude_replay_html::start_server;
 use claude_replay_present::Args;
 use harness::{
-    assistant_at, at_tail, base, click_session_id, command_at, copied_text, drag_select, eval,
-    image_result_at, jump_to_end, key, last_mounted_turn, long_session, now_minus, open_last_fold,
-    open_turn_session, probe, queued_at, queued_text, read_tool_at, scroll_by, selection_text,
-    serial, session_id_chip, stub_clipboard, tap_console, tool_open_at, tool_result_at,
-    tool_result_lines, tool_result_text, turn_at_top, until, user_at, view_anchor_index, Kind,
-    LiveGrowth, Monitor, Shape, Stores, Surface,
+    agent_spawn, assistant_at, at_tail, base, click_session_id, codex_tool_session, command_at,
+    copied_text, drag_select, eval, image_result_at, jump_to_end, key, last_mounted_turn,
+    long_session, now_minus, open_last_fold, open_turn_session, probe, queued_at, queued_text,
+    read_tool_at, scroll_by, selection_text, serial, session_id_chip, stub_clipboard, tap_console,
+    tool_open_at, tool_result_at, tool_result_lines, tool_result_text, turn_at_top, until, user_at,
+    view_anchor_index, Kind, LiveGrowth, Monitor, Shape, Stores, Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -41,6 +41,37 @@ fn fixture(name: &str, turns: u32) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
     let path = stores.claude_session(SID, &long_session(turns, Shape::default()));
+    Fixture { base, path, turns }
+}
+
+/// The id the monitor addresses the fixture by: its file stem, for a Claude session and a Codex
+/// rollout alike (the rail lists `rollout-<id>`, not the session_meta id).
+fn sid_of(fx: &Fixture) -> String {
+    fx.path.file_stem().unwrap().to_string_lossy().to_string()
+}
+
+const CODEX_SID: &str = "s117";
+
+/// A Codex fixture (harness `codex_tool_session`): the heads whose chips carry an exit code, a
+/// duration and a status word, which Claude's own format never records.
+fn fixture_codex(name: &str, turns: u32) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let path = stores.codex_session(CODEX_SID, &codex_tool_session(CODEX_SID, turns));
+    Fixture { base, path, turns }
+}
+
+/// A Claude fixture whose tail carries sub-agent SPAWNS with no result: the launch event, whose
+/// chip reads `launched` whatever the spawn's status (present.rs `spawn_chip` — the terminal verb
+/// arrives on a separate completion record). A closed session is full of them.
+fn fixture_spawns(name: &str, turns: u32) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(turns, Shape::default());
+    for i in 0..3u32 {
+        jsonl += &agent_spawn(&format!("spawn-{i}"), "explore", 900 + i);
+    }
+    let path = stores.claude_session(SID, &jsonl);
     Fixture { base, path, turns }
 }
 
@@ -90,7 +121,7 @@ fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
             };
             let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
             monitor.pair(&tab);
-            monitor.open(&tab, &format!("?ui=app&session={SID}"));
+            monitor.open(&tab, &format!("?ui=app&session={}", sid_of(fx)));
             harness::until(
                 &tab,
                 "document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3",
@@ -120,8 +151,8 @@ fn open_on_v2(surface: Surface, fx: &Fixture, port: u16) -> Opened {
     let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
     monitor.pair(&tab);
     let (query, ready, diag) = match surface {
-        Surface::Classic => (format!("?ui=classic&session={SID}"), "document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3", "document.querySelectorAll('#stream [data-turn]').length"),
-        Surface::AppShell => (format!("?ui=app&session={SID}"), "document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3", "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : 'no window'"),
+        Surface::Classic => (format!("?ui=classic&session={}", sid_of(fx)), "document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3", "document.querySelectorAll('#stream [data-turn]').length"),
+        Surface::AppShell => (format!("?ui=app&session={}", sid_of(fx)), "document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3", "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : 'no window'"),
     };
     monitor.open(&tab, &query);
     harness::until(
@@ -2959,4 +2990,195 @@ fn app_shell_dragging_a_card_copies_one_line() {
     let fx = fixture("scenario-copyline-app", 12);
     let page = open(Surface::AppShell, &fx, 2895);
     scenario_dragging_a_card_copies_one_line(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a tool head carries its state, exit and duration (#117) ─────────────────────
+
+/// The shared tool head (shared/tool-head.js, audit row 3.4): a failed call shows failure
+/// presentation WITH its exit code, a long call shows its duration, a declined call says so,
+/// and an Edit reads Update — the classic page as chips, the app shell as one state pill.
+fn scenario_tool_heads_carry_state_exit_and_duration(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    if surface == Surface::AppShell {
+        // A process surface shows its first events and folds the rest behind "Show N more".
+        eval(
+            tab,
+            "document.querySelectorAll('[data-process-more][aria-expanded=\"false\"]').forEach(b => b.click())",
+        );
+        settle();
+    }
+    let heads = probe(
+        tab,
+        match surface {
+            Surface::Classic => "[...document.querySelectorAll('#stream .fold')].map(f => { var h = f.querySelector('.fold-h'); return { name: (h.querySelector('.tool-name') || {}).textContent || '', target: (h.querySelector('.tool-target,.tool-path') || {}).textContent || '', chips: [...h.querySelectorAll('.chip')].map(c => ({ c: c.className.replace('chip', '').trim(), x: c.textContent })) }; })",
+            Surface::AppShell => "[...document.querySelectorAll('.renderer[data-renderer-kind]')].map(r => ({ name: (r.querySelector('.renderer-title') || {}).textContent || '', target: (r.querySelector('.renderer-target') || {}).textContent || '', state: r.dataset.state || '', pill: (r.querySelector('.renderer-state') || {}).textContent || '' }))",
+        },
+    );
+    let heads = heads.as_array().cloned().unwrap_or_default();
+    let find = |name: &str, target: &str| {
+        heads
+            .iter()
+            .find(|h| h["name"] == name && h["target"] == target)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {name} {target} head among {heads:?}"))
+    };
+    let failed = find("Bash", "cargo test --lib");
+    let long = find("Bash", "cargo build --release");
+    let declined = find("Bash", "cargo fmt");
+    let update = find("Update", "README.md");
+    match surface {
+        Surface::Classic => {
+            // A call with output carries its line count first; the execution chip is last.
+            let last = |h: &serde_json::Value| {
+                h["chips"]
+                    .as_array()
+                    .and_then(|c| c.last().cloned())
+                    .unwrap_or_default()
+            };
+            assert_eq!(
+                last(&failed),
+                serde_json::json!({ "c": "fail", "x": "exit 1 · 2.50s" }),
+                "a failed call: failure presentation with its exit and duration"
+            );
+            assert_eq!(
+                last(&long),
+                serde_json::json!({ "c": "", "x": "exit 0 · 1m 5s" }),
+                "a long call shows its duration"
+            );
+            assert_eq!(
+                last(&declined),
+                serde_json::json!({ "c": "fail", "x": "declined · 42ms" })
+            );
+            assert_eq!(
+                update["chips"][0]["c"], "add",
+                "an Edit reads Update: {update:?}"
+            );
+        }
+        Surface::AppShell => {
+            assert_eq!(
+                (failed["state"].as_str(), failed["pill"].as_str()),
+                (Some("failed"), Some("failed · exit 1")),
+                "a failed call's pill names the failure and its exit"
+            );
+            assert_eq!(long["state"].as_str(), Some("completed"));
+            assert!(
+                long["pill"]
+                    .as_str()
+                    .unwrap_or("")
+                    .ends_with("exit 0 · 1m 5s"),
+                "a long call's pill shows its duration: {long:?}"
+            );
+            assert_eq!(
+                (declined["state"].as_str(), declined["pill"].as_str()),
+                (Some("failed"), Some("declined"))
+            );
+            assert_eq!(
+                (update["state"].as_str(), update["pill"].as_str()),
+                (Some("completed"), Some("+1 · −1")),
+                "an Edit reads Update with its change chips"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_tool_heads_carry_state_exit_and_duration() {
+    let _serial = serial();
+    let fx = fixture_codex("scenario-toolhead-classic", 12);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_tool_heads_carry_state_exit_and_duration(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_tool_heads_carry_state_exit_and_duration() {
+    let _serial = serial();
+    let fx = fixture_codex("scenario-toolhead-app", 12);
+    let page = open(Surface::AppShell, &fx, 2896);
+    scenario_tool_heads_carry_state_exit_and_duration(&page.tab, Surface::AppShell, &fx);
+}
+
+/// A spawn's `launched` chip is a launch EVENT, not liveness (#117): a closed session's
+/// sub-agents must read as finished work on both pages, not as calls still in flight.
+fn scenario_a_launched_spawn_is_not_a_running_head(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    if surface == Surface::AppShell {
+        eval(
+            tab,
+            "document.querySelectorAll('[data-process-more][aria-expanded=\"false\"]').forEach(b => b.click())",
+        );
+        settle();
+    }
+    match surface {
+        Surface::Classic => {
+            let chips = probe(
+                tab,
+                "[...document.querySelectorAll('#stream .fold .chip')].map(c => c.textContent)",
+            );
+            let chips = chips.as_array().cloned().unwrap_or_default();
+            assert!(
+                chips.iter().any(|c| c.as_str().unwrap_or("") == "launched"),
+                "the reference page shows the launch event as its own chip: {chips:?}"
+            );
+        }
+        Surface::AppShell => {
+            let spawns = probe(
+                tab,
+                "[...document.querySelectorAll('.renderer[data-renderer-kind=\"agent\"]')].map(r => ({ state: r.dataset.state || '', pill: (r.querySelector('.renderer-state') || {}).textContent || '', closed: r.classList.contains('closed') }))",
+            );
+            let spawns = spawns.as_array().cloned().unwrap_or_default();
+            assert!(!spawns.is_empty(), "the fixture's spawns mounted");
+            for spawn in &spawns {
+                assert_eq!(
+                    (spawn["state"].as_str(), spawn["pill"].as_str()),
+                    (Some("completed"), Some("launched")),
+                    "a launch event is not an in-flight call: {spawn:?}"
+                );
+                assert_eq!(
+                    spawn["closed"], true,
+                    "…and it does not force its fold open: {spawn:?}"
+                );
+            }
+            let running = probe(
+                tab,
+                "document.querySelectorAll('.renderer[data-state=\"running\"], .process-surface.process-running').length",
+            );
+            assert_eq!(
+                running.as_i64(),
+                Some(0),
+                "nothing in a closed session reads as running"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_launched_spawn_is_not_a_running_head() {
+    let _serial = serial();
+    let fx = fixture_spawns("scenario-spawn-classic", 14);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_launched_spawn_is_not_a_running_head(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_launched_spawn_is_not_a_running_head() {
+    let _serial = serial();
+    let fx = fixture_spawns("scenario-spawn-app", 14);
+    let page = open(Surface::AppShell, &fx, 2897);
+    scenario_a_launched_spawn_is_not_a_running_head(&page.tab, Surface::AppShell, &fx);
 }

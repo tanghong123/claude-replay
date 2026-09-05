@@ -338,6 +338,21 @@ impl Stores {
         path
     }
 
+    /// A Codex rollout `id` under `codex/sessions/2026/08/21/rollout-<id>.jsonl` (the store
+    /// `CODEX_HOME` points at). Every line must parse: a malformed fixture line is skipped by
+    /// the adapter in silence, and the case would then chase a missing head.
+    pub fn codex_session(&self, id: &str, jsonl: &str) -> PathBuf {
+        for line in jsonl.lines() {
+            serde_json::from_str::<serde_json::Value>(line)
+                .unwrap_or_else(|e| panic!("fixture line {line}: {e}"));
+        }
+        let dir = self.root.join("codex/sessions/2026/08/21");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("rollout-{id}.jsonl"));
+        std::fs::write(&path, jsonl).unwrap();
+        path
+    }
+
     /// A sub-agent transcript of `parent_sid`: `<slug>/<sid>/subagents/agent-<agent>.jsonl`.
     /// Lineage is the PATH alone (the adapter reads no file to know the parent).
     pub fn claude_child(&self, parent_sid: &str, agent: &str, jsonl: &str) -> PathBuf {
@@ -1205,4 +1220,114 @@ pub fn selection_text(tab: &headless_chrome::Tab) -> String {
     .as_str()
     .unwrap_or("")
     .to_string()
+}
+
+/// A Codex rollout of `turns` turns — each a prompt, then (narrated, so no call folds into an
+/// activity) a failing `cargo test --lib` (exit 1, 2.50s), a long `cargo build --release`
+/// (exit 0, 1m 5s), a declined `cargo fmt` (42ms) and an update of README.md: the heads whose
+/// chips carry an exit code, a duration and a status word (#117). Claude's own format records
+/// neither an exit code nor a duration, so these heads need a Codex store.
+pub fn codex_tool_session(id: &str, turns: u32) -> String {
+    fn at(k: u32, i: u32) -> String {
+        format!("{DAY}:{:02}:{:02}Z", k % 60, i % 60)
+    }
+    fn user(k: u32, i: u32, text: &str) -> String {
+        format!(
+            "{{\"timestamp\":\"{}\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"{text}\"}}]}}}}\n",
+            at(k, i)
+        )
+    }
+    fn assistant(k: u32, i: u32, phase: &str, text: &str) -> String {
+        format!(
+            "{{\"timestamp\":\"{}\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"{phase}\",\"content\":[{{\"type\":\"output_text\",\"text\":\"{text}\"}}]}}}}\n",
+            at(k, i)
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn command(
+        k: u32,
+        i: u32,
+        cid: &str,
+        cmd: &str,
+        status: &str,
+        exit: Option<i32>,
+        secs: u64,
+        nanos: u64,
+        output: &str,
+    ) -> String {
+        let exit = exit
+            .map(|e| format!(",\"exit_code\":{e}"))
+            .unwrap_or_default();
+        format!(
+            "{{\"timestamp\":\"{}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"item_completed\",\"item\":{{\"type\":\"CommandExecution\",\"id\":\"{cid}\",\"command\":[\"/bin/zsh\",\"-lc\",\"{cmd}\"],\"status\":\"{status}\"{exit},\"duration\":{{\"secs\":{secs},\"nanos\":{nanos}}},\"formatted_output\":\"{output}\"}}}}}}\n",
+            at(k, i)
+        )
+    }
+    fn edit(k: u32, i: u32, cid: &str) -> String {
+        format!(
+            "{{\"timestamp\":\"{}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"item_completed\",\"item\":{{\"type\":\"FileChange\",\"id\":\"{cid}\",\"status\":\"completed\",\"changes\":{{\"/r/README.md\":{{\"type\":\"update\",\"unified_diff\":\"@@ -1 +1 @@\\n-old readme\\n+new readme\\n\"}}}}}}}}}}\n",
+            at(k, i)
+        )
+    }
+    let mut out = format!(
+        "{{\"timestamp\":\"{}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/r\",\"originator\":\"codex-tui\",\"cli_version\":\"0.147.0\"}}}}\n",
+        at(0, 0)
+    );
+    for k in 1..=turns {
+        out += &user(
+            k,
+            0,
+            &format!("Turn {k}: run the checks and patch the readme"),
+        );
+        out += &assistant(k, 1, "commentary", "Running the unit tests first.");
+        out += &command(
+            k,
+            2,
+            &format!("exec-{k}-fail"),
+            "cargo test --lib",
+            "failed",
+            Some(1),
+            2,
+            500_000_000,
+            "error: test failed, to rerun pass `--lib`\\n",
+        );
+        out += &assistant(
+            k,
+            3,
+            "commentary",
+            "That failed; a release build takes a while.",
+        );
+        out += &command(
+            k,
+            4,
+            &format!("exec-{k}-long"),
+            "cargo build --release",
+            "completed",
+            Some(0),
+            65,
+            0,
+            "    Finished release [optimized] target(s)\\n",
+        );
+        out += &assistant(
+            k,
+            5,
+            "commentary",
+            "The formatter was declined by the sandbox.",
+        );
+        out += &command(
+            k,
+            6,
+            &format!("exec-{k}-declined"),
+            "cargo fmt",
+            "declined",
+            None,
+            0,
+            42_000_000,
+            "",
+        );
+        out += &assistant(k, 7, "commentary", "Patching the readme now.");
+        out += &edit(k, 8, &format!("edit-{k}"));
+        out += &assistant(k, 9, "final", &format!("Done with turn {k}."));
+    }
+    out
 }

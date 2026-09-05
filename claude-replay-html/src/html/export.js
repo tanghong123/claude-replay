@@ -553,8 +553,10 @@
     records.forEach(walk);
   }
 
+  // The head is read through the shared module (#117, shared/tool-head.js): the display name
+  // and the chips are one vocabulary with the app shell's state pill.
   function chips(head, into) {
-    (head.chips || []).forEach(function (c) {
+    shared.toolHead(head).chips.forEach(function (c) {
       into.appendChild(el("span", "chip" + (c.c ? " " + c.c : ""), c.x));
     });
   }
@@ -751,7 +753,8 @@
       }
     } else {
       if (head.dot) h.appendChild(el("span", "tool-dot"));
-      if (head.name) h.appendChild(el("span", "tool-name", head.name));
+      var toolName = shared.toolHead(head).name;
+      if (toolName) h.appendChild(el("span", "tool-name", toolName));
       if (head.target) {
         if (head.artifact && head.artifact.url) {
           // An artifact publish is labelled by the artifact; make the label the LINK. This

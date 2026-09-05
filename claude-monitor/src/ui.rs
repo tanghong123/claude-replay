@@ -314,6 +314,10 @@ mod tests {
                 "shared/time.js",
                 claude_replay_html::shared_source("time").unwrap(),
             ),
+            (
+                "shared/tool-head.js",
+                claude_replay_html::shared_source("tool-head").unwrap(),
+            ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),

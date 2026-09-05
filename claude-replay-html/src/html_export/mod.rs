@@ -3280,6 +3280,28 @@ mod tests {
             .any(|(name, _)| *name == "time"));
     }
 
+    /// #117: the classic page reads a tool head through the shared module — the display name
+    /// and the chips are one vocabulary with the app shell's state pill.
+    #[test]
+    fn tool_heads_are_the_shared_module() {
+        assert!(JS.contains("shared.toolHead(head).chips.forEach(function (c) {"));
+        assert!(JS.contains("var toolName = shared.toolHead(head).name;"));
+        // …and nowhere else: a head's chips reach the page only through the module, so the two
+        // pages cannot drift back into reading the wire's chip text each in its own way.
+        assert!(
+            !JS.contains("head.chips"),
+            "the classic page reads a head's chips through the shared module, never directly"
+        );
+        assert!(super::shared::SHARED
+            .iter()
+            .any(|(name, _)| *name == "tool-head"));
+        // The launch event is not liveness (present.rs spawn_chip): an async spawn's chip reads
+        // "launched" whatever its status, so the module groups it with the terminal words.
+        let module = super::shared::shared_source("tool-head").unwrap();
+        assert!(module.contains(r#"const DONE_WORDS = new Set(["completed", "done", "finished", "stopped", "launched"]);"#));
+        assert!(!module.contains("RUNNING_WORDS"));
+    }
+
     /// #111: the classic page's haystack rules are the shared module's.
     #[test]
     fn search_haystack_is_the_shared_modules() {

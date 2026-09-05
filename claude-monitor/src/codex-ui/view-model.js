@@ -2,6 +2,10 @@
 // markup and the expansion memory — one implementation with the classic page.
 import { capSplit, capLabel, preLines, toLineOf, numRowsHtml, diffRowsHtml, capOpenHas } from "./shared/parts.js";
 import { recordText, stripTags } from "./shared/search.js";
+// A head's state is the shared module's reading of its chips (#117, shared/tool-head.js): the
+// display name, failed / running / completed from the words the server writes, and the exit
+// code and duration as facts — one vocabulary with the classic page's chips.
+import { displayName, toolHead, stateLabel } from "./shared/tool-head.js";
 
 export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 // A record's searchable text is what a reader can see of it (#111, shared/search.js): heads and
@@ -216,8 +220,8 @@ export function viewRecord(record) {
   if (record.kind === "attachment") return rendererRecord(record, "attachment", head.att_name || "Attachment");
   if (record.kind === "compaction") return rendererRecord(record, "context", "Context compacted");
   // A slash command is the user speaking (#113, the classic page's turn card): a user view with
-  // the command's badge, its argument preview and the `N lines` chip from the wire.
-  if (record.kind === "command") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record, command: { name: String(head.badge || head.name || "command").replace(/^\//, ""), preview: head.preview || "", lines: (head.chips || []).map(c => c.x || "").find(x => /lines$/.test(x)) || "" } };
+  // the command's badge, its argument preview and the `N lines` chip as the head module reads it.
+  if (record.kind === "command") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record, command: { name: String(head.badge || head.name || "command").replace(/^\//, ""), preview: head.preview || "", lines: toolHead(head).lines != null ? `${toolHead(head).lines} lines` : "" } };
   if (record.kind === "task") return rendererRecord(record, "task", head.name || "Task");
   if (toolKinds.has(record.kind)) return rendererRecord(record, record.kind, head.name || record.tool || record.kind);
   if (processKinds.has(record.kind)) return rendererRecord(record, record.kind, head.name || record.kind);
@@ -228,13 +232,15 @@ function rendererRecord(record, renderer, name) {
   const head = record.head || {};
   const children = [];
   for (const part of record.body || []) if (part.p === "blocks") for (const item of part.items || []) children.push(viewRecord(item));
-  const chips = head.chips || [];
-  const chipText = chips.map(c => c.x).filter(Boolean).join(" · ");
+  // No pattern match over chip text: the head module says what the chips mean, and a chipless
+  // head keeps its renderer's own word (state null → "reasoning" for a thinking). A head says
+  // nothing about liveness — an async spawn's chip reads "launched" long after it finished —
+  // so `running` stays false here until a record carries a real in-flight signal.
+  const th = toolHead(head);
   return {
     t: renderer === "thinking" ? "thinking" : renderer === "activity" ? "activity" : renderer === "task" ? "task" : renderer === "agent" ? "agent" : "tool",
-    renderer, id: record.id, name, summary: head.target || head.preview || head.summary || "",
-    state: chipText, error: chips.some(c => /fail|error/i.test(`${c.c || ""} ${c.x || ""}`)),
-    running: chips.some(c => /running|active/i.test(c.x || "")), duration: chipText,
+    renderer, id: record.id, name: displayName(name), summary: head.target || head.preview || head.summary || "",
+    state: th.state, error: th.failed, running: false, duration: th.duration, exit: th.exit, pill: stateLabel(th),
     html: partsHtml((record.body || []).filter(p => p.p !== "blocks")), raw: record,
     parts: (record.body || []).filter(p => p.p !== "blocks"),
     path: head.path || head.att_path,

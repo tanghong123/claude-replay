@@ -10,6 +10,7 @@ import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-ht
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { recordTextSize, LIVE_SEARCH_LIMIT, recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, countOcc, wholeAt, directMask, CLASS_BIT } from "../../claude-monitor/src/codex-ui/shared/search.js";
 import { fmtTime, fmtDur } from "../../claude-monitor/src/codex-ui/shared/time.js";
+import { displayName, toolHead, stateLabel } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
@@ -1150,4 +1151,48 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(css, /\.turn \.spot-link,\.turn \.raw-toggle,\.turn \.turn-time,\.turn \.prompt-expand,[^{]*\{user-select:none\}/, "spot links, raw toggles, the time and the expander are unselectable");
   console.log("#99 selection cases passed");
+}
+
+// #117: a tool head's state, exit and duration are the shared module's reading of its chips.
+{
+  assert.equal(displayName("Edit"), "Update");
+  assert.equal(displayName("MultiEdit"), "Update");
+  assert.equal(displayName("Bash"), "Bash");
+  const failed = toolHead({ name: "Bash", target: "cargo test", chips: [{ c: "fail", x: "exit 1 · 2.50s" }] });
+  assert.deepEqual([failed.state, failed.exit, failed.duration, failed.failed], ["failed", 1, "2.50s", true]);
+  assert.equal(stateLabel(failed), "failed · exit 1", "a failure names its word and its exit");
+  const declined = toolHead({ chips: [{ c: "fail", x: "declined · 42ms" }] });
+  assert.deepEqual([declined.state, declined.status, declined.duration, stateLabel(declined)], ["failed", "declined", "42ms", "declined"]);
+  const long = toolHead({ chips: [{ x: "exit 0 · 1m 5s" }] });
+  assert.deepEqual([long.state, long.exit, long.duration, stateLabel(long)], ["completed", 0, "1m 5s", "exit 0 · 1m 5s"]);
+  const read = toolHead({ name: "Read", chips: [{ x: "12 lines" }] });
+  assert.deepEqual([read.state, read.lines, stateLabel(read)], ["completed", 12, "12 lines"]);
+  // "launched" is the LAUNCH EVENT of an async spawn, not liveness: present.rs spawn_chip writes
+  // it whatever the spawn's status, and the terminal verb arrives on a separate AgentDone record.
+  const launched = toolHead({ chips: [{ x: "3 tools · launched" }] });
+  assert.deepEqual([launched.state, launched.status, stateLabel(launched)], ["completed", "launched", "3 tools · launched"], "a launch event is not a running head");
+  assert.equal(toolHead({ chips: [{ x: "launched" }] }).running, undefined, "a head carries no liveness at all");
+  const killed = toolHead({ chips: [{ c: "fail", x: "killed" }] });
+  assert.deepEqual([killed.state, stateLabel(killed)], ["failed", "killed"], "a failure keeps the server's own word");
+  assert.equal(toolHead({ chips: [{ x: "done" }] }).state, "completed");
+  assert.equal(displayName("constructor"), "constructor", "the name map has no prototype");
+  assert.equal(toolHead({ name: "Thinking" }).state, null, "a chipless head keeps its renderer's own word");
+  assert.equal(stateLabel(toolHead({ chips: [{ c: "fail", x: "failed" }] })), "failed", "Claude's format has no exit code");
+  // The view model consumes it — no regex over chip text remains — and the pill shows its label.
+  const view = viewRecord({ kind: "bash", id: "b1", head: { name: "Bash", target: "cargo test", chips: [{ c: "fail", x: "exit 1 · 2.50s" }] }, body: [{ p: "pre", x: "error" }] });
+  assert.deepEqual([view.state, view.error, view.exit, view.duration, view.pill], ["failed", true, 1, "2.50s", "failed · exit 1"]);
+  const edit = viewRecord({ kind: "edit", id: "e1", head: { name: "Edit", target: "README.md", chips: [{ c: "add", x: "+1" }, { c: "del", x: "−1" }] }, body: [] });
+  assert.deepEqual([edit.name, edit.state, edit.pill], ["Update", "completed", "+1 · −1"]);
+  assert.equal(viewRecord({ kind: "think", id: "t1", head: {}, body: [{ p: "md", x: "hm" }] }).state, null);
+  const spawn = viewRecord({ kind: "agent", id: "a1", head: { name: "Agent", chips: [{ x: "launched" }] }, body: [] });
+  assert.deepEqual([spawn.state, spawn.running, spawn.pill], ["completed", false, "launched"], "a finished session's spawns are not left running");
+  const cmd = viewRecord({ kind: "command", id: "c1", head: { badge: "/compact", preview: "", chips: [{ x: "12 lines" }] }, body: [] });
+  assert.deepEqual([cmd.command.name, cmd.command.lines], ["compact", "12 lines"], "a command card's lines chip is the module's count");
+  assert.equal(viewRecord({ kind: "command", id: "c2", head: { badge: "/compact", chips: [] }, body: [] }).command.lines, "", "…and absent when the wire carries none");
+  const vm = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
+  assert.doesNotMatch(vm, /fail\|error|running\|active|lines\$\/|\.find\(x => \//, "the state is not a regex over chip text");
+  assert.match(vm, /from "\.\/shared\/tool-head\.js"/);
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /\$\{escapeText\(view\.state \? view\.pill : status === "completed" \? "" : status\)\}/, "the pill shows the module's label");
+  console.log("#117 tool head cases passed");
 }
