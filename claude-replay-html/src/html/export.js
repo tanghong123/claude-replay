@@ -2376,7 +2376,7 @@
   });
 
   // ── folds ────────────────────────────────────────────────────────────
-  function setFold(f, open) {
+  function setFold(f, open, full) {
     if (!f) return;
     f.dataset.open = open ? "1" : "0";
     // Persist to the record (#50): the DOM window is disposable, the record isn't.
@@ -2387,24 +2387,56 @@
     // §8.2 collapsed header target = one ellipsized line; expanded = pre-wrap. Set
     // inline so it's correct on every state change (init syncs all folds; renderBlock
     // also emits the expanded form for authored-open blocks).
-    var t = h.querySelector(":scope > .tool-target, :scope > .tool-path");
-    if (t) {
-      t.style.whiteSpace = open ? "pre-wrap" : "nowrap";
-      t.style.overflow = open ? "visible" : "hidden";
-      t.style.textOverflow = open ? "clip" : "ellipsis";
-      t.style.overflowWrap = open ? "anywhere" : "normal";
-    }
+    setTargetFull(f, full === undefined ? f.dataset.full === "1" : full);
+  }
+
+  // §8.2 / #129: the target's own state. Collapsed it is one ellipsized line; expanded it is
+  // pre-wrap, the whole command. Set inline so it is right on every state change (init syncs
+  // every fold; renderBlock emits the expanded form for an authored-open block).
+  function setTargetFull(f, full) {
+    if (!f) return;
+    f.dataset.full = full ? "1" : "0";
+    var h = f.querySelector(":scope > .fold-h");
+    var t = h && h.querySelector(":scope > .tool-target, :scope > .tool-path");
+    if (!t) return;
+    t.style.whiteSpace = full ? "pre-wrap" : "nowrap";
+    t.style.overflow = full ? "visible" : "hidden";
+    t.style.textOverflow = full ? "clip" : "ellipsis";
+    t.style.overflowWrap = full ? "anywhere" : "normal";
+  }
+
+  /** Is this head's target actually clipped — is there anything to reveal (#129)? */
+  function targetClipped(f) {
+    var h = f && f.querySelector(":scope > .fold-h");
+    var t = h && h.querySelector(":scope > .tool-target, :scope > .tool-path");
+    if (!t) return false;
+    if (f.dataset.full === "1") return true; // already showing it in full
+    return t.scrollWidth - t.clientWidth > 1;
+  }
+
+  // The head's click cycle (#129, shared/tool-head.js): folded → output → output and the whole
+  // command → output → folded. A head whose target already fits keeps the plain toggle.
+  function cycleFold(f) {
+    if (!f) return;
+    var clipped = targetClipped(f);
+    // The step is REMEMBERED, not derived: "output, command clipped" is both the way in and the
+    // way out of the cycle, and only the step tells them apart.
+    var at = f.dataset.step === undefined ? shared.headStepOf(f.dataset.open === "1", f.dataset.full === "1") : Number(f.dataset.step);
+    var step = shared.nextHeadStep(at, clipped);
+    f.dataset.step = String(step);
+    var next = shared.headStepState(step);
+    toggleFold(f, next.open, next.full);
   }
   // §8.8 Toggle with scroll anchoring + the foldin animation. Measures the header's
   // viewport top before/after and scrollBy the delta so the clicked row doesn't move;
   // if it would sit behind the sticky bars (<96px) ease it to 104. Bulk/programmatic
   // paths call setFold directly and skip anchoring.
-  function toggleFold(f, open) {
+  function toggleFold(f, open, full) {
     if (!f) return;
     if (f.id) userFolds[f.id] = open ? 1 : 0; // an explicit user gesture (#61)
     var h = f.querySelector(":scope > .fold-h");
     var y0 = h ? h.getBoundingClientRect().top : 0;
-    setFold(f, open);
+    setFold(f, open, full);
     var b = f.querySelector(":scope > .fold-b");
     if (open && b) { b.classList.remove("anim"); void b.offsetWidth; b.classList.add("anim"); }
     if (!h) return;
@@ -2887,7 +2919,7 @@
     // same case — it opens claude.ai in a new tab and must not also fold the block.
     if (e.target.closest(".agent-open") || e.target.closest(".artifact-link")) return;
     var h = e.target.closest(".fold-h");
-    if (h) { var f = h.closest(".fold"); toggleFold(f, f.dataset.open !== "1"); return; }
+    if (h) { cycleFold(h.closest(".fold")); return; }
     var trow = e.target.closest(".task-row");
     if (trow) { trow.parentElement.classList.toggle("open"); return; }
     if (e.target.closest("#stickybar") && curTurn) { goToId(curTurn.id); return; }
@@ -3417,7 +3449,7 @@
     if ((e.key === " " || e.key === "Enter") && active && active.classList.contains("fold-h")) {
       e.preventDefault();
       var f = active.closest(".fold");
-      toggleFold(f, f.dataset.open !== "1");
+      cycleFold(f);
       return;
     }
     var binding = shared.resolveKey(e, "view", e.target);

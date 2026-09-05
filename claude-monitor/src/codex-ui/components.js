@@ -5,6 +5,7 @@ import { svg } from "./icons.js";
 import { escapeText, partsHtml } from "./view-model.js";
 import { rememberCap, resultBodyHtml } from "./shared/parts.js";
 import { interactionHtml } from "./shared/interaction.js";
+import { headStepOf, headStepState, nextHeadStep } from "./shared/tool-head.js";
 import { fmtTime } from "./shared/time.js";
 
 const element = html => {
@@ -97,7 +98,7 @@ function renderRenderer(view, index, state) {
     ? `<div class="renderer-head" aria-label="Thinking recorded"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span><span class="renderer-target"></span><span class="renderer-state"></span></div>`
     : `<button class="renderer-head" type="button" aria-expanded="${!closed}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${view.path && (view.fileSig || view.revealSig) ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${referenceAction(view) === "preview" ? "Open in the preview pane" : "Reveal in file manager"}">${escapeText(view.summary || "")}</span>` : `<span class="renderer-target">${escapeText(view.summary || "")}</span>`}<span class="renderer-state" title="${escapeText(status)}">${escapeText(view.state ? view.pill : status === "completed" ? "" : status)}</span></button>`;
   const toolName = view.t === "tool" ? ` data-tool-name="${escapeText(view.name)}"` : "";
-  return `<div class="turn assistant renderer-turn" data-kind="${escapeText(view.t)}" data-record-kind="${escapeText(view.raw?.kind || view.renderer)}"${toolName} data-block-index="${escapeText(index)}"><div class="renderer ${noninteractive ? "noninteractive" : closed ? "closed" : ""}" data-renderer data-record-id="${escapeText(key)}" data-renderer-kind="${escapeText(view.renderer)}" data-state="${escapeText(status)}">${head}${view.id ? `<button class="spot-link renderer-spot" type="button" data-spot-link="${escapeText(view.id)}" aria-label="Copy a link to this call" title="Copy a link to this call"><span aria-hidden="true">#</span></button>` : ""}${view.children?.length ? `<button class="renderer-children-toggle" type="button" data-renderer-children-bulk aria-pressed="false" title="Expand all nested levels">${svg("expandStack")}</button>` : ""}${noninteractive ? "" : `<div class="renderer-body"><div class="renderer-output">${rendererBody(view, state)}</div>${children}</div>`}</div></div>`;
+  return `<div class="turn assistant renderer-turn" data-kind="${escapeText(view.t)}" data-record-kind="${escapeText(view.raw?.kind || view.renderer)}"${toolName} data-block-index="${escapeText(index)}"><div class="renderer ${noninteractive ? "noninteractive" : closed ? "closed" : ""}" data-renderer data-record-id="${escapeText(key)}" data-renderer-kind="${escapeText(view.renderer)}" data-state="${escapeText(status)}"${state.fullTargets?.has(key) ? ' data-target="full"' : ""}>${head}${view.id ? `<button class="spot-link renderer-spot" type="button" data-spot-link="${escapeText(view.id)}" aria-label="Copy a link to this call" title="Copy a link to this call"><span aria-hidden="true">#</span></button>` : ""}${view.children?.length ? `<button class="renderer-children-toggle" type="button" data-renderer-children-bulk aria-pressed="false" title="Expand all nested levels">${svg("expandStack")}</button>` : ""}${noninteractive ? "" : `<div class="renderer-body"><div class="renderer-output">${rendererBody(view, state)}</div>${children}</div>`}</div></div>`;
 }
 
 export const rendererStartsClosed = view => !view.running && !view.interaction && view.renderer !== "queue";
@@ -303,7 +304,24 @@ export function bindComponentEvents(root, state, actions) {
       actions.rerender(); return;
     }
     if (renderer && event.target.closest(".renderer-head") && !renderer.classList.contains("noninteractive")) {
-      state.folds.set(renderer.dataset.recordId, !renderer.classList.contains("closed"));
+      // The head's click cycle (#129, shared/tool-head.js): folded → the output → the output
+      // and the whole command → the output → folded. A target that already fits keeps the
+      // plain toggle, so a short call still costs one click to open and one to close.
+      const id = renderer.dataset.recordId;
+      const target = renderer.querySelector(":scope > .renderer-head > .renderer-target");
+      const full = !!state.fullTargets?.has(id);
+      const clipped = full || (!!target && target.scrollWidth - target.clientWidth > 1);
+      // The step is REMEMBERED, not derived: "output, command clipped" is both the way in and
+      // the way out of the cycle, and only the step tells them apart.
+      const at = state.headSteps?.has(id) ? state.headSteps.get(id) : headStepOf(!renderer.classList.contains("closed"), full);
+      const step = nextHeadStep(at, clipped);
+      state.headSteps?.set(id, step);
+      const next = headStepState(step);
+      state.folds.set(id, !next.open);
+      if (state.fullTargets) {
+        if (next.full) state.fullTargets.add(id);
+        else state.fullTargets.delete(id);
+      }
       actions.rerender();
     }
   });

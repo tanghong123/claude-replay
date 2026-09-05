@@ -22,6 +22,11 @@ export const recordState = {
   session: "", records: [], meta: null, units: [], generation: 0,
   cursor: { epoch: 0, committed: 0, gen: 0, index: 0 },
   heights: new Map(), folds: new Map(), processFolds: new Map(), processExpanded: new Set(), promptExpanded: new Set(),
+  // The heads whose TARGET is shown in full (#129): a long command is one clipped line until
+  // the reader asks for it, and asking is the third step of the head's click cycle.
+  fullTargets: new Set(),
+  // Where each head sits in its click cycle (#129), by record id.
+  headSteps: new Map(),
   following: true, newRecords: 0, search: "", matches: [], match: -1,
   // Per-turn raw overrides (#109): a value FLIPS away from what the turn shows — for a user
   // turn that is the global `rawUser` preference (the text as typed), for an assistant turn

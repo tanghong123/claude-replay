@@ -16,7 +16,7 @@ import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORD
 import { chainWalk } from "../../claude-replay-html/src/html/shared/filter.js";
 import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, correction, firstVisible, classifyScroll } from "../../claude-replay-html/src/html/shared/virtual-window.js";
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml } from "../../claude-replay-html/src/html/shared/task-card.js";
-import { displayName, toolHead, stateLabel } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
+import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
@@ -1209,6 +1209,29 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(vm, /from "\.\/shared\/tool-head\.js"/);
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.match(comp, /\$\{escapeText\(view\.state \? view\.pill : status === "completed" \? "" : status\)\}/, "the pill shows the module's label");
+  // #129: the head's click cycle. From folded: the output, then the whole command, then the
+  // command folds back, then the output. A target that already fits keeps the plain toggle.
+  let step = 0;
+  const walk = [];
+  for (let i = 0; i < 5; i++) {
+    const at = headStepState(step);
+    walk.push(`${at.open ? "open" : "closed"}/${at.full ? "full" : "clipped"}`);
+    step = nextHeadStep(step, true);
+  }
+  assert.deepEqual(walk, ["closed/clipped", "open/clipped", "open/full", "open/clipped", "closed/clipped"], "four clicks, and the reader passes through output-only both ways");
+  let short = 0;
+  const plain = [];
+  for (let i = 0; i < 3; i++) { plain.push(headStepState(short).open); short = nextHeadStep(short, false); }
+  assert.deepEqual(plain, [false, true, false], "nothing clipped, nothing to stop at: the plain toggle");
+  assert.deepEqual([headStepOf(false, false), headStepOf(true, false), headStepOf(true, true)], [0, 1, 2], "a restored head knows which step it is at");
+  const comp129 = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp129, /const at = state\.headSteps\?\.has\(id\) \? state\.headSteps\.get\(id\) : headStepOf\(!renderer\.classList\.contains\("closed"\), full\);/, "the app shell head cycles from the step it REMEMBERS…");
+  assert.match(comp129, /state\.headSteps\?\.set\(id, step\);/, "…and records where the click left it");
+  assert.match(comp129, /const clipped = full \|\| \(!!target && target\.scrollWidth - target\.clientWidth > 1\);/, "…and asks whether there is anything to reveal");
+  const js129 = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(js129, /var at = f\.dataset\.step === undefined \? shared\.headStepOf\(f\.dataset\.open === "1", f\.dataset\.full === "1"\) : Number\(f\.dataset\.step\);/, "the classic page cycles through the same rule, from its own remembered step");
+  assert.match(js129, /f\.dataset\.step = String\(step\);/);
+  assert.match(js129, /return t\.scrollWidth - t\.clientWidth > 1;/);
   console.log("#117 tool head cases passed");
 }
 

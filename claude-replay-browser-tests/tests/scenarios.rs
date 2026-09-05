@@ -2935,6 +2935,120 @@ fn app_shell_a_task_reads_like_the_board() {
     scenario_a_task_reads_like_the_board(&page.tab, Surface::AppShell, &fx);
 }
 
+/// A fixture whose tail holds a Bash call whose command runs far past the head's one line.
+fn fixture_long_command(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(14, Shape::default());
+    let command = "cargo test -p claude-replay-browser-tests --test scenarios -- --ignored --skip known_red app_shell --nocapture 2>&1 | grep -E 'the needle in a very long pipeline that keeps going and going past any reasonable head width' | sed -e 's/one thing/another thing entirely/' -e 's/and yet another substitution/to make quite sure this line cannot fit/' | sort -u | head -20";
+    jsonl += &format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"long-1\",\"name\":\"Bash\",\"input\":{{\"command\":\"{command}\"}}}}]}},\"timestamp\":\"2026-08-21T10:15:01Z\"}}\n"
+    );
+    jsonl += &tool_result_text("long-1", "one line of output", "2026-08-21T10:15:02Z");
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture {
+        base,
+        path,
+        turns: 15,
+    }
+}
+
+/// The head's click cycle (#129, the owner's report and their spec): a long command is one
+/// clipped line, and clicking used to reveal only the output. Now, from folded: the output,
+/// then the whole command, then the command folds back, then the output.
+fn scenario_a_long_command_unfolds_on_the_second_click(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    if surface == Surface::AppShell {
+        eval(
+            tab,
+            "document.querySelectorAll('[data-process-more][aria-expanded=\"false\"]').forEach(b => b.click())",
+        );
+        settle();
+    }
+    // The head of the long call, and what it is showing: whether the body is open, and whether
+    // the target is one clipped line or the whole command.
+    let (click, probe_js) = match surface {
+        Surface::Classic => (
+            "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(f => /cargo test -p claude-replay-browser-tests/.test((f.querySelector(':scope > .fold-h > .tool-target')||{}).textContent||'')); if (!f) return 'none'; f.querySelector('.fold-h').click(); return 'ok'; })()",
+            "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(f => /cargo test -p claude-replay-browser-tests/.test((f.querySelector(':scope > .fold-h > .tool-target')||{}).textContent||'')); if (!f) return null; var t = f.querySelector(':scope > .fold-h > .tool-target'); return { open: f.dataset.open === '1', full: getComputedStyle(t).whiteSpace === 'pre-wrap', text: t.textContent.length }; })()",
+        ),
+        Surface::AppShell => (
+            "(function(){ var r = [...document.querySelectorAll('.renderer[data-renderer-kind]')].find(r => /cargo test -p claude-replay-browser-tests/.test((r.querySelector(':scope > .renderer-head > .renderer-target')||{}).textContent||'')); if (!r) return 'none'; r.querySelector('.renderer-head').click(); return 'ok'; })()",
+            "(function(){ var r = [...document.querySelectorAll('.renderer[data-renderer-kind]')].find(r => /cargo test -p claude-replay-browser-tests/.test((r.querySelector(':scope > .renderer-head > .renderer-target')||{}).textContent||'')); if (!r) return null; var t = r.querySelector('.renderer-target'); return { open: !r.classList.contains('closed'), full: getComputedStyle(t).whiteSpace === 'pre-wrap', text: t.textContent.length }; })()",
+        ),
+    };
+    let at = |tab: &headless_chrome::Tab| {
+        let seen = probe(tab, probe_js);
+        assert!(!seen.is_null(), "the long command's head is on the page");
+        assert!(
+            seen["text"].as_i64().unwrap_or(0) > 250,
+            "the head carries the whole command as text: {seen:?}"
+        );
+        (
+            seen["open"].as_bool().unwrap_or(false),
+            seen["full"].as_bool().unwrap_or(false),
+        )
+    };
+    // A single tool call is grouped — an activity fold on the classic page, a process surface
+    // on the app shell — and its head has no layout box while that parent is closed. Open the
+    // ancestors first; the cycle under test is the head's own.
+    let open_parents = match surface {
+        Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(f => /cargo test -p claude-replay/.test((f.querySelector(':scope > .fold-h > .tool-target')||{}).textContent||'')); if (!f) return 'none'; var p = f.parentElement && f.parentElement.closest('.fold'); while (p) { if (p.dataset.open !== '1') p.querySelector(':scope > .fold-h').click(); p = p.parentElement && p.parentElement.closest('.fold'); } return 'ok'; })()",
+        Surface::AppShell => "(function(){ document.querySelectorAll('.process-surface.closed [data-process-toggle]').forEach(function (h) { h.click(); }); document.querySelectorAll('[data-process-more]').forEach(function (b) { if (b.getAttribute('aria-expanded') === 'false') b.click(); }); for (var pass = 0; pass < 4; pass++) { var host = [...document.querySelectorAll('.renderer.closed')].find(function (r) { var own = r.querySelector(':scope > .renderer-head > .renderer-target'); return (!own || !/cargo test -p claude-replay/.test(own.textContent)) && /cargo test -p claude-replay/.test(r.textContent); }); if (!host) break; host.querySelector(':scope > .renderer-head').click(); } return 'ok'; })()",
+    };
+    eval(tab, open_parents);
+    settle();
+    settle();
+    println!("MATCHES {surface:?}: {:?}", probe(tab, "[...document.querySelectorAll('#stream .fold, .virtual-window .renderer')].filter(function (f) { var t = f.querySelector('.tool-target, .renderer-target'); return t && /cargo test -p claude-replay/.test(t.textContent); }).map(function (f) { var t = f.querySelector('.tool-target, .renderer-target'); return { w: Math.round(f.getBoundingClientRect().width), tw: Math.round(t.getBoundingClientRect().width), off: f.offsetParent === null, cls: f.className.slice(0, 24) }; })"));
+    println!("STREAM {surface:?}: {:?} body={:?}", probe(tab, "(function(){ var s = document.getElementById('stream') || document.querySelector('.virtual-window'); return s ? Math.round(s.getBoundingClientRect().width) : -1; })()"), probe(tab, "Math.round(document.body.getBoundingClientRect().width)"));
+    assert_eq!(
+        at(tab),
+        (false, false),
+        "folded: one clipped line, no output"
+    );
+    let mut walk = vec![at(tab)];
+    for _ in 0..4 {
+        eval(tab, click);
+        settle();
+        walk.push(at(tab));
+    }
+    assert_eq!(
+        walk,
+        vec![
+            (false, false),
+            (true, false),
+            (true, true),
+            (true, false),
+            (false, false),
+        ],
+        "the output, then the whole command, then the command folds, then the output"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_long_command_unfolds_on_the_second_click() {
+    let _serial = serial();
+    let fx = fixture_long_command("scenario-longcmd-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_long_command_unfolds_on_the_second_click(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_long_command_unfolds_on_the_second_click() {
+    let _serial = serial();
+    let fx = fixture_long_command("scenario-longcmd-app");
+    let page = open(Surface::AppShell, &fx, 2903);
+    scenario_a_long_command_unfolds_on_the_second_click(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: scope counts, a typed scope prefix, scoped stepping, the escape (#101) ─────
 
 /// Row 5.6 of design/rendering-parity-audit.md and the owner's report. A query shows how many

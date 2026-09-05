@@ -819,6 +819,7 @@ pub fn scroll_by(tab: &headless_chrome::Tab, surface: Surface, dy: i64) {
     let move_it = format!(
         "(function(){{ var s = {s}; var want = Math.max(0, s.scrollTop + ({dy})); {target}.dispatchEvent(new WheelEvent('wheel', {{deltaY: {dy}, bubbles: true}})); s.scrollTo({{ top: want, behavior: 'instant' }}); {target}.dispatchEvent(new WheelEvent('wheel', {{deltaY: {dy}, bubbles: true}})); return [want, s.scrollTop]; }})()"
     );
+    let before = eval(tab, &format!("{s}.scrollTop")).as_f64().unwrap_or(0.0);
     let asked = probe(tab, &move_it);
     let want = asked
         .get(0)
@@ -828,7 +829,11 @@ pub fn scroll_by(tab: &headless_chrome::Tab, surface: Surface, dy: i64) {
     let now = eval(tab, &format!("{s}.scrollTop"))
         .as_f64()
         .unwrap_or(want);
-    if (now - want).abs() > 2.0 {
+    // Retry only an outright REFUSAL — the view came back to where it started although we asked
+    // it to move. A page that merely lands somewhere else is CORRECTING (it held an anchor
+    // through growth, it converged on the tail), and re-applying our number would fight the
+    // very rule the case is watching.
+    if (now - before).abs() <= 2.0 && (want - before).abs() > 2.0 {
         eval(
             tab,
             &format!("(function(){{ var s = {s}; {target}.dispatchEvent(new WheelEvent('wheel', {{deltaY: {dy}, bubbles: true}})); s.scrollTo({{ top: {want}, behavior: 'instant' }}); return 'ok'; }})()"),

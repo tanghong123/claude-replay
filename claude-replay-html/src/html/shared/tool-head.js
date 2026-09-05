@@ -81,4 +81,44 @@ function stateLabel(th) {
   return th.text;
 }
 
-export { displayName, toolHead, stateLabel };
+/* ── the head's click cycle (#129) ────────────────────────────────────────
+ * A tool head shows its target on one line: for a Bash call that is the command, and a long
+ * command is clipped. The output was the only thing a click could reveal, so the command a
+ * reader wanted — the flags, the heredoc, the far end of a pipeline — was unreachable.
+ *
+ * The owner's cycle, from folded: one click opens the OUTPUT, the next opens the COMMAND
+ * (output stays), the next folds the command back (output stays), the next folds the output.
+ * Four clicks, and the reader passes through "output only" on the way in and on the way out —
+ * which is the state they want most of the time.
+ *
+ * A head with nothing clipped keeps the plain two-state toggle: an extra click to close a fold
+ * whose target already fits would be a tax on every short call, and row density is what makes a
+ * long transcript readable. */
+const HEAD_STEPS = [
+  { open: false, full: false },
+  { open: true, full: false },
+  { open: true, full: true },
+  { open: true, full: false },
+];
+
+/** Where a click takes a head. `clipped` is the page's measurement — does the target overflow
+ *  its one line — because only then is there a third state worth stopping at. */
+function nextHeadStep(step, clipped) {
+  const at = Number(step) || 0;
+  if (!clipped) return at === 0 ? 1 : 0;
+  return (at + 1) % HEAD_STEPS.length;
+}
+
+/** What a step shows: the output open, and the target at full length. */
+function headStepState(step) {
+  return HEAD_STEPS[Number(step) || 0] || HEAD_STEPS[0];
+}
+
+/** The step a head is at, given what it is showing — for a head whose state a page restored
+ *  (a remembered fold, an authored-open block) rather than clicked into. */
+function headStepOf(open, full) {
+  if (!open) return 0;
+  return full ? 2 : 1;
+}
+
+export { displayName, toolHead, stateLabel, HEAD_STEPS, nextHeadStep, headStepState, headStepOf };
