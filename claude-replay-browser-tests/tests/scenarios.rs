@@ -2677,3 +2677,116 @@ fn scope_fixture(name: &str) -> Fixture {
         turns: 13,
     }
 }
+
+// ── scenario: a large session searches on Enter, not on every keystroke (#104) ────────────
+
+/// Row 5.7 of design/rendering-parity-audit.md and the owner's report. Above the shared
+/// haystack limit, typing shows "⏎ to search" and marks nothing; Enter runs the search.
+fn scenario_large_session_searches_on_enter(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (type_query, press_enter, count, marks) = match surface {
+        Surface::Classic => (
+            "(function(q){ var i = document.getElementById('q'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(){ var i = document.getElementById('q'); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return 'enter'; })()",
+            "(function(){ var c = document.getElementById('qcount'); return c ? c.textContent.trim() : ''; })()",
+            "document.querySelectorAll('#stream mark.hl').length",
+        ),
+        Surface::AppShell => (
+            "(function(q){ var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(){ var i = document.getElementById('transcriptSearchInput'); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return 'enter'; })()",
+            "document.getElementById('transcriptSearchCount').textContent.trim()",
+            "document.querySelectorAll('.virtual-window mark.search-mark').length",
+        ),
+    };
+    // The whole session must have streamed in for the size to be known.
+    until(
+        tab,
+        &format!(
+            "{}",
+            match surface {
+                Surface::Classic =>
+                    "document.querySelectorAll('#turnlist .side-item').length >= 13",
+                Surface::AppShell =>
+                    "document.querySelectorAll('#navigatorTurns .outline-turn-row').length >= 13",
+            }
+        ),
+        "the session to stream in",
+        Duration::from_secs(60),
+        "document.readyState",
+    );
+    std::thread::sleep(Duration::from_millis(2500));
+    eval(tab, &format!("{type_query}('needle')"));
+    settle();
+    settle();
+    let c = eval(tab, count).as_str().unwrap_or("").to_string();
+    assert!(
+        c.contains("⏎"),
+        "typing in a large session does not search: {c:?}"
+    );
+    assert_eq!(eval(tab, marks), 0, "…and marks nothing");
+    eval(tab, press_enter);
+    settle();
+    settle();
+    let c2 = eval(tab, count).as_str().unwrap_or("").to_string();
+    assert!(
+        c2.starts_with('1') || c2.starts_with("1/"),
+        "Enter runs the search: {c2:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_large_session_searches_on_enter() {
+    let _serial = serial();
+    let fx = large_fixture("scenario-large-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_large_session_searches_on_enter(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_large_session_searches_on_enter() {
+    let _serial = serial();
+    let fx = large_fixture("scenario-large-app");
+    let page = open(Surface::AppShell, &fx, 2893);
+    scenario_large_session_searches_on_enter(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Twelve turns, then a turn of 200 narrated Bash calls with ~62 KB of output each (~12.5 MB
+/// of haystack, each under the reader's per-string eliding bound), the last one carrying the word.
+fn large_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("question large: run everything", &now_minus(9000));
+    let chunk: String = (0..1200)
+        .map(|k| format!("output line {k:04} of a long run that goes on and on\\n"))
+        .collect();
+    for k in 0..200u64 {
+        transcript += &assistant_at(&format!("step {k}"), &now_minus(8000 - k * 30));
+        transcript += &tool_open_at(&format!("t-large-{k}"), &now_minus(8000 - k * 30 - 10));
+        let body = if k == 199 {
+            format!("{chunk}the needle is here\\n")
+        } else {
+            chunk.clone()
+        };
+        transcript += &tool_result_text(
+            &format!("t-large-{k}"),
+            &body,
+            &now_minus(8000 - k * 30 - 20),
+        );
+    }
+    transcript += &assistant_at("answer large: done", &now_minus(100));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}

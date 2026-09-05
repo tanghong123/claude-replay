@@ -502,9 +502,16 @@
       if (p.p === "blocks") p.items.forEach(applyUserFolds);
     });
   }
+  // The haystack's size, kept per record (#104): above the shared limit the box searches on
+  // Enter, not on every keystroke — a 200 MB session cannot be searched live.
+  var recSize = [];
+  function haystackChars() { var n = 0; for (var i = 0; i < records.length; i++) n += recSize[i] || 0; return n; }
+  function searchIsLive() { return haystackChars() <= shared.LIVE_SEARCH_LIMIT; }
+  var pendingSearch = false;
   function pushRecord(b) {
     applyUserFolds(b);
     records.push(b);
+    recSize.push(shared.recordTextSize(b));
     recHeights.push(EST_H);
     recText.push(null);
     recSearchParts.push(null);
@@ -1484,6 +1491,7 @@
     if (records.length <= from) return;
     dropHitsFrom(from);
     records.length = from;
+    recSize.length = records.length;
     recHeights.length = from;
     recText.length = from;
     recSearchParts.length = from;
@@ -3349,8 +3357,22 @@
       if (cb) cb.addEventListener("change", applyScopeFromMenu);
     });
   }
-  q.addEventListener("input", function () { search(q.value); syncQScope(); });
+  q.addEventListener("input", function () {
+    if (!searchIsLive()) { // #104: a large session searches on Enter
+      pendingSearch = true;
+      $("qcount").textContent = q.value.trim().length ? "⏎ to search" : "";
+      showQNav(false);
+      return;
+    }
+    search(q.value); syncQScope();
+  });
   q.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && pendingSearch) {
+      pendingSearch = false;
+      search(q.value); syncQScope();
+      e.stopPropagation();
+      return;
+    }
     if (e.key === "Enter" && totalHits) {
       stepHit(e.shiftKey ? -1 : 1);
     }

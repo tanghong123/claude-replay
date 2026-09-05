@@ -12,7 +12,7 @@ import { displayState, needsPerson as needs, denoteState } from "./shared/state-
 import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { CLASS_BIT, activeLetters, countOcc, parseScope, recordTextParts, scopeLetters, scopeMask, stripTags } from "./shared/search.js";
+import { CLASS_BIT, LIVE_SEARCH_LIMIT, activeLetters, countOcc, parseScope, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags } from "./shared/search.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskOrder, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -190,7 +190,7 @@ const sessionIndex = new SessionIndexStore({
   error: () => toast("Session scan failed — retrying")
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   error: (error, hasRecords) => hasRecords ? toast(`${error.message}；retrying`) : viewport.showEmpty("Cannot read this session", `${error.message}；The monitor will retry.`, true)
 });
@@ -411,6 +411,10 @@ function updateRecords({ records, meta, changedFrom }) {
   const before = lastRecordCount; const wasFollowing = recordState.following;
   const metaArrived = meta && meta !== recordState.meta;
   recordState.records = records; recordState.meta = meta;
+  // The haystack's size per record (#104), kept in step with the store's truncate/append.
+  const sizes = recordState.recSizes;
+  sizes.length = Math.min(sizes.length, changedFrom, records.length);
+  for (let i = sizes.length; i < records.length; i++) sizes[i] = recordTextSize(records[i]);
   if (metaArrived) renderHeader();
   recordState.taskTargets = taskRecordTargets(meta?.tasks || [], records);
   recordState.agentTargets = agentRecordTargets(directAgents(meta), records);
@@ -718,7 +722,20 @@ function markSearch() {
     }
   }
 }
-byId("transcriptSearchInput").oninput = () => updateSearch(true); byId("findNext").onclick = () => stepSearch(1); byId("findPrev").onclick = () => stepSearch(-1);
+/** Live search while the haystack is small; above the shared limit the box searches on Enter (#104). */
+function searchIsLive() { let n = 0; for (const s of recordState.recSizes) n += s; return n <= LIVE_SEARCH_LIMIT; }
+byId("transcriptSearchInput").oninput = () => {
+  if (searchIsLive()) { recordState.pendingSearch = false; updateSearch(true); return; }
+  recordState.pendingSearch = true;
+  byId("transcriptSearchCount").textContent = byId("transcriptSearchInput").value.trim() ? "⏎ to search" : "";
+};
+byId("transcriptSearchInput").onkeydown = event => {
+  if (event.key !== "Enter") return;
+  event.preventDefault(); event.stopPropagation();
+  if (recordState.pendingSearch) { recordState.pendingSearch = false; updateSearch(true); return; }
+  stepSearch(event.shiftKey ? -1 : 1);
+};
+byId("findNext").onclick = () => stepSearch(1); byId("findPrev").onclick = () => stepSearch(-1);
 
 function toolNames(records, into = []) {
   for (const record of records || []) {

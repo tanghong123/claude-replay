@@ -108,6 +108,28 @@ function scopeMask(set) {
   return mask;
 }
 
+/** Above this many characters of haystack a page searches on Enter, not on every keystroke
+ *  (#104): the owner's threshold, "don't try to do progressive search above ~10 MB". */
+const LIVE_SEARCH_LIMIT = 10 * 1024 * 1024;
+
+/** A cheap size of a record's searchable text — the raw part and head strings, nested records
+ *  included — for deciding whether live search is affordable, without building the text. */
+function recordTextSize(b) {
+  let n = 0;
+  (function walk(record) {
+    const h = record.head || {};
+    for (const k of ["summary", "badge", "preview", "name", "target", "att_name"]) if (h[k]) n += String(h[k]).length;
+    for (const p of record.body || []) {
+      if (p.p === "md" || p.p === "think") n += (p.h || "").length;
+      else if (p.p === "pre" || p.p === "note") n += String(p.x ?? "").length;
+      else if (p.p === "num") for (const r of p.rows || []) n += String(r[1] ?? "").length;
+      else if (p.p === "diff") for (const r of p.rows || []) n += String(r[2] ?? "").length;
+      else if (p.p === "blocks") for (const item of p.items || []) walk(item);
+    }
+  })(b);
+  return n;
+}
+
 /** A regex HTML-to-text: tags out, the five entities the renderer emits decoded. */
 function stripTags(h) {
   return String(h ?? "").replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
@@ -131,4 +153,4 @@ function countOcc(t, lc, whole) {
   return n;
 }
 
-export { CLASS_BIT, directMask, ownTextParts, recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };
+export { CLASS_BIT, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };

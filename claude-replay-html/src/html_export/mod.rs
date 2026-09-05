@@ -3252,6 +3252,16 @@ mod tests {
         assert!(JS.contains("if (Array.isArray(vs0.caps)) capOpen = new Set(vs0.caps);"));
     }
 
+    /// #104: above the shared haystack limit the classic page searches on Enter.
+    #[test]
+    fn a_large_session_searches_on_enter() {
+        assert!(JS.contains(
+            "function searchIsLive() { return haystackChars() <= shared.LIVE_SEARCH_LIMIT; }"
+        ));
+        assert!(JS.contains("recSize.push(shared.recordTextSize(b));"));
+        assert!(JS.contains("if (e.key === \"Enter\" && pendingSearch) {"));
+    }
+
     /// #112: the classic page's time formatting is the shared module's.
     #[test]
     fn times_are_the_shared_modules() {

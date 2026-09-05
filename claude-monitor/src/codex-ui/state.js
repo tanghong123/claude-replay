@@ -30,7 +30,7 @@ export const recordState = {
   // The tool filter (#110): the ids of every record on a hit chain while a tool is selected,
   // and the fold state to put back when it is cleared.
   filterHits: null, filterDirect: null, filterSnapshot: null,
-  searchMask: 0, searchWhole: false,
+  searchMask: 0, searchWhole: false, recSizes: [], pendingSearch: false,
   capOpen: new Set(), openImages: new Set(),
   taskTargets: new Map(), agentTargets: new Map()
 };

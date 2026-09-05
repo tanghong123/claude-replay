@@ -8,7 +8,7 @@ import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../c
 import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-html/src/html/shared/runtime.js";
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
-import { recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, countOcc, wholeAt, directMask, CLASS_BIT } from "../../claude-monitor/src/codex-ui/shared/search.js";
+import { recordTextSize, LIVE_SEARCH_LIMIT, recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, countOcc, wholeAt, directMask, CLASS_BIT } from "../../claude-monitor/src/codex-ui/shared/search.js";
 import { fmtTime, fmtDur } from "../../claude-monitor/src/codex-ui/shared/time.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
@@ -1120,6 +1120,17 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /data-scope-count="\$\{key\}"/, "the scope rows carry counts");
   assert.match(app, /function applyScopeFromMenu\(\) \{/, "the buttons rewrite the box's prefix");
   const search = readFileSync(new URL("../../claude-replay-html/src/html/shared/search.js", import.meta.url), "utf8");
-  assert.match(search, /^export \{ CLASS_BIT, directMask, ownTextParts, recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc \};\s*$/m);
+  assert.match(search, /^export \{ CLASS_BIT, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc \};\s*$/m);
   console.log("#101 scope cases passed");
+}
+
+// #104: above the shared haystack limit both pages search on Enter.
+{
+  assert.equal(LIVE_SEARCH_LIMIT, 10 * 1024 * 1024, "the owner's threshold");
+  const record = { kind: "act", head: { name: "Bash" }, body: [{ p: "md", h: "<p>hi</p>" }, { p: "blocks", items: [{ kind: "bash", head: {}, body: [{ p: "pre", x: "x".repeat(100) }] }] }] };
+  assert.equal(recordTextSize(record), 4 + 9 + 100, "head strings, part strings, nested records — without building the text");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /function searchIsLive\(\) \{ let n = 0; for \(const s of recordState\.recSizes\) n \+= s; return n <= LIVE_SEARCH_LIMIT; \}/, "live while small");
+  assert.match(app, /if \(recordState\.pendingSearch\) \{ recordState\.pendingSearch = false; updateSearch\(true\); return; \}\n\s*stepSearch\(event\.shiftKey \? -1 : 1\);/, "Enter runs a pending search, else steps");
+  console.log("#104 large-session search cases passed");
 }
