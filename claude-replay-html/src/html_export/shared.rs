@@ -44,6 +44,10 @@ pub const SHARED: &[(&str, &str)] = &[
     ("tool-head", include_str!("../html/shared/tool-head.js")),
     ("interaction", include_str!("../html/shared/interaction.js")),
     ("filter", include_str!("../html/shared/filter.js")),
+    (
+        "virtual-window",
+        include_str!("../html/shared/virtual-window.js"),
+    ),
     ("ids", include_str!("../html/shared/ids.js")),
 ];
 

@@ -326,6 +326,10 @@ mod tests {
                 "shared/filter.js",
                 claude_replay_html::shared_source("filter").unwrap(),
             ),
+            (
+                "shared/virtual-window.js",
+                claude_replay_html::shared_source("virtual-window").unwrap(),
+            ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),

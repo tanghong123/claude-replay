@@ -1,4 +1,8 @@
 import { renderUnit } from "./components.js";
+// The window's arithmetic — the sums, the search, the ranges, the pads, the anchor correction,
+// the follow rule — is the shared module's (#107, html/shared/virtual-window.js): one set of
+// scroll rules for both pages. What reads layout and what writes the DOM stays here.
+import { classifyScroll, clampRange, correction, firstVisible, heightChanged, indexAt, padHeights, prefixSums, rangeAround, rangeForScroll } from "./shared/virtual-window.js";
 
 export function revealNavigationContext(units, index, state, recordIndex, reveal = "record") {
   const unit = units[index];
@@ -181,33 +185,26 @@ export class Viewport {
     }
   }
 
+  /** One unit's height as the sums see it: what was measured, or the estimate. */
+  heightOf(index) {
+    const unit = this.units[index];
+    return (unit && this.state.heights.get(unit.key)) || ESTIMATE;
+  }
+
   rebuildPrefix() {
-    this.prefix = [0];
-    for (const unit of this.units) this.prefix.push(this.prefix.at(-1) + (this.state.heights.get(unit.key) || ESTIMATE));
+    this.prefix = prefixSums(this.units.length, index => this.heightOf(index));
   }
 
   indexAt(y) {
-    if (!this.units.length) return 0;
-    let lo = 0, hi = this.units.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (this.prefix[mid + 1] > y) hi = mid;
-      else lo = mid + 1;
-    }
-    return Math.min(lo, this.units.length - 1);
+    return indexAt(this.prefix, this.units.length, y, true);
   }
 
   rangeForScroll() {
-    const top = Math.max(0, this.scroller.scrollTop - OVERSCAN);
-    const bottom = this.scroller.scrollTop + this.scroller.clientHeight + OVERSCAN;
-    return { lo: this.indexAt(top), hi: Math.min(this.units.length, this.indexAt(bottom) + 1) };
+    return rangeForScroll(this.prefix, this.units.length, this.scroller.scrollTop, this.scroller.clientHeight, OVERSCAN);
   }
 
   rangeAround(index) {
-    let lo = index, hi = index + 1, above = OVERSCAN, below = this.scroller.clientHeight + OVERSCAN;
-    while (lo > 0 && above > 0) { lo--; above -= this.state.heights.get(this.units[lo].key) || ESTIMATE; }
-    while (hi < this.units.length && below > 0) { below -= this.state.heights.get(this.units[hi].key) || ESTIMATE; hi++; }
-    return { lo, hi };
+    return rangeAround(index, this.units.length, i => this.heightOf(i), this.scroller.clientHeight, OVERSCAN);
   }
 
   // The reader's anchor is the first visible RECORD, not the first visible unit — the classic
@@ -220,18 +217,17 @@ export class Viewport {
   captureDomAnchor() {
     const viewportTop = this.scroller.getBoundingClientRect().top;
     const viewportBottom = viewportTop + this.scroller.clientHeight;
-    for (const child of this.window.children) {
-      const rect = child.getBoundingClientRect();
-      if (rect.bottom <= viewportTop + 1) continue;
-      if (rect.top >= viewportBottom) return null;
-      const anchor = { key: child.dataset.unitKey, top: rect.top - viewportTop, block: null, blockTop: 0 };
-      for (const row of child.querySelectorAll("[data-block-index]")) {
-        const r = row.getBoundingClientRect();
-        if (r.height > 0 && r.bottom > viewportTop + 1) { anchor.block = row.dataset.blockIndex; anchor.blockTop = r.top - viewportTop; break; }
-      }
-      return anchor;
-    }
-    return null;
+    const rects = element => {
+      const rect = element.getBoundingClientRect();
+      return { element, top: rect.top, bottom: rect.bottom, height: rect.height };
+    };
+    // This page measures; the shared rule says which one the reader is looking at (#107).
+    const child = firstVisible([...this.window.children].map(rects), viewportTop, viewportBottom, 1, false);
+    if (!child) return null;
+    const anchor = { key: child.element.dataset.unitKey, top: child.top - viewportTop, block: null, blockTop: 0 };
+    const row = firstVisible([...child.element.querySelectorAll("[data-block-index]")].map(rects), viewportTop, Infinity, 1, true);
+    if (row) { anchor.block = row.element.dataset.blockIndex; anchor.blockTop = row.top - viewportTop; }
+    return anchor;
   }
 
   restoreDomAnchor(anchor) {
@@ -244,8 +240,7 @@ export class Viewport {
       if (row && row.getBoundingClientRect().height > 0) { target = row; want = anchor.blockTop; }
     }
     const viewportTop = this.scroller.getBoundingClientRect().top;
-    const delta = target.getBoundingClientRect().top - viewportTop - want;
-    if (Math.abs(delta) > 1) this.scroller.scrollTop += delta;
+    this.scroller.scrollTop += correction(target.getBoundingClientRect().top - viewportTop, want, 1);
   }
 
   // The anchor a SPONTANEOUS change is measured against (#98). A change the viewport makes
@@ -293,7 +288,7 @@ export class Viewport {
       const index = Number(element.dataset.unitIndex);
       const unit = this.units[index];
       const height = this.outerHeight(element);
-      if (unit && height > 1 && Math.abs((this.state.heights.get(unit.key) || ESTIMATE) - height) > 0.5) {
+      if (unit && heightChanged(this.heightOf(index), height, 1, 0.5)) {
         this.state.heights.set(unit.key, height);
         changed = true;
       }
@@ -317,8 +312,9 @@ export class Viewport {
   }
 
   updatePads() {
-    this.top.style.height = `${this.prefix[this.lo] || 0}px`;
-    this.bottom.style.height = `${Math.max(0, this.prefix.at(-1) - (this.prefix[this.hi] || 0))}px`;
+    const pads = padHeights(this.prefix, this.lo, this.hi, this.units.length);
+    this.top.style.height = `${pads.top}px`;
+    this.bottom.style.height = `${pads.bottom}px`;
   }
 
   clearWindow() {
@@ -330,8 +326,7 @@ export class Viewport {
   }
 
   reconcile(lo, hi, dirtyFrom = Infinity, refresh = false, anchor = this.state.following ? null : this.captureDomAnchor()) {
-    lo = Math.max(0, Math.min(lo, this.units.length));
-    hi = Math.max(lo, Math.min(hi, this.units.length));
+    ({ lo, hi } = clampRange(lo, hi, this.units.length));
     if (!refresh && dirtyFrom === Infinity && lo === this.lo && hi === this.hi) return false;
 
     this.observer.disconnect();
@@ -410,18 +405,18 @@ export class Viewport {
   }
 
   onScroll() {
+    // What this scroll MEANS is the shared rule (#107); the slacks are this page's. It decides
+    // on the true end in both directions — acquire and hold are both ACQUIRE_SLACK — where the
+    // classic page holds at 80px; that difference is #127, not something to change here.
     const user = performance.now() - this.lastUserInput < USER_INTENT_MS;
-    if (user) {
-      const following = this.gapToBottom() <= ACQUIRE_SLACK;
-      if (following !== this.state.following) {
-        this.state.following = following;
-        if (following) this.state.newRecords = 0;
-        this.actions.followChanged?.();
-      }
-      this.scheduleRemember();
-    } else if (this.state.following && this.gapToBottom() > HOLD_SLACK) {
-      this.convergeBottom();
+    const verdict = classifyScroll(this.state.following, user, this.gapToBottom(), ACQUIRE_SLACK, ACQUIRE_SLACK, HOLD_SLACK);
+    if (verdict === "follow" || verdict === "unfollow") {
+      this.state.following = verdict === "follow";
+      if (this.state.following) this.state.newRecords = 0;
+      this.actions.followChanged?.();
     }
+    if (user) this.scheduleRemember();
+    else if (verdict === "heal") this.convergeBottom();
     // This scroll moved the reader: the kept anchor is stale until the deferred window update
     // re-reads it (once per batch of scroll events, not per event — the classic page's shape).
     this.anchor = null;

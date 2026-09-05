@@ -14,6 +14,7 @@ import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/s
 import { isInteraction, interactionCard, interactionHtml } from "../../claude-replay-html/src/html/shared/interaction.js";
 import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE } from "../../claude-replay-html/src/html/shared/search.js";
 import { chainWalk } from "../../claude-replay-html/src/html/shared/filter.js";
+import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, correction, firstVisible, classifyScroll } from "../../claude-replay-html/src/html/shared/virtual-window.js";
 import { displayName, toolHead, stateLabel } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
@@ -939,8 +940,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // and the scrollbar thumb owns the position while it is held.
 {
   const src = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
-  assert.match(src, /for \(const row of child\.querySelectorAll\("\[data-block-index\]"\)\) \{/, "the anchor descends to the first visible row of the unit");
-  assert.match(src, /if \(rect\.top >= viewportBottom\) return null;/, "a unit below the viewport is no anchor — the scroll offset places the window");
+  // The rule is the shared module's since #107; this page measures the rects and reads it.
+  assert.match(src, /const row = firstVisible\(\[\.\.\.child\.element\.querySelectorAll\("\[data-block-index\]"\)\]\.map\(rects\), viewportTop, Infinity, 1, true\);/, "the anchor descends to the first visible row of the unit");
+  assert.equal(firstVisible([{ index: 0, top: 900, bottom: 1000, height: 100 }], 0, 500, 1, false), null, "a unit below the viewport is no anchor — the scroll offset places the window");
   assert.match(src, /const row = unit\.querySelector\(`\[data-block-index="\$\{anchor\.block\}"\]`\);/, "…and the restore puts that row back");
   assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\)\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");
   assert.match(src, /return this\.anchor \|\| this\.captureDomAnchor\(\);/, "the kept anchor, else a fresh one");
@@ -1302,4 +1304,65 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(js, /q\.value = shared\.writePrefix\(q\.value, letters\);/);
   assert.match(js, /return shared\.chainWalk\(b, function \(rec\) \{ return filterMatchesDirect\(rec, want\); \}, null\);/);
   console.log("#118 shared search and filter cases passed");
+}
+
+// #107: the virtual window's arithmetic is one module, and it is the app shell's own numbers.
+// These run DIFFERENTIALLY against transcriptions of the bodies viewport.js had before the
+// extraction — the two implementations exist side by side only at this moment.
+{
+  const h = [40, 132, 8, 300, 132];
+  const heightAt = i => h[i];
+  const oldPrefix = (count, at) => { const p = [0]; for (let i = 0; i < count; i++) p.push(p.at(-1) + at(i)); return p; };
+  const sums = prefixSums(5, heightAt);
+  assert.deepEqual(sums, oldPrefix(5, heightAt));
+  assert.deepEqual(sums, [0, 40, 172, 180, 480, 612]);
+  const oldIndexAt = (p, count, y) => { if (!count) return 0; let lo = 0, hi = count; while (lo < hi) { const mid = (lo + hi) >> 1; if (p[mid + 1] > y) hi = mid; else lo = mid + 1; } return Math.min(lo, count - 1); };
+  for (const y of [-50, 0, 39, 40, 171, 172, 179, 180, 479, 480, 611, 612, 9000]) {
+    assert.equal(indexAt(sums, 5, y, true), oldIndexAt(sums, 5, y), `clamped index at ${y}`);
+  }
+  assert.equal(indexAt(sums, 5, 9000, false), 5, "unclamped, an offset past the end is past the end — the classic page's reading");
+  assert.equal(indexAt([0], 0, 10, true), 0, "no items, no index");
+  const oldRangeForScroll = (p, count, top, height, over) => ({ lo: oldIndexAt(p, count, Math.max(0, top - over)), hi: Math.min(count, oldIndexAt(p, count, top + height + over) + 1) });
+  for (const top of [0, 100, 400, 612]) {
+    assert.deepEqual(rangeForScroll(sums, 5, top, 200, 150), oldRangeForScroll(sums, 5, top, 200, 150), `range at ${top}`);
+  }
+  const oldRangeAround = (index, count, at, height, over) => { let lo = index, hi = index + 1, above = over, below = height + over; while (lo > 0 && above > 0) { lo--; above -= at(lo); } while (hi < count && below > 0) { below -= at(hi); hi++; } return { lo, hi }; };
+  for (const index of [0, 2, 4]) {
+    assert.deepEqual(rangeAround(index, 5, heightAt, 200, 150), oldRangeAround(index, 5, heightAt, 200, 150), `around ${index}`);
+  }
+  assert.deepEqual(clampRange(-5, 99, 5), { lo: 0, hi: 5 });
+  assert.deepEqual(clampRange(4, 2, 5), { lo: 4, hi: 4 }, "a backwards range is empty, not inverted");
+  assert.deepEqual(padHeights(sums, 1, 3, 5), { top: 40, bottom: 432 });
+  assert.deepEqual(padHeights(sums, 0, 5, 5), { top: 0, bottom: 0 }, "everything mounted, no pads");
+  // The measure threshold: more than a pixel tall, more than half a pixel different.
+  assert.equal(heightChanged(132, 140, 1, 0.5), true);
+  assert.equal(heightChanged(132, 132.4, 1, 0.5), false, "sub-pixel noise is not a height");
+  assert.equal(heightChanged(132, 0.5, 1, 0.5), false, "an element that is not laid out yet is not a height");
+  assert.equal(heightChanged(30, 40, 0, 0.5), true, "the classic page's floor is zero");
+  assert.equal(correction(210, 200, 1), 10, "put the anchored row back where it was");
+  assert.equal(correction(200.5, 200, 1), 0, "…but not by a pixel of noise");
+  const items = [
+    { index: 0, top: -80, bottom: -10, height: 70 },
+    { index: 1, top: -10, bottom: 120, height: 130 },
+    { index: 2, top: 120, bottom: 400, height: 280 },
+  ];
+  assert.equal(firstVisible(items, 0, 500, 1, false).index, 1, "the first row the reader can see");
+  assert.equal(firstVisible(items, 0, 500, 1, true).index, 1);
+  assert.equal(firstVisible([{ index: 9, top: 600, bottom: 700, height: 100 }], 0, 500, 1, false), null, "past the last of them there is no anchor at all");
+  assert.equal(firstVisible([{ index: 3, top: -5, bottom: -5, height: 0 }, items[2]], 0, 500, 1, true).index, 2, "a row laid out to nothing is no anchor");
+  // Rule 7, with each page's slacks.
+  assert.equal(classifyScroll(false, true, 1, 2, 2, 80), "follow");
+  assert.equal(classifyScroll(false, true, 40, 2, 2, 80), "none");
+  assert.equal(classifyScroll(true, true, 40, 2, 2, 80), "unfollow", "the app shell decides on the true end in both directions (#127)");
+  assert.equal(classifyScroll(true, true, 40, 2, 80, 80), "none", "the classic page holds through a nudge");
+  assert.equal(classifyScroll(true, false, 120, 2, 2, 80), "heal", "displacement while pinned is healed");
+  assert.equal(classifyScroll(false, false, 900, 2, 2, 80), "none", "…and means nothing when unpinned");
+  const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  assert.match(vp, /from "\.\/shared\/virtual-window\.js";/, "the app shell drives the module");
+  assert.match(vp, /this\.prefix = prefixSums\(this\.units\.length, index => this\.heightOf\(index\)\);/);
+  assert.match(vp, /const verdict = classifyScroll\(this\.state\.following, user, this\.gapToBottom\(\), ACQUIRE_SLACK, ACQUIRE_SLACK, HOLD_SLACK\);/);
+  const module = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  // Numbers in, numbers out: `scrollTop` names a PARAMETER here, but no element is touched.
+  assert.doesNotMatch(module, /document\.|ResizeObserver|\.getBoundingClientRect\(|\.scrollTop|\.style\.|performance\.now\(|setTimeout\(|addEventListener/, "the module is numbers in, numbers out — no page can hide a layout read in it");
+  console.log("#107 virtual window cases passed");
 }

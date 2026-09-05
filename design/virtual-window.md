@@ -125,6 +125,17 @@ shape:
   optional `estimate(index)`, and it calls back `onSettle(firstVisibleIndex)` for the spy.
 - **The pages keep** what is theirs: which records form a unit (the app shell's projection),
   what a fold is and how a reveal opens it, the search stepping, the outline column.
+**Step 1 landed (v1.195.0).** `shared/virtual-window.js` holds the arithmetic — `prefixSums`,
+`indexAt` (clamped for the app shell, raw for the classic page), `rangeForScroll`, `rangeAround`,
+`clampRange`, `padHeights`, `heightChanged`, `correction`, `firstVisible`, `classifyScroll` — and
+`viewport.js` runs it. It takes NUMBERS and returns numbers: every layout read and every DOM write
+stayed on the page, which is what lets the node contract test the rules differentially against the
+bodies they replaced. Two divergences the extraction surfaced are parameters, not forks: the index
+clamp, and the follow slacks (the app shell decides on the true end in both directions, filed as
+its own task; the classic page holds at 80px). The class the note describes below is not built:
+the app shell's scroller is an element and the classic page's is the document, so a frame adapter
+has to come first, and that belongs with step 2.
+
 - **Migration** in three steps, each releasable: (1) the app shell's `viewport.js` becomes the
   module's first consumer (it is already class-shaped and record-agnostic); (2) the classic page
   adopts it for the window/anchor/observer core, keeping `updateView`'s materialization as the
