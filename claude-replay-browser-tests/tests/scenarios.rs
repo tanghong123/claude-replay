@@ -2847,7 +2847,7 @@ fn scenario_a_task_reads_like_the_board(
     settle();
     let card = match surface {
         Surface::Classic => "(function(){ var c = document.querySelector('#taskbox .tcard'); if (!c) return null; return { glyph: (c.querySelector('.tcard-glyph')||{}).textContent, id: (c.querySelector('.tcard-id')||{}).textContent, chips: [...c.querySelectorAll('.tchip')].map(e => e.textContent.trim()), dates: (c.querySelector('.tcard-dates')||{}).textContent, labels: [...c.querySelectorAll('.tcard-label')].map(e => e.textContent), log: [...c.querySelectorAll('.tcard-lt')].map(e => e.textContent), meta: [...document.querySelectorAll('#taskbox .task-meta')].map(e => e.textContent) }; })()",
-        Surface::AppShell => "(function(){ var c = document.querySelector('.task-card'); if (!c) return null; return { glyph: (c.querySelector('.task-card-glyph')||{}).textContent, id: (c.querySelector('.task-card-id')||{}).textContent, chips: [...c.querySelectorAll('.task-chip')].map(e => e.textContent.trim()), dates: (c.querySelector('.task-card-dates')||{}).textContent, labels: [...c.querySelectorAll('.task-card-label')].map(e => e.textContent), log: [...c.querySelectorAll('.task-card-log-time')].map(e => e.textContent), meta: [] }; })()",
+        Surface::AppShell => "(function(){ var c = document.querySelector('.task-card'); if (!c) return null; return { glyph: (c.querySelector('.task-card-glyph')||{}).textContent, id: (c.querySelector('.task-card-id')||{}).textContent, chips: [...c.querySelectorAll('.task-chip')].map(e => e.textContent.trim()), dates: (c.querySelector('.task-card-dates')||{}).textContent, labels: [...c.querySelectorAll('.task-card-label')].map(e => e.textContent), log: [...c.querySelectorAll('.task-card-log-time')].map(e => e.textContent), meta: [...document.querySelectorAll('#navigatorWork .work-task-meta')].map(e => e.textContent) }; })()",
     };
     let seen = probe(tab, card);
     assert!(
@@ -2901,7 +2901,7 @@ fn scenario_a_task_reads_like_the_board(
         Some(2),
         "each worklog entry keeps its time: {seen:?}"
     );
-    if surface == Surface::Classic {
+    {
         let meta: Vec<String> = seen["meta"]
             .as_array()
             .map(|a| {

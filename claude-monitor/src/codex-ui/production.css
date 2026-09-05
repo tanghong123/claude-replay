@@ -242,3 +242,4 @@
 .task-card-log-time{font:11px/1.7 var(--mono);color:var(--faint);white-space:nowrap}
 .task-card-log-msg{color:var(--sub);overflow-wrap:anywhere}
 .task-card-log-by{color:var(--faint)}
+.work-task-meta{display:block;margin-top:2px;font-size:11px;color:var(--faint);overflow-wrap:anywhere}

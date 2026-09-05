@@ -3,7 +3,7 @@ import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
 import { chainWalk } from "./shared/filter.js";
-import { taskCardHtml } from "./shared/task-card.js";
+import { taskCardHtml, taskRowMeta } from "./shared/task-card.js";
 import { ControlStore } from "./control-store.js";
 import { Preview } from "./preview.js";
 import { RecordStore } from "./record-store.js";
@@ -523,7 +523,10 @@ function renderNavigator() {
     // The row opens the task's details (#60); the jump to where its status was recorded is an
     // action inside the popover, so a click never moves the transcript by surprise.
     const status = taskStatus(task.status), statusClass = status === "in_progress" ? "running" : status;
-    return `<div class="work-task"><button class="work-task-head" type="button" data-task-open="${index}" title="Task details" aria-haspopup="dialog"><span class="task-state ${escapeText(statusClass)}"></span><span class="work-copy"><strong>${escapeText(task.subject || task.title || `Task ${index + 1}`)}</strong></span><span class="work-tail">#${escapeText(task.id || index + 1)}</span></button></div>`;
+    // A second line when there is something to say — who holds it, what blocks it, what gates
+    // it, whether it is parked (#125, the queue board's two-line card). Silence keeps it to one.
+    const meta = taskRowMeta({ ...task, blockedBy: task.blocked_by || task.blockedBy || [] });
+    return `<div class="work-task"><button class="work-task-head" type="button" data-task-open="${index}" title="Task details" aria-haspopup="dialog"><span class="task-state ${escapeText(statusClass)}"></span><span class="work-copy"><strong>${escapeText(task.subject || task.title || `Task ${index + 1}`)}</strong>${meta ? `<small class="work-task-meta">${escapeText(meta)}</small>` : ""}</span><span class="work-tail">#${escapeText(task.id || index + 1)}</span></button></div>`;
   };
   byId("navigatorWork").innerHTML = taskGroups(tasks).map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("") || '<div class="activity-empty">No session tasks</div>';
   const agents = directAgents(), activeAgents = agents.filter(agent => agent.running).length;

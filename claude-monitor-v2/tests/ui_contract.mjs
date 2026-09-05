@@ -1427,6 +1427,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(taskCardHtml({ id: "1", subject: "<b>x</b>" }, classes), /&lt;b&gt;x&lt;\/b&gt;/, "a subject is escaped");
   const app125 = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app125, /\$\{taskCardHtml\(\{ \.\.\.task, id: key, blockedBy: d\.blockedBy, blocks: d\.blocks \}, APP_TASK\)\}/, "the app shell's popover shows the card");
+  assert.match(app125, /const meta = taskRowMeta\(\{ \.\.\.task, blockedBy: task\.blocked_by \|\| task\.blockedBy \|\| \[\] \}\);/, "…and its pane rows carry the board's second line");
   const js125 = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
   assert.match(js125, /det\.insertAdjacentHTML\("beforeend", shared\.taskCardHtml\(card\(t\), CLASSIC_TASK\)\);/, "…and so does the classic page's panel");
   assert.match(js125, /row\.appendChild\(el\("span", "task-glyph", shared\.taskGlyph\(t\.status, t\.deferred\)\)\);/);
