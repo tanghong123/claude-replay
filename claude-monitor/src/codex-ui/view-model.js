@@ -246,6 +246,10 @@ function rendererRecord(record, renderer, name) {
     path: head.path || head.att_path,
     revealSig: head.sig || head.att_sig,
     fileSig: head.fsig || head.att_fsig,
+    // A BARE result (#122): a `tool_result` with no call before it. The server names it
+    // `Result` with the first 70 characters as its target and writes no `tool` field — only a
+    // tool CALL carries that — so its body wears the ⎿ gutter, as the classic page draws it.
+    bare: record.kind === "tool" && !record.tool,
     attachment: record.kind === "attachment" ? head : null,
     interaction: head.interaction || null,
     childId: head.child_id || childFrom(head.child), children

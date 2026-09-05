@@ -58,6 +58,17 @@ function diffRowsHtml(rows, classes, marks) {
   }).join("");
 }
 
+/** The gutter that means "this is what came back" in the pages' vocabulary (#122,
+ *  design/rendering-parity-audit.md row 3.18). The classic page has always drawn it on a tool
+ *  result body; a BARE result — a `tool_result` with no call before it, which the server names
+ *  `Result` with the first 70 characters as its target — is nothing but that body, and the app
+ *  shell drew it as plain output. One rule, both pages, each with its own class names. */
+const RESULT_MARK = "⎿";
+
+function resultBodyHtml(innerHtml, classes) {
+  return `<div class="${classes.result}"><span class="${classes.lead}">${RESULT_MARK}</span><div class="${classes.box}">${innerHtml}</div></div>`;
+}
+
 /** The memory key of one expander: the record's id and the button's ordinal within it. */
 function capKey(recordId, ordinal) {
   return recordId + ":" + ordinal;
@@ -86,4 +97,4 @@ function hiddenLines(button, hidden, rowClass) {
   return (hidden.textContent || "").split("\n").length;
 }
 
-export { MAX_BUFFER_LINES, capLabel, capSplit, preLines, toLineOf, numRowsHtml, diffRowsHtml, capKey, rememberCap, capOpenHas, hiddenLines };
+export { MAX_BUFFER_LINES, RESULT_MARK, resultBodyHtml, capLabel, capSplit, preLines, toLineOf, numRowsHtml, diffRowsHtml, capKey, rememberCap, capOpenHas, hiddenLines };

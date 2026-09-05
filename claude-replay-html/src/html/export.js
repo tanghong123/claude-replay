@@ -76,6 +76,7 @@
   // split, the label and the expansion memory are the shared module's, and both pages run it.
   var CLASSIC_ROWS = { row: "nrow", gut: "gut", mark: "mark", code: "code", add: "add", del: "del" };
   var CLASSIC_MARKS = { add: "+", del: "−", ctx: " " };
+  var CLASSIC_RESULT = { result: "result", lead: "lead", box: "resultbox" };
 
   // A capped list: the first `cap` rows stay visible, the rest go into a hidden div revealed
   // by a "⋯ N more lines" button. All content is always present.
@@ -119,18 +120,19 @@
     }
     if (p.p === "note") {
       var note = el("div", "note");
-      note.appendChild(el("span", null, "⎿"));
+      note.appendChild(el("span", null, shared.RESULT_MARK));
       note.appendChild(el("span", null, p.x));
       into.appendChild(note);
       return;
     }
     if (p.p === "pre") {
-      var wrap = el("div", "result");
-      wrap.appendChild(el("span", "lead", "⎿"));
+      // The result body's shape — the ⎿ gutter and the output beside it — is the shared
+      // module's (#122); this page fills the box with its own capped nodes.
+      var host = el("div", null);
+      host.insertAdjacentHTML("beforeend", shared.resultBodyHtml("", CLASSIC_RESULT));
+      var wrap = host.firstElementChild;
+      var box = wrap.lastElementChild;
       var lines = shared.preLines(p.x);
-      var box = el("div");
-      box.style.flex = "1";
-      box.style.minWidth = "0";
       var split = shared.capSplit(lines, p.cap);
       box.appendChild(el("pre", null, split.shown.join("\n")));
       if (split.hidden.length) {
@@ -144,7 +146,6 @@
         btn.dataset.capLines = split.hidden.length;
         box.appendChild(btn);
       }
-      wrap.appendChild(box);
       into.appendChild(wrap);
       return;
     }

@@ -694,6 +694,7 @@ body.selecting #toolmenu, body.selecting #agentmenu {
   line-height: 1.7; color: var(--muted);
 }
 .result > .lead { flex: none; }
+.result > .resultbox { flex: 1; min-width: 0; }
 .result pre { margin: 0; font: inherit; white-space: pre-wrap; word-break: break-word; }
 .note { display: flex; gap: 8px; font: 11.5px var(--mono); color: var(--muted); margin: 2px 0 6px; }
 

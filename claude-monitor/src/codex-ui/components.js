@@ -3,7 +3,7 @@
 import { attachmentCapability, referenceAction, revealQuery } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 import { escapeText, partsHtml } from "./view-model.js";
-import { rememberCap } from "./shared/parts.js";
+import { rememberCap, resultBodyHtml } from "./shared/parts.js";
 import { fmtTime } from "./shared/time.js";
 
 const element = html => {
@@ -25,8 +25,14 @@ const element = html => {
 /** A tool view's body with the reader's cap state applied (#108): the raw parts render at
  *  render time, so an expander opened before comes back open. */
 function bodyHtml(view, state) {
-  return view.parts ? partsHtml(view.parts, view.id, state) : view.html;
+  const html = view.parts ? partsHtml(view.parts, view.id, state) : view.html;
+  // A bare result is nothing but what came back, so it reads as the classic page draws it:
+  // the ⎿ gutter and the output beside it, from the shared module (#122).
+  return view.bare ? resultBodyHtml(html, APP_RESULT) : html;
 }
+
+/** This shell's names for the shared result body (html/shared/parts.js). */
+const APP_RESULT = { result: "renderer-result", lead: "renderer-result-lead", box: "renderer-result-box" };
 
 function rendererBody(view, state) {
   if (view.renderer === "fallback") {

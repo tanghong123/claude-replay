@@ -75,6 +75,21 @@ fn fixture_spawns(name: &str, turns: u32) -> Fixture {
     Fixture { base, path, turns }
 }
 
+/// A fixture whose tail carries a BARE tool result — a `tool_result` with no `tool_use` before
+/// it, which the engine keeps as its own `ToolResult` block (#122).
+fn fixture_bare_result(name: &str, turns: u32) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(turns, Shape::default());
+    jsonl += &harness::tool_result_text(
+        "orphan-1",
+        "checked 42 files and found the one that matters, a very long first line that runs past seventy characters\\nsecond line\\nthird line",
+        "2026-08-21T10:15:01Z",
+    );
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture { base, path, turns }
+}
+
 /// The surface, opened on the fixture: the html server for the classic page (in-process, one
 /// root), a paired v2 monitor for the app shell. Returns the tab and what keeps the page alive.
 struct Opened {
@@ -3172,6 +3187,59 @@ fn classic_page_a_launched_spawn_is_not_a_running_head() {
     let fx = fixture_spawns("scenario-spawn-classic", 14);
     let page = open(Surface::Classic, &fx, 0);
     scenario_a_launched_spawn_is_not_a_running_head(&page.tab, Surface::Classic, &fx);
+}
+
+/// A BARE tool result — a `tool_result` with no call before it — reads as the classic page
+/// draws it (#122, parity row 3.18): a `Result` row whose target is the first 70 characters of
+/// the text and whose body is the ⎿ gutter with the output beside it.
+fn scenario_a_bare_result_reads_as_a_result_row(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let row = probe(
+        tab,
+        match surface {
+            Surface::Classic => "(function () { var f = [...document.querySelectorAll('#stream .fold')].find(f => (f.querySelector('.tool-name') || {}).textContent === 'Result'); if (!f) return null; f.querySelector('.fold-h').click(); var b = f.querySelector('.fold-b'); return { name: f.querySelector('.tool-name').textContent, target: (f.querySelector('.tool-target') || {}).textContent || '', mark: (b.querySelector('.result > .lead') || {}).textContent || '', body: (b.querySelector('.result > .resultbox > pre') || {}).textContent || '' }; })()",
+            Surface::AppShell => "(function () { var r = [...document.querySelectorAll('.renderer[data-renderer-kind]')].find(r => (r.querySelector('.renderer-title') || {}).textContent === 'Result'); if (!r) return null; r.querySelector('.renderer-head').click(); var b = r.querySelector('.renderer-body'); return { name: r.querySelector('.renderer-title').textContent, target: (r.querySelector('.renderer-target') || {}).textContent || '', mark: (b.querySelector('.renderer-result > .renderer-result-lead') || {}).textContent || '', body: (b.querySelector('.renderer-result > .renderer-result-box > pre') || {}).textContent || '' }; })()",
+        },
+    );
+    assert!(!row.is_null(), "a bare result mounted as its own row");
+    assert_eq!(row["name"], "Result", "the row names what it is: {row:?}");
+    assert_eq!(
+        row["target"], "checked 42 files and found the one that matters, a very long first lin…",
+        "…and its target is the first 70 characters: {row:?}"
+    );
+    assert_eq!(row["mark"], "⎿", "the result gutter: {row:?}");
+    assert!(
+        row["body"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("checked 42 files")
+            && row["body"].as_str().unwrap_or("").ends_with("third line"),
+        "…with the whole text beside it: {row:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_bare_result_reads_as_a_result_row() {
+    let _serial = serial();
+    let fx = fixture_bare_result("scenario-bare-classic", 14);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_bare_result_reads_as_a_result_row(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_bare_result_reads_as_a_result_row() {
+    let _serial = serial();
+    let fx = fixture_bare_result("scenario-bare-app", 14);
+    let page = open(Surface::AppShell, &fx, 2898);
+    scenario_a_bare_result_reads_as_a_result_row(&page.tab, Surface::AppShell, &fx);
 }
 
 #[test]

@@ -3280,6 +3280,26 @@ mod tests {
             .any(|(name, _)| *name == "time"));
     }
 
+    /// #122: the result body — the ⎿ gutter and the output beside it — is one rule in
+    /// `shared/parts.js`, and the classic page (the reference for the shape) runs it.
+    #[test]
+    fn the_result_body_is_the_shared_modules() {
+        assert!(JS.contains(
+            r#"host.insertAdjacentHTML("beforeend", shared.resultBodyHtml("", CLASSIC_RESULT));"#
+        ));
+        assert!(JS.contains(
+            r#"var CLASSIC_RESULT = { result: "result", lead: "lead", box: "resultbox" };"#
+        ));
+        // The mark lives in the module, nowhere else: two pages, one vocabulary.
+        assert!(
+            !JS.contains("\"⎿\""),
+            "the classic page takes the gutter glyph from the shared module, never its own literal"
+        );
+        let module = super::shared::shared_source("parts").unwrap();
+        assert!(module.contains(r#"const RESULT_MARK = "⎿";"#));
+        assert!(CSS.contains(".result > .resultbox { flex: 1; min-width: 0; }"));
+    }
+
     /// #117: the classic page reads a tool head through the shared module — the display name
     /// and the chips are one vocabulary with the app shell's state pill.
     #[test]

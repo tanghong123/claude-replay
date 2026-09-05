@@ -10,6 +10,7 @@ import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-ht
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { recordTextSize, LIVE_SEARCH_LIMIT, recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, countOcc, wholeAt, directMask, CLASS_BIT } from "../../claude-monitor/src/codex-ui/shared/search.js";
 import { fmtTime, fmtDur } from "../../claude-monitor/src/codex-ui/shared/time.js";
+import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/shared/parts.js";
 import { displayName, toolHead, stateLabel } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
@@ -952,7 +953,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // #108: row caps are the shared module's, on both pages.
 {
   const parts = readFileSync(new URL("../../claude-replay-html/src/html/shared/parts.js", import.meta.url), "utf8");
-  assert.match(parts, /^export \{ MAX_BUFFER_LINES, capLabel, capSplit, preLines, toLineOf, numRowsHtml, diffRowsHtml, capKey, rememberCap, capOpenHas, hiddenLines \};\s*$/m, "the module's export line");
+  assert.match(parts, /^export \{ MAX_BUFFER_LINES, RESULT_MARK, resultBodyHtml, capLabel, capSplit, preLines, toLineOf, numRowsHtml, diffRowsHtml, capKey, rememberCap, capOpenHas, hiddenLines \};\s*$/m, "the module's export line");
   const vm = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
   assert.match(vm, /import \{ capSplit, capLabel, preLines, toLineOf, numRowsHtml, diffRowsHtml, capOpenHas \} from "\.\/shared\/parts\.js";/, "the app shell imports the shared rules");
   assert.match(vm, /export function partsHtml\(parts = \[\], recordId = "", state = null\) \{/, "parts render with the record id and the reader state");
@@ -961,7 +962,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.match(comp, /const capMore = event\.target\.closest\("\[data-cap-more\]"\);/, "the click reveals in place…");
   assert.match(comp, /rememberCap\(state\.capOpen, capMore\.dataset\.capRecord, capMore\.dataset\.capOrd, Number\(capMore\.dataset\.capLines\) \|\| 0\);/, "…and remembers a small expansion");
-  assert.match(comp, /return view\.parts \? partsHtml\(view\.parts, view\.id, state\) : view\.html;/, "the body renders from parts with the state");
+  assert.match(comp, /const html = view\.parts \? partsHtml\(view\.parts, view\.id, state\) : view\.html;/, "the body renders from parts with the state");
   const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(vp, /if \(target\?\.id && state\.capOpen\) state\.capOpen\.add\(`\$\{target\.id\}:\*`\);/, "a navigated-to record opens every cap");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
@@ -1195,4 +1196,26 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.match(comp, /\$\{escapeText\(view\.state \? view\.pill : status === "completed" \? "" : status\)\}/, "the pill shows the module's label");
   console.log("#117 tool head cases passed");
+}
+
+// #122: a bare tool result reads as the classic page draws it — a Result row whose body wears
+// the ⎿ gutter, from the shared module.
+{
+  assert.equal(RESULT_MARK, "⎿");
+  assert.equal(
+    resultBodyHtml("<pre>out</pre>", { result: "r", lead: "l", box: "b" }),
+    '<div class="r"><span class="l">⎿</span><div class="b"><pre>out</pre></div></div>',
+    "the mark and the box around the output"
+  );
+  // The server names a bare result and writes no `tool` field — only a call carries one.
+  const bare = viewRecord({ kind: "tool", id: "r1", head: { name: "Result", target: "checked 42 files…" }, body: [{ p: "pre", x: "line one\nline two" }] });
+  assert.deepEqual([bare.name, bare.summary, bare.bare], ["Result", "checked 42 files…", true]);
+  const call = viewRecord({ kind: "bash", id: "b9", tool: "Bash", head: { name: "Bash", target: "echo hi" }, body: [{ p: "pre", x: "hi" }] });
+  assert.equal(call.bare, false, "a tool call keeps this shell's own rail");
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /return view\.bare \? resultBodyHtml\(html, APP_RESULT\) : html;/, "the app shell draws it through the module");
+  assert.match(comp, /const APP_RESULT = \{ result: "renderer-result", lead: "renderer-result-lead", box: "renderer-result-box" \};/);
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.renderer-result\{display:flex;gap:8px\}/, "…and styles it beside the output");
+  console.log("#122 bare result cases passed");
 }

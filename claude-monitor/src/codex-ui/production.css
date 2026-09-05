@@ -212,3 +212,9 @@
 /* #99: a turn's chrome never enters a selection — dragging across a one-line prompt copied the
    prompt, "#" and "{}" as three lines. */
 .turn .spot-link,.turn .raw-toggle,.turn .turn-time,.turn .prompt-expand,.turn .command-chevron,.turn .command-chip,.renderer-head,.process-surface-headbar,.cap-more-btn,.codebar,.renderer-image-toggle{user-select:none}
+
+/* A bare tool result's body wears the classic page's ⎿ gutter (#122, parity row 3.18): the
+   record is nothing but what came back, so the mark carries the meaning the rail cannot. */
+.renderer-result{display:flex;gap:8px}
+.renderer-result>.renderer-result-lead{flex:none;color:var(--faint)}
+.renderer-result>.renderer-result-box{flex:1;min-width:0}
