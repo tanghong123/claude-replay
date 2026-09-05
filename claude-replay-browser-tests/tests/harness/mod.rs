@@ -803,7 +803,37 @@ pub fn scroll_by(tab: &headless_chrome::Tab, surface: Surface, dy: i64) {
         Surface::Classic => "window",
         Surface::AppShell => s,
     };
-    eval(tab, &format!("(function(){{ var s = {s}; {target}.dispatchEvent(new WheelEvent('wheel', {{deltaY: {dy}, bubbles: true}})); s.scrollTop = Math.max(0, s.scrollTop + ({dy})); return 'ok'; }})()"));
+    // The reader's intent, then the scroll: a programmatic scroll alone reads as the renderer's
+    // own, and a page that is following heals it straight back to the tail.
+    //
+    // Dispatched TWICE, around the move, and re-applied once if the position did not stick. The
+    // page classifies in its SCROLL handler, which is asynchronous: if that handler lands more
+    // than the intent window (300ms) after the wheel — a heavy page, a slower engine, a busy
+    // machine — it reads the reader's own scroll as displacement and undoes it. One retry is
+    // enough for a race and does not hide a page that genuinely refuses: a second refusal
+    // leaves the position where the page put it, and the case fails as it should.
+    // `s.scrollTop = y` on the DOCUMENT scroller fires no scroll event on every engine —
+    // measured: Chrome for Testing 151 stays silent where stable 152 reports two — and a page
+    // that classifies in its scroll handler then never hears the reader, so it heals the scroll
+    // straight back. `scrollTo` is the same movement and is reported by both.
+    let move_it = format!(
+        "(function(){{ var s = {s}; var want = Math.max(0, s.scrollTop + ({dy})); {target}.dispatchEvent(new WheelEvent('wheel', {{deltaY: {dy}, bubbles: true}})); s.scrollTo({{ top: want, behavior: 'instant' }}); {target}.dispatchEvent(new WheelEvent('wheel', {{deltaY: {dy}, bubbles: true}})); return [want, s.scrollTop]; }})()"
+    );
+    let asked = probe(tab, &move_it);
+    let want = asked
+        .get(0)
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    std::thread::sleep(Duration::from_millis(140));
+    let now = eval(tab, &format!("{s}.scrollTop"))
+        .as_f64()
+        .unwrap_or(want);
+    if (now - want).abs() > 2.0 {
+        eval(
+            tab,
+            &format!("(function(){{ var s = {s}; {target}.dispatchEvent(new WheelEvent('wheel', {{deltaY: {dy}, bubbles: true}})); s.scrollTo({{ top: {want}, behavior: 'instant' }}); return 'ok'; }})()"),
+        );
+    }
 }
 
 /// Jump to the end the way the page offers it: the classic page's pill / a scroll to the
@@ -815,7 +845,7 @@ pub fn jump_to_end(tab: &headless_chrome::Tab, surface: Surface) {
             eval(tab, "(function(){ window.dispatchEvent(new WheelEvent('wheel', {deltaY: 120})); window.scrollTo(0, document.scrollingElement.scrollHeight); var b = document.getElementById('newbadge'); if (b) b.click(); return 'ok'; })()");
         }
         Surface::AppShell => {
-            eval(tab, &format!("(function(){{ var b = document.getElementById('jumpToBottom'); if (b) b.click(); var s = {s}; s.scrollTop = s.scrollHeight; return 'ok'; }})()"));
+            eval(tab, &format!("(function(){{ var b = document.getElementById('jumpToBottom'); if (b) b.click(); var s = {s}; s.scrollTo({{ top: s.scrollHeight, behavior: 'instant' }}); return 'ok'; }})()"));
         }
     }
 }
