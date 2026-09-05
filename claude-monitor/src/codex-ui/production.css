@@ -209,3 +209,6 @@
 /* #103: the process header's turn is the unit's own ordinal — the demo's CSS counter counts
    mounted user turns, which in a virtual window is whatever happens to be on screen. */
 .process-surface-label[data-turn-label]:after{content:"Turn " attr(data-turn-label)}
+/* #99: a turn's chrome never enters a selection — dragging across a one-line prompt copied the
+   prompt, "#" and "{}" as three lines. */
+.turn .spot-link,.turn .raw-toggle,.turn .turn-time,.turn .prompt-expand,.turn .command-chevron,.turn .command-chip,.renderer-head,.process-surface-headbar,.cap-more-btn,.codebar,.renderer-image-toggle{user-select:none}

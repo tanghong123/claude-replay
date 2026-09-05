@@ -57,7 +57,7 @@ Scenario: the state of the guard that runs on both surfaces.
 | 1.6 | Queued prompt marker | `⧗ queued:` line | "Queued input" renderer, never folded | HAVE | `scenario_queued_prompt_text` ✓ both |
 | 1.7 | Prompt attachments (images, files) | attachment cards after the turn (`amark`) | cards under the prompt (`prompt-attachments`) with capability glyphs | OK-DIFF | image scenario ✓ both |
 | 1.8 | Spot / deep link on a turn | `#` copies URL+`#id` | same | HAVE | ✓ both, through 3.11's scenario (the same link mechanics) |
-| 1.9 | Copy the message text | none (select text) | none | — | owner's #99 (a selected one-line prompt pastes as three): fix there; a "copy message" control is the durable answer, propose with #99 |
+| 1.9 | Copy the message text | select text — but a drag across the card took the caret, the time, `{}` and `#` too (six lines) | select text — the same, three lines | Fixed on BOTH (#99, v1.190.0): a turn's chrome never enters a selection; a drag across the whole card selects the message alone. A "copy message" control remains an option if wanted | ✓ both: `scenario_dragging_a_card_copies_one_line` (a real drag through CDP mouse events) |
 
 ### 2. Assistant text
 

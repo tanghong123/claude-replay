@@ -1662,17 +1662,37 @@ fn the_compose_affordance_appears_only_once_paired() {
     let probe = |paired: bool, port: u16| -> (bool, i64) {
         let m = Monitor::spawn(Kind::V2, port, &base, Some(&stores), paired);
         let tab = browser.new_tab().unwrap();
+        let console = harness::tap_console(&tab);
         m.pair(&tab);
         // The affordance under test is the classic splice's: ask for it by name, since the
         // app shell is what `/` serves by default.
         m.open(&tab, "?ui=classic");
-        std::thread::sleep(std::time::Duration::from_millis(2500));
-        let buttons = harness::eval(&tab, "document.querySelectorAll('.v2send').length")
-            .as_i64()
-            .unwrap_or(-1);
-        let rows = harness::eval(&tab, "document.querySelectorAll('.v2row').length")
-            .as_i64()
-            .unwrap_or(0);
+        // Wait for the rows, not a fixed beat: the index scan and the first paint take longer
+        // on a loaded machine, and the affordance follows the rows by another round trip.
+        let rows_js = "document.querySelectorAll('.v2row').length";
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < deadline
+            && harness::eval(&tab, rows_js).as_i64().unwrap_or(0) == 0
+        {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        let buttons_js = "document.querySelectorAll('.v2send').length";
+        let settle_until =
+            std::time::Instant::now() + std::time::Duration::from_secs(if paired { 20 } else { 2 });
+        while std::time::Instant::now() < settle_until
+            && (harness::eval(&tab, buttons_js).as_i64().unwrap_or(0) > 0) != paired
+        {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        let buttons = harness::eval(&tab, buttons_js).as_i64().unwrap_or(-1);
+        let rows = harness::eval(&tab, rows_js).as_i64().unwrap_or(0);
+        if rows == 0 {
+            let body = harness::eval(&tab, "location.href + ' | ' + document.title + ' | ' + document.body.innerText.replace(/\\s+/g, ' ').slice(0, 300)");
+            eprintln!(
+                "no rows on port {port}: {body} console: {:?}",
+                console.lock().unwrap()
+            );
+        }
         let _ = tab.close(true);
         drop(m);
         (rows > 0, buttons)

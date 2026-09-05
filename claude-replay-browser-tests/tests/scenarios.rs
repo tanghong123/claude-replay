@@ -18,12 +18,12 @@ mod harness;
 use claude_replay_html::start_server;
 use claude_replay_present::Args;
 use harness::{
-    assistant_at, at_tail, base, click_session_id, command_at, copied_text, eval, image_result_at,
-    jump_to_end, key, last_mounted_turn, long_session, now_minus, open_last_fold,
-    open_turn_session, probe, queued_at, queued_text, read_tool_at, scroll_by, serial,
-    session_id_chip, stub_clipboard, tap_console, tool_open_at, tool_result_at, tool_result_lines,
-    tool_result_text, turn_at_top, until, user_at, view_anchor_index, Kind, LiveGrowth, Monitor,
-    Shape, Stores, Surface,
+    assistant_at, at_tail, base, click_session_id, command_at, copied_text, drag_select, eval,
+    image_result_at, jump_to_end, key, last_mounted_turn, long_session, now_minus, open_last_fold,
+    open_turn_session, probe, queued_at, queued_text, read_tool_at, scroll_by, selection_text,
+    serial, session_id_chip, stub_clipboard, tap_console, tool_open_at, tool_result_at,
+    tool_result_lines, tool_result_text, turn_at_top, until, user_at, view_anchor_index, Kind,
+    LiveGrowth, Monitor, Shape, Stores, Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -862,7 +862,7 @@ fn scenario_scrolling_back_during_growth_holds_between_scrolls(
     while t0.elapsed() < Duration::from_secs(44) {
         std::thread::sleep(Duration::from_millis(250));
         ticks += 1;
-        if ticks % 9 == 0 {
+        if ticks.is_multiple_of(9) {
             scroll_by(tab, surface, -400);
             std::thread::sleep(Duration::from_millis(150));
             expect = harness::view_anchor(tab, surface);
@@ -2707,15 +2707,12 @@ fn scenario_large_session_searches_on_enter(
     // The whole session must have streamed in for the size to be known.
     until(
         tab,
-        &format!(
-            "{}",
-            match surface {
-                Surface::Classic =>
-                    "document.querySelectorAll('#turnlist .side-item').length >= 13",
-                Surface::AppShell =>
-                    "document.querySelectorAll('#navigatorTurns .outline-turn-row').length >= 13",
+        match surface {
+            Surface::Classic => "document.querySelectorAll('#turnlist .side-item').length >= 13",
+            Surface::AppShell => {
+                "document.querySelectorAll('#navigatorTurns .outline-turn-row').length >= 13"
             }
-        ),
+        },
         "the session to stream in",
         Duration::from_secs(60),
         "document.readyState",
@@ -2904,4 +2901,62 @@ fn ordinal_fixture(name: &str) -> Fixture {
         path,
         turns: 120,
     }
+}
+
+// ── scenario: dragging across a one-line prompt selects the prompt alone (#99) ────────────
+
+/// The owner's report: a one-line user message pasted as three lines. A drag from one corner
+/// of the card to the other must select the message text only — no control labels, no time.
+fn scenario_dragging_a_card_copies_one_line(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let card_rect = match surface {
+        Surface::Classic => "(function(){ var c = [...document.querySelectorAll('#stream .uturn')].pop(); if (!c) return null; var r = c.getBoundingClientRect(); var b = c.querySelector('.uturn-md') || c; return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, text: b.textContent.trim() }; })()",
+        Surface::AppShell => "(function(){ var c = [...document.querySelectorAll('.turn.user')].pop(); if (!c) return null; var r = c.getBoundingClientRect(); var b = c.querySelector('.body.markdown') || c; return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, text: b.textContent.trim() }; })()",
+    };
+    let card = probe(tab, card_rect);
+    let (l, t, r, b) = (
+        card["left"].as_f64().unwrap(),
+        card["top"].as_f64().unwrap(),
+        card["right"].as_f64().unwrap(),
+        card["bottom"].as_f64().unwrap(),
+    );
+    let text = card["text"].as_str().unwrap_or("").to_string();
+    assert!(
+        !text.contains('\n') && text.len() > 10,
+        "the last prompt is one line: {text:?}"
+    );
+    drag_select(tab, l + 2.0, t + 2.0, r - 2.0, b - 2.0);
+    settle();
+    let selected = selection_text(tab);
+    let selected = selected.trim().to_string();
+    assert_eq!(
+        selected.lines().count(),
+        1,
+        "a drag across the whole card selects one line, not the controls too: {selected:?}"
+    );
+    assert_eq!(selected, text, "…the message itself");
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_dragging_a_card_copies_one_line() {
+    let _serial = serial();
+    let fx = fixture("scenario-copyline-classic", 12);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_dragging_a_card_copies_one_line(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_dragging_a_card_copies_one_line() {
+    let _serial = serial();
+    let fx = fixture("scenario-copyline-app", 12);
+    let page = open(Surface::AppShell, &fx, 2895);
+    scenario_dragging_a_card_copies_one_line(&page.tab, Surface::AppShell, &fx);
 }

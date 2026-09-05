@@ -781,6 +781,9 @@ hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
    made to fit rather than wrapped or scrolled. */
 /* Per-turn "show as raw" control: as quiet as the anchor beside it, and only offered
    once the pointer is on the turn. Tinted when that turn is showing raw. */
+/* #99: a turn's chrome never enters a selection — a drag across a one-line prompt selected the
+   caret, the time, "{}" and "#" as separate lines. */
+.uturn .caret, .uturn .ts, .uturn .rawbtn, .uturn .alink, .fold-h .alink, .morebtn, .clampbtn, .codebar { user-select: none; }
 .rawbtn {
   flex: none; margin-top: 2px; padding: 0 4px; border: 0; background: none; cursor: pointer;
   font: 11px var(--mono); color: var(--faint); opacity: 0; transition: opacity .12s;

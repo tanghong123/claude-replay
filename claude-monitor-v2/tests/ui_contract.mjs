@@ -1144,3 +1144,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(css, /\.process-surface-label\[data-turn-label\]:after\{content:"Turn " attr\(data-turn-label\)\}/, "…and the label reads it, not the counter");
   console.log("#103 turn ordinal cases passed");
 }
+
+// #99: a turn's chrome never enters a selection.
+{
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.turn \.spot-link,\.turn \.raw-toggle,\.turn \.turn-time,\.turn \.prompt-expand,[^{]*\{user-select:none\}/, "spot links, raw toggles, the time and the expander are unselectable");
+  console.log("#99 selection cases passed");
+}

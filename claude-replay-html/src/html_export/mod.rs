@@ -3252,6 +3252,14 @@ mod tests {
         assert!(JS.contains("if (Array.isArray(vs0.caps)) capOpen = new Set(vs0.caps);"));
     }
 
+    /// #99: a turn's chrome never enters a selection — a drag across a one-line prompt selected
+    /// the caret, the time, "{}" and "#" as separate lines.
+    #[test]
+    fn turn_chrome_never_enters_a_selection() {
+        let css = include_str!("../html/export.css");
+        assert!(css.contains(".uturn .caret, .uturn .ts, .uturn .rawbtn, .uturn .alink, .fold-h .alink, .morebtn, .clampbtn, .codebar { user-select: none; }"));
+    }
+
     /// #104: above the shared haystack limit the classic page searches on Enter.
     #[test]
     fn a_large_session_searches_on_enter() {

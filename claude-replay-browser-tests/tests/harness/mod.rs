@@ -794,7 +794,7 @@ impl LiveGrowth {
     /// Wait until the whole script has been appended (or `timeout`).
     pub fn finish(mut self, timeout: Duration) -> usize {
         let t0 = Instant::now();
-        while self.thread.as_ref().map_or(false, |t| !t.is_finished()) && t0.elapsed() < timeout {
+        while self.thread.as_ref().is_some_and(|t| !t.is_finished()) && t0.elapsed() < timeout {
             std::thread::sleep(Duration::from_millis(100));
         }
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1101,6 +1101,13 @@ pub fn tap_console(tab: &headless_chrome::Tab) -> std::sync::Arc<std::sync::Mute
     let sink = lines.clone();
     let _ = tab.enable_log();
     let _ = tab.enable_runtime();
+    let _ = tab.call_method(headless_chrome::protocol::cdp::Network::Enable {
+        max_total_buffer_size: None,
+        max_resource_buffer_size: None,
+        max_post_data_size: None,
+        enable_durable_messages: None,
+        report_direct_socket_traffic: None,
+    });
     tab.add_event_listener(std::sync::Arc::new(move |event: &Event| {
         let text = match event {
             Event::LogEntryAdded(e) => Some(format!(
@@ -1115,6 +1122,10 @@ pub fn tap_console(tab: &headless_chrome::Tab) -> std::sync::Arc<std::sync::Mute
                     .as_ref()
                     .and_then(|x| x.description.clone())
                     .unwrap_or_else(|| e.params.exception_details.text.clone())
+            )),
+            Event::NetworkResponseReceived(e) if e.params.response.status >= 400 => Some(format!(
+                "HTTP {} {}",
+                e.params.response.status, e.params.response.url
             )),
             Event::RuntimeConsoleAPICalled(e) => Some(format!(
                 "console: {}",
@@ -1133,4 +1144,65 @@ pub fn tap_console(tab: &headless_chrome::Tab) -> std::sync::Arc<std::sync::Mute
     }))
     .unwrap();
     lines
+}
+
+/// A real drag selection: the pointer goes down at (x1, y1), moves to (x2, y2) with the button
+/// held, and comes up — what a reader does to copy a message. Synthetic Range selections
+/// ignore `user-select`, which is exactly the rule a copy case has to exercise.
+pub fn drag_select(tab: &headless_chrome::Tab, x1: f64, y1: f64, x2: f64, y2: f64) {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption, MouseButton,
+    };
+    let event =
+        |kind: DispatchMouseEventTypeOption, x: f64, y: f64, buttons: u32| DispatchMouseEvent {
+            Type: kind,
+            x,
+            y,
+            modifiers: None,
+            timestamp: None,
+            button: Some(MouseButton::Left),
+            buttons: Some(buttons),
+            click_count: Some(1),
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        };
+    tab.call_method(event(DispatchMouseEventTypeOption::MouseMoved, x1, y1, 0))
+        .unwrap();
+    tab.call_method(event(DispatchMouseEventTypeOption::MousePressed, x1, y1, 1))
+        .unwrap();
+    let steps = 6;
+    for i in 1..=steps {
+        let t = i as f64 / steps as f64;
+        tab.call_method(event(
+            DispatchMouseEventTypeOption::MouseMoved,
+            x1 + (x2 - x1) * t,
+            y1 + (y2 - y1) * t,
+            1,
+        ))
+        .unwrap();
+    }
+    tab.call_method(event(
+        DispatchMouseEventTypeOption::MouseReleased,
+        x2,
+        y2,
+        0,
+    ))
+    .unwrap();
+}
+
+/// The text a copy would take: the live selection as a string.
+pub fn selection_text(tab: &headless_chrome::Tab) -> String {
+    eval(
+        tab,
+        "String(window.getSelection ? window.getSelection().toString() : '')",
+    )
+    .as_str()
+    .unwrap_or("")
+    .to_string()
 }
