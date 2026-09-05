@@ -231,6 +231,22 @@ export function bindComponentEvents(root, state, actions) {
     }
     const child = event.target.closest("[data-child-session]");
     if (child) { actions.openChild(child.dataset.childSession); return; }
+    // The per-pane code bar (#115): size and wrap are the reading preferences (global, as on the
+    // classic page); copy joins this pane's code cells — no gutters, no +/− marks.
+    const sizeStep = event.target.closest("[data-code-size]");
+    if (sizeStep) { event.preventDefault(); event.stopPropagation(); actions.readingStep?.(Number(sizeStep.dataset.codeSize) || 0); return; }
+    if (event.target.closest("[data-code-wrap]")) { event.preventDefault(); event.stopPropagation(); actions.readingWrap?.(); return; }
+    const codeCopy = event.target.closest("[data-code-copy]");
+    if (codeCopy) {
+      event.preventDefault(); event.stopPropagation();
+      const box = codeCopy.closest(".codebox");
+      const text = box ? [...box.querySelectorAll(".codecell")].map(cell => cell.textContent).join("\n") : "";
+      const original = codeCopy.textContent;
+      const operation = navigator.clipboard?.writeText(text);
+      if (!operation) { actions.toast?.("This browser does not support copying"); return; }
+      operation.then(() => { codeCopy.textContent = "copied"; setTimeout(() => { if (codeCopy.isConnected) codeCopy.textContent = original; }, 1200); }, () => actions.toast?.("Could not copy the code"));
+      return;
+    }
     // A cap expander (#108): reveal in place — the rows are already there — and remember a
     // small expansion so a re-render keeps it open; the viewport's observer measures the growth.
     const capMore = event.target.closest("[data-cap-more]");

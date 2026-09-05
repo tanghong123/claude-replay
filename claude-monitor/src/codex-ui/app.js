@@ -134,7 +134,7 @@ sessionCopyMenu.addEventListener("click", async event => {
 });
 
 const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, {
-  afterRender: () => { applyFilters(); markSearch(); updateStickyHeaders(); updateOutlineFocus(); },
+  afterRender: () => { applyFilters(); markSearch(); paintCodeBars(); updateStickyHeaders(); updateOutlineFocus(); },
   afterScroll: () => { updateStickyHeaders(); updateOutlineFocus(); },
   followChanged: paintJump
 });
@@ -142,6 +142,8 @@ const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, 
 // while a pull reconciliation is in flight, but attachment/fold interactions must survive it.
 bindComponentEvents(transcript, recordState, {
   rerender: () => { viewport.render(); viewport.scheduleRemember(); },
+  readingStep: delta => setReading({ size: uiState.reading.size + delta * SIZE_STEP }),
+  readingWrap: () => setReading({ wrap: !uiState.reading.wrap }),
   remember: () => viewport.scheduleRemember(),
   copySpot: async (id, button) => {
     const url = new URL(location.href);
@@ -679,6 +681,12 @@ readingSection.innerHTML = `<div class="scope-menu-divider"></div><div class="sc
 <div class="reading-row"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>User turns as raw text</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="rawUser" aria-label="Show user turns as raw text — exactly as typed, whitespace intact" aria-checked="false"><span></span></button></div>`;
 byId("navigatorOptions").append(readingSection);
+/** The per-pane code bars show the current size and wrap (#115); fresh panes are painted here. */
+function paintCodeBars() {
+  const prefs = uiState.reading;
+  for (const value of viewport.window.querySelectorAll("[data-code-size-val]")) value.textContent = String(clampSize(prefs.size));
+  for (const button of viewport.window.querySelectorAll("[data-code-wrap]")) button.textContent = prefs.wrap ? "⤶" : "↔";
+}
 function applyReading() {
   const prefs = uiState.reading;
   // #109: the raw-text preference is the renderer's business — mirror it and re-render the
@@ -691,6 +699,9 @@ function applyReading() {
   app.classList.toggle("wrap-code", !!prefs.wrap); app.classList.toggle("wide", !!prefs.wide);
   readingSection.querySelector("[data-reading-value]").textContent = `${clampSize(prefs.size)} px`;
   for (const toggle of readingSection.querySelectorAll("[data-reading-toggle]")) toggle.setAttribute("aria-checked", String(!!prefs[toggle.dataset.readingToggle]));
+  // The per-pane code bars (#115) mirror the preferences in place — no re-render for a label.
+  for (const value of viewport.window.querySelectorAll("[data-code-size-val]")) value.textContent = String(clampSize(prefs.size));
+  for (const button of viewport.window.querySelectorAll("[data-code-wrap]")) button.textContent = prefs.wrap ? "⤶" : "↔";
   readingSection.querySelector('[data-reading-size="-1"]').disabled = prefs.size <= SIZE_MIN;
   readingSection.querySelector('[data-reading-size="1"]').disabled = prefs.size >= SIZE_MAX;
   viewport.remeasure();

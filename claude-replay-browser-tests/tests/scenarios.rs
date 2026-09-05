@@ -2255,3 +2255,105 @@ fn view_state_fixture(name: &str) -> Fixture {
         turns: 13,
     }
 }
+
+// ── scenario: the code pane — unselectable gutters, a bar per pane, copy without gutters (#115)
+
+/// Rows 3.2 and 3.3 of design/rendering-parity-audit.md. A numbered pane's gutter never enters
+/// a selection; its bar steps the code size, toggles wrap, and copies the code cells alone.
+fn scenario_code_pane_bar_and_gutters(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // Open the Read row's chain so its pane is on screen.
+    for _ in 0..6 {
+        let step = match surface {
+            Surface::Classic => eval(tab, "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-kind=\"read\"]')].pop(); if (!f) return 'none'; var chain = []; for (var e = f; e; e = e.parentElement.closest('.fold')) chain.push(e); var closed = chain.reverse().find(function (x) { return x.dataset.open === '0'; }); if (!closed) return 'open'; closed.querySelector('.fold-h').click(); return 'clicked'; })()"),
+            Surface::AppShell => eval(tab, "(function(){ var t = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Read\"] > .renderer')].pop(); if (!t) return 'none'; var chain = []; for (var e = t; e; e = e.parentElement && e.parentElement.closest('.renderer')) chain.push(e); var closed = chain.reverse().find(function (x) { return x.classList.contains('closed'); }); if (!closed) return 'open'; closed.querySelector('button.renderer-head').click(); return 'clicked'; })()"),
+        };
+        settle();
+        if step != "clicked" {
+            break;
+        }
+    }
+    let (gutter_select, size_val, size_up, wrap_btn, wrap_state, copy_btn) = match surface {
+        Surface::Classic => (
+            "(function(){ var g = [...document.querySelectorAll('#stream .numbered .gut')].pop(); return g ? getComputedStyle(g).userSelect : 'none-found'; })()",
+            "(function(){ var v = [...document.querySelectorAll('#stream .codebar .ms-val')].pop(); return v ? Number(v.textContent) : -1; })()",
+            "(function(){ var b = [...document.querySelectorAll('#stream .codebar .ms-up')].pop(); if (!b) return 'none'; b.click(); return 'clicked'; })()",
+            "(function(){ var b = [...document.querySelectorAll('#stream .codebar .ms-wrap')].pop(); if (!b) return 'none'; b.click(); return 'clicked'; })()",
+            "(function(){ var b = [...document.querySelectorAll('#stream .codebar .ms-wrap')].pop(); return b ? b.textContent : ''; })()",
+            "(function(){ var b = [...document.querySelectorAll('#stream .codebar .cpy-code')].pop(); if (!b) return 'none'; b.click(); return 'clicked'; })()",
+        ),
+        Surface::AppShell => (
+            "(function(){ var g = [...document.querySelectorAll('.codebox .ln')].pop(); return g ? getComputedStyle(g).userSelect : 'none-found'; })()",
+            "(function(){ var v = [...document.querySelectorAll('.codebox [data-code-size-val]')].pop(); return v ? Number(v.textContent) : -1; })()",
+            "(function(){ var b = [...document.querySelectorAll('.codebox [data-code-size=\"1\"]')].pop(); if (!b) return 'none'; b.click(); return 'clicked'; })()",
+            "(function(){ var b = [...document.querySelectorAll('.codebox [data-code-wrap]')].pop(); if (!b) return 'none'; b.click(); return 'clicked'; })()",
+            "(function(){ var b = [...document.querySelectorAll('.codebox [data-code-wrap]')].pop(); return b ? b.textContent : ''; })()",
+            "(function(){ var b = [...document.querySelectorAll('.codebox [data-code-copy]')].pop(); if (!b) return 'none'; b.click(); return 'clicked'; })()",
+        ),
+    };
+    assert_eq!(
+        eval(tab, gutter_select),
+        "none",
+        "the line-number gutter never enters a selection"
+    );
+    let size = eval(tab, size_val).as_f64().unwrap_or(-1.0);
+    assert!(size > 0.0, "the pane's bar shows the code size: {size}");
+    assert_eq!(
+        eval(tab, size_up),
+        "clicked",
+        "the pane's bar steps the size"
+    );
+    settle();
+    let after = eval(tab, size_val).as_f64().unwrap_or(-1.0);
+    assert!(
+        (after - size - 0.5).abs() < 0.01,
+        "…by half a pixel: {size} → {after}"
+    );
+    let glyph = eval(tab, wrap_state).as_str().unwrap_or("").to_string();
+    assert_eq!(
+        eval(tab, wrap_btn),
+        "clicked",
+        "the pane's bar toggles wrap"
+    );
+    settle();
+    let glyph_after = eval(tab, wrap_state).as_str().unwrap_or("").to_string();
+    assert!(
+        glyph != glyph_after && !glyph_after.is_empty(),
+        "…and the glyph follows: {glyph:?} → {glyph_after:?}"
+    );
+    stub_clipboard(tab);
+    assert_eq!(eval(tab, copy_btn), "clicked", "the pane's bar copies");
+    settle();
+    let copied = copied_text(tab);
+    let lines: Vec<&str> = copied.lines().collect();
+    assert!(
+        lines.len() >= 10,
+        "the copy holds the pane's lines: {} lines",
+        lines.len()
+    );
+    assert!(
+        lines.iter().all(|l| l.starts_with("line ")),
+        "…the code cells alone, no gutters: {:?}",
+        &lines[..3.min(lines.len())]
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_code_pane_bar_and_gutters() {
+    let _serial = serial();
+    let fx = view_state_fixture("scenario-codepane-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_code_pane_bar_and_gutters(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_code_pane_bar_and_gutters() {
+    let _serial = serial();
+    let fx = view_state_fixture("scenario-codepane-app");
+    let page = open(Surface::AppShell, &fx, 2889);
+    scenario_code_pane_bar_and_gutters(&page.tab, Surface::AppShell, &fx);
+}

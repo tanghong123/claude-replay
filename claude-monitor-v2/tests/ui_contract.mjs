@@ -1064,3 +1064,17 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /addEventListener\("pagehide", \(\) => viewport\.remember\(\)\);/, "…and leaving saves at once");
   console.log("#114 view state cases passed");
 }
+
+// #115: gutters never enter a selection; each code pane has its bar; copy skips gutters and marks.
+{
+  const vm = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
+  assert.match(vm, /<div class="codefoot">\$\{cut\.button\}\$\{bar\}<\/div><\/div>`/, "the bar and the expander share the pane's foot");
+  assert.match(vm, /data-code-size="-1"[^>]*>A−<\/button><span class="code-size-val" data-code-size-val><\/span><button[^>]*data-code-size="1"/, "A− size A+");
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /\[\.\.\.box\.querySelectorAll\("\.codecell"\)\]\.map\(cell => cell\.textContent\)\.join\("\\n"\)/, "copy joins the code cells only");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.codebox \.ln,\.codebox \.mark\{user-select:none\}/, "gutters and marks are unselectable");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /readingStep: delta => setReading\(\{ size: uiState\.reading\.size \+ delta \* SIZE_STEP \}\)/, "the bar drives the reading size");
+  console.log("#115 code pane cases passed");
+}

@@ -290,7 +290,11 @@ export function partsHtml(parts = [], recordId = "", state = null) {
 function codeRows(part, capped) {
   const build = part.p === "num" ? rows => numRowsHtml(rows, APP_ROWS) : rows => diffRowsHtml(rows, APP_ROWS, APP_MARKS);
   const cut = capped(part.rows || [], part.cap, build, toLineOf(part));
-  return `<div class="codebox" data-codebox><div class="lines wrap">${cut.shown}${cut.hidden}</div>${cut.button}</div>`;
+  // The per-pane code bar (#115, the classic page's): size and wrap for every code block,
+  // tuned from the pane the reader is looking at, and a copy of this pane's code — no gutters,
+  // no marks. The expander shares the foot.
+  const bar = `<div class="codebar"><button type="button" class="code-size" data-code-size="-1" title="Smaller code (−) — applies to all code blocks">A−</button><span class="code-size-val" data-code-size-val></span><button type="button" class="code-size" data-code-size="1" title="Larger code (+) — applies to all code blocks">A+</button><button type="button" class="code-wrap" data-code-wrap title="Long lines: wrap / scroll (w)"></button><button type="button" class="code-copy" data-code-copy title="Copy this block">copy</button></div>`;
+  return `<div class="codebox" data-codebox><div class="lines wrap">${cut.shown}${cut.hidden}</div><div class="codefoot">${cut.button}${bar}</div></div>`;
 }
 
 export class Projection {

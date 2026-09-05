@@ -190,3 +190,12 @@
 .command-chevron{flex:none;color:var(--faint);font-size:12px}
 .turn.user.command .prompt-copy-shell{border-top:1px solid var(--line)}
 .turn.user.command .body{width:auto;max-width:none;border-radius:0;box-shadow:none;background:transparent}
+/* #115: gutters and marks never enter a selection; the per-pane code bar sits in the foot. */
+.codebox .ln,.codebox .mark{user-select:none}
+.codebox .codefoot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:2px 6px 2px 8px}
+.codebox .codefoot .cap-more-btn{margin:0}
+.codebox .codebar{display:flex;align-items:center;gap:2px;margin-left:auto;opacity:.75;transition:opacity .12s}
+.codebox:hover .codebar,.codebox:focus-within .codebar{opacity:1}
+.codebox .codebar button{padding:1px 6px;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--sub);font:11px/1.6 var(--mono,ui-monospace,monospace);cursor:pointer}
+.codebox .codebar button:hover,.codebox .codebar button:focus-visible{border-color:var(--line);color:var(--ink);outline:0}
+.codebox .code-size-val{min-width:2.4em;text-align:center;font:11px/1.6 var(--mono,ui-monospace,monospace);color:var(--faint)}
