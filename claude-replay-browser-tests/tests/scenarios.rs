@@ -584,6 +584,65 @@ fn app_shell_the_filter_takes_in_what_arrives() {
     scenario_the_filter_takes_in_what_arrives(&page.tab, Surface::AppShell, &fx);
 }
 
+/// Rule 7's hysteresis (#127): acquiring the pin needs the true end, KEEPING it only the old
+/// slack. A reader who nudges the view a few pixels is still reading the tail and must keep it;
+/// a real scroll away lets go.
+fn scenario_a_nudge_keeps_the_tail(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    assert!(at_tail(tab, surface), "following the tail to begin with");
+    let following = |tab: &headless_chrome::Tab| {
+        match surface {
+            Surface::Classic => eval(tab, "document.body.classList.contains('following')")
+                .as_bool()
+                .unwrap_or(false),
+            // The jump control is the page's own statement of it: shown exactly when NOT following.
+            Surface::AppShell => eval(
+                tab,
+                "document.getElementById('jumpToBottom').getAttribute('aria-hidden') === 'true'",
+            )
+            .as_bool()
+            .unwrap_or(false),
+        }
+    };
+    assert!(following(tab), "…and the page says so");
+    // A nudge — less than the hold slack — is still reading the tail.
+    scroll_by(tab, surface, -40);
+    settle();
+    settle();
+    assert!(
+        following(tab),
+        "a 40px nudge keeps the tail: the pin holds through the old slack"
+    );
+    // A real scroll away lets go.
+    scroll_by(tab, surface, -1200);
+    settle();
+    settle();
+    assert!(
+        !following(tab),
+        "…and a scroll away from the tail unpins, as it always did"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_nudge_keeps_the_tail() {
+    let _serial = serial();
+    let fx = fixture("scenario-nudge-classic", 20);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_nudge_keeps_the_tail(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_nudge_keeps_the_tail() {
+    let _serial = serial();
+    let fx = fixture("scenario-nudge-app", 20);
+    let page = open(Surface::AppShell, &fx, 2906);
+    scenario_a_nudge_keeps_the_tail(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: stepping and paging from the top ──────────────────────────────────────────────
 
 /// From the top, `]` three times lands on turn 3 or later and each press moves forward; a

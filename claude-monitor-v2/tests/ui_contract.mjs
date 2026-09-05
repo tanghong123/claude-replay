@@ -1386,7 +1386,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // Rule 7, with each page's slacks.
   assert.equal(classifyScroll(false, true, 1, 2, 2, 80), "follow");
   assert.equal(classifyScroll(false, true, 40, 2, 2, 80), "none");
-  assert.equal(classifyScroll(true, true, 40, 2, 2, 80), "unfollow", "the app shell decides on the true end in both directions (#127)");
+  assert.equal(classifyScroll(true, true, 40, 2, 2, 80), "unfollow", "held at the true end, a nudge drops the tail — what #127 fixed");
   assert.equal(classifyScroll(true, true, 40, 2, 80, 80), "none", "the classic page holds through a nudge");
   assert.equal(classifyScroll(true, false, 120, 2, 2, 80), "heal", "displacement while pinned is healed");
   assert.equal(classifyScroll(false, false, 900, 2, 2, 80), "none", "…and means nothing when unpinned");
@@ -1397,7 +1397,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   assert.match(engine, /this\.prefix = prefixSums\(this\.count, index => this\.heightOf\(index\)\);/);
   assert.match(engine, /const verdict = classifyScroll\(this\.following, user, this\.gapToBottom\(\), this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal\);/);
-  assert.match(vp, /slacks: \{ acquire: ACQUIRE_SLACK, hold: ACQUIRE_SLACK, heal: HOLD_SLACK \},/, "this shell decides on the true end in both directions (#127)");
+  assert.match(vp, /slacks: \{ acquire: ACQUIRE_SLACK, hold: HOLD_SLACK, heal: HOLD_SLACK \},/, "both pages now acquire at the true end and hold through a nudge (#127)");
   assert.doesNotMatch(vp, /new ResizeObserver|addEventListener\("scroll"/, "the observers and the scroll listener are the engine's now");
   const module = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   // The RULES half of the module is numbers in, numbers out: no layout read can hide among

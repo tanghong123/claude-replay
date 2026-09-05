@@ -71,7 +71,10 @@ export class Viewport extends VirtualWindow {
       frame: elementFrame(scroller),
       mount: { top, window: mounted, bottom, content: inner },
       overscan: OVERSCAN,
-      slacks: { acquire: ACQUIRE_SLACK, hold: ACQUIRE_SLACK, heal: HOLD_SLACK },
+      // Rule 7's hysteresis (#127): acquiring the pin needs the true end, KEEPING it only the
+      // old slack. Held at the true end too, a nudge of three pixels dropped the tail — which
+      // is what this shell did, where the classic page has held at 80 since #103.
+      slacks: { acquire: ACQUIRE_SLACK, hold: HOLD_SLACK, heal: HOLD_SLACK },
       userIntentMs: USER_INTENT_MS,
       rememberMs: REMEMBER_MS,
     });
