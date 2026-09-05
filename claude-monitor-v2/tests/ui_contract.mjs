@@ -1089,3 +1089,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /if \(!viewport\.jumpToRecord\(index, "hash"\)\) return false;/, "…and lands there");
   console.log("#116 deep link cases passed");
 }
+
+// #100: stepping re-enters from the viewport once the current hit is off screen; the term lands in view.
+{
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /const onScreen = !!box && box\.bottom >= view\.top && box\.top <= view\.bottom;/, "the current hit's mark decides whether the sequence continues");
+  assert.match(app, /const k = matches\.findIndex\(index => index >= top\);/, "…else the first hit at or below the viewport top");
+  assert.match(app, /recordState\.match = delta > 0 \? \(k >= 0 \? k : 0\) : \(k > 0 \? k - 1 : matches\.length - 1\);/, "forward from there, backward from the one above, wrapping");
+  assert.match(app, /function landOnCurrentMark\(\) \{/, "the landing brings the term into view");
+  const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  assert.match(vp, /if \(reveal === "search" \|\| reveal === "hash"\) \{\n\s*const openAll = view =>/, "a search or deep-link reveal opens the nested chain and its caps");
+  console.log("#100 hit stepping cases passed");
+}

@@ -10,8 +10,14 @@ export function revealNavigationContext(units, index, state, recordIndex, reveal
     const target = unit.views.find(item => item.index === recordIndex)?.view;
     if (target?.id && target.t !== "assistant") state.folds.set(target.id, false);
     // A navigated-to record shows whole: every cap in it opens (#108), so a search hit or a
-    // deep link behind "⋯ N more lines" is on screen, as the classic page's revealMark does.
+    // deep link behind "⋯ N more lines" is on screen, as the classic page's revealMark does —
+    // and for a search or a deep link the records NESTED in it open too, folds and caps (#100):
+    // a hit on line 55 of a Read inside an activity is inside a closed row with a closed cap.
     if (target?.id && state.capOpen) state.capOpen.add(`${target.id}:*`);
+    if (reveal === "search" || reveal === "hash") {
+      const openAll = view => { for (const child of view?.children || []) { if (child?.id) { state.folds.set(child.id, false); state.capOpen?.add(`${child.id}:*`); } openAll(child); } };
+      openAll(target);
+    }
   } else if (reveal === "turn") {
     const process = units[index + 1];
     if (process?.type === "process" && process.turn === unit.turn) {

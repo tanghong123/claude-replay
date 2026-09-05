@@ -169,6 +169,12 @@ pub fn command_at(name: &str, args: &str, stdout: &str, ts: &str) -> String {
         "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":\"<command-message>{name}</command-message>\\n<command-name>/{name}</command-name>\\n<command-args>{args}</command-args>{out}\"}},\"timestamp\":\"{ts}\"}}\n"
     )
 }
+/// A tool result carrying the given text (already JSON-escaped: `\\n` for a newline).
+pub fn tool_result_text(call_id: &str, text: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":\"{text}\"}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
 pub fn tool_result_at(id: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"out line\\nout line\\nout line\\n\"}}]}},\"timestamp\":\"{ts}\"}}\n"

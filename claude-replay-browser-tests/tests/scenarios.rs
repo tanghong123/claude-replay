@@ -22,8 +22,8 @@ use harness::{
     jump_to_end, key, last_mounted_turn, long_session, now_minus, open_last_fold,
     open_turn_session, probe, queued_at, queued_text, read_tool_at, scroll_by, serial,
     session_id_chip, stub_clipboard, tap_console, tool_open_at, tool_result_at, tool_result_lines,
-    turn_at_top, until, user_at, view_anchor_index, Kind, LiveGrowth, Monitor, Shape, Stores,
-    Surface,
+    tool_result_text, turn_at_top, until, user_at, view_anchor_index, Kind, LiveGrowth, Monitor,
+    Shape, Stores, Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -2424,4 +2424,117 @@ fn app_shell_deep_links_to_a_tool_row() {
     let fx = view_state_fixture("scenario-deeplink-app");
     let page = open(Surface::AppShell, &fx, 2890);
     scenario_deep_link_to_a_tool_row(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: hit stepping shows the term and re-enters from the viewport (#100) ──────────
+
+/// Row 5.5 of design/rendering-parity-audit.md and the owner's report. Every "next" lands with
+/// the matched term on screen — a hit deep in a long tool output included — and after the
+/// reader scrolls away, "next" is the hit nearest the view, not the one after the old current.
+fn scenario_hit_stepping_shows_the_term_and_reenters(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (type_query, next, current_state) = match surface {
+        Surface::Classic => (
+            "(function(q){ var i = document.getElementById('q'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(){ var b = document.getElementById('qnext'); if (b) { b.click(); return 'next'; } return 'none'; })()",
+            "(function(){ var m = document.querySelector('#stream mark.hl.cur'); if (!m) return 'no current'; var r = m.getBoundingClientRect(); var blk = m.closest('.blk'); return (r.top >= 0 && r.bottom <= innerHeight ? 'inview' : 'offscreen') + ':' + (blk ? (blk.classList.contains('uturn') ? 'prompt' : blk.dataset.kind || blk.className.split(' ')[0]) : '?'); })()",
+        ),
+        Surface::AppShell => (
+            "(function(q){ var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(){ document.getElementById('findNext').click(); return 'next'; })()",
+            "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); if (!m) return 'no current'; var r = m.getBoundingClientRect(); var s = document.querySelector('.transcript').getBoundingClientRect(); var turn = m.closest('.turn'); return (r.top >= s.top && r.bottom <= s.bottom ? 'inview' : 'offscreen') + ':' + (turn ? (turn.classList.contains('user') ? 'prompt' : turn.dataset.kind || turn.className.split(' ')[0]) : '?'); })()",
+        ),
+    };
+    scroll_by(tab, surface, -40000);
+    settle();
+    eval(tab, &format!("{type_query}('needle')"));
+    settle();
+    settle();
+    // Three hits: the prompt, line 55 of a 60-line output, the answer. Every step shows the term.
+    for expected in ["prompt", "tool", "assistant"] {
+        eval(tab, next);
+        settle();
+        settle();
+        let state = eval(tab, current_state).as_str().unwrap_or("").to_string();
+        assert!(
+            state.starts_with("inview:"),
+            "after a step the term is on screen ({expected}): {state:?}"
+        );
+        if expected == "prompt" {
+            assert!(
+                state.ends_with(":prompt"),
+                "the first step from the top lands on the prompt: {state:?}"
+            );
+        }
+    }
+    // Scrolled away to the top: the next step is the hit nearest the view — the prompt again,
+    // not the one after the old current (which would wrap to the prompt too — so go from the
+    // middle: land on the output hit, scroll to the top, and the next is the prompt).
+    eval(tab, next);
+    settle();
+    let mid = eval(tab, current_state).as_str().unwrap_or("").to_string();
+    assert!(mid.starts_with("inview:"), "{mid:?}");
+    scroll_by(tab, surface, -40000);
+    settle();
+    settle();
+    eval(tab, next);
+    settle();
+    settle();
+    let reentered = eval(tab, current_state).as_str().unwrap_or("").to_string();
+    assert!(
+        reentered.starts_with("inview:") && reentered.ends_with(":prompt"),
+        "after scrolling to the top, next re-enters at the prompt, the nearest hit: {reentered:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_hit_stepping_shows_the_term_and_reenters() {
+    let _serial = serial();
+    let fx = hits_fixture("scenario-hits-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_hit_stepping_shows_the_term_and_reenters(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_hit_stepping_shows_the_term_and_reenters() {
+    let _serial = serial();
+    let fx = hits_fixture("scenario-hits-app");
+    let page = open(Surface::AppShell, &fx, 2891);
+    scenario_hit_stepping_shows_the_term_and_reenters(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Twelve turns, then a prompt with the word, a 60-line Read with the word on line 55, and an
+/// answer with the word.
+fn hits_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("question hits: where is the needle", &now_minus(90));
+    transcript += &assistant_at("Reading the long file.", &now_minus(85));
+    transcript += &read_tool_at("t-hits-read", "/tmp/haystack.txt", &now_minus(70));
+    let body: String = (1..=60)
+        .map(|k| {
+            if k == 55 {
+                "line 55 has the needle here\\n".to_string()
+            } else {
+                format!("line {k}\\n")
+            }
+        })
+        .collect();
+    transcript += &tool_result_text("t-hits-read", &body, &now_minus(60));
+    transcript += &assistant_at("answer hits: the needle is on line 55", &now_minus(30));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
 }

@@ -576,7 +576,36 @@ function updateSearch(reset) {
   if (reset) recordState.match = recordState.matches.length ? 0 : -1; else recordState.match = Math.min(recordState.match, recordState.matches.length - 1);
   byId("transcriptSearchCount").textContent = `${recordState.matches.length} matches`; markSearch();
 }
-function stepSearch(delta) { if (!recordState.matches.length) return; recordState.match = (recordState.match + delta + recordState.matches.length) % recordState.matches.length; viewport.jumpToRecord(recordState.matches[recordState.match], "search"); markSearch(); }
+// Stepping (#100, the classic page's rule): the sequence continues only while the current hit
+// is on screen; once the reader has moved away, "next" is the first hit at or below the
+// viewport top and "previous" the one just above it (wrapping at the ends). The landing brings
+// the matched TERM into view, not only the record that holds it — a hit deep in a long output
+// sits well below its row's head.
+function stepSearch(delta) {
+  const matches = recordState.matches;
+  if (!matches.length) return;
+  const current = viewport.window.querySelector("mark.search-mark.current");
+  const box = current?.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
+  const onScreen = !!box && box.bottom >= view.top && box.top <= view.bottom;
+  if (recordState.match >= 0 && onScreen) {
+    recordState.match = (recordState.match + delta + matches.length) % matches.length;
+  } else {
+    const top = unitAtTop()?.from ?? 0;
+    const k = matches.findIndex(index => index >= top);
+    recordState.match = delta > 0 ? (k >= 0 ? k : 0) : (k > 0 ? k - 1 : matches.length - 1);
+  }
+  viewport.jumpToRecord(matches[recordState.match], "search");
+  markSearch();
+  landOnCurrentMark();
+}
+/** After a jump, put the current mark on screen if the record's head left it below the fold. */
+function landOnCurrentMark() {
+  const mark = viewport.window.querySelector("mark.search-mark.current");
+  if (!mark) return;
+  const box = mark.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
+  if (box.top >= view.top && box.bottom <= view.bottom) return;
+  viewport.scroller.scrollTop += box.top - view.top - Math.min(120, view.height / 3);
+}
 function markSearch() {
   viewport.window.querySelectorAll("mark.search-mark").forEach(mark => mark.replaceWith(mark.textContent));
   viewport.window.normalize();
