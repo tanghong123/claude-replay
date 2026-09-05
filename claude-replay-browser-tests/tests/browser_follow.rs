@@ -3948,8 +3948,9 @@ fn the_app_shell_expands_every_group_again() {
     drop(monitor);
 }
 
-/// #78: the header's artifact roster lists what the session published — one row per URL,
-/// the republish counted, in a new-tab link — and jumps to the publishing record.
+/// #78 / #95: the roster of what the session published lives in the right pane — one row per
+/// URL, the republish counted, in a new-tab link — with the count on the pane's button while
+/// the pane is hidden, and a jump that lands the transcript on the publishing record.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn the_app_shell_lists_the_published_artifacts() {
@@ -3985,6 +3986,26 @@ fn the_app_shell_lists_the_published_artifacts() {
         &harness::now_minus(64),
     );
     transcript += &harness::assistant_at("answer 6: both published", &harness::now_minus(60));
+    // Room BELOW the publishing records, so a jump can actually put one at the top of the
+    // viewport — at the tail of the transcript the scroller has nowhere left to go.
+    for i in 0..5u64 {
+        transcript += &harness::user_at(
+            &format!(
+                "question {}: {}",
+                7 + i,
+                "lorem ipsum dolor sit amet, consectetur. ".repeat(6)
+            ),
+            &harness::now_minus(50 - i * 10),
+        );
+        transcript += &harness::assistant_at(
+            &format!(
+                "answer {}: {}",
+                7 + i,
+                "sed do eiusmod tempor incididunt ut labore. ".repeat(8)
+            ),
+            &harness::now_minus(48 - i * 10),
+        );
+    }
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V2, 2875, &base, Some(&stores), true);
     let browser = harness::chrome();
@@ -3994,25 +4015,44 @@ fn the_app_shell_lists_the_published_artifacts() {
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    assert_eq!(
+        harness::probe(&tab, "!!document.getElementById('artifactsBtn') || !!document.getElementById('artifactsMenu')"),
+        false,
+        "the header control is gone (#95)"
+    );
+    // Hidden pane, and the button says there is something behind it.
     harness::until(
         &tab,
-        "(document.getElementById('artifactsBtn') || {}).textContent === 'Artifacts (2) ▾'",
-        "the roster control to count two artifacts",
+        "(document.querySelector('#previewBtn .preview-badge') || {}).textContent === '2'",
+        "the pane's button to carry the published count",
         std::time::Duration::from_secs(20),
-        "(document.getElementById('artifactsBtn') || {textContent: 'no control'}).textContent",
+        "(document.querySelector('#previewBtn .preview-badge') || {textContent: 'no badge'}).textContent",
     );
-    harness::eval(
-        &tab,
-        "document.getElementById('artifactsBtn').click(); 'ok'",
+    assert_eq!(
+        harness::probe(
+            &tab,
+            "document.getElementById('app').classList.contains('preview-off')"
+        ),
+        true,
+        "the pane is still hidden — the badge is what reaches the reader"
     );
+    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
     harness::until(
         &tab,
-        "!document.getElementById('artifactsMenu').hidden",
-        "the menu to open",
-        std::time::Duration::from_secs(5),
-        "document.getElementById('artifactsMenu').hidden",
+        "!document.getElementById('app').classList.contains('preview-off') && !!document.querySelector('#previewTabs .preview-tab.pinned.on')",
+        "the pane to open on its pinned roster tab",
+        std::time::Duration::from_secs(10),
+        "document.getElementById('previewTabs').innerText",
     );
-    let rows = harness::probe(&tab, "(function(){ return [...document.querySelectorAll('#artifactsMenu .artifacts-row')].map(function (r) { var a = r.querySelector('a'); return { href: a.getAttribute('href'), target: a.getAttribute('target'), name: (r.querySelector('.artifacts-name') || {}).textContent, count: (r.querySelector('.artifacts-count') || {}).textContent || '', at: r.querySelector('[data-artifact-record]').dataset.artifactRecord }; }); })()");
+    assert_eq!(
+        harness::probe(
+            &tab,
+            "document.querySelector('#previewTabs .preview-tab.pinned').innerText.trim()"
+        ),
+        "Artifacts (2)",
+        "the pinned tab counts them"
+    );
+    let rows = harness::probe(&tab, "(function(){ return [...document.querySelectorAll('#previewBody .artifacts-row')].map(function (r) { var a = r.querySelector('a'); return { href: a.getAttribute('href'), target: a.getAttribute('target'), name: (r.querySelector('.artifacts-name') || {}).textContent, count: (r.querySelector('.artifacts-count') || {}).textContent || '', at: r.querySelector('[data-artifact-record]').dataset.artifactRecord }; }); })()");
     assert_eq!(
         rows.as_array().map(|r| r.len()),
         Some(2),
@@ -4036,25 +4076,30 @@ fn the_app_shell_lists_the_published_artifacts() {
         rows[1]["count"], "",
         "a single publish carries no count: {rows}"
     );
-    // The jump lands the transcript on the publishing record, not the tail.
+    // The jump lands the transcript on the publishing record — from the tail, and with the pane
+    // left open behind it (a pane is not a menu that dismisses itself).
     harness::jump_to_end(&tab, harness::Surface::AppShell);
     std::thread::sleep(std::time::Duration::from_millis(500));
-    let at_tail = harness::eval(&tab, "document.querySelector('.transcript').scrollTop");
-    harness::eval(&tab, "document.getElementById('artifactsBtn').click(); document.querySelector('#artifactsMenu .artifacts-jump').click(); 'ok'");
-    harness::until(
+    let at = rows[1]["at"].as_str().unwrap_or_default().to_string();
+    harness::eval(
         &tab,
-        "document.getElementById('artifactsMenu').hidden",
-        "the jump to close the menu",
-        std::time::Duration::from_secs(5),
-        "document.getElementById('artifactsMenu').hidden",
+        "document.querySelector('#previewBody .artifacts-row:nth-child(2) .artifacts-jump').click(); 'ok'",
     );
-    let _ = at_tail;
+    let landed = format!("(function(){{ var e = document.querySelector('[data-block-index=\"{at}\"]'); if (!e) return false; var t = e.getBoundingClientRect().top - document.querySelector('.transcript').getBoundingClientRect().top; return Math.abs(t - 18) <= 8; }})()");
     harness::until(
         &tab,
-        "!!document.querySelector('.virtual-window .artifact-link, .virtual-window [data-kind]')",
-        "the transcript to show the publishing turn",
+        &landed,
+        "the transcript to land on the record that published it",
         std::time::Duration::from_secs(10),
-        "document.querySelector('.transcript').scrollTop",
+        &format!("(function(){{ var e = document.querySelector('[data-block-index=\"{at}\"]'); return e ? e.getBoundingClientRect().top - document.querySelector('.transcript').getBoundingClientRect().top : 'not rendered'; }})()"),
+    );
+    assert_eq!(
+        harness::probe(
+            &tab,
+            "document.getElementById('app').classList.contains('preview-off')"
+        ),
+        false,
+        "the pane stays open after a jump"
     );
     drop(monitor);
 }

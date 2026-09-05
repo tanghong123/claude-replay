@@ -917,11 +917,18 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const rows = artifactRoster(records);
   assert.deepEqual(rows.map(r => [r.url, r.count, r.name, r.icon, r.desc, r.at]), [["https://a/1", 2, "deck v2", "📊", "again", 3], ["https://a/2", 1, "notes", "", "", 2]], "one row per URL, first-seen order, republishes counted, latest name kept, nested blocks walked, last publishing record kept");
   assert.deepEqual(artifactRoster([]), []);
-  assert.match(appSource, /artifactsBtn\.textContent = rows\.length \? `Artifacts \(\$\{rows\.length\}\) ▾` : "Artifacts ▾";/, "the control is always present, counted when there is something");
-  assert.match(appSource, /artifactsBtn\.classList\.toggle\("disabled", rows\.length === 0\);/, "…grayed when the session published nothing");
-  assert.match(appSource, /<a href="\$\{escapeText\(r\.url\)\}" target="_blank" rel="noopener"/, "a row is a link in a new tab");
-  assert.match(appSource, /viewport\.jumpToRecord\(Number\(jump\.dataset\.artifactRecord\), "artifact"\)/, "…with a jump to the publishing record");
-  console.log("#78 artifact roster cases passed");
+  // #95: the roster is the right pane's pinned first tab, not a header menu.
+  assert.ok(!/artifactsBtn|artifactsMenu/.test(appSource) && !/artifacts-btn|artifacts-menu/.test(productionCss), "the header control is gone");
+  assert.match(appSource, /preview\.setRoster\(recordState\.session === indexState\.selected \? artifactRoster\(recordState\.records\) : \[\]\)/, "the header render hands the roster to the pane");
+  assert.match(previewSource, /class="preview-tab pinned \$\{roster \? "on" : ""\}" data-preview-tab="\$\{ROSTER_ID\}"/, "…which pins it as a tab");
+  assert.match(previewSource, /<span class="preview-tab-label">Artifacts \(\$\{this\.roster\.length\}\)<\/span>/, "…labelled with the count");
+  assert.match(previewSource, /const roster = !item && this\.roster\.length > 0;/, "…and shown when no file tab is selected, so an opened pane lands on it");
+  assert.match(previewSource, /className: "preview-badge" \}\)\)\)\.textContent = String\(this\.roster\.length\)/, "the pane's button carries the count while the pane is hidden");
+  assert.match(previewSource, /if \(key === this\.rosterKey\) return;/, "an unchanged roster re-renders nothing — an open file tab is not re-fetched underneath the reader");
+  assert.match(previewSource, /<a href="\$\{escapeText\(r\.url\)\}" target="_blank" rel="noopener"/, "a row is a link in a new tab");
+  assert.match(previewSource, /this\.actions\.jumpToRecord\?\.\(Number\(jump\.dataset\.artifactRecord\)\)/, "…with a jump to the publishing record");
+  assert.match(appSource, /jumpToRecord: at => viewport\.jumpToRecord\(at, "artifact"\)/, "…which the app wires to the viewport");
+  console.log("#78 / #95 artifact roster cases passed");
 }
 
 // #86 / #87: the tick is a glyph and "from → to" in the rows' type — no prose — from structured
