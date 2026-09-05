@@ -213,21 +213,16 @@
   function isTurnKind(b) { return b.kind === "user" || b.kind === "command"; }
   function isHiddenRec(i) { return !!filter && !isTurnKind(records[i]) && !recHit[i]; }
   function effH(i) { return isHiddenRec(i) ? 0 : recHeights[i]; }
+  // The sums, the search and the pads are the shared engine's (#107, html/shared/virtual-window.js)
+  // — the same arithmetic the app shell runs. Kept LAZY here (`prefix = null` invalidates), and
+  // the search stays UNCLAMPED: with a filter on, an offset past the last visible record must
+  // read as past the end, which is what places the bottom pad.
   function P() {
-    if (!prefix) {
-      prefix = new Float64Array(records.length + 1);
-      for (var i = 0; i < records.length; i++) prefix[i + 1] = prefix[i] + effH(i);
-    }
+    if (!prefix) prefix = shared.prefixSums(records.length, effH);
     return prefix;
   }
-  // First index whose bottom edge lies below y (binary search over the prefix sums).
   function idxAt(y) {
-    var p = P(), lo = 0, hi = records.length;
-    while (lo < hi) {
-      var mid = (lo + hi) >> 1;
-      if (p[mid + 1] > y) hi = mid; else lo = mid + 1;
-    }
-    return lo;
+    return shared.indexAt(P(), records.length, y, false);
   }
   function streamTop() {
     return stream.getBoundingClientRect().top + window.scrollY;
@@ -311,10 +306,10 @@
     });
   }
   function updatePads() {
-    var p = P();
     ensurePads();
-    topPad.style.height = p[loIdx] + "px";
-    botPad.style.height = Math.max(0, p[records.length] - p[hiIdx]) + "px";
+    var pads = shared.padHeights(P(), loIdx, hiIdx, records.length);
+    topPad.style.height = pads.top + "px";
+    botPad.style.height = pads.bottom + "px";
   }
   // Measure the materialized run: each block's effective height is the offsetTop
   // delta to its next sibling (the last one measures against the bottom pad).
@@ -1854,6 +1849,10 @@
   function atEnd() {
     return window.innerHeight + window.scrollY >= document.body.scrollHeight - PIN_SLACK;
   }
+  // How far the end is from the view — the one number the shared follow rule reads (#107).
+  function gapToBottom() {
+    return document.body.scrollHeight - window.innerHeight - window.scrollY;
+  }
   // Whether the view is PINNED to the live tail. An explicit mode, not inferred from
   // pixel proximity each tick (#88): under the virtualizer, materializing the tail
   // corrects estimated heights and silently moves the true bottom away from the
@@ -1930,22 +1929,23 @@
   // frame cannot undo the scroll), and read by the body observer above for changes nobody asked
   // for.
   var viewAnchor = null;
+  // Which element the reader is looking at, and by how much it has to move back: the shared
+  // rules (#107). This page measures; the module decides. No epsilon above the fold here (the
+  // app shell allows a pixel) and no height test — an id is what makes a record an anchor.
   function captureAnchor() {
     if (following) return null;
-    var a = null;
-    matEls().some(function (e) {
+    var items = matEls().filter(function (e) { return !!e.id; }).map(function (e) {
       var r = e.getBoundingClientRect();
-      if (r.bottom > 0 && e.id) { a = { id: e.id, top: r.top }; return true; }
-      return false;
+      return { element: e, top: r.top, bottom: r.bottom, height: r.height };
     });
-    return a;
+    var first = shared.firstVisible(items, 0, Infinity, 0, false);
+    return first ? { id: first.element.id, top: first.top } : null;
   }
   function restoreAnchor(a) {
     if (!a) return;
     var e = document.getElementById(a.id);
     if (!e) return; // the anchor was inside the rewritten tail — nothing stable to hold
-    var d = e.getBoundingClientRect().top - a.top;
-    if (Math.abs(d) > 1) window.scrollBy(0, d);
+    window.scrollBy(0, shared.correction(e.getBoundingClientRect().top, a.top, 1));
   }
   // Shared apply epilogue: settle the viewport (pin or anchor), then refresh the
   // spy at the FINAL position — a rewrite that nets zero new records still rebuilt
@@ -3478,13 +3478,12 @@
   }
   var lastActiveId = null;
   window.addEventListener("scroll", function () {
-    if (performance.now() - lastUserInput < USER_MS) {
-      // #103 hysteresis: while pinned the old slack decides (away unpins), but
-      // acquiring the pin needs the true end — near-bottom reading never pins.
-      setFollowing(following ? atBottom() : atEnd());
-    } else if (following && !atBottom()) {
-      toBottom(); // browser displacement (anchoring/clamp) while pinned — heal it
-    }
+    // What a scroll MEANS is the shared rule (#107): the reader's input decides following —
+    // acquiring the pin needs the true end, keeping it only the old slack — and a scroll with
+    // no input behind it is displacement, healed while pinned. The slacks are this page's.
+    var verdict = shared.classifyScroll(following, performance.now() - lastUserInput < USER_MS, gapToBottom(), PIN_SLACK, BOTTOM_SLACK, BOTTOM_SLACK);
+    if (verdict === "follow" || verdict === "unfollow") setFollowing(verdict === "follow");
+    else if (verdict === "heal") toBottom(); // browser displacement while pinned
     if (newCount && atBottom()) newCount = 0; // caught up by scrolling down
     // NOT inside the rAF below: a background tab pauses `requestAnimationFrame`, and the pill
     // has to be right the moment the tab is looked at. It is guarded to a no-op unless the

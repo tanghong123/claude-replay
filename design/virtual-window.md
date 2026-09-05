@@ -125,7 +125,7 @@ shape:
   optional `estimate(index)`, and it calls back `onSettle(firstVisibleIndex)` for the spy.
 - **The pages keep** what is theirs: which records form a unit (the app shell's projection),
   what a fold is and how a reveal opens it, the search stepping, the outline column.
-**Step 1 landed (v1.195.0).** `shared/virtual-window.js` holds the arithmetic — `prefixSums`,
+**Steps 1 and 2 landed (v1.195.0, v1.196.0).** `shared/virtual-window.js` holds the arithmetic — `prefixSums`,
 `indexAt` (clamped for the app shell, raw for the classic page), `rangeForScroll`, `rangeAround`,
 `clampRange`, `padHeights`, `heightChanged`, `correction`, `firstVisible`, `classifyScroll` — and
 `viewport.js` runs it. It takes NUMBERS and returns numbers: every layout read and every DOM write
@@ -134,7 +134,11 @@ bodies they replaced. Two divergences the extraction surfaced are parameters, no
 clamp, and the follow slacks (the app shell decides on the true end in both directions, filed as
 its own task; the classic page holds at 80px). The class the note describes below is not built:
 the app shell's scroller is an element and the classic page's is the document, so a frame adapter
-has to come first, and that belongs with step 2.
+has to come first. Step 2 put the CLASSIC page on the same arithmetic — its lazy prefix sums, its
+unclamped search, its pads, its anchor (captured and corrected through the shared rules) and its
+follow decision — which is what validates the module against the reference. What remains is the
+class: the state machine (the window range, the observers, the measure schedule, the tail
+converge, position memory) still lives twice, and moving it needs that frame adapter.
 
 - **Migration** in three steps, each releasable: (1) the app shell's `viewport.js` becomes the
   module's first consumer (it is already class-shaped and record-agnostic); (2) the classic page

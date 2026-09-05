@@ -1364,5 +1364,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const module = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   // Numbers in, numbers out: `scrollTop` names a PARAMETER here, but no element is touched.
   assert.doesNotMatch(module, /document\.|ResizeObserver|\.getBoundingClientRect\(|\.scrollTop|\.style\.|performance\.now\(|setTimeout\(|addEventListener/, "the module is numbers in, numbers out — no page can hide a layout read in it");
+  // Step 2: the classic page — the reference — runs the same arithmetic, with its own numbers.
+  const cls = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(cls, /if \(!prefix\) prefix = shared\.prefixSums\(records\.length, effH\);/, "the classic sums stay LAZY and shared");
+  assert.match(cls, /return shared\.indexAt\(P\(\), records\.length, y, false\);/, "…and its search stays unclamped");
+  assert.match(cls, /var pads = shared\.padHeights\(P\(\), loIdx, hiIdx, records\.length\);/);
+  assert.match(cls, /var first = shared\.firstVisible\(items, 0, Infinity, 0, false\);/, "no epsilon above the fold on this page");
+  assert.match(cls, /window\.scrollBy\(0, shared\.correction\(e\.getBoundingClientRect\(\)\.top, a\.top, 1\)\);/);
+  assert.match(cls, /var verdict = shared\.classifyScroll\(following, performance\.now\(\) - lastUserInput < USER_MS, gapToBottom\(\), PIN_SLACK, BOTTOM_SLACK, BOTTOM_SLACK\);/, "the classic page holds the pin through a nudge");
   console.log("#107 virtual window cases passed");
 }
