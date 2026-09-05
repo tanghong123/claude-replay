@@ -160,13 +160,17 @@ pub fn tool_result_lines(call_id: &str, n: usize, ts: &str) -> String {
 /// classifies commands on that path, not on text-block arrays), with its args and its local
 /// stdout inline (a standalone stdout message's attachment to the command is #124's question).
 pub fn command_at(name: &str, args: &str, stdout: &str, ts: &str) -> String {
-    let out = if stdout.is_empty() {
-        String::new()
-    } else {
-        format!("\\n<local-command-stdout>{stdout}</local-command-stdout>")
-    };
-    format!(
-        "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":\"<command-message>{name}</command-message>\\n<command-name>/{name}</command-name>\\n<command-args>{args}</command-args>{out}\"}},\"timestamp\":\"{ts}\"}}\n"
+    // TWO messages, as Claude Code really records a slash command: the command itself, then its
+    // output as a standalone `<local-command-stdout>` user message (#124). The fold attaches the
+    // second to the first, so the pair is ONE turn — which is the thing worth testing.
+    let call = format!(
+        "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":\"<command-message>{name}</command-message>\\n<command-name>/{name}</command-name>\\n<command-args>{args}</command-args>\"}},\"timestamp\":\"{ts}\"}}\n"
+    );
+    if stdout.is_empty() {
+        return call;
+    }
+    call + &format!(
+        "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":\"<local-command-stdout>{stdout}</local-command-stdout>\"}},\"timestamp\":\"{ts}\"}}\n"
     )
 }
 /// A tool result carrying the given text (already JSON-escaped: `\\n` for a newline).

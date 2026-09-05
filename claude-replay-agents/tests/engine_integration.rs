@@ -452,6 +452,64 @@ fn reset_clears_committed_meta() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A slash command is TWO user messages in a real transcript — the command, then its output as a
+/// standalone `<local-command-stdout>` — and the fold attaches the second to the first (#124).
+/// One turn, one block, whether the two arrive together or one line at a time: the stdout is
+/// appended to the `Command` block that precedes it, and a fold that has already handed that
+/// block off must still find it.
+#[test]
+fn a_standalone_command_stdout_attaches_to_the_command_it_follows() {
+    let command = r#"{"type":"user","cwd":"/r","message":{"role":"user","content":"<command-message>compact</command-message>\n<command-name>/compact</command-name>\n<command-args></command-args>"},"timestamp":"2026-07-26T10:00:00Z"}"#;
+    let stdout = r#"{"type":"user","cwd":"/r","message":{"role":"user","content":"<local-command-stdout>Compacted 12 turns</local-command-stdout>"},"timestamp":"2026-07-26T10:00:01Z"}"#;
+    let reply = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]},"timestamp":"2026-07-26T10:00:02Z"}"#;
+
+    let both = |blocks: &[Block]| {
+        let commands: Vec<_> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Command { name, output, .. } => Some((name.clone(), output.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(commands.len(), 1, "one command block, not two: {blocks:?}");
+        assert_eq!(commands[0].0, "/compact");
+        assert_eq!(
+            commands[0].1,
+            vec!["Compacted 12 turns".to_string()],
+            "…carrying the stdout that followed it"
+        );
+    };
+
+    // Cold: the whole file at once.
+    let path = tmp1(&format!("{command}\n{stdout}\n{reply}\n"));
+    let cold = parse_session(&path).unwrap();
+    let cold_blocks = cold.blocks();
+    both(&cold_blocks);
+    assert_eq!(
+        claude_replay_engine::SessionMeta::build(&cold_blocks).turns,
+        1,
+        "the command and its output are ONE turn"
+    );
+    let _ = std::fs::remove_file(&path);
+
+    // Incrementally, one line at a time — the stdout arrives after the command has already been
+    // folded and handed off, which is where an attach that only looks at the pending output
+    // would push an orphan command-less block instead.
+    let live = tmp1(&format!("{command}\n"));
+    let mut fp = FollowParser::open(&ClaudeAdapter, &live);
+    fp.advance_stream().unwrap();
+    std::fs::write(&live, format!("{command}\n{stdout}\n")).unwrap();
+    fp.advance_stream().unwrap();
+    std::fs::write(&live, format!("{command}\n{stdout}\n{reply}\n")).unwrap();
+    fp.advance_stream().unwrap();
+    let read = fp.stream_read(0);
+    let mut blocks = read.committed_delta.clone();
+    blocks.extend(read.provisional.clone());
+    both(&blocks);
+    assert_eq!(read.meta.turns, 1, "…and still one turn when it streams in");
+    let _ = std::fs::remove_file(&live);
+}
+
 /// `parse_session` must return exactly what the existing entry points return — same
 /// blocks, same per-turn times, same metrics, same cwd — just bundled. This is the
 /// byte-identical gate for the wrapper.
