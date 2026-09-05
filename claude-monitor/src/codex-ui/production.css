@@ -252,3 +252,13 @@
    command card's own measure — not the bordered code block `.markdown pre` would give it. */
 .command-card .renderer-result{margin:2px 0 0;font:12px/1.7 var(--mono);color:var(--sub)}
 .command-card .renderer-result pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;padding:0;border:0;background:none}
+
+/* The attention filter reads as PRESSED (#91): the shell's `.navbtn.on` is the same faint hover
+   tint every other row takes on hover, so the one filter that changes what the list SHOWS
+   looked like a mouse happened to be over it. Pressed, it takes the amber attention colour it
+   filters for — a tinted fill, a real border in that colour, and the count inverted onto it —
+   which is legible in both themes because both define --attention and --attention-soft. */
+.navbtn.attention-filter.on{background:var(--attention-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--attention) 55%,transparent);color:var(--attention)}
+.navbtn.attention-filter.on .label{font-weight:600}
+.navbtn.attention-filter.on .attention-count{min-width:18px;padding:0 5px;border-radius:999px;text-align:center;background:var(--attention);color:var(--attention-soft);font-weight:650}
+.sidebar-mini-button.attention-mini.on{background:var(--attention-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--attention) 55%,transparent);color:var(--attention)}

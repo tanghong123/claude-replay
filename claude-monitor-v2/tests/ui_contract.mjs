@@ -711,6 +711,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /byId\("sidebarMiniWrite"\)\.onclick = \(\) => byId\("writeSwitch"\)\.click\(\);/, "the rail's write button reaches the switch");
   assert.match(appSource, /byId\("sidebarMiniSearch"\)\.onclick = openGlobalSearch;/, "…its search button the global search");
   assert.match(appSource, /byId\("sidebarMiniAttention"\)\.onclick = \(\) => byId\("attentionBtn"\)\.click\(\);/, "…its attention button the filter");
+  const prodCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  // #91: pressed, the attention filter takes the colour it filters FOR — the shell's own
+  // `.navbtn.on` is the hover tint every row shares, so the one control that changes what the
+  // list shows read as a stray mouse. Both themes define --attention and --attention-soft.
+  assert.match(prodCss, /\.navbtn\.attention-filter\.on\{background:var\(--attention-soft\);box-shadow:inset 0 0 0 1px color-mix\(in srgb,var\(--attention\) 55%,transparent\);color:var\(--attention\)\}/, "a tinted fill and a real border");
+  assert.match(prodCss, /\.navbtn\.attention-filter\.on \.attention-count\{[^}]*background:var\(--attention\);color:var\(--attention-soft\)/, "…and the count inverted onto it");
+  assert.match(prodCss, /\.sidebar-mini-button\.attention-mini\.on\{background:var\(--attention-soft\)/, "…the mini rail's button too");
   assert.match(appSource, /hintFor\("sidebar-toggle"\)/, "the key is discoverable on the control");
   console.log("#54 sidebar rail cases passed");
 }

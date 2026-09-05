@@ -2499,6 +2499,29 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
         std::time::Duration::from_secs(5),
         "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
     );
+    // #91: the attention filter reads as PRESSED — it takes the amber it filters for, where the
+    // shell's own `.navbtn.on` is the faint hover tint every row shares.
+    let attention = |t: &headless_chrome::Tab| {
+        harness::probe(t, "(function(){ var b = document.getElementById('attentionBtn'); var c = b.querySelector('.attention-count'); var m = document.getElementById('sidebarMiniAttention'); return { bg: getComputedStyle(b).backgroundColor, shadow: getComputedStyle(b).boxShadow, count: getComputedStyle(c).backgroundColor, mini: getComputedStyle(m).backgroundColor, pressed: b.getAttribute('aria-pressed') }; })()")
+    };
+    let off = attention(&tab);
+    harness::eval(
+        &tab,
+        "document.getElementById('attentionBtn').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let on = attention(&tab);
+    assert_eq!(on["pressed"], "true", "the filter is pressed: {on}");
+    assert_ne!(
+        on["bg"], off["bg"],
+        "…and says so with a fill of its own: {off} -> {on}"
+    );
+    assert_ne!(on["shadow"], off["shadow"], "…and a border: {on}");
+    assert_ne!(
+        on["count"], off["count"],
+        "…with the count inverted onto it: {on}"
+    );
+    assert_ne!(on["mini"], off["mini"], "…and the rail's button too: {on}");
     drop(monitor);
 }
 
