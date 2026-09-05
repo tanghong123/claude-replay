@@ -587,9 +587,60 @@ impl Monitor {
 
 /// Headless Chrome with timer throttling off — a throttled background tab misses polls and
 /// reads exactly like a positioning bug.
+/// The browser this suite drives — NEVER the developer's own Google Chrome (#u21).
+///
+/// `headless_chrome` with no `path` calls its `default_executable()`, which on macOS falls
+/// through to `/Applications/Google Chrome.app`: the same bundle id (`com.google.Chrome`) the
+/// developer browses with. macOS registers one app per bundle id, so launching a second
+/// instance reconciles to the one application — it can take the developer's window — and mints
+/// a copy-on-write clone of the whole bundle under `$TMPDIR/../X/com.google.Chrome.code_sign_clone/`
+/// that nothing reaps. One clone per launch, one launch per case: measured at 4,405 clones on
+/// this machine, 481 of them in three hours of running these suites.
+///
+/// So the path is explicit, and any browser whose bundle id differs will do: `CLAUDE_REPLAY_CHROME`
+/// when set, else a Chrome for Testing (`com.google.chrome.for.testing`) where one is installed.
+/// Neither present, the crate's own detection stands — CI has its own Chrome and no developer
+/// window to lose — so this is a local hygiene rule, not a new dependency.
+fn browser_path() -> Option<std::path::PathBuf> {
+    if let Some(explicit) = std::env::var_os("CLAUDE_REPLAY_CHROME") {
+        let path = std::path::PathBuf::from(explicit);
+        assert!(
+            path.exists(),
+            "CLAUDE_REPLAY_CHROME points at {path:?}, which does not exist"
+        );
+        return Some(path);
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+    let testing = |dir: std::path::PathBuf| {
+        let binary =
+            dir.join("Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing");
+        binary.exists().then_some(binary)
+    };
+    if let Some(found) = testing(std::path::PathBuf::from("/Applications")) {
+        return Some(found);
+    }
+    // Playwright keeps one under its cache; the newest install wins.
+    let cache = home.join("Library/Caches/ms-playwright");
+    let mut candidates: Vec<_> = std::fs::read_dir(&cache)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("chromium"))
+        })
+        .collect();
+    candidates.sort();
+    candidates.into_iter().rev().find_map(|dir| {
+        testing(dir.join("chrome-mac-arm64")).or_else(|| testing(dir.join("chrome-mac")))
+    })
+}
+
 pub fn chrome() -> headless_chrome::Browser {
     headless_chrome::Browser::new(
         headless_chrome::LaunchOptions::default_builder()
+            .path(browser_path())
             .headless(true)
             .window_size(Some((1400, 900)))
             .args(vec![
