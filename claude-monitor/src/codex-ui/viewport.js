@@ -2,7 +2,7 @@ import { renderUnit } from "./components.js";
 // The window's arithmetic — the sums, the search, the ranges, the pads, the anchor correction,
 // the follow rule — is the shared module's (#107, html/shared/virtual-window.js): one set of
 // scroll rules for both pages. What reads layout and what writes the DOM stays here.
-import { classifyScroll, clampRange, correction, firstVisible, heightChanged, indexAt, padHeights, prefixSums, rangeAround, rangeForScroll } from "./shared/virtual-window.js";
+import { VirtualWindow, elementFrame } from "./shared/virtual-window.js";
 
 export function revealNavigationContext(units, index, state, recordIndex, reveal = "record") {
   const unit = units[index];
@@ -51,71 +51,63 @@ const HOLD_SLACK = 80;
 const ACQUIRE_SLACK = 2;
 const USER_INTENT_MS = 320;
 
-export class Viewport {
+export class Viewport extends VirtualWindow {
   constructor(scroller, inner, state, actions) {
+    const top = document.createElement("div");
+    top.className = "virtual-pad";
+    const mounted = document.createElement("div");
+    mounted.className = "virtual-window";
+    const bottom = document.createElement("div");
+    bottom.className = "virtual-pad";
+    const empty = document.createElement("div");
+    empty.className = "monitor-empty";
+    empty.hidden = true;
+    inner.replaceChildren(top, mounted, bottom, empty);
+    // The engine is the shared one (#107, html/shared/virtual-window.js): the window and its
+    // pads, the anchor, the observers, the follow state, the thumb, the converge, the remember
+    // debounce. What this shell brings is what a unit IS, how one renders, and where the
+    // reader's choices are kept.
+    super({
+      frame: elementFrame(scroller),
+      mount: { top, window: mounted, bottom, content: inner },
+      overscan: OVERSCAN,
+      slacks: { acquire: ACQUIRE_SLACK, hold: ACQUIRE_SLACK, heal: HOLD_SLACK },
+      userIntentMs: USER_INTENT_MS,
+      rememberMs: REMEMBER_MS,
+    });
     this.scroller = scroller;
     this.inner = inner;
     this.state = state;
     this.actions = actions;
     this.units = [];
-    this.prefix = [0];
-    this.lo = 0;
-    this.hi = 0;
-    this.pendingScroll = false;
-    this.pendingMeasure = false;
-    this.lastUserInput = -1e9;
-    this.anchor = null;
-    this.dragging = false;
-    this.bottomTimer = 0;
+    this.top = top;
+    this.window = mounted;
+    this.bottom = bottom;
+    this.empty = empty;
     // Per-session position memory (parity #6): the session this viewport is showing, the
     // remembered anchor still to be applied once its unit has streamed in, and a debounce.
     this.session = "";
     this.pending = null;
     this.pendingTries = 0;
-    this.rememberTimer = 0;
     addEventListener("pagehide", () => this.remember());
-
-    this.top = document.createElement("div");
-    this.top.className = "virtual-pad";
-    this.window = document.createElement("div");
-    this.window.className = "virtual-window";
-    this.bottom = document.createElement("div");
-    this.bottom.className = "virtual-pad";
-    this.empty = document.createElement("div");
-    this.empty.className = "monitor-empty";
-    this.empty.hidden = true;
-    inner.replaceChildren(this.top, this.window, this.bottom, this.empty);
-
-    this.observer = new ResizeObserver(() => this.scheduleMeasure());
-    // Displacement is a HEIGHT signal, not a scroll signal (the classic page's rule, #89 —
-    // followed here per #70): a late reflow — fonts arriving, an estimate replaced by a real
-    // height, chrome around the window — grows the content below the viewport WITHOUT firing
-    // a scroll event, and a pinned view is silently parked a few pixels above the tail until
-    // the next apply happens to converge. The per-unit observer above only hears a unit's own
-    // height change; observing the content as a whole hears every displacement, and any size
-    // change while following that leaves the bottom is healed on the spot. Converging moves
-    // scroll, not size — no feedback loop.
-    this.contentObserver = new ResizeObserver(() => {
-      if (this.state.following && this.units.length && this.gapToBottom() > 1) this.convergeBottom();
-    });
-    this.contentObserver.observe(inner);
-    const noteIntent = event => {
-      if (event.type === "keydown" && event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
-      if (event.type === "pointermove" && !event.buttons) return;
-      this.lastUserInput = performance.now();
-    };
-    for (const type of ["pointerdown", "pointermove", "wheel", "touchstart", "touchmove", "keydown"]) {
-      scroller.addEventListener(type, noteIntent, { passive: true, capture: true });
-    }
-    scroller.addEventListener("scroll", () => this.onScroll(), { passive: true });
-    // A pointer that lands on the scroller ITSELF is on its scrollbar: content lands on a
-    // descendant (the inner column, a pad, a unit). Not a coordinate test — an overlay
-    // scrollbar (macOS) sits inside the client box. A false positive (the border) costs one
-    // window update on release.
-    scroller.addEventListener("pointerdown", event => { if (event.target === scroller) this.beginDrag(); }, { passive: true, capture: true });
-    for (const type of ["pointerup", "pointercancel", "mouseup"]) addEventListener(type, () => this.endDrag(), { passive: true, capture: true });
-    addEventListener("blur", () => this.endDrag());
   }
+
+  // ── what a unit is, for the engine ──────────────────────────────────────
+  get count() { return this.units.length; }
+  get following() { return this.state.following; }
+  set following(value) {
+    this.state.following = value;
+    if (value) this.state.newRecords = 0;
+  }
+  identityAt(index) { return this.units[index]?.key; }
+  estimateAt(index) { return ESTIMATES[this.units[index]?.type] || ESTIMATE; }
+  heightFor(index) { const unit = this.units[index]; return unit ? this.state.heights.get(unit.key) : 0; }
+  setHeight(index, height) { this.state.heights.set(this.units[index].key, height); }
+  clearHeights() { this.state.heights.clear(); }
+  renderItem(index) { return renderUnit(this.units[index], this.state); }
+  afterRender() { this.actions.afterRender?.(); }
+  afterScroll() { this.actions.afterScroll?.(); }
+  followChanged() { this.actions.followChanged?.(); }
 
   /** A session is opening: read what was remembered for it. A remembered anchor is applied by
    *  `setUnits` once its unit has streamed in (the stream arrives in batches); until then the
@@ -143,11 +135,6 @@ export class Viewport {
     if (!value) return;
     const view = viewChoices(this.state);
     try { sessionStorage.setItem(viewMemoryKey(this.session), serializeViewMemory(value.following ? { following: true, view } : { following: false, key: value.key, top: value.top, view })); } catch (_) {}
-  }
-
-  scheduleRemember() {
-    clearTimeout(this.rememberTimer);
-    this.rememberTimer = setTimeout(() => this.remember(), REMEMBER_MS);
   }
 
   setUnits(units, changedUnit = 0) {
@@ -193,264 +180,6 @@ export class Viewport {
     }
   }
 
-  /** One unit's height as the sums see it: what was measured, or the estimate. */
-  heightOf(index) {
-    const unit = this.units[index];
-    if (!unit) return ESTIMATE;
-    return this.state.heights.get(unit.key) || ESTIMATES[unit.type] || ESTIMATE;
-  }
-
-  rebuildPrefix() {
-    this.prefix = prefixSums(this.units.length, index => this.heightOf(index));
-  }
-
-  indexAt(y) {
-    return indexAt(this.prefix, this.units.length, y, true);
-  }
-
-  rangeForScroll() {
-    return rangeForScroll(this.prefix, this.units.length, this.scroller.scrollTop, this.scroller.clientHeight, OVERSCAN);
-  }
-
-  rangeAround(index) {
-    return rangeAround(index, this.units.length, i => this.heightOf(i), this.scroller.clientHeight, OVERSCAN);
-  }
-
-  // The reader's anchor is the first visible RECORD, not the first visible unit — the classic
-  // page's rule, borrowed for #98. A unit (a process) can hold a hundred rows; anchored on the
-  // unit, a growth inside it above the visible region — a thumbnail decoding, a fold opening, a
-  // late reflow — moves everything the reader is looking at while the unit's own top never
-  // moves, and nothing corrects it. Anchored on the row, every growth above is a delta on the
-  // row and is put back. A unit that starts below the viewport is no anchor at all: the reader
-  // has left the window entirely (a dragged thumb does that) and the scroll offset places it.
-  captureDomAnchor() {
-    const viewportTop = this.scroller.getBoundingClientRect().top;
-    const viewportBottom = viewportTop + this.scroller.clientHeight;
-    const rects = element => {
-      const rect = element.getBoundingClientRect();
-      return { element, top: rect.top, bottom: rect.bottom, height: rect.height };
-    };
-    // This page measures; the shared rule says which one the reader is looking at (#107).
-    const child = firstVisible([...this.window.children].map(rects), viewportTop, viewportBottom, 1, false);
-    if (!child) return null;
-    const anchor = { key: child.element.dataset.unitKey, top: child.top - viewportTop, block: null, blockTop: 0 };
-    const row = firstVisible([...child.element.querySelectorAll("[data-block-index]")].map(rects), viewportTop, Infinity, 1, true);
-    if (row) { anchor.block = row.element.dataset.blockIndex; anchor.blockTop = row.top - viewportTop; }
-    return anchor;
-  }
-
-  restoreDomAnchor(anchor) {
-    if (!anchor) return;
-    const unit = [...this.window.children].find(child => child.dataset.unitKey === anchor.key);
-    if (!unit) return;
-    let target = unit, want = anchor.top;
-    if (anchor.block != null) {
-      const row = unit.querySelector(`[data-block-index="${anchor.block}"]`);
-      if (row && row.getBoundingClientRect().height > 0) { target = row; want = anchor.blockTop; }
-    }
-    const viewportTop = this.scroller.getBoundingClientRect().top;
-    this.scroller.scrollTop += correction(target.getBoundingClientRect().top - viewportTop, want, 1);
-  }
-
-  // The anchor a SPONTANEOUS change is measured against (#98). A change the viewport makes
-  // itself — an apply, a rerender, a jump — captures the anchor before it touches the DOM. A
-  // change that arrives on its own — a row resizing under the observer — has already moved the
-  // view by the time it is heard, and an anchor captured then describes the moved view and
-  // corrects nothing. So the anchor is kept: refreshed on every scroll and after every settle,
-  // and read here. While the thumb is held (`dragging`) or the tail is followed there is none.
-  readerAnchor() {
-    if (this.state.following || this.dragging) return null;
-    return this.anchor || this.captureDomAnchor();
-  }
-
-  syncAnchor() {
-    this.anchor = this.state.following || this.dragging ? null : this.captureDomAnchor();
-  }
-
-  // The scrollbar thumb owns the position while the pointer holds it (#98): the window follows
-  // the scroll offset and nothing corrects it — a page that re-anchors on its old first-visible
-  // row while units mount under the thumb with real heights snaps the thumb away from the
-  // pointer, the "zone the slider cannot rest in". The anchor rule resumes on release.
-  beginDrag() {
-    if (this.dragging) return;
-    this.dragging = true;
-    this.anchor = null;
-    this.lastUserInput = performance.now();
-  }
-
-  endDrag() {
-    if (!this.dragging) return;
-    this.dragging = false;
-    this.updateWindow();
-    this.syncAnchor();
-    this.scheduleRemember();
-  }
-
-  outerHeight(element) {
-    const style = getComputedStyle(element);
-    return element.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
-  }
-
-  measureMounted(anchor = this.readerAnchor()) {
-    let changed = false;
-    for (const element of this.window.children) {
-      const index = Number(element.dataset.unitIndex);
-      const unit = this.units[index];
-      const height = this.outerHeight(element);
-      if (unit && heightChanged(this.heightOf(index), height, 1, 0.5)) {
-        this.state.heights.set(unit.key, height);
-        changed = true;
-      }
-    }
-    if (!changed) return false;
-    this.rebuildPrefix();
-    this.updatePads();
-    if (!this.state.following) this.restoreDomAnchor(anchor);
-    this.syncAnchor();
-    return true;
-  }
-
-  scheduleMeasure() {
-    if (this.pendingMeasure) return;
-    this.pendingMeasure = true;
-    setTimeout(() => {
-      this.pendingMeasure = false;
-      const changed = this.measureMounted();
-      if (changed && this.state.following) this.convergeBottom();
-    }, 0);
-  }
-
-  updatePads() {
-    const pads = padHeights(this.prefix, this.lo, this.hi, this.units.length);
-    this.top.style.height = `${pads.top}px`;
-    this.bottom.style.height = `${pads.bottom}px`;
-  }
-
-  clearWindow() {
-    this.observer.disconnect();
-    this.window.replaceChildren();
-    this.lo = this.hi = 0;
-    this.top.style.height = "0px";
-    this.bottom.style.height = "0px";
-  }
-
-  reconcile(lo, hi, dirtyFrom = Infinity, refresh = false, anchor = this.state.following ? null : this.captureDomAnchor()) {
-    ({ lo, hi } = clampRange(lo, hi, this.units.length));
-    if (!refresh && dirtyFrom === Infinity && lo === this.lo && hi === this.hi) return false;
-
-    this.observer.disconnect();
-    for (const child of [...this.window.children]) {
-      const index = Number(child.dataset.unitIndex);
-      if (index < lo || index >= hi) child.remove();
-    }
-
-    let cursor = this.window.firstElementChild;
-    for (let index = lo; index < hi; index++) {
-      const unit = this.units[index];
-      while (cursor && Number(cursor.dataset.unitIndex) < index) {
-        const stale = cursor;
-        cursor = cursor.nextElementSibling;
-        stale.remove();
-      }
-      const reusable = cursor && Number(cursor.dataset.unitIndex) === index && cursor.dataset.unitKey === unit.key && index < dirtyFrom && !refresh;
-      if (reusable) {
-        cursor = cursor.nextElementSibling;
-        continue;
-      }
-      const fresh = renderUnit(unit, this.state);
-      fresh.dataset.unitIndex = index;
-      if (cursor && Number(cursor.dataset.unitIndex) === index) {
-        const next = cursor.nextElementSibling;
-        cursor.replaceWith(fresh);
-        cursor = next;
-      } else {
-        this.window.insertBefore(fresh, cursor);
-      }
-    }
-    while (cursor) {
-      const stale = cursor;
-      cursor = cursor.nextElementSibling;
-      stale.remove();
-    }
-
-    this.lo = lo;
-    this.hi = hi;
-    this.updatePads();
-    this.measureMounted(anchor);
-    this.restoreDomAnchor(anchor);
-    // The border box: a unit's height is its border box plus margins (`outerHeight`), and a
-    // change to its padding or border — invisible to the default content box — is a height
-    // change the reader feels like any other.
-    for (const child of this.window.children) this.observer.observe(child, { box: "border-box" });
-    this.actions.afterRender?.();
-    this.syncAnchor();
-    return true;
-  }
-
-  updateWindow(forceIndex = null) {
-    if (!this.units.length) return;
-    const anchor = this.state.following || this.dragging ? null : this.captureDomAnchor();
-    const anchorIndex = forceIndex == null && anchor ? this.units.findIndex(unit => unit.key === anchor.key) : -1;
-    const range = forceIndex != null ? this.rangeAround(forceIndex) : anchorIndex >= 0 ? this.rangeAround(anchorIndex) : this.rangeForScroll();
-    this.reconcile(range.lo, range.hi, Infinity, false, anchor);
-    this.syncAnchor(); // an unchanged window returns early above; the anchor is re-read either way
-  }
-
-  // Public rerender for fold/filter changes: only the mounted window is rebuilt and its
-  // first visible unit is restored to the same pixel offset.
-  render(forceIndex = null) {
-    if (!this.units.length) return;
-    if (forceIndex != null) {
-      const range = this.rangeAround(forceIndex);
-      this.reconcile(range.lo, range.hi, 0, false, this.state.following ? null : this.captureDomAnchor());
-      return;
-    }
-    this.reconcile(this.lo, this.hi, Infinity, true, this.state.following ? null : this.captureDomAnchor());
-    if (this.state.following) this.convergeBottom();
-  }
-
-  gapToBottom() {
-    return this.scroller.scrollHeight - this.scroller.clientHeight - this.scroller.scrollTop;
-  }
-
-  onScroll() {
-    // What this scroll MEANS is the shared rule (#107); the slacks are this page's. It decides
-    // on the true end in both directions — acquire and hold are both ACQUIRE_SLACK — where the
-    // classic page holds at 80px; that difference is #127, not something to change here.
-    const user = performance.now() - this.lastUserInput < USER_INTENT_MS;
-    const verdict = classifyScroll(this.state.following, user, this.gapToBottom(), ACQUIRE_SLACK, ACQUIRE_SLACK, HOLD_SLACK);
-    if (verdict === "follow" || verdict === "unfollow") {
-      this.state.following = verdict === "follow";
-      if (this.state.following) this.state.newRecords = 0;
-      this.actions.followChanged?.();
-    }
-    if (user) this.scheduleRemember();
-    else if (verdict === "heal") this.convergeBottom();
-    // This scroll moved the reader: the kept anchor is stale until the deferred window update
-    // re-reads it (once per batch of scroll events, not per event — the classic page's shape).
-    this.anchor = null;
-    this.actions.afterScroll?.();
-    if (this.pendingScroll) return;
-    this.pendingScroll = true;
-    setTimeout(() => {
-      this.pendingScroll = false;
-      this.updateWindow();
-    }, 0);
-  }
-
-  convergeBottom() {
-    clearTimeout(this.bottomTimer);
-    const settle = pass => {
-      if (!this.state.following || !this.units.length) return;
-      const range = this.rangeAround(this.units.length - 1);
-      this.reconcile(range.lo, range.hi, Infinity, false, null);
-      this.scroller.scrollTop = this.scroller.scrollHeight;
-      this.measureMounted(null);
-      if (this.gapToBottom() > 1 && pass < 7) this.bottomTimer = setTimeout(() => settle(pass + 1), 0);
-    };
-    settle(0);
-  }
-
   toBottom() {
     this.state.following = true;
     this.state.newRecords = 0;
@@ -485,16 +214,6 @@ export class Viewport {
     this.syncAnchor();
     this.scheduleRemember();
     return true;
-  }
-
-  remeasure() {
-    const anchor = this.state.following ? null : this.captureDomAnchor();
-    this.state.heights.clear();
-    this.rebuildPrefix();
-    const anchorIndex = anchor ? this.units.findIndex(unit => unit.key === anchor.key) : -1;
-    const range = anchorIndex >= 0 ? this.rangeAround(anchorIndex) : this.rangeForScroll();
-    this.reconcile(range.lo, range.hi, 0, false, anchor);
-    if (this.state.following) this.convergeBottom();
   }
 
   showEmpty(title, detail, error = false) {

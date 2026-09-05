@@ -140,6 +140,20 @@ follow decision — which is what validates the module against the reference. Wh
 class: the state machine (the window range, the observers, the measure schedule, the tail
 converge, position memory) still lives twice, and moving it needs that frame adapter.
 
+**Step 4a landed (v1.198.0).** The state machine is the module's now — `VirtualWindow`, with the
+frame adapter the classic page will need: the engine reaches the scroll host only through
+`{scrollTop, scrollTo, scrollBy, clientHeight, scrollHeight, viewportTop, on, isScrollbarTarget}`,
+and `elementFrame(el)` is the element implementation the app shell passes. `viewport.js` is now
+that class's consumer (232 lines from 513): it answers what a unit IS (`count`, `identityAt`,
+`estimateAt`, `heightFor`/`setHeight`/`clearHeights`, `renderItem`), where the follow flag lives
+(a get/set pair over the page's own state, so `state.following` keeps every reader it had), and
+what a reveal opens. The rules half of the module stays pure and node-tested; the engine half
+drives the DOM by definition, and the contract guards the split.
+
+What remains for the acceptance: the classic page driving the same class through a DOCUMENT
+frame. Its window is built around `matEls()` and its own materialization, so that is a step of
+its own — and the reference page is the one that must not move.
+
 Step 3 fixed rule 5's wrong side on the app shell: the estimate is a FLOOR per unit type (a
 prompt 44px, an assistant note 40, a process 34) instead of 132px for everything, so learning a
 height only grows the page below the reader. Measured on a forty-turn session: reading down and

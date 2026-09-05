@@ -939,18 +939,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // #98: the reader's anchor is the first visible ROW, kept fresh for changes nobody asked for,
 // and the scrollbar thumb owns the position while it is held.
 {
-  const src = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  // The rules moved into the shared engine with #107 step 4; the app shell's viewport is its
+  // consumer, so each pin now reads whichever file OWNS the rule.
+  const src = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  const vpSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   // The rule is the shared module's since #107; this page measures the rects and reads it.
   assert.match(src, /const row = firstVisible\(\[\.\.\.child\.element\.querySelectorAll\("\[data-block-index\]"\)\]\.map\(rects\), viewportTop, Infinity, 1, true\);/, "the anchor descends to the first visible row of the unit");
   assert.equal(firstVisible([{ index: 0, top: 900, bottom: 1000, height: 100 }], 0, 500, 1, false), null, "a unit below the viewport is no anchor — the scroll offset places the window");
-  assert.match(src, /const row = unit\.querySelector\(`\[data-block-index="\$\{anchor\.block\}"\]`\);/, "…and the restore puts that row back");
+  assert.match(src, /const row = item\.querySelector\(`\[data-block-index="\$\{anchor\.block\}"\]`\);/, "…and the restore puts that row back");
   assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\)\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");
   assert.match(src, /return this\.anchor \|\| this\.captureDomAnchor\(\);/, "the kept anchor, else a fresh one");
-  assert.match(src, /this\.anchor = null;\n    this\.actions\.afterScroll\?\.\(\);/, "a scroll invalidates the kept anchor…");
+  assert.match(src, /this\.anchor = null;\n    this\.afterScroll\(\);/, "a scroll invalidates the kept anchor…");
   assert.match(src, /this\.reconcile\(range\.lo, range\.hi, Infinity, false, anchor\);\n    this\.syncAnchor\(\);/, "…and the deferred window update re-reads it once per batch");
-  assert.match(src, /scroller\.addEventListener\("pointerdown", event => \{ if \(event\.target === scroller\) this\.beginDrag\(\); \}/, "a pointer that lands on the scroller itself is on its scrollbar — no coordinate test, overlay scrollbars sit inside the client box");
+  assert.match(vpSrc, /export class Viewport extends VirtualWindow \{/, "the app shell's viewport IS the shared engine (#107)");
+  assert.match(vpSrc, /frame: elementFrame\(scroller\),/, "…driving it through the element frame");
+  assert.match(src, /frame\.on\("pointerdown", event => \{ if \(frame\.isScrollbarTarget\(event\)\) this\.beginDrag\(\); \}/, "a pointer that lands on the scroller itself is on its scrollbar — no coordinate test, overlay scrollbars sit inside the client box");
   assert.match(src, /for \(const type of \["pointerup", "pointercancel", "mouseup"\]\) addEventListener\(type, \(\) => this\.endDrag\(\)/, "…released anywhere");
-  assert.match(src, /const anchor = this\.state\.following \|\| this\.dragging \? null : this\.captureDomAnchor\(\);\n    const anchorIndex/, "while dragging the window is placed by the scroll offset and nothing corrects it");
+  assert.match(src, /const anchor = this\.following \|\| this\.dragging \? null : this\.captureDomAnchor\(\);\n    const anchorIndex/, "while dragging the window is placed by the scroll offset and nothing corrects it");
   assert.match(src, /this\.observer\.observe\(child, \{ box: "border-box" \}\);/, "a unit's height is its border box — padding and border changes count");
   console.log("#98 reader anchor cases passed");
 }
@@ -1359,15 +1364,25 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(classifyScroll(false, false, 900, 2, 2, 80), "none", "…and means nothing when unpinned");
   const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(vp, /from "\.\/shared\/virtual-window\.js";/, "the app shell drives the module");
-  assert.match(vp, /this\.prefix = prefixSums\(this\.units\.length, index => this\.heightOf\(index\)\);/);
-  assert.match(vp, /const verdict = classifyScroll\(this\.state\.following, user, this\.gapToBottom\(\), ACQUIRE_SLACK, ACQUIRE_SLACK, HOLD_SLACK\);/);
+  // Step 4: the engine itself is shared, and this shell is its consumer — the sums, the window,
+  // the anchor, the observers, the follow state, the thumb and the converge run from one place.
+  const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  assert.match(engine, /this\.prefix = prefixSums\(this\.count, index => this\.heightOf\(index\)\);/);
+  assert.match(engine, /const verdict = classifyScroll\(this\.following, user, this\.gapToBottom\(\), this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal\);/);
+  assert.match(vp, /slacks: \{ acquire: ACQUIRE_SLACK, hold: ACQUIRE_SLACK, heal: HOLD_SLACK \},/, "this shell decides on the true end in both directions (#127)");
+  assert.doesNotMatch(vp, /new ResizeObserver|addEventListener\("scroll"/, "the observers and the scroll listener are the engine's now");
   const module = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
-  // Numbers in, numbers out: `scrollTop` names a PARAMETER here, but no element is touched.
-  assert.doesNotMatch(module, /document\.|ResizeObserver|\.getBoundingClientRect\(|\.scrollTop|\.style\.|performance\.now\(|setTimeout\(|addEventListener/, "the module is numbers in, numbers out — no page can hide a layout read in it");
+  // The RULES half of the module is numbers in, numbers out: no layout read can hide among
+  // them, which is what lets these tests run in node at all. (`scrollTop` names a parameter.)
+  // The engine below the marker drives the DOM by definition; that this import worked at all is
+  // the guard that it touches nothing at module TOP level, where node has no document.
+  const rules = module.slice(0, module.indexOf("/* ── the engine"));
+  assert.ok(rules.length > 2000 && module.includes("/* ── the engine"), "the file keeps its two halves");
+  assert.doesNotMatch(rules, /document\.|ResizeObserver|\.getBoundingClientRect\(|\.scrollTop|\.style\.|performance\.now\(|setTimeout\(|addEventListener/, "the rules are numbers in, numbers out");
   // Step 3: the estimate is a FLOOR per unit type — under the real height, never over, so
   // learning a height only grows the page below the reader (rule 5).
   assert.match(vp, /const ESTIMATES = \{ user: 44, assistant: 40, process: 34 \};/);
-  assert.match(vp, /return this\.state\.heights\.get\(unit\.key\) \|\| ESTIMATES\[unit\.type\] \|\| ESTIMATE;/);
+  assert.match(vp, /estimateAt\(index\) \{ return ESTIMATES\[this\.units\[index\]\?\.type\] \|\| ESTIMATE; \}/, "the estimate is this shell's answer to the engine's question");
   // Step 2: the classic page — the reference — runs the same arithmetic, with its own numbers.
   const cls = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
   assert.match(cls, /if \(!prefix\) prefix = shared\.prefixSums\(records\.length, effH\);/, "the classic sums stay LAZY and shared");

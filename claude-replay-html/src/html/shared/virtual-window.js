@@ -114,4 +114,359 @@ function classifyScroll(following, userIntent, gap, acquire, hold, heal) {
   return following && gap > heal ? "heal" : "none";
 }
 
-export { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, correction, firstVisible, classifyScroll };
+/* ── the engine ───────────────────────────────────────────────────────────
+ * The state machine the arithmetic above serves: the contiguous window and its pads, the
+ * anchor, the two height observers, the measure schedule, the follow state, the thumb-drag
+ * mode, the tail converge and the position-memory debounce. Both pages had all of it, twice.
+ *
+ * It knows nothing about records. A page supplies:
+ *   frame        — where the scrolling happens: scrollTop()/scrollTo(y)/clientHeight()/
+ *                  scrollHeight()/viewportTop()/on(type, fn, opts)/isScrollbarTarget(event).
+ *                  An element scroller and the document are the same engine through it.
+ *   mount        — { top, window, bottom }: the two pads and the element items mount into.
+ *   count        — how many items there are (a getter on the page).
+ *   identityAt   — a string stable across a rewrite that re-emits the same positions.
+ *   estimateAt   — an item's height before it has been measured. UNDER, never over (rule 5).
+ *   heightFor / setHeight / clearHeights — where measured heights live.
+ *   renderItem   — index → an element, already stamped with its identity.
+ *   following    — the page's own flag (both pages render from it), through a get/set pair.
+ *   afterRender / afterScroll / followChanged / remember — the page's hooks.
+ *
+ * Every layout read and DOM write in here is the engine's own; the arithmetic above stays pure
+ * so the node contract can test the rules directly. */
+class VirtualWindow {
+  constructor(options) {
+    const { frame, mount, overscan, slacks, userIntentMs, rememberMs } = options;
+    this.frame = frame;
+    this.mount = mount.window;
+    this.topPad = mount.top;
+    this.bottomPad = mount.bottom;
+    this.overscan = overscan;
+    this.slacks = slacks;
+    this.userIntentMs = userIntentMs;
+    this.rememberMs = rememberMs;
+    this.prefix = [0];
+    this.lo = 0;
+    this.hi = 0;
+    this.pendingScroll = false;
+    this.pendingMeasure = false;
+    // Sentinel far in the past: performance.now() is small right after load, so a 0 init would
+    // read the load sequence's own scrolls (and the browser's async scroll restoration) as the
+    // reader moving, and unpin a fresh page (#89).
+    this.lastUserInput = -1e9;
+    this.anchor = null;
+    this.dragging = false;
+    this.bottomTimer = 0;
+    this.rememberTimer = 0;
+
+    this.observer = new ResizeObserver(() => this.scheduleMeasure());
+    // Displacement is a HEIGHT signal, not a scroll signal (#89): a late reflow — fonts
+    // arriving, an estimate replaced by a real height, chrome around the window — grows the
+    // content below the viewport WITHOUT firing a scroll event, and a pinned view is silently
+    // parked a few pixels above the tail until the next apply happens to converge. The per-item
+    // observer only hears an item's own height change; observing the content as a whole hears
+    // every displacement, and any size change while following that leaves the bottom is healed
+    // on the spot. Converging moves scroll, not size — no feedback loop.
+    this.contentObserver = new ResizeObserver(() => {
+      if (this.following && this.count && this.gapToBottom() > 1) this.convergeBottom();
+    });
+    this.contentObserver.observe(mount.content);
+    const noteIntent = event => {
+      if (event.type === "keydown" && event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
+      if (event.type === "pointermove" && !event.buttons) return;
+      this.lastUserInput = performance.now();
+    };
+    for (const type of ["pointerdown", "pointermove", "wheel", "touchstart", "touchmove", "keydown"]) {
+      frame.on(type, noteIntent, { passive: true, capture: true });
+    }
+    frame.on("scroll", () => this.onScroll(), { passive: true });
+    // The scrollbar thumb owns the position while the pointer holds it (#98).
+    frame.on("pointerdown", event => { if (frame.isScrollbarTarget(event)) this.beginDrag(); }, { passive: true, capture: true });
+    for (const type of ["pointerup", "pointercancel", "mouseup"]) addEventListener(type, () => this.endDrag(), { passive: true, capture: true });
+    addEventListener("blur", () => this.endDrag());
+  }
+
+  /** An item's height as the sums see it: what was measured, or the page's estimate. */
+  heightOf(index) {
+    return this.heightFor(index) || this.estimateAt(index);
+  }
+
+  rebuildPrefix() {
+    this.prefix = prefixSums(this.count, index => this.heightOf(index));
+  }
+
+  indexAt(y) {
+    return indexAt(this.prefix, this.count, y, true);
+  }
+
+  rangeForScroll() {
+    return rangeForScroll(this.prefix, this.count, this.frame.scrollTop(), this.frame.clientHeight(), this.overscan);
+  }
+
+  rangeAround(index) {
+    return rangeAround(index, this.count, i => this.heightOf(i), this.frame.clientHeight(), this.overscan);
+  }
+
+  /** Which index carries this identity, or -1 — the scan a rewrite makes necessary. */
+  indexOfIdentity(key) {
+    for (let i = 0; i < this.count; i++) if (this.identityAt(i) === key) return i;
+    return -1;
+  }
+
+  /** The reader's anchor is the first visible ROW, not the first visible item (#98): an item
+   *  can hold a hundred rows, and anchored on the item a growth inside it above the visible
+   *  region moves everything the reader is looking at while the item's own top never moves. An
+   *  item that starts BELOW the viewport is no anchor at all — the reader has left the window
+   *  entirely (a dragged thumb does that) and the scroll offset places it. */
+  captureDomAnchor() {
+    const viewportTop = this.frame.viewportTop();
+    const viewportBottom = viewportTop + this.frame.clientHeight();
+    const rects = element => {
+      const rect = element.getBoundingClientRect();
+      return { element, top: rect.top, bottom: rect.bottom, height: rect.height };
+    };
+    const child = firstVisible([...this.mount.children].map(rects), viewportTop, viewportBottom, 1, false);
+    if (!child) return null;
+    const anchor = { key: child.element.dataset.unitKey, top: child.top - viewportTop, block: null, blockTop: 0 };
+    const row = firstVisible([...child.element.querySelectorAll("[data-block-index]")].map(rects), viewportTop, Infinity, 1, true);
+    if (row) { anchor.block = row.element.dataset.blockIndex; anchor.blockTop = row.top - viewportTop; }
+    return anchor;
+  }
+
+  restoreDomAnchor(anchor) {
+    if (!anchor) return;
+    const item = [...this.mount.children].find(child => child.dataset.unitKey === anchor.key);
+    if (!item) return;
+    let target = item, want = anchor.top;
+    if (anchor.block != null) {
+      const row = item.querySelector(`[data-block-index="${anchor.block}"]`);
+      if (row && row.getBoundingClientRect().height > 0) { target = row; want = anchor.blockTop; }
+    }
+    const delta = correction(target.getBoundingClientRect().top - this.frame.viewportTop(), want, 1);
+    if (delta) this.frame.scrollBy(delta);
+  }
+
+  /** The anchor a SPONTANEOUS change is measured against (#98). A change the engine makes
+   *  itself captures the anchor before it touches the DOM; a change that arrives on its own —
+   *  a row resizing under the observer — has already moved the view by the time it is heard,
+   *  and an anchor captured then describes the moved view and corrects nothing. So it is kept:
+   *  refreshed on every settle, cleared the instant a scroll begins. */
+  readerAnchor() {
+    if (this.following || this.dragging) return null;
+    return this.anchor || this.captureDomAnchor();
+  }
+
+  syncAnchor() {
+    this.anchor = this.following || this.dragging ? null : this.captureDomAnchor();
+  }
+
+  beginDrag() {
+    if (this.dragging) return;
+    this.dragging = true;
+    this.anchor = null;
+    this.lastUserInput = performance.now();
+  }
+
+  endDrag() {
+    if (!this.dragging) return;
+    this.dragging = false;
+    this.updateWindow();
+    this.syncAnchor();
+    this.scheduleRemember();
+  }
+
+  /** An item's height is its border box plus margins — a margin the reader cannot see still
+   *  takes the space that decides where everything below it sits. */
+  outerHeight(element) {
+    const style = getComputedStyle(element);
+    return element.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
+  }
+
+  measureMounted(anchor = this.readerAnchor()) {
+    let changed = false;
+    for (const element of this.mount.children) {
+      const index = Number(element.dataset.unitIndex);
+      const height = this.outerHeight(element);
+      if (index >= 0 && index < this.count && heightChanged(this.heightOf(index), height, 1, 0.5)) {
+        this.setHeight(index, height);
+        changed = true;
+      }
+    }
+    if (!changed) return false;
+    this.rebuildPrefix();
+    this.updatePads();
+    if (!this.following) this.restoreDomAnchor(anchor);
+    this.syncAnchor();
+    return true;
+  }
+
+  scheduleMeasure() {
+    if (this.pendingMeasure) return;
+    this.pendingMeasure = true;
+    setTimeout(() => {
+      this.pendingMeasure = false;
+      const changed = this.measureMounted();
+      if (changed && this.following) this.convergeBottom();
+    }, 0);
+  }
+
+  updatePads() {
+    const pads = padHeights(this.prefix, this.lo, this.hi, this.count);
+    this.topPad.style.height = `${pads.top}px`;
+    this.bottomPad.style.height = `${pads.bottom}px`;
+  }
+
+  clearWindow() {
+    this.observer.disconnect();
+    this.mount.replaceChildren();
+    this.lo = this.hi = 0;
+    this.topPad.style.height = "0px";
+    this.bottomPad.style.height = "0px";
+  }
+
+  /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
+   *  whose content changed; `refresh` rebuilds everything mounted. */
+  reconcile(lo, hi, dirtyFrom = Infinity, refresh = false, anchor = this.following ? null : this.captureDomAnchor()) {
+    ({ lo, hi } = clampRange(lo, hi, this.count));
+    if (!refresh && dirtyFrom === Infinity && lo === this.lo && hi === this.hi) return false;
+
+    this.observer.disconnect();
+    for (const child of [...this.mount.children]) {
+      const index = Number(child.dataset.unitIndex);
+      if (index < lo || index >= hi) child.remove();
+    }
+
+    let cursor = this.mount.firstElementChild;
+    for (let index = lo; index < hi; index++) {
+      while (cursor && Number(cursor.dataset.unitIndex) < index) {
+        const stale = cursor;
+        cursor = cursor.nextElementSibling;
+        stale.remove();
+      }
+      const reusable = cursor && Number(cursor.dataset.unitIndex) === index && cursor.dataset.unitKey === this.identityAt(index) && index < dirtyFrom && !refresh;
+      if (reusable) {
+        cursor = cursor.nextElementSibling;
+        continue;
+      }
+      const fresh = this.renderItem(index);
+      fresh.dataset.unitIndex = index;
+      if (cursor && Number(cursor.dataset.unitIndex) === index) {
+        const next = cursor.nextElementSibling;
+        cursor.replaceWith(fresh);
+        cursor = next;
+      } else {
+        this.mount.insertBefore(fresh, cursor);
+      }
+    }
+    while (cursor) {
+      const stale = cursor;
+      cursor = cursor.nextElementSibling;
+      stale.remove();
+    }
+
+    this.lo = lo;
+    this.hi = hi;
+    this.updatePads();
+    this.measureMounted(anchor);
+    this.restoreDomAnchor(anchor);
+    for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
+    this.afterRender();
+    this.syncAnchor();
+    return true;
+  }
+
+  updateWindow(forceIndex = null) {
+    if (!this.count) return;
+    const anchor = this.following || this.dragging ? null : this.captureDomAnchor();
+    const anchorIndex = forceIndex == null && anchor ? this.indexOfIdentity(anchor.key) : -1;
+    const range = forceIndex != null ? this.rangeAround(forceIndex) : anchorIndex >= 0 ? this.rangeAround(anchorIndex) : this.rangeForScroll();
+    this.reconcile(range.lo, range.hi, Infinity, false, anchor);
+    this.syncAnchor(); // an unchanged window returns early above; the anchor is re-read either way
+  }
+
+  /** Rebuild what is mounted — a fold opened, a filter changed — holding the reader's place. */
+  render(forceIndex = null) {
+    if (!this.count) return;
+    if (forceIndex != null) {
+      const range = this.rangeAround(forceIndex);
+      this.reconcile(range.lo, range.hi, 0, false, this.following ? null : this.captureDomAnchor());
+      return;
+    }
+    this.reconcile(this.lo, this.hi, Infinity, true, this.following ? null : this.captureDomAnchor());
+    if (this.following) this.convergeBottom();
+  }
+
+  gapToBottom() {
+    return this.frame.scrollHeight() - this.frame.clientHeight() - this.frame.scrollTop();
+  }
+
+  onScroll() {
+    const user = performance.now() - this.lastUserInput < this.userIntentMs;
+    const verdict = classifyScroll(this.following, user, this.gapToBottom(), this.slacks.acquire, this.slacks.hold, this.slacks.heal);
+    if (verdict === "follow" || verdict === "unfollow") {
+      this.following = verdict === "follow";
+      this.followChanged();
+    }
+    if (user) this.scheduleRemember();
+    else if (verdict === "heal") this.convergeBottom();
+    // This scroll moved the reader: the kept anchor is stale until the deferred window update
+    // re-reads it, once per batch of scroll events rather than per event.
+    this.anchor = null;
+    this.afterScroll();
+    if (this.pendingScroll) return;
+    this.pendingScroll = true;
+    setTimeout(() => {
+      this.pendingScroll = false;
+      this.updateWindow();
+    }, 0);
+  }
+
+  /** Sit on the tail and stay there while the heights under it settle. */
+  convergeBottom() {
+    clearTimeout(this.bottomTimer);
+    const settle = pass => {
+      if (!this.following || !this.count) return;
+      const range = this.rangeAround(this.count - 1);
+      this.reconcile(range.lo, range.hi, Infinity, false, null);
+      this.frame.scrollTo(this.frame.scrollHeight());
+      this.measureMounted(null);
+      if (this.gapToBottom() > 1 && pass < 7) this.bottomTimer = setTimeout(() => settle(pass + 1), 0);
+    };
+    settle(0);
+  }
+
+  /** Every measured height is wrong (the font changed, the window resized): learn them again. */
+  remeasure() {
+    const anchor = this.following ? null : this.captureDomAnchor();
+    this.clearHeights();
+    this.rebuildPrefix();
+    const anchorIndex = anchor ? this.indexOfIdentity(anchor.key) : -1;
+    const range = anchorIndex >= 0 ? this.rangeAround(anchorIndex) : this.rangeForScroll();
+    this.reconcile(range.lo, range.hi, 0, false, anchor);
+    if (this.following) this.convergeBottom();
+  }
+
+  scheduleRemember() {
+    clearTimeout(this.rememberTimer);
+    this.rememberTimer = setTimeout(() => this.remember(), this.rememberMs);
+  }
+}
+
+/** The element-scroller frame: a div that scrolls its own content. */
+function elementFrame(scroller) {
+  return {
+    scrollTop: () => scroller.scrollTop,
+    scrollTo: y => { scroller.scrollTop = y; },
+    scrollBy: dy => { scroller.scrollTop += dy; },
+    clientHeight: () => scroller.clientHeight,
+    scrollHeight: () => scroller.scrollHeight,
+    viewportTop: () => scroller.getBoundingClientRect().top,
+    on: (type, fn, options) => scroller.addEventListener(type, fn, options),
+    // A pointer that lands on the scroller ITSELF is on its scrollbar: content lands on a
+    // descendant. Not a coordinate test — an overlay scrollbar (macOS) sits inside the client
+    // box. A false positive (the border) costs one window update on release.
+    isScrollbarTarget: event => event.target === scroller,
+  };
+}
+
+export { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, correction, firstVisible, classifyScroll, VirtualWindow, elementFrame };
