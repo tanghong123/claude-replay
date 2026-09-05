@@ -1233,9 +1233,7 @@ fn scenario_new_messages_pill(tab: &headless_chrome::Tab, surface: Surface, fx: 
         8,
         "the driver appended the whole script"
     );
-    std::thread::sleep(Duration::from_millis(4000));
-    let said = harness::new_messages_pill(tab, surface);
-    assert_eq!(said, 8, "the pill says how many records arrived");
+    harness::await_pill(tab, surface, 8, "the pill says how many records arrived");
     harness::click_pill(tab, surface);
     await_tail(tab, surface, "the pill's click to land at the tail");
     settle();

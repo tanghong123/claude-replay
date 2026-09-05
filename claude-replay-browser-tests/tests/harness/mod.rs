@@ -1136,6 +1136,23 @@ pub fn new_messages_pill(tab: &headless_chrome::Tab, surface: Surface) -> i64 {
     eval(tab, js).as_i64().unwrap_or(-1)
 }
 
+/// Wait for the pill to reach `want`, or fail saying what it reached. A live-growth case reads
+/// a number the page arrives at ASYNCHRONOUSLY — the driver appends on its own cadence, the
+/// page folds and paints on its own — so a flat sleep and a single read is a coin toss on a
+/// busy machine (#131). This waits for the answer and only then insists on it.
+pub fn await_pill(tab: &headless_chrome::Tab, surface: Surface, want: i64, what: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut seen = new_messages_pill(tab, surface);
+    while std::time::Instant::now() < deadline {
+        if seen == want {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        seen = new_messages_pill(tab, surface);
+    }
+    panic!("{what}: the pill reached {seen}, not {want}");
+}
+
 /// Click the pill / jump control.
 pub fn click_pill(tab: &headless_chrome::Tab, surface: Surface) {
     let id = match surface {

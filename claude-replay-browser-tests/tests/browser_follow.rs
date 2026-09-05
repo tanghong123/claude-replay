@@ -3645,11 +3645,11 @@ fn the_app_shell_open_counts_nothing_as_new() {
         8,
         "the driver appended the whole script"
     );
-    std::thread::sleep(std::time::Duration::from_millis(4000));
-    assert_eq!(
-        harness::new_messages_pill(&tab, harness::Surface::AppShell),
+    harness::await_pill(
+        &tab,
+        harness::Surface::AppShell,
         8,
-        "only the eight that arrived count"
+        "only the eight that arrived count",
     );
     drop(monitor);
 }
