@@ -45,6 +45,9 @@ export const uiState = {
   navigatorOpen: localStorage.getItem("am-demo-navigator") !== "0",
   navigatorHidden: localStorage.getItem("am-prod-navigator-hidden") === "1",
   navCards: new Set(json("am-prod-nav-cards", ["turns"])),
+  // Which info subsections the reader has folded away (#89). Per VIEWER, not per session: a
+  // reader who does not care about Usage does not care about it in the next session either.
+  infoFolds: new Set(json("am-prod-info-folds", [])),
   searchTab: "all", searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), searchWhole: false, toolFilters: new Set(),
   globalResults: [], globalIndex: 0,
   reading: parseReading(localStorage.getItem(READING_KEY)) || { ...DEFAULT_READING },
@@ -67,6 +70,7 @@ export function persist() {
   localStorage.setItem("am-demo-navigator", uiState.navigatorOpen ? "1" : "0");
   localStorage.setItem("am-prod-navigator-hidden", uiState.navigatorHidden ? "1" : "0");
   localStorage.setItem("am-prod-nav-cards", JSON.stringify([...uiState.navCards]));
+  localStorage.setItem("am-prod-info-folds", JSON.stringify([...uiState.infoFolds]));
   localStorage.setItem("am-prod-read", JSON.stringify(indexState.read));
   if (uiState.readingChosen) localStorage.setItem(READING_KEY, JSON.stringify(uiState.reading));
 }

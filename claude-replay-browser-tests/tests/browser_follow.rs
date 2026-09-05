@@ -3453,6 +3453,102 @@ fn the_app_shell_outline_never_shows_a_body_above_its_head_known_red_88() {
     drop(monitor);
 }
 
+/// #89: the info pane's three subsections fold on their label, and the choice is the READER's —
+/// it survives switching to another session and a reload, because it is one key per viewer and
+/// not a property of the session being looked at.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_info_subsections_fold_and_the_choice_persists() {
+    let _serial = serial();
+    let base = base("appshell-info-folds");
+    let stores = Stores::new(&base);
+    let first = "cccccccc-0000-4000-8000-000000000089".to_string();
+    let second = "cccccccc-0000-4000-8000-000000000090".to_string();
+    stores.claude_session(&first, &harness::long_session(6, harness::Shape::default()));
+    stores.claude_session(
+        &second,
+        &harness::long_session(4, harness::Shape::default()),
+    );
+    let monitor = Monitor::spawn(Kind::V2, 2908, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={first}"));
+    let open_info = "var c = document.querySelector('[data-nav-card=\"session\"]'); if (c && !c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); 'ok'";
+    let usage_rows = "(function(){ var g = document.querySelector('[data-info-group=\"usage\"]'); return g ? g.querySelectorAll('.session-info-row').length : -1; })()";
+    let usage_expanded = "(function(){ var b = document.querySelector('[data-info-fold=\"usage\"]'); return b ? b.getAttribute('aria-expanded') : 'missing'; })()";
+    harness::eval(&tab, open_info);
+    harness::until(
+        &tab,
+        &format!("({usage_rows}) > 0"),
+        "the Usage subsection to render its rows",
+        std::time::Duration::from_secs(20),
+        usage_rows,
+    );
+    assert_eq!(
+        harness::eval(&tab, usage_expanded),
+        "true",
+        "open to begin with"
+    );
+    // Fold Usage on its label.
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-info-fold=\"usage\"]').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        harness::eval(&tab, usage_rows),
+        0,
+        "a folded group shows no rows"
+    );
+    assert_eq!(harness::eval(&tab, usage_expanded), "false");
+    // Another session: still folded — the choice is the reader's, not the session's.
+    monitor.open(&tab, &format!("?ui=app&session={second}"));
+    harness::eval(&tab, open_info);
+    harness::until(
+        &tab,
+        &format!("({usage_expanded}) === 'false'"),
+        "Usage still folded in the next session",
+        std::time::Duration::from_secs(20),
+        usage_expanded,
+    );
+    assert_eq!(
+        harness::eval(&tab, usage_rows),
+        0,
+        "…and still showing no rows"
+    );
+    // A reload keeps it.
+    monitor.open(&tab, &format!("?ui=app&session={second}"));
+    harness::eval(&tab, open_info);
+    harness::until(
+        &tab,
+        &format!("({usage_expanded}) === 'false'"),
+        "Usage still folded after a reload",
+        std::time::Duration::from_secs(20),
+        usage_expanded,
+    );
+    // Unfolding is remembered the same way.
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-info-fold=\"usage\"]').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        harness::eval(&tab, usage_rows).as_i64().unwrap_or(0) > 0,
+        "unfolded again"
+    );
+    monitor.open(&tab, &format!("?ui=app&session={first}"));
+    harness::eval(&tab, open_info);
+    harness::until(
+        &tab,
+        &format!("({usage_rows}) > 0"),
+        "…and it stays unfolded",
+        std::time::Duration::from_secs(20),
+        usage_expanded,
+    );
+    drop(monitor);
+}
+
 /// #67 / #68 / #69: the info pane carries status, counts, tokens with the cached reads and the
 /// compaction summary — and none of the title / agent / project the header already shows; the
 /// turns pane shows the compaction as an epoch tick between the tenth and eleventh turns.

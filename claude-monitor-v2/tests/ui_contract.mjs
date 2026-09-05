@@ -1468,3 +1468,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(js125, /var meta = shared\.taskRowMeta\(card\(t\)\);/);
   console.log("#125 task card cases passed");
 }
+
+// #89: the info pane's three subsections fold on their label, and the choice is the READER's —
+// one key, kept across sessions and reloads.
+{
+  const app89 = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  const state89 = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  const css89 = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(state89, /infoFolds: new Set\(json\("am-prod-info-folds", \[\]\)\),/, "one key, per viewer");
+  assert.match(state89, /localStorage\.setItem\("am-prod-info-folds", JSON\.stringify\(\[\.\.\.uiState\.infoFolds\]\)\);/, "…persisted with the rest");
+  assert.match(app89, /const folded = uiState\.infoFolds\.has\(key\);/, "a group knows whether it is folded");
+  assert.match(app89, /data-info-fold="\$\{escapeText\(key\)\}" aria-expanded="\$\{!folded\}"/, "…its label is the control, and says so");
+  assert.match(app89, /const body = folded \? "" : rows\.map/, "…and a folded group renders no rows at all");
+  assert.match(app89, /uiState\.infoFolds\.has\(key\) \? uiState\.infoFolds\.delete\(key\) : uiState\.infoFolds\.add\(key\);/, "the click toggles it");
+  assert.match(css89, /\.session-info-label\{display:flex;[^}]*cursor:pointer/, "the label reads as a control");
+  console.log("#89 info fold cases passed");
+}

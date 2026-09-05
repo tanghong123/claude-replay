@@ -563,12 +563,28 @@ function renderSessionInfo(turns, agents) {
   const summary = byId("navigatorSessionSummary");
   if (row.cost != null && row.costSubs) { const own = Number(row.cost) - Number(row.costSubs); summary.textContent = `~$${own.toFixed(2)} + $${Number(row.costSubs).toFixed(2)} sub-agents`; summary.title = `total ~$${Number(row.cost).toFixed(2)} = this session $${own.toFixed(2)} + sub-agents $${Number(row.costSubs).toFixed(2)}`; }
   else { summary.textContent = row.cost != null ? `~$${Number(row.cost).toFixed(2)}` : usage.cost || "—"; summary.title = ""; }
-  const group = (label, rows) => `<div class="session-info-group"><div class="session-info-label">${label}</div>${rows.map(([key, value]) => `<div class="session-info-row"><span>${escapeText(key)}</span><strong>${escapeText(value ?? "—")}</strong></div>`).join("")}</div>`;
+  // Each subsection folds on its own label and the choice is the READER's, kept across sessions
+  // and reloads (#89): a folded group is its label alone, and the rows are not rendered at all.
+  const group = (label, rows) => {
+    const key = label.toLowerCase();
+    const folded = uiState.infoFolds.has(key);
+    const body = folded ? "" : rows.map(([name, value]) => `<div class="session-info-row"><span>${escapeText(name)}</span><strong>${escapeText(value ?? "—")}</strong></div>`).join("");
+    return `<div class="session-info-group${folded ? " folded" : ""}" data-info-group="${escapeText(key)}"><button class="session-info-label" type="button" data-info-fold="${escapeText(key)}" aria-expanded="${!folded}"><span class="session-info-chevron" aria-hidden="true">${folded ? "▸" : "▾"}</span>${escapeText(label)}</button>${body}</div>`;
+  };
   byId("navigatorSession").innerHTML = `<div class="session-info">${group("Session", [["status", displayState(row).label], ["turns", turns], ["children", agents]])}${group("Usage", [["model", usage.model], ["input", usage.input || usage.input_tokens], ["output", usage.output || usage.output_tokens], ["cache read", usage.cache_read], ...(usage.compacted ? [["compacted", usage.compacted]] : []), ["est. cost", usage.cost || (row.cost != null ? `~$${Number(row.cost).toFixed(2)}` : "—")]])}${group("Runtime", [["cwd", meta.cwd || row._group?.secondary], ...runtimeRows(usage.runtime).filter(r => r.state !== "absent" || RUNTIME_ALWAYS.includes(r.key)).map(r => [r.label, runtimeText(r, agentName(row.agent))])])}</div>`;
 }
 
 byId("sessionNavigator").onclick = event => {
   const turn = event.target.closest("[data-turn-record]"); if (turn) { viewport.jumpToRecord(Number(turn.dataset.turnRecord), "turn"); return; }
+  const infoFold = event.target.closest("[data-info-fold]");
+  if (infoFold) {
+    const key = infoFold.dataset.infoFold;
+    uiState.infoFolds.has(key) ? uiState.infoFolds.delete(key) : uiState.infoFolds.add(key);
+    persist();
+    // The whole pane re-renders: the counts are computed there, not held.
+    renderNavigator();
+    return;
+  }
   const open = event.target.closest("[data-task-open]"); if (open) { openTaskPopover(Number(open.dataset.taskOpen), open); return; }
   const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); viewport.jumpToRecord(Number(task.dataset.taskRecord), "task"); return; }
   const agent = event.target.closest("[data-agent-record]"); if (agent) { viewport.jumpToRecord(Number(agent.dataset.agentRecord), "agent"); return; }
