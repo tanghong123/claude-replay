@@ -6,6 +6,7 @@
 //! and the pure `path`/`time` helpers the per-agent parsers share. Only
 //! `index` and `session` are part of the public API; the rest are crate-internal.
 
+pub mod ansi;
 pub(crate) mod builder; // the single incremental fold orchestrator (batch + live drive it)
 pub mod elide; // the bounded eliding line reader — the only byte-toucher (#193)
 pub mod index;

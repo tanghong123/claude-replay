@@ -510,6 +510,44 @@ fn a_standalone_command_stdout_attaches_to_the_command_it_follows() {
     let _ = std::fs::remove_file(&live);
 }
 
+/// Terminal styling never reaches a block (#130). An agent records what a command printed to a
+/// TERMINAL — Claude Code writes `<local-command-stdout>` with the dim pair around it, a build
+/// tool that forces colour writes SGR codes into a tool result — and nothing downstream renders
+/// them: the browser drops the ESC byte and shows the rest as text.
+#[test]
+fn terminal_styling_is_stripped_from_command_output_and_tool_results() {
+    let esc = "\\u001b";
+    let command = r#"{"type":"user","cwd":"/r","message":{"role":"user","content":"<command-message>compact</command-message>\n<command-name>/compact</command-name>\n<command-args></command-args>"},"timestamp":"2026-07-26T10:00:00Z"}"#;
+    let stdout = format!(
+        r#"{{"type":"user","cwd":"/r","message":{{"role":"user","content":"<local-command-stdout>{esc}[2mCompacted (ctrl+o to see full summary) {esc}[22m</local-command-stdout>"}},"timestamp":"2026-07-26T10:00:01Z"}}"#
+    );
+    let call = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"c1","name":"Bash","input":{"command":"cargo build"}}]},"timestamp":"2026-07-26T10:00:02Z"}"#;
+    let result = format!(
+        r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"c1","content":"{esc}[1;31merror{esc}[0m: something failed"}}]}},"timestamp":"2026-07-26T10:00:03Z"}}"#
+    );
+    let path = tmp1(&format!("{command}\n{stdout}\n{call}\n{result}\n"));
+    let session = parse_session(&path).unwrap();
+    let blocks = session.blocks();
+    let text = format!("{blocks:?}");
+    assert!(
+        !text.contains('\u{1b}'),
+        "no escape byte survives into a block: {text}"
+    );
+    let command_output = blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Command { output, .. } => Some(output.join("\n")),
+            _ => None,
+        })
+        .expect("the command block");
+    assert_eq!(command_output, "Compacted (ctrl+o to see full summary) ");
+    assert!(
+        text.contains("error: something failed") && !text.contains("[1;31m"),
+        "a tool result keeps its words and loses its colours: {text}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
 /// `parse_session` must return exactly what the existing entry points return — same
 /// blocks, same per-turn times, same metrics, same cwd — just bundled. This is the
 /// byte-identical gate for the wrapper.

@@ -418,6 +418,86 @@ fn app_shell_holds_when_unpinned_through_growth() {
     scenario_holds_when_unpinned(&page.tab, Surface::AppShell, &fx);
 }
 
+/// A fixture whose tail holds a slash command whose output carries terminal styling — the dim
+/// pair Claude Code really writes around `/compact`'s line (#130).
+fn fixture_styled_command(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(14, Shape::default());
+    // `\u001b` in the JSON, so the fixture carries a real escape byte the way a transcript does.
+    jsonl += &command_at(
+        "compact",
+        "",
+        "\\u001b[2mCompacted (ctrl+o to see full summary) \\u001b[22m",
+        "2026-08-21T10:15:01Z",
+    );
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture {
+        base,
+        path,
+        turns: 15,
+    }
+}
+
+/// A command's output reads as output (#130, the owner's report): the terminal's own styling is
+/// gone — no `[2m` in the page — and the body wears the same ⎿ result shape as every other
+/// output rather than a bordered code block of its own.
+fn scenario_a_command_output_is_plain_output(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let open = match surface {
+        Surface::Classic => "(function(){ var c = [...document.querySelectorAll('#stream .fold')].find(function (f) { var n = f.querySelector(':scope > .fold-h > .tool-name'); return n && /compact/.test(f.textContent); }); if (c && c.dataset.open !== '1') c.querySelector(':scope > .fold-h').click(); return 'ok'; })()",
+        Surface::AppShell => "(function(){ var b = [...document.querySelectorAll('[data-prompt-toggle]')].find(function (e) { return /compact/.test(e.textContent); }); if (b && b.getAttribute('aria-expanded') === 'false') b.click(); return 'ok'; })()",
+    };
+    eval(tab, open);
+    settle();
+    settle();
+    let seen = probe(
+        tab,
+        match surface {
+            Surface::Classic => "(function(){ var c = [...document.querySelectorAll('#stream .fold, #stream .blk')].find(function (f) { return /Compacted \\(ctrl/.test(f.textContent); }); if (!c) return null; return { text: c.textContent, marks: c.querySelectorAll('.result > .lead').length }; })()",
+            Surface::AppShell => "(function(){ var c = [...document.querySelectorAll('.turn.command, .renderer')].find(function (f) { return /Compacted \\(ctrl/.test(f.textContent); }); if (!c) return null; return { text: c.textContent, marks: c.querySelectorAll('.renderer-result > .renderer-result-lead').length }; })()",
+        },
+    );
+    assert!(!seen.is_null(), "the command's output is on the page");
+    let text = seen["text"].as_str().unwrap_or("");
+    assert!(
+        text.contains("Compacted (ctrl+o to see full summary)"),
+        "the sentence survives: {text:?}"
+    );
+    assert!(
+        !text.contains("[2m") && !text.contains("[22m"),
+        "…and the terminal's styling does not reach the reader: {text:?}"
+    );
+    assert!(
+        seen["marks"].as_i64().unwrap_or(0) >= 1,
+        "the output wears the same result body as any other output: {seen:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_command_output_is_plain_output() {
+    let _serial = serial();
+    let fx = fixture_styled_command("scenario-ansi-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_command_output_is_plain_output(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_command_output_is_plain_output() {
+    let _serial = serial();
+    let fx = fixture_styled_command("scenario-ansi-app");
+    let page = open(Surface::AppShell, &fx, 2904);
+    scenario_a_command_output_is_plain_output(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: stepping and paging from the top ──────────────────────────────────────────────
 
 /// From the top, `]` three times lands on turn 3 or later and each press moves forward; a

@@ -249,6 +249,10 @@ impl<'a> Replayer<'a> {
                     tur,
                     is_error,
                 } => {
+                    // What a program printed to a TERMINAL, without the terminal (#130): a build
+                    // tool that forces colour writes SGR codes into its output, and no consumer
+                    // here renders them — the browser drops the ESC byte and shows the rest.
+                    let text = &crate::engine::ansi::strip_ansi(text).into_owned();
                     if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
                         join_result(&mut self.out[rel], text, tur, *is_error);
                         note_patch(&mut patch_floor, self.base + rel, emitted_frontier);
@@ -363,10 +367,17 @@ impl<'a> Replayer<'a> {
                     self.out.push(Block::Command {
                         name: name.clone(),
                         args: args.clone(),
-                        output: output.clone(),
+                        output: output
+                            .iter()
+                            .map(|o| crate::engine::ansi::strip_ansi(o).into_owned())
+                            .collect(),
                     });
                 }
                 Message::CommandStdout { text } => {
+                    // A slash command's own stdout is written with its terminal styling — the
+                    // dim pair around "Compacted (ctrl+o to see full summary)" is what the owner
+                    // saw rendered as `[2m…[22m` (#130).
+                    let text = &crate::engine::ansi::strip_ansi(text).into_owned();
                     // Attach to the command it follows, else show it command-less.
                     let last_logical = (self.base + self.out.len()).checked_sub(1);
                     if let Some(Block::Command { output, .. }) = self.out.last_mut() {

@@ -247,3 +247,8 @@
 /* A head's target shown in full (#129): the third step of the click cycle, where a long
    command stops being one clipped line and becomes the whole thing. */
 .renderer[data-target="full"]>.renderer-head>.renderer-target{white-space:pre-wrap;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+
+/* A slash command's output is OUTPUT (#130): the same ⎿ body as any other result, in the
+   command card's own measure — not the bordered code block `.markdown pre` would give it. */
+.command-card .renderer-result{margin:2px 0 0;font:12px/1.7 var(--mono);color:var(--sub)}
+.command-card .renderer-result pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;padding:0;border:0;background:none}
