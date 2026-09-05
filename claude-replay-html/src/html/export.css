@@ -717,6 +717,28 @@ body.selecting #toolmenu, body.selecting #agentmenu {
   border: 1px solid var(--border); border-radius: 999px; background: var(--bg); }
 .irq-answer > small { color: var(--muted); font-size: 11px; }
 
+/* ── a task, as the queue's own board shows it (#125, shared/task-card.js) ─ */
+.task-meta { margin: 0 0 3px 22px; font: 11px var(--sans); color: var(--muted); }
+.tcard { display: flex; flex-direction: column; gap: 8px; padding: 2px 0 4px; }
+.tcard-head { display: flex; align-items: baseline; gap: 7px; }
+.tcard-glyph { flex: none; font: 12px var(--mono); color: var(--muted); }
+.tcard-id { font: 11px var(--mono); color: var(--muted); }
+.tcard-title { font-weight: 600; color: var(--fg); overflow-wrap: anywhere; }
+.tcard-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.tchip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--panel); font-size: 11px; color: var(--muted); }
+.tcard-dates { font: 11px var(--mono); color: var(--muted); }
+.tcard-sec { display: flex; flex-direction: column; gap: 3px; }
+.tcard-label { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.tcard-body { max-width: 72ch; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
+.tcard-item { color: var(--muted); }
+.tcard-out { padding: 7px 9px; border-radius: 7px; background: var(--addbg); }
+.tcard-out > .tcard-label { color: var(--addfg); }
+.tcard-log { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 10px; }
+.tcard-lt { font: 10.5px var(--mono); color: var(--faint); white-space: nowrap; }
+.tcard-lm { color: var(--muted); overflow-wrap: anywhere; }
+.tcard-lb { color: var(--faint); }
+
 /* ── numbered code + diffs ───────────────────────────────────────────── */
 
 .numbered, .diff {

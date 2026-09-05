@@ -358,6 +358,17 @@ impl Stores {
         }
         dir
     }
+    /// A task file with the LIFE a queue records (#125): who holds it, when it moved, what it
+    /// asked for, what came of it, and the worklog written along the way.
+    pub fn claude_task_file(&self, sid: &str, n: usize, json: &str) -> PathBuf {
+        let dir = self.root.join("claude-tasks").join(sid);
+        std::fs::create_dir_all(&dir).unwrap();
+        serde_json::from_str::<serde_json::Value>(json).expect("a task file is JSON");
+        let path = dir.join(format!("{n}.json"));
+        std::fs::write(&path, json).unwrap();
+        path
+    }
+
     pub fn claude_session(&self, sid: &str, jsonl: &str) -> PathBuf {
         let proj = self.root.join("claude").join("-r");
         std::fs::create_dir_all(&proj).unwrap();

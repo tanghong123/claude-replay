@@ -48,6 +48,7 @@ pub const SHARED: &[(&str, &str)] = &[
         "virtual-window",
         include_str!("../html/shared/virtual-window.js"),
     ),
+    ("task-card", include_str!("../html/shared/task-card.js")),
     ("ids", include_str!("../html/shared/ids.js")),
 ];
 

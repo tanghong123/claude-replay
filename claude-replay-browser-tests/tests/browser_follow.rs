@@ -3059,17 +3059,35 @@ fn the_app_shell_opens_a_task_details_popover() {
         std::time::Duration::from_secs(5),
         "document.getElementById('taskPopover') ? 'hidden' : 'no popover'",
     );
-    let shown = harness::probe(&tab, "(function(){ var p = document.getElementById('taskPopover'); return { subject: p.querySelector('.task-popover-head strong').textContent, status: p.querySelector('.task-popover-facts dd').textContent, paragraphs: p.querySelectorAll('.task-popover-body p').length, blockedBy: [...p.querySelectorAll('.task-popover-facts code')].map(function (c) { return c.textContent; }), jumpDisabled: p.querySelector('.task-popover-jump').disabled, transcriptTop: document.querySelector('.transcript').scrollTop, focusInside: p.contains(document.activeElement) }; })()");
+    // The popover shows the shared task card (#125): a glyph, chips and labelled sections,
+    // where it used to show a definition list of facts.
+    let shown = harness::probe(&tab, "(function(){ var p = document.getElementById('taskPopover'); var c = p.querySelector('.task-card'); return { subject: p.querySelector('.task-popover-head strong').textContent, glyph: (c.querySelector('.task-card-glyph')||{}).textContent, chips: [...c.querySelectorAll('.task-chip')].map(function (e) { return e.textContent.trim(); }), sections: [...c.querySelectorAll('.task-card-label')].map(function (e) { return e.textContent; }), jumpDisabled: p.querySelector('.task-popover-jump').disabled, transcriptTop: document.querySelector('.transcript').scrollTop, focusInside: p.contains(document.activeElement) }; })()");
     assert_eq!(shown["subject"], "two, running", "{shown}");
-    assert_eq!(shown["status"], "Running", "{shown}");
     assert_eq!(
-        shown["paragraphs"], 2,
-        "the description's two paragraphs: {shown}"
+        shown["glyph"], "◐",
+        "a running task wears its glyph: {shown}"
+    );
+    let chips: Vec<String> = shown["chips"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|c| c.as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        chips.iter().any(|c| c.contains("in progress")),
+        "its state: {chips:?}"
+    );
+    assert!(
+        chips.iter().any(|c| c.contains("blocked by #1"))
+            && chips.iter().any(|c| c.contains("blocks #3")),
+        "what blocks it and what it blocks: {chips:?}"
     );
     assert_eq!(
-        shown["blockedBy"],
-        serde_json::json!(["#1", "#3"]),
-        "blocked-by and blocks as ids: {shown}"
+        shown["sections"],
+        serde_json::json!(["description"]),
+        "and the description it carries: {shown}"
     );
     assert_eq!(
         shown["jumpDisabled"], true,

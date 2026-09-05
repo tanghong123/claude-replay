@@ -15,6 +15,7 @@ import { isInteraction, interactionCard, interactionHtml } from "../../claude-re
 import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE } from "../../claude-replay-html/src/html/shared/search.js";
 import { chainWalk } from "../../claude-replay-html/src/html/shared/filter.js";
 import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, correction, firstVisible, classifyScroll } from "../../claude-replay-html/src/html/shared/virtual-window.js";
+import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml } from "../../claude-replay-html/src/html/shared/task-card.js";
 import { displayName, toolHead, stateLabel } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
@@ -1392,4 +1393,43 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(cls, /window\.scrollBy\(0, shared\.correction\(e\.getBoundingClientRect\(\)\.top, a\.top, 1\)\);/);
   assert.match(cls, /var verdict = shared\.classifyScroll\(following, performance\.now\(\) - lastUserInput < USER_MS, gapToBottom\(\), PIN_SLACK, BOTTOM_SLACK, BOTTOM_SLACK\);/, "the classic page holds the pin through a nudge");
   console.log("#107 virtual window cases passed");
+}
+
+// #125: a task reads as the queue's own board shows it — a glyph, chips, the stamps on one
+// line, and labelled sections — and both pages render the same anatomy.
+{
+  const done = {
+    id: "125", subject: "Render tasks the way the board does", status: "Completed",
+    owner: "claude-code/hong@aries-black", created: "2026-09-04T18:23:00Z",
+    claimed: "2026-09-04T22:14:00Z", completed: "2026-09-04T22:53:00Z",
+    description: "the prose", accept: ["one", "two"], outcome: "shipped", checks: 1,
+    blockedBy: ["7"], log: [{ ts: "2026-09-04T22:49:00Z", by: "claude", msg: "found the seam" }],
+  };
+  assert.deepEqual([cardStatus("InProgress"), cardStatus("Completed"), cardStatus("pending"), cardStatus("")], ["in_progress", "completed", "pending", "pending"]);
+  assert.deepEqual([taskGlyph("Pending"), taskGlyph("InProgress"), taskGlyph("Completed"), taskGlyph("cancelled"), taskGlyph("Completed", true)], ["○", "◐", "✓", "✗", "◌"]);
+  assert.equal(taskStamp("2026-09-04T18:23:00Z"), "09-04 18:23", "the month-day and the clock, nothing else");
+  assert.equal(taskStamp(""), "");
+  assert.equal(taskDates(done), "created 09-04 18:23 · claimed 09-04 22:14 · completed 09-04 22:53");
+  assert.equal(taskDates({ created: "2026-09-04T18:23:00Z", updated: "2026-09-05T09:00:00Z", status: "InProgress" }), "created 09-04 18:23 · updated 09-05 09:00", "still open: when it last moved");
+  assert.deepEqual(taskChips(done).map(c => c.kind), ["status", "owner", "checks", "blocked"]);
+  assert.equal(taskChips(done)[0].text, "completed");
+  assert.equal(taskChips({ status: "Pending", deferred: true })[0].text, "deferred");
+  assert.equal(taskRowMeta(done), "claude-code/hong@aries-black · blocked by #7 · 1 check");
+  assert.equal(taskRowMeta({ id: "1", subject: "bare" }), "", "nothing to say leaves the row one line");
+  assert.deepEqual(taskSections(done).map(s => s.label), ["description", "acceptance", "outcome", "worklog"]);
+  assert.deepEqual(taskSections(done).at(-1).log, [{ ts: "09-04 22:49", by: "claude", msg: "found the seam" }]);
+  const classes = { card: "c", head: "h", glyph: "g", id: "i", title: "t", chips: "cs", chip: "ch", dates: "d", section: "s", label: "l", body: "b", item: "it", outcome: "o", log: "lg", logTime: "lt", logMsg: "lm", logBy: "lb" };
+  const html = taskCardHtml(done, classes);
+  assert.match(html, /<span class="g" data-state="completed">✓<\/span><span class="i">#125<\/span>/);
+  assert.match(html, /<div class="d">created 09-04 18:23 · claimed 09-04 22:14 · completed 09-04 22:53<\/div>/);
+  assert.match(html, /<div class="s o"><span class="l">outcome<\/span>/, "the outcome is a callout");
+  assert.match(html, /<span class="lt">09-04 22:49<\/span><div class="lm">found the seam<span class="lb"> — claude<\/span>/);
+  assert.match(taskCardHtml({ id: "1", subject: "<b>x</b>" }, classes), /&lt;b&gt;x&lt;\/b&gt;/, "a subject is escaped");
+  const app125 = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app125, /\$\{taskCardHtml\(\{ \.\.\.task, id: key, blockedBy: d\.blockedBy, blocks: d\.blocks \}, APP_TASK\)\}/, "the app shell's popover shows the card");
+  const js125 = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(js125, /det\.insertAdjacentHTML\("beforeend", shared\.taskCardHtml\(card\(t\), CLASSIC_TASK\)\);/, "…and so does the classic page's panel");
+  assert.match(js125, /row\.appendChild\(el\("span", "task-glyph", shared\.taskGlyph\(t\.status, t\.deferred\)\)\);/);
+  assert.match(js125, /var meta = shared\.taskRowMeta\(card\(t\)\);/);
+  console.log("#125 task card cases passed");
 }

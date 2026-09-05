@@ -121,6 +121,15 @@ fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
     match surface {
         Surface::Classic => {
             std::env::set_var("CLAUDE_REPLAY_CACHE", &fx.base);
+            // The html server runs IN this process, so the stores it reads are this process's
+            // env — a monitor gets them as spawn env instead (#125 needed the task store).
+            for (key, value) in (Stores {
+                root: fx.base.join("stores"),
+            })
+            .envs()
+            {
+                std::env::set_var(key, value);
+            }
             let args = Args {
                 no_cache: true,
                 ..Default::default()
@@ -2803,6 +2812,127 @@ fn app_shell_learning_heights_only_grows_the_page() {
     let fx = fixture("scenario-estimate-app", 40);
     let page = open(Surface::AppShell, &fx, 2901);
     scenario_learning_heights_only_grows_the_page(&page.tab, Surface::AppShell, &fx);
+}
+
+/// A fixture whose queue holds a task with a life: an owner, the three stamps, an acceptance
+/// list, an outcome and two worklog entries — and a pending one that is blocked (#125).
+fn fixture_task_life(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let path = stores.claude_session(SID, &long_session(14, Shape::default()));
+    stores.claude_task_file(SID, 1, r#"{"id":"125","subject":"Render tasks the way the board does","description":"the prose the queue kept","activeForm":"Rendering the task card","status":"completed","blockedBy":[],"blocks":[],"accept":["the glyph and the chips","the worklog"],"owner":"claude-code/hong@aries-black","created_at":"2026-09-04T18:23:00Z","claimed_at":"2026-09-04T22:14:00Z","completed_at":"2026-09-04T22:53:00Z","updated_at":"2026-09-04T22:53:00Z","outcome":"shipped as v1.200.0","checks":["node tests/ui_contract.mjs"],"log":[{"ts":"2026-09-04T22:49:00Z","by":"claude-code","msg":"found the seam"},{"ts":"2026-09-04T22:51:00Z","by":"claude-code","msg":"both pages render it"}]}"#);
+    stores.claude_task_file(SID, 2, r#"{"id":"126","subject":"The blocked one","description":"waits on 125","status":"pending","blockedBy":["125"],"blocks":[],"owner":"claude-code/hong@aries-black","created_at":"2026-09-04T19:00:00Z","updated_at":"2026-09-04T19:00:00Z"}"#);
+    Fixture {
+        base,
+        path,
+        turns: 14,
+    }
+}
+
+/// A task reads as the queue's own board shows it (#125, the owner's report): a glyph, the
+/// chips, the created·claimed·completed line and labelled sections — description, acceptance,
+/// outcome, worklog — with a blocked row saying so on its own second line.
+fn scenario_a_task_reads_like_the_board(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    // Open the panel that holds the tasks, then the task itself.
+    let open = match surface {
+        Surface::Classic => "(function(){ var b = document.getElementById('btn-tasks'); if (b) b.click(); var it = document.querySelector('#taskbox .task-item'); if (it) it.classList.add('open'); return 'ok'; })()",
+        Surface::AppShell => "(function(){ var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) { var h = c.querySelector('[data-nav-card-toggle]'); if (h) h.click(); } var t = document.querySelector('[data-task-open]'); if (t) t.click(); return 'ok'; })()",
+    };
+    eval(tab, open);
+    settle();
+    settle();
+    let card = match surface {
+        Surface::Classic => "(function(){ var c = document.querySelector('#taskbox .tcard'); if (!c) return null; return { glyph: (c.querySelector('.tcard-glyph')||{}).textContent, id: (c.querySelector('.tcard-id')||{}).textContent, chips: [...c.querySelectorAll('.tchip')].map(e => e.textContent.trim()), dates: (c.querySelector('.tcard-dates')||{}).textContent, labels: [...c.querySelectorAll('.tcard-label')].map(e => e.textContent), log: [...c.querySelectorAll('.tcard-lt')].map(e => e.textContent), meta: [...document.querySelectorAll('#taskbox .task-meta')].map(e => e.textContent) }; })()",
+        Surface::AppShell => "(function(){ var c = document.querySelector('.task-card'); if (!c) return null; return { glyph: (c.querySelector('.task-card-glyph')||{}).textContent, id: (c.querySelector('.task-card-id')||{}).textContent, chips: [...c.querySelectorAll('.task-chip')].map(e => e.textContent.trim()), dates: (c.querySelector('.task-card-dates')||{}).textContent, labels: [...c.querySelectorAll('.task-card-label')].map(e => e.textContent), log: [...c.querySelectorAll('.task-card-log-time')].map(e => e.textContent), meta: [] }; })()",
+    };
+    let seen = probe(tab, card);
+    assert!(
+        !seen.is_null(),
+        "the task card rendered (panel: {:?}, nav: {:?})",
+        probe(tab, "(document.getElementById('taskbox')||{}).innerHTML"),
+        probe(tab, "(document.getElementById('tasknav')||{}).outerHTML")
+    );
+    assert_eq!(
+        seen["glyph"], "✓",
+        "a finished task wears its glyph: {seen:?}"
+    );
+    assert_eq!(seen["id"], "#125");
+    assert_eq!(
+        seen["dates"], "created 09-04 18:23 · claimed 09-04 22:14 · completed 09-04 22:53",
+        "its life on one line: {seen:?}"
+    );
+    let chips: Vec<String> = seen["chips"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|c| c.as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        chips.iter().any(|c| c.contains("completed")),
+        "a status chip: {chips:?}"
+    );
+    assert!(
+        chips
+            .iter()
+            .any(|c| c.contains("claude-code/hong@aries-black")),
+        "…and who held it: {chips:?}"
+    );
+    let labels: Vec<String> = seen["labels"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|c| c.as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        labels,
+        vec!["description", "acceptance", "outcome", "worklog"],
+        "the sections a reader wants, in order"
+    );
+    assert_eq!(
+        seen["log"].as_array().map(Vec::len),
+        Some(2),
+        "each worklog entry keeps its time: {seen:?}"
+    );
+    if surface == Surface::Classic {
+        let meta: Vec<String> = seen["meta"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|c| c.as_str().unwrap_or("").to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            meta.iter().any(|m| m.contains("blocked by #125")),
+            "the blocked row says so on its own line: {meta:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_task_reads_like_the_board() {
+    let _serial = serial();
+    let fx = fixture_task_life("scenario-task-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_task_reads_like_the_board(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_task_reads_like_the_board() {
+    let _serial = serial();
+    let fx = fixture_task_life("scenario-task-app");
+    let page = open(Surface::AppShell, &fx, 2902);
+    scenario_a_task_reads_like_the_board(&page.tab, Surface::AppShell, &fx);
 }
 
 // ── scenario: scope counts, a typed scope prefix, scoped stepping, the escape (#101) ─────

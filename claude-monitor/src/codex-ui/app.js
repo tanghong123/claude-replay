@@ -3,6 +3,7 @@ import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
 import { chainWalk } from "./shared/filter.js";
+import { taskCardHtml } from "./shared/task-card.js";
 import { ControlStore } from "./control-store.js";
 import { Preview } from "./preview.js";
 import { RecordStore } from "./record-store.js";
@@ -584,6 +585,8 @@ function searchTextOf(record) {
   if (!entry) { entry = recordTextParts(record, stripTags, s => s.toLowerCase()); searchTextCache.set(record, entry); }
   return entry;
 }
+/** This shell's names for the shared task card (html/shared/task-card.js). */
+const APP_TASK = { card: "task-card", head: "task-card-head", glyph: "task-card-glyph", id: "task-card-id", title: "task-card-title", chips: "task-card-chips", chip: "task-chip", dates: "task-card-dates", section: "task-card-section", label: "task-card-label", body: "task-card-body", item: "task-card-item", outcome: "task-card-out", log: "task-card-log", logTime: "task-card-log-time", logMsg: "task-card-log-msg", logBy: "task-card-log-by" };
 const ALL_SCOPES = ["u", "a", "t", "o", "b", "r", "e"];
 /** The active scope as a set for the shared grammar; null when every class is on (no scope). */
 function activeScopeSet() {
@@ -1025,9 +1028,12 @@ function openTaskPopover(index, opener) {
   const jump = d.target == null
     ? `<button type="button" class="task-popover-jump" disabled title="This record stream did not keep where the task's status was set">Go to the turn — not kept in this stream</button>`
     : `<button type="button" class="task-popover-jump" data-task-record="${d.target}">Go to the turn where this task's status was recorded</button>`;
-  taskPopover.innerHTML = `<div class="task-popover-head"><span class="task-state ${escapeText(d.status === "in_progress" ? "running" : d.status)}"></span><strong>${escapeText(d.subject)}</strong><span class="task-popover-id">#${escapeText(d.id)}</span><button type="button" class="task-popover-close" aria-label="Close">×</button></div>
-    <dl class="task-popover-facts"><dt>Status</dt><dd>${escapeText(d.label)}</dd>${d.activeForm ? `<dt>While running</dt><dd>${escapeText(d.activeForm)}</dd>` : ""}<dt>Blocked by</dt><dd>${list(d.blockedBy, "nothing")}</dd><dt>Blocks</dt><dd>${list(d.blocks, "nothing")}</dd></dl>
-    <div class="task-popover-body">${d.paragraphs.length ? d.paragraphs.map(p => `<p>${escapeText(p)}</p>`).join("") : '<p class="task-popover-none">No description recorded.</p>'}</div>
+  // The card's anatomy is the shared module's (#125): the glyph, the chips, the
+  // created·claimed·completed line and the labelled sections, as the queue's own board shows
+  // them. What stays this shell's is the popover around it and the jump.
+  taskPopover.innerHTML = `<div class="task-popover-head"><strong>${escapeText(d.subject)}</strong><button type="button" class="task-popover-close" aria-label="Close">✕</button></div>
+    ${taskCardHtml({ ...task, id: key, blockedBy: d.blockedBy, blocks: d.blocks }, APP_TASK)}
+    ${d.activeForm && d.status === "in_progress" ? `<div class="task-card-dates">${escapeText(d.activeForm)}</div>` : ""}
     <div class="task-popover-actions">${jump}</div>`;
   taskPopoverOpener = opener;
   taskPopover.hidden = false;

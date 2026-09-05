@@ -78,6 +78,7 @@
   var CLASSIC_MARKS = { add: "+", del: "−", ctx: " " };
   var CLASSIC_RESULT = { result: "result", lead: "lead", box: "resultbox" };
   var CLASSIC_INTERACTION = { card: "irq", icon: "irq-icon", copy: "irq-copy", meta: "irq-meta", answers: "irq-answers", answer: "irq-answer" };
+  var CLASSIC_TASK = { card: "tcard", head: "tcard-head", glyph: "tcard-glyph", id: "tcard-id", title: "tcard-title", chips: "tcard-chips", chip: "tchip", dates: "tcard-dates", section: "tcard-sec", label: "tcard-label", body: "tcard-body", item: "tcard-item", outcome: "tcard-out", log: "tcard-log", logTime: "tcard-lt", logMsg: "tcard-lm", logBy: "tcard-lb" };
 
   // A capped list: the first `cap` rows stay visible, the rest go into a hidden div revealed
   // by a "⋯ N more lines" button. All content is always present.
@@ -1213,12 +1214,23 @@
     var pend = tasks.filter(function (t) {
       return t.status !== "Completed" && t.status !== "InProgress";
     }).sort(byId);
+    // The wire names a task's edges `blocked_by`/`blocks`; the card reads the board's names.
+    function card(t) {
+      return {
+        id: t.id, subject: t.subject, status: t.status, description: t.description,
+        owner: t.owner, created: t.created, claimed: t.claimed, completed: t.completed,
+        updated: t.updated, outcome: t.outcome, accept: t.accept, checks: t.checks,
+        deferred: t.deferred, deferred_reason: t.deferred_reason, log: t.log,
+        blockedBy: t.blocked_by || [], blocks: t.blocks || [],
+      };
+    }
     function item(t) {
       var it = el("div", "task-item" + (openIds[t.id] ? " open" : ""));
       it.dataset.tid = t.id;
-      var glyph = t.status === "Completed" ? "●" : t.status === "InProgress" ? "◐" : "○";
+      // The glyph and the row's meta line are the shared module's (#125) — the queue's own
+      // board vocabulary, on both pages.
       var row = el("div", "task-row" + (t.status === "Completed" ? " done" : t.status === "InProgress" ? " active" : ""));
-      row.appendChild(el("span", "task-glyph", glyph));
+      row.appendChild(el("span", "task-glyph", shared.taskGlyph(t.status, t.deferred)));
       row.appendChild(el("span", "task-id", "#" + t.id));
       // #125: a transcript that only ever UPDATED a task never saw its subject, and the
       // title is not recoverable — the tool result says "Updated task #5 status" and
@@ -1228,12 +1240,12 @@
       if (t.status === "InProgress" && t.active_form) subj += " · " + t.active_form;
       row.appendChild(el("span", "task-subj", subj));
       it.appendChild(row);
+      // A second line when there is something to say — who holds it, what blocks it, what
+      // gates it, whether it is parked (#125). Nothing to say leaves the row one line.
+      var meta = shared.taskRowMeta(card(t));
+      if (meta) it.appendChild(el("div", "task-meta", meta));
       var det = el("div", "task-det");
-      var deps = [];
-      if (t.blocked_by && t.blocked_by.length) deps.push("blocked by " + t.blocked_by.join(", "));
-      if (t.blocks && t.blocks.length) deps.push("blocks " + t.blocks.join(", "));
-      if (deps.length) det.appendChild(el("div", "task-deps", deps.join(" · ")));
-      det.appendChild(el("div", "task-desc", t.description || "(no recorded description)"));
+      det.insertAdjacentHTML("beforeend", shared.taskCardHtml(card(t), CLASSIC_TASK));
       it.appendChild(det);
       return it;
     }

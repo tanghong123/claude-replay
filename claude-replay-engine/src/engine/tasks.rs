@@ -49,6 +49,51 @@ pub struct TaskItem {
     /// Ids this task blocks / is blocked by (dependency edges).
     pub blocks: Vec<String>,
     pub blocked_by: Vec<String>,
+    /// What a queue file records beyond the transcript's own vocabulary (#125): who holds it,
+    /// when it moved, what it asked for, what came of it, and what was written along the way.
+    /// The op-log fold leaves these empty — a transcript records none of them — and
+    /// [`enrich_from_queue`] fills them from the queue's files, which is where a task's life is written.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub created: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub claimed: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub completed: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub updated: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub outcome: String,
+    /// The acceptance criteria a `done` is checked against.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accept: Vec<String>,
+    /// The commands that gate `done`; the count is what a reader needs to see.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub checks: usize,
+    /// Parked on an event, and why.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deferred: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub deferred_reason: String,
+    /// The worklog: what was decided or found while the task was open.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub log: Vec<TaskLogEntry>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// One worklog entry: when, by whom, and what.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TaskLogEntry {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ts: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub by: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub msg: String,
 }
 
 /// The session's task list, ordered by numeric id (falling back to string order).
@@ -200,6 +245,10 @@ impl TaskFold {
                         status: TaskStatus::Pending,
                         blocks: Vec::new(),
                         blocked_by: blocked_by.clone(),
+                        // A transcript records none of a task's LIFE — who holds it, when it
+                        // moved, what came of it. The queue's files do, and `enrich` fills
+                        // them in (#125).
+                        ..TaskItem::default()
                     },
                 ));
             }
@@ -475,6 +524,26 @@ pub fn enrich_from_queue(list: &mut TaskList, queue: &TaskList) {
         // might belong to a native task. Since ids are namespaced `q<n>` a match is
         // unambiguous, so the reason for holding back is gone.
         item.status = disk.status;
+        // A task's LIFE comes from disk outright too (#125), for the same reason: a transcript
+        // records none of it, and the queue file is where it is written. Owner, the three
+        // stamps, what the task asked for, what came of it, what was noted along the way.
+        item.owner = disk.owner.clone();
+        item.created = disk.created.clone();
+        item.claimed = disk.claimed.clone();
+        item.completed = disk.completed.clone();
+        item.updated = disk.updated.clone();
+        item.outcome = disk.outcome.clone();
+        item.accept = disk.accept.clone();
+        item.checks = disk.checks;
+        item.deferred = disk.deferred;
+        item.deferred_reason = disk.deferred_reason.clone();
+        item.log = disk.log.clone();
+        if item.blocked_by.is_empty() {
+            item.blocked_by = disk.blocked_by.clone();
+        }
+        if item.blocks.is_empty() {
+            item.blocks = disk.blocks.clone();
+        }
     }
 }
 
@@ -512,6 +581,40 @@ pub fn task_from_json(v: &serde_json::Value) -> Option<TaskItem> {
     if id.is_empty() {
         return None;
     }
+    let meta = v.get("meta");
+    let meta_str = |k: &str| {
+        meta.and_then(|m| m.get(k))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let log = v
+        .get("log")
+        .and_then(serde_json::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|e| TaskLogEntry {
+                    ts: e
+                        .get("ts")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    by: e
+                        .get("by")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    msg: e
+                        .get("msg")
+                        .or_else(|| e.get("message"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                })
+                .filter(|e| !e.msg.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
     Some(TaskItem {
         id,
         subject: s("subject"),
@@ -520,6 +623,22 @@ pub fn task_from_json(v: &serde_json::Value) -> Option<TaskItem> {
         status: TaskStatus::parse(&s("status")),
         blocks: list("blocks"),
         blocked_by: list("blockedBy"),
+        owner: s("owner"),
+        created: s("created_at"),
+        claimed: s("claimed_at"),
+        completed: s("completed_at"),
+        updated: s("updated_at"),
+        outcome: s("outcome"),
+        accept: list("accept"),
+        checks: v
+            .get("checks")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.len())
+            .unwrap_or(0),
+        // taskq parks a task with `--meta deferred=true` and says why beside it.
+        deferred: meta_str("deferred") == "true",
+        deferred_reason: meta_str("deferred_reason"),
+        log,
     })
 }
 

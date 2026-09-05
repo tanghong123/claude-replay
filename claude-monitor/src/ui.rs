@@ -330,6 +330,10 @@ mod tests {
                 "shared/virtual-window.js",
                 claude_replay_html::shared_source("virtual-window").unwrap(),
             ),
+            (
+                "shared/task-card.js",
+                claude_replay_html::shared_source("task-card").unwrap(),
+            ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),
