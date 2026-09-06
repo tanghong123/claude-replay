@@ -357,5 +357,25 @@ Which failure would you rather have?
 My read: with (1) answered, the expensive half of "one file" is already agreed, and today's #138
 — the same fix written twice, in two vocabularies — is the concrete cost of not doing it.
 
+→ **Answered (owner, 2026-09-06):** *"That is right. I prefer one-file, since I think the logic
+should be reused. We will resolve regressions over time."*
+
+**Both questions are now settled, and the doc is closed as a decision record.** The spacing may
+change (1) and the loop becomes one file (2), so Option C is the plan and #128 is execution, in
+this order:
+
+1. **The spacing change** — `.uturn` / `.fold` margins → padding, on its own commit, the gate
+   re-baselined on appearance with a look at the render.
+2. **One measure** — with no collapsing margins, `measureMounted` is exact for both pages.
+3. **The sparse-filter scenario** — written to FAIL on the placeholder model, since the range
+   walk never spends its budget on a zero-height record and no existing case is long enough to
+   show it.
+4. **The port** — the document frame, the wrapper inside `#stream`, the skip predicate, and the
+   seven `ui_contract` pins rewritten.
+
+"We will resolve regressions over time" is noted, and the two-surface scenarios are what will
+surface them: they stay, and they are the reason a regression on the reference page is a bug
+report rather than a silent difference.
+
 **3. What happens to #128?** — it stays open as the port, no longer blocked on a decision. The
 spacing change becomes its first step.
