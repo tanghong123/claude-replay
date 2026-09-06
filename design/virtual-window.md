@@ -375,3 +375,67 @@ Both are wrong in opposite directions for the invisible groups. Scaling the reme
 when the width changes — a text block's height moves roughly with the inverse of its measure — is
 a better first guess than either, costs one multiply per remembered record, and is independent of
 the two rules above. Worth its own task whichever way #128 goes.
+
+### Review: is the model sound, and how far is the code from it (2026-09-06)
+
+Read against `shared/virtual-window.js` (the engine), `viewport.js` (its app-shell consumer) and
+`export.js` (the classic page), with the specific question: if we built this, what would change?
+
+**Sound, with one refinement that makes it well-defined.** "An offset within the rendered middle"
+cannot be measured from the middle's top edge, because that edge moves every time `lo` changes —
+sliding the window would change the meaning of the number. The stable form is **a record identity
+plus a pixel delta from that record's top** (`{key, delta}`), which is invariant under window
+slides in both directions; the offset within the middle is then derived, `Σ heights[lo..key) +
+delta`, and the absolute position is `padTop(lo) + that`. This is precisely the shape
+`captureDomAnchor` already returns, so the refinement costs nothing. Two smaller ones the code
+already has and the model should keep: when the anchored record itself grows above the viewport
+(the reader is inside a long block), the delta must be to the first visible ROW inside it, not
+the record (#98's `block/blockTop`); and an anchor can vanish — a rewrite re-emits the tail and
+the key is gone — so the fallback is the nearest surviving key at or above, then arithmetic.
+
+**Re-reading the engine changed one premise of #128.** Rule 1 above says the engine ranges from
+the scroll offset and the classic page from the on-screen anchor. That is not what the engine
+does on its main paths: `updateWindow` (after every scroll) and `setUnits` (records arriving)
+both capture the DOM anchor and range with `rangeAround(anchorIndex)`; `rangeForScroll` is the
+fallback for when nothing is on screen — the pads, or following — which is exactly when the
+classic page falls back to `idxAt(y0 ± MARGIN)` too. What is left of Rule 1 is the window's
+SHAPE: the classic page extends `MARGIN` above the anchor's on-screen top and `innerHeight −
+anchorTop + MARGIN` below it; the engine extends `overscan` above the anchor and `clientHeight +
+overscan` below, ignoring where on screen the anchor sits. Since the anchor is by construction
+the first visible item, that is at most one item of difference at the window's edges — a
+parameter, not a fork. **Rule 2 (dense-and-hide vs sparse mount) is the only genuine fork.**
+
+**The largest real gap is timing, and the classic page is on the right side of it.** The engine
+learns heights through `scheduleMeasure`, which defers the work with `setTimeout(0)` — so when a
+mounted row above the reader grows, the browser PAINTS the shifted content, and only in the next
+task does `measureMounted` rebuild the sums, move the pads and `scrollBy` the anchor back. That is
+a one-frame jolt, and it is the shape of the residual #98-class reports. The classic page's
+body-level `ResizeObserver` calls `restoreAnchor(viewAnchor)` synchronously inside the callback —
+before paint — so the reader sees nothing. The owner's model makes the classic page's ordering
+the rule: measure, move the pads and write the position back in one synchronous block, inside the
+observer callback. The engine's deferral exists because its content observer watches
+`.transcript-inner`, which contains the pads, so a pad write inside the callback re-fires it; the
+fix is to observe the mounted window only (or ignore notifications the engine's own pad writes
+cause), not to yield to paint.
+
+**A second, smaller gap:** `restoreDomAnchor` is an increment — it re-reads the anchor's rect and
+`scrollBy`s the difference — so it needs the laid-out DOM and can only run after everything else.
+The model's write is absolute, `scrollTo(padTop + Σ + delta)`, computed from the sums; it can run
+the moment the pads are known, and it gives the same answer however the window got there.
+
+**The plan, each step releasable and held by the pixel-hold scenarios on both surfaces:**
+
+1. Make the write-back absolute in the engine (`restoreDomAnchor` computes from the sums; the
+   rect-based delta stays only as a fallback when the anchor is not mounted). Small, one method.
+2. Measure before paint: the `ResizeObserver` callback measures, moves the pads and writes the
+   position back synchronously; the content observer stops watching the pads. This is the change
+   that removes the one-frame jolt.
+3. Suppress the write-back during a thumb drag or a fling and reconcile at its end — the model's
+   reset step. `dragging` exists; a fling is a scroll within `userIntentMs` of the last wheel or
+   touch, which the engine already tracks.
+4. Width change: scale remembered heights by the width ratio instead of discarding them.
+5. Only then, and independently: the classic page onto the engine — where the one real decision,
+   sparse vs dense mount, is a per-page strategy.
+
+The order matters: 1–4 improve the app shell on its own and change nothing on the reference page,
+and each is measurable by the scenarios that exist today.
