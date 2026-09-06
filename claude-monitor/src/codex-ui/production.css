@@ -344,3 +344,18 @@
 .session-info-label:hover,.session-info-label:focus-visible{color:var(--ink);outline:0}
 .session-info-chevron{flex:none;width:9px;font-size:9px;color:var(--faint)}
 .session-info-group.folded+.session-info-group{margin-top:6px;padding-top:6px}
+
+/* #128 step 1: a unit's SIZE is its own box, on this page too. The shared engine
+   (html/shared/virtual-window.js) reads a unit as its border box plus its margins and places the
+   next one at the running sum of those — true only when nothing carries a margin on its TOP and
+   adjacent margins do not COLLAPSE. `.process-surface` (reference.css, generated — never edited
+   by hand) opens with `margin: 8px 0 4px`, so every process unit made the sums 8px short of where
+   the layout actually put the next one, and the pads that stand for the unmounted records were
+   short by 8 for each process they covered. The window is therefore a flex column and the 8px is
+   handed to the record ABOVE, which is where it lands in stacking terms anyway. The selector keys
+   on the KIND of the next unit, never on its open/closed state: a unit's size must depend on its
+   own state alone, or opening a process would resize the unit above it — a change a per-element
+   observer cannot see, and a top that moves under the reader on the click that asked for more. */
+.virtual-window{display:flex;flex-direction:column}
+.virtual-window>*{flex:0 0 auto;margin-top:0}
+.virtual-window>*:has(+ .process-surface){margin-bottom:8px}

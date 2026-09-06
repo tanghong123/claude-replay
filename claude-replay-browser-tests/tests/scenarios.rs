@@ -4664,3 +4664,82 @@ fn app_shell_a_launched_spawn_is_not_a_running_head() {
     let page = open(Surface::AppShell, &fx, 2897);
     scenario_a_launched_spawn_is_not_a_running_head(&page.tab, Surface::AppShell, &fx);
 }
+
+// ── scenario: a record's size is its own box, so a prefix sum of sizes is where the next one
+//    starts (#128 step 1) ─────────────────────────────────────────────────────────────────────
+
+/// Both pages place records by SUMMING their sizes: the classic page's pads are a prefix sum,
+/// the app shell's virtual window is one. That arithmetic reads a record as its border box plus
+/// its margins, and it is right only when the distance to the next record's top IS that number —
+/// which needs two things of the CSS: nothing carries a margin on its TOP (the sum would be short
+/// by exactly that margin), and adjacent margins do not COLLAPSE (the sum would be long by the
+/// smaller of each pair). Before #128 the classic page failed both — four block kinds had top
+/// margins and `#stream` was ordinary block layout, so on a real transcript 26 of 27 mounted
+/// pairs disagreed with their own measure. This holds every mounted pair to it, on both pages,
+/// with folds shut and again with folds open (an open fold must not resize the record ABOVE it).
+fn scenario_a_record_measures_as_its_own_box(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    let children = match surface {
+        Surface::Classic => "document.querySelectorAll('#stream > .blk')",
+        Surface::AppShell => "document.querySelectorAll('.virtual-window > [data-unit-from]')",
+    };
+    // Every mounted record, in document order: its own measure against the true stacking
+    // distance to the next one's top. The last has no successor, so it only reports its margins.
+    let js = format!(
+        "(function(){{ var k = [].slice.call({children}), out = {{n: k.length, tops: [], bad: []}}; \
+         for (var i = 0; i < k.length; i++) {{ var s = getComputedStyle(k[i]), r = k[i].getBoundingClientRect(); \
+           var mt = parseFloat(s.marginTop) || 0, mb = parseFloat(s.marginBottom) || 0; \
+           if (mt !== 0) out.tops.push({{at: i, mt: mt, cls: k[i].className}}); \
+           if (i + 1 < k.length) {{ var d = k[i+1].getBoundingClientRect().top - r.top; \
+             if (Math.abs((r.height + mt + mb) - d) > 0.5) out.bad.push({{at: i, size: Math.round((r.height+mt+mb)*10)/10, dist: Math.round(d*10)/10, cls: k[i].className}}); }} }} \
+         return out; }})()"
+    );
+    let check = |what: &str| {
+        let seen = harness::probe(tab, &js);
+        let n = seen["n"].as_i64().unwrap_or(0);
+        assert!(n >= 4, "{what}: records are mounted to measure ({seen})");
+        assert_eq!(
+            seen["tops"].as_array().map(Vec::len),
+            Some(0),
+            "{what}: no mounted record carries a margin on its top — a sum of sizes would be short by it ({seen})"
+        );
+        assert_eq!(
+            seen["bad"].as_array().map(Vec::len),
+            Some(0),
+            "{what}: every record's size is the distance to the next record's top ({seen})"
+        );
+    };
+    // Mid-transcript, where both pages are windowed and the sums are actually load-bearing.
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the jump to land at the tail");
+    scroll_by(tab, surface, -4000);
+    settle();
+    check("scrolled into the middle");
+    // Open the folds in view: an open fold grows DOWNWARD, and must not change what the record
+    // above it measures — the case that rules out keying spacing on fold state.
+    let opened = open_last_fold(tab, surface);
+    assert!(opened != -1, "a fold header was found to open ({opened})");
+    settle();
+    check("with a fold opened under the reader");
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_record_measures_as_its_own_box() {
+    let _serial = serial();
+    let fx = fixture("scenario-measure-classic", 120);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_record_measures_as_its_own_box(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_record_measures_as_its_own_box() {
+    let _serial = serial();
+    let fx = fixture("scenario-measure-app", 120);
+    let page = open(Surface::AppShell, &fx, 2913);
+    scenario_a_record_measures_as_its_own_box(&page.tab, Surface::AppShell, &fx);
+}
