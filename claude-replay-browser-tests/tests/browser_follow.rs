@@ -4234,13 +4234,16 @@ fn the_app_shell_lists_the_published_artifacts() {
         &tab,
         "document.querySelector('#previewBody .artifacts-row:nth-child(2) .artifacts-jump').click(); 'ok'",
     );
-    let landed = format!("(function(){{ var e = document.querySelector('[data-block-index=\"{at}\"]'); if (!e) return false; var t = e.getBoundingClientRect().top - document.querySelector('.transcript').getBoundingClientRect().top; return Math.abs(t - 18) <= 8; }})()");
+    // Where a jump lands is the scroller's own `scroll-padding-top` (the turn bar's height,
+    // #123) or 18px when nothing sticky sits there — read it off the page rather than pinning
+    // a number the chrome above the transcript is free to change.
+    let landed = format!("(function(){{ var t = document.querySelector('.transcript'); var e = document.querySelector('[data-block-index=\"{at}\"]'); if (!e) return false; var want = parseFloat(getComputedStyle(t).scrollPaddingTop) || 18; var top = e.getBoundingClientRect().top - t.getBoundingClientRect().top; return Math.abs(top - want) <= 8; }})()");
     harness::until(
         &tab,
         &landed,
         "the transcript to land on the record that published it",
         std::time::Duration::from_secs(10),
-        &format!("(function(){{ var e = document.querySelector('[data-block-index=\"{at}\"]'); return e ? e.getBoundingClientRect().top - document.querySelector('.transcript').getBoundingClientRect().top : 'not rendered'; }})()"),
+        &format!("(function(){{ var t = document.querySelector('.transcript'); var e = document.querySelector('[data-block-index=\"{at}\"]'); return e ? (e.getBoundingClientRect().top - t.getBoundingClientRect().top) + ' (want ' + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + ')' : 'not rendered'; }})()"),
     );
     assert_eq!(
         harness::probe(

@@ -137,12 +137,31 @@ sessionCopyMenu.addEventListener("click", async event => {
 });
 
 const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, {
-  afterRender: () => { applyFilters(); markSearch(); paintCodeBars(); updateStickyHeaders(); updateOutlineFocus(); },
-  afterScroll: () => { updateStickyHeaders(); updateOutlineFocus(); },
+  afterRender: () => { applyFilters(); markSearch(); paintCodeBars(); updateStickyHeaders(); updateOutlineFocus(); updateTurnBar(); },
+  afterScroll: () => { updateStickyHeaders(); updateOutlineFocus(); updateTurnBar(); },
   followChanged: paintJump
 });
 // Delegate from the stable scroll host: the virtual window may replace all of its children
 // while a pull reconciliation is in flight, but attachment/fold interactions must survive it.
+// #123: the turn bar. A strip at the top of the transcript naming the turn the reader is
+// inside — "Turn N — <label>" — and a click on it returns to that turn's card, the classic
+// page's `#stickybar` rule (export.js `spy`) in the app shell's own chrome. It names a turn
+// only once that turn's card has scrolled past the top: while its head is on screen the turn
+// names itself, and the bar would be saying it twice.
+const turnStickyBar = document.createElement("button");
+turnStickyBar.type = "button";
+turnStickyBar.className = "turn-stickybar";
+turnStickyBar.id = "turnStickyBar";
+const turnStickyCaret = document.createElement("span");
+turnStickyCaret.className = "turn-sticky-caret";
+turnStickyCaret.textContent = "❯";
+const turnStickyText = document.createElement("span");
+turnStickyText.className = "turn-sticky-text";
+turnStickyText.id = "turnStickyText";
+turnStickyBar.append(turnStickyCaret, turnStickyText);
+byId("transcript").prepend(turnStickyBar);
+let turnStickyAt = null;
+turnStickyBar.onclick = () => { if (turnStickyAt != null) viewport.jumpToRecord(turnStickyAt, "turn"); };
 bindComponentEvents(transcript, recordState, {
   rerender: () => { viewport.render(); viewport.scheduleRemember(); },
   readingStep: delta => setReading({ size: uiState.reading.size + delta * SIZE_STEP }),
@@ -1206,6 +1225,23 @@ function currentUserUnitIndex() {
 // the pane's OWN scroller (never the transcript's), only when the current row changes, so the
 // spy never fights the reader. The click direction — a row jumps the transcript to its turn —
 // lands that turn at the top, so the spy then names the row that was clicked.
+function updateTurnBar() {
+  const index = currentTurnIndex(recordState.units, unitAtTop());
+  const unit = index >= 0 ? userUnits()[index] : null;
+  // Off at the very top of the first turn — nothing has scrolled past, so the turn is on
+  // screen naming itself. Anywhere else it names the turn the reader is inside, including
+  // right after a jump: the classic page keeps its bar on there too, and that is how a
+  // reader sees where a click landed.
+  const on = !!unit && viewport.scroller.scrollTop > 8;
+  turnStickyBar.classList.toggle("on", on);
+  turnStickyBar.setAttribute("aria-hidden", String(!on));
+  turnStickyBar.tabIndex = on ? 0 : -1;
+  turnStickyAt = on ? unit.from : null;
+  if (!on) return;
+  turnStickyText.textContent = `Turn ${unit.turn} — ${unit.label || ""}`.trimEnd();
+  turnStickyBar.title = `Back to turn ${unit.turn}`;
+}
+
 function updateOutlineFocus() {
   const rows = byId("navigatorTurns").querySelectorAll(".outline-turn-row");
   if (!rows.length) { outlineCurrent = null; return; }

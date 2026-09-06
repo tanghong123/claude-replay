@@ -965,6 +965,39 @@ pub fn pane_focus_turn(tab: &headless_chrome::Tab, surface: Surface) -> i64 {
     eval(tab, js).as_i64().unwrap_or(-1)
 }
 
+/// The turn bar's reading (#123): `None` while it is off, else the turn it names and its whole
+/// text. Both surfaces mark a live bar with `on` and read `Turn N — <label>`; only the id
+/// differs — the classic page's `#stickybar` and the app shell's `#turnStickyBar`.
+pub fn sticky_turn(tab: &headless_chrome::Tab, surface: Surface) -> Option<(i64, String)> {
+    let bar = match surface {
+        Surface::Classic => "document.getElementById('stickybar')",
+        Surface::AppShell => "document.getElementById('turnStickyBar')",
+    };
+    let text = eval(tab, &format!("(function(){{ var b = {bar}; if (!b || !b.classList.contains('on')) return ''; return b.innerText.replace(/\\s+/g, ' ').trim(); }})()"));
+    let text = text.as_str().unwrap_or("").to_string();
+    if text.is_empty() {
+        return None;
+    }
+    let turn = text
+        .split("Turn ")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|digits| digits.parse::<i64>().ok())?;
+    Some((turn, text))
+}
+
+/// Click the turn bar — the way a reader returns to the turn it names.
+pub fn click_sticky_turn(tab: &headless_chrome::Tab, surface: Surface) {
+    let bar = match surface {
+        Surface::Classic => "document.getElementById('stickybar')",
+        Surface::AppShell => "document.getElementById('turnStickyBar')",
+    };
+    eval(
+        tab,
+        &format!("(function(){{ {bar}.click(); return 'ok'; }})()"),
+    );
+}
+
 /// Type a search query the way the page takes it (its own box), and return the hit count the
 /// page reports ("N hits" / "N matches").
 pub fn search(tab: &headless_chrome::Tab, surface: Surface, query: &str) -> i64 {

@@ -695,6 +695,102 @@ fn app_shell_steps_turns_from_the_top() {
     scenario_step_and_page(&page.tab, Surface::AppShell, &fx);
 }
 
+// ── scenario: the turn bar names the turn, and returns to it (#123) ─────────────────────────
+
+/// A strip under the top bar reads "Turn N — <label>" for the turn the reader is inside, and a
+/// click on it returns to that turn's card. At the very top it is off: the first turn is on
+/// screen naming itself.
+fn scenario_the_turn_bar_names_and_returns(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    scroll_by(tab, surface, -1_000_000);
+    settle();
+    assert!(
+        harness::sticky_turn(tab, surface).is_none(),
+        "at the very top the bar is off — the first turn names itself: {:?}",
+        harness::sticky_turn(tab, surface)
+    );
+    // Scroll in until the reader is inside turn 7.
+    let mut named = None;
+    for _ in 0..40 {
+        scroll_by(tab, surface, 320);
+        settle();
+        if let Some((turn, text)) = harness::sticky_turn(tab, surface) {
+            if turn >= 7 {
+                named = Some((turn, text));
+                break;
+            }
+        }
+    }
+    let (turn, text) = named.expect("the bar names a turn once the reader has scrolled in");
+    assert_eq!(
+        turn, 7,
+        "the bar names the turn the reader is inside: {text}"
+    );
+    assert!(
+        text.contains("Turn 7 — question 6"),
+        "…as 'Turn N — <the turn's own label>': {text}"
+    );
+    let top = turn_at_top(tab, surface);
+    assert!(
+        (top - turn).abs() <= 1,
+        "…the same turn the viewport is showing: bar {turn}, viewport {top}"
+    );
+    // Read on, then click the bar: it returns to the turn it names.
+    for _ in 0..3 {
+        scroll_by(tab, surface, 700);
+    }
+    settle();
+    let (later, later_text) =
+        harness::sticky_turn(tab, surface).expect("the bar still names the turn being read");
+    assert!(
+        later > turn,
+        "reading on moves the bar forward: {turn} -> {later} ({later_text})"
+    );
+    harness::click_sticky_turn(tab, surface);
+    settle();
+    settle();
+    let landed = turn_at_top(tab, surface);
+    assert!(
+        (landed - later).abs() <= 1,
+        "the click returns to the turn the bar named: {later}, landed on {landed}"
+    );
+    let base = match surface {
+        Surface::Classic => "0".to_string(),
+        Surface::AppShell => format!("{}.getBoundingClientRect().top", surface.scroller()),
+    };
+    let card = eval(
+        tab,
+        &format!("(function(){{ var c = document.querySelector('[data-turn=\"{later}\"]'); if (!c) return 9999; return Math.round(c.getBoundingClientRect().top - ({base})); }})()"),
+    )
+    .as_i64()
+    .unwrap_or(9999);
+    assert!(
+        (-8..=160).contains(&card),
+        "…with that turn's card at the top of the viewport, clear of the bar: {card}px"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_the_turn_bar_names_and_returns() {
+    let _serial = serial();
+    let fx = fixture("scenario-turnbar-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_the_turn_bar_names_and_returns(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_turn_bar_names_and_returns() {
+    let _serial = serial();
+    let fx = fixture("scenario-turnbar-app", 40);
+    let page = open(Surface::AppShell, &fx, 2907);
+    scenario_the_turn_bar_names_and_returns(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: the pane's focused turn follows the transcript (#52) ──────────────────────────
 
 /// Scrolled a few screens into the session, the pane names the turn at the top of the

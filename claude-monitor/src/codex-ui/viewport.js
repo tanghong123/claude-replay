@@ -204,12 +204,16 @@ export class Viewport extends VirtualWindow {
     revealNavigationContext(this.units, index, this.state, recordIndex, reveal);
     const range = this.rangeAround(index);
     this.reconcile(range.lo, range.hi, index, false, null);
+    // Where a jump LANDS the target: 18px under the scroller's top, unless something sticky
+    // sits there — the turn bar (#123) declares its own height as the scroller's
+    // `scroll-padding-top`, so a jumped-to record does not arrive behind it.
+    const landing = parseFloat(getComputedStyle(this.scroller).scrollPaddingTop) || 18;
     for (let pass = 0; pass < 3; pass++) {
       const target = this.window.querySelector(`[data-block-index="${recordIndex}"]`);
       if (!target) break;
       const top = target.getBoundingClientRect().top - this.scroller.getBoundingClientRect().top;
-      if (Math.abs(top - 18) <= 2) break;
-      this.scroller.scrollTop += top - 18;
+      if (Math.abs(top - landing) <= 2) break;
+      this.scroller.scrollTop += top - landing;
       this.updateWindow(index);
     }
     this.actions.followChanged?.();

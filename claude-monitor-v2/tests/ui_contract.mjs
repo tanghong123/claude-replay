@@ -601,7 +601,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(currentTurnIndex(units, null), -1, "nothing at the top yet");
   assert.equal(currentTurnIndex(units, "nope"), -1, "an unknown unit names no turn");
   assert.equal(currentTurnIndex([{ key: "p", type: "process" }], "p"), -1, "no user turn at or before");
-  assert.match(appSource, /afterScroll: \(\) => \{ updateStickyHeaders\(\); updateOutlineFocus\(\); \}/, "the spy runs on every scroll");
+  assert.match(appSource, /afterScroll: \(\) => \{ updateStickyHeaders\(\); updateOutlineFocus\(\);/, "the spy runs on every scroll");
   assert.match(appSource, /row\.classList\.toggle\("current", on\)/, "the current row carries the reference CSS's `current` class");
   assert.match(appSource, /row\.setAttribute\("aria-current", "true"\)/, "…and aria-current");
   assert.match(appSource, /return currentTurnIndex\(recordState\.units, unitAtTop\(\)\);/, "the keys step from the same rule");
@@ -1505,4 +1505,18 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /setSidebarWidth\(localStorage\.getItem\(SIDEBAR_WIDTH_KEY\) \|\| SIDEBAR_DEFAULT, false\);/, "…and restored on load");
   assert.match(appSource, /try \{ sidebarResizer\.setPointerCapture\(event\.pointerId\); \} catch \(_\) \{\}/, "a refused pointer capture does not end the drag");
   console.log("#96 sidebar head and resize cases passed");
+}
+
+// #123: the turn bar names the turn the reader is inside and returns to it, the classic page's
+// `#stickybar` rule in the app shell's chrome.
+{
+  assert.match(appSource, /const on = !!unit && viewport\.scroller\.scrollTop > 8;/, "off only at the very top, where the turn names itself");
+  assert.match(appSource, /turnStickyText\.textContent = `Turn \$\{unit\.turn\} — \$\{unit\.label \|\| ""\}`\.trimEnd\(\);/, "…and reads 'Turn N — label', the classic page's own words");
+  assert.match(appSource, /const index = currentTurnIndex\(recordState\.units, unitAtTop\(\)\);\s*\n\s*const unit = index >= 0 \? userUnits\(\)\[index\] : null;\s*\n\s*\/\/ Off at the very top/, "fed by the same current-turn rule the outline pane uses");
+  assert.match(appSource, /turnStickyBar\.onclick = \(\) => \{ if \(turnStickyAt != null\) viewport\.jumpToRecord\(turnStickyAt, "turn"\); \};/, "a click returns to that turn's record");
+  assert.match(appSource, /afterScroll: \(\) => \{ updateStickyHeaders\(\); updateOutlineFocus\(\); updateTurnBar\(\); \}/, "…and it is refreshed on every scroll");
+  assert.match(productionCss, /\.transcript\{scroll-padding-top:52px\}/, "the scroller declares the bar's height");
+  assert.match(viewportSource, /const landing = parseFloat\(getComputedStyle\(this\.scroller\)\.scrollPaddingTop\) \|\| 18;/, "…so a jump lands below the bar, not behind it");
+  assert.match(productionCss, /\.turn-stickybar\.on\{opacity:1;pointer-events:auto\}/, "the bar keeps its space when off, as the classic page's does");
+  console.log("#123 turn bar cases passed");
 }
