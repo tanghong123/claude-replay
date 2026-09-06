@@ -828,9 +828,7 @@ fn app_shell_corrects_a_growth_above_before_paint() {
 /// the page must not write `scrollTop` underneath them: the fling stutters or dies, the thumb
 /// jumps under the pointer. A correction owed during that window is paid at its end instead, so
 /// nothing is lost. The probe counts the writes the page makes to its own scroller.
-///
-/// The classic half is `known_red_134`: it writes twice in that window (measured), which is the
-/// same defect on the reference page — a classic bug of its own, per #71.
+
 fn scenario_the_readers_motion_is_never_fought(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -885,7 +883,7 @@ fn scenario_the_readers_motion_is_never_fought(
 
 #[test]
 #[ignore = "needs a local Chrome"]
-fn classic_page_never_fights_the_readers_motion_known_red_134() {
+fn classic_page_never_fights_the_readers_motion() {
     let _serial = serial();
     let fx = fixture_open_turn("scenario-fling-classic");
     let page = open(Surface::Classic, &fx, 0);

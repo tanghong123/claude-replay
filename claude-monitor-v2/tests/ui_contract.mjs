@@ -1431,7 +1431,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(cls, /return shared\.indexAt\(P\(\), records\.length, y, false\);/, "…and its search stays unclamped");
   assert.match(cls, /var pads = shared\.padHeights\(P\(\), loIdx, hiIdx, records\.length\);/);
   assert.match(cls, /var first = shared\.firstVisible\(items, 0, Infinity, 0, false\);/, "no epsilon above the fold on this page");
-  assert.match(cls, /window\.scrollBy\(0, shared\.correction\(e\.getBoundingClientRect\(\)\.top, a\.top, 1\)\);/);
+  assert.match(cls, /var delta = shared\.correction\(e\.getBoundingClientRect\(\)\.top, a\.top, 1\);/, "the classic page measures its correction with the shared rule…");
+  assert.match(cls, /if \(readerOwnsPosition\(\)\) \{ owedAnchor = a; scheduleSettle\(\); return; \}\s*\n\s*window\.scrollBy\(0, delta\);/, "…and owes it rather than writing under the reader's own motion (#134)");
   assert.match(cls, /var verdict = shared\.classifyScroll\(following, performance\.now\(\) - lastUserInput < USER_MS, gapToBottom\(\), PIN_SLACK, BOTTOM_SLACK, BOTTOM_SLACK\);/, "the classic page holds the pin through a nudge");
   console.log("#107 virtual window cases passed");
 }

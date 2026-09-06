@@ -1953,11 +1953,35 @@
     var first = shared.firstVisible(items, 0, Infinity, 0, false);
     return first ? { id: first.element.id, top: first.top } : null;
   }
+  // A correction the reader's own motion postponed (#134), and the timer that pays it.
+  var owedAnchor = null, settleTimer = 0;
+  // Is the position the READER's right now? For USER_MS after a wheel, a key, a touch or a
+  // pointer (a scrollbar drag is a pointerdown here) — which is a fling still travelling, or a
+  // thumb still held. Writing the offset under either fights whoever owns the motion: the fling
+  // stutters or dies, the thumb jumps under the pointer. The correction is not dropped, it is
+  // OWED — the app shell's rule since #132, and this page wrote through it twice per fling.
+  function readerOwnsPosition() {
+    return performance.now() - lastUserInput < USER_MS;
+  }
+  function scheduleSettle() {
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(function () {
+      if (!owedAnchor || following) { owedAnchor = null; return; }
+      if (readerOwnsPosition()) { scheduleSettle(); return; }
+      var a = owedAnchor;
+      owedAnchor = null;
+      restoreAnchor(a);
+      viewAnchor = captureAnchor();
+    }, USER_MS);
+  }
   function restoreAnchor(a) {
     if (!a) return;
     var e = document.getElementById(a.id);
     if (!e) return; // the anchor was inside the rewritten tail — nothing stable to hold
-    window.scrollBy(0, shared.correction(e.getBoundingClientRect().top, a.top, 1));
+    var delta = shared.correction(e.getBoundingClientRect().top, a.top, 1);
+    if (!delta) return;
+    if (readerOwnsPosition()) { owedAnchor = a; scheduleSettle(); return; }
+    window.scrollBy(0, delta);
   }
   // Shared apply epilogue: settle the viewport (pin or anchor), then refresh the
   // spy at the FINAL position — a rewrite that nets zero new records still rebuilt
