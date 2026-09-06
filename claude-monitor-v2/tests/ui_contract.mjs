@@ -1540,3 +1540,18 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(productionCss, /@media\(prefers-reduced-motion:reduce\)\{\.fleet-dot\.on\{animation:none\}\}/, "…unless motion is reduced");
   console.log("#119 fleet roster cases passed");
 }
+
+// #132: the anchor IS the position. A spontaneous height change is measured inside the observer
+// delivery, before the frame paints; the write-back is absolute, from the sums; a unit's height
+// is the distance to the next unit's top, so the sums are exact.
+{
+  const src = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  assert.match(src, /this\.observer = new ResizeObserver\(\(\) => this\.measureNow\(\)\);/, "the observer measures NOW, inside its delivery — no task in between");
+  assert.doesNotMatch(src, /scheduleMeasure|pendingMeasure/, "…and the deferral is gone");
+  assert.match(src, /this\.contentObserver\.observe\(mount\.window\);/, "the content observer watches the mounted window, not the pads it would loop on");
+  assert.match(src, /const contentTop = this\.topPad\.getBoundingClientRect\(\)\.top - this\.frame\.viewportTop\(\) \+ this\.frame\.scrollTop\(\);\s*\n\s*return contentTop \+ \(this\.prefix\[index\] \|\| 0\);/, "an item's document top is the pads' edge plus the sums before it");
+  assert.match(src, /const want = itemTop \+ within - sat;\s*\n\s*if \(correction\(this\.frame\.scrollTop\(\), want, 1\)\) this\.frame\.scrollTo\(want\);/, "the write-back is absolute — scrollTo a position derived from the anchor, not scrollBy an accumulating difference");
+  assert.match(src, /\/\/ Not mounted: nothing to hold it by\./, "…and an anchor the window has left behind stays put — the sums there are estimates");
+  assert.doesNotMatch(src, /this\.frame\.scrollBy\(/, "…and nothing in the engine nudges the offset by an increment any more");
+  console.log("#132 anchor-is-the-position cases passed");
+}

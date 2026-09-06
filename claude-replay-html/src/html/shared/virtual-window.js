@@ -149,7 +149,6 @@ class VirtualWindow {
     this.lo = 0;
     this.hi = 0;
     this.pendingScroll = false;
-    this.pendingMeasure = false;
     // Sentinel far in the past: performance.now() is small right after load, so a 0 init would
     // read the load sequence's own scrolls (and the browser's async scroll restoration) as the
     // reader moving, and unpin a fresh page (#89).
@@ -159,7 +158,12 @@ class VirtualWindow {
     this.bottomTimer = 0;
     this.rememberTimer = 0;
 
-    this.observer = new ResizeObserver(() => this.scheduleMeasure());
+    // A height that changes on its own — a row growing, a font arriving, an estimate replaced —
+    // is measured INSIDE the observer delivery (#132): after layout and before the frame paints,
+    // so the pads move and the reader's position is written back in the same frame and nobody
+    // sees the growth. Deferring this by a task painted the shifted content once first — a
+    // one-frame jolt the classic page never had, because it restores inside its observer too.
+    this.observer = new ResizeObserver(() => this.measureNow());
     // Displacement is a HEIGHT signal, not a scroll signal (#89): a late reflow — fonts
     // arriving, an estimate replaced by a real height, chrome around the window — grows the
     // content below the viewport WITHOUT firing a scroll event, and a pinned view is silently
@@ -170,7 +174,11 @@ class VirtualWindow {
     this.contentObserver = new ResizeObserver(() => {
       if (this.following && this.count && this.gapToBottom() > 1) this.convergeBottom();
     });
-    this.contentObserver.observe(mount.content);
+    // The MOUNTED window, not the content that also holds the pads: measuring writes the pads,
+    // and a pad write inside a delivery would re-fire an observer that watched them — the loop
+    // the browser cuts short with "undelivered notifications", deferring the very correction
+    // this delivery exists to make.
+    this.contentObserver.observe(mount.window);
     const noteIntent = event => {
       if (event.type === "keydown" && event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
       if (event.type === "pointermove" && !event.buttons) return;
@@ -233,17 +241,39 @@ class VirtualWindow {
     return anchor;
   }
 
+  /** Put the reader back: the anchor IS the position (#132) — an item, a row inside it, and
+   *  where on screen that row sat — and the scroll offset is DERIVED from it and WRITTEN, not
+   *  nudged. `scrollTo(where it goes)` rather than `scrollBy(how far it has drifted)`: an
+   *  increment carries whatever the last one missed and needs the anchor already laid out under
+   *  the offset it is correcting, so a path that skips it leaves the error behind. Where the
+   *  item goes is read from its own rect — the same quantity the sums stand for, known exactly
+   *  where it is mounted, and not summed through heights a rewrite has just turned back into
+   *  estimates. */
   restoreDomAnchor(anchor) {
     if (!anchor) return;
     const item = [...this.mount.children].find(child => child.dataset.unitKey === anchor.key);
+    // Not mounted: nothing to hold it by. Placing it from the sums was tried and reverted —
+    // the paths that lose the anchor are the ones that just cleared the heights (a width
+    // change), so the sums there are estimates and the "restore" lands the reader somewhere
+    // else entirely. Staying put is right.
     if (!item) return;
-    let target = item, want = anchor.top;
+    let within = 0, sat = anchor.top;
     if (anchor.block != null) {
       const row = item.querySelector(`[data-block-index="${anchor.block}"]`);
-      if (row && row.getBoundingClientRect().height > 0) { target = row; want = anchor.blockTop; }
+      if (row && row.getBoundingClientRect().height > 0) {
+        // The row's place inside its item is relative geometry — the pads do not move it.
+        within = row.getBoundingClientRect().top - item.getBoundingClientRect().top;
+        sat = anchor.blockTop;
+      }
     }
-    const delta = correction(target.getBoundingClientRect().top - this.frame.viewportTop(), want, 1);
-    if (delta) this.frame.scrollBy(delta);
+    // Where the item IS, in the scroller's coordinate. Measured, not summed: the sums are the
+    // model's, and above a mounted item they are exact only when every height in between has
+    // been measured — during a tail rewrite they are estimates again, and a position summed
+    // through them lands on a different record (measured: twenty records off). The rect is the
+    // same quantity the sums stand for, read where it is known exactly.
+    const itemTop = item.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop();
+    const want = itemTop + within - sat;
+    if (correction(this.frame.scrollTop(), want, 1)) this.frame.scrollTo(want);
   }
 
   /** The anchor a SPONTANEOUS change is measured against (#98). A change the engine makes
@@ -276,17 +306,17 @@ class VirtualWindow {
   }
 
   /** An item's height is its border box plus margins — a margin the reader cannot see still
-   *  takes the space that decides where everything below it sits. */
-  outerHeight(element) {
-    const style = getComputedStyle(element);
-    return element.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
-  }
-
+   *  takes the space that decides where everything below it sits. (Measuring top-to-next-top
+   *  instead, the way the classic page does, was tried for #132 and reverted: it attributes the
+   *  gap between two items to the upper one, so which item owns a margin changes as the window
+   *  slides, and a width reflow moved the reader off the unit they were reading. The sums do
+   *  not have to be exact for the restore — that reads the item's own rect.) */
   measureMounted(anchor = this.readerAnchor()) {
     let changed = false;
-    for (const element of this.mount.children) {
-      const index = Number(element.dataset.unitIndex);
-      const height = this.outerHeight(element);
+    for (const child of this.mount.children) {
+      const index = Number(child.dataset.unitIndex);
+      const style = getComputedStyle(child);
+      const height = child.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
       if (index >= 0 && index < this.count && heightChanged(this.heightOf(index), height, 1, 0.5)) {
         this.setHeight(index, height);
         changed = true;
@@ -300,14 +330,19 @@ class VirtualWindow {
     return true;
   }
 
-  scheduleMeasure() {
-    if (this.pendingMeasure) return;
-    this.pendingMeasure = true;
-    setTimeout(() => {
-      this.pendingMeasure = false;
-      const changed = this.measureMounted();
-      if (changed && this.following) this.convergeBottom();
-    }, 0);
+  /** The observer's own measure: synchronous, so it lands before the frame paints. */
+  measureNow() {
+    const changed = this.measureMounted();
+    if (changed && this.following) this.convergeBottom();
+  }
+
+  /** Where item `index` starts, in the scroller's own coordinate, from the MODEL: the content's
+   *  top edge plus the sums before it. Exact for a mounted item only when the heights between
+   *  are measured, so the restore prefers the item's own rect and this serves the case that has
+   *  no rect — an anchor that is not mounted at all. */
+  documentTopOf(index) {
+    const contentTop = this.topPad.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop();
+    return contentTop + (this.prefix[index] || 0);
   }
 
   updatePads() {

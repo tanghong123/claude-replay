@@ -727,6 +727,101 @@ fn app_shell_steps_turns_from_the_top() {
     scenario_step_and_page(&page.tab, Surface::AppShell, &fx);
 }
 
+// ── scenario: a growth above the reader is corrected BEFORE the frame paints (#132) ─────────
+
+/// A mounted row above the viewport grows on its own — an image decoding, a late reflow, a
+/// height learned — and the reader must see NOTHING. The pixel-hold scenarios sample every
+/// 250ms and cannot tell a one-frame jolt from a clean hold, so this one reads the anchor's
+/// position at the one moment that decides it: inside the ResizeObserver delivery for the
+/// grown element, AFTER the page's own observer has run (observers are invoked in creation
+/// order, and the page's is older) and BEFORE the frame paints. A page that measures and
+/// restores inside its observer reads the anchor back in place there; a page that defers the
+/// repair past the frame reads it displaced by the growth — and that displaced frame is what
+/// the reader saw. The classic page restores inside its body observer (`restoreAnchor`); the
+/// app shell deferred with `setTimeout(0)` until #132.
+fn scenario_growth_above_is_corrected_before_paint(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    for _ in 0..3 {
+        scroll_by(tab, surface, -700);
+    }
+    settle();
+    settle();
+    let (held_key, _) = harness::view_anchor(tab, surface);
+    assert!(
+        !held_key.is_empty() && !at_tail(tab, surface),
+        "the reader scrolled up (looking at {held_key})"
+    );
+    // Arm: the first visible element is the anchor; the last mounted element ENTIRELY above the
+    // viewport is what will grow. A second observer on it reads the anchor's offset in the same
+    // delivery as the page's own.
+    let (items, top) = match surface {
+        Surface::Classic => ("document.querySelectorAll('#stream [data-idx]')", "0"),
+        Surface::AppShell => (
+            "document.querySelector('.virtual-window').children",
+            "document.querySelector('.transcript').getBoundingClientRect().top",
+        ),
+    };
+    let armed = probe(
+        tab,
+        &format!("(function(){{ var top = {top}; var els = [...{items}]; var anchor = null, above = null; for (var e of els) {{ var r = e.getBoundingClientRect(); if (r.bottom < top - 10) above = e; else if (!anchor && r.bottom > top) anchor = e; }} if (!anchor || !above) return {{ ok: false, els: els.length }}; var base = anchor.getBoundingClientRect().top - top; window.__jolt = {{ base: base, atObserver: null, deliveries: [] }}; new ResizeObserver(function () {{ var offset = anchor.getBoundingClientRect().top - ({top}); var grown = !!above.querySelector('[data-jolt-spacer]'); window.__jolt.deliveries.push({{ offset: offset, grown: grown }}); if (grown && window.__jolt.atObserver == null) window.__jolt.atObserver = offset; }}).observe(above); window.__joltAbove = above; window.__joltAnchor = anchor; return {{ ok: true, base: base, aboveBottom: above.getBoundingClientRect().top + above.getBoundingClientRect().height - top }}; }})()"),
+    );
+    assert_eq!(
+        armed["ok"], true,
+        "a mounted element above the viewport and an anchor to hold: {armed}"
+    );
+    let base = armed["base"].as_f64().unwrap();
+    // Grow it, synchronously, by more than any tolerance: a 300px block appended inside it.
+    eval(tab, "(function(){ var s = document.createElement('div'); s.style.height = '300px'; s.setAttribute('data-jolt-spacer', ''); window.__joltAbove.appendChild(s); return 'ok'; })()");
+    until(
+        tab,
+        "window.__jolt && window.__jolt.atObserver != null",
+        "the observer delivery for the grown element",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__jolt)",
+    );
+    let at_observer = eval(tab, "window.__jolt.atObserver").as_f64().unwrap();
+    // …and afterwards the hold is complete, as the coarse scenarios already require.
+    settle();
+    let after = eval(
+        tab,
+        &format!("window.__joltAnchor.getBoundingClientRect().top - ({top})"),
+    )
+    .as_f64()
+    .unwrap();
+    assert!(
+        (after - base).abs() <= 1.0,
+        "after the growth settled the anchor is back where it was: {base:.1} -> {after:.1}"
+    );
+    let deliveries = eval(tab, "JSON.stringify(window.__jolt.deliveries)");
+    assert!(
+        (at_observer - base).abs() <= 1.0,
+        "inside the observer delivery — before the frame painted — the anchor was already back in place: {base:.1} -> {at_observer:.1} (a displaced value here is the frame the reader saw); deliveries {deliveries}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_corrects_a_growth_above_before_paint() {
+    let _serial = serial();
+    let fx = fixture("scenario-jolt-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_growth_above_is_corrected_before_paint(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_corrects_a_growth_above_before_paint() {
+    let _serial = serial();
+    let fx = fixture("scenario-jolt-app", 40);
+    let page = open(Surface::AppShell, &fx, 2909);
+    scenario_growth_above_is_corrected_before_paint(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: a workflow call carries its fleet in flow (#119) ──────────────────────────────
 
 /// The call that launched a run shows its members under it — a dot per member, pulsing for the
