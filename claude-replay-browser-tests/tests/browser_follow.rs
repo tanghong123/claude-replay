@@ -4010,7 +4010,18 @@ fn the_app_shell_open_counts_nothing_as_new() {
         std::time::Duration::from_secs(30),
         "document.body.innerText.slice(0, 120)",
     );
-    std::thread::sleep(std::time::Duration::from_millis(3000));
+    // Wait for the restore rather than guessing at it: the remembered unit has to stream in
+    // before it can be landed on, and how long that takes is the machine's business (a fixed
+    // 3s sleep failed once on CI and never locally). The assertion is the same; only the
+    // deadline replaces the guess.
+    let at_top = "(function(){ var s = document.querySelector('.transcript'); var top = s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { var r = c.getBoundingClientRect(); if (r.bottom > top + 1) return c.dataset.unitKey || ''; } return ''; })()";
+    harness::until(
+        &tab,
+        &format!("{at_top} === {:?}", anchor.0),
+        "the reload to restore the remembered position",
+        std::time::Duration::from_secs(20),
+        at_top,
+    );
     let restored = harness::view_anchor(&tab, harness::Surface::AppShell);
     assert_eq!(
         restored.0, anchor.0,
