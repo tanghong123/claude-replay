@@ -511,53 +511,130 @@ function directAgents(source = recordState.meta) {
   for (const run of meta.runs || []) for (const member of run.members || []) if (!ids.has(member.id)) { ids.add(member.id); result.push(member); }
   return result;
 }
-// The outline column scrolls as a whole (#74); the "Outline" caption sticks at its top and every
-// pane sits in a stack under it: a pane's SLOT is the caption plus the heads above it. Each card
-// is `position:sticky` at its own slot (#88) — an opaque card with a z-index rising down the
-// column — so a card the scroll has carried up pins there with its body still under its own
-// head, and the cards after it scroll OVER that body rather than under it. (The transform this
-// replaced moved the head alone, leaving the body in flow: between two heads the reader saw the
-// top of a body sitting ABOVE the head it belongs to.) The slots are measured here because only
-// the page knows how tall a head is; folded panes count, their heads are in the stack too.
+// The outline column is a stack of DRAWERS (#139, design/outline-drawers.md). A drawer's body has
+// a HEIGHT, not a display, so it can sit anywhere between open and shut; the column's scroll
+// offset is a BUDGET spent on the drawers in order, so the top one — the one with the least
+// friction — closes first, and the budget is given back from the bottom, so the column retraces
+// exactly on the way up. Openness is a pure function of the offset. The rigid 8px between cards
+// never enters the budget, so it is the same at every openness.
+//
+// Two mechanisms, each doing what it is good at. The SLIDE box above the stack is as tall as the
+// budget already spent: the scroller lifts the stack by `s`, the slide pushes it back down by
+// `s`, and the two cancel, so the heads stay where they are. It also keeps the column's
+// scrollHeight constant — caption + spent + Σ(H+G) + ΣB·p, with spent = ΣB − ΣB·p — so the
+// scrollbar does not shrink under the reader's thumb, and once every drawer is shut the slide
+// stops growing and the stack scrolls normally, which is a window too short for the heads.
+//
+// #88's sticky SLOTS stay, to absorb the lag: the column scrolls on the compositor and this
+// handler runs on the main thread, so for a frame or two of a fling the scroller has moved and
+// the slide has not caught up. A card sticky at its own slot cannot rise above it, so that lag is
+// clamped instead of seen. The slot counts the GAP as well as the head now, so a fully compacted
+// card rests exactly on its slot and the clamp catches at the first pixel rather than after eight.
+const drawers = { natural: new Map(), open: new Map(), dir: new Map() };
+const drawerSlide = document.createElement("div");
+drawerSlide.className = "outline-slide";
+drawerSlide.setAttribute("aria-hidden", "true");
+const drawerCards = () => [...byId("sessionNavigator").querySelectorAll(":scope > .outline-card")];
+/** The slots (#88, kept) and B(i), each drawer's body at its NATURAL height. Only a render or a
+ *  resize can change either; a scroll never does, so this is not on the scroll path. */
 function stackOutlineHeads() {
   const nav = byId("sessionNavigator");
   const caption = nav.querySelector(":scope > .outline-caption");
+  if (drawerSlide.parentNode !== nav) nav.insertBefore(drawerSlide, nav.querySelector(":scope > .outline-card"));
   let slot = caption ? caption.getBoundingClientRect().height : 0;
   let depth = 0;
-  const cards = [...nav.querySelectorAll(":scope > .outline-card")];
-  for (const card of cards) {
+  for (const card of drawerCards()) {
     const head = card.querySelector(":scope > .outline-card-head");
+    const body = card.querySelector(":scope > .outline-card-body");
     if (!head) continue;
     card.style.setProperty("--slot", `${Math.round(slot)}px`);
     card.style.zIndex = String(++depth);
-    slot += head.getBoundingClientRect().height;
+    // B(i) is read off the LIST, never off the body: the body is the box we clip, so measuring it
+    // would mean setting it back to `auto` for a frame — which cannot be animated from, and which
+    // reports the stale height rather than the content when a list has SHRUNK. The list is never
+    // height-constrained by us, so its own box is the natural height, exactly.
+    const list = body && body.querySelector(":scope > .navigator-list");
+    if (body) drawers.natural.set(card.dataset.navCard, list ? list.offsetHeight : body.scrollHeight);
+    // The gap belongs to the slot: a compacted card rests on `slot`, so sticky catches at once.
+    slot += head.getBoundingClientRect().height + (parseFloat(getComputedStyle(card).marginBottom) || 0);
   }
   // A sticky box may not leave its containing block, so the LAST cards need floor under them or
   // they come unpinned as the column bottoms out. The room the stack needs is the stack itself.
   nav.style.setProperty("--stack", `${Math.round(slot)}px`);
+  applyDrawers();
 }
-/** Put a card's head at its own slot (#88): what "expanded" should look like — the body directly
- *  below the head, nothing of it above. Called when a pane opens, since a card that opens while
- *  the column is scrolled would otherwise unfold wherever it happened to be. */
-function landOutlineCard(card) {
-  if (!card) return;
+/** Spend the scroll offset on the drawers, top first — the budget loop of the design note. */
+function applyDrawers() {
   const nav = byId("sessionNavigator");
-  const settle = pass => {
-    stackOutlineHeads();
-    // A sticky slot is measured from the scrollport's PADDING box, so the card's own position
-    // has to be read from the same origin — off by the column's padding otherwise, which is
-    // exactly how far short the head lands (measured: 20px, the column's padding-top).
-    const origin = nav.getBoundingClientRect().top + (parseFloat(getComputedStyle(nav).paddingTop) || 0);
-    const slot = parseFloat(getComputedStyle(card).getPropertyValue("--slot")) || 0;
-    const want = nav.scrollTop + (card.getBoundingClientRect().top - origin) - slot;
-    if (Math.abs(want - nav.scrollTop) > 1) nav.scrollTop = want;
-    // The pane opened this frame: its body's height, and so the room the column has to scroll,
-    // is only true once it has been laid out. Correct on the next frame rather than guessing.
-    if (pass < 2) requestAnimationFrame(() => settle(pass + 1));
-  };
-  settle(0);
+  let budget = Math.max(0, nav.scrollTop);
+  let spent = 0;
+  for (const card of drawerCards()) {
+    const key = card.dataset.navCard;
+    const body = card.querySelector(":scope > .outline-card-body");
+    if (!body) continue;
+    // A drawer the reader shut with its own toggle has no body to close, and takes no budget.
+    const natural = card.classList.contains("open") ? drawers.natural.get(key) || 0 : 0;
+    const closed = Math.min(budget, natural);
+    budget -= closed;
+    spent += closed;
+    const openness = natural ? 1 - closed / natural : 0;
+    const was = drawers.open.get(key);
+    if (was != null && Math.abs(openness - was) > 0.002) drawers.dir.set(key, openness < was ? "closing" : "opening");
+    drawers.open.set(key, openness);
+    body.style.height = `${Math.round(natural * openness)}px`;
+    card.classList.toggle("shut", openness === 0);
+  }
+  drawerSlide.style.height = `${Math.round(spent)}px`;
 }
-byId("sessionNavigator").addEventListener("scroll", stackOutlineHeads, { passive: true });
+/** Σ B(j) over the drawers ABOVE `key`: the offset at which this one is open and those still are
+ *  not — the budget that leaves it alone. */
+function drawerPrefix(key) {
+  let sum = 0;
+  for (const card of drawerCards()) {
+    if (card.dataset.navCard === key) break;
+    if (card.classList.contains("open")) sum += drawers.natural.get(card.dataset.navCard) || 0;
+  }
+  return sum;
+}
+const slideDrawersTo = top => byId("sessionNavigator").scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+/** A toggle's height change is animated; a slide's is not — that one tracks the wheel 1:1. */
+let drawerAnimation = 0;
+function animateDrawers() {
+  const nav = byId("sessionNavigator");
+  nav.classList.add("drawers-animating");
+  clearTimeout(drawerAnimation);
+  drawerAnimation = setTimeout(() => nav.classList.remove("drawers-animating"), 260);
+}
+/** The toggle: the only explicit open/close, and the only thing that acts on ONE drawer. On the
+ *  frontier — the single drawer that is ever part-way — it completes the movement that was under
+ *  way, or, with none behind it, the static half-way rule. At either endpoint it is the control
+ *  it has always been: shutting Session never shuts Turns. */
+function toggleDrawer(key) {
+  const nav = byId("sessionNavigator");
+  const card = nav.querySelector(`[data-nav-card="${CSS.escape(key)}"]`);
+  if (!card) return;
+  const wasOpen = card.classList.contains("open");
+  const openness = wasOpen ? drawers.open.get(key) ?? 1 : 0;
+  if (!wasOpen) {
+    // Shut by its own toggle: open it, and hold the budget back so it cannot be spent here again.
+    uiState.navCards.add(key);
+    persist();
+    animateDrawers();
+    renderNavigator();
+    slideDrawersTo(Math.min(nav.scrollTop, drawerPrefix(key)));
+  } else if (openness === 0) {
+    slideDrawersTo(drawerPrefix(key)); // shut by the slide: give its budget back
+  } else if (openness === 1) {
+    uiState.navCards.delete(key); // fully open: shut this drawer, and only this one
+    persist();
+    animateDrawers();
+    renderNavigator();
+  } else {
+    const closing = drawers.dir.has(key) ? drawers.dir.get(key) === "closing" : openness >= 0.5;
+    slideDrawersTo(closing ? drawerPrefix(key) + (drawers.natural.get(key) || 0) : drawerPrefix(key));
+  }
+}
+byId("sessionNavigator").addEventListener("scroll", applyDrawers, { passive: true });
 window.addEventListener("resize", stackOutlineHeads);
 function renderNavigator() {
   const turns = recordState.units.filter(unit => unit.type === "user");
@@ -652,22 +729,15 @@ byId("sessionNavigator").onclick = event => {
   const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); viewport.jumpToRecord(Number(task.dataset.taskRecord), "task"); return; }
   const agent = event.target.closest("[data-agent-record]"); if (agent) { viewport.jumpToRecord(Number(agent.dataset.agentRecord), "agent"); return; }
   const child = event.target.closest("[data-child-outline]"); if (child) { parentHints.set(child.dataset.childOutline, indexState.selected); selectSession(child.dataset.childOutline, true); return; }
-  // A card's head folds and unfolds ITS pane (#74) — the whole head, and nothing else changes:
-  // the other panes keep their state and their height.
+  // A card's head opens and shuts ITS drawer (#74, #139) — the whole head, and nothing else
+  // changes: the other drawers keep their openness. On the one drawer that is part-way, the
+  // toggle completes the movement the slide was making instead (design/outline-drawers.md).
   const card = event.target.closest("[data-nav-card-toggle]");
   if (card) {
-    const key = card.dataset.navCardToggle;
-    const opening = !uiState.navCards.has(key);
-    opening ? uiState.navCards.add(key) : uiState.navCards.delete(key);
-    persist();
-    renderNavigator();
-    // A pane that OPENS lands its head at its own slot, so the body it just revealed is directly
-    // below it (#88) — a card opened while the column is scrolled would otherwise unfold
-    // wherever it happened to be sitting.
-    if (opening) landOutlineCard(byId("sessionNavigator").querySelector(`[data-nav-card="${CSS.escape(key)}"]`));
+    toggleDrawer(card.dataset.navCardToggle);
     return;
   }
-  const rail = event.target.closest("[data-nav-card-open]"); if (rail) { uiState.navCards.add(rail.dataset.navCardOpen); uiState.navigatorOpen = true; persist(); renderNavigator(); }
+  const rail = event.target.closest("[data-nav-card-open]"); if (rail) { uiState.navCards.add(rail.dataset.navCardOpen); uiState.navigatorOpen = true; persist(); renderNavigator(); slideDrawersTo(drawerPrefix(rail.dataset.navCardOpen)); }
 };
 
 // A record's lowercase text with its scope ownership (#101), cached per record object — the
@@ -1261,6 +1331,7 @@ function centerTasks() {
   const target = taskCenterTarget(taskOrder(tasks));
   if (!target) return false;
   if (!uiState.navCards.has("tasks")) { uiState.navCards.add("tasks"); persist(); renderNavigator(); }
+  slideDrawersTo(drawerPrefix("tasks")); // #139: give the tasks drawer the room to be looked at
   if (uiState.navigatorHidden) setNavigatorHidden(false);
   if (!uiState.navigatorOpen) toggleNavigator(true);
   const row = document.querySelectorAll("#navigatorWork .work-task")[target.index];
@@ -1350,6 +1421,12 @@ function updateOutlineFocus() {
   if (target) revealInPane(target);
 }
 function revealInPane(row) {
+  // #139: only while the drawer is fully open. A part-way drawer shows the TOP of its list and
+  // clips the rest, so scrolling the list inside it would move rows the reader cannot see — and
+  // opening the drawer to make room would fight the reader who just shut it, on every scroll of
+  // the transcript.
+  const card = row.closest(".outline-card");
+  if (card && (drawers.open.get(card.dataset.navCard) ?? 1) < 1) return;
   let pane = row.parentElement;
   while (pane && pane !== document.body) {
     const overflow = getComputedStyle(pane).overflowY;

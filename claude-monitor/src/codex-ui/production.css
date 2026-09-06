@@ -195,6 +195,25 @@
    a box does, so the column grows one — `--stack`, the height of the stack it makes room for. */
 .session-navigator:after{content:"";display:block;flex:0 0 auto;height:var(--stack,0px)}
 .session-navigator>.outline-card{position:sticky;top:var(--slot,0px);margin:0 0 8px;background:var(--outline-surface,var(--bg))}
+/* #139: the column is a stack of DRAWERS (design/outline-drawers.md). A body has a HEIGHT rather
+   than a display, so a drawer can sit anywhere between open and shut; app.js spends the scroll
+   offset on them top-first and writes those heights. The 8px between cards never enters that
+   budget, so the gaps are the same at every openness — "invisible but rigid". The SLIDE box above
+   the stack is as tall as the budget spent: the scroller lifts the stack by `s`, the slide pushes
+   it back down by `s`, the heads stay put, and the column's scrollHeight stays constant so the
+   scrollbar does not shrink under the thumb. The sticky slots above stay to clamp the frame or
+   two by which a compositor scroll leads the main thread. `overflow-anchor` has to be off, or the
+   browser would "helpfully" undo the slide's growth. A drawer that reaches nought takes its head's
+   full radius back, since there is no body under it to square off against. */
+.session-navigator{overflow-anchor:none}
+.outline-slide{flex:0 0 auto;width:1px;pointer-events:none}
+.session-navigator .outline-card>.outline-card-body{display:block;overflow:hidden;padding:0}
+/* A border box can never be shorter than its own padding, so a body with `padding:4px 3px 5px`
+   floors at 9px and a shut drawer still shows a sliver. The padding moves inside, onto the list,
+   where the height the engine writes can take it all the way to nought. */
+.session-navigator .outline-card>.outline-card-body>.navigator-list{padding:4px 3px 5px}
+.session-navigator .outline-card.shut>.outline-card-head{border-radius:10px}
+.session-navigator.drawers-animating .outline-card>.outline-card-body{transition:height .2s ease}
 .session-navigator>.outline-caption{z-index:60}
 /* #96: the sidebar head carries the brand and five controls, and at the sidebar's own width
    they did not fit — `.side-head{overflow:hidden}` swallowed the last three, among them the

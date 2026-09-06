@@ -314,3 +314,32 @@ on its slot and the clamp catches at the first pixel rather than after eight of 
 
 A body's height is the only thing that can visibly lag, and a size change a frame late reads as
 the drawer closing — which is what it is — where a position change a frame late reads as a jump.
+
+## Built, and what the build measured (2026-09-06)
+
+On a 60-turn session, the outline column at four scroll offsets — the numbers the browser case
+asserts:
+
+```
+   scroll     Turns   Tasks   Agents    gaps     top head
+   ────────────────────────────────────────────────────────
+   0           238      97       97     8/8/8      119
+   200          38      97       97     8/8/8      119
+   298           0      37       97     8/8/8      119
+   back to 0   238      97       97     8/8/8      119
+```
+
+Every rule the document asks for is in that table. The top drawer takes the whole push and nothing
+below it moves until it is empty (rule 2); a 200px push closes exactly 200px (rule 7); the gaps do
+not change (rule 3); the top head does not move (rule 4); the column's scroll EXTENT does not
+change either, so the scrollbar keeps its size under the thumb; and scrolling back to 0 returns
+every drawer to exactly where it was, because openness is a pure function of the offset.
+
+**One thing the build had to fix that the model did not predict.** A border box can never be
+shorter than its own padding, so a body with `padding: 4px 3px 5px` floored at 9px and a shut
+drawer still showed a sliver of itself. The padding moved inside, onto the list, where the height
+the engine writes can take it all the way to nought.
+
+**And one thing to look at and decide.** A closing drawer clips its list mid-row — the row at the
+cut is sliced through. That is what a drawer sliding shut does to what is inside it, so it is left
+as it is; if it should instead fade at the cut edge, that is a couple of lines.

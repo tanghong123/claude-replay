@@ -3658,27 +3658,32 @@ fn the_app_shell_outline_is_an_accordion() {
         Some(0),
         "no pane shows its body above its own head: {above}"
     );
-    // Expanding from a scrolled column: fold the Session pane, scroll away, open it again — its
-    // head lands at its own slot and its body is directly below, not wherever the card happened
-    // to be sitting.
+    // Expanding from a scrolled column: shut the Session drawer, slide the chain away, open it
+    // again. #88 landed the head at its slot by scrolling the column; #139 has no landing to do —
+    // a drawer opens where it already is — but the rule it was there for still holds, and is the
+    // one asserted: the opened drawer's body is directly below its own head, and it is really
+    // OPEN, at its natural height, not immediately eaten again by a budget the slide had already
+    // spent. (That is what `slideDrawersTo(min(s, prefix))` is for.)
     harness::eval(&tab, "document.querySelector('[data-nav-card=\"session\"] [data-nav-card-toggle]').click(); 'ok'");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::thread::sleep(std::time::Duration::from_millis(400));
     harness::eval(
         &tab,
-        "document.querySelector('.session-navigator').scrollTop = 0; 'ok'",
+        "document.querySelector('.session-navigator').scrollTop = 600; 'ok'",
     );
     std::thread::sleep(std::time::Duration::from_millis(300));
     harness::eval(&tab, "document.querySelector('[data-nav-card=\"session\"] [data-nav-card-toggle]').click(); 'ok'");
-    std::thread::sleep(std::time::Duration::from_millis(700));
-    let landed = harness::probe(&tab, "(function(){ var nav = document.querySelector('.session-navigator'); var card = document.querySelector('[data-nav-card=\"session\"]'); var head = card.querySelector(':scope > .outline-card-head'); var body = card.querySelector(':scope > .outline-card-body'); var origin = nav.getBoundingClientRect().top + (parseFloat(getComputedStyle(nav).paddingTop) || 0); var slot = parseFloat(getComputedStyle(card).getPropertyValue('--slot')) || 0; return { open: card.classList.contains('open'), atSlot: Math.round(head.getBoundingClientRect().top - origin - slot), bodyBelow: Math.round(body.getBoundingClientRect().top - head.getBoundingClientRect().bottom) }; })()");
-    assert_eq!(landed["open"], true, "the pane opened: {landed}");
+    std::thread::sleep(std::time::Duration::from_millis(900));
+    let landed = harness::probe(&tab, "(function(){ var card = document.querySelector('[data-nav-card=\"session\"]'); var head = card.querySelector(':scope > .outline-card-head'); var body = card.querySelector(':scope > .outline-card-body'); var was = body.style.height; body.style.height = 'auto'; var natural = body.offsetHeight; body.style.height = was; return { open: card.classList.contains('open'), height: Math.round(body.getBoundingClientRect().height), natural: natural, bodyBelow: Math.round(body.getBoundingClientRect().top - head.getBoundingClientRect().bottom) }; })()");
+    assert_eq!(landed["open"], true, "the drawer opened: {landed}");
     assert!(
-        landed["atSlot"].as_f64().unwrap_or(999.0).abs() <= 2.0,
-        "an opened pane's head lands at its own slot: {landed}"
+        (landed["height"].as_f64().unwrap_or(0.0) - landed["natural"].as_f64().unwrap_or(-1.0))
+            .abs()
+            <= 2.0,
+        "…all the way, not into a budget that shuts it again: {landed}"
     );
     assert!(
         landed["bodyBelow"].as_f64().unwrap_or(999.0).abs() <= 2.0,
-        "…with its body directly below the head: {landed}"
+        "…with its body directly below its own head: {landed}"
     );
     drop(monitor);
 }
@@ -4468,6 +4473,243 @@ fn the_app_shell_lists_the_published_artifacts() {
         ),
         false,
         "the pane stays open after a jump"
+    );
+    drop(monitor);
+}
+
+/// #139: the outline column is a stack of DRAWERS (design/outline-drawers.md). Scrolling it spends
+/// a BUDGET on them in order — the top drawer closes first, because it is the one with the least
+/// friction — the heads do not move while that happens, the gaps between cards are the same at
+/// every openness, the column's scroll extent does not change under the reader's thumb, and
+/// scrolling back up retraces exactly, because openness is a pure function of the offset.
+/// (App-shell only: the classic page has no outline column, so there is no second surface here.)
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_outline_panes_are_drawers() {
+    let _serial = serial();
+    let base = base("appshell-drawers");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000139".to_string();
+    stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2914, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: Some(0),
+        top: Some(0),
+        width: Some(1400.0),
+        height: Some(620.0),
+    })
+    .unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length >= 40",
+        "the turns to list",
+        std::time::Duration::from_secs(30),
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+    );
+    // Every drawer open, so the whole chain is there to be pushed.
+    harness::eval(&tab, "['turns', 'tasks', 'agents', 'session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (!c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); }); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let state = r#"(function(){ var nav = document.querySelector('.session-navigator'); var cards = [...nav.querySelectorAll(':scope > .outline-card')]; var rect = function (e) { return e.getBoundingClientRect(); }; return { scroll: Math.round(nav.scrollTop), extent: Math.round(nav.scrollHeight - nav.clientHeight), keys: cards.map(function (c) { return c.dataset.navCard; }), bodies: cards.map(function (c) { return Math.round(rect(c.querySelector(':scope > .outline-card-body')).height); }), heads: cards.map(function (c) { return Math.round(rect(c.querySelector(':scope > .outline-card-head')).top); }), gaps: cards.slice(1).map(function (c, i) { return Math.round(rect(c).top - rect(cards[i]).bottom); }) }; })()"#;
+    let open = harness::probe(&tab, state);
+    let bodies = |v: &serde_json::Value| -> Vec<f64> {
+        v["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_f64().unwrap())
+            .collect()
+    };
+    let at_rest = bodies(&open);
+    assert!(
+        at_rest.iter().all(|b| *b > 0.0),
+        "every drawer starts open: {open}"
+    );
+    assert!(
+        open["extent"].as_f64().unwrap_or(0.0) > 200.0,
+        "with every drawer open the column has room to close them: {open}"
+    );
+    // Push the chain a little: the TOP drawer takes all of it, and only it.
+    harness::eval(
+        &tab,
+        "document.querySelector('.session-navigator').scrollTop = 200; 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let pushed = harness::probe(&tab, state);
+    let now = bodies(&pushed);
+    assert!(
+        (at_rest[0] - now[0] - 200.0).abs() <= 2.0,
+        "the top drawer takes the whole push: {open} -> {pushed}"
+    );
+    assert_eq!(
+        &now[1..],
+        &at_rest[1..],
+        "…and no other drawer has begun to close: {pushed}"
+    );
+    assert_eq!(
+        pushed["heads"][0], open["heads"][0],
+        "the top drawer's head does not move: {open} -> {pushed}"
+    );
+    assert_eq!(
+        pushed["gaps"], open["gaps"],
+        "the gaps between drawers are rigid — the same at every openness: {open} -> {pushed}"
+    );
+    assert_eq!(
+        pushed["extent"], open["extent"],
+        "the column's scroll extent does not change under the reader's thumb: {open} -> {pushed}"
+    );
+    // Push past the top drawer's whole body: it is shut, and the SECOND one starts.
+    harness::eval(
+        &tab,
+        &format!(
+            "document.querySelector('.session-navigator').scrollTop = {}; 'ok'",
+            at_rest[0] as i64 + 60
+        ),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let deep = harness::probe(&tab, state);
+    let now = bodies(&deep);
+    assert_eq!(now[0], 0.0, "the top drawer is shut: {deep}");
+    assert!(
+        now[1] < at_rest[1] && now[1] > 0.0,
+        "…and only then does the second begin to close: {deep}"
+    );
+    assert_eq!(
+        deep["heads"][0], open["heads"][0],
+        "the top head is still fixed: {deep}"
+    );
+    assert_eq!(
+        deep["gaps"], open["gaps"],
+        "the gaps are still rigid: {deep}"
+    );
+    // And back: openness is a pure function of the offset, so the column retraces exactly.
+    harness::eval(
+        &tab,
+        "document.querySelector('.session-navigator').scrollTop = 0; 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let back = harness::probe(&tab, state);
+    assert_eq!(
+        bodies(&back),
+        at_rest,
+        "scrolling back opens them again, bottom-first, to exactly where they were: {back}"
+    );
+    drop(monitor);
+}
+
+/// #139 rule 5: the toggle is the only EXPLICIT open/close, and the only thing that acts on one
+/// drawer. On the frontier — the single drawer that is ever part-way — it completes the movement
+/// the slide was making; at either endpoint it opens or shuts that drawer alone, so shutting
+/// Session never shuts Turns.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_outline_toggle_completes_the_slide() {
+    let _serial = serial();
+    let base = base("appshell-drawer-toggle");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000140".to_string();
+    stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2915, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: Some(0),
+        top: Some(0),
+        width: Some(1400.0),
+        height: Some(620.0),
+    })
+    .unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length >= 40",
+        "the turns to list",
+        std::time::Duration::from_secs(30),
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+    );
+    harness::eval(&tab, "['turns', 'tasks', 'agents', 'session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (!c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); }); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let heights = r#"(function(){ var cards = [...document.querySelectorAll('.session-navigator > .outline-card')]; return cards.map(function (c) { return c.dataset.navCard + ':' + Math.round(c.querySelector(':scope > .outline-card-body').getBoundingClientRect().height); }); })()"#;
+    let rest = harness::probe(&tab, heights);
+    let read = |v: &serde_json::Value, key: &str| -> f64 {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .find_map(|r| {
+                let s = r.as_str().unwrap();
+                s.strip_prefix(&format!("{key}:"))
+                    .map(|n| n.parse::<f64>().unwrap())
+            })
+            .unwrap()
+    };
+    let turns_natural = read(&rest, "turns");
+    // 1. At rest, the toggle shuts THAT drawer and no other.
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-nav-card-toggle=\"session\"]').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let one = harness::probe(&tab, heights);
+    assert_eq!(read(&one, "session"), 0.0, "the session drawer shut: {one}");
+    assert_eq!(
+        read(&one, "turns"),
+        turns_natural,
+        "…and the turns drawer, at the other end of the chain, did not move: {one}"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-nav-card-toggle=\"session\"]').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    // 2. Slide the chain so the TOP drawer is part-way — the frontier — with closing behind it,
+    //    then click its toggle: it finishes closing, and nothing below it moves.
+    harness::eval(
+        &tab,
+        &format!(
+            "document.querySelector('.session-navigator').scrollTop = {}; 'ok'",
+            (turns_natural * 0.4) as i64
+        ),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let partway = harness::probe(&tab, heights);
+    let mid = read(&partway, "turns");
+    assert!(
+        mid > 0.0 && mid < turns_natural,
+        "the top drawer is part-way: {partway}"
+    );
+    let tasks_before = read(&partway, "tasks");
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-nav-card-toggle=\"turns\"]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "Math.round(document.querySelector('[data-nav-card=\"turns\"] > .outline-card-body').getBoundingClientRect().height) === 0",
+        "the toggle to finish the close the slide had started",
+        std::time::Duration::from_secs(5),
+        "Math.round(document.querySelector('[data-nav-card=\"turns\"] > .outline-card-body').getBoundingClientRect().height)",
+    );
+    let finished = harness::probe(&tab, heights);
+    assert_eq!(
+        read(&finished, "tasks"),
+        tasks_before,
+        "…and the drawer below it did not begin to close: {finished}"
+    );
+    // 3. Clicking it again gives its budget back: the drawer it shut is the one that re-opens.
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-nav-card-toggle=\"turns\"]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        &format!("Math.abs(document.querySelector('[data-nav-card=\"turns\"] > .outline-card-body').getBoundingClientRect().height - {turns_natural}) <= 2"),
+        "the toggle to open the drawer the slide had shut",
+        std::time::Duration::from_secs(5),
+        "Math.round(document.querySelector('[data-nav-card=\"turns\"] > .outline-card-body').getBoundingClientRect().height)",
     );
     drop(monitor);
 }
