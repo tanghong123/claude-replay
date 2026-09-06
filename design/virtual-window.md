@@ -333,6 +333,25 @@ it produces the same answer no matter how the window got there. Every #98-class 
 lives in a gap between the repairs; there is no equivalent gap in a recomputation, because there is
 nothing to skip — the write-back IS the position.
 
+The net effect the model is aiming at is that the reader sees NOTHING: the pad grows by Δ, the
+content under them would jump by Δ, and the write-back takes it straight back — zero movement,
+provided both land before the same paint. Three mechanics decide whether that holds. (1) The
+mutation and the write must be one synchronous block; a `getBoundingClientRect()` read between
+them forces a layout but not a paint, so read-then-write in the same task never flashes — the
+flash appears only when the write lands in a LATER frame. (2) `ResizeObserver` callbacks are
+delivered at the end of the layout step, before paint, so a height learned by measurement can
+update the pad and rewrite the offset in the same frame — which is what makes learning a height
+above the reader invisible rather than a jolt. (3) The one case that can still be seen is a
+programmatic write during an active inertial scroll: the compositor is animating, and writing the
+offset mid-fling can stutter or kill it — so the write-back should be suppressed while a fling or
+a thumb drag is in flight and reconciled at its end, which is the model's own "reset" step
+arriving for a second reason.
+
+That invariant is already how this repo states acceptance: `scenario_unpinned_holds_to_the_pixel`
+and `scenario_unpinned_inside_an_open_turn_holds_to_the_pixel` assert exactly "the reader did not
+move", to the pixel, on both surfaces, through live growth. Any implementation of this model either
+holds those or does not; no new criteria have to be invented for it.
+
 Two details make it practical here. The pages already own anchoring completely — `overflow-anchor:
 none` on the app shell's `.transcript` and on the classic page's `html`/`body` (#50/#66/#89) — so
 nothing else writes the scroll offset and there is no second mechanism to fight. And the write-back
