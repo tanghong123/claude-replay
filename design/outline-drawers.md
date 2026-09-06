@@ -19,11 +19,30 @@ model, draw the arithmetic, name what it costs, ask the questions that change th
 Four rules, and they are all one idea: **the column is a stack of drawers, and scrolling it is a
 gesture that closes them.**
 
+### The chain, and the friction (owner's elaboration)
+
+> "These drawers are chained (invisibly). And when the whole chain is sliding, it is as if
+> someone is pulling or pushing the drawers from the very bottom. The 'friction' of these drawers
+> grow from the top drawer to the bottom drawer. So when push, the top drawer starts collapsing.
+> The top drawer's head is fixed."
+
+This is the *why* under rule 2, and it is worth keeping because it settles cases the rule alone
+does not:
+
+- The drawers are **linked**, and the force is applied **at the bottom** — the reader's scroll
+  pushes the whole chain.
+- **Friction increases downward**, so the top drawer offers the least resistance and yields
+  first. "Top drawer closes first" is not a policy; it is what the least-resistance drawer does.
+- **The top drawer's head is fixed** — it never moves, whatever the chain does.
+
+The physical picture and the arithmetic below agree exactly on the way DOWN. They differ on the
+way back up, which is question A at the end.
+
 | # | Rule | What it replaces |
 |---|---|---|
 | 1 | Openness is **continuous** — a drawer can sit anywhere between open and shut | a boolean per pane (`uiState.navCards`) |
 | 2 | **Scrolling closes** drawers smoothly, **top one first**, then the second, then the third | scrolling moves a viewport over fixed-height cards |
-| 3 | The **toggle snaps to the nearer end** — >50% showing closes, <50% opens | the toggle flips the boolean |
+| 3 | The **toggle completes the last movement** — was it closing, close it; was it opening, open it | the toggle flips the boolean |
 | 4 | The **gaps between drawers are rigid** — the same at every openness | gaps are margins between cards, which is already true and must stay true |
 
 ---
@@ -90,19 +109,34 @@ Two consequences fall straight out, and they are the rules:
 - **The gaps are outside the arithmetic.** `G` never appears in the budget, so it is constant at
   every openness — "invisible but rigid".
 
-Total column height is then `Σ(H + G) + Σ B(i)·p(i)`, and the maximum scroll is `Σ B(i)` — the
-point where every drawer is shut and only the head stack remains.
+Total column height is then `Σ(H + G) + Σ B(i)·p(i)`.
 
-**The toggle.** For a drawer at openness `p`:
+**How far it can be pushed** — *"we don't need to fully close the bottom drawer when its bottom
+is visible"*. So the chain stops when there is nothing left to gain:
 
 ```
-  p > 0.5  →  close it   (animate p → 0)      "finish shutting what the sliding started"
-  p ≤ 0.5  →  open it    (animate p → 1)
+  s_max = max(0, Σ(H + G) + Σ B(i) − columnHeight)
 ```
 
-So the toggle is never a flip — it is a snap to the nearer end. A fully open drawer (`p = 1`)
-closes and a fully shut one (`p = 0`) opens, which is the behaviour that exists today; the new
-part is only what happens in between.
+which is the ordinary scroll extent — content height minus the viewport. Drawers close only as
+far as it takes to bring the rest into view, and the bottom one keeps whatever openness the
+remaining room allows. On the way up, `s = 0` is everything open: *"for scroll up, no"*, there is
+nothing beyond it.
+
+**The toggle** — *"if we know whether the drawer was opening or closing in the last movement,
+then the toggle just completes the action if the drawer is partially open"*:
+
+```
+  p = 1                        →  close it        (a fully open drawer shuts, as today)
+  p = 0                        →  open it         (a shut one opens, as today)
+  0 < p < 1, last was closing  →  close it        finish the movement
+  0 < p < 1, last was opening  →  open it         finish the movement
+```
+
+So each drawer remembers the **direction** of its last movement, and the toggle finishes it
+rather than reversing it. The endpoints behave exactly as the control does today; only the middle
+is new. (Where a drawer is partly open with no movement behind it — the first paint — there is no
+direction to complete; see question C.)
 
 ---
 
@@ -134,23 +168,67 @@ three change meaning when the column's height is a function of the scroll offset
 
 ---
 
-## Questions that change what gets built
+## Answered (owner, 2026-09-06)
 
-1. **Does a shut drawer's head stay in the stack**, so all four heads are always visible and
-   clickable? (I assume yes — otherwise a shut drawer is unreachable.)
-2. **Wheel over an open body: scroll the body, or close the drawer?** And if the body scrolls
-   first, does the drawer start closing the moment the list hits its end (continuous), or does
-   that take a second gesture?
-3. **When every drawer is shut, is there anything left to scroll?** (If not, the column ends as a
-   bare head stack; if yes, what is below it?)
-4. **Is partial openness remembered across a reload**, or does it snap to the nearer end on load?
-5. **Does the drawer animate on the toggle** (a duration, an easing), and should the sliding
-   itself feel 1:1 with the wheel or damped?
-6. **What happens on a short window** where `Σ(H + G)` alone exceeds the column's height — the
-   head stack itself does not fit? (Today the caption plus four heads is ~200px, so this bites
-   under about 260px of column height.)
+| Question | Answer |
+|---|---|
+| Does a shut drawer's head stay in the stack? | **Yes** — all four heads are always there. |
+| Wheel over an open body: scroll the body, or close the drawer? | **Close the drawer.** |
+| Anything left to scroll when everything is shut? | **No** on the way up; and the bottom drawer need not fully close while its bottom is visible (the `s_max` clamp above). |
+| Is partial openness remembered across a reload? | **No need.** |
+| Does the drawer animate on the toggle? | **Yes** — *"the drawer toggle is the only way to explicitly open/close one drawer."* |
+| A window too short for the head stack itself? | **The outline column's own scrollbar takes it**, as it does today. |
 
----
+Two of the original questions dissolve with those answers: nothing partial is stored, so there is
+nothing to restore on load; and the short-window case is the existing scroll behaviour.
+
+**One consequence to flag, from "the wheel closes the drawer".** The Turns list has its own
+scrollbar today (`max-height: min(48vh, 560px)`) and a long session gives it forty-plus rows. If
+the wheel over that list always closes the drawer, the wheel can no longer scroll the list — its
+scrollbar (or a drag, or keyboard) becomes the only way through it. That may be exactly right:
+the drawer closing IS how a reader moves down the outline. But it is worth saying out loud before
+it is built, because it changes how a long Turns list is read. → **question B.**
+
+## Still open
+
+**A. On the way back up, which drawer opens first?**
+
+The two readings agree while only one drawer is part-way. They differ once a drawer is fully shut
+and the next has started:
+
+```
+   state:  Turns shut,  Tasks half open,  Agents open
+           p = (0, 0.5, 1)
+
+   scroll up a little…
+
+   (i)  ARITHMETIC — undo the last thing        (ii)  FRICTION — least resistance first
+        p = (0, 0.75, 1)                              p = (0.25, 0.5, 1)
+        Tasks keeps opening; Turns stays shut         Turns re-opens first, though Tasks
+        until Tasks is fully open again               was what just closed
+```
+
+(i) is what the budget loop gives, and it makes openness a pure function of the scroll offset —
+scroll down and back up and you retrace exactly. (ii) is the literal reading of "friction grows
+downward", since the top drawer has the least resistance in both directions, and it means the
+column does not retrace (the same offset can mean two different states).
+
+I would build (i): "undo the last thing" is what a reader expects from scrolling back, and a
+position that means one state is far easier to keep honest. **Confirm?**
+
+**B. The long Turns list** — see the consequence above. Is the wheel closing the drawer the rule
+even when the pointer is over a forty-row list, with its scrollbar as the way through it?
+
+**C. A drawer that is part-way with no history** — the first paint after a reload, where nothing
+is remembered. Every drawer starts fully open or fully shut, so this only arises if a drawer can
+be left part-way by something other than a movement. If so, what does its toggle do?
+
+**D. "1:1 or damped"** — an unfamiliar term in the original list, so: *1:1* means the drawer
+closes by exactly the pixels you scrolled — move the wheel 40px, 40px of drawer closes, and it
+stops the instant you stop. *Damped* means it lags slightly behind and eases to rest, the way a
+heavy thing does. I would build 1:1, because it is what a native scroll feels like and the
+animation is then reserved for the toggle alone (which is what "the toggle is the only way to
+explicitly open/close one drawer" implies). **Confirm?**
 
 ## Where this sits in the record
 
