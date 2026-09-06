@@ -508,7 +508,7 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 
 .uturn {
   position: relative; background: var(--card); border: 1px solid var(--border);
-  border-radius: 10px; margin: 16px 0 10px;
+  border-radius: 10px; margin: 0 0 10px;
 }
 .uturn:not(.fold) { padding: 12px 16px; display: flex; gap: 10px; align-items: flex-start; }
 .uturn.fold { overflow: hidden; }
@@ -525,7 +525,7 @@ body.selecting #toolmenu, body.selecting #agentmenu {
    it reads as a faint annotation rather than a full turn. */
 .qmarker {
   display: flex; gap: 8px; align-items: baseline;
-  margin: 10px 0 2px; padding: 2px 16px; color: var(--faint);
+  margin: 0 0 2px; padding: 2px 16px; color: var(--faint);
 }
 .qcaret { flex: none; font: 12px var(--mono); color: var(--faint); white-space: nowrap; }
 .qmd { min-width: 0; font-size: 13px; }
@@ -533,7 +533,7 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 /* A surfaced attachment — an understated card; the name is the actionable link. */
 .amark {
   display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
-  margin: 10px 0 2px; padding: 4px 16px; font-size: 13px;
+  margin: 0 0 2px; padding: 4px 16px; font-size: 13px;
 }
 .acaret { flex: none; color: var(--tool); }
 .akind { flex: none; color: var(--tool); font: 12px var(--mono); }
@@ -618,8 +618,39 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 
 /* ── folds ───────────────────────────────────────────────────────────── */
 
-.fold { border-radius: 8px; margin: 2px 0; }
-.fold[data-open="1"]:not(.uturn) { background: var(--openbg); border: 1px solid var(--border); margin: 8px 0; }
+/* #128 step 1: ONE measure, good on both pages. The shared engine takes a record's size to be
+   its border box plus its margins, and a prefix sum of those to be where the next record starts.
+   `top(i) = Σ_{j<i} size(j)` is true only when no margin COLLAPSES and no block carries a margin
+   on its TOP — otherwise it is wrong by exactly `margin-top(i)`. So `#stream` is a flex column
+   (flex items never collapse margins) and every block's spacing sits BELOW it. The classic page
+   used to need its own measure, top-to-next-top, precisely to absorb the collapsing; that basis
+   was tried in the engine for #132 and reverted, because charging the gap to the upper record
+   moves the reader when the window slides.
+
+   Where the air belongs to what FOLLOWS — a user turn opens a new exchange with 16px above it,
+   a queued prompt or a surfaced attachment with 10 — the predecessor carries it via `:has`.
+   Those selectors key on KIND, never on fold state: a record's size must depend on its own
+   state alone, or opening a fold would resize the record ABOVE it — a change no per-element
+   observer can see (a margin is not a border box), and a top that slides under the reader on
+   the very click that asked for more. The visible cost is that an open fold no longer claims
+   8px above itself, only below.
+
+   `.vpad` is excluded on purpose: a pad's height IS the prefix sum of the records it stands
+   for, so a margin on a pad would leave the mounted window that far off the boundary the sum
+   names. `margin-top: 0` is stated for every child, not just today's five kinds, because the
+   engine's arithmetic — not a designer's intent — is what a stray top margin would break. */
+/* The 16px above the first block used to arrive by accident: the leading turn's top margin
+   COLLAPSED out of `#stream` and pushed the whole stream down. With no collapsing left it has
+   to be asked for, and it belongs to the container — a block's own top margin is exactly what
+   the sums cannot survive. `getBoundingClientRect().top` is read AFTER margins resolve, so the
+   engine's origin is untouched. */
+#stream { display: flex; flex-direction: column; margin-top: 16px; }
+#stream > * { flex: 0 0 auto; margin-top: 0; }
+#stream > .blk:has(+ .uturn:not(.fold)) { margin-bottom: 16px; }
+#stream > .blk:has(+ .amark), #stream > .blk:has(+ .qmarker) { margin-bottom: 10px; }
+#stream > .ablock:has(+ .fold) { margin-bottom: 2px; }
+.fold { border-radius: 8px; margin: 0 0 2px; }
+.fold[data-open="1"]:not(.uturn) { background: var(--openbg); border: 1px solid var(--border); margin: 0 0 8px; }
 /* §8.1 One shared 20px line box, top-aligned so a wrapping target keeps the
    chevron / dot / name / chips / # on line 1. Every child is pinned to that box
    (the `font:` shorthand resets line-height, so targets/chips restate it). */

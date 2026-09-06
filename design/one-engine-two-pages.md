@@ -379,3 +379,49 @@ report rather than a silent difference.
 
 **3. What happens to #128?** — it stays open as the port, no longer blocked on a decision. The
 spacing change becomes its first step.
+
+---
+
+## Step 1, done (2026-09-06)
+
+The spacing change landed as stated — with one correction to the plan and one finding it turned
+up on the page that was supposed to be already right.
+
+**The correction.** "Margins → padding" was the sketch; padding puts the space INSIDE a card's
+border and background, which changes what a user turn and an open fold look like. What the
+arithmetic actually needs is narrower than that:
+
+```
+  engine:  size(i) = borderBox(i) + marginTop(i) + marginBottom(i)
+           top(i)  = Σ_{j<i} size(j)                    ← where the pads put the next record
+  layout:  top(i)  = Σ_{j<i} (marginTop + borderBox + marginBottom)(j) + marginTop(i)
+                                                        ← plus collapsing, which takes the max
+                                                          of each adjacent pair instead of the sum
+```
+
+The two agree exactly when **no record carries a margin on its top** and **no two margins
+collapse** — nothing about padding. So `#stream` became a flex column (flex items never collapse)
+and every block's spacing moved to its bottom, with the air that belongs to what FOLLOWS handed
+to the predecessor by `:has`. Those selectors key on the next block's KIND, never on its fold
+state: a record's size has to depend on its own state alone, or opening a fold resizes the record
+ABOVE it — a change no per-element observer can see, and a top that moves under the reader on the
+click that asked for more.
+
+**Measured, on a real 400-turn transcript scrolled into its middle:** 26 of 27 mounted pairs
+disagreed with their own measure before; 0 of 27 after, with folds shut and again with folds
+opened under the reader. Every rendered gap is unchanged except one — an open fold no longer
+claims 8px above itself, only below (`ablock → open fold` goes 8 → 2). The 16px above the first
+block used to arrive by accident, as the leading turn's top margin collapsing OUT of `#stream`;
+it is now asked for on the container, where it cannot corrupt a sum.
+
+**The finding.** The rule was written as a scenario and run against BOTH pages, and the app shell
+failed it: `.process-surface` opens with `margin: 8px 0 4px`, so every process unit made the
+virtual window's sums 8px short of where the layout actually put the next unit — and the pads
+standing in for unmounted records were short by 8 for each process they covered. The same fix
+(a flex column, the 8px handed to the record above) went into `production.css`, since
+`reference.css` is generated and never hand-edited. Whether this was the residual "the page jumps
+a small offset when I stop scrolling" is a hypothesis, not a claim: it was not reproduced from
+this cause, only measured.
+
+That is the whole argument for the two-surface discipline in one paragraph — the page we thought
+was the correct one had the same bug, and only a scenario written once and run twice found it.
