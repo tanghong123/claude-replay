@@ -232,3 +232,85 @@ one place:
   it: those two rules are still true of drawers.
 - `#74` — the head stack, and each pane keeping its own height and its own scrollbar.
 - This task — the drawer model above, which replaces #88's *mechanism* while keeping its rules.
+
+---
+
+## The toggle on a drawer that is not the frontier (added at build time, 2026-09-06)
+
+Building the arithmetic turned up the one case the rules above do not decide, and it needs a
+sentence from you. It comes out of a property worth naming first, because it makes everything
+else simpler:
+
+**Only one drawer is ever part-way.** The budget is spent in order, so every drawer above the one
+currently absorbing it is fully shut and every drawer below is fully open. Call that one the
+**frontier**. Rule 5 — "the toggle completes the last movement" — is a rule about the frontier,
+because it is the only drawer that has a movement to complete.
+
+```
+   s = 640                      p        state
+   ┌──────────────┐
+   │ ▸ Turns   40 │  shut       0        above the frontier — the budget passed through it
+   │ ▾ Tasks    3 │  part-way   0.45  ←  THE FRONTIER: the only drawer with a direction
+   │ ▾ Agents   2 │  open       1        below — the budget never reached it
+   │ ▾ Session    │  open       1
+   └──────────────┘
+```
+
+So a click lands on one of four things, and only the first two are rule 5:
+
+| Where the click lands | What it does | What else moves |
+|---|---|---|
+| the frontier, last movement was closing | finish shutting it: `s += B(i)·p(i)` | nothing — the budget stops exactly at its end |
+| the frontier, last movement was opening | give its budget back: `s = Σ_{j<i} B(j)` | nothing — the drawers above still consume exactly that much |
+| a fully OPEN drawer below the frontier | shut that drawer alone, as the control does today | nothing |
+| a fully SHUT drawer above the frontier | open that drawer alone, and clamp `s` so the budget cannot immediately re-spend it | nothing |
+
+**Why the last two are not "move `s` until that drawer is open/shut".** Under a pure `s`, shutting
+Session would mean spending the whole budget — which shuts Turns, Tasks and Agents on the way. The
+owner's own words are that "the drawer toggle is the only way to explicitly open/close **one**
+drawer", so a drawer at an endpoint keeps the boolean it has today, and the slide only ever acts
+on the frontier. Two mechanisms, but for two different gestures: **the slide is a chain, the
+toggle is a drawer.**
+
+**What this does to rule 8.** "Every drawer opens fully on first paint" was the answer to *can a
+drawer be part-way with no movement behind it* — and the answer stands with the boolean kept:
+a drawer restored shut is at an ENDPOINT, where the toggle is unambiguous ("open it"), never
+part-way. So the build persists the per-drawer boolean exactly as today (a reader who shut Agents
+last week still finds it shut) and resets the slide `s` to 0, which is the part that could be
+partial. If you would rather every drawer came back open, that is one line — say so.
+
+**One consequence to accept.** `revealInPane` scrolls the current turn's row into view inside the
+Turns list as the transcript scrolls. When Turns is part-way shut, the list's viewport is mostly
+clipped, so revealing inside it would either do nothing visible or have to re-open the drawer on
+every transcript scroll — which would fight the reader who just shut it. **The build reveals only
+while Turns is fully open**, and leaves a shut drawer shut.
+
+## How it is built, and why that shape
+
+Two mechanisms, each doing the job it is good at.
+
+**The slide box carries the steady state.** A box above the stack, as tall as the budget already
+spent, is what keeps the heads where they are: the scroller lifts the stack by `s`, the slide
+pushes it back down by `s`, and the two cancel. It also holds the column's `scrollHeight`
+constant — `caption + spent + Σ(H + G) + Σ B·p` with `spent = ΣB − ΣB·p` — so the scrollbar does
+not shrink under the reader's thumb as the drawers close, and `s_max` is the ordinary extent the
+model asks for. When every drawer is shut the slide stops growing and the stack scrolls normally,
+which is rule 9 for free.
+
+**#88's sticky slots stay, to absorb the lag.** The column scrolls on the compositor and the
+handler that grows the slide runs on the main thread, so for a frame or two of a fling the
+scroller has moved and the slide has not caught up. A card that is `position: sticky` at its own
+slot cannot rise above it, so that lag is clamped instead of seen. The slot now counts the gap as
+well as the head — `slot(i) = caption + Σ_{j<i}(H + G)` — so a fully compacted card rests exactly
+on its slot and the clamp catches at the first pixel rather than after eight of them.
+
+```
+   what each mechanism owns
+
+   slide box   ──  where the stack sits in steady state   (main thread, exact)
+   sticky slot ──  where a head may never go above        (compositor, catches the lag)
+   body height ──  how open each drawer is                (main thread, one frame behind on a fling)
+```
+
+A body's height is the only thing that can visibly lag, and a size change a frame late reads as
+the drawer closing — which is what it is — where a position change a frame late reads as a jump.
