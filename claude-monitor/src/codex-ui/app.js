@@ -558,9 +558,6 @@ function stackOutlineHeads() {
     // The gap belongs to the slot: a compacted card rests on `slot`, so sticky catches at once.
     slot += head.getBoundingClientRect().height + (parseFloat(getComputedStyle(card).marginBottom) || 0);
   }
-  // A sticky box may not leave its containing block, so the LAST cards need floor under them or
-  // they come unpinned as the column bottoms out. The room the stack needs is the stack itself.
-  nav.style.setProperty("--stack", `${Math.round(slot)}px`);
   applyDrawers();
 }
 /** Spend the scroll offset on the drawers, top first — the budget loop of the design note. */

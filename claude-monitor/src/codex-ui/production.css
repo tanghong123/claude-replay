@@ -192,8 +192,14 @@
    the last cards need FLOOR under them or they never reach their slot — a sticky box may not
    leave its containing block, and that block is the column's CONTENT box, which ends at the last
    card. Padding does not extend it (measured: the Session head stopped 20px short of its slot);
-   a box does, so the column grows one — `--stack`, the height of the stack it makes room for. */
-.session-navigator:after{content:"";display:block;flex:0 0 auto;height:var(--stack,0px)}
+   a box did, so the column grew one. #139 REMOVED it: under drawers a card never rises above its
+   slot in steady state — the slide holds the stack — so the floor's only remaining job was to
+   catch a lag frame on the last card, and it cost `caption + Σ(H+G)` of extra scroll extent. That
+   is the "I scroll and nothing happens" zone past the point where every drawer is shut (measured:
+   140px of it), and it also pushed s_max past the model's `Σ(H+G) + ΣB − column`, which is what
+   lets the BOTTOM drawer stay part-way open while its bottom is visible. The card that lost its
+   clamp is the last one, and the last one only reaches its slot when the budget is fully spent —
+   which, whenever there is anything to close, is exactly when it cannot be. */
 .session-navigator>.outline-card{position:sticky;top:var(--slot,0px);margin:0 0 8px;background:var(--outline-surface,var(--bg))}
 /* #139: the column is a stack of DRAWERS (design/outline-drawers.md). A body has a HEIGHT rather
    than a display, so a drawer can sit anywhere between open and shut; app.js spends the scroll

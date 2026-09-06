@@ -4597,6 +4597,26 @@ fn the_app_shell_outline_panes_are_drawers() {
         at_rest,
         "scrolling back opens them again, bottom-first, to exactly where they were: {back}"
     );
+    // And the chain stops when there is nothing left to gain: at the very end of the column,
+    // either a drawer is still part-way (the budget could not be fully spent — the model's clamp,
+    // the bottom drawer need not shut while its bottom is visible) or the shut stack itself
+    // overflows and there is stack left to scroll. Anything else is scroll over which NOTHING
+    // moves, which is what #88's floor box used to add (measured: 140px of it).
+    harness::eval(
+        &tab,
+        "var n = document.querySelector('.session-navigator'); n.scrollTop = n.scrollHeight; 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let bottom = harness::probe(
+        &tab,
+        r#"(function(){ var nav = document.querySelector('.session-navigator'); var cards = [...nav.querySelectorAll(':scope > .outline-card')]; var stack = 0; cards.forEach(function (c) { stack += c.querySelector(':scope > .outline-card-head').getBoundingClientRect().height + (parseFloat(getComputedStyle(c).marginBottom) || 0); }); var cs = getComputedStyle(nav); var cap = nav.querySelector(':scope > .outline-caption'); return { openBodies: cards.filter(function (c) { return c.querySelector(':scope > .outline-card-body').getBoundingClientRect().height > 1; }).length, shutStack: Math.round(stack + cap.getBoundingClientRect().height + (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0)), clientH: nav.clientHeight }; })()"#,
+    );
+    assert!(
+        bottom["openBodies"].as_i64().unwrap_or(0) > 0
+            || bottom["shutStack"].as_f64().unwrap_or(0.0)
+                > bottom["clientH"].as_f64().unwrap_or(0.0),
+        "at the end of the column there is no scroll left over which nothing moves: {bottom}"
+    );
     drop(monitor);
 }
 

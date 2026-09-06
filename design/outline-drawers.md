@@ -340,6 +340,20 @@ shorter than its own padding, so a body with `padding: 4px 3px 5px` floored at 9
 drawer still showed a sliver of itself. The padding moved inside, onto the list, where the height
 the engine writes can take it all the way to nought.
 
+**And one thing the model DID predict, which the first build got wrong.** `s_max` is supposed to be
+the ordinary scroll extent — "the chain stops when there is nothing left to gain" — and #88's floor
+box (`::after`, as tall as the caption plus the head stack) sat under the cards adding its own
+height to that extent. Measured on the fixture: at the very bottom of the column every drawer was
+shut and the budget fully spent, with **140px of scroll left over which nothing moved at all**. It
+also pushed `s_max` past `Σ(H + G) + ΣB − column`, which is the clamp that lets the bottom drawer
+stay part-way open while its bottom is visible. The floor is gone: a drawer column never lifts a
+card above its slot in steady state, because the slide holds the stack, so the floor's only
+remaining job was catching a lag frame on the LAST card — and the last card only reaches its slot
+when the budget is fully spent, which, whenever there is anything left to close, is exactly when it
+cannot be. The browser case now asserts the property directly: at the end of the column, either a
+drawer is still part-way or the shut stack itself overflows. It was confirmed to FAIL with the
+floor put back.
+
 **And one thing to look at and decide.** A closing drawer clips its list mid-row — the row at the
 cut is sliced through. That is what a drawer sliding shut does to what is inside it, so it is left
 as it is; if it should instead fade at the cut edge, that is a couple of lines.

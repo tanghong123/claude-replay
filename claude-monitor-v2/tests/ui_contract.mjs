@@ -735,14 +735,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // in flow above it) is gone; each card sticks at its own slot with a rising z-index.
   assert.doesNotMatch(appSource, /head\.style\.transform/, "no head is moved by a transform any more");
   assert.match(appSource, /card\.style\.setProperty\("--slot", `\$\{Math\.round\(slot\)\}px`\);\s*\n\s*card\.style\.zIndex = String\(\+\+depth\);/, "each card carries its slot and its depth");
-  assert.match(appSource, /nav\.style\.setProperty\("--stack", `\$\{Math\.round\(slot\)\}px`\);/, "…and the column knows how much floor the stack needs");
+  assert.doesNotMatch(appSource, /--stack/, "…and no floor box: #139 removed it, since a drawer column never lifts a card above its slot");
   // #139 replaced #88's LANDING — a card that opens no longer has to be scrolled to its slot,
   // because a drawer opens where it already is and the slide holds the stack still.
   assert.doesNotMatch(appSource, /landOutlineCard/, "no card is scrolled to its slot any more — the drawer opens in place");
   assert.match(appSource, /if \(!wasOpen\) \{/, "the toggle branches on whether the drawer was open at all");
   const navCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(navCss, /\.session-navigator>\.outline-card\{position:sticky;top:var\(--slot,0px\);margin:0 0 8px;background:var\(--outline-surface,var\(--bg\)\)\}/, "the cards are sticky, opaque, and carry no top margin to push them off their slot");
-  assert.match(navCss, /\.session-navigator:after\{content:"";display:block;flex:0 0 auto;height:var\(--stack,0px\)\}/, "the column grows a floor box — padding cannot hold a sticky child, only content can");
+  assert.doesNotMatch(navCss, /\.session-navigator:after\{content:""/, "the floor box is gone (#139) — it was dead scroll past the point where every drawer is shut");
   assert.match(appSource, /uiState\.navigatorHidden \? setNavigatorHidden\(false\) : toggleNavigator\(!uiState\.navigatorOpen\)/, "the header's toggle brings a hidden pane back");
   assert.match(appSource, /if \(open\) uiState\.navigatorHidden = false;/, "opening the pane un-hides it");
   assert.match(appSource, /hintFor\("navigator-toggle"\)/, "the key is discoverable on the controls");
