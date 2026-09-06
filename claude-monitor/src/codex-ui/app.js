@@ -138,7 +138,12 @@ sessionCopyMenu.addEventListener("click", async event => {
 
 const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, {
   afterRender: () => { applyFilters(); markSearch(); paintCodeBars(); updateStickyHeaders(); updateOutlineFocus(); updateTurnBar(); },
-  afterScroll: () => { updateStickyHeaders(); updateOutlineFocus(); updateTurnBar(); },
+  afterScroll: () => {
+    updateStickyHeaders(); updateOutlineFocus(); updateTurnBar();
+    // The reader moved themselves: wherever a jump last landed them is no longer where they
+    // are, so the next step enters afresh at the nearest hit rather than stepping past it.
+    if (performance.now() - viewport.lastUserInput < viewport.userIntentMs) recordState.landed = null;
+  },
   followChanged: paintJump
 });
 // Delegate from the stable scroll host: the virtual window may replace all of its children
@@ -684,10 +689,16 @@ function updateSearch(reset) {
     if (inScope) { recordState.matches.push(index); total += inScope; }
   });
   for (const k of CLASS_ORDER) { const cell = byId("scopeRow").querySelector(`[data-scope-count="${k}"]`); if (cell) cell.textContent = query ? String(classCounts[k]) : ""; }
-  if (reset) recordState.match = recordState.matches.length ? 0 : -1; else recordState.match = Math.min(recordState.match, recordState.matches.length - 1);
-  byId("transcriptSearchCount").textContent = query ? countLabel(total, set, whole) : "";
+  if (reset) { recordState.match = recordState.matches.length ? 0 : -1; recordState.landed = null; } else recordState.match = Math.min(recordState.match, recordState.matches.length - 1);
+  paintMatchCount(query ? countLabel(total, set, whole) : "");
   markSearch();
   applyFilters();
+}
+/** The count the box shows: the query's own words when there is a query, else what the tool
+ *  filter found (#133) — the filter is a search, and a search says how many. */
+function paintMatchCount(text) {
+  const hits = !text && uiState.toolFilters.size ? (recordState.filterMatches || []).length : 0;
+  byId("transcriptSearchCount").textContent = text || (hits ? `${hits} ${hits === 1 ? "match" : "matches"}` : "");
 }
 /** The scope buttons rewrite the box's prefix (the classic page's applyScopeFromMenu). */
 function applyScopeFromMenu() {
@@ -703,10 +714,22 @@ function applyScopeFromMenu() {
 function kindInScope(row, wanted) {
   return !wanted || !!(directMask(row?.dataset.recordKind || "") & wanted);
 }
+/** What ↑/↓ steps: the query's hits when there is a query, else the tool filter's (#133). A
+ *  filter is a search by kind here, so it steps through the same control. */
+function activeMatches() {
+  if (recordState.search) return recordState.matches;
+  return uiState.toolFilters.size ? recordState.filterMatches || [] : [];
+}
 function stepSearch(delta) {
-  const matches = recordState.matches;
+  const matches = activeMatches();
   if (!matches.length) return;
-  const current = viewport.window.querySelector("mark.search-mark.current");
+  const textual = !!recordState.search;
+  const at = recordState.match >= 0 ? matches[recordState.match] : null;
+  // Find the record by the NUMBER its attribute holds, not by string equality: a block index
+  // reaches the attribute as the server wrote it, and "32.0" is not the selector "32".
+  const current = textual
+    ? viewport.window.querySelector("mark.search-mark.current")
+    : (at != null ? [...viewport.window.querySelectorAll("[data-block-index]")].find(element => Number(element.dataset.blockIndex) === at) : null);
   const box = current?.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
   const onScreen = !!box && box.bottom >= view.top && box.top <= view.bottom;
   if (recordState.match >= 0 && onScreen) {
@@ -714,9 +737,19 @@ function stepSearch(delta) {
   } else {
     const top = recordIndexAtTop();
     const k = matches.findIndex(index => index >= top);
-    recordState.match = delta > 0 ? (k >= 0 ? k : 0) : (k > 0 ? k - 1 : matches.length - 1);
+    const nearest = delta > 0 ? (k >= 0 ? k : 0) : (k > 0 ? k - 1 : matches.length - 1);
+    // The nearest hit from the top can BE the one the reader is already looking at — after a
+    // jump it always is, since the jump put it there — and then "next" has to mean the one
+    // after it, or the control does nothing at all.
+    // Advance only when the nearest hit is the one a jump LANDED the reader on — pressing next
+    // where you already are must move. The cursor alone cannot say this: a fresh query points it
+    // at the first hit without taking the reader anywhere, and the first step must land there.
+    const already = matches[nearest] === recordState.landed;
+    recordState.match = already ? (nearest + delta + matches.length) % matches.length : nearest;
   }
-  viewport.jumpToRecord(matches[recordState.match], "search");
+  recordState.landed = matches[recordState.match];
+  viewport.jumpToRecord(recordState.landed, textual ? "search" : "filter");
+  if (!textual) return;
   markSearch();
   landOnCurrentMark();
 }
@@ -791,32 +824,25 @@ function renderFilterMenu() {
 function applyFilters() {
   const hits = recordState.filterHits;
   viewport.window.querySelectorAll("[data-kind]").forEach(element => {
-    const kind = element.dataset.kind;
     // Which scope classes this row belongs to, through the SHARED table (#126) — the last
     // hand-written kind map on this shell, and one that read a row's DISPLAY name where the
     // record's own kind is what the classes are defined on. A row no class claims (an agent
     // event, an attachment, a queued prompt) is never dimmed: no scope excludes it.
     const mask = directMask(element.dataset.recordKind || "");
     const scopeDim = mask && ![...uiState.searchScopes].some(letter => mask & CLASS_BIT[letter]);
-    element.classList.toggle("filter-dim", !!scopeDim || (!!hits && kind === "user" && element.classList.contains("turn")));
+    element.classList.toggle("filter-dim", !!scopeDim);
   });
-  // The tool filter (#110), the classic page's rule: a non-turn record that does not match is
-  // HIDDEN, user turns stay as dimmed landmarks, and a matching head is accented. Rows are
-  // hidden inside their process; a process left with nothing to show goes with them.
+  // The tool filter is a SEARCH BY KIND on this shell (#133), not the classic page's cut: it
+  // finds the calls of a kind and marks them, and the reader steps between them the way they
+  // step search hits — with every hit still sitting in its own surroundings. Hiding everything
+  // else takes the context away at exactly the moment the reader found what they were looking
+  // for, and it is what made a filtered window a different beast for the virtual window (the
+  // heights of hidden records, the sparse mount). Nothing is hidden here; nothing changes
+  // height; the window stays dense.
   for (const element of viewport.window.querySelectorAll(".filter-hidden, .filter-hit")) element.classList.remove("filter-hidden", "filter-hit");
   if (!hits) return;
-  for (const answer of viewport.window.querySelectorAll(":scope > .turn.assistant")) answer.classList.add("filter-hidden");
-  for (const surface of viewport.window.querySelectorAll("[data-process-surface]")) {
-    let shown = 0;
-    for (const event of surface.querySelectorAll(".process-event")) {
-      const hit = [...event.querySelectorAll("[data-record-id]")].some(r => hits.has(r.dataset.recordId));
-      event.classList.toggle("filter-hidden", !hit);
-      if (hit) shown++;
-    }
-    surface.classList.toggle("filter-hidden", shown === 0);
-    for (const renderer of surface.querySelectorAll("[data-record-id]")) {
-      if (recordState.filterDirect?.has(renderer.dataset.recordId)) renderer.querySelector(":scope > .renderer-head")?.classList.add("filter-hit");
-    }
+  for (const renderer of viewport.window.querySelectorAll("[data-record-id]")) {
+    if (recordState.filterDirect?.has(renderer.dataset.recordId)) renderer.querySelector(":scope > .renderer-head")?.classList.add("filter-hit");
   }
 }
 // Does this record — or a record nested in it — carry one of the selected tools? Every record
@@ -846,11 +872,17 @@ function computeFilterHits() {
   recordState.records.forEach((record, index) => { if (filterChain(record, wanted, hits, direct)) indices.push(index); });
   recordState.filterHits = hits;
   recordState.filterDirect = direct;
-  for (const id of hits) if (!before?.has(id)) recordState.folds.set(id, false);
+  recordState.filterMatches = indices;
+  // Whether this pass OPENED anything. A record that arrives under a filter must be shown the
+  // same way as one that was there when it was applied — and opening a fold is a change to what
+  // is rendered, not to what is painted, so the caller has to re-render for it to be seen.
+  let opened = false;
+  for (const id of hits) if (!before?.has(id)) { recordState.folds.set(id, false); opened = true; }
   for (const unit of projection.units) {
     if (unit.type !== "process" || recordState.processExpanded.has(unit.key)) continue;
-    if (indices.some(index => index >= unit.from && index <= unit.to)) { recordState.processFolds.set(unit.key, false); recordState.processExpanded.add(unit.key); }
+    if (indices.some(index => index >= unit.from && index <= unit.to)) { recordState.processFolds.set(unit.key, false); recordState.processExpanded.add(unit.key); opened = true; }
   }
+  recordState.filterOpened = opened;
   return indices;
 }
 
@@ -861,6 +893,10 @@ function computeFilterHits() {
 function refreshFilterHits() {
   if (!uiState.toolFilters.size || !recordState.filterHits) return;
   computeFilterHits();
+  // A fold the filter just opened is only in the DOM once the window is rebuilt; `render` holds
+  // the reader's place while it does that, so an arrival never moves them.
+  if (recordState.filterOpened) viewport.render();
+  if (!recordState.search) paintMatchCount("");
   applyFilters();
 }
 
@@ -871,17 +907,22 @@ function applyToolFilter() {
     const indices = computeFilterHits();
     viewport.render();
     viewport.remeasure();
-    // Land on the nearest hit so the filter visibly did something.
+    // Land on the nearest hit so the filter visibly did something — and that hit becomes where
+    // ↑/↓ step from, since a filter is a search by kind here (#133).
     const start = recordIndexAtTop();
     const target = indices.find(index => index >= start) ?? indices[0];
+    recordState.match = target == null ? -1 : indices.indexOf(target);
+    recordState.landed = target ?? null;
     if (target != null) viewport.jumpToRecord(target, "filter");
   } else if (recordState.filterHits) {
     const snapshot = recordState.filterSnapshot;
-    recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null;
+    recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.filterMatches = null;
+    recordState.match = -1; recordState.landed = null;
     if (snapshot) { recordState.folds = snapshot.folds; recordState.processFolds = snapshot.processFolds; recordState.processExpanded = snapshot.processExpanded; }
     viewport.render();
     viewport.remeasure();
   }
+  if (!recordState.search) paintMatchCount("");
   applyFilters();
 }
 // Reading controls (parity #7), in the options popover where the shell keeps view preferences:

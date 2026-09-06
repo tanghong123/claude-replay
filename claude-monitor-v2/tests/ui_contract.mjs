@@ -601,7 +601,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(currentTurnIndex(units, null), -1, "nothing at the top yet");
   assert.equal(currentTurnIndex(units, "nope"), -1, "an unknown unit names no turn");
   assert.equal(currentTurnIndex([{ key: "p", type: "process" }], "p"), -1, "no user turn at or before");
-  assert.match(appSource, /afterScroll: \(\) => \{ updateStickyHeaders\(\); updateOutlineFocus\(\);/, "the spy runs on every scroll");
+  assert.match(appSource, /afterScroll: \(\) => \{\s*\n\s*updateStickyHeaders\(\); updateOutlineFocus\(\);/, "the spy runs on every scroll");
   assert.match(appSource, /row\.classList\.toggle\("current", on\)/, "the current row carries the reference CSS's `current` class");
   assert.match(appSource, /row\.setAttribute\("aria-current", "true"\)/, "…and aria-current");
   assert.match(appSource, /return currentTurnIndex\(recordState\.units, unitAtTop\(\)\);/, "the keys step from the same rule");
@@ -1019,16 +1019,22 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /function filterChain\(record, wanted, hits, direct\) \{/, "a hit chain: the record or a nested one carries a selected tool");
   // Only what is NEWLY on the chain opens (#126): a live session must not re-open a fold the
   // reader closed a moment ago, and a record that arrives under a filter must still be added.
-  assert.match(app, /for \(const id of hits\) if \(!before\?\.has\(id\)\) recordState\.folds\.set\(id, false\);/, "every record newly on a chain opens");
+  assert.match(app, /for \(const id of hits\) if \(!before\?\.has\(id\)\) \{ recordState\.folds\.set\(id, false\); opened = true; \}/, "every record newly on a chain opens");
+  assert.match(app, /if \(recordState\.filterOpened\) viewport\.render\(\);/, "…and a fold opened for an ARRIVING record reaches the DOM, which only a render does");
   assert.match(app, /function refreshFilterHits\(\) \{/, "…and records arriving under a filter join it");
   assert.match(app, /renderNavigator\(\); refreshFilterHits\(\); updateSearch\(false\);/, "…on the arrival path");
   assert.match(app, /recordState\.filterSnapshot = \{ folds: new Map\(recordState\.folds\)/, "the fold state is snapshotted for the clear");
   assert.match(app, /if \(target != null\) viewport\.jumpToRecord\(target, "filter"\);/, "…and the view lands on the nearest hit");
-  assert.match(app, /answer\.classList\.add\("filter-hidden"\)/, "assistant answers hide");
-  assert.match(app, /event\.classList\.toggle\("filter-hidden", !hit\);/, "non-matching rows hide inside their process");
-  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
-  assert.match(css, /\.filter-hidden\{display:none!important\}/, "hidden is hidden");
-  console.log("#110 tool filter cases passed");
+  // #133: on THIS shell a tool filter is a search by kind — it finds, marks and steps, and
+  // hides nothing, so every hit is read in its own surroundings. (The classic page still cuts;
+  // the two surfaces differ here on purpose.)
+  assert.doesNotMatch(app, /classList\.add\("filter-hidden"\)|classList\.toggle\("filter-hidden"/, "nothing is hidden by a filter");
+  assert.match(app, /recordState\.filterMatches = indices;/, "the filter's hits are a match list…");
+  assert.match(app, /function activeMatches\(\) \{[\s\S]{0,200}?return uiState\.toolFilters\.size \? recordState\.filterMatches \|\| \[\] : \[\];/, "…which is what the step control walks when there is no query");
+  assert.match(app, /recordState\.landed = matches\[recordState\.match\];\s*\n\s*viewport\.jumpToRecord\(recordState\.landed, textual \? "search" : "filter"\);/, "…landing each one in its surroundings");
+  assert.match(app, /const already = matches\[nearest\] === recordState\.landed;/, "pressing next where a jump already landed moves on — while the first step after a fresh query still lands on the first hit");
+  assert.match(app, /byId\("transcriptSearchCount"\)\.textContent = text \|\| \(hits \? `\$\{hits\} \$\{hits === 1 \? "match" : "matches"\}` : ""\);/, "the box counts what the filter found, the way it counts a search");
+  console.log("#110 / #133 tool filter cases passed");
 }
 
 // #111: the haystack is the record's text, shared; every hit in the window is marked.
@@ -1126,7 +1132,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /const onScreen = !!box && box\.bottom >= view\.top && box\.top <= view\.bottom;/, "the current hit's mark decides whether the sequence continues");
   assert.match(app, /const k = matches\.findIndex\(index => index >= top\);/, "…else the first hit at or below the viewport top");
-  assert.match(app, /recordState\.match = delta > 0 \? \(k >= 0 \? k : 0\) : \(k > 0 \? k - 1 : matches\.length - 1\);/, "forward from there, backward from the one above, wrapping");
+  assert.match(app, /const nearest = delta > 0 \? \(k >= 0 \? k : 0\) : \(k > 0 \? k - 1 : matches\.length - 1\);/, "forward from there, backward from the one above, wrapping");
   assert.match(app, /function landOnCurrentMark\(\) \{/, "the landing brings the term into view");
   const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(vp, /if \(reveal === "search" \|\| reveal === "hash"\) \{\n\s*const openAll = view =>/, "a search or deep-link reveal opens the nested chain and its caps");
@@ -1330,7 +1336,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(chainWalk(tree, rec => rec.kind === "write", null), false, "nothing under it, no chain");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /const q = splitQuery\(raw\);/, "the app shell splits the query through the module");
-  assert.match(app, /byId\("transcriptSearchCount"\).textContent = query \? countLabel\(total, set, whole\) : "";/);
+  assert.match(app, /paintMatchCount\(query \? countLabel\(total, set, whole\) : ""\);/);
   assert.match(app, /input\.value = writePrefix\(input\.value, set \? activeLetters\(set\) : \[\]\);/);
   assert.match(app, /return chainWalk\(/, "…and walks the filter chain through the module");
   assert.doesNotMatch(app, /function elementMask|function wholeAtText/, "its own copies are gone");
@@ -1515,7 +1521,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /turnStickyText\.textContent = `Turn \$\{unit\.turn\} — \$\{unit\.label \|\| ""\}`\.trimEnd\(\);/, "…and reads 'Turn N — label', the classic page's own words");
   assert.match(appSource, /const index = currentTurnIndex\(recordState\.units, unitAtTop\(\)\);\s*\n\s*const unit = index >= 0 \? userUnits\(\)\[index\] : null;\s*\n\s*\/\/ Off at the very top/, "fed by the same current-turn rule the outline pane uses");
   assert.match(appSource, /turnStickyBar\.onclick = \(\) => \{ if \(turnStickyAt != null\) viewport\.jumpToRecord\(turnStickyAt, "turn"\); \};/, "a click returns to that turn's record");
-  assert.match(appSource, /afterScroll: \(\) => \{ updateStickyHeaders\(\); updateOutlineFocus\(\); updateTurnBar\(\); \}/, "…and it is refreshed on every scroll");
+  assert.match(appSource, /updateStickyHeaders\(\); updateOutlineFocus\(\); updateTurnBar\(\);/, "…and it is refreshed on every scroll");
   assert.match(productionCss, /\.transcript\{scroll-padding-top:52px\}/, "the scroller declares the bar's height");
   assert.match(viewportSource, /const landing = parseFloat\(getComputedStyle\(this\.scroller\)\.scrollPaddingTop\) \|\| 18;/, "…so a jump lands below the bar, not behind it");
   assert.match(productionCss, /\.turn-stickybar\.on\{opacity:1;pointer-events:auto\}/, "the bar keeps its space when off, as the classic page's does");

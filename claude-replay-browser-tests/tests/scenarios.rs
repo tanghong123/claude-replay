@@ -607,14 +607,12 @@ fn classic_page_the_filter_takes_in_what_arrives() {
     scenario_the_filter_takes_in_what_arrives(&page.tab, Surface::Classic, &fx);
 }
 
-#[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn app_shell_the_filter_takes_in_what_arrives() {
-    let _serial = serial();
-    let fx = fixture("scenario-livefilter-app", 14);
-    let page = open(Surface::AppShell, &fx, 2905);
-    scenario_the_filter_takes_in_what_arrives(&page.tab, Surface::AppShell, &fx);
-}
+// The app shell has no equivalent of this case, and needs none: it hides nothing (#133), so a
+// call that arrives can never be hidden by the filter. What must hold there — an arriving call
+// joins the filter's count and its fold opens — is asserted in
+// `app_shell_the_tool_filter_is_a_search_by_kind`. Counting VISIBLE rows would measure the
+// window, not the filter: with nothing cut, how much of the tail is mounted is the window's
+// business.
 
 /// Rule 7's hysteresis (#127): acquiring the pin needs the true end, KEEPING it only the old
 /// slack. A reader who nudges the view a few pixels is still reading the tail and must keep it;
@@ -828,7 +826,6 @@ fn app_shell_corrects_a_growth_above_before_paint() {
 /// the page must not write `scrollTop` underneath them: the fling stutters or dies, the thumb
 /// jumps under the pointer. A correction owed during that window is paid at its end instead, so
 /// nothing is lost. The probe counts the writes the page makes to its own scroller.
-
 fn scenario_the_readers_motion_is_never_fought(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -2470,13 +2467,127 @@ fn classic_page_tool_filter_hides_and_lands() {
     scenario_tool_filter_hides_and_lands(&page.tab, Surface::Classic, &fx);
 }
 
+/// The app shell's filter is a SEARCH BY KIND (#133), so this rule is the classic page's alone
+/// — a deliberate divergence, not a gap. What the app shell must do instead is
+/// `app_shell_the_tool_filter_is_a_search_by_kind` below.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn app_shell_tool_filter_hides_and_lands() {
+fn app_shell_the_tool_filter_is_a_search_by_kind() {
     let _serial = serial();
     let fx = filter_fixture("scenario-filter-app");
     let page = open(Surface::AppShell, &fx, 2884);
-    scenario_tool_filter_hides_and_lands(&page.tab, Surface::AppShell, &fx);
+    let tab = &page.tab;
+    let surface = Surface::AppShell;
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let height = "Math.round(document.querySelector('.transcript').scrollHeight)";
+    let hidden = "document.querySelectorAll('.filter-hidden').length";
+    let count = "document.getElementById('transcriptSearchCount').textContent.trim()";
+    // A tool sits inside an activity row, so visibility is the ROW's — the tool's own element
+    // has no height while its process is folded (the probe the classic-page case uses).
+    let bash_rows = "[...document.querySelectorAll('.renderer-turn[data-tool-name=\"Bash\"]')].map(function (t) { return t.closest('.process-event') || t; }).filter(function (row) { return row.getBoundingClientRect().height > 0; }).length";
+    let answers = "[...document.querySelectorAll('.virtual-window > .turn.assistant')].filter(function (f) { return f.getBoundingClientRect().height > 0; }).length";
+    let before_height = eval(tab, height).as_i64().unwrap_or(0);
+    let before_bash = eval(tab, bash_rows).as_i64().unwrap_or(0);
+    assert!(
+        before_bash >= 1 && before_height > 0,
+        "the fixture is mounted"
+    );
+    assert_eq!(
+        eval(tab, "(function(){ var it = document.querySelector('.tool-type-option[data-tool-filter=\"Read\"]'); if (!it) { document.getElementById('filterTranscriptBtn').click(); it = document.querySelector('.tool-type-option[data-tool-filter=\"Read\"]'); } if (!it) return 'no item'; it.click(); return 'selected'; })()"),
+        "selected",
+        "the Read tool can be selected in the filter"
+    );
+    settle();
+    settle();
+    // Nothing is hidden, and nothing changed height: the window stays dense (#133).
+    assert_eq!(
+        eval(tab, hidden).as_i64().unwrap_or(-1),
+        0,
+        "a filter hides nothing on this shell"
+    );
+    assert!(
+        eval(tab, bash_rows).as_i64().unwrap_or(0) >= 1,
+        "the calls the filter did NOT match are still there to read around the ones it did"
+    );
+    assert!(
+        eval(tab, answers).as_i64().unwrap_or(0) >= 1,
+        "…and so are the answers"
+    );
+    // Nothing is taken AWAY. The page may well grow — a match opens its fold so the reader can
+    // see it — but under the classic page's rule it would shrink to almost nothing here.
+    let after_height = eval(tab, height).as_i64().unwrap_or(0);
+    assert!(
+        after_height >= before_height - 8,
+        "the transcript did not shrink: {before_height} -> {after_height}"
+    );
+    // It counts, the way a search counts.
+    let said = eval(tab, count);
+    assert_eq!(
+        said.as_str().unwrap_or(""),
+        "1 match",
+        "the box says what the filter found: {said}"
+    );
+    // The match is marked and the view landed on it, with its surroundings on screen.
+    let landed = probe(tab, "(function(){ var v = document.querySelector('.transcript').getBoundingClientRect(); var head = document.querySelector('.renderer-turn[data-tool-name=\"Read\"] .renderer-head.filter-hit'); if (!head) return { marked: false }; var r = head.getBoundingClientRect(); var seen = [...document.querySelectorAll('.virtual-window [data-block-index]')].filter(function (e) { var b = e.getBoundingClientRect(); return b.height > 0 && b.bottom > v.top && b.top < v.bottom; }); var others = seen.filter(function (e) { return !e.querySelector(':scope > .renderer-head.filter-hit'); }).length; return { marked: true, inview: r.top >= v.top - 1 && r.top <= v.bottom, others: others }; })()");
+    assert_eq!(
+        landed["marked"], true,
+        "the matching head is marked: {landed}"
+    );
+    assert_eq!(
+        landed["inview"], true,
+        "…and the view landed on it: {landed}"
+    );
+    assert!(
+        landed["others"].as_i64().unwrap_or(0) >= 1,
+        "…with records the filter did NOT match on screen beside it, which is the point of not hiding: {landed}"
+    );
+    // A matching call that arrives live joins the count.
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        vec![
+            assistant_at("reading one more file", &now_minus(20)),
+            read_tool_at("t-late-read", "/tmp/other.toml", &now_minus(19)),
+            tool_result_lines("t-late-read", 4, &now_minus(18)),
+        ],
+        Duration::from_millis(900),
+    );
+    growth.finish(Duration::from_secs(40));
+    until(
+        tab,
+        "document.getElementById('transcriptSearchCount').textContent.trim() === '2 matches'",
+        "the arriving Read call to join the count",
+        Duration::from_secs(25),
+        count,
+    );
+    assert_eq!(
+        eval(tab, hidden).as_i64().unwrap_or(-1),
+        0,
+        "…and still nothing is hidden"
+    );
+    // Stepping walks the matches, as it walks search hits.
+    let at = "(function(){ var v = document.querySelector('.transcript').getBoundingClientRect(); var hit = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Read\"]')].find(function (t) { var r = t.getBoundingClientRect(); return r.bottom > v.top && r.top < v.bottom; }); return hit ? hit.dataset.blockIndex : ''; })()";
+    // Let the arrival's own apply finish before stepping: a jump issued mid-apply is undone by
+    // the anchor restore that follows it.
+    settle();
+    settle();
+    // Stepping walks the matches, as it walks search hits — wherever the growth left the view,
+    // pressing next visits BOTH of them.
+    let mut visited = std::collections::BTreeSet::new();
+    for _ in 0..3 {
+        let seen = eval(tab, at).as_str().unwrap_or("").to_string();
+        if !seen.is_empty() {
+            visited.insert(seen);
+        }
+        eval(tab, "document.getElementById('findNext').click(); 'ok'");
+        settle();
+        settle();
+    }
+    assert!(
+        visited.len() >= 2,
+        "stepping visits every match, not just the one it starts on: {visited:?}"
+    );
 }
 
 /// Twelve turns of Bash, then a turn with one Read among the Bash calls.
