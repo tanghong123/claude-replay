@@ -288,3 +288,56 @@ on both surfaces before and after every step, and the byte-identical gate is ver
 line — a rendered-HTML change is not what this work is for. A case that fails on the classic page
 is a classic bug and gets its own task (#71), because the classic page is the reference, not an
 oracle.
+
+### The owner's model, and where the code already agrees (2026-09-06)
+
+Stated as a model rather than as a patch to the current one: the page is three consecutive
+groups — an invisible TOP, a rendered MIDDLE, an invisible BOTTOM, either end possibly empty;
+only the middle is concrete; the viewport is **an offset within the rendered middle** (or, in
+the pinned case, "at the bottom"); a height change in an invisible group needs no change to
+that offset, and only a change inside the middle can move it; a scroll first maps the old
+offset into the new middle and then applies the delta; a jump checks whether the target is
+already in the middle and, if not, does the full calculation; a thumb drag inside the pads is
+an ordinary scroll, and beyond them translates the offset to a record, renders that record
+first and resets.
+
+**Most of this is what the code does, and the parts that differ are the interesting ones.**
+
+- *Three groups, only the middle concrete.* Exactly the implementation on both pages: `[lo, hi)`
+  mounted between two pads sized from prefix sums (`padHeights`).
+- *The pinned case.* That is `following` + `convergeBottom` — the tail wins over any offset.
+- *A jump checks the middle first.* `jumpToRecord` always re-ranges around the target and then
+  lands it at a fixed offset; skipping the re-range when the target is already mounted would be
+  an optimisation, not a behaviour change.
+- *A thumb drag has its own mode.* `dragging` exists and the held thumb has a scenario. What the
+  model adds is the RESET at the end of a long drag — make the translated record the first
+  visible thing and re-zero the offset — instead of scrolling to a computed pixel and then
+  correcting.
+- *The offset within the middle.* This representation is already in the code — `captureDomAnchor`
+  returns `{key, top: elementTop − viewportTop, block, blockTop}`, an identity and a delta. But it
+  is a **capture/restore patch around each mutation**, not the stored position: between mutations
+  the position IS the browser's `scrollTop`, measured over a document that includes both pads.
+
+That last difference is the whole of Rule 1 above. In the model, "a height change in an invisible
+group cannot move the reader" is a *theorem* — the offset does not mention the pads. In the code
+it is a *property maintained by patches*: capture an anchor, mutate, restore it, and correct
+(`correction`, `heightChanged`, the classic page's `scrollBy(d)` after `setWindow`). Every #98-class
+bug lives in a gap between those patches. Promoting the anchor from patch to stored position — the
+scroll offset becoming a value derived from it, reconciled after every window change — is the same
+direction as the recommendation above (make the index-anchored range the default), taken further.
+
+**What it costs, honestly.** The browser owns the scrollbar. Keeping a native scroller means the
+authoritative number is `scrollTop` whether we like it or not, so the model can be the source of
+truth only if every window change ends by writing `scrollTop` back from it. Going further — a
+transform-based virtual scroller with a synthetic scrollbar — makes the model exact but gives up
+native scroll anchoring, trackpad momentum, keyboard paging, find-in-page and the accessibility
+tree. That trade is not worth it for a transcript reader; the reconcile-after-every-change version
+gets most of the benefit and keeps the platform.
+
+**One idea in the model that is in NEITHER page: the pads under a width change.** Today a resize
+makes the app shell throw every measured height away and relearn (`remeasure` → `clearHeights`),
+while the classic page keeps heights measured at the old width and simply re-runs `updateView`.
+Both are wrong in opposite directions for the invisible groups. Scaling the remembered heights
+when the width changes — a text block's height moves roughly with the inverse of its measure — is
+a better first guess than either, costs one multiply per remembered record, and is independent of
+the two rules above. Worth its own task whichever way #128 goes.
