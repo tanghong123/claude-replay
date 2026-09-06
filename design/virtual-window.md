@@ -318,13 +318,28 @@ first and resets.
   is a **capture/restore patch around each mutation**, not the stored position: between mutations
   the position IS the browser's `scrollTop`, measured over a document that includes both pads.
 
-That last difference is the whole of Rule 1 above. In the model, "a height change in an invisible
-group cannot move the reader" is a *theorem* — the offset does not mention the pads. In the code
-it is a *property maintained by patches*: capture an anchor, mutate, restore it, and correct
-(`correction`, `heightChanged`, the classic page's `scrollBy(d)` after `setWindow`). Every #98-class
-bug lives in a gap between those patches. Promoting the anchor from patch to stored position — the
-scroll offset becoming a value derived from it, reconciled after every window change — is the same
-direction as the recommendation above (make the index-anchored range the default), taken further.
+That last difference is the whole of Rule 1 above, and the model states the consequence exactly:
+a height change inside an invisible group leaves the OFFSET alone and changes the height of the
+invisible top, so the absolute position is recomputed — `scrollTop = padTop(lo) + offset` — and
+written back. The invariant is on the offset; the absolute number is derived from it, every time.
+
+That is a different operation from what the code does today, not a different spelling of it. The
+code keeps `scrollTop` as the stored position and repairs it after the fact: capture an anchor,
+mutate, restore it, correct (`correction`, `heightChanged`, the classic page's `scrollBy(d)` after
+`setWindow`). A repair is an increment — it measures where the anchor ended up and nudges — so it
+needs the DOM already laid out, it can be skipped on a path nobody thought to instrument, and its
+error accumulates. The recomputation is absolute: it needs only the prefix sums and the offset, and
+it produces the same answer no matter how the window got there. Every #98-class bug we have had
+lives in a gap between the repairs; there is no equivalent gap in a recomputation, because there is
+nothing to skip — the write-back IS the position.
+
+Two details make it practical here. The pages already own anchoring completely — `overflow-anchor:
+none` on the app shell's `.transcript` and on the classic page's `html`/`body` (#50/#66/#89) — so
+nothing else writes the scroll offset and there is no second mechanism to fight. And the write-back
+must land in the same frame as the mutation, before paint, and be marked as the page's own scroll
+(`classifyScroll` already draws that line) so the follow logic does not read it as the reader
+moving. Promoting the anchor from patch to stored position is the same direction as the
+recommendation above (make the index-anchored range the default), taken to its end.
 
 **What it costs, honestly.** The browser owns the scrollbar. Keeping a native scroller means the
 authoritative number is `scrollTop` whether we like it or not, so the model can be the source of
