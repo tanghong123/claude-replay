@@ -143,6 +143,14 @@ pub fn tool_open_at(id: &str, ts: &str) -> String {
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"echo {id}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
     )
 }
+/// A `Workflow` call and its result (#38/#119): the result text carries `Transcript dir:`, whose
+/// trailing component IS the run id — the only place a transcript names the fleet it launched.
+pub fn workflow_call_at(id: &str, run: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Workflow\",\"input\":{{\"script\":\"export const meta = {{ name: 'fan-out' }}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"Workflow launched in background. Task ID: t-{run}\\nTranscript dir: /w/.claude/runs/{run}\\n\"}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
 /// A file-acting tool call (`Read` on `path`): the page offers the path with its stamps.
 pub fn read_tool_at(id: &str, path: &str, ts: &str) -> String {
     format!(
@@ -366,6 +374,36 @@ impl Stores {
         serde_json::from_str::<serde_json::Value>(json).expect("a task file is JSON");
         let path = dir.join(format!("{n}.json"));
         std::fs::write(&path, json).unwrap();
+        path
+    }
+
+    /// One workflow run's journal beside a Claude session — `<session>/subagents/workflows/
+    /// <run>/journal.jsonl`, the file the roster is read from. Each member is `(id, result)`:
+    /// a member with a result is finished and titled by its first line, one without is still
+    /// running.
+    pub fn claude_workflow_run(&self, sid: &str, run: &str, members: &[(&str, &str)]) -> PathBuf {
+        let dir = self
+            .root
+            .join("claude")
+            .join("-r")
+            .join(sid)
+            .join("subagents")
+            .join("workflows")
+            .join(run);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut journal = String::new();
+        for (id, _) in members {
+            journal += &format!("{{\"type\":\"started\",\"agentId\":\"{id}\"}}\n");
+        }
+        for (id, result) in members {
+            if !result.is_empty() {
+                journal += &format!(
+                    "{{\"type\":\"result\",\"agentId\":\"{id}\",\"result\":\"{result}\"}}\n"
+                );
+            }
+        }
+        let path = dir.join("journal.jsonl");
+        std::fs::write(&path, journal).unwrap();
         path
     }
 

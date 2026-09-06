@@ -1,6 +1,6 @@
 import { agentLogo, svg } from "./icons.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
-import { bindComponentEvents } from "./components.js";
+import { bindComponentEvents, fleetHtml } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
 import { chainWalk } from "./shared/filter.js";
 import { taskCardHtml, taskRowMeta } from "./shared/task-card.js";
@@ -436,7 +436,7 @@ function updateRecords({ records, meta, changedFrom }) {
   const sizes = recordState.recSizes;
   sizes.length = Math.min(sizes.length, changedFrom, records.length);
   for (let i = sizes.length; i < records.length; i++) sizes[i] = recordTextSize(records[i]);
-  if (metaArrived) renderHeader();
+  if (metaArrived) { renderHeader(); refreshFleets(); }
   recordState.taskTargets = taskRecordTargets(meta?.tasks || [], records);
   recordState.agentTargets = agentRecordTargets(directAgents(meta), records);
   const changedUnit = projection.rebuild(records, changedFrom);
@@ -486,6 +486,21 @@ function recordChain(record, id, chain) {
   return false;
 }
 
+// #119: a workflow call's fleet roster is rendered WITH the record (`fleetHtml` reads the live
+// meta), so a rematerialized block gets it for free — the classic page has to refill by hand.
+// What a fresh render cannot cover is a meta that arrives while the block is already mounted:
+// the members changed, the record did not. This rewrites just those boxes.
+function refreshFleets() {
+  for (const host of viewport.window.querySelectorAll("[data-run]")) {
+    const shell = host.querySelector(":scope > .renderer");
+    if (!shell) continue;
+    const html = fleetHtml(host.dataset.run, recordState);
+    const box = shell.querySelector(":scope > .fleet");
+    if (!html) { box?.remove(); continue; }
+    if (box) box.outerHTML = html;
+    else shell.insertAdjacentHTML("beforeend", html);
+  }
+}
 function directAgents(source = recordState.meta) {
   const meta = source || {}, result = [...(meta.children || [])], ids = new Set(result.map(item => item.id));
   for (const run of meta.runs || []) for (const member of run.members || []) if (!ids.has(member.id)) { ids.add(member.id); result.push(member); }

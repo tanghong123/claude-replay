@@ -51,6 +51,38 @@ fn sid_of(fx: &Fixture) -> String {
     fx.path.file_stem().unwrap().to_string_lossy().to_string()
 }
 
+/// A fixture whose session launched a workflow run: the `Workflow` call that names the run, the
+/// run's journal (one member finished and titled by its result, one still running), and a real
+/// session for each member so the roster's links resolve on both surfaces.
+fn fixture_workflow(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    // Long enough for the classic page's readiness gate (three viewports), so the launching
+    // call sits at the tail — where a scenario lands first.
+    let mut transcript = long_session(20, Shape::default());
+    transcript += &user_at("question 20: fan the work out", &now_minus(90));
+    transcript += &harness::workflow_call_at("wf1", RUN, &now_minus(88));
+    transcript += &assistant_at("answer 20: two agents are on it", &now_minus(80));
+    let path = stores.claude_session(SID, &transcript);
+    stores.claude_workflow_run(
+        SID,
+        RUN,
+        &[(MEMBER_DONE, "Reviewed the parser"), (MEMBER_RUNNING, "")],
+    );
+    for member in [MEMBER_DONE, MEMBER_RUNNING] {
+        stores.claude_session(member, &long_session(2, Shape::default()));
+    }
+    Fixture {
+        base,
+        path,
+        turns: 21,
+    }
+}
+
+const RUN: &str = "wf_run_119";
+const MEMBER_DONE: &str = "dddddddd-0000-4000-8000-000000000001";
+const MEMBER_RUNNING: &str = "dddddddd-0000-4000-8000-000000000002";
+
 const CODEX_SID: &str = "s117";
 
 /// A Codex fixture (harness `codex_tool_session`): the heads whose chips carry an exit code, a
@@ -693,6 +725,83 @@ fn app_shell_steps_turns_from_the_top() {
     let fx = fixture("scenario-step-app", 40);
     let page = open(Surface::AppShell, &fx, 2853);
     scenario_step_and_page(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a workflow call carries its fleet in flow (#119) ──────────────────────────────
+
+/// The call that launched a run shows its members under it — a dot per member, pulsing for the
+/// one still running — each naming a session the reader can open. The agents pane keeps its own
+/// list; this is the in-flow half the owner asked for.
+fn scenario_the_call_carries_its_fleet(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    // The launching call is at the tail: land there, so both pages have it mounted.
+    jump_to_end(tab, surface);
+    settle();
+    let roster = "(function(){ var host = document.querySelector('[data-run]'); if (!host) return { host: false }; var rows = [...host.querySelectorAll('.fleet-row')]; return { host: true, run: host.dataset.run, rows: rows.length, running: host.querySelectorAll('.fleet-dot.on').length, names: rows.map(function (r) { return (r.querySelector('.fleet-name') || {}).textContent; }), hrefs: rows.map(function (r) { var a = r.querySelector('.fleet-name'); return a ? a.getAttribute('href') : ''; }), ids: rows.map(function (r) { return (r.querySelector('.fleet-id') || {}).textContent; }) }; })()";
+    until(
+        tab,
+        "!!document.querySelector('[data-run] .fleet-row')",
+        "the launching call to carry its fleet",
+        Duration::from_secs(20),
+        "JSON.stringify({ hosts: document.querySelectorAll('[data-run]').length, fleets: document.querySelectorAll('.fleet').length, workflowText: document.body.innerText.indexOf('Workflow') >= 0 })",
+    );
+    let fleet = probe(tab, roster);
+    assert_eq!(
+        fleet["run"], RUN,
+        "the roster hangs under its own run: {fleet}"
+    );
+    assert_eq!(fleet["rows"], 2, "one row per member: {fleet}");
+    assert_eq!(
+        fleet["running"], 1,
+        "the member still working carries the running dot: {fleet}"
+    );
+    assert_eq!(
+        fleet["names"][0], "Reviewed the parser",
+        "a finished member is titled by its result: {fleet}"
+    );
+    assert_eq!(
+        fleet["ids"][0], MEMBER_DONE,
+        "…beside the id that addresses it: {fleet}"
+    );
+    let href = fleet["hrefs"][0].as_str().unwrap_or_default().to_string();
+    assert!(
+        href.contains(&format!("session={MEMBER_DONE}")),
+        "a member's name opens that member's session: {href}"
+    );
+    // And the click gets there: the page ends up addressing the member's session.
+    eval(
+        tab,
+        "document.querySelector('[data-run] .fleet-row .fleet-name').click(); 'ok'",
+    );
+    until(
+        tab,
+        &format!("location.search.indexOf('session={MEMBER_DONE}') >= 0"),
+        "the click to open the member's session",
+        Duration::from_secs(15),
+        "location.search",
+    );
+    let _ = surface;
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_the_call_carries_its_fleet() {
+    let _serial = serial();
+    let fx = fixture_workflow("scenario-fleet-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_the_call_carries_its_fleet(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_call_carries_its_fleet() {
+    let _serial = serial();
+    let fx = fixture_workflow("scenario-fleet-app");
+    let page = open(Surface::AppShell, &fx, 2908);
+    scenario_the_call_carries_its_fleet(&page.tab, Surface::AppShell, &fx);
 }
 
 // ── scenario: the turn bar names the turn, and returns to it (#123) ─────────────────────────

@@ -1520,3 +1520,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(productionCss, /\.turn-stickybar\.on\{opacity:1;pointer-events:auto\}/, "the bar keeps its space when off, as the classic page's does");
   console.log("#123 turn bar cases passed");
 }
+
+// #119: a workflow call carries its fleet in flow — the classic page's roster (`.fleet` /
+// `.fleet-row` / `.fleet-dot.on` / `a.fleet-name`) rendered WITH the record from the live meta,
+// and rewritten in place when a meta arrives for a block already mounted.
+{
+  const componentsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  const viewModelSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
+  assert.match(viewModelSrc, /run: record\.run \? String\(record\.run\) : "",/, "the view carries the run a call launched — a RECORD field, as the classic page reads it (b.run), not a head field");
+  assert.match(componentsSrc, /export function fleetHtml\(run, state\)/, "the roster is one function of the run and the live meta");
+  assert.match(componentsSrc, /\(state\?\.meta\?\.runs \|\| \[\]\)\.find\(entry => String\(entry\.run\) === String\(run\)\)\?\.members \|\| \[\]/, "…whose members ride the meta, not the record");
+  assert.match(componentsSrc, /<span class="fleet-dot\$\{member\.running \? " on" : ""\}" aria-hidden="true">\$\{member\.running \? "◍" : "◉"\}<\/span>/, "a running member pulses, a finished one sits");
+  assert.match(componentsSrc, /<a class="fleet-name" href="\?session=\$\{encodeURIComponent\(member\.id\)\}" data-child-session="\$\{escapeText\(member\.id\)\}"/, "a member's name opens its session through the child action, and is a link on its own");
+  assert.match(componentsSrc, /\$\{view\.run \? fleetHtml\(view\.run, state\) : ""\}<\/div><\/div>`;/, "the roster sits inside the renderer after the body, so a folded call still shows who it launched");
+  assert.match(componentsSrc, /\$\{view\.run \? ` data-run="\$\{escapeText\(view\.run\)\}"` : ""\}/, "…and the record carries data-run for the refresh to find");
+  assert.match(appSource, /if \(metaArrived\) \{ renderHeader\(\); refreshFleets\(\); \}/, "a meta that arrives for a mounted block rewrites its roster");
+  assert.match(appSource, /const html = fleetHtml\(host\.dataset\.run, recordState\);/, "…from the same function");
+  assert.match(productionCss, /\.fleet-dot\.on\{[^}]*animation:fleet-pulse/, "the running dot pulses");
+  assert.match(productionCss, /@media\(prefers-reduced-motion:reduce\)\{\.fleet-dot\.on\{animation:none\}\}/, "…unless motion is reduced");
+  console.log("#119 fleet roster cases passed");
+}

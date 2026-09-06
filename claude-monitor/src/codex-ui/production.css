@@ -145,6 +145,18 @@
 .renderer-image-thumb{padding:0;border:1px solid var(--line);border-radius:8px;background:var(--bg);cursor:zoom-in;overflow:hidden;max-width:100%;display:block}
 .renderer-image-thumb img{display:block;max-height:320px;max-width:100%;width:auto;height:auto}
 .renderer-image-figure figcaption{font-size:11.5px;color:var(--faint)}
+/* #119: the fleet a workflow call launched, in flow under the call — the classic page's roster
+   (`.fleet` / `.fleet-row` / `.fleet-dot.on` / `a.fleet-name`), in this shell's type. It sits
+   inside the renderer after the body, so a folded call still shows who it launched. */
+.fleet{margin:2px 12px 10px 34px;display:flex;flex-direction:column;gap:3px}
+.fleet-row{display:flex;align-items:center;gap:7px;min-width:0;font-size:12px}
+.fleet-dot{flex:none;width:12px;text-align:center;color:var(--faint);font-size:11px;line-height:1}
+.fleet-dot.on{color:var(--state-running,var(--primary));animation:fleet-pulse 1.6s ease-in-out infinite}
+@keyframes fleet-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.fleet-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);text-decoration:none;border-bottom:1px solid transparent}
+.fleet-name:hover,.fleet-name:focus-visible{border-bottom-color:currentColor;outline:0}
+.fleet-id{flex:none;color:var(--faint);font:10.5px var(--mono)}
+@media(prefers-reduced-motion:reduce){.fleet-dot.on{animation:none}}
 /* #123: the turn bar — a strip at the top of the transcript naming the turn the reader is
    inside, and a control that returns to it. It sticks at the scroller's top, so the scroller
    declares its height as `scroll-padding-top` and viewport.js lands a jump below it rather

@@ -252,7 +252,12 @@ function rendererRecord(record, renderer, name) {
     bare: record.kind === "tool" && !record.tool,
     attachment: record.kind === "attachment" ? head : null,
     interaction: head.interaction || null,
-    childId: head.child_id || childFrom(head.child), children
+    childId: head.child_id || childFrom(head.child), children,
+    // The run a workflow call launched (#38/#119): a STATIC fact of the call, so it is safe in
+    // a cached record — the run's MEMBERS ride the meta and are attached at render time. It is a
+    // RECORD field, not a head field (mod.rs writes it into the record object; the classic page
+    // reads `b.run`) — reading it off the head found nothing on either path.
+    run: record.run ? String(record.run) : "",
   };
 }
 
