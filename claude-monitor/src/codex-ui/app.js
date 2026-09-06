@@ -512,26 +512,50 @@ function directAgents(source = recordState.meta) {
   return result;
 }
 // The outline column scrolls as a whole (#74); the "Outline" caption sticks at its top and every
-// pane's head sits in a stack under it: the slot of a head is the caption plus the heads above
-// it, and on every scroll a head whose pane has moved above its slot is shifted down to the
-// slot — so the Turns head stays under "Outline" however far the column scrolls, and each
-// following head moves up until it sits under the one before it. (CSS sticky cannot do this:
-// a sticky head may not leave its own pane, and a pane scrolled past takes its head along.)
-// Folded panes count: their heads are in the stack too.
+// pane sits in a stack under it: a pane's SLOT is the caption plus the heads above it. Each card
+// is `position:sticky` at its own slot (#88) — an opaque card with a z-index rising down the
+// column — so a card the scroll has carried up pins there with its body still under its own
+// head, and the cards after it scroll OVER that body rather than under it. (The transform this
+// replaced moved the head alone, leaving the body in flow: between two heads the reader saw the
+// top of a body sitting ABOVE the head it belongs to.) The slots are measured here because only
+// the page knows how tall a head is; folded panes count, their heads are in the stack too.
 function stackOutlineHeads() {
   const nav = byId("sessionNavigator");
   const caption = nav.querySelector(":scope > .outline-caption");
-  const navTop = nav.getBoundingClientRect().top;
-  let slot = caption ? caption.getBoundingClientRect().bottom - navTop : 0;
-  nav.querySelectorAll(":scope > .outline-card").forEach(card => {
+  let slot = caption ? caption.getBoundingClientRect().height : 0;
+  let depth = 0;
+  const cards = [...nav.querySelectorAll(":scope > .outline-card")];
+  for (const card of cards) {
     const head = card.querySelector(":scope > .outline-card-head");
-    if (!head) return;
-    head.style.transform = "";
-    const cardTop = card.getBoundingClientRect().top - navTop;
-    const shift = Math.max(0, slot - cardTop);
-    if (shift > 0) head.style.transform = `translateY(${shift}px)`;
-    slot += head.offsetHeight;
-  });
+    if (!head) continue;
+    card.style.setProperty("--slot", `${Math.round(slot)}px`);
+    card.style.zIndex = String(++depth);
+    slot += head.getBoundingClientRect().height;
+  }
+  // A sticky box may not leave its containing block, so the LAST cards need floor under them or
+  // they come unpinned as the column bottoms out. The room the stack needs is the stack itself.
+  nav.style.setProperty("--stack", `${Math.round(slot)}px`);
+}
+/** Put a card's head at its own slot (#88): what "expanded" should look like — the body directly
+ *  below the head, nothing of it above. Called when a pane opens, since a card that opens while
+ *  the column is scrolled would otherwise unfold wherever it happened to be. */
+function landOutlineCard(card) {
+  if (!card) return;
+  const nav = byId("sessionNavigator");
+  const settle = pass => {
+    stackOutlineHeads();
+    // A sticky slot is measured from the scrollport's PADDING box, so the card's own position
+    // has to be read from the same origin — off by the column's padding otherwise, which is
+    // exactly how far short the head lands (measured: 20px, the column's padding-top).
+    const origin = nav.getBoundingClientRect().top + (parseFloat(getComputedStyle(nav).paddingTop) || 0);
+    const slot = parseFloat(getComputedStyle(card).getPropertyValue("--slot")) || 0;
+    const want = nav.scrollTop + (card.getBoundingClientRect().top - origin) - slot;
+    if (Math.abs(want - nav.scrollTop) > 1) nav.scrollTop = want;
+    // The pane opened this frame: its body's height, and so the room the column has to scroll,
+    // is only true once it has been laid out. Correct on the next frame rather than guessing.
+    if (pass < 2) requestAnimationFrame(() => settle(pass + 1));
+  };
+  settle(0);
 }
 byId("sessionNavigator").addEventListener("scroll", stackOutlineHeads, { passive: true });
 window.addEventListener("resize", stackOutlineHeads);
@@ -631,7 +655,18 @@ byId("sessionNavigator").onclick = event => {
   // A card's head folds and unfolds ITS pane (#74) — the whole head, and nothing else changes:
   // the other panes keep their state and their height.
   const card = event.target.closest("[data-nav-card-toggle]");
-  if (card) { const key = card.dataset.navCardToggle; uiState.navCards.has(key) ? uiState.navCards.delete(key) : uiState.navCards.add(key); persist(); renderNavigator(); return; }
+  if (card) {
+    const key = card.dataset.navCardToggle;
+    const opening = !uiState.navCards.has(key);
+    opening ? uiState.navCards.add(key) : uiState.navCards.delete(key);
+    persist();
+    renderNavigator();
+    // A pane that OPENS lands its head at its own slot, so the body it just revealed is directly
+    // below it (#88) — a card opened while the column is scrolled would otherwise unfold
+    // wherever it happened to be sitting.
+    if (opening) landOutlineCard(byId("sessionNavigator").querySelector(`[data-nav-card="${CSS.escape(key)}"]`));
+    return;
+  }
   const rail = event.target.closest("[data-nav-card-open]"); if (rail) { uiState.navCards.add(rail.dataset.navCardOpen); uiState.navigatorOpen = true; persist(); renderNavigator(); }
 };
 

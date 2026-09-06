@@ -168,6 +168,19 @@
 .turn-stickybar:hover,.turn-stickybar:focus-visible{color:var(--ink);outline:0}
 .turn-sticky-caret{flex:none;font-family:var(--mono);font-weight:700;font-size:12px;color:var(--faint)}
 .turn-sticky-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* #88: the outline column is an ACCORDION. Each card sticks at its own slot — the caption plus
+   the heads above it, measured in app.js because only the page knows how tall a head is — with a
+   z-index rising down the column and an opaque background, so a card the scroll has carried up
+   pins with its body still under its own head, and the cards after it pass OVER that body. The
+   8px margin is folded to the bottom only: a sticky box's top offset is measured to its MARGIN
+   box, so a margin-top would sit the head that far below its slot. The column needs floor under
+   the last cards need FLOOR under them or they never reach their slot — a sticky box may not
+   leave its containing block, and that block is the column's CONTENT box, which ends at the last
+   card. Padding does not extend it (measured: the Session head stopped 20px short of its slot);
+   a box does, so the column grows one — `--stack`, the height of the stack it makes room for. */
+.session-navigator:after{content:"";display:block;flex:0 0 auto;height:var(--stack,0px)}
+.session-navigator>.outline-card{position:sticky;top:var(--slot,0px);margin:0 0 8px;background:var(--outline-surface,var(--bg))}
+.session-navigator>.outline-caption{z-index:60}
 /* #96: the sidebar head carries the brand and five controls, and at the sidebar's own width
    they did not fit — `.side-head{overflow:hidden}` swallowed the last three, among them the
    collapse control the owner went looking for (measured: content 410px in a 300px head, the

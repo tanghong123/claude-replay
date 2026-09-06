@@ -3434,14 +3434,12 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
 /// shifted down into its stack slot by a transform while the body stays in flow, so between two
 /// heads the reader sees the top of a body above the head it belongs to.
 ///
-/// `known_red_88`: the requirement, written before the fix. The accordion it needs (each card
-/// sticky at its slot, opaque, rising z-index) is queued as #88 — see that task for what a first
-/// attempt measured: the column is a flex column whose sticky origin is its PADDING box, the
-/// cards' 8px margins drift the stack, and the LAST card cannot pin because a sticky item may
-/// not leave its containing block.
+/// #88: the outline column is an accordion. Each card sticks at its own slot with a rising
+/// z-index, so no pane ever shows its body above its own head, and a pane opened while the
+/// column is scrolled lands its head AT that slot with the body directly below it.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn the_app_shell_outline_never_shows_a_body_above_its_head_known_red_88() {
+fn the_app_shell_outline_is_an_accordion() {
     let _serial = serial();
     let base = base("appshell-outline-accordion");
     let stores = Stores::new(&base);
@@ -3474,6 +3472,28 @@ fn the_app_shell_outline_never_shows_a_body_above_its_head_known_red_88() {
         above.as_array().map(Vec::len),
         Some(0),
         "no pane shows its body above its own head: {above}"
+    );
+    // Expanding from a scrolled column: fold the Session pane, scroll away, open it again — its
+    // head lands at its own slot and its body is directly below, not wherever the card happened
+    // to be sitting.
+    harness::eval(&tab, "document.querySelector('[data-nav-card=\"session\"] [data-nav-card-toggle]').click(); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    harness::eval(
+        &tab,
+        "document.querySelector('.session-navigator').scrollTop = 0; 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    harness::eval(&tab, "document.querySelector('[data-nav-card=\"session\"] [data-nav-card-toggle]').click(); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let landed = harness::probe(&tab, "(function(){ var nav = document.querySelector('.session-navigator'); var card = document.querySelector('[data-nav-card=\"session\"]'); var head = card.querySelector(':scope > .outline-card-head'); var body = card.querySelector(':scope > .outline-card-body'); var origin = nav.getBoundingClientRect().top + (parseFloat(getComputedStyle(nav).paddingTop) || 0); var slot = parseFloat(getComputedStyle(card).getPropertyValue('--slot')) || 0; return { open: card.classList.contains('open'), atSlot: Math.round(head.getBoundingClientRect().top - origin - slot), bodyBelow: Math.round(body.getBoundingClientRect().top - head.getBoundingClientRect().bottom) }; })()");
+    assert_eq!(landed["open"], true, "the pane opened: {landed}");
+    assert!(
+        landed["atSlot"].as_f64().unwrap_or(999.0).abs() <= 2.0,
+        "an opened pane's head lands at its own slot: {landed}"
+    );
+    assert!(
+        landed["bodyBelow"].as_f64().unwrap_or(999.0).abs() <= 2.0,
+        "…with its body directly below the head: {landed}"
     );
     drop(monitor);
 }

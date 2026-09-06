@@ -731,6 +731,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(resolveKey(ev("o"), "view", { tagName: "TEXTAREA" }), null, "never while typing");
   assert.match(appSource, /"navigator-toggle": \(\) => setNavigatorHidden\(!uiState\.navigatorHidden\)/, "the key hides and shows");
   assert.match(appSource, /function setNavigatorHidden\(hidden\) \{ uiState\.navigatorHidden = hidden; persist\(\); renderNavigator\(\); viewport\.remeasure\(\); \}/, "one path, remembered, re-measured");
+  // #88: the column is an accordion — the transform that moved a head alone (and left its body
+  // in flow above it) is gone; each card sticks at its own slot with a rising z-index.
+  assert.doesNotMatch(appSource, /head\.style\.transform/, "no head is moved by a transform any more");
+  assert.match(appSource, /card\.style\.setProperty\("--slot", `\$\{Math\.round\(slot\)\}px`\);\s*\n\s*card\.style\.zIndex = String\(\+\+depth\);/, "each card carries its slot and its depth");
+  assert.match(appSource, /nav\.style\.setProperty\("--stack", `\$\{Math\.round\(slot\)\}px`\);/, "…and the column knows how much floor the stack needs");
+  assert.match(appSource, /const origin = nav\.getBoundingClientRect\(\)\.top \+ \(parseFloat\(getComputedStyle\(nav\)\.paddingTop\) \|\| 0\);/, "a landing measures from the same origin a sticky slot does — the PADDING box");
+  assert.match(appSource, /if \(opening\) landOutlineCard\(/, "opening a pane lands its head at its slot");
+  const navCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(navCss, /\.session-navigator>\.outline-card\{position:sticky;top:var\(--slot,0px\);margin:0 0 8px;background:var\(--outline-surface,var\(--bg\)\)\}/, "the cards are sticky, opaque, and carry no top margin to push them off their slot");
+  assert.match(navCss, /\.session-navigator:after\{content:"";display:block;flex:0 0 auto;height:var\(--stack,0px\)\}/, "the column grows a floor box — padding cannot hold a sticky child, only content can");
   assert.match(appSource, /uiState\.navigatorHidden \? setNavigatorHidden\(false\) : toggleNavigator\(!uiState\.navigatorOpen\)/, "the header's toggle brings a hidden pane back");
   assert.match(appSource, /if \(open\) uiState\.navigatorHidden = false;/, "opening the pane un-hides it");
   assert.match(appSource, /hintFor\("navigator-toggle"\)/, "the key is discoverable on the controls");
@@ -768,14 +778,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(css, /\.session-navigator\{display:flex;flex-direction:column;min-height:0;overflow-y:auto;/, "the column scrolls as a whole");
   assert.match(css, /\.session-navigator>\*\{flex:0 0 auto\}/, "every pane sits at its own height — nothing is shared");
   assert.match(css, /\.session-navigator>\.outline-caption\{position:sticky;top:0;/, "the caption sticks at the top");
-  assert.match(css, /\.session-navigator>\.outline-card>\.outline-card-head\{position:relative;z-index:2;/, "the heads are shifted into a stack by app.js — not CSS-sticky, which cannot leave the pane");
-  assert.doesNotMatch(css, /outline-card-head\{position:sticky/, "…and never stick to the bottom");
+  assert.match(css, /\.session-navigator>\.outline-card>\.outline-card-head\{position:relative;z-index:2;/, "a head sits above its own body…");
+  assert.doesNotMatch(css, /outline-card-head\{position:sticky/, "…and is never sticky itself — the CARD is (#88), so a head can never leave the body it belongs to");
   assert.match(css, /\.navigator-list\{max-height:min\(48vh,560px\);overflow-y:auto;/, "a long list scrolls itself under a max-height");
   assert.doesNotMatch(css, /outline-card\.open\{flex:|\.focus\{flex:/, "no shared height, no focus share");
   assert.match(appSource, /function stackOutlineHeads\(\) \{/, "the stack offsets are measured");
-  assert.match(appSource, /const shift = Math\.max\(0, slot - cardTop\);\n\s*if \(shift > 0\) head\.style\.transform = `translateY\(\$\{shift\}px\)`;\n\s*slot \+= head\.offsetHeight;/, "…each head shifted to its slot under the ones above it");
+  assert.match(appSource, /slot \+= head\.getBoundingClientRect\(\)\.height;/, "…each slot the caption plus the heads above it");
   assert.match(appSource, /byId\("sessionNavigator"\)\.addEventListener\("scroll", stackOutlineHeads, \{ passive: true \}\);/, "…on every scroll of the column");
-  assert.match(appSource, /if \(card\) \{ const key = card\.dataset\.navCardToggle; uiState\.navCards\.has\(key\) \? uiState\.navCards\.delete\(key\) : uiState\.navCards\.add\(key\); persist\(\); renderNavigator\(\); return; \}/, "a head click toggles its own pane, whole head");
+  assert.match(appSource, /const opening = !uiState\.navCards\.has\(key\);\s*\n\s*opening \? uiState\.navCards\.add\(key\) : uiState\.navCards\.delete\(key\);/, "a head folds and unfolds ITS pane, and nothing else changes")
   assert.doesNotMatch(appSource, /navFocus|classList\.toggle\("focus"/, "no focus state");
   const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
   assert.doesNotMatch(stateSrc, /navFocus/, "…nor remembered");
