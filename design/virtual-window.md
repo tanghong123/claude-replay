@@ -439,3 +439,70 @@ the moment the pads are known, and it gives the same answer however the window g
 
 The order matters: 1–4 improve the app shell on its own and change nothing on the reference page,
 and each is measurable by the scenarios that exist today.
+
+### Step 5, surveyed: a third rule differs, and it has no comfortable option (2026-09-06)
+
+Steps 1–4 shipped (v1.212.0, v1.213.0), so the engine now measures before paint, writes the
+position rather than nudging it, leaves the reader's own motion alone and re-guesses heights on
+a width change. That cleared the way for step 5 — the classic page driving the same class
+through a document frame — and a survey of what that takes, verified against the source, says
+**do not start it yet**. Four readers mapped it and four adversarial checks came back
+`holds: false`. What follows is what the survey established, so nobody pays for it twice.
+
+**The DOM half is easy, and that was the part expected to be hard.** `#stream` is empty in the
+exported HTML (`mod.rs` writes `<div id="stream"></div>`; every child is built by JS), `export.css`
+does not mention `#stream` at all, and repo-wide there is exactly ONE `#stream >` child selector
+in the tests. So wrapping the mounted run in a div — which the engine needs, since six of its
+methods assume `mount.window.children` ARE the items — changes no rendered byte and breaks no
+selector. The byte-identical gate still moves, but only because `export.js` is inlined into every
+page, which is the ordinary shared-module re-baseline.
+
+**Rule 3, which nobody had named: the two pages cannot share one height measure.** The engine
+records a unit as border box **plus margins** (`measureMounted`). The classic page's blocks carry
+margins on *both* sides — `.uturn{margin:16px 0 10px}`, `.fold{margin:2px 0}`,
+`.fold[data-open="1"]:not(.uturn){margin:8px 0}` — and adjacent siblings **collapse**, so a
+border-box-plus-margins measure over-counts every pair by `min(margin-bottom, margin-top)`. The
+classic page's own `measureWindow` absorbs that exactly, by measuring top-to-next-top:
+`var h = next.offsetTop - els[k].offsetTop`. The app shell never met this because its units are
+spaced with padding, not margins.
+
+That is not a parameter waiting to be named. **The engine already tried top-to-next-top and
+reverted it** — #132 above — because that basis attributes the gap between two items to the upper
+one, so which item owns a margin changes as the window slides, and the app shell's width reflow
+moved the reader off the unit they were reading. So the two pages want *opposite* measures for
+good reasons on each side. The options are: fork the measure (which is what step 5 exists to
+stop), parameterize it (the design #132 reverted), or take the margins out of the classic page's
+CSS — a change to how the reference page LOOKS, not merely how it is built.
+
+**Two costs of the agreed sparse/dense policy that the decision could not have foreseen.** The
+owner chose a `skip(index)` predicate with empty placeholder children, keeping the reconcile loop
+1:1. Under a filter that hides most of a long session:
+
+- `rangeAround` walks `while (hi < count && below > 0) { below -= heightAt(hi); hi++; }` — a
+  skipped record has height 0, so it consumes none of the budget and the range keeps growing.
+  A window that today mounts twenty visible records would mount every hidden record between them
+  as a placeholder: thousands of nodes, and one `ResizeObserver.observe` per node, since
+  `reconcile` observes every child it mounts. The classic page's sparse mount never builds them.
+- A placeholder stamped with its record's identity **passes the reuse test**
+  (`cursor.dataset.unitKey === this.identityAt(index)`), so when the filter clears, the engine
+  keeps the placeholder and never renders the record. Stamped with anything else, it is torn
+  down and rebuilt on every reconcile. Both directions need explicit handling the model does not
+  have yet.
+
+**Three more that must be answered before any code:** the classic page observes `document.body`
+and restores its anchor synchronously from that (growth ANYWHERE, including chrome outside the
+mounted run) while the engine observes only the mount and its children; six places compute a
+position from the sums alone (a filter exit, `landOn`, `goToId`, `matRecord`, search ordering,
+`turnTo`) which the engine serves none of; and `ui_contract.mjs` pins seven literal lines of
+`export.js` that the port deletes — a mandatory CI step, guaranteed red until rewritten.
+
+**Recommendation: leave the classic page where it is, and close the acceptance differently.**
+"Both pages drive it" was worth wanting when the engine was one page's private machinery. It no
+longer is: the arithmetic is shared and node-tested, the state machine is shared and the app
+shell runs it, and the two pages are held to the same behaviour by scenarios that run on both —
+which is the property the migration was a means to. What step 5 would add is that one *file*
+holds the loop; what it would cost is a fork of the height measure or a change to the reference
+page's spacing, plus a placeholder explosion under exactly the filter the classic page uses most.
+If the owner still wants it, the first commit is not the port: it is a decision on rule 3, and a
+scenario for the sparse-filter window that fails on the placeholder model before any of it is
+written.
