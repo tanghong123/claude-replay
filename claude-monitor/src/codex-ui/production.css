@@ -145,6 +145,28 @@
 .renderer-image-thumb{padding:0;border:1px solid var(--line);border-radius:8px;background:var(--bg);cursor:zoom-in;overflow:hidden;max-width:100%;display:block}
 .renderer-image-thumb img{display:block;max-height:320px;max-width:100%;width:auto;height:auto}
 .renderer-image-figure figcaption{font-size:11.5px;color:var(--faint)}
+/* #96: the sidebar head carries the brand and five controls, and at the sidebar's own width
+   they did not fit — `.side-head{overflow:hidden}` swallowed the last three, among them the
+   collapse control the owner went looking for (measured: content 410px in a 300px head, the
+   theme toggle cut in half and collapse-all, expand-all and the sidebar collapse entirely off
+   screen). The head WRAPS instead of clipping: the controls keep their size and take their own
+   row when the brand leaves no room, so each is on screen at every width the sidebar can be
+   dragged to, and they return to one row when there is room again. */
+.side-head{height:auto;min-height:72px;flex-wrap:wrap;align-content:center;row-gap:1px;padding-bottom:5px;overflow:visible}
+.side-head>.brand{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-head>.head-actions{flex:none}
+/* #96: the session list's own resize handle, on the sidebar's right edge. `--sidebar-user`
+   reaches the grid only above the mobile breakpoint, where the sidebar is a full-width sheet
+   and a drag makes no sense; the rail has no width to drag either. */
+@media(min-width:761px){
+  .app{--sidebar:var(--sidebar-user,300px)}
+  .sidebar{position:relative}
+}
+.sidebar-resizer{position:absolute;top:0;right:0;bottom:0;width:6px;z-index:24;cursor:col-resize;touch-action:none;background:transparent;transition:background-color .12s}
+.sidebar-resizer:hover,.sidebar-resizer.dragging,.sidebar-resizer:focus-visible{background:var(--blue);outline:0}
+.sidebar-resizer.dragging:after{content:"";position:fixed;inset:0;cursor:col-resize;z-index:9999}
+.app.sidebar-off .sidebar-resizer{display:none}
+@media(max-width:760px){.sidebar-resizer{display:none}}
 /* #78 / #95: the published-artifact roster — the right pane's pinned first tab, and the
    count on the pane's button so a closed pane still says there is something to see. */
 #previewBtn{position:relative}

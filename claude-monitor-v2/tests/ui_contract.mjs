@@ -1491,3 +1491,18 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(css89, /\.session-info-label\{display:flex;[^}]*cursor:pointer/, "the label reads as a control");
   console.log("#89 info fold cases passed");
 }
+
+// #96: the sidebar head wraps rather than clipping its controls, and the session list resizes
+// from a handle on its own edge, with the width remembered and clamped.
+{
+  assert.match(productionCss, /\.side-head\{height:auto;min-height:72px;flex-wrap:wrap/, "the head wraps instead of clipping what does not fit");
+  assert.match(productionCss, /\.side-head>\.head-actions\{flex:none\}/, "…the controls keep their size; the brand is what yields");
+  assert.match(productionCss, /@media\(min-width:761px\)\{\s*\.app\{--sidebar:var\(--sidebar-user,300px\)\}/, "the viewer's width reaches the grid only above the mobile breakpoint");
+  assert.match(productionCss, /\.app\.sidebar-off \.sidebar-resizer\{display:none\}/, "…and the rail has nothing to drag");
+  assert.match(appSource, /const SIDEBAR_MIN = 232, SIDEBAR_MAX = 520, SIDEBAR_DEFAULT = 300;/, "the width is clamped at both ends");
+  assert.match(appSource, /Math\.max\(SIDEBAR_MIN, Math\.min\(SIDEBAR_MAX, Math\.round\(Number\.isFinite\(asked\) \? asked : SIDEBAR_DEFAULT\)\)\)/, "…on every path that sets it, and a drag to x=0 clamps to the minimum rather than falling back to the default");
+  assert.match(appSource, /localStorage\.setItem\(SIDEBAR_WIDTH_KEY, String\(width\)\)/, "…and remembered for the viewer");
+  assert.match(appSource, /setSidebarWidth\(localStorage\.getItem\(SIDEBAR_WIDTH_KEY\) \|\| SIDEBAR_DEFAULT, false\);/, "…and restored on load");
+  assert.match(appSource, /try \{ sidebarResizer\.setPointerCapture\(event\.pointerId\); \} catch \(_\) \{\}/, "a refused pointer capture does not end the drag");
+  console.log("#96 sidebar head and resize cases passed");
+}

@@ -997,6 +997,62 @@ byId("sidebarCollapse").onclick = () => toggleSidebar(false); byId("sidebarMiniE
 byId("sidebarMiniWrite").onclick = () => byId("writeSwitch").click();
 byId("sidebarCollapse").title = `Collapse the sidebar into its icon rail  ( ${hintFor("sidebar-toggle")} )`;
 byId("sidebarMiniExpand").title = `Expand the sidebar  ( ${hintFor("sidebar-toggle")} )`;
+// #96: the session list is resizable, the way the preview pane is — a handle on the sidebar's
+// own right edge. The width is the viewer's: it is written to `--sidebar-user` (production.css
+// feeds it to the grid only above the mobile breakpoint, so a phone keeps its full-width
+// sheet), remembered across reloads, reset by a double-click and nudged by the arrow keys.
+const SIDEBAR_WIDTH_KEY = "am-sidebar-width";
+const SIDEBAR_MIN = 232, SIDEBAR_MAX = 520, SIDEBAR_DEFAULT = 300;
+const sidebarResizer = document.createElement("div");
+sidebarResizer.className = "sidebar-resizer";
+sidebarResizer.id = "sidebarResizer";
+sidebarResizer.setAttribute("role", "separator");
+sidebarResizer.setAttribute("aria-orientation", "vertical");
+sidebarResizer.setAttribute("aria-label", "Resize the session list");
+sidebarResizer.setAttribute("aria-valuemin", String(SIDEBAR_MIN));
+sidebarResizer.setAttribute("aria-valuemax", String(SIDEBAR_MAX));
+sidebarResizer.tabIndex = 0;
+document.querySelector(".sidebar").append(sidebarResizer);
+function sidebarWidth() {
+  return Math.round(document.querySelector(".sidebar").getBoundingClientRect().width) || SIDEBAR_DEFAULT;
+}
+function setSidebarWidth(value, remember) {
+  // A drag that reaches x=0 is a drag to the minimum, not a request for the default: 0 is a
+  // width, so only a value that is not a number at all falls back.
+  const asked = Number(value);
+  const width = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(Number.isFinite(asked) ? asked : SIDEBAR_DEFAULT)));
+  document.documentElement.style.setProperty("--sidebar-user", `${width}px`);
+  sidebarResizer.setAttribute("aria-valuenow", String(width));
+  sidebarResizer.title = `Drag to resize the session list · double-click for ${SIDEBAR_DEFAULT}px`;
+  if (remember) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width));
+  viewport.remeasure();
+  return width;
+}
+sidebarResizer.addEventListener("pointerdown", event => {
+  if (!indexState.sidebarOpen) return;
+  event.preventDefault();
+  // A synthetic pointer (a test, an assistive tool) has no capture to take — the drag is driven
+  // from the window either way, so a refused capture must not end it.
+  try { sidebarResizer.setPointerCapture(event.pointerId); } catch (_) {}
+  sidebarResizer.classList.add("dragging"); app.classList.add("resizing");
+  let width = sidebarWidth();
+  const move = moved => { width = setSidebarWidth(moved.clientX, false); };
+  const up = () => {
+    removeEventListener("pointermove", move); removeEventListener("pointerup", up);
+    sidebarResizer.classList.remove("dragging"); app.classList.remove("resizing");
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width));
+  };
+  addEventListener("pointermove", move); addEventListener("pointerup", up);
+});
+sidebarResizer.ondblclick = () => setSidebarWidth(SIDEBAR_DEFAULT, true);
+sidebarResizer.onkeydown = event => {
+  const step = event.shiftKey ? 32 : 8;
+  if (event.key === "ArrowLeft") setSidebarWidth(sidebarWidth() - step, true);
+  else if (event.key === "ArrowRight") setSidebarWidth(sidebarWidth() + step, true);
+  else return;
+  event.preventDefault();
+};
+setSidebarWidth(localStorage.getItem(SIDEBAR_WIDTH_KEY) || SIDEBAR_DEFAULT, false);
 // The outline pane has three states (#55): open, collapsed to its icon rail ("off"), and
 // HIDDEN — gone altogether, the transcript taking the whole remaining width. The header's
 // toggle walks open ↔ rail as before and brings a hidden pane back; `o` and the rail's own

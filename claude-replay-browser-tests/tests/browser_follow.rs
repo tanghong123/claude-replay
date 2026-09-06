@@ -2370,20 +2370,45 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
         false,
         "a fresh shell opens with the sidebar expanded"
     );
-    // #76: the control is there to be seen — a glyph, a size, a name — before it is clicked.
-    let control = harness::probe(&tab, "(function(){ var b = document.getElementById('sidebarCollapse'); var r = b.getBoundingClientRect(); return { visible: b.offsetParent !== null && r.width >= 24 && r.height >= 24, glyph: !!b.querySelector('svg'), label: b.getAttribute('aria-label') || '' }; })()");
-    assert_eq!(
-        control["visible"], true,
-        "the sidebar collapse control is visible: {control}"
-    );
-    assert_eq!(control["glyph"], true, "…with a glyph: {control}");
-    assert!(
-        control["label"]
-            .as_str()
-            .unwrap_or("")
-            .contains("Collapse the session list"),
-        "…and a name: {control}"
-    );
+    // #76 / #96: the control is there to be SEEN — a glyph, a size, a name, inside the sidebar
+    // it belongs to, and answering a hit test at its own centre. A rect alone says nothing: the
+    // head clips what overflows it, and for four releases this button sat 91px past the clip,
+    // rect and all, which is why the owner went looking for it and found nothing (#96).
+    let seen = "(function(){ var b = document.getElementById('sidebarCollapse'); var side = document.querySelector('.sidebar'); var r = b.getBoundingClientRect(), sr = side.getBoundingClientRect(); var hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2); return { visible: b.offsetParent !== null && r.width >= 24 && r.height >= 24, inside: r.left >= sr.left - 0.5 && r.right <= sr.right + 0.5 && r.top >= sr.top - 0.5, hits: !!hit && (hit === b || b.contains(hit)), glyph: !!b.querySelector('svg'), label: b.getAttribute('aria-label') || '', width: Math.round(sr.width) }; })()";
+    for narrow in [false, true] {
+        if narrow {
+            // The owner's own window is not the widest one: the control has to survive there too.
+            tab.set_bounds(headless_chrome::types::Bounds::Normal {
+                left: None,
+                top: None,
+                width: Some(1000.0),
+                height: Some(800.0),
+            })
+            .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        let control = harness::probe(&tab, seen);
+        assert_eq!(
+            control["visible"], true,
+            "the sidebar collapse control is visible (narrow={narrow}): {control}"
+        );
+        assert_eq!(
+            control["inside"], true,
+            "…inside the sidebar, not clipped past its edge (narrow={narrow}): {control}"
+        );
+        assert_eq!(
+            control["hits"], true,
+            "…and reachable by a click at its own centre (narrow={narrow}): {control}"
+        );
+        assert_eq!(control["glyph"], true, "…with a glyph: {control}");
+        assert!(
+            control["label"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Collapse the session list"),
+            "…and a name: {control}"
+        );
+    }
     harness::eval(
         &tab,
         "document.getElementById('sidebarCollapse').click(); 'ok'",
@@ -3944,6 +3969,130 @@ fn the_app_shell_expands_every_group_again() {
     assert_eq!(
         after["open"], after["total"],
         "expand-all is remembered across a reload: {after}"
+    );
+    drop(monitor);
+}
+
+/// #96: the session list is resizable — a handle on the sidebar's own right edge, a width that
+/// is clamped, remembered across a reload, and reset by a double-click. The head reflows with
+/// it: the controls that share a row with the brand only when there is room for them.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_resizes_the_session_list() {
+    let _serial = serial();
+    let base = base("appshell-sidebar-resize");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000096".to_string();
+    stores.claude_session(&sid, &harness::long_session(10, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2876, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    let url = format!("http://127.0.0.1:2876/?ui=app&session={sid}");
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0";
+    harness::until(
+        &tab,
+        mounted,
+        "the app shell to mount the fixture",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let state = "(function(){ var side = document.querySelector('.sidebar'), head = document.querySelector('.side-head'); var handle = document.getElementById('sidebarResizer'); var hr = handle ? handle.getBoundingClientRect() : null; var sr = side.getBoundingClientRect(); var brand = head.querySelector('.brand').getBoundingClientRect(), acts = head.querySelector('.head-actions').getBoundingClientRect(); return { width: Math.round(sr.width), handle: hr ? [Math.round(hr.right - sr.right), Math.round(hr.width)] : null, sameRow: Math.abs(acts.top - brand.top) <= 10, actionsInside: acts.right <= sr.right + 0.5, stored: localStorage.getItem('am-sidebar-width'), role: handle ? handle.getAttribute('role') : '' }; })()";
+    let start = harness::probe(&tab, state);
+    assert_eq!(
+        start["width"], 300,
+        "the list opens at its default width: {start}"
+    );
+    assert_eq!(
+        start["handle"]
+            .as_array()
+            .map(|h| (h[0].as_i64(), h[1].as_i64())),
+        Some((Some(0), Some(6))),
+        "the handle sits on the sidebar's right edge: {start}"
+    );
+    assert_eq!(start["role"], "separator", "…named for what it is: {start}");
+    // A drag widens it. The head reflows: at 300px its five controls take their own row, and
+    // with the room a wider list gives they come back up beside the brand.
+    assert_eq!(
+        start["sameRow"], false,
+        "at the default width the head's controls take their own row rather than overflow: {start}"
+    );
+    assert_eq!(
+        start["actionsInside"], true,
+        "…and every one of them is inside the sidebar: {start}"
+    );
+    let drag = |x: i32| {
+        format!("(function(){{ var r = document.getElementById('sidebarResizer'); var rect = r.getBoundingClientRect(); r.dispatchEvent(new PointerEvent('pointerdown', {{ clientX: rect.left + 3, clientY: 300, bubbles: true, pointerId: 1 }})); dispatchEvent(new PointerEvent('pointermove', {{ clientX: {x}, clientY: 300, bubbles: true, pointerId: 1 }})); dispatchEvent(new PointerEvent('pointerup', {{ clientX: {x}, clientY: 300, bubbles: true, pointerId: 1 }})); return 'ok'; }})()")
+    };
+    harness::eval(&tab, &drag(430));
+    harness::until(
+        &tab,
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 430",
+        "the list to follow the drag",
+        std::time::Duration::from_secs(5),
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
+    );
+    let wide = harness::probe(&tab, state);
+    assert_eq!(wide["stored"], "430", "the width is the viewer's: {wide}");
+    assert_eq!(
+        wide["sameRow"], true,
+        "the head's controls come back up beside the brand once there is room: {wide}"
+    );
+    // Clamped at both ends — a drag off the left edge cannot leave a sliver, nor eat the page.
+    harness::eval(&tab, &drag(60));
+    harness::until(
+        &tab,
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 232",
+        "the list to stop at its minimum",
+        std::time::Duration::from_secs(5),
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
+    );
+    harness::eval(&tab, &drag(900));
+    harness::until(
+        &tab,
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 520",
+        "the list to stop at its maximum",
+        std::time::Duration::from_secs(5),
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
+    );
+    // Remembered across a reload, and a double-click puts it back.
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        mounted,
+        "the reloaded shell",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    harness::until(
+        &tab,
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 520",
+        "the width to survive the reload",
+        std::time::Duration::from_secs(10),
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
+    );
+    harness::eval(&tab, "document.getElementById('sidebarResizer').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); 'ok'");
+    harness::until(
+        &tab,
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 300",
+        "a double-click to restore the default width",
+        std::time::Duration::from_secs(5),
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
+    );
+    // The rail has no width to drag: collapsed, the handle is gone.
+    harness::eval(
+        &tab,
+        "document.getElementById('sidebarCollapse').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sidebarResizer').offsetParent === null",
+        "the handle to leave with the list",
+        std::time::Duration::from_secs(5),
+        "document.getElementById('app').className",
     );
     drop(monitor);
 }
