@@ -822,6 +822,85 @@ fn app_shell_corrects_a_growth_above_before_paint() {
     scenario_growth_above_is_corrected_before_paint(&page.tab, Surface::AppShell, &fx);
 }
 
+// ── scenario: the reader's own motion is never fought (#132 step 3) ─────────────────────────
+
+/// While the reader is moving the view — a wheel still travelling as a fling, a thumb held —
+/// the page must not write `scrollTop` underneath them: the fling stutters or dies, the thumb
+/// jumps under the pointer. A correction owed during that window is paid at its end instead, so
+/// nothing is lost. The probe counts the writes the page makes to its own scroller.
+///
+/// The classic half is `known_red_134`: it writes twice in that window (measured), which is the
+/// same defect on the reference page — a classic bug of its own, per #71.
+fn scenario_the_readers_motion_is_never_fought(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    for _ in 0..3 {
+        scroll_by(tab, surface, -700);
+    }
+    settle();
+    // Count every scroll the PAGE performs, on either surface's scroller.
+    let install = match surface {
+        Surface::Classic => "(function(){ window.__writes = 0; var el = document.scrollingElement; ['scrollTo','scrollBy'].forEach(function (m) { var f = window[m].bind(window); window[m] = function () { window.__writes++; return f.apply(null, arguments); }; }); var d = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop'); Object.defineProperty(el, 'scrollTop', { get: function () { return d.get.call(el); }, set: function (v) { window.__writes++; d.set.call(el, v); } }); return 'ok'; })()",
+        Surface::AppShell => "(function(){ window.__writes = 0; var el = document.querySelector('.transcript'); var d = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop'); Object.defineProperty(el, 'scrollTop', { get: function () { return d.get.call(el); }, set: function (v) { window.__writes++; d.set.call(el, v); } }); return 'ok'; })()",
+    };
+    eval(tab, install);
+    // The reader is mid-fling: a wheel, and then growth arriving inside the intent window.
+    let wheel = match surface {
+        Surface::Classic => "window",
+        Surface::AppShell => "document.querySelector('.transcript')",
+    };
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        harness::open_turn_growth(40, 2),
+        Duration::from_millis(300),
+    );
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < Duration::from_millis(2600) {
+        eval(
+            tab,
+            &format!("(function(){{ {wheel}.dispatchEvent(new WheelEvent('wheel', {{ deltaY: -40, bubbles: true }})); return 'ok'; }})()"),
+        );
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    let during = eval(tab, "window.__writes").as_i64().unwrap_or(-1);
+    growth.finish(Duration::from_secs(10));
+    assert_eq!(
+        during, 0,
+        "while the reader's own motion is in flight the page wrote the scroll offset {during} time(s) — a fling fights every one of them"
+    );
+    // …and the correction was not dropped: once the motion stops the reader is holding the same
+    // record, which is what the owed correction pays for.
+    settle();
+    settle();
+    let (key, _) = harness::view_anchor(tab, surface);
+    assert!(
+        !key.is_empty(),
+        "after the motion stopped the reader is on a record"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_never_fights_the_readers_motion_known_red_134() {
+    let _serial = serial();
+    let fx = fixture_open_turn("scenario-fling-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_the_readers_motion_is_never_fought(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_never_fights_the_readers_motion() {
+    let _serial = serial();
+    let fx = fixture_open_turn("scenario-fling-app");
+    let page = open(Surface::AppShell, &fx, 2910);
+    scenario_the_readers_motion_is_never_fought(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: a workflow call carries its fleet in flow (#119) ──────────────────────────────
 
 /// The call that launched a run shows its members under it — a dot per member, pulsing for the
@@ -1460,7 +1539,12 @@ fn scenario_scrolling_back_during_growth_holds_between_scrolls(
         ticks += 1;
         if ticks.is_multiple_of(9) {
             scroll_by(tab, surface, -400);
-            std::thread::sleep(Duration::from_millis(150));
+            // The reader's own scroll is not over when the wheel stops: a fling is still
+            // travelling, and while it is, a correction owed by growth is deliberately not
+            // written (#132 step 3 — writing under momentum stutters or kills it). Take the
+            // baseline once that window has lapsed, so this measures what the rule is about:
+            // between the reader's OWN movements, nothing moves on its own.
+            std::thread::sleep(Duration::from_millis(500));
             expect = harness::view_anchor(tab, surface);
             continue;
         }

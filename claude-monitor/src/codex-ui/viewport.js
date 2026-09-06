@@ -107,6 +107,12 @@ export class Viewport extends VirtualWindow {
   heightFor(index) { const unit = this.units[index]; return unit ? this.state.heights.get(unit.key) : 0; }
   setHeight(index, height) { this.state.heights.set(this.units[index].key, height); }
   clearHeights() { this.state.heights.clear(); }
+  /** #132 step 4: the same heights, re-guessed for a new measure. A text block's height moves
+   *  roughly with the inverse of its width, and rule 5 still holds — an estimate is a FLOOR, so
+   *  a widen that scales a height down may not take it under this shell's own floor. */
+  scaleHeights(ratio) {
+    for (const [key, height] of this.state.heights) this.state.heights.set(key, Math.max(ESTIMATE, height * ratio));
+  }
   renderItem(index) { return renderUnit(this.units[index], this.state); }
   afterRender() { this.actions.afterRender?.(); }
   afterScroll() { this.actions.afterScroll?.(); }

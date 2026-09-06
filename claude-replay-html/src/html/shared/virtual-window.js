@@ -148,6 +148,8 @@ class VirtualWindow {
     this.prefix = [0];
     this.lo = 0;
     this.hi = 0;
+    // The width the remembered heights were measured at (#132 step 4).
+    this.lastWidth = 0;
     this.pendingScroll = false;
     // Sentinel far in the past: performance.now() is small right after load, so a 0 init would
     // read the load sequence's own scrolls (and the browser's async scroll restoration) as the
@@ -157,6 +159,9 @@ class VirtualWindow {
     this.dragging = false;
     this.bottomTimer = 0;
     this.rememberTimer = 0;
+    // A correction the reader's own motion postponed (#132 step 3), and the timer that pays it.
+    this.owed = null;
+    this.settleTimer = 0;
 
     // A height that changes on its own — a row growing, a font arriving, an estimate replaced —
     // is measured INSIDE the observer delivery (#132): after layout and before the frame paints,
@@ -273,7 +278,10 @@ class VirtualWindow {
     // same quantity the sums stand for, read where it is known exactly.
     const itemTop = item.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop();
     const want = itemTop + within - sat;
-    if (correction(this.frame.scrollTop(), want, 1)) this.frame.scrollTo(want);
+    if (!correction(this.frame.scrollTop(), want, 1)) return;
+    // The reader is moving: owe it, do not write (#132 step 3).
+    if (this.readerOwnsPosition()) { this.owed = anchor; this.scheduleSettle(); return; }
+    this.frame.scrollTo(want);
   }
 
   /** The anchor a SPONTANEOUS change is measured against (#98). A change the engine makes
@@ -290,6 +298,28 @@ class VirtualWindow {
     this.anchor = this.following || this.dragging ? null : this.captureDomAnchor();
   }
 
+  /** Is the position the READER's right now? While a thumb is held, and for `userIntentMs`
+   *  after a wheel or a touch — which is a fling still travelling. Writing `scrollTop` under
+   *  either fights whoever owns the motion: the drag jumps under the pointer, the fling
+   *  stutters or dies. The correction is not dropped, it is OWED (#132 step 3). */
+  readerOwnsPosition() {
+    return this.dragging || performance.now() - this.lastUserInput < this.userIntentMs;
+  }
+
+  /** Pay an owed correction once the reader has stopped moving. Re-armed on every attempt, so a
+   *  continuous fling pays only at its end. */
+  scheduleSettle() {
+    clearTimeout(this.settleTimer);
+    this.settleTimer = setTimeout(() => {
+      if (!this.owed || this.following) { this.owed = null; return; }
+      if (this.readerOwnsPosition()) { this.scheduleSettle(); return; }
+      const anchor = this.owed;
+      this.owed = null;
+      this.restoreDomAnchor(anchor);
+      this.syncAnchor();
+    }, this.userIntentMs);
+  }
+
   beginDrag() {
     if (this.dragging) return;
     this.dragging = true;
@@ -300,6 +330,10 @@ class VirtualWindow {
   endDrag() {
     if (!this.dragging) return;
     this.dragging = false;
+    // The model's own reset (#132 step 3): the offset the drag left names a record, that record
+    // is mounted first, and the anchor is re-read there — rather than correcting toward an
+    // anchor from before the drag, which is a place the reader deliberately left.
+    this.owed = null;
     this.updateWindow();
     this.syncAnchor();
     this.scheduleRemember();
@@ -470,10 +504,20 @@ class VirtualWindow {
     settle(0);
   }
 
-  /** Every measured height is wrong (the font changed, the window resized): learn them again. */
+  /** The layout changed under everything: a pane opened, the font arrived, the window resized.
+   *  What that does to a height is not "unknown" — a block of text is about as tall as its
+   *  measure is narrow — so a width change SCALES the remembered heights (#132 step 4) rather
+   *  than throwing them away and falling back to per-kind floors, which shrinks the page under
+   *  the reader until they have scrolled through it again. The mounted ones are corrected
+   *  exactly by the observer a frame later; only the invisible groups keep the guess. A change
+   *  that is not a width change (a font) has no ratio to apply, and there the old rule stands. */
   remeasure() {
     const anchor = this.following ? null : this.captureDomAnchor();
-    this.clearHeights();
+    const width = this.mount.getBoundingClientRect().width;
+    const ratio = this.lastWidth && width ? this.lastWidth / width : 0;
+    this.lastWidth = width || this.lastWidth;
+    if (ratio && Math.abs(ratio - 1) > 0.01 && this.scaleHeights) this.scaleHeights(ratio);
+    else this.clearHeights();
     this.rebuildPrefix();
     const anchorIndex = anchor ? this.indexOfIdentity(anchor.key) : -1;
     const range = anchorIndex >= 0 ? this.rangeAround(anchorIndex) : this.rangeForScroll();

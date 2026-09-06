@@ -1550,8 +1550,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(src, /scheduleMeasure|pendingMeasure/, "…and the deferral is gone");
   assert.match(src, /this\.contentObserver\.observe\(mount\.window\);/, "the content observer watches the mounted window, not the pads it would loop on");
   assert.match(src, /const contentTop = this\.topPad\.getBoundingClientRect\(\)\.top - this\.frame\.viewportTop\(\) \+ this\.frame\.scrollTop\(\);\s*\n\s*return contentTop \+ \(this\.prefix\[index\] \|\| 0\);/, "an item's document top is the pads' edge plus the sums before it");
-  assert.match(src, /const want = itemTop \+ within - sat;\s*\n\s*if \(correction\(this\.frame\.scrollTop\(\), want, 1\)\) this\.frame\.scrollTo\(want\);/, "the write-back is absolute — scrollTo a position derived from the anchor, not scrollBy an accumulating difference");
+  assert.match(src, /const want = itemTop \+ within - sat;\s*\n\s*if \(!correction\(this\.frame\.scrollTop\(\), want, 1\)\) return;[\s\S]{0,240}?this\.frame\.scrollTo\(want\);/, "the write-back is absolute — scrollTo a position derived from the anchor, not scrollBy an accumulating difference");
   assert.match(src, /\/\/ Not mounted: nothing to hold it by\./, "…and an anchor the window has left behind stays put — the sums there are estimates");
   assert.doesNotMatch(src, /this\.frame\.scrollBy\(/, "…and nothing in the engine nudges the offset by an increment any more");
   console.log("#132 anchor-is-the-position cases passed");
+}
+
+// #132 steps 3-4: the reader owns the position while they are moving it, and a width change
+// re-guesses the remembered heights rather than discarding them.
+{
+  const src = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  const vpSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  assert.match(src, /readerOwnsPosition\(\) \{\s*\n\s*return this\.dragging \|\| performance\.now\(\) - this\.lastUserInput < this\.userIntentMs;/, "a held thumb and a travelling fling own the position");
+  assert.match(src, /if \(this\.readerOwnsPosition\(\)\) \{ this\.owed = anchor; this\.scheduleSettle\(\); return; \}/, "…so the correction is owed, not written under them");
+  assert.match(src, /if \(this\.readerOwnsPosition\(\)\) \{ this\.scheduleSettle\(\); return; \}/, "…and the settle re-arms while they are still moving");
+  assert.match(src, /this\.owed = null;\s*\n\s*this\.updateWindow\(\);/, "a drag ends in the model's own reset — the offset names a record, not the anchor from before the drag");
+  assert.match(src, /const ratio = this\.lastWidth && width \? this\.lastWidth \/ width : 0;/, "a width change has a ratio…");
+  assert.match(src, /if \(ratio && Math\.abs\(ratio - 1\) > 0\.01 && this\.scaleHeights\) this\.scaleHeights\(ratio\);\s*\n\s*else this\.clearHeights\(\);/, "…and scales the remembered heights; anything else still relearns them");
+  assert.match(vpSrc, /this\.state\.heights\.set\(key, Math\.max\(ESTIMATE, height \* ratio\)\)/, "…never under the floor an estimate must be (rule 5)");
+  console.log("#132 steps 3-4 cases passed");
 }
