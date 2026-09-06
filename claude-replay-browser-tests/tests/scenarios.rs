@@ -896,6 +896,166 @@ fn app_shell_never_fights_the_readers_motion() {
     scenario_the_readers_motion_is_never_fought(&page.tab, Surface::AppShell, &fx);
 }
 
+// ── scenario: wide mode drops the reading-width cap (#136) ──────────────────────────────────
+
+/// The reading measure serves prose; a diff-heavy session wants the window. Both pages offer a
+/// wide switch, and on both it must actually widen the transcript — and be remembered. (The app
+/// shell had the switch, the class and the remembered preference, and no rule that read the
+/// class: the reader flipped it and the page did not move.)
+fn scenario_wide_mode_drops_the_reading_cap(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    // Wide enough that the cap is what limits the column — under it, `min()` already returns the
+    // window and the switch is rightly a no-op.
+    harness::resize(tab, 1800.0, 900.0);
+    // set_bounds is asynchronous: measuring before the window has actually grown reads the
+    // WINDOW widening, not the cap dropping — which passes on a page that has no wide mode.
+    until(
+        tab,
+        "innerWidth >= 1700",
+        "the window to reach its wide size",
+        Duration::from_secs(10),
+        "innerWidth",
+    );
+    settle();
+    let column = match surface {
+        Surface::Classic => "document.getElementById('main').getBoundingClientRect().width",
+        Surface::AppShell => {
+            "document.querySelector('.transcript-inner').getBoundingClientRect().width"
+        }
+    };
+    let toggle = match surface {
+        Surface::Classic => "(function(){ document.getElementById('btn-wide').click(); return 'ok'; })()",
+        Surface::AppShell => "(function(){ var t = document.querySelector('[data-reading-toggle=\"wide\"]'); if (!t) { document.getElementById('filterTranscriptBtn').click(); t = document.querySelector('[data-reading-toggle=\"wide\"]'); } if (!t) return 'no switch'; t.click(); return 'ok'; })()",
+    };
+    let narrow = eval(tab, column).as_f64().unwrap_or(0.0);
+    assert!(
+        narrow > 100.0 && narrow < 1100.0,
+        "the transcript starts at its reading measure: {narrow}px in an 1800px window"
+    );
+    assert_eq!(eval(tab, toggle), "ok", "the wide switch is reachable");
+    settle();
+    let wide = eval(tab, column).as_f64().unwrap_or(0.0);
+    assert!(
+        wide > narrow + 100.0,
+        "wide mode drops the cap: {narrow}px -> {wide}px"
+    );
+    // Remembered: the preference is the reader's, not the page's.
+    tab.reload(false, None).expect("reload");
+    tab.wait_until_navigated().expect("reloaded");
+    settle();
+    settle();
+    settle();
+    let after = eval(tab, column).as_f64().unwrap_or(0.0);
+    assert!(
+        (after - wide).abs() <= 8.0,
+        "the choice survives a reload: {wide}px -> {after}px"
+    );
+    // …and off again puts the measure back.
+    assert_eq!(eval(tab, toggle), "ok", "the switch is reachable again");
+    settle();
+    let back = eval(tab, column).as_f64().unwrap_or(0.0);
+    assert!(
+        (back - narrow).abs() <= 8.0,
+        "turning it off restores the reading measure: {back}px, was {narrow}px"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_wide_mode_drops_the_reading_cap() {
+    let _serial = serial();
+    let fx = fixture("scenario-wide-classic", 12);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_wide_mode_drops_the_reading_cap(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_wide_mode_drops_the_reading_cap() {
+    let _serial = serial();
+    let fx = fixture("scenario-wide-app", 12);
+    let page = open(Surface::AppShell, &fx, 2911);
+    scenario_wide_mode_drops_the_reading_cap(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: folding near the tail does not take the scroll away (#138) ────────────────────
+
+/// The owner's repro: cycle a command block's fold state a few times near the bottom, scroll to
+/// the tail, then scroll up — and the page would not stay where it was put. A fold is a CLICK,
+/// and a click is user intent, so the correction the fold owed was postponed (#132 step 3) and
+/// then paid a third of a second after the reader had scrolled away, dragging them back to
+/// where the fold had been. It read as a transcript that could not be scrolled, and it freed
+/// itself the moment a new record arrived and reconciled the debt to a no-op.
+fn scenario_folding_near_the_tail_keeps_the_scroll(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // Cycle the last fold's state, the way a reader reads a command and closes it again — with a
+    // real pointer gesture, since `element.click()` fires no `pointerdown` and the engine reads
+    // intent from the pointer, not from the click. Folding without that is not what a reader
+    // does, and the defect only exists for someone who used a pointer.
+    let head = match surface {
+        Surface::Classic => ".fold-h",
+        Surface::AppShell => "button.renderer-head",
+    };
+    let fold = format!("(function(){{ var hs = document.querySelectorAll('{head}'); if (!hs.length) return 'none'; var h = hs[hs.length - 1]; var r = h.getBoundingClientRect(); var at = {{ bubbles: true, cancelable: true, clientX: r.left + 8, clientY: r.top + 8, pointerId: 1, isPrimary: true }}; h.dispatchEvent(new PointerEvent('pointerdown', at)); h.dispatchEvent(new PointerEvent('pointerup', at)); h.click(); return 'ok'; }})()");
+    for _ in 0..4 {
+        eval(tab, &fold);
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    settle();
+    jump_to_end(tab, surface);
+    settle();
+    // Now scroll up, and stay there.
+    for _ in 0..3 {
+        scroll_by(tab, surface, -600);
+    }
+    settle();
+    let (key_after, top_after) = harness::view_anchor(tab, surface);
+    let where_after = harness::scroll_top(tab, surface);
+    assert!(
+        !at_tail(tab, surface),
+        "the reader scrolled up off the tail (at {where_after})"
+    );
+    // Long enough for any owed correction to come due (the intent window plus its settle).
+    std::thread::sleep(Duration::from_millis(1500));
+    let (key_later, top_later) = harness::view_anchor(tab, surface);
+    let where_later = harness::scroll_top(tab, surface);
+    assert!(
+        key_later == key_after && (top_later - top_after).abs() <= 4.0,
+        "the reader stays where they scrolled to: was {key_after} @ {top_after:.0} ({where_after}), later {key_later} @ {top_later:.0} ({where_later})"
+    );
+    assert!(
+        !at_tail(tab, surface),
+        "…and is not dragged back to the tail: {where_after} -> {where_later}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_folding_near_the_tail_keeps_the_scroll() {
+    let _serial = serial();
+    let fx = fixture("scenario-foldscroll-classic", 20);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_folding_near_the_tail_keeps_the_scroll(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_folding_near_the_tail_keeps_the_scroll() {
+    let _serial = serial();
+    let fx = fixture("scenario-foldscroll-app", 20);
+    let page = open(Surface::AppShell, &fx, 2912);
+    scenario_folding_near_the_tail_keeps_the_scroll(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: a workflow call carries its fleet in flow (#119) ──────────────────────────────
 
 /// The call that launched a run shows its members under it — a dot per member, pulsing for the
@@ -1534,12 +1694,10 @@ fn scenario_scrolling_back_during_growth_holds_between_scrolls(
         ticks += 1;
         if ticks.is_multiple_of(9) {
             scroll_by(tab, surface, -400);
-            // The reader's own scroll is not over when the wheel stops: a fling is still
-            // travelling, and while it is, a correction owed by growth is deliberately not
-            // written (#132 step 3 — writing under momentum stutters or kills it). Take the
-            // baseline once that window has lapsed, so this measures what the rule is about:
-            // between the reader's OWN movements, nothing moves on its own.
-            std::thread::sleep(Duration::from_millis(500));
+            // 150ms, not the intent window: a reader who stops scrolling must not be moved at
+            // all. This was widened to 500ms while #132 step 3 was owing corrections across the
+            // reader's own scrolls — an 11px drift that was the DEFECT (#138), not the rule.
+            std::thread::sleep(Duration::from_millis(150));
             expect = harness::view_anchor(tab, surface);
             continue;
         }

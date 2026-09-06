@@ -279,7 +279,8 @@ class VirtualWindow {
     const itemTop = item.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop();
     const want = itemTop + within - sat;
     if (!correction(this.frame.scrollTop(), want, 1)) return;
-    // The reader is moving: owe it, do not write (#132 step 3).
+    // The reader is moving: do not write under them (#132 step 3). What they get instead is a
+    // fresh anchor once they stop (#138) — never this position, replayed late.
     if (this.readerOwnsPosition()) { this.owed = anchor; this.scheduleSettle(); return; }
     this.frame.scrollTo(want);
   }
@@ -306,16 +307,19 @@ class VirtualWindow {
     return this.dragging || performance.now() - this.lastUserInput < this.userIntentMs;
   }
 
-  /** Pay an owed correction once the reader has stopped moving. Re-armed on every attempt, so a
-   *  continuous fling pays only at its end. */
+  /** What happens once the reader comes to rest (#138). NOT "pay the correction that was owed":
+   *  the position that correction was protecting is from BEFORE they moved, and writing it back
+   *  afterwards moves the page under someone who has stopped — a small jump every time they stop
+   *  scrolling, which is exactly how it was reported. Where the reader is NOW is the reference,
+   *  so the debt is dropped and the anchor is re-read from the view at rest. A displacement that
+   *  happened mid-motion is not worth a visible jump to undo; it is indistinguishable from the
+   *  reader's own movement anyway. Re-armed while they are still moving. */
   scheduleSettle() {
     clearTimeout(this.settleTimer);
     this.settleTimer = setTimeout(() => {
-      if (!this.owed || this.following) { this.owed = null; return; }
+      if (this.following) { this.owed = null; return; }
       if (this.readerOwnsPosition()) { this.scheduleSettle(); return; }
-      const anchor = this.owed;
       this.owed = null;
-      this.restoreDomAnchor(anchor);
       this.syncAnchor();
     }, this.userIntentMs);
   }
@@ -481,6 +485,13 @@ class VirtualWindow {
     // This scroll moved the reader: the kept anchor is stale until the deferred window update
     // re-reads it, once per batch of scroll events rather than per event.
     this.anchor = null;
+    // …and a correction owed from BEFORE they moved is void (#138). The reader's own scroll makes
+    // their position the authoritative one; paying an old debt afterwards drags them back to
+    // where they were, and since every click registers as intent (a fold is a pointerdown), the
+    // debt was owed by the fold and paid a third of a second after they scrolled away. Folding a
+    // block and then scrolling read as a page that would not scroll — until the next record
+    // arrived and reconciled the debt to a no-op.
+    if (user && this.owed) { this.owed = null; clearTimeout(this.settleTimer); }
     this.afterScroll();
     if (this.pendingScroll) return;
     this.pendingScroll = true;

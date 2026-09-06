@@ -1966,11 +1966,11 @@
   function scheduleSettle() {
     clearTimeout(settleTimer);
     settleTimer = setTimeout(function () {
-      if (!owedAnchor || following) { owedAnchor = null; return; }
+      if (following) { owedAnchor = null; return; }
       if (readerOwnsPosition()) { scheduleSettle(); return; }
-      var a = owedAnchor;
+      // Where the reader is NOW is the reference (#138) — not the position the correction was
+      // protecting before they moved, which writes a small jump under someone who has stopped.
       owedAnchor = null;
-      restoreAnchor(a);
       viewAnchor = captureAnchor();
     }, USER_MS);
   }
@@ -3549,9 +3549,15 @@
     // What a scroll MEANS is the shared rule (#107): the reader's input decides following —
     // acquiring the pin needs the true end, keeping it only the old slack — and a scroll with
     // no input behind it is displacement, healed while pinned. The slacks are this page's.
-    var verdict = shared.classifyScroll(following, performance.now() - lastUserInput < USER_MS, gapToBottom(), PIN_SLACK, BOTTOM_SLACK, BOTTOM_SLACK);
+    var userScroll = performance.now() - lastUserInput < USER_MS;
+    var verdict = shared.classifyScroll(following, userScroll, gapToBottom(), PIN_SLACK, BOTTOM_SLACK, BOTTOM_SLACK);
     if (verdict === "follow" || verdict === "unfollow") setFollowing(verdict === "follow");
     else if (verdict === "heal") toBottom(); // browser displacement while pinned
+    // A correction owed from before the reader moved is void (#138): their own scroll makes
+    // their position the authoritative one, and paying an old debt afterwards drags them back.
+    // Every click counts as intent here too, so a fold owes a correction that would land a
+    // third of a second after they scrolled away from it.
+    if (userScroll && owedAnchor) { owedAnchor = null; clearTimeout(settleTimer); }
     if (newCount && atBottom()) newCount = 0; // caught up by scrolling down
     // NOT inside the rAF below: a background tab pauses `requestAnimationFrame`, and the pill
     // has to be right the moment the tab is looked at. It is guarded to a no-op unless the

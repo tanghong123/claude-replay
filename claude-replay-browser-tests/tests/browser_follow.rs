@@ -3434,6 +3434,191 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
 /// shifted down into its stack slot by a transform while the body stays in flow, so between two
 /// heads the reader sees the top of a body above the head it belongs to.
 ///
+/// #139: the options popover has to fit on screen. A session that used many tools grew the
+/// tool-type list past the bottom of the window, and neither the list nor the popover scrolled —
+/// so the tools below the fold, and the whole Reading section under them (where Wide transcript
+/// lives), could not be reached at all.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_options_popover_fits_and_scrolls() {
+    let _serial = serial();
+    let base = base("appshell-options-scroll");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000139".to_string();
+    let mut transcript = harness::long_session(4, harness::Shape::default());
+    for (i, name) in [
+        "Bash",
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Task",
+        "WebFetch",
+        "WebSearch",
+        "NotebookEdit",
+        "TodoWrite",
+        "Skill",
+        "Workflow",
+        "MultiEdit",
+        "LS",
+        "BashOutput",
+    ]
+    .iter()
+    .enumerate()
+    {
+        transcript += &harness::named_tool_at(
+            &format!("t-many-{i}"),
+            name,
+            "/tmp/x",
+            &harness::now_minus(200 - i as u64 * 4),
+        );
+    }
+    transcript += &harness::assistant_at("done with all of those", &harness::now_minus(20));
+    stores.claude_session(&sid, &transcript);
+    let monitor = Monitor::spawn(Kind::V2, 2876, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window')",
+        "the app shell to mount the fixture",
+        std::time::Duration::from_secs(20),
+        "document.body.innerText.slice(0, 120)",
+    );
+    // A short window, so the list has more tools than room — the reader's situation.
+    harness::resize(&tab, 1280.0, 700.0);
+    harness::until(
+        &tab,
+        "innerHeight <= 760",
+        "the window to shorten",
+        std::time::Duration::from_secs(10),
+        "innerHeight",
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('filterTranscriptBtn').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#filterOptions .tool-type-option').length >= 8",
+        "the tool list to fill",
+        std::time::Duration::from_secs(10),
+        "document.querySelectorAll('#filterOptions .tool-type-option').length",
+    );
+    let fit = harness::probe(&tab, "(function(){ var pop = document.getElementById('navigatorOptions'); var list = document.getElementById('filterOptions'); var pr = pop.getBoundingClientRect(); var reading = pop.querySelector('.reading-section'); var rr = reading ? reading.getBoundingClientRect() : null; return { tools: list.querySelectorAll('.tool-type-option').length, listScrolls: list.scrollHeight > list.clientHeight + 1, popBottom: Math.round(pr.bottom), viewport: Math.round(innerHeight), popFits: pr.bottom <= innerHeight + 1, readingReachable: !!rr && rr.bottom <= innerHeight + 1 && rr.height > 0 }; })()");
+    assert!(
+        fit["tools"].as_i64().unwrap_or(0) >= 8,
+        "the fixture gives the filter more tools than fit: {fit}"
+    );
+    assert_eq!(
+        fit["listScrolls"], true,
+        "the tool list scrolls rather than running off the popover: {fit}"
+    );
+    assert_eq!(
+        fit["popFits"], true,
+        "the popover ends inside the window: {fit}"
+    );
+    // Reachable means: scrolling gets you there. Before the fix neither the list nor the popover
+    // scrolled, so the sections under the tools were off the bottom of the window for good.
+    harness::eval(&tab, "(function(){ var p = document.getElementById('navigatorOptions'); p.scrollTop = p.scrollHeight; var l = document.getElementById('filterOptions'); l.scrollTop = l.scrollHeight; return 'ok'; })()");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let reached = harness::probe(&tab, "(function(){ var pop = document.getElementById('navigatorOptions'); var reading = pop.querySelector('.reading-section'); if (!reading) return { there: false }; var r = reading.getBoundingClientRect(); var wide = pop.querySelector('[data-reading-toggle=\"wide\"]'); var wr = wide ? wide.getBoundingClientRect() : null; return { there: true, inView: r.top >= 0 && r.bottom <= innerHeight + 1 && r.height > 0, wideInView: !!wr && wr.top >= 0 && wr.bottom <= innerHeight + 1, popScrolled: Math.round(pop.scrollTop) }; })()");
+    assert_eq!(
+        reached["there"], true,
+        "the Reading section exists: {reached}"
+    );
+    assert_eq!(
+        reached["inView"], true,
+        "…and scrolling the popover reaches it: {reached}"
+    );
+    assert_eq!(
+        reached["wideInView"], true,
+        "…including the Wide transcript switch at the bottom of it: {reached}"
+    );
+    drop(monitor);
+}
+
+/// #137: the outline can be hidden, so the control that brings it back has to be THERE — a
+/// visible, hittable button in the top bar, at every width. The generated reference stylesheet
+/// hides `.navigator-toggle` outright (the demo has no outline), and nothing in production put
+/// it back: the pane went away and only a key the reader had to already know returned it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_can_bring_a_hidden_outline_back() {
+    let _serial = serial();
+    let base = base("appshell-outline-return");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000137".to_string();
+    stores.claude_session(&sid, &harness::long_session(12, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2877, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.outline-card')",
+        "the outline column to render",
+        std::time::Duration::from_secs(20),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let seen = "(function(){ var b = document.getElementById('navigatorToggle'); if (!b) return { there: false }; var r = b.getBoundingClientRect(); var hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2); return { there: true, w: Math.round(r.width), h: Math.round(r.height), hits: !!hit && (hit === b || b.contains(hit)), title: b.title || '' }; })()";
+    let hidden = "document.querySelector('.workspace').classList.contains('navigator-hidden')";
+    let shown = "!document.querySelector('.workspace').classList.contains('navigator-hidden') && !!document.querySelector('.session-navigator .outline-card')";
+    // Visible and reachable at a narrow window as well as a wide one — a control that comes and
+    // goes with the width cannot be found either.
+    for width in [1280.0, 1440.0, 1800.0] {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("Math.abs(innerWidth - {width}) < 60"),
+            "the window to resize",
+            std::time::Duration::from_secs(10),
+            "innerWidth",
+        );
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let control = harness::probe(&tab, seen);
+        assert_eq!(
+            control["there"], true,
+            "the outline toggle exists: {control}"
+        );
+        assert!(
+            control["w"].as_f64().unwrap_or(0.0) >= 24.0
+                && control["h"].as_f64().unwrap_or(0.0) >= 24.0,
+            "…with a size a pointer can hit at {width}px: {control}"
+        );
+        assert_eq!(
+            control["hits"], true,
+            "…and it answers a click at its own centre at {width}px: {control}"
+        );
+    }
+    // Hide the outline, then bring it back with that control alone.
+    // Hide it the way a reader does — the key the toggle's own tooltip names.
+    harness::eval(&tab, "document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', bubbles: true, cancelable: true })); 'ok'");
+    harness::until(
+        &tab,
+        hidden,
+        "the outline to hide",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('.workspace').className",
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorToggle').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        shown,
+        "the toggle to bring the outline back",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('.workspace').className",
+    );
+    drop(monitor);
+}
+
 /// #88: the outline column is an accordion. Each card sticks at its own slot with a rising
 /// z-index, so no pane ever shows its body above its own head, and a pane opened while the
 /// column is scrolled lands its head AT that slot with the body directly below it.

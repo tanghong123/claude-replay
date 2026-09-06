@@ -151,6 +151,14 @@ pub fn workflow_call_at(id: &str, run: &str, ts: &str) -> String {
     )
 }
 
+/// A tool call by NAME — for a session that used many different tools, which is what fills the
+/// filter's tool-type list (#139).
+pub fn named_tool_at(id: &str, name: &str, target: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"{name}\",\"input\":{{\"command\":\"{target}\",\"file_path\":\"{target}\",\"pattern\":\"{target}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"ok\"}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
 /// A file-acting tool call (`Read` on `path`): the page offers the path with its stamps.
 pub fn read_tool_at(id: &str, path: &str, ts: &str) -> String {
     format!(

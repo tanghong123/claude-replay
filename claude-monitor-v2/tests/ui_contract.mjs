@@ -974,7 +974,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /const row = item\.querySelector\(`\[data-block-index="\$\{anchor\.block\}"\]`\);/, "…and the restore puts that row back");
   assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\)\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");
   assert.match(src, /return this\.anchor \|\| this\.captureDomAnchor\(\);/, "the kept anchor, else a fresh one");
-  assert.match(src, /this\.anchor = null;\n    this\.afterScroll\(\);/, "a scroll invalidates the kept anchor…");
+  assert.match(src, /this\.anchor = null;\n(?:.*\n)*?    if \(user && this\.owed\) \{ this\.owed = null; clearTimeout\(this\.settleTimer\); \}/, "a scroll invalidates the kept anchor — and a correction owed from before the reader moved (#138)");
   assert.match(src, /this\.reconcile\(range\.lo, range\.hi, Infinity, false, anchor\);\n    this\.syncAnchor\(\);/, "…and the deferred window update re-reads it once per batch");
   assert.match(vpSrc, /export class Viewport extends VirtualWindow \{/, "the app shell's viewport IS the shared engine (#107)");
   assert.match(vpSrc, /frame: elementFrame\(scroller\),/, "…driving it through the element frame");
@@ -1449,7 +1449,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(cls, /var first = shared\.firstVisible\(items, 0, Infinity, 0, false\);/, "no epsilon above the fold on this page");
   assert.match(cls, /var delta = shared\.correction\(e\.getBoundingClientRect\(\)\.top, a\.top, 1\);/, "the classic page measures its correction with the shared rule…");
   assert.match(cls, /if \(readerOwnsPosition\(\)\) \{ owedAnchor = a; scheduleSettle\(\); return; \}\s*\n\s*window\.scrollBy\(0, delta\);/, "…and owes it rather than writing under the reader's own motion (#134)");
-  assert.match(cls, /var verdict = shared\.classifyScroll\(following, performance\.now\(\) - lastUserInput < USER_MS, gapToBottom\(\), PIN_SLACK, BOTTOM_SLACK, BOTTOM_SLACK\);/, "the classic page holds the pin through a nudge");
+  assert.match(cls, /var verdict = shared\.classifyScroll\(following, userScroll, gapToBottom\(\), PIN_SLACK, BOTTOM_SLACK, BOTTOM_SLACK\);/, "the classic page holds the pin through a nudge");
+  assert.match(cls, /if \(userScroll && owedAnchor\) \{ owedAnchor = null; clearTimeout\(settleTimer\); \}/, "…and a correction owed from before the reader moved is void (#138)");
   console.log("#107 virtual window cases passed");
 }
 
@@ -1567,7 +1568,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(src, /scheduleMeasure|pendingMeasure/, "…and the deferral is gone");
   assert.match(src, /this\.contentObserver\.observe\(mount\.window\);/, "the content observer watches the mounted window, not the pads it would loop on");
   assert.match(src, /const contentTop = this\.topPad\.getBoundingClientRect\(\)\.top - this\.frame\.viewportTop\(\) \+ this\.frame\.scrollTop\(\);\s*\n\s*return contentTop \+ \(this\.prefix\[index\] \|\| 0\);/, "an item's document top is the pads' edge plus the sums before it");
-  assert.match(src, /const want = itemTop \+ within - sat;\s*\n\s*if \(!correction\(this\.frame\.scrollTop\(\), want, 1\)\) return;[\s\S]{0,240}?this\.frame\.scrollTo\(want\);/, "the write-back is absolute — scrollTo a position derived from the anchor, not scrollBy an accumulating difference");
+  assert.match(src, /const want = itemTop \+ within - sat;\s*\n\s*if \(!correction\(this\.frame\.scrollTop\(\), want, 1\)\) return;[\s\S]{0,420}?this\.frame\.scrollTo\(want\);/, "the write-back is absolute — scrollTo a position derived from the anchor, not scrollBy an accumulating difference");
   assert.match(src, /\/\/ Not mounted: nothing to hold it by\./, "…and an anchor the window has left behind stays put — the sums there are estimates");
   assert.doesNotMatch(src, /this\.frame\.scrollBy\(/, "…and nothing in the engine nudges the offset by an increment any more");
   console.log("#132 anchor-is-the-position cases passed");

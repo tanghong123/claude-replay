@@ -168,6 +168,21 @@
 .turn-stickybar:hover,.turn-stickybar:focus-visible{color:var(--ink);outline:0}
 .turn-sticky-caret{flex:none;font-family:var(--mono);font-weight:700;font-size:12px;color:var(--faint)}
 .turn-sticky-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* #139: the options popover has to fit on screen. `.tool-type-list` is a bare flex column with
+   no cap, and the popover no cap either, so a session with many tool types grew it past the
+   bottom of the window — and neither the list nor the popover scrolls, so everything below the
+   fold (the rest of the tools, and the whole Reading section under them) was unreachable. The
+   LIST is the unbounded part, so it scrolls first and the sections around it stay put; the
+   popover keeps its own cap as a backstop for a short window. `overscroll-behavior` stops the
+   transcript scrolling once the list hits its end. */
+#app .navigator-options{max-height:min(74vh,640px);overflow-y:auto;overscroll-behavior:contain}
+#app .tool-type-list{max-height:min(38vh,320px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-gutter:stable}
+/* #137: the outline toggle is production chrome. The generated reference stylesheet carries
+   `.navigator-toggle{display:none!important}` at top level — the demo has no outline to toggle
+   — so the one control that brings a HIDDEN outline back was 0x0 at every width (measured at
+   1280/1440/1800: no box, no hit). Hide the pane and the only way back was a key you had to
+   already know. It is a top-bar icon button like its neighbours. */
+#app .topbar .navigator-toggle{display:grid!important}
 /* #88: the outline column is an ACCORDION. Each card sticks at its own slot — the caption plus
    the heads above it, measured in app.js because only the page knows how tall a head is — with a
    z-index rising down the column and an opaque background, so a card the scroll has carried up
