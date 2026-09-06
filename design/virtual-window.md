@@ -177,3 +177,114 @@ folds; they are the pages' vocabulary, not the engine's.
 
 The extraction is more than the #98 fix and is filed on its own; #98 ships the rules above in
 place, so that the extraction moves code that is already right.
+
+## Step 4b: the two rules that differ, and the decision they need (#128)
+
+Steps 1–4a made the *plumbing* shared: both pages run the same arithmetic, and the app shell
+runs the same engine class. What is left — the classic page driving that class through a
+document frame — is not a mechanical move, because two rules genuinely differ between the
+pages. Both are rules the reference page holds deliberately, and both were written to close a
+bug that actually shipped. This section states them so the choice can be made on the facts.
+
+### The model both pages already share
+
+A session is N records. Only a slice `[lo, hi)` is in the DOM; two pad elements stand in for
+everything above and below, sized from prefix sums over per-record heights. A record's height is
+an **estimate** until it is mounted and measured, then it is remembered. So the index↔pixel
+mapping is exact behind the reader and approximate ahead of them. Everything below is about the
+two places that approximation bites.
+
+### Rule 1 — where the window's range comes from
+
+**The engine (app shell): pixel-anchored.** `rangeForScroll` (`shared/virtual-window.js:44`)
+takes the scroll offset and maps pixels → indices through the prefix sums:
+`lo = indexAt(scrollTop − OVERSCAN)`, `hi = indexAt(scrollTop + clientHeight + OVERSCAN) + 1`,
+with `OVERSCAN = 1500` (`viewport.js:49`). After a jump, `rangeAround(index)`
+(`shared/virtual-window.js:52`) walks heights outward from the target instead. Both are pure
+functions of numbers, which is why they are node-tested.
+
+**The classic page: index-anchored (#66, `export.js:401` `updateView`).** It does not ask the
+scroll offset where it is; it asks the DOM. It scans materialized elements for the first one
+actually on screen (`r.bottom > 0 && r.top < innerHeight`, `export.js:414`), takes **that
+element's record index** as the anchor, and walks effective heights outward from it:
+`anchorTop + MARGIN_PX` of content above the viewport top, `innerHeight − anchorTop + MARGIN_PX`
+below (`export.js:421–433`). It falls back to the pixel mapping only when nothing materialized is
+visible. Then it re-reads the anchor's rect and `scrollBy`s the delta (`export.js:435`), so
+measurement drift never visibly moves the page.
+
+The difference matters in one specific way. The engine's estimates decide **which indices** the
+window contains; the classic page's estimates decide only **how far** the window extends. So a
+prefix full of drift can make the engine compute a window that EXCLUDES the block on screen —
+the #66 failure, written in that comment: you navigate to record N, the next update recomputes
+from `scrollTop`, stale estimates above map that offset to different indices than the real rects
+on screen, and the very block just navigated to is unmounted. The index-anchored rule cannot
+produce that outcome, because it starts from an element that is provably on screen.
+
+What the classic rule costs: it needs materialized DOM to read (hence the fallback, and a
+chicken-and-egg on first paint), it does a DOM scan per update, and it makes the range a
+function of DOM state rather than of numbers — so it cannot be unit-tested in isolation the way
+`rangeForScroll` is, and a stale anchor is a way to be wrong that the pure rule does not have.
+
+### Rule 2 — what actually gets mounted
+
+**The engine: dense.** One child per index in `[lo, hi)`, reconciled by `dataset.unitIndex` with
+a cursor walking in lockstep with the range (`shared/virtual-window.js:329` `reconcile`).
+Children are a bijection with the range: index → child is direct, reuse is an identity compare,
+and the pads come straight from the sums. Filtering is then a *paint* concern — `applyFilters`
+(`app.js:770`) mounts everything in range and adds `.filter-hidden{display:none!important}`.
+
+**The classic page: sparse.** `setWindow` skips `isHiddenRec(i)` entirely (`export.js:344`) — a
+filtered-out record is never built — and `effH(i)` returns **0** for it (`export.js:215–216`), so
+the prefix sums are a *filtered* coordinate space. DOM children are therefore a subset of
+`[lo, hi)`, and every loop has to walk by `data-idx` and check real indices. That is exactly what
+#94 fixed: trimming one node per index step deleted visible elements that belonged inside the new
+window.
+
+Three consequences follow from the code (derived from reading it, not measured in a browser):
+
+- With a filter on, the classic page's document height is right immediately — it knows a record
+  is hidden without mounting it. The app shell only learns a record is hidden after mounting and
+  measuring it at zero, so records outside the window still contribute their unfiltered heights
+  and the page shortens as the reader scrolls through.
+- The app shell builds DOM it immediately hides: cheap when a filter keeps most rows, wasteful
+  when it hides almost all of them.
+- Serving the classic page on the engine means teaching the hot reconcile loop a skip predicate
+  and index-sparse children — the loop where #94 and the #98 class of bug live.
+
+### The two options
+
+**(a) One engine, two strategies.** `rangeAround` / `rangeForScroll` and the mount step become
+page-supplied. Nothing on the reference page changes; the engine keeps the pads, sums,
+measurement, anchoring, correction, follow state and position memory. The cost is honest: the
+engine no longer owns the two rules that matter most, so "both pages drive it" becomes true of
+the plumbing but not of the policy, and a future #98-class bug can still be fixed on one page and
+not the other.
+
+**(b) The app shell's rules win and the classic page moves.** One rule in one place, real
+convergence. The cost is a behaviour change on the REFERENCE page in the two spots with the worst
+bug history (#66, #94, #98) — which needs scenarios written first and confirmed to fail, the
+byte-identical gate re-verified line by line, and it re-opens the drift class #66 was written to
+close.
+
+### Recommendation
+
+**(a), with one addition: make the index-anchored range the engine's DEFAULT strategy and the
+pixel-anchored one the fallback**, rather than the other way round. Where the two rules differ,
+the classic page's is strictly more robust — it cannot exclude the block on screen — so the app
+shell would inherit that protection instead of the two pages keeping different exposure to the
+same bug class. Whether that changes the app shell's post-jump behaviour at all is a measurable
+question: the existing jump and anchor scenarios would show it, on both surfaces, before and
+after.
+
+The sparse-mount rule is the one I would leave as a strategy for real. Dense-and-hide fits a
+shell that filters interactively (the filter is a paint pass, not a re-window); sparse fits an
+export page whose filter is usually a big cut. That difference is a property of the two products,
+not an accident of history.
+
+### Either way, the harness comes first
+
+The scenarios in `tests/scenarios.rs` and the structural cases in `tests/browser_follow.rs` run
+on both surfaces before and after every step, and the byte-identical gate is verified line by
+line — a rendered-HTML change is not what this work is for. A case that fails on the classic page
+is a classic bug and gets its own task (#71), because the classic page is the reference, not an
+oracle.
