@@ -301,8 +301,61 @@ reference page's look was fixed. It is not, so the plan becomes:
    record fixtures where the explosion cannot show.
 4. **Then the port.**
 
-**2. Do you want one *file* to hold the loop, or one *behaviour*?** — still open, but the answer
-to (1) suggests you want the real thing, so the plan above assumes it.
+**2. Do you want one *file* to hold the loop, or one *behaviour*?** — still open. What the two
+mean in practice:
+
+### "One behaviour" — where we are now
+
+Two implementations of the scroll loop: `export.js` has ~300 lines of window / anchor / follow,
+`shared/virtual-window.js` has the class. They are kept identical **by the scenarios**, which run
+the same assertions against both pages.
+
+- A new scroll rule is **written twice**, and tested once.
+- A rule nobody wrote a scenario for can differ silently — the scenarios *catch* divergence, they
+  do not *prevent* it.
+- The reference page is never at risk, because nothing moves.
+
+### "One file" — step 5
+
+One loop. The classic page becomes a consumer of the class, the way `viewport.js` is: it says
+what an item is, how one renders, where the reader's choices live, and the engine owns the
+window, the pads, the anchor, the observers and the follow state.
+
+- A new scroll rule is **written once** and both pages have it.
+- Divergence becomes *impossible* for anything the engine owns — a stronger guarantee than "no
+  scenario has caught one".
+- The cost is the migration: the spacing change, then the measure, then the sparse-filter
+  scenario, then the port — with the reference page moving underneath it.
+
+### The evidence from building this
+
+Both this session:
+
+| For "one file" | For "one behaviour" |
+|---|---|
+| **#138 was fixed twice.** The scroll-jump fix — "at rest, adopt where the reader is; never replay an old position" — was written into `virtual-window.js` AND `export.js`, and needed its own contract pin on each. One rule, two edits, two chances to get it wrong. | **Three classic-page bugs were found by app-shell rules**: #71, #98 and #134. The scenarios are not a formality — they are what catches the page that nobody is currently working on. |
+| **#134 exists because of duplication.** The classic page fought the reader's fling for a whole release *because* the fix had gone into the engine only. | **Nothing regressed on the reference page all session**, precisely because it was not being refactored. |
+
+Note that the second column survives either choice: the two-surface scenarios stay, and stay
+valuable, whichever way this goes. The first column is what only "one file" buys.
+
+### What stays split either way
+
+"One file" is only the **scroll loop**. Each page keeps its own renderer, folds, search reveal,
+filter meaning (deliberately divergent since #133), and chrome — and the agreed `skip()`
+predicate is itself a small per-page fork living inside the shared engine.
+
+### The question under the question
+
+Which failure would you rather have?
+
+- **A rule that quietly differs** between the two pages because no scenario covers it → "one
+  file" removes this.
+- **A regression on the reference page** introduced while unifying → "one behaviour" removes
+  this.
+
+My read: with (1) answered, the expensive half of "one file" is already agreed, and today's #138
+— the same fix written twice, in two vocabularies — is the concrete cost of not doing it.
 
 **3. What happens to #128?** — it stays open as the port, no longer blocked on a decision. The
 spacing change becomes its first step.
