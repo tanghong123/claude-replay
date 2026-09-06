@@ -12,16 +12,13 @@ arithmetic drawn out, because the disagreements are arithmetic disagreements.
 
 ## Where we already are
 
-```
-                        ARITHMETIC          STATE MACHINE        DRIVES IT
-                     (pure functions)      (the class)
-  shared/virtual-window.js
-    prefixSums, indexAt,      ✅ shared          ✅ shared          app shell ✅
-    rangeForScroll,                                                classic   ❌  ← step 5
-    rangeAround, padHeights,
-    correction, firstVisible,
-    classifyScroll, heightChanged
-```
+| | Classic page | App shell | Shared? |
+|---|---|---|---|
+| **Arithmetic** — `prefixSums`, `indexAt`, `rangeForScroll`, `rangeAround`, `padHeights`, `correction`, `firstVisible`, `classifyScroll`, `heightChanged` | uses it | uses it | ✅ **yes**, and node-tested |
+| **State machine** — the window, the pads, the anchor, the observers, the follow state, the tail converge | its own | `VirtualWindow` | ⚠️ shared *class*, one consumer |
+| **Drives the class** | ❌ **no** — this is step 5 | ✅ yes | — |
+| **Held to the same behaviour** | ~95 two-surface scenarios | same ~95 | ✅ **yes**, zero `known_red` |
+
 
 - **Steps 1–3** put both pages on the same *arithmetic*. Node-tested, no DOM.
 - **Step 4a** made the state machine a class (`VirtualWindow`) with a frame adapter, so a
@@ -260,7 +257,10 @@ border-box-plus-margins becomes exact there too.
 
 ## What I would do
 
-**Option A, unless you want the spacing change.** The property we were after — one behaviour,
+**Option A, unless you want the spacing change** — and you do; see the answer under
+*Questions* below, which supersedes this.
+
+**Option A was the recommendation when the reference page's look was fixed.** The property we were after — one behaviour,
 held on both surfaces — is already ours, and it is held by tests rather than by a shared file,
 which is the stronger of the two. Step 5's remaining benefit is one loop instead of two; its
 price is either a fork of the measure or a change to how the reference page looks.
@@ -279,9 +279,30 @@ the port. It is:
 
 ## Questions for you
 
-1. Is the classic page's **spacing** something you would let change (Option C), or is its look
-   fixed?
-2. Do you want one *file* to hold the loop, or is one *behaviour* — held by the two-surface
-   scenarios — what you were actually after?
-3. If we stop at Option A: shall I close #128 as "acceptance met differently", or keep it open as
-   a standing intention?
+**1. Is the classic page's spacing something you would let change (Option C)?**
+→ **Answered (owner, 2026-09-06):** *"I have no opinion on the classic page's spacing. To me it
+was an implementation detail and I was not informed or weighed on that decision. I feel the app
+shell's way is cleaner, self-contained. So yes, I'd let it change."*
+
+**That decides it: Option C is on the table, and it is the only option that leaves the engine
+owning the rule.** The recommendation above (Option A) was written on the assumption that the
+reference page's look was fixed. It is not, so the plan becomes:
+
+1. **Spacing first, on its own.** Convert `.uturn` / `.fold` spacing from collapsing margins to
+   padding (or a flex `gap`), so border-box-plus-margins is exact on both pages. This is a
+   visual change to the reference page: the gate re-baselines on *appearance*, and it wants a
+   look at the rendered result, not just a byte diff. Backgrounds and borders move — a margin is
+   transparent, padding is inside the box — so a card's fill grows by the space it used to have
+   outside it. Ships on its own, with nothing else in the commit.
+2. **Then one measure.** With no collapsing margins, `measureMounted` is exact for both, and the
+   engine keeps the rule it reverted top-to-next-top to protect (#132).
+3. **Then the sparse-filter scenario**, which must fail on the placeholder model before the port
+   is written — Cost A above is unmeasured, and both existing classic filter cases use 12–14
+   record fixtures where the explosion cannot show.
+4. **Then the port.**
+
+**2. Do you want one *file* to hold the loop, or one *behaviour*?** — still open, but the answer
+to (1) suggests you want the real thing, so the plan above assumes it.
+
+**3. What happens to #128?** — it stays open as the port, no longer blocked on a decision. The
+spacing change becomes its first step.
