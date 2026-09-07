@@ -425,3 +425,105 @@ this cause, only measured.
 
 That is the whole argument for the two-surface discipline in one paragraph — the page we thought
 was the correct one had the same bug, and only a scenario written once and run twice found it.
+
+## Steps 2 and 3, done (2026-09-07)
+
+Both landed. Step 2 turned up a property of the classic page that nobody had written down, and
+it is the reason step 4 does not follow straight on.
+
+### Step 2 — one measure
+
+**The correction to the plan.** The step reads "take heights from the shared `measureMounted`".
+`measureMounted` is a METHOD on `VirtualWindow`, and the classic page does not extend that class
+— it consumes the module's arithmetic half as `window.__shared`. So "one measure" is one
+FUNCTION, not one loop: `itemHeight(element)` (`shared/virtual-window.js:148`) is now the only
+place either page turns an element into a height, called by the engine at `:368` and by the
+classic page's `measureWindow` at `export.js:346`. It sits BELOW the engine marker on purpose —
+the contract pins the rules half as numbers in, numbers out (`ui_contract.mjs`, "the rules are
+numbers in, numbers out"), and this one reads layout.
+
+**The finding: the classic page cannot hold fractional heights.** With the shared measure taken
+raw, `classic_page_holds_to_the_pixel_when_unpinned_through_growth` went from 8/8 green to 4/8;
+rounding it put it back to 8/8. Three blocks of eight serial runs on an idle machine, back to
+back. In a failing run both of the reader's scrolls take (gap 700 then 1400) but the page is
+still `following` throughout — it never unfollows — and the next settle heals it to the tail.
+
+What that is NOT, each measured rather than argued:
+
+| suspect | measurement | verdict |
+|---|---|---|
+| the basis | the two agree to 0.61px over every mounted record (108.390625 vs 109) | not it |
+| the cost | 0.020ms vs 0.013ms per pass over 23 elements | not it |
+| the corrective `window.scrollBy` | wrapped and counted from before the jump: fires ZERO times | not it |
+| total height | 10024px fractional vs 10023px integer | not it |
+
+Every attempt to instrument the page also stops the race reproducing — an arming `eval` after
+`await_tail`, and a MutationObserver plus a `scrollBy` wrapper armed before the jump, each took
+it to 6/6 or 3/3 green. So what shipped is `Math.round` on the measure, and it is a RESTORED
+INVARIANT rather than a fix: `offsetTop` is an integer, so this page always had integer heights.
+The cause is **#156**, and it is a precondition for step 4, not a footnote — see below.
+
+**What rounding costs, stated so #156 can weigh it.** The old measure was a POSITION delta, so a
+sum over any range telescoped: Σ = round(top_last) − round(top_first), exact to 1px. A sum of
+rounded SIZES does not telescope. On the fixture every record rounds down by 0.39px, so `P()`
+drifts about −0.4px per record — roughly −60px over a 160-record transcript. The fractional
+basis is the exact one; this page cannot hold it yet.
+
+### Step 3 — the sparse-filter scenario
+
+`classic_page_sparse_filter_mounts_only_what_matches` (`scenarios.rs`). The premise checked out
+and was worse than the step described: **no filter case before this one exercised the sparse
+window at all.** The page renders a filter's visible set in FULL while it is small — `filterFull
+= nhits <= 50 && visible <= 400` (`export.js:1723`) — and every existing fixture is under that
+ceiling, so their filters mount `[0, N)` and the range walk never runs. The new fixture is over
+it: 160 turns, a `Read` on every third, 54 hits.
+
+Measured, scrolled into the middle with the filter on: **118 mounted across 263 indices, 0
+strays.** With `isHiddenRec` forced to `return false` — the dense model, which is the RED check
+the case exists for — the same probe reads **107 across 107 with 60 strays**. So the two models
+are 1.0× and 2.2×, and the case's floor sits between them with room to spare.
+
+One thing the doc feared is bounded by the page's own vocabulary: a filter DIMS turn records
+rather than hiding them (`isHiddenRec` excludes `isTurnKind`), so the visible set can never fall
+below one record per turn. There is no ratio at which the window degenerates into pads.
+
+### Step 4 — preconditions, verified against the code
+
+The owner has settled the design question ("I prefer one-file, since I think the logic should be
+reused. We will resolve regressions over time"), so what follows is cost, not a request for a
+decision. Every line below was checked, because the step's own description names things that are
+not there.
+
+1. **Named in the plan, absent from the code.** `documentFrame`, `skip()`, `skipPredicate` —
+   zero occurrences anywhere in the tree. They are work, not hooks waiting to be wired.
+2. **A wrapper inside `#stream` is REQUIRED, and it breaks step 1's own CSS.** The engine calls
+   `this.mount.replaceChildren()` (`:405`) and walks `this.mount.firstElementChild` (`:423`), so
+   `mount.window` cannot be `#stream` itself with the pads as children. But the records are
+   direct children of `#stream` today, and step 1's rules key on exactly that:
+   `#stream > *  { margin-top: 0 }` and three `#stream > .blk:has(+ …)` selectors
+   (`export.css:648-651`) — the very rules that make `scenario_a_record_measures_as_its_own_box`
+   pass. They all have to move to the wrapper in the same commit, and that re-baselines the
+   byte-identical gate again.
+3. **Four browser cases die on the wrapper.** `view_state()` reports `blocks` as
+   `#stream.childElementCount` (`browser_follow.rs:65`); with a wrapper it is permanently 3, and
+   four cases assert `> 5`. The harness fix is to count `#stream [data-idx]`.
+4. **`indexAt`'s clamp is already a parameter** of the pure function (`:32`), but the engine's
+   method hardcodes `true` (`:228`) where the classic page passes `false` (`export.js:226`).
+   One option on the class — the smallest of these, and not a fork.
+5. **A skip cannot be expressed as a zero height.** `heightOf` is
+   `this.heightFor(index) || this.estimateAt(index)` (`:220`), so a 0 falls through to the
+   estimate. Sparse mounting needs a real predicate.
+6. **`filterFull` is a second mount strategy** (`export.js:1723`) that the engine has no concept
+   of: it abandons windowing entirely for a small filtered set.
+7. **The document frame has no scrollbar test.** `elementFrame` defines
+   `isScrollbarTarget: event => event.target === scroller` (`:569`); the document scroller needs
+   its own definition before the thumb-drag mode means anything there.
+8. **The correction has to come across with the frame.** The classic page nudges its position
+   with `window.scrollBy(0, d)` in FOUR places (`export.js:459, 2126, 2669, 2720`), and the
+   contract pins the engine as having none: `doesNotMatch(/this\.frame\.scrollBy\(/)`
+   (`ui_contract.mjs:1620`), which #132 did deliberately. Porting the window while leaving those
+   in place is not a port of the rules.
+9. **#156 sits across the path.** The engine keeps fractional heights; step 2 measured that this
+   page heals a scrolled-up reader when it is given them. The port hands it exactly those
+   heights. Whatever #156 turns out to be has to be understood BEFORE the port, not discovered
+   underneath it.

@@ -134,6 +134,22 @@ function classifyScroll(following, userIntent, gap, acquire, hold, heal) {
  *
  * Every layout read and DOM write in here is the engine's own; the arithmetic above stays pure
  * so the node contract can test the rules directly. */
+
+/** Rule 8, #140 step 2: ONE measure. An item's height is its border box plus its margins — a
+ *  margin the reader cannot see still takes the space that decides where everything below it
+ *  sits. This is the only place either page turns an element into a height, so the two cannot
+ *  drift apart again. (Top-to-next-top, which the classic page measured until #140, charges the
+ *  gap between two items to the upper one, so which item owns a margin changes as the window
+ *  slides; it was tried in the engine for #132 and reverted for moving the reader on a width
+ *  reflow. #128, step 1, removed the reason the classic page needed it: `#stream` is a flex column
+ *  with `#stream > * { margin-top: 0 }`, so on that page the two bases agree to the integer.)
+ *  It reads layout, so it lives below the marker with the rest of the engine's DOM work and not
+ *  among the rules, which stay numbers in, numbers out. */
+function itemHeight(element) {
+  const style = getComputedStyle(element);
+  return element.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
+}
+
 class VirtualWindow {
   constructor(options) {
     const { frame, mount, overscan, slacks, userIntentMs, rememberMs } = options;
@@ -343,18 +359,13 @@ class VirtualWindow {
     this.scheduleRemember();
   }
 
-  /** An item's height is its border box plus margins — a margin the reader cannot see still
-   *  takes the space that decides where everything below it sits. (Measuring top-to-next-top
-   *  instead, the way the classic page does, was tried for #132 and reverted: it attributes the
-   *  gap between two items to the upper one, so which item owns a margin changes as the window
-   *  slides, and a width reflow moved the reader off the unit they were reading. The sums do
-   *  not have to be exact for the restore — that reads the item's own rect.) */
+  /** Heights from `itemHeight` (rule 8) — the same function the classic page measures with.
+   *  The sums do not have to be exact for the restore: that reads the item's own rect. */
   measureMounted(anchor = this.readerAnchor()) {
     let changed = false;
     for (const child of this.mount.children) {
       const index = Number(child.dataset.unitIndex);
-      const style = getComputedStyle(child);
-      const height = child.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
+      const height = itemHeight(child);
       if (index >= 0 && index < this.count && heightChanged(this.heightOf(index), height, 1, 0.5)) {
         this.setHeight(index, height);
         changed = true;
@@ -559,4 +570,4 @@ function elementFrame(scroller) {
   };
 }
 
-export { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, correction, firstVisible, classifyScroll, VirtualWindow, elementFrame };
+export { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, correction, firstVisible, classifyScroll, itemHeight, VirtualWindow, elementFrame };

@@ -312,16 +312,38 @@
     topPad.style.height = pads.top + "px";
     botPad.style.height = pads.bottom + "px";
   }
-  // Measure the materialized run: each block's effective height is the offsetTop
-  // delta to its next sibling (the last one measures against the bottom pad).
+  // Measure the materialized run through the SHARED measure (#140 step 2): a block's height is
+  // its border box plus its margins, the same function the app shell's engine measures with
+  // (html/shared/virtual-window.js, rule 8). This page used to take the offsetTop delta to the
+  // next sibling, which charges the gap between two blocks to the upper one; since #128 (step 1)
+  // gave `#stream` a flex column with `#stream > * { margin-top: 0 }`, the two bases agree here
+  // and one function means they cannot drift apart again.
+  //
+  // ROUNDED, and that part is not cosmetic. `offsetTop` is an integer, so this page's heights
+  // always were; a rect is fractional, and handing this page fractional heights made it heal a
+  // scrolled-up reader back to the tail in 4 of 8 serial runs of
+  // `classic_page_holds_to_the_pixel_when_unpinned_through_growth` — 8/8 green before the change
+  // and 8/8 green again with this round, measured back to back on an idle machine. WHY is not
+  // known and is #156's job: the two bases agree (0.61px of rounding apart, over every mounted
+  // record), the cost is the same (0.020ms vs 0.013ms per pass over 23 elements), and in a
+  // failing run the page never unfollows at all — it is still `following` when the reader's
+  // scroll lands, and the next settle heals it back. The obvious suspect, the corrective
+  // `window.scrollBy` at the end of updateView, is NOT it: wrapped and counted, it fires zero
+  // times. Every attempt to instrument the page also stops the race reproducing, which is why
+  // this ships as a restored invariant (integer heights, which is what this page always had)
+  // rather than as a fix for a cause anyone has seen.
+  //
+  // What rounding costs, so #156 can weigh it: the old measure was a POSITION delta, so a sum
+  // over any range telescoped and was exact to 1px. A sum of rounded SIZES does not telescope —
+  // on the fixture above every record rounds down by 0.39px, so P() drifts about -0.4px per
+  // record. The fractional basis is the exact one; this page cannot hold it yet.
   function measureWindow() {
     var els = matEls();
     if (!els.length) return false;
     var changed = false;
     for (var k = 0; k < els.length; k++) {
       var i = +els[k].dataset.idx;
-      var next = k + 1 < els.length ? els[k + 1] : botPad;
-      var h = next.offsetTop - els[k].offsetTop;
+      var h = Math.round(shared.itemHeight(els[k]));
       if (h > 0 && Math.abs(h - recHeights[i]) > 0.5) {
         recHeights[i] = h;
         changed = true;

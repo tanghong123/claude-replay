@@ -20,11 +20,11 @@ use claude_replay_present::Args;
 use harness::{
     agent_spawn, assistant_at, at_tail, base, click_session_id, codex_tool_session, command_at,
     copied_text, drag_select, edit_tool_at, eval, image_result_at, jump_to_end, key,
-    last_mounted_turn, long_session, now_minus, open_last_fold, open_turn_session, probe,
-    queued_at, queued_text, read_tool_at, scroll_by, selection_text, serial, session_id_chip,
-    stub_clipboard, tap_console, tool_open_at, tool_result_at, tool_result_lines, tool_result_text,
-    turn_at_top, until, user_at, view_anchor_index, write_tool_at, Kind, LiveGrowth, Monitor,
-    Shape, Stores, Surface,
+    last_mounted_turn, long_session, named_tool_at, now_minus, open_last_fold, open_turn_session,
+    probe, queued_at, queued_text, read_tool_at, scroll_by, selection_text, serial,
+    session_id_chip, stub_clipboard, tap_console, thinking_at, tool_open_at, tool_result_at,
+    tool_result_lines, tool_result_text, turn_at_top, until, user_at, view_anchor_index,
+    write_tool_at, Kind, LiveGrowth, Monitor, Shape, Stores, Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -2625,6 +2625,90 @@ fn classic_page_tool_filter_hides_and_lands() {
     scenario_tool_filter_hides_and_lands(&page.tab, Surface::Classic, &fx);
 }
 
+// ── scenario: a filter big enough to take the SPARSE window (#140 step 3) ───────────────────
+
+/// What the window mounts, what index range it covers, and whether anything the filter hid got
+/// mounted anyway. `#stream`'s children are the two pads with the materialized run between
+/// them, and `matBlock` stamps each one: `data-idx` is its record index, `data-kind` its kind,
+/// and a filter marks a turn record `filter-dim` and a matching record's header `filter-hit`.
+/// So a mounted element that is neither is a record the filter hid — a `stray`.
+const WINDOW_PROBE: &str = "(function(){ var els = [...document.querySelectorAll('#stream > [data-idx]')]; if (!els.length) return { mounted: 0, span: 0, stray: 0, pads: 0 }; var idxs = els.map(function (e) { return +e.dataset.idx; }); var lo = Math.min.apply(null, idxs), hi = Math.max.apply(null, idxs); var stray = els.filter(function (e) { return e.dataset.kind !== 'user' && e.dataset.kind !== 'command' && !e.querySelector('.fold-h.filter-hit'); }).length; var pads = [...document.querySelectorAll('#stream > .vpad')].reduce(function (a, p) { return a + p.getBoundingClientRect().height; }, 0); return { mounted: els.length, lo: lo, hi: hi, span: hi - lo + 1, stray: stray, pads: Math.round(pads) }; })()";
+
+/// Row 5.8 of design/rendering-parity-audit.md, and the case #140 step 3 asks for. Under a
+/// filter the classic page is SPARSE: it mounts only the records that match (plus the turn
+/// records, which a filter dims rather than hides) and lets the pads absorb everything between
+/// them, so the window's index SPAN runs far past the handful of elements in it. The range walk
+/// is what makes that possible — `effH` is 0 for a hidden record, so the walk crosses a run of
+/// them without spending any of its pixel budget.
+///
+/// No filter case before this one exercised that path at all: the page renders a filter's
+/// visible set in FULL while it is small (`filterFull` in export.js — at most 50 hits and at
+/// most 400 visible records), and every existing fixture is well under the ceiling, so their
+/// filters mount `[0, N)` and the sparse window never runs. This fixture is over it.
+///
+/// Classic-only on purpose. The app shell's filter is a SEARCH BY KIND (#133): it hides
+/// nothing, so it has no sparse window to have — `app_shell_the_tool_filter_is_a_search_by_kind`
+/// is what it must do instead.
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_sparse_filter_mounts_only_what_matches() {
+    let _serial = serial();
+    let fx = sparse_filter_fixture("scenario-sparse-filter");
+    let page = open(Surface::Classic, &fx, 0);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::Classic);
+    await_tail(tab, Surface::Classic, "a fresh open to land at the tail");
+    settle();
+
+    // The control: with no filter the window is CONTIGUOUS — every index in its span is
+    // mounted. That is also what proves the probe reads what it claims to.
+    let plain = probe(tab, WINDOW_PROBE);
+    let plain_mounted = plain["mounted"].as_i64().unwrap_or(0);
+    assert!(plain_mounted >= 3, "the fixture is mounted: {plain}");
+    assert_eq!(
+        plain["span"], plain["mounted"],
+        "unfiltered, the window mounts every index in its span: {plain}"
+    );
+    assert!(
+        plain["pads"].as_i64().unwrap_or(0) > 0,
+        "…and it is a WINDOW: the pads hold the rest of the transcript: {plain}"
+    );
+
+    let select = "(function(){ var b = document.getElementById('btn-tools'); if (b) b.click(); var it = document.querySelector('.tool-item[data-label=\"Read\"]'); if (!it) return 'no item'; it.click(); return 'selected'; })()";
+    assert_eq!(eval(tab, select), "selected", "the Read filter is selected");
+    settle();
+    settle();
+
+    // Away from the tail, so the window is one the range walk built rather than the converge.
+    scroll_by(tab, Surface::Classic, -4000);
+    settle();
+    settle();
+    let sparse = probe(tab, WINDOW_PROBE);
+    let mounted = sparse["mounted"].as_i64().unwrap_or(0);
+    let span = sparse["span"].as_i64().unwrap_or(0);
+    assert!(
+        mounted >= 3,
+        "the filtered window still has records in it: {sparse}"
+    );
+    assert_eq!(
+        sparse["stray"].as_i64().unwrap_or(-1),
+        0,
+        "every mounted record is one the filter kept — a turn or a match: {sparse}"
+    );
+    // Measured on this fixture: 118 mounted across 263 indices, 0 strays. With `isHiddenRec`
+    // forced to `false` — the dense model — the same case reads 107 across 107 with 60 strays,
+    // so the two models are 1.0x and 2.2x and the floor below separates them with room to spare.
+    assert!(
+        span * 2 >= mounted * 3,
+        "the window is SPARSE: its index span runs far past what it mounts, because the walk \
+         crosses a hidden record for free ({mounted} mounted across {span} indices): {sparse}"
+    );
+    assert!(
+        sparse["pads"].as_i64().unwrap_or(0) > 0,
+        "…and the pads still absorb what is not mounted: {sparse}"
+    );
+}
+
 /// The app shell's filter is a SEARCH BY KIND (#133), so this rule is the classic page's alone
 /// — a deliberate divergence, not a gap. What the app shell must do instead is
 /// `app_shell_the_tool_filter_is_a_search_by_kind` below.
@@ -2749,6 +2833,43 @@ fn app_shell_the_tool_filter_is_a_search_by_kind() {
 }
 
 /// Twelve turns of Bash, then a turn with one Read among the Bash calls.
+/// A transcript over the page's `filterFull` ceiling (export.js: at most 50 hits and at most
+/// 400 visible records), so a filter on it takes the WINDOWED path. 160 turns, each a question,
+/// a deliberation, one tool call and an answer; every third turn reaches for `Read` and the rest
+/// for `Bash`, which puts 54 `Read` hits on the page — four over the ceiling — with long runs of
+/// hidden records between them for the range walk to cross.
+fn sparse_filter_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let turns = 160u32;
+    let mut transcript = String::new();
+    for i in 0..turns {
+        let s = 4000 - u64::from(i) * 20;
+        transcript += &user_at(&format!("question {i}: what is in the log"), &now_minus(s));
+        transcript += &thinking_at(
+            &format!("deliberation {i}: weighing the options carefully. "),
+            &now_minus(s - 4),
+        );
+        if i % 3 == 0 {
+            transcript += &named_tool_at(
+                &format!("r{i}"),
+                "Read",
+                &format!("/tmp/log-{i}.txt"),
+                &now_minus(s - 8),
+            );
+        } else {
+            transcript += &tool_open_at(&format!("t{i}"), &now_minus(s - 8));
+            transcript += &tool_result_at(&format!("t{i}"), &now_minus(s - 10));
+        }
+        transcript += &assistant_at(
+            &format!("answer {i}: sed do eiusmod tempor incididunt ut labore."),
+            &now_minus(s - 12),
+        );
+    }
+    let path = stores.claude_session(SID, &transcript);
+    Fixture { base, path, turns }
+}
+
 fn filter_fixture(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);

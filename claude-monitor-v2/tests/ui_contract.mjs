@@ -1471,6 +1471,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const rules = module.slice(0, module.indexOf("/* ── the engine"));
   assert.ok(rules.length > 2000 && module.includes("/* ── the engine"), "the file keeps its two halves");
   assert.doesNotMatch(rules, /document\.|ResizeObserver|\.getBoundingClientRect\(|\.scrollTop|\.style\.|performance\.now\(|setTimeout\(|addEventListener/, "the rules are numbers in, numbers out");
+
+  // #140 step 2: ONE measure. Turning an element into a height happens in exactly one function,
+  // below the marker with the rest of the engine's DOM work, and BOTH pages call it — the app
+  // shell's engine from `measureMounted`, the classic page from `measureWindow`. The classic
+  // page's old basis was the offsetTop delta to the next sibling, which charges the gap between
+  // two records to the upper one; #128 made `#stream` a flex column with `#stream > *
+  // { margin-top: 0 }`, so the two bases agree there and one function keeps them agreeing.
+  assert.match(module, /^function itemHeight\(element\) \{$/m, "the shared measure is a module-level function, not a method");
+  assert.doesNotMatch(rules, /function itemHeight/, "itemHeight reads layout, so it sits below the engine marker");
+  assert.match(module, /const height = itemHeight\(child\);/, "the engine measures through it");
+  const classic = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(classic, /var h = Math\.round\(shared\.itemHeight\(els\[k\]\)\);/, "the classic page measures through it too — ROUNDED, because fractional heights made a following page heal a scrolled-up reader in half of eight runs and integer heights are what this page always had; the cause is #156");
+  assert.doesNotMatch(classic, /\.offsetTop - /, "no page measures top-to-next-top any more (#140 step 2)");
   // Step 3: the estimate is a FLOOR per unit type — under the real height, never over, so
   // learning a height only grows the page below the reader (rule 5).
   assert.match(vp, /const ESTIMATES = \{ user: 44, assistant: 40, process: 34 \};/);
