@@ -5171,3 +5171,72 @@ fn the_app_shell_raw_toggle_reveals_the_same_way_on_every_turn() {
         "…and on an agent turn: {seen}"
     );
 }
+
+/// #159. The reader chooses which panes the outline has at all, from a control on its caption.
+/// A pane turned off must cost NOTHING — the owner's reason for wanting this is that a drawer
+/// which is shut forever still charges you for its head — so the case checks that the card is
+/// gone from the layout, not merely collapsed, and that the drawer machinery below it no longer
+/// counts it. Turning it back on restores it open.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_chooses_which_outline_panes_exist() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-pane-picker", 2889);
+    harness::until(
+        &tab,
+        "!!document.getElementById('navigatorPanesBtn')",
+        "the pane selector on the outline caption",
+        std::time::Duration::from_secs(15),
+        "document.querySelector('.outline-caption') ? document.querySelector('.outline-caption').innerHTML.slice(0, 120) : 'no caption'",
+    );
+    let read = "(function(){ var cards = [...document.querySelectorAll('#sessionNavigator > .outline-card')]; var live = cards.filter(function (c) { return c.getBoundingClientRect().height > 0; }); return { total: cards.length, live: live.length, keys: live.map(function (c) { return c.dataset.navCard; }), stack: Math.round(live.reduce(function (a, c) { return a + c.getBoundingClientRect().height; }, 0)) }; })()";
+    let before = harness::probe(&tab, read);
+    assert!(
+        before["live"].as_i64().unwrap_or(0) >= 3,
+        "the column starts with its panes: {before}"
+    );
+    // Open the selector and turn Tasks off.
+    harness::eval(&tab, "document.getElementById('navigatorPanesBtn').click()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('[data-pane-toggle=\"tasks\"]')",
+        "the pane list",
+        std::time::Duration::from_secs(10),
+        "document.getElementById('navigatorPanesOptions') ? document.getElementById('navigatorPanesOptions').className : 'absent'",
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-pane-toggle=\"tasks\"]').click()",
+    );
+    let after = harness::probe(&tab, read);
+    assert_eq!(
+        after["live"].as_i64().unwrap_or(-1),
+        before["live"].as_i64().unwrap_or(0) - 1,
+        "the pane is gone from the column: {before} -> {after}"
+    );
+    assert!(
+        !after["keys"]
+            .as_array()
+            .map(|k| k.iter().any(|v| v == "tasks"))
+            .unwrap_or(true),
+        "…and it is Tasks that went: {after}"
+    );
+    // The column is a fixed-height scroller, so its own scrollHeight says nothing. What says the
+    // head cost nothing is the STACK: the cards that remain take less room than they did.
+    assert!(
+        after["stack"].as_i64().unwrap_or(0) + 20 < before["stack"].as_i64().unwrap_or(0),
+        "…and the cards that remain take less room, so its head cost nothing: {before} -> {after}"
+    );
+    // Back on, and open — never restored into a state the reader has to hunt for.
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-pane-toggle=\"tasks\"]').click()",
+    );
+    let back = harness::probe(&tab, read);
+    assert_eq!(
+        back["live"], before["live"],
+        "turning it back on restores it: {back}"
+    );
+    let open = harness::eval(&tab, "(function(){ var c = document.querySelector('[data-nav-card=\"tasks\"]'); return c ? c.classList.contains('open') : 'absent'; })()");
+    assert_eq!(open, true, "…and it comes back open: {open}");
+}

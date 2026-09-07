@@ -357,3 +357,38 @@ floor put back.
 **And one thing to look at and decide.** A closing drawer clips its list mid-row — the row at the
 cut is sliced through. That is what a drawer sliding shut does to what is inside it, so it is left
 as it is; if it should instead fade at the cut edge, that is a couple of lines.
+
+## Two controls, two questions (#159, 2026-09-07)
+
+The column now has a second control, and the reason it is a second control rather than another
+drawer state is the owner's:
+
+> the only reason why a user may want a pane being closed and always stay closed is when they
+> don't care about that info. In that case, we don't even want to pay for the cost of the head
+> pane.
+
+So the two answer different questions, and neither can answer the other's:
+
+|  | the drawer | the pane selector |
+|---|---|---|
+| the question | *not right now* | *I do not care about this* |
+| what stays | the head, so the reader can bring the body back | nothing at all |
+| where it lives | the card's own toggle, and the column's scroll | a control on the Outline caption |
+| what it costs | one head's height, always | zero |
+
+**Nothing.** A pane turned off is not `display:none` on a body — the whole card leaves the
+column: no head, no gap, no sticky slot, and no part in the budget. That last one is the
+integration, and it is one line: `drawerCards()` selects `:scope > .outline-card:not(.pane-off)`,
+and the budget loop, the slot stack, the prefix and the toggle all read the column through that
+one function. None of them can see a pane that is not there.
+
+**A pane comes back OPEN.** Restoring it into whatever `navCards` state it had before would drop
+the reader into a column where the thing they just asked for is still hidden, behind a second
+control they would have to find.
+
+**The last pane cannot be turned off.** An outline with no panes has no card to put a control
+on; the only way back would be the popover the reader just emptied.
+
+This also settles something for the drawer model (#157): it does **not** need to carry "shut and
+stays shut". That state is this control now, and a drawer state that means "forever" would be the
+same information in two places, disagreeing.

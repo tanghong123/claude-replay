@@ -468,6 +468,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    narrow-window rule that turns it into a full-width sheet), and only overrides its width and
    the anchor, since it hangs off a topbar button rather than the search box. */
 .reading-cluster { position: relative; display: flex; align-items: center; flex: none; }
+
+/* #159. The pane selector sits on the Outline caption, and its popover hangs off it, so the
+   caption is the positioned ancestor. A pane the reader turned off renders NOTHING — not a head,
+   not a gap, not a slot — which is what makes it different from a drawer that is merely shut. */
+.outline-caption { position: relative; }
+.outline-card.pane-off { display: none; }
+#navigatorPanesBtn { margin-left: auto; padding: 0 2px; background: transparent; color: var(--faint); cursor: pointer; display: grid; place-items: center; }
+#navigatorPanesBtn:hover, #navigatorPanesBtn[aria-expanded="true"] { color: var(--ink); }
+.outline-caption > .panes-options { position: absolute; left: 4px; right: 4px; top: 28px; width: auto; z-index: 48; text-transform: none; letter-spacing: normal; font-weight: 400; }
 /* The positioning is spelled out rather than inherited: the demo's own rule is
    `.header-search-cluster>.navigator-options`, a CHILD selector this popover cannot match from
    its own cluster. Without these it laid out as a static flex item — measured at top -40px,

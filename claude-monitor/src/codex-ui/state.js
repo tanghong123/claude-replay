@@ -44,6 +44,11 @@ export const uiState = {
   preview: false, previewTabs: [], previewId: null,
   navigatorOpen: localStorage.getItem("am-demo-navigator") !== "0",
   navCards: new Set(json("am-prod-nav-cards", ["turns"])),
+  // Which panes EXIST in the outline at all (#159). Distinct from `navCards`, which is whether a
+  // pane that exists is open: a pane turned off here costs nothing — no body, no head, no slot,
+  // and no part in the drawer budget. The owner's reason for the two being different controls is
+  // that "shut and stays shut" is not a drawer state, it is not caring about that information.
+  navPanes: new Set(json("am-prod-nav-panes", ["turns", "tasks", "agents", "session"])),
   // Which info subsections the reader has folded away (#89). Per VIEWER, not per session: a
   // reader who does not care about Usage does not care about it in the next session either.
   infoFolds: new Set(json("am-prod-info-folds", [])),
@@ -68,6 +73,7 @@ export function persist() {
   localStorage.setItem("am-demo-sidebar", indexState.sidebarOpen ? "1" : "0");
   localStorage.setItem("am-demo-navigator", uiState.navigatorOpen ? "1" : "0");
   localStorage.setItem("am-prod-nav-cards", JSON.stringify([...uiState.navCards]));
+  localStorage.setItem("am-prod-nav-panes", JSON.stringify([...uiState.navPanes]));
   localStorage.setItem("am-prod-info-folds", JSON.stringify([...uiState.infoFolds]));
   localStorage.setItem("am-prod-read", JSON.stringify(indexState.read));
   if (uiState.readingChosen) localStorage.setItem(READING_KEY, JSON.stringify(uiState.reading));

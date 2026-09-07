@@ -547,7 +547,23 @@ const drawers = { natural: new Map(), open: new Map(), dir: new Map() };
 const drawerSlide = document.createElement("div");
 drawerSlide.className = "outline-slide";
 drawerSlide.setAttribute("aria-hidden", "true");
-const drawerCards = () => [...byId("sessionNavigator").querySelectorAll(":scope > .outline-card")];
+// A pane the reader has turned OFF (#159) is not a shut drawer — it does not exist. Filtering it
+// out here is the whole integration: the budget, the slots, the prefix and the toggle all read
+// the column through this one function, so none of them can see a pane that is not there.
+const drawerCards = () => [...byId("sessionNavigator").querySelectorAll(":scope > .outline-card:not(.pane-off)")];
+/** The panes the reader keeps, applied to the column. A pane turned off renders nothing at all —
+ *  no body, no head, no gap, no slot — which is what separates it from a drawer that is merely
+ *  shut, and is the point the owner made when asking for it: if you do not care about the
+ *  information you should not pay for its head either. */
+function applyPanes() {
+  for (const card of byId("sessionNavigator").querySelectorAll(":scope > .outline-card")) {
+    const on = uiState.navPanes.has(card.dataset.navCard);
+    card.classList.toggle("pane-off", !on);
+  }
+  renderNavigator();
+  stackOutlineHeads();
+  applyDrawers();
+}
 /** The slots (#88, kept) and B(i), each drawer's body at its NATURAL height. Only a render or a
  *  resize can change either; a scroll never does, so this is not on the scroll path. */
 function stackOutlineHeads() {
@@ -1315,6 +1331,64 @@ setSidebarWidth(localStorage.getItem(SIDEBAR_WIDTH_KEY) || SIDEBAR_DEFAULT, fals
 //
 // Retiring a shipped feature, not fixing a bug: the history should not read as a regression.
 function toggleNavigator(open) { uiState.navigatorOpen = open; persist(); renderNavigator(); viewport.remeasure(); }
+// #159. The pane selector, beside the Outline caption. Production-only chrome, layered on at
+// runtime like the reading cluster (#142) and the rail's own close button, because
+// `reference-shell.html` is extracted byte-for-byte from the demo and is never hand-edited.
+// The labels come off each card's own head, so they cannot drift from what the column says.
+const panesBtn = document.createElement("button");
+panesBtn.id = "navigatorPanesBtn";
+panesBtn.type = "button";
+panesBtn.title = "Which panes this outline shows";
+panesBtn.setAttribute("aria-label", "Which panes this outline shows");
+panesBtn.setAttribute("aria-haspopup", "true");
+panesBtn.setAttribute("aria-expanded", "false");
+panesBtn.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="7" cy="18" r="2"/></svg>';
+const panesOptions = document.createElement("div");
+panesOptions.className = "navigator-options panes-options";
+panesOptions.id = "navigatorPanesOptions";
+function renderPanesOptions() {
+  const rows = [...byId("sessionNavigator").querySelectorAll(":scope > .outline-card")].map(card => {
+    const key = card.dataset.navCard;
+    const label = card.querySelector(":scope > .outline-card-head strong")?.textContent?.trim() || key;
+    const on = uiState.navPanes.has(key);
+    return `<div class="reading-row"><span>${escapeText(label)}</span><button class="mode-switch" type="button" role="switch" data-pane-toggle="${escapeText(key)}" aria-checked="${on}" aria-label="Show the ${escapeText(label)} pane"><span></span></button></div>`;
+  });
+  panesOptions.innerHTML = `<div class="scope-menu-head"><strong>Panes</strong></div>${rows.join("")}`;
+}
+panesOptions.onclick = event => {
+  const toggle = event.target.closest("[data-pane-toggle]");
+  if (!toggle) return;
+  const key = toggle.dataset.paneToggle;
+  // The last pane cannot be turned off — an outline with no panes is a column of nothing, and
+  // the reader would have no control left to get one back except this popover.
+  if (uiState.navPanes.has(key) && uiState.navPanes.size <= 1) return;
+  if (uiState.navPanes.has(key)) {
+    uiState.navPanes.delete(key);
+  } else {
+    uiState.navPanes.add(key);
+    // A pane coming BACK comes back open, so the reader is never handed a column where the thing
+    // they just asked for is still hidden behind a second control. Only on the transition —
+    // doing it in `applyPanes` would force every pane open on load.
+    uiState.navCards.add(key);
+  }
+  persist();
+  applyPanes();
+  renderPanesOptions();
+};
+byId("navigatorClose").before(panesBtn, panesOptions);
+panesBtn.onclick = () => {
+  const open = panesOptions.classList.contains("open");
+  if (!open) renderPanesOptions();
+  panesOptions.classList.toggle("open", !open);
+  panesBtn.setAttribute("aria-expanded", String(!open));
+};
+addEventListener("pointerdown", event => {
+  if (!panesBtn.contains(event.target) && !panesOptions.contains(event.target) && panesOptions.classList.contains("open")) {
+    panesOptions.classList.remove("open");
+    panesBtn.setAttribute("aria-expanded", "false");
+  }
+}, true);
+applyPanes(); // the stored choice, before anything measures the column
 byId("navigatorClose").onclick = () => toggleNavigator(false);
 byId("navigatorRailExpand").onclick = () => toggleNavigator(true);
 // #148, at the owner's request: the top-bar toggle goes with the X. Its remaining job was
