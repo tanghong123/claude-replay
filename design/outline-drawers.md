@@ -392,3 +392,73 @@ on; the only way back would be the popover the reader just emptied.
 This also settles something for the drawer model (#157): it does **not** need to carry "shut and
 stays shut". That state is this control now, and a drawer state that means "forever" would be the
 same information in two places, disagreeing.
+
+## #157, attempted: one state per pane, and the constraint that stops it (2026-09-07)
+
+**This supersedes "The toggle on a drawer that is not the frontier" above.** That section records
+the owner approving the two-mechanism model on 2026-09-06 — "the slide is a chain, the toggle is a
+drawer" — and on 2026-09-07 they reversed it, having found what it does:
+
+> when a pane is explicitly toggled shut, we cannot re-open it via scrolling down. And when a pane
+> is shut via scrolling up, a click on the header does not pop it open. … capture each drawer
+> state via (open%, direction (open, close, unknown)) … The scrolling needs to be able to reason
+> about which drawer to open or close based on the current states of all outline panes.
+
+Both reported bugs come from one line of the old model: `applyDrawers` reads a toggle-shut pane's
+natural height as 0 — "has no body to close, and takes no budget" — so it is invisible to the
+budget, can never be given anything back, and no amount of scrolling reopens it.
+
+### The model that was built
+
+Openness stops being a function of the offset and becomes STATE; the offset tracks it, so
+`s == Σ B(i)·(1 − open(i))`. A scroll is read as a DELTA and routed by the current states —
+closing spends on the topmost pane with anything left, opening returns to the bottommost pane not
+yet full — which is what lets a pane the toggle shut be reopened by scrolling: it is a pane at 0%,
+and the walk finds it like any other. The toggle sets a state and moves the offset under it: at
+either end it flips, part-way it follows the direction, and with no direction it makes the bigger
+visual change. The slide box, the sticky slots and the compositor-lag clamp all keep working.
+
+Four things this got wrong on the way, all found by the existing cases and all worth keeping:
+
+1. **A scroll event can land before the column has ever been measured.** A `?? 1` default then
+   reads every unseeded pane as fully open and paints it that way. Openness has to be seeded on
+   FIRST READ from the stored boolean, in an accessor, not in an initialiser.
+2. **Paint before writing `scrollTop`.** The slide box is what makes the column's scrollHeight big
+   enough to hold the offset, so writing the offset first lets the browser CLAMP it — and the next
+   scroll event reads the difference as the reader opening a drawer. Measured: a column seeded
+   shut landed with `session` at 63% open, direction "opening", from a delta nobody made. Resync
+   the tracked offset from the REAL `scrollTop` afterwards, never from what was asked for.
+3. **Reconcile in one direction only.** `B(i)` moves for reasons that are not the reader's — a
+   resize reflows the lists, a live session grows them — so recompute the OFFSET from the states,
+   never the states from the offset, or the drawers snap on every resize.
+4. **A pane at 100% must be painted at its list's height read NOW.** `B(i)` is otherwise only
+   refreshed when the column is stacked, and a pane whose list gained its `max-height` after that
+   is painted at a stale `B` — 27px of empty space under the session list, and a pane that reopens
+   to a different height than it had at rest.
+
+### The constraint, and the question for the owner
+
+**A bounded scroller cannot represent an unbounded per-pane state.** The design's own
+constant-scrollHeight property is what does it: as panes close, the bodies shrink by exactly
+`spent` and the slide grows by exactly `spent`, so `scrollHeight` is CONSTANT and the offset range
+`scrollHeight − clientHeight` is fixed. But `spent` can reach `Σ B(i)`, which is larger. The old
+model never met this because openness was DERIVED from a clamped offset — you could only close as
+much as the range allowed. With states as the truth, a column that starts with three panes shut
+needs an offset it cannot have, so scrolling back to 0 returns only the range, not the state, and
+the last pane stops part-way open. That is `the_app_shell_outline_panes_are_drawers` failing on
+"scrolling back opens them again, bottom-first, to exactly where they were".
+
+The ways out are a decision, not a detail:
+
+- **Proportional control.** Map the scroller's `[0, max]` onto `[0, Σ B(i)]`. Everything lines up
+  and scrollTop 0 means fully open — but the wheel stops tracking the drawers 1:1, which is the
+  property this design was built around.
+- **A taller slide.** Make the slide `spent + shortfall` so the range can hold the offset — but
+  the slide is above the stack and the excess pushes every head down.
+- **Accept the clamp.** Keep the states as truth and let the offset be best-effort: scrolling
+  reopens what it can reach, and the toggle reaches the rest. Both of the owner's bugs are fixed,
+  but "scroll all the way up and everything is open" stops being exactly true.
+
+The third is the smallest change and still delivers what was asked; the first is what most people
+mean by a drawer chain. The work is not committed — it is a patch on the session's scratch, and
+the four findings above are the part worth keeping either way.
