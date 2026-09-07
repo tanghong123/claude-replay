@@ -5000,16 +5000,27 @@ fn scenario_wide_is_one_click_from_the_header(
     // A control is "reachable" only if the point at its centre actually hits it.
     let hittable = r#"function (el) { if (!el) return false; var r = el.getBoundingClientRect(); if (r.width < 4 || r.height < 4) return false; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(hit && (hit === el || el.contains(hit) || hit.contains(el))); }"#;
 
-    for width in [1500.0_f64, 820.0] {
-        tab.set_bounds(headless_chrome::types::Bounds::Normal {
-            left: Some(0),
-            top: Some(0),
-            width: Some(width),
-            height: Some(900.0),
-        })
-        .unwrap();
-        settle();
-        settle();
+    for want in [1500.0_f64, 820.0] {
+        harness::resize(tab, want, 900.0);
+        // Let the resize LAND, then measure what the window really is. `set_bounds` is a
+        // request, not a guarantee: on CI's headless Linux it never reached 1500px, and an
+        // assertion keyed to the REQUESTED width then tested a viewport that was never there —
+        // it read as "wide mode does nothing" (820 -> 821) on a page simply too narrow to
+        // widen. Poll until the width stops moving rather than `until`, which would panic on a
+        // browser that cannot honour the request at all; every branch below keys off `width`,
+        // the measured value.
+        let mut width = 0.0;
+        for _ in 0..10 {
+            settle();
+            let now = probe(tab, "({ w: innerWidth })")["w"]
+                .as_f64()
+                .unwrap_or(0.0);
+            if now == width && now > 0.0 {
+                break;
+            }
+            width = now;
+        }
+        assert!(width > 0.0, "the window reports a width at all");
         // Start each width from the page at rest. Without this the previous width's popover is
         // still open, and step 2's click CLOSES it instead of opening it — which read exactly
         // like the control being unreachable, at the width where a real one had just been found.
@@ -5068,7 +5079,8 @@ fn scenario_wide_is_one_click_from_the_header(
         // 820px the classic page's stream is ALREADY the full width (measured 532 -> 532), so a
         // widening assertion there would be testing the viewport, not the control. The narrow
         // pass still proves reachability, which is the half that regresses.
-        let before = transcript_width(tab, surface);
+        let (before, avail) = transcript_box(tab, surface);
+        let wide_before = wide_is_on(tab, surface);
         let toggled = probe(
             tab,
             &format!(
@@ -5080,16 +5092,37 @@ fn scenario_wide_is_one_click_from_the_header(
         );
         settle();
         settle();
-        let after = transcript_width(tab, surface);
-        if width > 1000.0 {
+        let (after, _) = transcript_box(tab, surface);
+        let wide_after = wide_is_on(tab, surface);
+        // The EFFECT, asserted without reference to the viewport: the click actually flipped the
+        // preference. This holds on any window, which is what the rendered-width check below
+        // cannot promise — CI's headless Linux would not honour a 1500px resize, and on a column
+        // with no slack a perfectly working control moves the transcript by one pixel (820 ->
+        // 821), which reads exactly like a broken one.
+        assert_ne!(
+            wide_before, wide_after,
+            "at {width}px the click ({toggled}) actually flipped wide mode: {wide_before} -> {wide_after}"
+        );
+        // Only assert the widening where the normal-mode transcript is actually being held in
+        // by its own max-width — i.e. where there is room to widen. Below that, wide mode has
+        // nothing to do and the measurement would be about the viewport, not the control: the
+        // classic page's stream is already full width at 820px (measured 532 -> 532). The
+        // narrow pass still proves reachability, which is the half that regresses.
+        // …and where the column has real slack, the change is visible in the rendering too.
+        // The threshold is generous on purpose: `avail` does not subtract every ancestor's
+        // padding, so a small positive difference is not evidence of room.
+        if avail - before > 120.0 {
             assert!(
                 after > before + 8.0,
-                "at {width}px toggling wide ({toggled}) actually widens the transcript: {before} -> {after}"
+                "at {width}px, with {avail} available to a {before}-wide transcript, toggling wide \
+                 ({toggled}) actually widens it: {before} -> {after}"
             );
         } else {
             assert!(
                 after >= before,
-                "at {width}px toggling wide ({toggled}) never NARROWS the transcript: {before} -> {after}"
+                "at {width}px the transcript already fills its column ({before} of {avail}), so \
+                 toggling wide ({toggled}) has nothing to widen — but it must never NARROW it: \
+                 {before} -> {after}"
             );
         }
 
@@ -5126,20 +5159,47 @@ fn scenario_wide_is_one_click_from_the_header(
     }
 }
 
-/// The transcript's content width on either page — what "wide" is supposed to change.
-fn transcript_width(tab: &headless_chrome::Tab, surface: Surface) -> f64 {
-    let sel = match surface {
-        Surface::Classic => "#stream",
-        Surface::AppShell => ".virtual-window",
+/// The transcript's content width on either page — what "wide" is supposed to change — and the
+/// width AVAILABLE to it inside its scroller.
+///
+/// Both numbers are needed because "is there room to widen?" is a question about the column, not
+/// about the window. CI's headless Linux never honoured a 1500px `set_bounds`, and a check keyed
+/// to the viewport still concluded there was room when there was none: the transcript measured
+/// 820 of an ~820px column, already at the container's edge, so raising its max-width moved it
+/// one pixel. Comparing content against container asks the question directly and gives the same
+/// answer on any machine.
+/// Whether wide mode is ON, read from where each page actually keeps it — the one thing that is
+/// true regardless of how much room the window happens to give the column.
+///
+/// The two pages express it differently and neither is guessable from geometry: the classic page
+/// sets `#main`'s inline `max-width` ("820px" off, "none" on — `applyWide` in export.js); the app
+/// shell toggles a `wide` class on its root (`applyReading` in app.js) and caps nothing with
+/// max-width at all. Walking the ancestry for a max-width change found "none" at every level in
+/// both states, which is how that assertion passed on one page and failed on the other while
+/// both controls were working perfectly.
+fn wide_is_on(tab: &headless_chrome::Tab, surface: Surface) -> bool {
+    let js = match surface {
+        Surface::Classic => "(function(){ var m = document.getElementById('main'); return { on: !!m && m.style.maxWidth === 'none' }; })()",
+        Surface::AppShell => "(function(){ var a = document.getElementById('app'); return { on: !!a && a.classList.contains('wide') }; })()",
     };
-    probe(
+    probe(tab, js)["on"].as_bool().unwrap_or(false)
+}
+
+fn transcript_box(tab: &headless_chrome::Tab, surface: Surface) -> (f64, f64) {
+    let (content, holder) = match surface {
+        Surface::Classic => ("#stream", "#stream"),
+        Surface::AppShell => (".virtual-window", ".transcript"),
+    };
+    let v = probe(
         tab,
         &format!(
-            "(function(){{ var e = document.querySelector('{sel}'); return {{ w: e ? e.getBoundingClientRect().width : 0 }}; }})()"
+            "(function(){{ var e = document.querySelector('{content}'); var h = document.querySelector('{holder}');              var avail = 0;              if (h === e && e) {{ var p = e.parentElement; avail = p ? p.clientWidth : 0; }}              else if (h) {{ var cs = getComputedStyle(h); avail = h.clientWidth - parseFloat(cs.paddingLeft || 0) - parseFloat(cs.paddingRight || 0); }}              return {{ w: e ? e.getBoundingClientRect().width : 0, avail: avail }}; }})()"
         ),
-    )["w"]
-        .as_f64()
-        .unwrap_or(0.0)
+    );
+    (
+        v["w"].as_f64().unwrap_or(0.0),
+        v["avail"].as_f64().unwrap_or(0.0),
+    )
 }
 
 #[test]
