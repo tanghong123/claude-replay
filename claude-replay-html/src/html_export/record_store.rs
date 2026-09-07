@@ -83,6 +83,28 @@ impl RecordStore {
     }
 
     /// Cut the log to `len` bytes and leave the handle at the new end.
+    /// The highest `b{n}` anchor the surviving prefix already spent, so a continuation cannot
+    /// hand the same one out twice (#151). Scanned as BYTES rather than parsed: the marker is
+    /// `"id":"b` with unescaped quotes, which cannot occur inside a JSON string value (there it
+    /// is `\"id\":\"b`), so a transcript that merely TALKS about an anchor never matches. One
+    /// pass over the prefix at resume, against a JSON parse of every record, which is the whole
+    /// reason this is a scan.
+    fn highest_block_anchor(&self) -> std::io::Result<usize> {
+        use std::io::BufRead;
+        let file = std::fs::File::open(&self.log.path)?;
+        let mut reader = std::io::BufReader::new(std::io::Read::take(file, self.log.len));
+        let mut line = Vec::new();
+        let mut high = 0usize;
+        loop {
+            line.clear();
+            if reader.read_until(b'\n', &mut line)? == 0 {
+                break;
+            }
+            high = high.max(highest_anchor_in(&line));
+        }
+        Ok(high)
+    }
+
     fn cut_to(&mut self, len: u64) -> std::io::Result<()> {
         self.log.file.set_len(len)?;
         self.log.file.seek(SeekFrom::End(0))?;
@@ -232,18 +254,28 @@ impl DurableStore for RecordStore {
     /// Cut the log to `n` records and **derive** the render continuation from the prefix that
     /// survives (#96 §4.3: no presentation state is persisted).
     ///
-    /// All three counters are facts about the prefix, so deriving them cannot go stale against
-    /// it the way a persisted copy could: one record per committed block makes `next_block` the
-    /// block count, and both turn counters advance once per `UserText`/`Command`, which is
-    /// exactly what the header's `turns` counts. The sidebar accumulator starts empty because
-    /// the live path never reads it — a served page builds its turn index from the records
-    /// themselves; only the static bundle, which never resumes, consumes it.
+    /// The turn counters are facts about the prefix — both advance once per `UserText`/`Command`,
+    /// which is exactly what the header's `turns` counts — and the sidebar accumulator starts
+    /// empty because the live path never reads it (a served page builds its turn index from the
+    /// records themselves; only the static bundle, which never resumes, consumes it).
+    ///
+    /// `next_block` is the one that cannot be counted from lines, and used to be (#151). The old
+    /// rule read "one record per committed block makes `next_block` the block count", and folding
+    /// ended that: a folded record carries its children inside a `blocks` part, each child spends
+    /// a `block_id()`, and none of them gets a line. Measured on a real session — 13,085 lines,
+    /// 27,032 ids issued, high-water mark b20775 — a resume restarted the counter near 13,085 and
+    /// re-issued some seven thousand anchors. Two records then answered to one id, `#` links and
+    /// every DOM→record lookup could resolve to the wrong one, and an image whose id was re-spent
+    /// on a bash call opened as "That image cannot be opened".
+    ///
+    /// So it is derived from what the prefix actually SPENT, not from how many lines hold it.
     fn adopt(&mut self, n: usize, meta: &SessionMeta) -> std::io::Result<()> {
         let end = self.load()?.get(n).map(|l| l.offset);
         if let Some(end) = end {
             self.cut_to(end)?;
         }
-        self.emit = EmitState::resumed(n, meta.turns);
+        let spent = self.highest_block_anchor()?.max(n);
+        self.emit = EmitState::resumed(spent, meta.turns);
         Ok(())
     }
 }
@@ -294,6 +326,37 @@ fn one_record(line: &[u8]) -> bool {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HtmlNote {
     pub port: u16,
+}
+
+/// The highest `b{n}` anchor in one wire record (#151). The marker carries UNESCAPED quotes,
+/// which cannot occur inside a JSON string value — there it is `\\"id\\":\\"b` — so a transcript
+/// that merely quotes an anchor never counts as having spent one.
+fn highest_anchor_in(line: &[u8]) -> usize {
+    const MARK: &[u8] = b"\"id\":\"b";
+    let mut high = 0usize;
+    let mut at = 0;
+    while let Some(hit) = find(&line[at..], MARK) {
+        let mut k = at + hit + MARK.len();
+        let (mut value, mut digits) = (0usize, 0u32);
+        while k < line.len() && line[k].is_ascii_digit() {
+            value = value * 10 + (line[k] - b'0') as usize;
+            digits += 1;
+            k += 1;
+        }
+        if digits > 0 && k < line.len() && line[k] == b'"' {
+            high = high.max(value);
+        }
+        at = k.max(at + hit + MARK.len());
+    }
+    high
+}
+
+/// The first index of `needle` in `hay` — a plain scan, since the prefix walk needs no more.
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    (0..=hay.len() - needle.len()).find(|&i| &hay[i..i + needle.len()] == needle)
 }
 
 #[cfg(test)]
@@ -503,6 +566,55 @@ mod tests {
         assert_eq!(
             resumed, cold,
             "a resumed record log must equal a cold one, byte for byte"
+        );
+    }
+
+    /// #151: the continuation must start past every anchor the prefix ALREADY SPENT, not past
+    /// its line count. The two were the same thing until folding began nesting records: a folded
+    /// record carries its children inside a `blocks` part, and each child spends an anchor
+    /// without taking a line of its own. On a real session that left the counter roughly seven
+    /// thousand behind — 13,085 lines against a high-water mark of b20775 — so a resume re-issued
+    /// ids the prefix had used, two records answered to one id, and every DOM→record lookup could
+    /// land on the wrong one. An image whose anchor had been re-spent on a bash call opened as
+    /// "That image cannot be opened".
+    ///
+    /// This tests the SCAN the derivation rests on, because the folded fixtures here happen to
+    /// give their nested records no anchors of their own, so a whole-log uniqueness assertion
+    /// over them would pass whatever `adopt` did — coverage in name only.
+    #[test]
+    fn a_prefix_reports_the_highest_anchor_it_spent() {
+        // A record whose NESTED child holds the higher anchor: the shape that made the line count
+        // an undercount in the first place.
+        let nested = br#"{"id":"b12","kind":"act","body":[{"p":"blocks","items":[{"id":"b900","kind":"bash"}]}]}"#;
+        assert_eq!(
+            highest_anchor_in(nested),
+            900,
+            "a nested child's anchor counts — it was spent"
+        );
+        assert_eq!(highest_anchor_in(br#"{"id":"b7"}"#), 7);
+        assert_eq!(
+            highest_anchor_in(br#"{"kind":"user"}"#),
+            0,
+            "no anchor, no claim"
+        );
+        // A transcript that merely QUOTES an anchor has not spent one: inside a JSON string the
+        // quotes are escaped, so the marker cannot match.
+        assert_eq!(
+            highest_anchor_in(
+                br#"{"id":"b3","body":[{"p":"pre","x":"see \"id\":\"b9999\" above"}]}"#
+            ),
+            3,
+            "an anchor named in CONTENT is not an anchor the renderer handed out"
+        );
+        assert_eq!(
+            highest_anchor_in(br#"{"id":"bxx"}"#),
+            0,
+            "b must be followed by digits"
+        );
+        assert_eq!(
+            highest_anchor_in(br#"{"id":"b12"#),
+            0,
+            "an unterminated id is not a claim"
         );
     }
 
