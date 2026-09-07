@@ -69,7 +69,17 @@
    property change, not a rule per element. */
 #app{--code-size:12px;--measure:820px}
 #app .markdown pre code,#app .renderer-terminal .output,#app .turn-raw{font-size:var(--code-size)}
+/* #161. The preference reaches every `pre` and `code` in the transcript, not an enumerated set
+   of containers. `white-space` inherits, but the UA stylesheet sets it EXPLICITLY on `pre`, and
+   an explicit UA declaration beats an inherited author value — so a bare `<pre>` inside an
+   already-wrapping box kept `white-space: pre` and quietly ignored the control. Measured: the
+   terminal computed `pre-wrap` while the `<pre>` inside it computed `pre`, which is the "wrap
+   long lines does not apply to bash output" the owner reported. Keyed on the ELEMENTS rather
+   than on class names, so a rendering added later obeys it without being added to a list. */
 #app.wrap-code .markdown pre,#app.wrap-code .markdown pre code,#app.wrap-code .renderer-terminal .output{white-space:pre-wrap;word-break:break-word}
+#app.wrap-code .transcript pre,#app.wrap-code .transcript code{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+#app.wrap-code .transcript pre{overflow-x:hidden}
+#app:not(.wrap-code) .transcript pre{white-space:pre;overflow-x:auto}
 #app .transcript-inner{width:min(var(--measure),calc(100% - 64px))}
 .reading-row{height:30px;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;color:var(--sub);font-size:11.5px}
 .reading-step{display:inline-flex;align-items:center;gap:4px}

@@ -2625,6 +2625,130 @@ fn classic_page_tool_filter_hides_and_lands() {
     scenario_tool_filter_hides_and_lands(&page.tab, Surface::Classic, &fx);
 }
 
+// ── scenario: wrap reaches every rendering that can hold a long line (#161) ─────────────────
+
+/// A transcript whose every long-line rendering carries one unbroken 420-character line: a Bash
+/// result, a Read with numbered source, a user turn, and an assistant answer. The marker is the
+/// same in each so a failure names which one did not wrap.
+fn long_line_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let long: String = "LONGLINE_".to_string() + &"x".repeat(420);
+    // Long enough that the page is several viewports tall, which is what the opener waits for.
+    let mut transcript = long_session(14, Shape::default());
+    transcript += &user_at(&format!("look at this: {long}"), &now_minus(120));
+    transcript += &tool_open_at("t-long", &now_minus(110));
+    transcript += &tool_result_text(
+        "t-long",
+        &format!("first line\\n{long}\\nlast line"),
+        &now_minus(100),
+    );
+    transcript += &assistant_at(&format!("the output was {long}"), &now_minus(90));
+    transcript += &write_tool_at("t-long-write", "/tmp/long.py", 6, &now_minus(80));
+    transcript += &assistant_at("done", &now_minus(70));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 15,
+    }
+}
+
+/// Row for #161. With "wrap long lines" ON, NOTHING in the transcript scrolls sideways — asked
+/// of every element rather than of a named list, because a list-shaped test would have passed
+/// all along while a plain tool-output `pre` quietly ignored the preference.
+fn scenario_wrap_reaches_every_rendering(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // Open every fold first, so the long lines are mounted and the code panes exist, then make
+    // sure wrap is ON. The two pages DEFAULT differently — the classic page wraps out of the box,
+    // the shell does not — so this reads the state and toggles only if it has to.
+    match surface {
+        Surface::Classic => {
+            eval(tab, "(function(){ document.querySelectorAll('#stream .fold').forEach(function (f) { if (f.dataset.open === '0') { var h = f.querySelector('.fold-h'); if (h) h.click(); } }); return 'opened'; })()");
+        }
+        Surface::AppShell => {
+            for _ in 0..2 {
+                eval(tab, "(function(){ document.querySelectorAll('.process-surface.closed [data-process-toggle]').forEach(function (b) { b.click(); }); document.querySelectorAll('[data-process-more][aria-expanded=\"false\"]').forEach(function (b) { b.click(); }); document.querySelectorAll('.renderer.closed > button.renderer-head').forEach(function (h) { h.click(); }); document.querySelectorAll('.cap-more-btn').forEach(function (b) { b.click(); }); return 'opened'; })()");
+                settle();
+            }
+        }
+    }
+    settle();
+    let wrapped = match surface {
+        // `.ms-wrap` carries `on` when wrapping is OFF (the button offers the other mode).
+        Surface::Classic => eval(tab, "(function(){ var b = [...document.querySelectorAll('#stream .codebar .ms-wrap')].pop(); if (!b) return 'no bar'; if (b.classList.contains('on')) b.click(); return 'wrapping'; })()"),
+        Surface::AppShell => eval(tab, "(function(){ var app = document.getElementById('app'); if (!app.classList.contains('wrap-code')) { document.getElementById('readingBtn').click(); var t = document.querySelector('[data-reading-toggle=\"wrap\"]'); if (!t) return 'no toggle'; t.click(); document.getElementById('readingBtn').click(); } return app.classList.contains('wrap-code') ? 'wrapping' : 'still off'; })()"),
+    };
+    assert_eq!(
+        wrapped.as_str().unwrap_or(""),
+        "wrapping",
+        "the page is set to wrap long lines: {wrapped}"
+    );
+    settle();
+    settle();
+    let scope = match surface {
+        Surface::Classic => "#stream",
+        Surface::AppShell => ".transcript",
+    };
+    let edge_of = match surface {
+        Surface::Classic => "document.scrollingElement",
+        Surface::AppShell => "document.querySelector('.transcript')",
+    };
+    // Two ways a long line defeats the preference, and the case has to see both: the element
+    // SCROLLS sideways (it clips or offers a scrollbar), or it simply SPILLS past the reading
+    // column's right edge. Checking `scrollWidth` alone misses the spill; checking the edge
+    // alone misses a `pre` that quietly scrolls inside its own box.
+    let probe_js = format!(
+        "(function(){{ var root = document.querySelector('{scope}'); if (!root) return {{ err: 'no root' }}; \
+         var sc = {edge_of}; var edge = sc.getBoundingClientRect().left + sc.clientWidth; \
+         var bad = []; \
+         [...root.querySelectorAll('*')].forEach(function (e) {{ \
+           var t = (e.textContent || ''); if (t.indexOf('LONGLINE_') < 0 && t.indexOf('SENTINEL_') < 0) return; \
+           if ([...e.children].some(function (c) {{ var s = (c.textContent || ''); return s.indexOf('LONGLINE_') >= 0 || s.indexOf('SENTINEL_') >= 0; }})) return; \
+           var cs = getComputedStyle(e); \
+           var scrolls = e.scrollWidth - e.clientWidth > 1; \
+           var spills = e.getBoundingClientRect().right > edge + 1; \
+           var stuck = getComputedStyle(e).whiteSpace === 'pre'; \
+           if (!scrolls && !spills && !stuck) return; \
+           bad.push((e.tagName + '.' + (typeof e.className === 'string' ? e.className : '')).slice(0, 40) + (scrolls ? ' scrolls ' + Math.round(e.scrollWidth - e.clientWidth) : '') + (spills ? ' spills ' + Math.round(e.getBoundingClientRect().right - edge) : '') + (stuck ? ' white-space:pre' : '')); }}); \
+         return {{ overflowing: bad.length, which: bad.slice(0, 8), marked: root.textContent.indexOf('LONGLINE_') >= 0 }}; }})()"
+    );
+    let seen = probe(tab, &probe_js);
+    assert_eq!(
+        seen["marked"], true,
+        "the long lines are mounted, or this proves nothing: {seen}"
+    );
+    assert_eq!(
+        seen["overflowing"].as_i64().unwrap_or(-1),
+        0,
+        "with wrap ON nothing holding a long line scrolls sideways: {seen}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_wrap_reaches_every_rendering() {
+    let _serial = serial();
+    let fx = long_line_fixture("scenario-wrap-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_wrap_reaches_every_rendering(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_wrap_reaches_every_rendering() {
+    let _serial = serial();
+    let fx = long_line_fixture("scenario-wrap-app");
+    let page = open(Surface::AppShell, &fx, 2886);
+    scenario_wrap_reaches_every_rendering(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: the spot controls hold their own slot (#162) ──────────────────────────────────
 
 /// Rule from three owner reports: the anchor and the raw toggle must sit IN their row, never on
