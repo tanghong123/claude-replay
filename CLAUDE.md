@@ -116,6 +116,12 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   required check — it becomes one once it has been stable for a while). Read Chrome's console
   before diagnosing a "timed out waiting for …" on a shell:
   `chrome --headless=new --enable-logging=stderr --v=0 <url>` prints `CONSOLE … Uncaught …`.
+  A killed run used to leave its browsers behind — a SIGKILL runs no `Drop` and macOS has no
+  PDEATHSIG — and sixty such processes once exhausted the machine and took the session's
+  background jobs with them. `chrome()` now names each profile `cr-browser-chrome-<launching
+  pid>-<n>` under the workspace scratch and reaps, at launch, any marked process whose owner pid
+  is gone. Both halves of the mark are required, so a suite running in parallel is never in range
+  and the developer's own Chrome cannot be (#141).
 - **Quick plain check:** `agent-replay <path|--latest> --dump -` renders to stdout
   (no TUI) — good for verifying parsing/markdown/diffs in a pipe. (`--dump <stem>` or
   bare `--dump` instead write `<stem>.txt` + `<stem>.ansi` at the terminal width or

@@ -562,6 +562,7 @@ impl Monitor {
             bin.display(),
             kind.package()
         );
+        reap_stranded_monitor(port);
         let state = base.join(format!("state-{port}"));
         std::fs::create_dir_all(&state).unwrap();
         let mut cmd = std::process::Command::new(&bin);
@@ -684,11 +685,13 @@ fn browser_path() -> Option<std::path::PathBuf> {
 }
 
 pub fn chrome() -> headless_chrome::Browser {
+    reap_stranded_browsers();
     headless_chrome::Browser::new(
         headless_chrome::LaunchOptions::default_builder()
             .path(browser_path())
             .headless(true)
             .window_size(Some((1400, 900)))
+            .user_data_dir(Some(browser_profile()))
             .args(vec![
                 std::ffi::OsStr::new("--disable-background-timer-throttling"),
                 std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
@@ -698,6 +701,150 @@ pub fn chrome() -> headless_chrome::Browser {
             .unwrap(),
     )
     .expect("chrome launches")
+}
+
+/// This launch's own profile directory, under the workspace scratch (`.cargo/config.toml` points
+/// `TMPDIR` at `target/`), named with the pid of the process that LAUNCHED it. That name is the
+/// whole reaping mechanism: Chrome puts `--user-data-dir=<path>` on the command line of the
+/// browser process and of every helper it spawns, so the owner of a stray process can be read
+/// straight out of `ps`.
+fn browser_profile() -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "{BROWSER_PROFILE_MARK}{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+const BROWSER_PROFILE_MARK: &str = "cr-browser-chrome-";
+
+/// Kill the browsers a previous run left behind, once per process, before the first launch.
+///
+/// A `Browser`'s `Drop` kills its child — but a SIGKILL of the test binary (an OOM kill, a
+/// harness timeout) runs no `Drop` at all, and macOS has no PDEATHSIG to fall back on, so those
+/// browsers keep running. On 2026-09-06 sixty such processes exhausted this machine's memory and
+/// the OS killed every background job in the session, the suite among them; a machine that has
+/// been through a few killed runs gets slower and slower with nothing to show why.
+///
+/// The scope is exact, and deliberately so: a process is reaped only when its `--user-data-dir`
+/// carries this harness's mark AND the pid in that mark is no longer alive. So a SIBLING suite
+/// running right now is never in range — which is what makes it safe to do this unconditionally
+/// at launch — and the developer's own Chrome, which has no such directory, cannot be.
+fn reap_stranded_browsers() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let listing = match std::process::Command::new("ps")
+            .args(["-Awwo", "pid=,command="]) // -ww: macOS truncates the command line otherwise
+            .output()
+        {
+            Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+            Err(_) => return,
+        };
+        let mut killed = 0;
+        for line in listing.lines() {
+            let Some((pid, command)) = line.trim().split_once(' ') else {
+                continue;
+            };
+            let Some(owner) = command
+                .split(BROWSER_PROFILE_MARK)
+                .nth(1)
+                .and_then(|rest| rest.split(['-', '/', ' ']).next())
+                .and_then(|digits| digits.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if owner == std::process::id() || pid_is_alive(owner) {
+                continue;
+            }
+            if std::process::Command::new("kill")
+                .args(["-9", pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
+                killed += 1;
+            }
+        }
+        // The profiles themselves: an explicit `user_data_dir` is not the crate's temp dir, so
+        // nothing else removes them. They sit under `target/`, which `scripts/sweep.sh` and
+        // `cargo clean` clear, but a run that reaps should not also leave litter.
+        if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Some(rest) = name
+                    .to_string_lossy()
+                    .strip_prefix(BROWSER_PROFILE_MARK)
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                let owner = rest.split('-').next().and_then(|d| d.parse::<u32>().ok());
+                if owner.is_some_and(|o| o != std::process::id() && !pid_is_alive(o)) {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+        if killed > 0 {
+            eprintln!("harness: reaped {killed} browser process(es) stranded by an earlier run");
+        }
+    });
+}
+
+/// Kill a monitor a previous run left on this port. `Monitor`'s `Drop` has the same hole as the
+/// browser's — a SIGKILL of the test binary runs no `Drop` — and the consequence is worse than a
+/// stray process: the next run's `spawn` cannot bind, so the tab talks to the OLD monitor, whose
+/// state dir and token are somebody else's, and the case fails as "not paired" with nothing on
+/// screen to say why. (Measured 2026-09-06: a monitor stranded on 2846 by a killed run failed
+/// `the_app_shell_centers_the_tasks_pane_on_the_running_tasks` exactly that way.)
+///
+/// Scoped by BINARY PATH and PORT: only a monitor built into this workspace's `target/release`,
+/// and only one holding the port this case is about to bind. The developer's own monitor is the
+/// tap's binary on 2727/2828 — a different path and a port no case uses — so it is never in range.
+fn reap_stranded_monitor(port: u16) {
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-Awwo", "pid=,command="])
+        .output()
+    else {
+        return;
+    };
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target/release/agent-monitor");
+    let marker = workspace.to_string_lossy().into_owned();
+    let mut reaped = 0;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some((pid, command)) = line.trim().split_once(' ') else {
+            continue;
+        };
+        if !command.contains(&marker) || !command.contains(&format!("--port {port}")) {
+            continue;
+        }
+        let _ = std::process::Command::new("kill")
+            .args(["-9", pid])
+            .stderr(std::process::Stdio::null())
+            .status();
+        reaped += 1;
+    }
+    if reaped > 0 {
+        eprintln!("harness: reaped a monitor stranded on port {port} by an earlier run");
+        std::thread::sleep(Duration::from_millis(200)); // let the port come free
+    }
+}
+
+/// Whether a pid is a live process. `kill -0` fails for a pid that is gone; anything else (a
+/// permission error, no `kill` at all) reads as ALIVE, so an unknown never gets something killed.
+fn pid_is_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null()) // "No such process" is the ANSWER here, not an error
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(true)
 }
 
 /// A JS expression's PRIMITIVE result (string, number, bool) — objects come back Null; use
