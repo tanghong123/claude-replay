@@ -395,6 +395,10 @@ same information in two places, disagreeing.
 
 ## #157, attempted: one state per pane, and the constraint that stops it (2026-09-07)
 
+*If the spacer and the constant `scrollHeight` below are unfamiliar, read
+[`outline-spacer-explained.md`](outline-spacer-explained.md) first — it builds both up from
+the column's anatomy, with diagrams.*
+
 **This supersedes "The toggle on a drawer that is not the frontier" above.** That section records
 the owner approving the two-mechanism model on 2026-09-06 — "the slide is a chain, the toggle is a
 drawer" — and on 2026-09-07 they reversed it, having found what it does:
