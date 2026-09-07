@@ -73,7 +73,7 @@ function rendererBody(view, state) {
       const source = h.att_datauri || `/file?path=${encodeURIComponent(h.att_path || "")}&sig=${encodeURIComponent(h.att_fsig || "")}`;
       const name = h.att_name || "image";
       const open = !!state?.openImages?.has(view.id);
-      const attrs = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="image" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
+      const attrs = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="image" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
       return `<div class="renderer-image ${open ? "open" : ""}" data-image-block="${escapeText(view.id || "")}"><button type="button" class="renderer-image-toggle" data-image-toggle="${escapeText(view.id || "")}" aria-expanded="${open}">${open ? "Hide" : "Show"} image · ${escapeText(name)}</button>${open ? `<figure class="renderer-image-figure"><button type="button" class="renderer-image-thumb" ${attrs} title="Open ${escapeText(name)} at full size"><img src="${escapeText(source)}" alt="${escapeText(name)}" decoding="async"></button><figcaption>${escapeText(name)} · click for full size</figcaption></figure>` : ""}</div>`;
     }
     return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button>${capability.action !== "reveal" && h.att_path && h.att_sig ? `<button class="artifact-link artifact-link-secondary" data-attachment="${escapeText(view.id || "")}" data-attachment-action="reveal" data-path="${escapeText(h.att_path)}" data-sig="${escapeText(h.att_sig)}">Reveal in file manager</button>` : ""}</div>`;
@@ -210,7 +210,10 @@ function renderPromptAttachments(attachments = []) {
     const capability = attachmentCapability(h);
     const isImage = capability.action === "image";
     const source = h.att_datauri || (h.att_path && h.att_fsig ? `/file?path=${encodeURIComponent(h.att_path)}&sig=${encodeURIComponent(h.att_fsig)}` : "");
-    const action = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
+    // `data-name` so the viewer can title itself from what the CARD says even when the record
+    // lookup misses (#144) — the lightbox reading "attachment" over a card that says "image.png"
+    // is the visible fingerprint of that miss.
+    const action = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
     if (isImage && source) return `<button class="prompt-attachment prompt-image" type="button" ${action} title="Enlarge ${escapeText(h.att_name || "image")}"><span class="prompt-image-thumb"><img src="${escapeText(source)}" alt=""></span><span class="prompt-file-copy"><strong>${escapeText(h.att_name || "image")}</strong><small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">⤢</span></button>`;
     const ext = String(h.att_name || "file").split(".").pop().slice(0, 4).toUpperCase();
     const glyph = capability.action === "download" ? "↓" : capability.action === "copy" ? "⎘" : "↗";
@@ -257,7 +260,17 @@ export function bindComponentEvents(root, state, actions) {
       }
     }
     const child = event.target.closest("[data-child-session]");
-    if (child) { actions.openChild(child.dataset.childSession); return; }
+    if (child) {
+      // A fleet row is an `<a href="?session=…">`, so ⌘/ctrl/shift-click still opens it in a tab
+      // — that is the anchor earning its href, and this handler must not swallow it. But a PLAIN
+      // click has to stay IN-PAGE (#143): letting the navigation happen reloads the shell, and
+      // the way back to the parent is an in-memory hint, so it died the instant it was written.
+      // The Agents pane never had this because its row is a button, not a link.
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+      event.preventDefault();
+      actions.openChild(child.dataset.childSession);
+      return;
+    }
     // The per-pane code bar (#115): size and wrap are the reading preferences (global, as on the
     // classic page); copy joins this pane's code cells — no gutters, no +/− marks.
     const sizeStep = event.target.closest("[data-code-size]");
@@ -289,8 +302,14 @@ export function bindComponentEvents(root, state, actions) {
     }
     const imageToggle = event.target.closest("[data-image-toggle]");
     if (imageToggle) { const id = imageToggle.dataset.imageToggle; state.openImages.has(id) ? state.openImages.delete(id) : state.openImages.add(id); actions.rerender?.(); return; }
+    // #144: hand the clicked element over too. The card was rendered from data the view already
+    // held, so whatever it is SHOWING is the truthful source; re-finding the record by id at
+    // click time is a second, weaker path to the same value, and when it misses (a tail rewrite
+    // replacing records, a stale id in a DOM that has not re-rendered) an embedded image has no
+    // path or stamp to fall back on — `src=""` loads the page, `onerror` fires, and the reader is
+    // told the image "cannot be opened" while its thumbnail sits right there.
     const attachment = event.target.closest("[data-attachment]");
-    if (attachment) { actions.openAttachment(attachment.dataset.attachment, attachment.dataset.path, attachment.dataset.fsig, attachment.dataset.attachmentAction, attachment.dataset.sig); return; }
+    if (attachment) { actions.openAttachment(attachment.dataset.attachment, attachment.dataset.path, attachment.dataset.fsig, attachment.dataset.attachmentAction, attachment.dataset.sig, { src: attachment.querySelector("img")?.getAttribute("src") || "", name: attachment.dataset.name || "" }); return; }
     const prompt = event.target.closest("[data-prompt-toggle]");
     if (prompt) { const key = prompt.dataset.promptToggle; state.promptExpanded.has(key) ? state.promptExpanded.delete(key) : state.promptExpanded.add(key); actions.rerender(); return; }
     const process = event.target.closest("[data-process-surface]");

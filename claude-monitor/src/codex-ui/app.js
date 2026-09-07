@@ -190,8 +190,8 @@ bindComponentEvents(transcript, recordState, {
       button.title = "Copy a link to here";
     }, 1400);
   },
-  openChild: id => selectSession(id, true),
-  openAttachment: (id, path, fsig, action, sig) => openAttachment(id, path, fsig, action, sig),
+  openChild: id => descendTo(id),
+  openAttachment: (id, path, fsig, action, sig, card) => openAttachment(id, path, fsig, action, sig, card),
   openReference: path => openReference(path),
   openReferenceOffer: offer => openReferenceOffer(offer),
   toast
@@ -373,6 +373,14 @@ parentBtn.onclick = () => { if (parentBtn.dataset.parent) selectSession(parentBt
 parentBtn.classList.remove("compat-hidden");
 parentBtn.insertAdjacentHTML("beforeend", '<span class="session-parent-label">Parent session</span>');
 const parentHints = new Map();
+/** Go DOWN into a child session, from wherever we are (#143). Every descent goes through here so
+ *  the way back is recorded once: `renderParent` prefers the child transcript's own ancestry and
+ *  falls back to this hint, which is the only thing a child whose transcript records no ancestors
+ *  has. The hint used to be set at ONE of the two descents — the Agents pane — so a reader who
+ *  went down from a workflow's fleet roster or an "Open child transcript" button arrived with no
+ *  way back to the parent. Selecting a session from the SIDEBAR is not a descent and must not
+ *  record a hint: the session you were reading is not that one's parent. */
+function descendTo(childId) { if (!childId) return; parentHints.set(childId, indexState.selected); selectSession(childId, true); }
 let synthesizedFor = "";
 function renderParent(meta) {
   const known = recordState.session === indexState.selected ? meta?.ancestors?.at(-1) : null;
@@ -725,7 +733,7 @@ byId("sessionNavigator").onclick = event => {
   const open = event.target.closest("[data-task-open]"); if (open) { openTaskPopover(Number(open.dataset.taskOpen), open); return; }
   const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); viewport.jumpToRecord(Number(task.dataset.taskRecord), "task"); return; }
   const agent = event.target.closest("[data-agent-record]"); if (agent) { viewport.jumpToRecord(Number(agent.dataset.agentRecord), "agent"); return; }
-  const child = event.target.closest("[data-child-outline]"); if (child) { parentHints.set(child.dataset.childOutline, indexState.selected); selectSession(child.dataset.childOutline, true); return; }
+  const child = event.target.closest("[data-child-outline]"); if (child) { descendTo(child.dataset.childOutline); return; }
   // A card's head opens and shuts ITS drawer (#74, #139) — the whole head, and nothing else
   // changes: the other drawers keep their openness. On the one drawer that is part-way, the
   // toggle completes the movement the slide was making instead (design/outline-drawers.md).
@@ -1095,10 +1103,19 @@ byId("searchTabs").onclick = event => { const tab = event.target.closest("[data-
 byId("searchResults").onclick = event => { const item = event.target.closest("[data-global-index]"); if (!item) return; const row = uiState.globalResults[Number(item.dataset.globalIndex)]; byId("searchLayer").classList.remove("production-open"); if (row.sid) selectSession(row.sid, true); else if (row.record != null) viewport.jumpToRecord(row.record, "search"); };
 byId("searchLayer").onclick = event => { if (event.target === byId("searchLayer")) byId("searchLayer").classList.remove("production-open"); };
 
-function openAttachment(id, path, fsig, action = "preview", sig = "") {
+/** `shown` is what the CLICKED card was already displaying (#144). The card rendered from data
+ *  the view held, so that src is the truthful source; the record lookup below is an ENRICHMENT —
+ *  it supplies the name, the text, the stamps — and must never be the only way to the bytes. When
+ *  it misses (a tail rewrite replacing records, a stale id in a DOM that has not re-rendered) an
+ *  embedded image has no path or stamp to fall back on, and the reader was told the image "cannot
+ *  be opened" while its own thumbnail sat beside the message. */
+function openAttachment(id, path, fsig, action = "preview", sig = "", card = {}) {
   const record = findRecord(id); const head = record?.head || {};
-  const item = { id: `attachment:${id || path}`, name: head.att_name || path.split("/").pop() || "attachment", path: head.att_path || path, fsig: head.att_fsig || fsig, sig: head.att_sig || sig, text: head.att_text, data: head.att_datauri, embedded: head.att_datauri != null || head.att_text != null };
-  item.source = item.data || (item.path && item.fsig ? `/file?path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig)}` : "");
+  const item = { id: `attachment:${id || path}`, name: head.att_name || card.name || path.split("/").pop() || "attachment", path: head.att_path || path, fsig: head.att_fsig || fsig, sig: head.att_sig || sig, text: head.att_text, data: head.att_datauri, embedded: head.att_datauri != null || head.att_text != null };
+  const shown = card.src || "";
+  item.source = item.data || (item.path && item.fsig ? `/file?path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig)}` : "") || shown;
+  // A card that was showing an inline payload is embedded, whatever the lookup found.
+  if (!item.embedded && shown.startsWith("data:")) item.embedded = true;
   if (action === "image") attachmentViewer.openImage(item);
   else if (action === "download") attachmentViewer.download(item);
   else if (action === "copy") attachmentViewer.copyPath(item);

@@ -884,7 +884,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(resolveKey(ev("u"), "view").action, "parent");
   assert.match(appSource, /parentBtn\.classList\.remove\("compat-hidden"\);/, "the control is un-hidden — the reference's !important rule hid it");
   assert.match(appSource, /<span class="session-parent-label">Parent session<\/span>/, "…and says what it does");
-  assert.match(appSource, /parentHints\.set\(child\.dataset\.childOutline, indexState\.selected\);/, "a switch from a parent is remembered");
+  // #143: EVERY descent records the way back, through one door. The hint used to be set at the
+  // Agents pane alone, so a reader who went down from a workflow's fleet roster arrived with no
+  // way back; and selecting from the sidebar must NOT record one, since that is not a descent.
+  assert.match(appSource, /function descendTo\(childId\) \{ if \(!childId\) return; parentHints\.set\(childId, indexState\.selected\); selectSession\(childId, true\); \}/, "one descent helper records the way back");
+  assert.match(appSource, /openChild: id => descendTo\(id\),/, "a fleet row and an 'open child' button descend through it");
+  // …and the plain click has to stay IN-PAGE, or the anchor's navigation reloads the shell and
+  // takes the in-memory hint with it. A modified click still belongs to the browser.
+  const componentsSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(componentsSource, /if \(event\.metaKey \|\| event\.ctrlKey \|\| event\.shiftKey \|\| event\.altKey \|\| event\.button !== 0\) return;\s*\n\s*event\.preventDefault\(\);\s*\n\s*actions\.openChild/, "a plain fleet-row click is handled in-page; a modified one is left to the browser");
+  assert.match(appSource, /closest\("\[data-child-outline\]"\); if \(child\) \{ descendTo\(child\.dataset\.childOutline\); return; \}/, "…and so does the agents pane");
   assert.match(appSource, /const parent = known \|\| \(hint \? \{ id: hint, title: indexState\.rows\.get\(hint\)\?\.name \|\| hint \} : null\);/, "…and used when the meta has no ancestry");
   assert.match(appSource, /"parent": \(\) => \{ if \(parentBtn\.dataset\.parent\) selectSession\(parentBtn\.dataset\.parent, true\); \}/, "the key goes up");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
@@ -1082,6 +1091,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const today = new Date(2026, 8, 4, 9, 41, 0).getTime() / 1000;
   const thisYear = new Date(2026, 2, 9, 10, 20, 0).getTime() / 1000;
   const otherYear = new Date(2025, 2, 9, 10, 20, 0).getTime() / 1000;
+  // #147: the format is the module's OWN promise — "Mon D h:mm" — not the operating system's
+  // idea of a date. `toLocaleDateString([], …)` followed the machine, so a zh-Hans desktop
+  // rendered "Sep 3" as "9月3日" in a page with no other localized string. The month has to read
+  // as the English abbreviation on ANY machine, which is what makes this assertion meaningful on
+  // a US-English runner and a Chinese one alike.
+  assert.match(fmtTime(thisYear, now), /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/, "an older turn names its month in English, whatever the machine's locale");
   assert.match(fmtTime(today, now), /^\d{1,2}:\d{2}/, "today: a bare clock time");
   assert.ok(!/2026/.test(fmtTime(today, now)), "…without a date");
   assert.ok(/Mar/.test(fmtTime(thisYear, now)) && !/2026/.test(fmtTime(thisYear, now)), "this year: month and day, no year");
