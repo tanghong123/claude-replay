@@ -11,6 +11,15 @@ that end the fork. It is a **test matrix**: a row is closed by a scenario in
 `claude-replay-browser-tests/tests/scenarios.rs` that runs on both surfaces, not by this document
 (the rule from #98 — a rule with no case is re-derived incompletely by the next implementation).
 
+> **2026-09-07 (#152) — that rule was stated here and then broken 22 times.** The verdict column
+> said "HAVE = ported already", so it measured whether CODE HAD MOVED while this paragraph says a
+> row is closed by a GUARD; a row could satisfy the verdict and violate the rule in the same line.
+> Row 3.7 did, and carried two shipped bugs for weeks. Every row that claimed parity without
+> naming a scenario now reads UNVERIFIED, the verdicts below say what is true of the PAGES rather
+> than of the port, and a second matrix carries the MECHANISMS a feature-shaped audit cannot see.
+> The 22 rows are work, not findings: each needs a rendered comparison, and until it has one the
+> honest word for it is "we have not looked".
+
 Method: two independent code inventories (one per page, every rendering path and control read
 with file and line), spot-verified against the code and, for the owner-named items, against the
 browser. Line numbers are as of v1.176.0. Revised 2026-09-04 after the owner's review (eight notes, all applied: per-pane bar, in-flow roster, MCP tree deferred, request-user-input on classic, bare results, sticky turn bar, viewport-relative hit entry, typed scope prefix).
@@ -40,33 +49,67 @@ both pages render the same parts); **raw text of a user turn is not** — see ro
 
 ## The matrix
 
-Verdicts: **KEEP** = the classic behaviour is right, port it · **HAVE** = ported already ·
-**OK-DIFF** = both have it, the app shell's form is acceptable or better · **FORGO** = do not
-port, with the reason · **APP-ONLY** = the app shell has it and the classic page does not.
-Scenario: the state of the guard that runs on both surfaces.
+Verdicts — **rewritten 2026-09-07 (#152), and the change is the point.** The old vocabulary
+read "**HAVE** = ported already", so a verdict measured whether CODE HAD MOVED while the rule in
+this document's own second paragraph says a row is closed by a SCENARIO. A row could satisfy the
+verdict and violate the rule in the same line, and 22 of them did. What that cost is not
+hypothetical: row 3.7 ("Numbered source with highlighting", classic `.numbered` vs app shell
+`.codebox`, verdict HAVE, scenario "none → add") was carrying two shipped bugs the whole time —
+a numbered row whose code cell landed in the 16px MARK track and wrapped one character per line,
+and four syntax classes the app shell styled nowhere. Both were found by the owner, in use, and
+both were invisible to a method that asks whether a construct exists. **A `.codebox` whose code
+cell is 16px wide still has a `.codebox`; a `<span class="kw">` that nothing colours still has
+the class.**
+
+So a verdict now says what is TRUE OF THE PAGES, and a row is closed only by a named guard:
+
+- **GUARDED** — a scenario runs on both surfaces and this row is one of the things it asserts.
+  Name it. This is the only verdict that claims parity.
+- **UNVERIFIED** — believed ported, read in the code, never rendered and compared. NOT a claim of
+  parity: it is a to-do with a reason. Every row that used to say HAVE with no scenario says this.
+- **OK-DIFF** — the two genuinely differ and the app shell's form is acceptable or better. Needs
+  the reason, and a guard for whatever IS shared.
+- **KEEP** — the classic behaviour is right and is not ported yet.
+- **FORGO** — deliberately not ported, with the reason.
+- **APP-ONLY** — the app shell has it and the classic page does not.
+
+Three rules the rework adds, each from a way this audit failed:
+
+1. **Render, do not read.** A row whose subject is a rendered result is settled by measuring both
+   pages — computed style, geometry, what a reader can see — never by finding the corresponding
+   construct in each implementation.
+2. **One row, one mechanism.** Split any row whose two surfaces reach the same result by different
+   means. Row 1.7 ("Prompt attachments") was marked covered by an image scenario that exercises
+   the TOOL-RESULT path with a 1×1 pixel; the prompt-attachment click — the one that broke — had
+   no case on either surface.
+3. **Features are not the only axis.** A feature matrix cannot hold "does the app shell resolve a
+   DOM element back to a record safely?", and that question was the duplicate-anchor bug (#151).
+   The mechanism matrix below carries those.
+
+Scenario: the name of the guard, or `none` — and `none` now forces the verdict to UNVERIFIED.
 
 ### 1. User prompts
 
 | # | Feature | Classic page | App shell | Verdict | Scenario |
 |---|---|---|---|---|---|
-| 1.1 | Prompt markdown with hard line breaks | server `md_html_user` | same wire, same HTML | HAVE | none → add to the prompt scenario |
-| 1.2 | Pasted terminal art shown verbatim | server detector → `pre.raw` (wrap toggle applies) | `raw` part → `<pre>` in `.body.markdown` | HAVE | none → add: a pasted box stays a box on both |
+| 1.1 | Prompt markdown with hard line breaks | server `md_html_user` | same wire, same HTML | UNVERIFIED | none → add to the prompt scenario |
+| 1.2 | Pasted terminal art shown verbatim | server detector → `pre.raw` (wrap toggle applies) | `raw` part → `<pre>` in `.body.markdown` | UNVERIFIED | none → add: a pasted box stays a box on both |
 | 1.3 | Long prompt clamp | 12 line-heights + fade + `⋯ N more lines`, re-collapsible | 560 chars → 246 px + fade + "Show the whole prompt" | OK-DIFF | none → add |
-| 1.4 | **Raw text of a user turn** | `{}` shows `src` — exactly as typed, whitespace intact; per turn (`.rawbtn`) and global (`#btn-raw`); wrap applies | was: the JSON record, per turn only. Now (#109): `{}` on a user turn shows `src` as typed (`pre.turn-raw-text`, wrap follows the reading preference), a per-turn override flips away from the global, and "User turns as raw text" sits with the reading controls — one preference with the classic page under the shared reading key, the classic page's old key folded in once; a global change clears per-turn overrides on both. Per-turn overrides across a reload stay with #114 | HAVE (v1.178.0) | ✓ both: `scenario_raw_text_of_a_user_turn` |
-| 1.5 | Slash-command turn is a turn | foldable card with badge, arg preview, `N lines`, outputs; a sidebar row | was: a "system" row inside the process. Now (#113): a turn card with the badge, the argument preview and the `N lines` chip, folded until opened, a turns-pane row, the user's turn for filters and the spy | HAVE (v1.182.0) | ✓ both: `scenario_command_turn_is_a_turn` |
-| 1.6 | Queued prompt marker | `⧗ queued:` line | "Queued input" renderer, never folded | HAVE | `scenario_queued_prompt_text` ✓ both |
+| 1.4 | **Raw text of a user turn** | `{}` shows `src` — exactly as typed, whitespace intact; per turn (`.rawbtn`) and global (`#btn-raw`); wrap applies | was: the JSON record, per turn only. Now (#109): `{}` on a user turn shows `src` as typed (`pre.turn-raw-text`, wrap follows the reading preference), a per-turn override flips away from the global, and "User turns as raw text" sits with the reading controls — one preference with the classic page under the shared reading key, the classic page's old key folded in once; a global change clears per-turn overrides on both. Per-turn overrides across a reload stay with #114 | GUARDED (v1.178.0) | ✓ both: `scenario_raw_text_of_a_user_turn` |
+| 1.5 | Slash-command turn is a turn | foldable card with badge, arg preview, `N lines`, outputs; a sidebar row | was: a "system" row inside the process. Now (#113): a turn card with the badge, the argument preview and the `N lines` chip, folded until opened, a turns-pane row, the user's turn for filters and the spy | GUARDED (v1.182.0) | ✓ both: `scenario_command_turn_is_a_turn` |
+| 1.6 | Queued prompt marker | `⧗ queued:` line | "Queued input" renderer, never folded | GUARDED | `scenario_queued_prompt_text` ✓ both |
 | 1.7 | Prompt attachments (images, files) | attachment cards after the turn (`amark`) | cards under the prompt (`prompt-attachments`) with capability glyphs | OK-DIFF | image scenario ✓ both |
-| 1.8 | Spot / deep link on a turn | `#` copies URL+`#id` | same | HAVE | ✓ both, through 3.11's scenario (the same link mechanics) |
+| 1.8 | Spot / deep link on a turn | `#` copies URL+`#id` | same | GUARDED | ✓ both, through 3.11's scenario (the same link mechanics) |
 | 1.9 | Copy the message text | select text — but a drag across the card took the caret, the time, `{}` and `#` too (six lines) | select text — the same, three lines | Fixed on BOTH (#99, v1.190.0): a turn's chrome never enters a selection; a drag across the whole card selects the message alone. A "copy message" control remains an option if wanted | ✓ both: `scenario_dragging_a_card_copies_one_line` (a real drag through CDP mouse events) |
 
 ### 2. Assistant text
 
 | # | Feature | Classic page | App shell | Verdict | Scenario |
 |---|---|---|---|---|---|
-| 2.1 | Markdown rendering | server | server, plus wide tables get a scroll box | HAVE (+) | none → add: a wide table scrolls on both |
-| 2.2 | Fenced code card + copy | server card; `.cpy` copies the code | same card; copy with "Copied" | HAVE | none → add |
+| 2.1 | Markdown rendering | server | server, plus wide tables get a scroll box | UNVERIFIED (+) | none → add: a wide table scrolls on both |
+| 2.2 | Fenced code card + copy | server card; `.cpy` copies the code | same card; copy with "Copied" | UNVERIFIED | none → add |
 | 2.3 | Commentary vs final phase | stated `commentary` muted | commentary rows live inside the process as "Progress" rows; final answers get answer chrome | OK-DIFF | none → add: a mid-process progress line lands in the process on the app shell, muted on classic |
-| 2.4 | Thinking fold with a summary line | `✻ thought for Xs` / activities summary; body in a rail | renderer with the summary as target; empty thinking is a non-interactive head | HAVE | none → add |
+| 2.4 | Thinking fold with a summary line | `✻ thought for Xs` / activities summary; body in a rail | renderer with the summary as target; empty thinking is a non-interactive head | UNVERIFIED | none → add |
 | 2.5 | Proposed plan | emitted (`presentation`) but not consumed | a "Proposed plan · review before implementation" card | APP-ONLY | none |
 | 2.6 | Plan attachment inline viewer | `▸ view plan` inline | preview pane | OK-DIFF | none |
 
@@ -74,68 +117,92 @@ Scenario: the state of the guard that runs on both surfaces.
 
 | # | Feature | Classic page | App shell | Verdict | Scenario |
 |---|---|---|---|---|---|
-| 3.1 | **Output caps** (`⋯ N more lines · to line M`) on `pre`/`num`/`diff` parts | first 12 (pre, diff) / 10 (num) rows, the rest behind a button; small expansions remembered per record | was: the server's `cap` ignored, every row in the DOM behind a 360 px scroll box. Now `shared/parts.js` (#108): both pages run one split, label, row markup and memory; the classic page's memory inside a nested fold (every tool call sits in an activity fold) was never re-applied and is fixed by the same scenario | HAVE (v1.177.0) | ✓ both: `scenario_output_caps_expand_and_remember` |
-| 3.2 | Line-number gutters unselectable | `.gut{user-select:none}` | was: `.ln` selectable. Now (#115) `.ln` and `.mark` never enter a selection | HAVE (v1.184.0) | ✓ both: `scenario_code_pane_bar_and_gutters` |
-| 3.3 | Per-pane code bar: copy the pane (no gutters/marks), size, wrap | per `.numbered`/`.diff` pane: `A−`, size, `A+`, wrap, copy — size and wrap apply to every code block (the bar is per pane, the preference is one) | was: global reading controls only. Now (#115) every numbered/diff pane carries the same bar with the same semantics; copy joins the code cells alone | HAVE (v1.184.0) — owner review kept the bar; a true per-pane override is not what the classic page does and is not built | ✓ both: `scenario_code_pane_bar_and_gutters` |
-| 3.4 | Tool head: name, target, chips, state | name/target/chips; failure chip red (`exit 1 · 2.50s`, `declined · 42ms`, `12 lines`, `launched`) | was: chips folded into a state pill by regex over their text (`/fail\|error/`, `/running\|active/` — the second matched nothing the server writes) and the exit code was lost once the pill said `failed`. Now `shared/tool-head.js` (#117): both pages read the head through one module — the display-name rule (Edit → Update), the status words pinned from the emitters, the exit code and duration as facts; the app shell's failed pill keeps the server's own word and names the exit (`failed · exit 1`, `declined`, `killed`), a completed pill shows the chips' text (`N lines`, the duration). A head carries no liveness — `launched` is an async spawn's launch EVENT, written whatever the spawn's status, so it reads as a terminal chip and a finished session's sub-agents are never left looking in-flight | HAVE (v1.191.0) | ✓ both: `scenario_tool_heads_carry_state_exit_and_duration` (a Codex fixture — Claude's format records neither an exit code nor a duration) |
+| 3.1 | **Output caps** (`⋯ N more lines · to line M`) on `pre`/`num`/`diff` parts | first 12 (pre, diff) / 10 (num) rows, the rest behind a button; small expansions remembered per record | was: the server's `cap` ignored, every row in the DOM behind a 360 px scroll box. Now `shared/parts.js` (#108): both pages run one split, label, row markup and memory; the classic page's memory inside a nested fold (every tool call sits in an activity fold) was never re-applied and is fixed by the same scenario | GUARDED (v1.177.0) | ✓ both: `scenario_output_caps_expand_and_remember` |
+| 3.2 | Line-number gutters unselectable | `.gut{user-select:none}` | was: `.ln` selectable. Now (#115) `.ln` and `.mark` never enter a selection | GUARDED (v1.184.0) | ✓ both: `scenario_code_pane_bar_and_gutters` |
+| 3.3 | Per-pane code bar: copy the pane (no gutters/marks), size, wrap | per `.numbered`/`.diff` pane: `A−`, size, `A+`, wrap, copy — size and wrap apply to every code block (the bar is per pane, the preference is one) | was: global reading controls only. Now (#115) every numbered/diff pane carries the same bar with the same semantics; copy joins the code cells alone | GUARDED (v1.184.0) — owner review kept the bar; a true per-pane override is not what the classic page does and is not built | ✓ both: `scenario_code_pane_bar_and_gutters` |
+| 3.4 | Tool head: name, target, chips, state | name/target/chips; failure chip red (`exit 1 · 2.50s`, `declined · 42ms`, `12 lines`, `launched`) | was: chips folded into a state pill by regex over their text (`/fail\|error/`, `/running\|active/` — the second matched nothing the server writes) and the exit code was lost once the pill said `failed`. Now `shared/tool-head.js` (#117): both pages read the head through one module — the display-name rule (Edit → Update), the status words pinned from the emitters, the exit code and duration as facts; the app shell's failed pill keeps the server's own word and names the exit (`failed · exit 1`, `declined`, `killed`), a completed pill shows the chips' text (`N lines`, the duration). A head carries no liveness — `launched` is an async spawn's launch EVENT, written whatever the spawn's status, so it reads as a terminal chip and a finished session's sub-agents are never left looking in-flight | GUARDED (v1.191.0) | ✓ both: `scenario_tool_heads_carry_state_exit_and_duration` (a Codex fixture — Claude's format records neither an exit code nor a duration) |
 | 3.5 | Edit diff open by default, others closed | fold policy `open` | `rendererStartsClosed`: closed unless running / interaction / queue — an Edit diff starts closed | OK-DIFF (the app shell's process rows are compact by design; the reader opens a diff) | none → add |
-| 3.6 | Diff rendering (unified, marks, tinted code column) | `.nrow.add/.del` | `.line.add/.del` with marks | HAVE | none → add |
-| 3.7 | Numbered source (Read/Write) with highlighting | `.numbered` | `.codebox` | HAVE | none → add |
-| 3.8 | File path links with reveal/render stamps; in-page viewer | `a.tool-path`; modal viewer | `.renderer-target-link`; preview pane; lightbox | HAVE | `the_app_shell_*` reveal cases ✓ (app), classic has `browser_follow` file cases; a both-surface scenario → add |
+| 3.6 | Diff rendering (unified, marks, tinted code column) | `.nrow.add/.del` | `.line.add/.del` with marks | UNVERIFIED | none → add |
+| 3.7 | Numbered source (Read/Write) with highlighting | `.numbered` | `.codebox` | UNVERIFIED | none → add |
+| 3.8 | File path links with reveal/render stamps; in-page viewer | `a.tool-path`; modal viewer | `.renderer-target-link`; preview pane; lightbox | UNVERIFIED | `the_app_shell_*` reveal cases ✓ (app), classic has `browser_follow` file cases; a both-surface scenario → add |
 | 3.9 | Images | inline ≤520 px, lightbox | collapsed → thumbnail → lightbox (#80, deliberate) | OK-DIFF | ✓ both (#106 tightened) |
-| 3.10 | Attachments (non-image) | `▤ kind name` card, download/reveal | `renderer-note` with capability button | HAVE | none → add |
-| 3.11 | **Deep links to tool records** | `#b7` lands on any block, opening its fold chain | was: user/assistant units only. Now (#116) every tool row carries a spot link, and a hash resolves through nested records, opens the chain and lands the row | HAVE (v1.185.0) | ✓ both: `scenario_deep_link_to_a_tool_row` |
-| 3.12 | Sub-agent spawn: badge, `N tools · launched`, open child | fold + `↵ child` + `⧉` new tab | "Agent event" + "Open child transcript"; parent button `u` | HAVE; FORGO `⧉` (a single-page app; the session list opens any session) | `the_app_shell_*` child cases ✓ (app); both-surface → add |
+| 3.10 | Attachments (non-image) | `▤ kind name` card, download/reveal | `renderer-note` with capability button | UNVERIFIED | none → add |
+| 3.11 | **Deep links to tool records** | `#b7` lands on any block, opening its fold chain | was: user/assistant units only. Now (#116) every tool row carries a spot link, and a hash resolves through nested records, opens the chain and lands the row | GUARDED (v1.185.0) | ✓ both: `scenario_deep_link_to_a_tool_row` |
+| 3.12 | Sub-agent spawn: badge, `N tools · launched`, open child | fold + `↵ child` + `⧉` new tab | "Agent event" + "Open child transcript"; parent button `u` | UNVERIFIED; FORGO `⧉` (a single-page app; the session list opens any session) | `the_app_shell_*` child cases ✓ (app); both-surface → add |
 | 3.13 | Workflow fleet roster under the launching block | in-flow roster with running dots, names linking to the children | agents pane (+ run members) | **KEEP** (port — owner review: both are needed, the pane for the session and the in-flow roster at the call that launched them) | none → add: a workflow call shows its members under it with a running dot on both |
 | 3.14 | Artifact link on the publishing tool's head | header target becomes the link | roster + `↳` jump (#78; moving to the right pane, #95) | OK-DIFF; verify the head link exists on the app shell | none → add with #95 |
-| 3.15 | Compaction | hairline seam in flow + sidebar tick | tick in the turns pane (#86) + a folded "Context compacted" renderer in flow | HAVE | ✓ app (#86); classic tick case → add |
+| 3.15 | Compaction | hairline seam in flow + sidebar tick | tick in the turns pane (#86) + a folded "Context compacted" renderer in flow | UNVERIFIED | ✓ app (#86); classic tick case → add |
 | 3.16 | MCP calls grouped in the filter | `MCP → server → tool` tree | flat tool names | DEFERRED task (owner review): the flat list works until a session has dozens of MCP tools; undefer when one does | — |
-| 3.17 | `request_user_input` card | was: the wire carried `head.interaction` and the page ignored it, showing a generic tool fold. Now the card, inside the fold body | waiting/resolved card with answers, unchanged | `shared/interaction.js` (#121) holds the two states, their words ("Waiting for user input" / "User input received", where to answer, what was answered) and the markup; each page passes its own class names, and neither holds the words | HAVE (v1.193.0) | ✓ both: `scenario_a_request_for_input_is_a_card` |
-| 3.18 | Bare tool result | fold named `Result`, the first 70 chars as target, a `⎿ pre` body | the name and the target were already the server's (`Result`, `label_of(text, 70)`); what was missing was the BODY — the app shell drew the output plain, and the ⎿ gutter that says "this is what came back" only exists on the classic page. Now `shared/parts.js` owns the result body (`RESULT_MARK` + `resultBodyHtml`, #122) and both pages draw it: the classic page for every `pre` part as before, the app shell for a bare result (a record with no `tool` field), which is nothing but that body — a tool CALL keeps this shell's own rail | HAVE (v1.192.0) | ✓ both: `scenario_a_bare_result_reads_as_a_result_row` |
-| 3.19 | Timestamps on user turns | `h:mm` today, `Mon D` older (+ year) | was: none. Now (#112) `shared/time.js` holds the rule for both pages; the app shell shows it beside the user bubble | HAVE (v1.181.0) | ✓ both: `scenario_user_turn_timestamps` |
+| 3.17 | `request_user_input` card | was: the wire carried `head.interaction` and the page ignored it, showing a generic tool fold. Now the card, inside the fold body | waiting/resolved card with answers, unchanged | `shared/interaction.js` (#121) holds the two states, their words ("Waiting for user input" / "User input received", where to answer, what was answered) and the markup; each page passes its own class names, and neither holds the words | GUARDED (v1.193.0) | ✓ both: `scenario_a_request_for_input_is_a_card` |
+| 3.18 | Bare tool result | fold named `Result`, the first 70 chars as target, a `⎿ pre` body | the name and the target were already the server's (`Result`, `label_of(text, 70)`); what was missing was the BODY — the app shell drew the output plain, and the ⎿ gutter that says "this is what came back" only exists on the classic page. Now `shared/parts.js` owns the result body (`RESULT_MARK` + `resultBodyHtml`, #122) and both pages draw it: the classic page for every `pre` part as before, the app shell for a bare result (a record with no `tool` field), which is nothing but that body — a tool CALL keeps this shell's own rail | GUARDED (v1.192.0) | ✓ both: `scenario_a_bare_result_reads_as_a_result_row` |
+| 3.19 | Timestamps on user turns | `h:mm` today, `Mon D` older (+ year) | was: none. Now (#112) `shared/time.js` holds the rule for both pages; the app shell shows it beside the user bubble | GUARDED (v1.181.0) | ✓ both: `scenario_user_turn_timestamps` |
 | 3.20 | "Turn NN" labels and the sticky turn bar | sticky bar under the top bar `Turn N — label`, click jumps back to the turn; sidebar rows | pane rows; the process header's label was a CSS counter over MOUNTED user turns — in a virtual window, whatever is on screen ("Turn 05" in the 900s). Fixed (#103, v1.189.0): the label reads the unit's own ordinal | **KEEP** the sticky turn bar (port, #123 — owner review: the bar and the pane serve different purposes); the header's own "Turn NN" text may go once the pane's focus and the bar are reliable | ✓ both (ordinal): `scenario_turn_ordinal_is_the_turns_own`; the bar → #123 |
 
 ### 4. Folding and disclosure
 
 | # | Feature | Classic page | App shell | Verdict | Scenario |
 |---|---|---|---|---|---|
-| 4.1 | Per-block fold, keyboard toggle (Space/Enter on a focused head) | yes | yes | HAVE | none → add |
+| 4.1 | Per-block fold, keyboard toggle (Space/Enter on a focused head) | yes | yes | UNVERIFIED | none → add |
 | 4.2 | Expand all / collapse all folds | record-level, pinned as user overrides so re-emission cannot undo them | `#sessionFoldAll` (every process surface), per-process bulk, per-subtree bulk | OK-DIFF; verify re-emission keeps a user's open state on the app shell | none → add: open a fold, let the tail rewrite, still open on both |
 | 4.3 | Progressive rows inside a long process | (folds only) | first 7 events, "Show N more" | APP-ONLY (keep) | ✓ app (#98 uses it); — |
-| 4.4 | **Fold / raw / expansion state survives reload and session switch** | sessionStorage per session (folds, raw overrides, anchor, read count; small cap expansions since #114) | was: position only. Now (#114) the reader's choices — folds, process folds and expansions, prompt expansions, raw overrides, cap expansions, shown images — ride with the position in the per-session memory, restored with the first batch and saved on every choice and on leaving | HAVE (v1.183.0) | ✓ both: `scenario_view_state_survives` (reload on both; switch away and back on the app shell) |
-| 4.5 | Navigation reveals context monotonically | `revealMark` opens caps/clamps holding a hit | `revealNavigationContext` opens process/progressive/renderer | HAVE; caps join it with 3.1 | #100 |
+| 4.4 | **Fold / raw / expansion state survives reload and session switch** | sessionStorage per session (folds, raw overrides, anchor, read count; small cap expansions since #114) | was: position only. Now (#114) the reader's choices — folds, process folds and expansions, prompt expansions, raw overrides, cap expansions, shown images — ride with the position in the per-session memory, restored with the first batch and saved on every choice and on leaving | GUARDED (v1.183.0) | ✓ both: `scenario_view_state_survives` (reload on both; switch away and back on the app shell) |
+| 4.5 | Navigation reveals context monotonically | `revealMark` opens caps/clamps holding a hit | `revealNavigationContext` opens process/progressive/renderer | UNVERIFIED; caps join it with 3.1 | #100 |
 
 ### 5. Navigation, search, reading aids
 
 | # | Feature | Classic page | App shell | Verdict | Scenario |
 |---|---|---|---|---|---|
-| 5.1 | Turn list + scroll-spy | sidebar, active row | turns pane, current row (#52) | HAVE | ✓ app; both → add |
-| 5.2 | Turn stepping `]`/`[`, head stepping `j`/`k`, page Space | yes | yes | HAVE | none → add |
-| 5.3 | Search haystack | the records' text | was: `JSON.stringify(record)` — field names matched every record. Now (#111) both pages run `shared/search.js`: a record's text is its head summary/badge/preview/name/target/attachment name and its body parts with tags stripped, nested records included; the scope classes and the whole-word rule live there too | HAVE (v1.180.0) | ✓ both: `scenario_every_hit_marked_and_text_haystack` |
-| 5.4 | Hit highlighting | every occurrence marked, the current one stronger | was: only the current hit's block. Now (#111): every hit in the mounted window is marked, the current record's first mark stronger | HAVE (v1.180.0) | ✓ both: `scenario_every_hit_marked_and_text_haystack` |
-| 5.5 | Hit stepping with reveal | record-first order, wrap, on-screen hit highlighted in place; **entry is from the viewport**: after scrolling away, next/previous is the hit nearest the reader | was: from the old current; the reveal left nested folds and caps closed. Now (#100): the sequence continues only while the current mark is on screen, else next/previous re-enter from the viewport; a search or deep-link reveal opens the nested chain and its caps; the landing brings the term itself into view | HAVE (v1.186.0) | ✓ both: `scenario_hit_stepping_shows_the_term_and_reenters` |
-| 5.6 | Scope filter with per-class counts; scope prefix `uatobrew:`; whole words | dropdown + typed prefix (order-free letters then `:`, a leading `:` escapes) + counts | was: no counts, scope ignored while stepping, no prefix, no whole words. Now (#101): the grammar and the per-part ownership are `shared/search.js`; the app shell shows per-class counts in the scope rows, gates stepping and marks by the scope, syncs the typed prefix and the buttons both ways (the box is the truth; a click from "everything" selects that scope alone, as a first checkbox does), and offers whole words | HAVE (v1.187.0) | ✓ both: `scenario_scope_counts_prefix_and_gating` |
-| 5.7 | Search on large transcripts | incremental | was: incremental on both, sluggish above ~10 MB. Now (#104) both pages search on Enter once the haystack (a per-record size kept in step with the stream, `shared/search.js`) passes 10 MB — the box says "⏎ to search" — and the app shell's Enter also steps hits like the classic page | HAVE (v1.188.0) | ✓ both: `scenario_large_session_searches_on_enter` |
+| 5.1 | Turn list + scroll-spy | sidebar, active row | turns pane, current row (#52) | UNVERIFIED | ✓ app; both → add |
+| 5.2 | Turn stepping `]`/`[`, head stepping `j`/`k`, page Space | yes | yes | UNVERIFIED | none → add |
+| 5.3 | Search haystack | the records' text | was: `JSON.stringify(record)` — field names matched every record. Now (#111) both pages run `shared/search.js`: a record's text is its head summary/badge/preview/name/target/attachment name and its body parts with tags stripped, nested records included; the scope classes and the whole-word rule live there too | GUARDED (v1.180.0) | ✓ both: `scenario_every_hit_marked_and_text_haystack` |
+| 5.4 | Hit highlighting | every occurrence marked, the current one stronger | was: only the current hit's block. Now (#111): every hit in the mounted window is marked, the current record's first mark stronger | GUARDED (v1.180.0) | ✓ both: `scenario_every_hit_marked_and_text_haystack` |
+| 5.5 | Hit stepping with reveal | record-first order, wrap, on-screen hit highlighted in place; **entry is from the viewport**: after scrolling away, next/previous is the hit nearest the reader | was: from the old current; the reveal left nested folds and caps closed. Now (#100): the sequence continues only while the current mark is on screen, else next/previous re-enter from the viewport; a search or deep-link reveal opens the nested chain and its caps; the landing brings the term itself into view | GUARDED (v1.186.0) | ✓ both: `scenario_hit_stepping_shows_the_term_and_reenters` |
+| 5.6 | Scope filter with per-class counts; scope prefix `uatobrew:`; whole words | dropdown + typed prefix (order-free letters then `:`, a leading `:` escapes) + counts | was: no counts, scope ignored while stepping, no prefix, no whole words. Now (#101): the grammar and the per-part ownership are `shared/search.js`; the app shell shows per-class counts in the scope rows, gates stepping and marks by the scope, syncs the typed prefix and the buttons both ways (the box is the truth; a click from "everything" selects that scope alone, as a first checkbox does), and offers whole words | GUARDED (v1.187.0) | ✓ both: `scenario_scope_counts_prefix_and_gating` |
+| 5.7 | Search on large transcripts | incremental | was: incremental on both, sluggish above ~10 MB. Now (#104) both pages search on Enter once the haystack (a per-record size kept in step with the stream, `shared/search.js`) passes 10 MB — the box says "⏎ to search" — and the app shell's Enter also steps hits like the classic page | GUARDED (v1.188.0) | ✓ both: `scenario_large_session_searches_on_enter` |
 | 5.8 | **Type / tool filter** | non-matching records hidden, turns dimmed as landmarks, matching folds force-open, lands on the nearest hit, ✕ restores the fold snapshot | **deliberately different (#133, owner)**: on the app shell a filter is a SEARCH BY KIND — it finds the calls of a kind, marks them, counts them in the search box and steps between them with ↑/↓, landing each in its own surroundings. Nothing is hidden and nothing changes height: hiding takes the context away exactly when the reader has found what they were looking for, and a filtered window was the one place this shell's virtual window had to reason about heights it could not see. The classic page keeps its cut — it is the reference for ITS rule, not a target for this one | DIVERGES ON PURPOSE (v1.215.0) | classic `scenario_tool_filter_hides_and_lands`; app shell `app_shell_the_tool_filter_is_a_search_by_kind` |
 | 5.9 | Filter-hit stepping ‹ › and `n`/`N` | yes | no (#94, owner-deferred) | #94 | — |
-| 5.10 | Jump-to-bottom / new-messages pill | one pill | one pill (#64) | HAVE | ✓ both |
+| 5.10 | Jump-to-bottom / new-messages pill | one pill | one pill (#64) | GUARDED | ✓ both |
 | 5.11 | Follow indicator `⤓ following live` | chip | the pill is a circle while following | FORGO (the pill states it) | — |
-| 5.12 | Theme, code size, wrap, wide | yes (shared key) | yes (shared key) | HAVE | theme ✓ app; reading → add |
-| 5.13 | Keyboard map | shared table; `\ o c u ↑↓` inert | every key wired | HAVE (+) | none → add: `w` wraps on both |
+| 5.12 | Theme, code size, wrap, wide | yes (shared key) | yes (shared key) | UNVERIFIED | theme ✓ app; reading → add |
+| 5.13 | Keyboard map | shared table; `\ o c u ↑↓` inert | every key wired | UNVERIFIED (+) | none → add: `w` wraps on both |
 | 5.14 | Sidebar / outline collapse | — | `\`, `o`, three states | APP-ONLY | ✓ app |
 | 5.15 | Global search overlay ⌘K | — | yes | APP-ONLY | — |
-| 5.16 | Landing flash / hold after a jump | 1 s flash; 2 s hold | flash; 3-pass converge | HAVE | — |
+| 5.16 | Landing flash / hold after a jump | 1 s flash; 2 s hold | flash; 3-pass converge | UNVERIFIED | — |
 | 5.17 | Upward drag-selection auto-scroll | custom | native (inner scroller) | FORGO | — |
 
 ### 6. Meta
 
 | # | Feature | Classic page | App shell | Verdict | Scenario |
 |---|---|---|---|---|---|
-| 6.1 | Session id, path, copy | id strip + copy path | title menu with id and path (#83) | HAVE | ✓ both |
-| 6.2 | Usage and runtime rows | side panels | info pane groups (#67/#68), shared `runtime.js` | HAVE | ✓ app |
-| 6.3 | Parent / children | crumbs + `↑`; agents menu | parent button `u` (#82); agents pane | HAVE | ✓ app |
-| 6.4 | Artifacts | menu, one row per URL | roster (#78) → right pane (#95) | HAVE | ✓ app |
-| 6.5 | Tasks | floating panel, ⌖ centring | tasks pane, popover (#60), `c` centring (#57) | HAVE (+) | ✓ app |
+| 6.1 | Session id, path, copy | id strip + copy path | title menu with id and path (#83) | GUARDED | ✓ both |
+| 6.2 | Usage and runtime rows | side panels | info pane groups (#67/#68), shared `runtime.js` | UNVERIFIED | ✓ app |
+| 6.3 | Parent / children | crumbs + `↑`; agents menu | parent button `u` (#82); agents pane | UNVERIFIED | ✓ app |
+| 6.4 | Artifacts | menu, one row per URL | roster (#78) → right pane (#95) | UNVERIFIED | ✓ app |
+| 6.5 | Tasks | floating panel, ⌖ centring | tasks pane, popover (#60), `c` centring (#57) | UNVERIFIED (+) | ✓ app |
+
+## The mechanism matrix (#152)
+
+A feature matrix asks *does the app shell do X?* — and nobody writes the row "does the app shell
+resolve a DOM element back to a record safely?", because that is not a feature a reader can name.
+Yet that question was the duplicate-anchor bug, and two more below were found the same way: by a
+reader hitting them, not by this audit. **Where the two pages reach the same result by different
+MEANS, the means is the row.** The classic page is still the reference, and its answer is usually
+the simpler one, which is itself the finding.
+
+| # | Mechanism | Classic page | App shell | Can they diverge silently? | Guard |
+|---|---|---|---|---|---|
+| M.1 | **DOM element → the record it came from** | never asks: the value it needs is already on the element (`lightbox(aimg.src, aimg.alt)`, export.js:2838) | asked at click time by id (`findRecord`), then re-derives the value | **Yes, and did.** Anchors were not unique (#151), so an image resolved to a `bash` record, its head read empty, and `src=""` told the reader the image "cannot be opened" | `scenario_a_pasted_image_opens` — points a rendered card at an id that is not in the stream and insists the card's own bytes still open |
+| M.2 | **Where an attachment's URL comes from** | the `img` already on the page | rebuilt from the record's head, with the card's own src only as a fallback since #144 | Yes — a card and its viewer could disagree about the same file, and the viewer could show less | same |
+| M.3 | **What a record's height IS** | was top-to-next-top; since #128 the same as the app shell | border box + margins, summed | Yes — silently, as pixels. 26 of 27 mounted pairs disagreed with their own measure before #128 | `scenario_a_record_measures_as_its_own_box`, both surfaces |
+| M.4 | **How a reader gets back from a child session** | reloads and rebuilds `↑ parent › current` from the transcript's own `ancestors`; keeps no state, so it cannot lose any | an in-memory hint recorded at the moment of descent | Yes — and did twice: the hint was written at one of two descents, and a fleet row's click also navigated, discarding it the instant it was written (#143) | `app_shell_a_fleet_row_descent_keeps_the_way_back` — app-shell-only, because the classic mechanism cannot have the fault |
+| M.5 | **Whose CSS dresses the SHARED row markup** | its own stylesheet, written for it (`.nrow{display:flex}`) | reference.css, extracted from a demo that had different markup (`.line` is a THREE-column grid; `numRowsHtml` emits two cells) | **Yes, and did, three times**: code in the 16px mark track (#146), the same track overflowing with wrap off (#145), and four syntax classes styled nowhere (#149) | `scenario_numbered_code_has_the_width`, both surfaces |
+| M.6 | **Which locale formats a date** | — | — | Both took the OPERATING SYSTEM's, from one shared module, so an English page showed `9月3日` (#147) | the `fmtTime` contract asserts an English month, which fails on a zh-Hans machine and passes on a US one |
+
+The pattern across M.1, M.2 and M.4 is one sentence: **the app shell re-derives what the classic
+page carries.** Re-derivation needs a key, a key can be wrong, and when it is wrong the failure is
+silent and looks like something else. That is worth holding as a design rule rather than six
+separate fixes — and it is the rule this audit could not see, because it only ever asked whether
+each page HAD the feature.
 
 ## Keep, forgo, and why
 
