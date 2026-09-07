@@ -416,11 +416,7 @@
    positioning context; the popover reuses `.navigator-options` for its chrome (and for the
    narrow-window rule that turns it into a full-width sheet), and only overrides its width and
    the anchor, since it hangs off a topbar button rather than the search box. */
-/* Above the preview panel (z-index 55), which is `position:fixed` and spans the full height at
-   narrow widths: the button sits in the topbar and stayed reachable, but the popover hangs
-   BELOW the topbar's box and was painted under the panel there — hit-testing at 820px is what
-   found it, a rect assertion never would have. */
-.reading-cluster { position: relative; display: flex; align-items: center; flex: none; z-index: 60; }
+.reading-cluster { position: relative; display: flex; align-items: center; flex: none; }
 /* The positioning is spelled out rather than inherited: the demo's own rule is
    `.header-search-cluster>.navigator-options`, a CHILD selector this popover cannot match from
    its own cluster. Without these it laid out as a static flex item — measured at top -40px,
@@ -431,7 +427,10 @@
   right: 0;
   top: 45px;
   width: 268px;
-  z-index: 60;
+  /* The same stacking the filter popover uses — one kind of thing, one layer (#155: an earlier
+     comment here claimed this had to clear the preview panel at narrow widths; measured, the
+     panel is parked off-screen and 48 is reachable at 1500px, 820px and 680px alike). */
+  z-index: 48;
   margin: 0;
   padding: 11px 14px 12px;
   border-radius: 12px;

@@ -3596,6 +3596,37 @@ fn the_app_shell_options_popover_fits_and_scrolls() {
         reading["wideHittable"], true,
         "…and actually clickable there: {reading}"
     );
+    // #155: the filter popover has to be usable at a NARROW window too, not just a short one.
+    // This went untested, and the gap is why a stray measurement was enough to make me believe
+    // the preview panel was covering it — filed as a bug that measurement then disproved (the
+    // panel is parked off-screen at every width, `transform: translateX(619.91px)` at 820px).
+    // The rule is real even though that bug was not, so it gets a guard rather than a comment.
+    for width in [820.0_f64, 680.0] {
+        harness::resize(&tab, width, 900.0);
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        harness::eval(
+            &tab,
+            "(function(){ var p = document.getElementById('navigatorOptions'); if (!p.classList.contains('open')) document.getElementById('filterTranscriptBtn').click(); return 'ok'; })()",
+        );
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let narrow = harness::probe(
+            &tab,
+            r#"(function(){ var pop = document.getElementById('navigatorOptions'); var r = pop.getBoundingClientRect(); var row = pop.querySelector('[data-scope]'); var rr = row ? row.getBoundingClientRect() : null; var hit = rr ? document.elementFromPoint(rr.left + rr.width / 2, rr.top + rr.height / 2) : null; return { open: pop.classList.contains('open'), onScreen: r.left >= -1 && r.right <= innerWidth + 1 && r.top >= 0, rowHittable: !!(hit && row && (hit === row || row.contains(hit) || hit.contains(row))), hitTag: hit ? (hit.tagName + '.' + (hit.className || '').toString().split(' ')[0]) : null, rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] }; })()"#,
+        );
+        assert_eq!(
+            narrow["open"], true,
+            "at {width}px the funnel still opens its popover: {narrow}"
+        );
+        assert_eq!(
+            narrow["onScreen"], true,
+            "…inside the window rather than off its edge: {narrow}"
+        );
+        assert_eq!(
+            narrow["rowHittable"], true,
+            "…and a scope row answers a click at its own centre — nothing is painted over it: \
+             {narrow}"
+        );
+    }
     drop(monitor);
 }
 
