@@ -6,15 +6,22 @@
 //
 // Shared-module conventions (html_export/shared.rs): no imports, one trailing `export` line.
 
+/** The locale the transcript is written in. `[]` — the runtime default — made the format follow
+ *  the OPERATING SYSTEM, so a machine set to zh-Hans rendered "Sep 3" as "9月3日" in a page whose
+ *  every other string is English (the owner hit exactly that). The doc comment above has always
+ *  promised "Mon D h:mm"; this makes the code keep that promise, and makes the module's own
+ *  behaviour independent of whichever machine runs its tests. */
+const LOCALE = "en-US";
+
 /** `ts` in seconds since the epoch → "h:mm" today, "Mon D h:mm" this year, "Mon D, YYYY h:mm" otherwise. */
 function fmtTime(ts, now = new Date()) {
   try {
     const d = new Date(ts * 1000);
-    const t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const t = d.toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" });
     if (d.toDateString() === now.toDateString()) return t;
     const opts = { month: "short", day: "numeric" };
     if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
-    return d.toLocaleDateString([], opts) + " " + t;
+    return d.toLocaleDateString(LOCALE, opts) + " " + t;
   } catch (_) { return ""; }
 }
 
