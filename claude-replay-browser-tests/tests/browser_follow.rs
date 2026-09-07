@@ -5111,3 +5111,63 @@ fn the_app_shell_show_hidden_reads_as_a_lit_toggle() {
         "the collapsed rail's button is the same control, so it lights too: {lit}"
     );
 }
+
+/// #162, the owner's third report: "the show-as-raw ({}) sign is always present for user-messages,
+/// which is a different behavior from agent messages". Both kinds carry the control on this shell,
+/// and `rawUser` makes every USER turn raw by default — so every user toggle was `.on` and pinned
+/// open while the agent ones stayed ghosts. One rule now: the raw toggle reveals on hover or
+/// focus, whatever kind of turn it is and whatever its state, and the ANCHOR is the one that
+/// stays. (The classic page has no inconsistency to fix here — only its user turns carry a raw
+/// button at all — which is why this case is the shell's alone.)
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_raw_toggle_reveals_the_same_way_on_every_turn() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-raw-visibility", 2884);
+    // Turn the global raw preference ON — the state that used to pin every user turn's toggle.
+    harness::eval(&tab, "document.getElementById('readingBtn').click()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('[data-reading-toggle=\"rawUser\"]')",
+        "the reading popover",
+        std::time::Duration::from_secs(10),
+        "document.body.innerText.slice(0, 120)",
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-reading-toggle=\"rawUser\"]').click()",
+    );
+    harness::eval(&tab, "document.getElementById('readingBtn').click()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.turn-raw')",
+        "the turns to render raw",
+        std::time::Duration::from_secs(10),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let seen = harness::probe(&tab, "(function(){ function rest(sel){ var els = [...document.querySelectorAll(sel)].filter(function (e) { var r = e.getBoundingClientRect(); return r.width > 0; }); return { n: els.length, shown: els.filter(function (e) { return Number(getComputedStyle(e).opacity) > 0.05; }).length }; } return { userRaw: rest('.turn.user .spot-link.raw-toggle'), agentRaw: rest('.turn.assistant .spot-link.raw-toggle'), userAnchor: rest('.turn.user .spot-link:not(.raw-toggle)'), agentAnchor: rest('.turn.assistant .spot-link:not(.raw-toggle)') }; })()");
+    assert!(
+        seen["userRaw"]["n"].as_i64().unwrap_or(0) >= 1
+            && seen["agentRaw"]["n"].as_i64().unwrap_or(0) >= 1,
+        "both kinds of turn carry a raw toggle, which is what makes them comparable: {seen}"
+    );
+    assert_eq!(
+        seen["userRaw"]["shown"].as_i64().unwrap_or(-1),
+        0,
+        "no raw toggle is pinned open on a user turn, even with the global preference on: {seen}"
+    );
+    assert_eq!(
+        seen["agentRaw"]["shown"].as_i64().unwrap_or(-1),
+        0,
+        "…and agent turns behave identically, which is the whole point: {seen}"
+    );
+    // The anchor is the control that stays, and it stays on both kinds alike.
+    assert_eq!(
+        seen["userAnchor"]["shown"], seen["userAnchor"]["n"],
+        "the anchor is drawn at rest on a user turn: {seen}"
+    );
+    assert_eq!(
+        seen["agentAnchor"]["shown"], seen["agentAnchor"]["n"],
+        "…and on an agent turn: {seen}"
+    );
+}

@@ -2625,6 +2625,73 @@ fn classic_page_tool_filter_hides_and_lands() {
     scenario_tool_filter_hides_and_lands(&page.tab, Surface::Classic, &fx);
 }
 
+// ── scenario: the spot controls hold their own slot (#162) ──────────────────────────────────
+
+/// Rule from three owner reports: the anchor and the raw toggle must sit IN their row, never on
+/// top of a trailing chip and never past the scroller's content edge. The classic page has always
+/// done it — `.alink` is a flex item with `margin-left:auto` in a fold head, so it cannot land on
+/// anything — and the app shell hung both controls off negative offsets instead (measured before
+/// the fix: the raw toggle rendered at 1388..1412 against a content edge of 1390, and a fold
+/// head's anchor at 1313..1337 over a tail chip at ~1309).
+///
+/// Hit-tested, not measured: a control that is covered still reports a full-size rect, and that
+/// is exactly the failure mode here.
+fn scenario_spot_controls_hold_their_slot(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (scroller, spots) = match surface {
+        Surface::Classic => (
+            "document.scrollingElement",
+            "#stream .alink, #stream .rawbtn",
+        ),
+        Surface::AppShell => (
+            "document.querySelector('.transcript')",
+            ".transcript .spot-link",
+        ),
+    };
+    let probe_js = format!(
+        "(function(){{ var sc = {scroller}; var edge = sc.getBoundingClientRect().left + sc.clientWidth;          var all = [...document.querySelectorAll('{spots}')].filter(function (e) {{ var r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; }});          var past = all.filter(function (e) {{ return e.getBoundingClientRect().right > edge + 0.5; }}).length;          var overlaps = 0, sample = null;          all.forEach(function (e) {{ var r = e.getBoundingClientRect();            var row = e.closest('.fold-h, .renderer-head, .turn, .uturn') || e.parentElement;            if (!row) return;            [...row.querySelectorAll('*')].forEach(function (o) {{              if (o === e || e.contains(o) || o.contains(e)) return;              if (o.children.length || !(o.textContent || '').trim()) return;              var b = o.getBoundingClientRect(); if (!b.width || !b.height) return;              if (b.left < r.right - 0.5 && b.right > r.left + 0.5 && b.top < r.bottom - 0.5 && b.bottom > r.top + 0.5) {{                overlaps++; if (!sample) sample = (o.className || o.tagName) + ':' + (o.textContent || '').trim().slice(0, 18); }} }}); }});          return {{ n: all.length, past: past, overlaps: overlaps, sample: sample, edge: Math.round(edge) }}; }})()"
+    );
+    let seen = probe(tab, &probe_js);
+    assert!(
+        seen["n"].as_i64().unwrap_or(0) >= 1,
+        "the page has spot controls to check: {seen}"
+    );
+    assert_eq!(
+        seen["past"].as_i64().unwrap_or(-1),
+        0,
+        "no spot control reaches past the scroller's content edge, where the scrollbar is: {seen}"
+    );
+    assert_eq!(
+        seen["overlaps"].as_i64().unwrap_or(-1),
+        0,
+        "…and none of them sits on top of text in its own row: {seen}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_spot_controls_hold_their_slot() {
+    let _serial = serial();
+    let fx = filter_fixture("scenario-spot-slot-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_spot_controls_hold_their_slot(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_spot_controls_hold_their_slot() {
+    let _serial = serial();
+    let fx = filter_fixture("scenario-spot-slot-app");
+    let page = open(Surface::AppShell, &fx, 2885);
+    scenario_spot_controls_hold_their_slot(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: a filter big enough to take the SPARSE window (#140 step 3) ───────────────────
 
 /// What the window mounts, what index range it covers, and whether anything the filter hid got
