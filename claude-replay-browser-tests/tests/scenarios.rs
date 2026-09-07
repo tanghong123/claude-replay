@@ -4971,3 +4971,191 @@ fn app_shell_a_fleet_row_descent_keeps_the_way_back() {
         "…and it points at the session the reader came from: {control}"
     );
 }
+
+// ── scenario: wide mode is one click from the header, on either page (#142) ───────────────────
+
+/// #142: the owner asked three times where the wide-mode control was. On the classic page it is
+/// `#btn-wide`, a plain toolbar button — one click, always visible. The app shell had the same
+/// preference buried three levels down: a FUNNEL icon inside the header SEARCH box, opening a
+/// popover whose last section, under an unsorted and unbounded tool list, held Reading. Measured
+/// at 1500x940 with only five tool rows the popover already needed scrolling; twenty MCP tools
+/// push Reading roughly 400px below the fold.
+///
+/// So the rule this pins is the classic page's, written as a rule rather than as a selector:
+/// **a persistently visible header control leads to the wide toggle in at most one click, and
+/// toggling it actually widens the transcript.** The classic page satisfies it with a direct
+/// button; the app shell now satisfies it with its own reading control. What neither may do is
+/// hide it behind a *filter* affordance — so the case also asserts the funnel no longer offers
+/// it, which is what makes "one control, one meaning" more than a comment.
+///
+/// Hit-testing, not rects: a clipped control still measures 34x34 (that is how a control that
+/// could not be reached once passed a width assertion), so every step here goes through
+/// `elementFromPoint`. And it runs at a narrow window too, because the header is where controls
+/// go to be dropped when space runs out.
+fn scenario_wide_is_one_click_from_the_header(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    // A control is "reachable" only if the point at its centre actually hits it.
+    let hittable = r#"function (el) { if (!el) return false; var r = el.getBoundingClientRect(); if (r.width < 4 || r.height < 4) return false; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(hit && (hit === el || el.contains(hit) || hit.contains(el))); }"#;
+
+    for width in [1500.0_f64, 820.0] {
+        tab.set_bounds(headless_chrome::types::Bounds::Normal {
+            left: Some(0),
+            top: Some(0),
+            width: Some(width),
+            height: Some(900.0),
+        })
+        .unwrap();
+        settle();
+        settle();
+        // Start each width from the page at rest. Without this the previous width's popover is
+        // still open, and step 2's click CLOSES it instead of opening it — which read exactly
+        // like the control being unreachable, at the width where a real one had just been found.
+        eval(
+            tab,
+            "(function(){ for (var p of document.querySelectorAll('.navigator-options.open')) p.classList.remove('open'); return 'ok'; })()",
+        );
+        settle();
+
+        // Step 1: the entry control is visible on the page at rest, with nothing opened first.
+        let entry = match surface {
+            Surface::Classic => "btn-wide",
+            Surface::AppShell => "readingBtn",
+        };
+        let seen = probe(
+            tab,
+            &format!(
+                "(function(){{ var hittable = {hittable}; var e = document.getElementById('{entry}'); \
+                 return {{ present: !!e, reachable: hittable(e), header: !!(e && e.closest('header, .topbar, .bar, .toolbar')) }}; }})()"
+            ),
+        );
+        assert_eq!(
+            seen["present"].as_bool(),
+            Some(true),
+            "at {width}px the header offers a reading control (`#{entry}`) on the page at rest: {seen}"
+        );
+        assert_eq!(
+            seen["reachable"].as_bool(),
+            Some(true),
+            "…and it is actually clickable there, not merely measured: {seen}"
+        );
+
+        // Step 2: at most ONE click reaches a wide toggle that is itself clickable. On the
+        // classic page the entry IS the toggle; on the app shell the entry opens the popover
+        // that holds it.
+        let reach = probe(
+            tab,
+            &format!(
+                "(function(){{ var hittable = {hittable}; \
+                 var wide = document.querySelector('[data-reading-toggle=\"wide\"]'); \
+                 if (!wide) return {{ clicks: 0, toggle: 'the entry itself' }}; \
+                 document.getElementById('{entry}').click(); \
+                 return {{ clicks: 1, toggle: 'in the popover', reachable: hittable(document.querySelector('[data-reading-toggle=\"wide\"]')) }}; }})()"
+            ),
+        );
+        settle();
+        if reach["clicks"].as_i64() == Some(1) {
+            assert_eq!(
+                reach["reachable"].as_bool(),
+                Some(true),
+                "at {width}px one click on `#{entry}` reveals a clickable wide toggle: {reach}"
+            );
+        }
+
+        // Step 3: the toggle does the thing — asserted only where there is room to widen. At
+        // 820px the classic page's stream is ALREADY the full width (measured 532 -> 532), so a
+        // widening assertion there would be testing the viewport, not the control. The narrow
+        // pass still proves reachability, which is the half that regresses.
+        let before = transcript_width(tab, surface);
+        let toggled = probe(
+            tab,
+            &format!(
+                "(function(){{ var w = document.querySelector('[data-reading-toggle=\"wide\"]'); \
+                 if (w) {{ w.click(); return 'popover toggle'; }} \
+                 var b = document.getElementById('{entry}'); if (b) {{ b.click(); return 'direct button'; }} \
+                 return 'none'; }})()"
+            ),
+        );
+        settle();
+        settle();
+        let after = transcript_width(tab, surface);
+        if width > 1000.0 {
+            assert!(
+                after > before + 8.0,
+                "at {width}px toggling wide ({toggled}) actually widens the transcript: {before} -> {after}"
+            );
+        } else {
+            assert!(
+                after >= before,
+                "at {width}px toggling wide ({toggled}) never NARROWS the transcript: {before} -> {after}"
+            );
+        }
+
+        // Put it back, so the next width starts from the same place.
+        eval(
+            tab,
+            &format!(
+                "(function(){{ var w = document.querySelector('[data-reading-toggle=\"wide\"]'); \
+                 if (w) {{ w.click(); }} else {{ var b = document.getElementById('{entry}'); if (b) b.click(); }} return 'ok'; }})()"
+            ),
+        );
+        settle();
+    }
+
+    // Step 4: the FILTER affordance no longer offers a reading preference. This is the half that
+    // makes each control mean one thing, and it is app-shell-only because the classic page never
+    // had a filter popover to put them in.
+    if surface == Surface::AppShell {
+        let funnel = probe(
+            tab,
+            r#"(function(){ var f = document.getElementById('navigatorOptions'); if (!f) return { missing: true }; return { reading: f.querySelectorAll('[data-reading-toggle], [data-reading-size]').length, has: !!document.getElementById('readingOptions') }; })()"#,
+        );
+        assert_eq!(
+            funnel["reading"].as_i64(),
+            Some(0),
+            "the search-scope funnel holds no reading preferences at all — they live behind the \
+             reading control now: {funnel}"
+        );
+        assert_eq!(
+            funnel["has"].as_bool(),
+            Some(true),
+            "…and that control has its own popover: {funnel}"
+        );
+    }
+}
+
+/// The transcript's content width on either page — what "wide" is supposed to change.
+fn transcript_width(tab: &headless_chrome::Tab, surface: Surface) -> f64 {
+    let sel = match surface {
+        Surface::Classic => "#stream",
+        Surface::AppShell => ".virtual-window",
+    };
+    probe(
+        tab,
+        &format!(
+            "(function(){{ var e = document.querySelector('{sel}'); return {{ w: e ? e.getBoundingClientRect().width : 0 }}; }})()"
+        ),
+    )["w"]
+        .as_f64()
+        .unwrap_or(0.0)
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_wide_is_one_click_from_the_header() {
+    let _serial = serial();
+    let fx = fixture("scenario-wide-classic", 12);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_wide_is_one_click_from_the_header(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_wide_is_one_click_from_the_header() {
+    let _serial = serial();
+    let fx = fixture("scenario-wide-app", 12);
+    let page = open(Surface::AppShell, &fx, 2924);
+    scenario_wide_is_one_click_from_the_header(&page.tab, Surface::AppShell, &fx);
+}

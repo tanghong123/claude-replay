@@ -3436,8 +3436,18 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
 ///
 /// #139: the options popover has to fit on screen. A session that used many tools grew the
 /// tool-type list past the bottom of the window, and neither the list nor the popover scrolled —
-/// so the tools below the fold, and the whole Reading section under them (where Wide transcript
-/// lives), could not be reached at all.
+/// so the tools below the fold could not be reached at all.
+///
+/// #142 retired half of what this case used to assert. The Reading section no longer lives in
+/// this popover at all — it moved behind its own header control, precisely BECAUSE reaching it
+/// meant scrolling past an unbounded tool list — so the old "scroll down to the Wide switch"
+/// half is replaced by its opposite: Reading must not be in here. The reachability of the
+/// reading preferences themselves is `scenario_wide_is_one_click_from_the_header` in
+/// `scenarios.rs`, which holds BOTH pages to it. What survives here is the rule #139 was
+/// really about, and it is still this popover's own: it fits inside the window, and its tool
+/// list scrolls instead of running off the end. The new popover is held to the fitting half
+/// too — it is anchored 45px below the top of the header and could as easily run off the
+/// bottom of a short window.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn the_app_shell_options_popover_fits_and_scrolls() {
@@ -3508,7 +3518,7 @@ fn the_app_shell_options_popover_fits_and_scrolls() {
         std::time::Duration::from_secs(10),
         "document.querySelectorAll('#filterOptions .tool-type-option').length",
     );
-    let fit = harness::probe(&tab, "(function(){ var pop = document.getElementById('navigatorOptions'); var list = document.getElementById('filterOptions'); var pr = pop.getBoundingClientRect(); var reading = pop.querySelector('.reading-section'); var rr = reading ? reading.getBoundingClientRect() : null; return { tools: list.querySelectorAll('.tool-type-option').length, listScrolls: list.scrollHeight > list.clientHeight + 1, popBottom: Math.round(pr.bottom), viewport: Math.round(innerHeight), popFits: pr.bottom <= innerHeight + 1, readingReachable: !!rr && rr.bottom <= innerHeight + 1 && rr.height > 0 }; })()");
+    let fit = harness::probe(&tab, "(function(){ var pop = document.getElementById('navigatorOptions'); var list = document.getElementById('filterOptions'); var pr = pop.getBoundingClientRect(); return { tools: list.querySelectorAll('.tool-type-option').length, listScrolls: list.scrollHeight > list.clientHeight + 1, popBottom: Math.round(pr.bottom), viewport: Math.round(innerHeight), popFits: pr.bottom <= innerHeight + 1, readingRows: pop.querySelectorAll('[data-reading-toggle], [data-reading-size]').length }; })()");
     assert!(
         fit["tools"].as_i64().unwrap_or(0) >= 8,
         "the fixture gives the filter more tools than fit: {fit}"
@@ -3521,22 +3531,38 @@ fn the_app_shell_options_popover_fits_and_scrolls() {
         fit["popFits"], true,
         "the popover ends inside the window: {fit}"
     );
-    // Reachable means: scrolling gets you there. Before the fix neither the list nor the popover
-    // scrolled, so the sections under the tools were off the bottom of the window for good.
-    harness::eval(&tab, "(function(){ var p = document.getElementById('navigatorOptions'); p.scrollTop = p.scrollHeight; var l = document.getElementById('filterOptions'); l.scrollTop = l.scrollHeight; return 'ok'; })()");
+    // #142: and it holds filters ONLY. A reading preference behind a funnel is what made Wide
+    // transcript unfindable — the owner asked for it three times — so its absence here is the
+    // rule, not an omission.
+    assert_eq!(
+        fit["readingRows"].as_i64(),
+        Some(0),
+        "the filter popover carries no reading preferences at all: {fit}"
+    );
+
+    // The reading popover is subject to the same short-window rule, from its own anchor.
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('navigatorOptions').classList.remove('open'); document.getElementById('readingBtn').click(); return 'ok'; })()",
+    );
     std::thread::sleep(std::time::Duration::from_millis(300));
-    let reached = harness::probe(&tab, "(function(){ var pop = document.getElementById('navigatorOptions'); var reading = pop.querySelector('.reading-section'); if (!reading) return { there: false }; var r = reading.getBoundingClientRect(); var wide = pop.querySelector('[data-reading-toggle=\"wide\"]'); var wr = wide ? wide.getBoundingClientRect() : null; return { there: true, inView: r.top >= 0 && r.bottom <= innerHeight + 1 && r.height > 0, wideInView: !!wr && wr.top >= 0 && wr.bottom <= innerHeight + 1, popScrolled: Math.round(pop.scrollTop) }; })()");
+    let reading = harness::probe(&tab, "(function(){ var pop = document.getElementById('readingOptions'); if (!pop) return { there: false }; var r = pop.getBoundingClientRect(); var wide = pop.querySelector('[data-reading-toggle=\"wide\"]'); var wr = wide ? wide.getBoundingClientRect() : null; var hit = wr ? document.elementFromPoint(wr.left + wr.width / 2, wr.top + wr.height / 2) : null; return { there: true, fits: r.bottom <= innerHeight + 1 && r.top >= 0, wideInView: !!wr && wr.top >= 0 && wr.bottom <= innerHeight + 1, wideHittable: !!(hit && (hit === wide || wide.contains(hit))), viewport: Math.round(innerHeight), popBottom: Math.round(r.bottom) }; })()");
     assert_eq!(
-        reached["there"], true,
-        "the Reading section exists: {reached}"
+        reading["there"], true,
+        "the reading control has its own popover: {reading}"
     );
     assert_eq!(
-        reached["inView"], true,
-        "…and scrolling the popover reaches it: {reached}"
+        reading["fits"], true,
+        "…which ends inside a SHORT window rather than running off the bottom: {reading}"
     );
     assert_eq!(
-        reached["wideInView"], true,
-        "…including the Wide transcript switch at the bottom of it: {reached}"
+        reading["wideInView"], true,
+        "…with the Wide transcript switch on screen, no scrolling at all: {reading}"
+    );
+    // Hit-tested, not measured: a covered control still reports a perfect rectangle.
+    assert_eq!(
+        reading["wideHittable"], true,
+        "…and actually clickable there: {reading}"
     );
     drop(monitor);
 }

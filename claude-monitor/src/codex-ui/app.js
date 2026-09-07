@@ -1035,18 +1035,62 @@ function applyToolFilter() {
   if (!recordState.search) paintMatchCount("");
   applyFilters();
 }
-// Reading controls (parity #7), in the options popover where the shell keeps view preferences:
-// a third section after Scope and Tool types, in the popover's own row anatomy. They apply as
-// custom properties and two classes on the app root (see production.css), persist with the
-// other production preferences, and are also what the `w` / `-` / `+` keys drive.
+// Reading controls (parity #7) — behind their OWN header control since #142. They used to be
+// the third section of the filter popover, and the owner asked three times where wide mode
+// was: a funnel icon means filter, sitting inside the search box means search options, and
+// Reading came last, under a tool list that is unsorted and unbounded (five fixture rows
+// already needed scrolling; twenty MCP tools push it ~400px below the fold). One control now
+// means one thing — funnel: what is shown; this one: how it reads. They apply as custom
+// properties and two classes on the app root (see production.css), persist with the other
+// production preferences, and are also what the `w` / `-` / `+` keys drive.
 const readingSection = document.createElement("div");
 readingSection.className = "reading-section";
-readingSection.innerHTML = `<div class="scope-menu-divider"></div><div class="scope-menu-head"><strong>Reading</strong><button class="scope-menu-action" type="button" data-reading-reset>Reset</button></div>
+readingSection.innerHTML = `<div class="scope-menu-head"><strong>Reading</strong><button class="scope-menu-action" type="button" data-reading-reset>Reset</button></div>
 <div class="reading-row"><span>Code size</span><span class="reading-step"><button type="button" data-reading-size="-1" aria-label="Smaller code">−</button><span class="reading-value" data-reading-value></span><button type="button" data-reading-size="1" aria-label="Larger code">+</button></span></div>
 <div class="reading-row"><span>Wrap long lines</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wrap" aria-label="Wrap long lines" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>User turns as raw text</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="rawUser" aria-label="Show user turns as raw text — exactly as typed, whitespace intact" aria-checked="false"><span></span></button></div>`;
-byId("navigatorOptions").append(readingSection);
+// Production-only chrome, built here so the extracted demo shell stays byte-identical (the
+// same reason `navigatorRailHide` writes its own SVG). The cluster is the positioning
+// context the popover anchors to; `navigator-options` carries the shared popover styling,
+// including the narrow-window rule that turns it into a full-width sheet.
+const readingCluster = document.createElement("div");
+readingCluster.className = "reading-cluster";
+const readingBtn = document.createElement("button");
+readingBtn.className = "iconbtn reading-toggle";
+readingBtn.id = "readingBtn";
+readingBtn.type = "button";
+readingBtn.title = "How the transcript reads — size, wrapping, width";
+readingBtn.setAttribute("aria-label", "How the transcript reads — size, wrapping, width");
+readingBtn.setAttribute("aria-haspopup", "true");
+readingBtn.setAttribute("aria-expanded", "false");
+// "Aa" — the one glyph every reader already knows for text preferences, and the icon set has
+// nothing for it (`wrap` is spoken for by the toggle inside this very popover).
+readingBtn.innerHTML =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.4 12.6 4.6 3.9l3.2 8.7"/><path d="M2.4 10h4.4"/><path d="M14.6 12.6V8.4a2 2 0 0 0-2-2h-.6a2 2 0 0 0-1.8 1.1"/><path d="M14.6 10.3h-2.4a1.7 1.7 0 0 0 0 3.4c1.1 0 2.4-.8 2.4-2.2"/></svg>';
+const readingOptions = document.createElement("div");
+readingOptions.className = "navigator-options reading-options";
+readingOptions.id = "readingOptions";
+readingOptions.append(readingSection);
+readingCluster.append(readingBtn, readingOptions);
+// Anchored on `sessionFoldAll`, NOT on `navigatorToggle`: same visual order today, but #148
+// deletes the outline toggle, and `.before()` on a missing node throws at module load — a
+// blank app shell that every static gate would pass.
+byId("sessionFoldAll").after(readingCluster);
+
+/** Only one header popover is open at a time — two overlapping sheets is not a menu. */
+function setPopover(which) {
+  const reading = which === "reading";
+  const filter = which === "filter";
+  readingOptions.classList.toggle("open", reading);
+  readingBtn.setAttribute("aria-expanded", String(reading));
+  byId("navigatorOptions").classList.toggle("open", filter);
+  byId("filterTranscriptBtn").setAttribute("aria-expanded", String(filter));
+}
+readingBtn.onclick = () => setPopover(readingOptions.classList.contains("open") ? null : "reading");
+addEventListener("pointerdown", event => {
+  if (!readingCluster.contains(event.target) && readingOptions.classList.contains("open")) setPopover(null);
+}, true);
 /** The per-pane code bars show the current size and wrap (#115); fresh panes are painted here. */
 function paintCodeBars() {
   const prefs = uiState.reading;
@@ -1079,7 +1123,7 @@ readingSection.onclick = event => {
   if (event.target.closest("[data-reading-reset]")) setReading({ size: 12, wrap: false, wide: false });
 };
 applyReading();
-byId("filterTranscriptBtn").onclick = () => { byId("navigatorOptions").classList.toggle("open"); renderFilterMenu(); };
+byId("filterTranscriptBtn").onclick = () => { setPopover(byId("navigatorOptions").classList.contains("open") ? null : "filter"); renderFilterMenu(); };
 byId("navigatorOptions").onclick = event => { const scope = event.target.closest("[data-scope]"); if (scope) { const key = scope.dataset.scope; if (key === "w") uiState.searchWhole = !uiState.searchWhole; else { const everything = ALL_SCOPES.every(k => uiState.searchScopes.has(k)); if (everything) uiState.searchScopes = new Set([key]); else if (uiState.searchScopes.has(key)) { uiState.searchScopes.delete(key); if (!uiState.searchScopes.size) uiState.searchScopes = new Set(ALL_SCOPES); } else uiState.searchScopes.add(key); } applyScopeFromMenu(); } const tool = event.target.closest("[data-tool-filter]"); if (tool) { uiState.toolFilters.has(tool.dataset.toolFilter) ? uiState.toolFilters.delete(tool.dataset.toolFilter) : uiState.toolFilters.add(tool.dataset.toolFilter); renderFilterMenu(); applyToolFilter(); } };
 byId("selectAllScopes").onclick = () => { uiState.searchScopes = new Set(ALL_SCOPES); uiState.searchWhole = false; applyScopeFromMenu(); };
 byId("clearTranscriptFilters").onclick = () => { uiState.toolFilters.clear(); renderFilterMenu(); applyToolFilter(); };
@@ -1498,7 +1542,7 @@ byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNe
 byId("turnPrev").onclick = () => stepTurn(-1); byId("turnNext").onclick = () => stepTurn(1);
 readingSection.querySelector('[data-reading-toggle="wrap"]').title = `Wrap long lines (${hintFor("wrap")})`;
 readingSection.querySelector('[data-reading-size="-1"]').title = `Smaller code (${hintFor("size-down")})`; readingSection.querySelector('[data-reading-size="1"]').title = `Larger code (${hintFor("size-up")})`;
-addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openGlobalSearch(); } else if (event.key === "Escape") { setSessionCopyMenu(false); byId("searchLayer").classList.remove("production-open"); byId("navigatorOptions").classList.remove("open"); } });
+addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openGlobalSearch(); } else if (event.key === "Escape") { setSessionCopyMenu(false); byId("searchLayer").classList.remove("production-open"); setPopover(null); } });
 
 app.classList.toggle("sidebar-off", !indexState.sidebarOpen);
 tree.innerHTML = '<div class="no-results">Scanning sessions…</div>';
