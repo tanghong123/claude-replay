@@ -3344,7 +3344,7 @@ fn scenario_code_pane_bar_and_gutters(tab: &headless_chrome::Tab, surface: Surfa
     let (gutter_select, size_val, size_up, wrap_btn, wrap_state, copy_btn) = match surface {
         Surface::Classic => (
             "(function(){ var g = [...document.querySelectorAll('#stream .numbered .gut')].pop(); return g ? getComputedStyle(g).userSelect : 'none-found'; })()",
-            "(function(){ var v = [...document.querySelectorAll('#stream .codebar .ms-val')].pop(); return v ? Number(v.textContent) : -1; })()",
+            "(function(){ var v = [...document.querySelectorAll('#stream .codebar .ms-val')].pop(); return v ? v.textContent.trim() : 'none'; })()",
             "(function(){ var b = [...document.querySelectorAll('#stream .codebar .ms-up')].pop(); if (!b) return 'none'; b.click(); return 'clicked'; })()",
             "(function(){ var b = [...document.querySelectorAll('#stream .codebar .ms-wrap')].pop(); if (!b) return 'none'; b.click(); return 'clicked'; })()",
             "(function(){ var b = [...document.querySelectorAll('#stream .codebar .ms-wrap')].pop(); return b ? b.textContent : ''; })()",
@@ -3352,7 +3352,7 @@ fn scenario_code_pane_bar_and_gutters(tab: &headless_chrome::Tab, surface: Surfa
         ),
         Surface::AppShell => (
             "(function(){ var g = [...document.querySelectorAll('.codebox .ln')].pop(); return g ? getComputedStyle(g).userSelect : 'none-found'; })()",
-            "(function(){ var v = [...document.querySelectorAll('.codebox [data-code-size-val]')].pop(); return v ? Number(v.textContent) : -1; })()",
+            "(function(){ var v = [...document.querySelectorAll('.codebox [data-code-size-val]')].pop(); return v ? v.textContent.trim() : 'none'; })()",
             "(function(){ var b = [...document.querySelectorAll('.codebox [data-code-size=\"1\"]')].pop(); if (!b) return 'none'; b.click(); return 'clicked'; })()",
             "(function(){ var b = [...document.querySelectorAll('.codebox [data-code-wrap]')].pop(); if (!b) return 'none'; b.click(); return 'clicked'; })()",
             "(function(){ var b = [...document.querySelectorAll('.codebox [data-code-wrap]')].pop(); return b ? b.textContent : ''; })()",
@@ -3364,18 +3364,26 @@ fn scenario_code_pane_bar_and_gutters(tab: &headless_chrome::Tab, surface: Surfa
         "none",
         "the line-number gutter never enters a selection"
     );
-    let size = eval(tab, size_val).as_f64().unwrap_or(-1.0);
-    assert!(size > 0.0, "the pane's bar shows the code size: {size}");
+    // The bar reads as a RELATIVE step, not a pixel count (#160) — an absolute number pins the
+    // reader to one base size, and the adjustment has always been relative. Each page counts
+    // from ITS OWN default, so "0" means "where this page starts" on both.
+    let size = eval(tab, size_val);
+    assert_eq!(
+        size.as_str().unwrap_or(""),
+        "0",
+        "the pane's bar starts at this page's own size: {size}"
+    );
     assert_eq!(
         eval(tab, size_up),
         "clicked",
         "the pane's bar steps the size"
     );
     settle();
-    let after = eval(tab, size_val).as_f64().unwrap_or(-1.0);
-    assert!(
-        (after - size - 0.5).abs() < 0.01,
-        "…by half a pixel: {size} → {after}"
+    let after = eval(tab, size_val);
+    assert_eq!(
+        after.as_str().unwrap_or(""),
+        "+1",
+        "…by one step, and says so relatively: {size} → {after}"
     );
     let glyph = eval(tab, wrap_state).as_str().unwrap_or("").to_string();
     assert_eq!(

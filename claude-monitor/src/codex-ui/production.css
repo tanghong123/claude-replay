@@ -75,7 +75,11 @@
 /* The raw toggle (parity #8): beside the spot link, same treatment; on, it stays visible. */
 .spot-link.raw-toggle{right:-54px;font-size:11px}
 .spot-link.raw-toggle.on{opacity:1;color:var(--ink);border-color:var(--line)}
-.turn-raw{margin:0;padding:12px 14px;border:1px solid var(--line);border-radius:9px;background:var(--panel);font:12px/1.6 var(--mono);color:var(--ink);white-space:pre-wrap;word-break:break-word;max-height:70vh;overflow:auto}
+/* Raw is about the TEXT, not about marking the turn as a different kind of thing (#160): no
+   surface of its own, so it sits on the turn's. That is what the classic page — the reference —
+   has always done (`.raw` in export.css is mono type, wrapping, and nothing else). The cap and
+   its scroll stay, so one enormous pasted turn cannot take the whole column. */
+pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;font:12px/1.6 var(--mono);color:var(--ink);white-space:pre-wrap;word-break:break-word;max-height:70vh;overflow:auto}
 /* #64: the jump control widens into the classic page's "N new messages" pill once records arrive
    while the reader is scrolled up; the circle is the reference's, the pill is production's. */
 .jump-to-bottom.has-new{width:auto;padding:0 14px 0 10px;border-radius:17px;display:inline-flex;align-items:center;gap:7px}
@@ -355,8 +359,15 @@
 .sidebar-mini-button.attention-mini.on{background:var(--attention-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--attention) 55%,transparent);color:var(--attention)}
 
 /* The info pane's subsections fold on their own label (#89): the label is a button in the
-   pane's own type, with a chevron that says which way it goes. */
-.session-info-label{display:flex;align-items:center;gap:6px;width:100%;padding:0;border:0;background:transparent;text-align:left;cursor:pointer;color:inherit;font:inherit;letter-spacing:inherit;text-transform:inherit}
+   pane's own type, with a chevron that says which way it goes.
+
+   Reset only what a <button>'s UA style breaks — NEVER the type or the colour. reference.css
+   already gives this label the column's small-caps treatment (8.5px/680, .09em, uppercase,
+   --faint), and this file loads after it at equal specificity, so a blanket `font:inherit`
+   plus `letter-spacing:inherit`, `text-transform:inherit` and `color:inherit` silently
+   replaced all four with the group's body type. That is what made Session / Usage / Runtime
+   read as headings competing with the card heads (#158). */
+.session-info-label{display:flex;align-items:center;gap:6px;width:100%;padding:0;border:0;background:transparent;text-align:left;cursor:pointer;font-family:inherit}
 .session-info-label:hover,.session-info-label:focus-visible{color:var(--ink);outline:0}
 .session-info-chevron{flex:none;width:9px;font-size:9px;color:var(--faint)}
 .session-info-group.folded+.session-info-group{margin-top:6px;padding-top:6px}

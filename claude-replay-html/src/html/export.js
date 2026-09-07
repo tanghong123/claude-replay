@@ -29,6 +29,15 @@
   var ms = reading.size;
   var wrap = reading.wrap;
   var wide = reading.wide;
+  // The size control reads as a RELATIVE step, never as a pixel count (#160): an absolute number
+  // pins the reader to one base size and forecloses variable sizes later, and the adjustment has
+  // always been relative. The baseline is THIS page's own default — the two pages set type at
+  // different sizes, so "one step up from where this page starts" is the honest reading of a
+  // shared preference on either of them.
+  function sizeStepLabel(size) {
+    var steps = Math.round((Number(size) - CLASSIC_READING.size) / 0.5);
+    return steps > 0 ? "+" + steps : steps < 0 ? "\u2212" + (-steps) : "0";
+  }
   function saveReading() { lsSet(shared.READING_KEY, JSON.stringify({ size: ms, wrap: wrap, wide: wide, rawUser: rawUser })); }
   // "Show user turns as raw": markdown rendering is lossy (padding collapses, indentation
   // is stripped), and the Rust-side detector only lifts pasted art it is SURE about. This
@@ -2514,7 +2523,7 @@
       function b(cls, label, title) { var x = el("button", cls, label); x.title = title; return x; }
       var bar = el("div", "codebar");
       bar.appendChild(b("ms-dn", "A−", "Smaller code (−) — applies to all code blocks"));
-      bar.appendChild(el("span", "ms-val", String(ms)));
+      bar.appendChild(el("span", "ms-val", sizeStepLabel(ms)));
       bar.appendChild(b("ms-up", "A+", "Larger code (+) — applies to all code blocks"));
       bar.appendChild(b("ms-wrap", wrap ? "⤶" : "↔", "Long lines: wrap / scroll (" + shared.hintFor("wrap") + ")"));
       bar.appendChild(b("cpy-code", "copy", "Copy this block"));
@@ -2531,7 +2540,7 @@
   function applyMono(v) {
     ms = shared.clampSize(v);
     root.style.setProperty("--ms", ms + "px");
-    all(".ms-val").forEach(function (n) { n.textContent = ms; });
+    all(".ms-val").forEach(function (n) { n.textContent = sizeStepLabel(ms); });
   }
   function setMono(v) { applyMono(v); saveReading(); }
   function setWrap(on) {

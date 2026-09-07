@@ -4835,3 +4835,209 @@ fn the_app_shell_outline_toggle_completes_the_slide() {
     );
     drop(monitor);
 }
+
+// ── the outline's info pane and the reading controls (#158, #160) ────────────────────────────
+
+/// Spawn a small app-shell session and return the monitor and its tab, mounted.
+fn shell_with_a_session(
+    name: &str,
+    port: u16,
+) -> (
+    Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000160".to_string();
+    let mut transcript = harness::long_session(4, harness::Shape::default());
+    transcript += &harness::user_at(
+        "a raw   turn\n    with its own spacing",
+        &harness::now_minus(60),
+    );
+    transcript += &harness::assistant_at("noted", &harness::now_minus(50));
+    stores.claude_session(&sid, &transcript);
+    let monitor = Monitor::spawn(Kind::V2, port, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window')",
+        "the app shell to mount the fixture",
+        std::time::Duration::from_secs(20),
+        "document.body.innerText.slice(0, 120)",
+    );
+    (monitor, browser, tab)
+}
+
+/// #158. Session / Usage / Runtime are SUBSECTION labels inside one outline card, so they have
+/// to read as the column's small-caps labels — not as headings competing with the card heads
+/// above them. The regression this pins is a CSS one with no markup to see: the labels became
+/// buttons when the groups learned to fold (#89), and the button reset in production.css carried
+/// `font:inherit` + `letter-spacing:inherit` + `text-transform:inherit` + `color:inherit`, which
+/// loads after reference.css at equal specificity and so replaced all four with the body type.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_info_pane_labels_stay_smaller_than_the_card_heads() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-labels", 2878);
+    // The info card has to be open for its groups to exist.
+    harness::eval(&tab, "(function(){ var card = document.querySelector('[data-nav-card=\"session\"]'); if (card && !card.classList.contains('open')) card.querySelector('.outline-card-head').click(); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.session-info-label')",
+        "the info pane's subsection labels",
+        std::time::Duration::from_secs(10),
+        "document.querySelector('[data-nav-card=\"session\"]') ? document.querySelector('[data-nav-card=\"session\"]').className : 'no card'",
+    );
+    let seen = harness::probe(&tab, "(function(){ var label = document.querySelector('.session-info-label'); var head = document.querySelector('[data-nav-card=\"session\"] .outline-card-head strong') || document.querySelector('.outline-card-head strong'); var ls = getComputedStyle(label), hs = getComputedStyle(head); return { label: parseFloat(ls.fontSize), head: parseFloat(hs.fontSize), transform: ls.textTransform, tracking: ls.letterSpacing, text: label.textContent.trim(), n: document.querySelectorAll('.session-info-label').length }; })()");
+    assert!(
+        seen["n"].as_i64().unwrap_or(0) >= 2,
+        "the info pane has its subsection labels: {seen}"
+    );
+    let label = seen["label"].as_f64().unwrap_or(0.0);
+    let head = seen["head"].as_f64().unwrap_or(0.0);
+    assert!(label > 0.0 && head > 0.0, "both were measured: {seen}");
+    assert!(
+        label < head,
+        "a subsection label is smaller than the card head it sits under: {seen}"
+    );
+    assert_eq!(
+        seen["transform"].as_str().unwrap_or(""),
+        "uppercase",
+        "…and keeps the column's small-caps treatment: {seen}"
+    );
+    assert!(
+        seen["tracking"].as_str().unwrap_or("normal") != "normal",
+        "…including its tracking: {seen}"
+    );
+}
+
+/// #160. The reading button draws its own glyph, because the icon set is generated and has
+/// nothing for text preferences — so the thing to hold is that it draws it the SET'S way: the
+/// same `.icon` class on the same 24 grid, with the weight and the size coming from the shared
+/// rule rather than from inline attributes. Measured against a real neighbour on the bar, since
+/// "consistent" is about what renders, not about what the markup says.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_reading_glyph_matches_its_neighbours() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-reading-glyph", 2881);
+    let seen = harness::probe(&tab, "(function(){ var mine = document.querySelector('#readingBtn svg'); var bar = mine.closest('.topbar, header, .toolbar') || document.body; var others = [...bar.querySelectorAll('.iconbtn > svg.icon')].filter(function (s) { return s !== mine && s.getBoundingClientRect().width > 0; }); var sizes = others.map(function (s) { var b = s.getBoundingClientRect(); return Math.round(b.width * 10) / 10 + 'x' + Math.round(b.height * 10) / 10 + ':' + (s.closest('.iconbtn').id || s.closest('.iconbtn').className); }); var r = mine.getBoundingClientRect(); var o = others.length ? others[0].getBoundingClientRect() : null; var cs = getComputedStyle(mine); return { klass: mine.getAttribute('class'), viewBox: mine.getAttribute('viewBox'), inlineStroke: mine.getAttribute('stroke-width'), w: Math.round(r.width * 10) / 10, h: Math.round(r.height * 10) / 10, ow: o ? Math.round(o.width * 10) / 10 : -1, oh: o ? Math.round(o.height * 10) / 10 : -1, weight: cs.strokeWidth, others: others.length, sizes: sizes.slice(0, 6) }; })()");
+    assert_eq!(
+        seen["klass"].as_str().unwrap_or(""),
+        "icon",
+        "the glyph joins the shared icon rule: {seen}"
+    );
+    assert_eq!(
+        seen["viewBox"].as_str().unwrap_or(""),
+        "0 0 24 24",
+        "…on the set's own grid: {seen}"
+    );
+    assert!(
+        seen["inlineStroke"].is_null(),
+        "…with no inline weight of its own to escape it: {seen}"
+    );
+    assert!(
+        seen["others"].as_i64().unwrap_or(0) >= 1,
+        "there is a neighbour to compare against: {seen}"
+    );
+    assert_eq!(
+        seen["w"], seen["ow"],
+        "…and it renders at exactly the neighbour's width: {seen}"
+    );
+    assert_eq!(seen["h"], seen["oh"], "…and its height: {seen}");
+}
+
+/// #160. The size control is a RELATIVE adjustment, so it must not print an absolute pixel
+/// count: that pins the reader to one base size and forecloses variable sizes later.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_size_control_reads_as_a_relative_step() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-size-step", 2879);
+    harness::eval(&tab, "document.getElementById('readingBtn').click()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('[data-reading-value]')",
+        "the reading popover",
+        std::time::Duration::from_secs(10),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let at_rest = harness::eval(
+        &tab,
+        "document.querySelector('[data-reading-value]').textContent.trim()",
+    );
+    let at_rest = at_rest.as_str().unwrap_or("").to_string();
+    assert!(
+        !at_rest.to_lowercase().contains("px"),
+        "the size reads as a step, not a pixel count: {at_rest:?}"
+    );
+    assert_eq!(at_rest, "0", "…and is 0 at the default: {at_rest:?}");
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-reading-size=\"1\"]').click()",
+    );
+    let bigger = harness::eval(
+        &tab,
+        "document.querySelector('[data-reading-value]').textContent.trim()",
+    );
+    assert_eq!(
+        bigger.as_str().unwrap_or(""),
+        "+1",
+        "…and a step up says so: {bigger}"
+    );
+    // The per-pane code bars say the same thing, in the same vocabulary.
+    let bar = harness::eval(&tab, "(function(){ var v = document.querySelector('[data-code-size-val]'); return v ? v.textContent.trim() : 'none'; })()");
+    let bar = bar.as_str().unwrap_or("").to_string();
+    assert!(
+        bar == "none" || !bar.to_lowercase().contains("px"),
+        "the per-pane bar agrees: {bar:?}"
+    );
+}
+
+/// #160. Raw is about the TEXT — showing a user turn as typed must not also restyle the turn
+/// into a different kind of object. The classic page, the reference, has always drawn it as mono
+/// type on the turn's own surface.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_raw_user_text_keeps_the_turns_own_surface() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-raw-surface", 2880);
+    harness::eval(&tab, "document.getElementById('readingBtn').click()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('[data-reading-toggle=\"rawUser\"]')",
+        "the reading popover",
+        std::time::Duration::from_secs(10),
+        "document.body.innerText.slice(0, 120)",
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-reading-toggle=\"rawUser\"]').click()",
+    );
+    harness::until(
+        &tab,
+        "!!document.querySelector('.turn-raw')",
+        "a user turn rendered raw",
+        std::time::Duration::from_secs(10),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let seen = harness::probe(&tab, "(function(){ var raw = document.querySelector('.turn-raw'); var s = getComputedStyle(raw); return { bg: s.backgroundColor, border: parseFloat(s.borderTopWidth) + parseFloat(s.borderLeftWidth), mono: /mono|Mono|Menlo|Consolas|ui-monospace|SFMono/.test(s.fontFamily), pre: s.whiteSpace }; })()");
+    let bg = seen["bg"].as_str().unwrap_or("").to_string();
+    assert!(
+        bg == "rgba(0, 0, 0, 0)" || bg == "transparent",
+        "raw text sits on the turn's own surface, with no background of its own: {seen}"
+    );
+    assert_eq!(
+        seen["border"].as_f64().unwrap_or(-1.0),
+        0.0,
+        "…and no box drawn around it: {seen}"
+    );
+    assert_eq!(
+        seen["mono"], true,
+        "…while still being the monospace the preference is FOR: {seen}"
+    );
+}

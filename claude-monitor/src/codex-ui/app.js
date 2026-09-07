@@ -11,7 +11,7 @@ import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
 import { displayState, needsPerson as needs, denoteState } from "./shared/state-labels.js";
-import { SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
+import { DEFAULT_READING, SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, parseScope, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt } from "./shared/search.js";
@@ -1063,9 +1063,13 @@ readingBtn.setAttribute("aria-label", "How the transcript reads — size, wrappi
 readingBtn.setAttribute("aria-haspopup", "true");
 readingBtn.setAttribute("aria-expanded", "false");
 // "Aa" — the one glyph every reader already knows for text preferences, and the icon set has
-// nothing for it (`wrap` is spoken for by the toggle inside this very popover).
+// nothing for it (`wrap` is spoken for by the toggle inside this very popover). Drawn in the
+// SET'S OWN wrapper, though (#160): `class="icon"` on a 24 grid with no inline fill, stroke or
+// weight, exactly what `svg()` in the generated icons.js emits. It used to carry its own 16
+// grid and its own `stroke-width="1.5"`, so it sat outside `.icon`'s 13px/1.6 and read a size
+// and a weight apart from every other glyph on the bar.
 readingBtn.innerHTML =
-  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.4 12.6 4.6 3.9l3.2 8.7"/><path d="M2.4 10h4.4"/><path d="M14.6 12.6V8.4a2 2 0 0 0-2-2h-.6a2 2 0 0 0-1.8 1.1"/><path d="M14.6 10.3h-2.4a1.7 1.7 0 0 0 0 3.4c1.1 0 2.4-.8 2.4-2.2"/></svg>';
+  '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.1 18.9 6.9 5.9l4.8 13"/><path d="M3.6 15h6.6"/><path d="M21.9 18.9v-6.3a3 3 0 0 0-3-3H18a3 3 0 0 0-2.7 1.7"/><path d="M21.9 15.5h-3.6a2.6 2.6 0 0 0 0 5.1c1.7 0 3.6-1.2 3.6-3.3"/></svg>';
 const readingOptions = document.createElement("div");
 readingOptions.className = "navigator-options reading-options";
 readingOptions.id = "readingOptions";
@@ -1089,10 +1093,17 @@ readingBtn.onclick = () => setPopover(readingOptions.classList.contains("open") 
 addEventListener("pointerdown", event => {
   if (!readingCluster.contains(event.target) && readingOptions.classList.contains("open")) setPopover(null);
 }, true);
+/** The size control reads as a RELATIVE step, never as a pixel count (#160). An absolute "11px"
+ *  pins the reader to one base size and forecloses the variable sizes we want later — the
+ *  adjustment has always been relative, so say so: 0 at the default, +n and −n either side. */
+function sizeStepLabel(size) {
+  const steps = Math.round((clampSize(size) - DEFAULT_READING.size) / SIZE_STEP);
+  return steps > 0 ? `+${steps}` : steps < 0 ? `\u2212${-steps}` : "0";
+}
 /** The per-pane code bars show the current size and wrap (#115); fresh panes are painted here. */
 function paintCodeBars() {
   const prefs = uiState.reading;
-  for (const value of viewport.window.querySelectorAll("[data-code-size-val]")) value.textContent = String(clampSize(prefs.size));
+  for (const value of viewport.window.querySelectorAll("[data-code-size-val]")) value.textContent = sizeStepLabel(prefs.size);
   for (const button of viewport.window.querySelectorAll("[data-code-wrap]")) button.textContent = prefs.wrap ? "⤶" : "↔";
 }
 function applyReading() {
@@ -1105,10 +1116,10 @@ function applyReading() {
   if (rawChanged && recordState.records.length) viewport.render();
   for (const [name, value] of Object.entries(readingVars(prefs))) app.style.setProperty(name, value);
   app.classList.toggle("wrap-code", !!prefs.wrap); app.classList.toggle("wide", !!prefs.wide);
-  readingSection.querySelector("[data-reading-value]").textContent = `${clampSize(prefs.size)} px`;
+  readingSection.querySelector("[data-reading-value]").textContent = sizeStepLabel(prefs.size);
   for (const toggle of readingSection.querySelectorAll("[data-reading-toggle]")) toggle.setAttribute("aria-checked", String(!!prefs[toggle.dataset.readingToggle]));
   // The per-pane code bars (#115) mirror the preferences in place — no re-render for a label.
-  for (const value of viewport.window.querySelectorAll("[data-code-size-val]")) value.textContent = String(clampSize(prefs.size));
+  for (const value of viewport.window.querySelectorAll("[data-code-size-val]")) value.textContent = sizeStepLabel(prefs.size);
   for (const button of viewport.window.querySelectorAll("[data-code-wrap]")) button.textContent = prefs.wrap ? "⤶" : "↔";
   readingSection.querySelector('[data-reading-size="-1"]').disabled = prefs.size <= SIZE_MIN;
   readingSection.querySelector('[data-reading-size="1"]').disabled = prefs.size >= SIZE_MAX;
