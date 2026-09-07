@@ -163,6 +163,13 @@ pub struct Index {
     cache_root: PathBuf,
     /// Which agents to show (R1); empty = all.
     only: Vec<Agent>,
+    /// Where this index's STATE lives — captured at construction, never re-read from the
+    /// environment (#153). `state_dir()` resolves process-global env at call time, so an
+    /// `Index` that re-derived it on every save could write to a directory its constructor
+    /// never named: the unit tests built one over a scratch cache root and their hide/unhide
+    /// pair persisted `[]` over the developer's real `~/.local/state/…/ignored.json`. Holding
+    /// the path makes that structurally impossible — an instance writes where it was told to.
+    state_dir: PathBuf,
     state: std::sync::Mutex<State>,
 }
 
@@ -358,16 +365,28 @@ impl Terminal {
 }
 
 impl Index {
-    pub fn new(cache_root: PathBuf, only: Vec<Agent>) -> Self {
-        let ignored = load_ignored(&ignore_path(), &legacy_ignore_path(&cache_root));
+    /// Build the index over a cache root and a STATE directory. Both are passed in rather
+    /// than resolved here (#153): a binary passes [`state_dir()`], a test passes its own
+    /// scratch, and neither can reach the other's files by accident.
+    pub fn new(cache_root: PathBuf, state_dir: PathBuf, only: Vec<Agent>) -> Self {
+        let ignored = load_ignored(
+            &state_dir.join("ignored.json"),
+            &legacy_ignore_path(&cache_root),
+        );
         Self {
             cache_root,
             only,
+            state_dir,
             state: std::sync::Mutex::new(State {
                 ignored,
                 ..Default::default()
             }),
         }
+    }
+
+    /// This index's hide list — under the state dir it was CONSTRUCTED with (#153).
+    fn hide_list(&self) -> PathBuf {
+        self.state_dir.join("ignored.json")
     }
 
     /// Toggle a hide key (#113): `add` inserts, else removes. Persists the set to the
@@ -382,7 +401,7 @@ impl Index {
             st.ignored.remove(key)
         };
         if changed {
-            save_ignored(&ignore_path(), &st.ignored);
+            save_ignored(&self.hide_list(), &st.ignored);
             // Re-derive the snapshot from the unchanged rows under the new hide set (no
             // rescan needed — hiding is a view filter, not a discovery change). The
             // state pass does not re-run: hiding changes the view, not any state.
@@ -1210,6 +1229,49 @@ pub fn percent_decode(s: &str) -> String {
 #[cfg(test)]
 pub(crate) static STATE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// The state-env guard every test that touches the state dir must hold (#153). It does three
+/// things the hand-rolled `set_var`/`remove_var` pairs did not:
+///
+/// 1. **Sets BOTH names.** `state_dir()` prefers `AGENT_MONITOR_STATE` over
+///    `CLAUDE_MONITOR_STATE`, so a test that set only the legacy name was still pointed at the
+///    developer's real directory whenever their shell exported the new one.
+/// 2. **Restores what was there**, instead of clearing to "no override" — clearing hands the
+///    rest of the process the real state dir even though the developer had redirected it.
+/// 3. **Holds the lock for exactly the redirected window**, so the restore cannot land while a
+///    neighbouring test is mid-read (cargo runs a crate's tests as threads of ONE process).
+#[cfg(test)]
+pub(crate) struct StateEnv {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    prev: [(&'static str, Option<std::ffi::OsString>); 2],
+}
+
+#[cfg(test)]
+impl StateEnv {
+    const VARS: [&'static str; 2] = ["AGENT_MONITOR_STATE", "CLAUDE_MONITOR_STATE"];
+
+    /// Redirect the state dir at `dir` for as long as the guard lives.
+    pub(crate) fn set(dir: impl AsRef<Path>) -> Self {
+        let lock = STATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = Self::VARS.map(|v| (v, std::env::var_os(v)));
+        for v in Self::VARS {
+            std::env::set_var(v, dir.as_ref());
+        }
+        Self { _lock: lock, prev }
+    }
+}
+
+#[cfg(test)]
+impl Drop for StateEnv {
+    fn drop(&mut self) {
+        for (v, was) in &self.prev {
+            match was {
+                Some(val) => std::env::set_var(v, val),
+                None => std::env::remove_var(v),
+            }
+        }
+    }
+}
+
 pub fn state_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("AGENT_MONITOR_STATE")
         .or_else(|| std::env::var_os("CLAUDE_MONITOR_STATE"))
@@ -1218,12 +1280,26 @@ pub fn state_dir() -> PathBuf {
     {
         return p;
     }
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state")))
-        .unwrap_or_else(|| PathBuf::from(".").join(".local").join("state"));
-    renamed_dir(&base, "claude-monitor", "agent-monitor")
+    // #153, enforced rather than documented: under `cargo test` this crate must never resolve
+    // the machine's real state dir. Reaching here means a test would read — and, one
+    // `set_ignore` later, OVERWRITE — the developer's own hide list, consent grants and token.
+    // That is not hypothetical: it is how `[]` replaced a live `ignored.json`.
+    #[cfg(test)]
+    panic!(
+        "state_dir() resolved the REAL state directory inside a test — hold an \
+         `index::StateEnv::set(<scratch>)` guard for the window that touches it (#153)"
+    );
+    #[cfg(not(test))]
+    {
+        let base = std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state"))
+            })
+            .unwrap_or_else(|| PathBuf::from(".").join(".local").join("state"));
+        renamed_dir(&base, "claude-monitor", "agent-monitor")
+    }
 }
 
 /// The binary-rename migration rule for an on-disk directory (owner, 2026-08-22): an
@@ -1249,12 +1325,6 @@ pub fn renamed_dir(base: &std::path::Path, old: &str, new: &str) -> PathBuf {
         });
     }
     old_p
-}
-
-/// The hide list's home (#197): `<state_dir>/ignored.json` — STATE, not cache. A plain JSON
-/// array (`p:<cwd>` / `s:<sid>` / `a:<agent>`), the format `agent-metrics` also reads.
-fn ignore_path() -> PathBuf {
-    state_dir().join("ignored.json")
 }
 
 /// The pre-#197 location, kept only for the migration read (and a downgrade's safety net).
@@ -1965,6 +2035,55 @@ mod tests {
         assert!(args.iter().any(|a| a == "resume") && args.contains(&"sid-x".to_string()));
     }
 
+    /// #153, the regression that matters: an `Index` writes its hide list ONLY under the
+    /// state directory it was CONSTRUCTED with — never one the ambient environment names.
+    ///
+    /// The bug this pins: `set_ignore` used to resolve `state_dir()` at save time, so the
+    /// hide/unhide pair below (it is the shape of a real test in this very file) persisted an
+    /// empty list over the developer's own `~/.local/state/…/ignored.json`. Reproduced from a
+    /// clean machine: `HOME=<scratch> cargo test -p claude-monitor --lib` left exactly one
+    /// file behind, `.local/state/agent-monitor/ignored.json`, two bytes, `[]`.
+    ///
+    /// The assertion is deliberately two-sided. Writing to the right place is half of it; the
+    /// other half is that NOTHING lands anywhere else, which is what a captured path buys and
+    /// an ambient one cannot.
+    #[test]
+    fn an_index_writes_its_hide_list_only_where_it_was_constructed() {
+        let base = std::env::temp_dir().join(format!("cm-hide-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let mine = base.join("mine");
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+
+        // The environment points at `elsewhere` — standing in for the developer's real state
+        // dir. The index is told `mine`. What the index was TOLD must win.
+        let _env = StateEnv::set(&elsewhere);
+        let idx = Index::new(base.join("cache"), mine.clone(), Vec::new());
+
+        idx.set_ignore("p:/some/project", true);
+        assert_eq!(
+            std::fs::read_to_string(mine.join("ignored.json")).unwrap(),
+            r#"["p:/some/project"]"#,
+            "the hide goes to the constructed state dir"
+        );
+        assert!(
+            !elsewhere.join("ignored.json").exists(),
+            "and nothing at all reaches the ambient one"
+        );
+
+        // Unhiding back to empty is the exact sequence that wrote `[]` over a live list.
+        idx.set_ignore("p:/some/project", false);
+        assert_eq!(
+            std::fs::read_to_string(mine.join("ignored.json")).unwrap(),
+            "[]"
+        );
+        assert!(
+            !elsewhere.join("ignored.json").exists(),
+            "emptying the list still writes only where the index was told to"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// #197 migration (the case the owner asked for): a hide list that exists ONLY at the
     /// old cache location is picked up, then written to the new STATE path on the next save,
     /// and the set survives — an existing user re-hides nothing. The old copy is left in
@@ -2068,8 +2187,12 @@ mod tests {
         // The store env vars are process-global: hold the same lock every env-setting test
         // holds (ui, control, routes), or a concurrent test's scratch stores replace the
         // fixture mid-scan.
-        let _lock = STATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let base = std::env::temp_dir().join(format!("cm-index-{}", std::process::id()));
+        // #153: redirect the STATE dir too, not just the stores. The scan reads consent
+        // grants (`consent_path()`), so without this the fixture's view of the world depended
+        // on which projects this machine's owner had granted — and `set_ignore` below wrote
+        // its hide list. The guard restores whatever the developer's environment had.
+        let _env = StateEnv::set(base.join("state"));
         let _ = std::fs::remove_dir_all(&base);
         let store = base.join("projects");
         let proj = store.join("-tmp-fixture-repo");
@@ -2094,7 +2217,10 @@ mod tests {
         std::fs::write(&t, line("build the thing", &ts0)).unwrap();
 
         let root = base.join("monitor-cache");
-        let idx = Index::new(root.clone(), Vec::new());
+        // #153: the state dir is the fixture's own, never this machine's. The hide-list
+        // assertions below toggle keys, and a toggle SAVES — under the ambient resolver this
+        // very test wrote `[]` over the developer's real `~/.local/state/…/ignored.json`.
+        let idx = Index::new(root.clone(), base.join("state"), Vec::new());
         let find = |json: &str| -> Value {
             let v: Value = serde_json::from_str(json).unwrap();
             v["groups"]
@@ -2611,7 +2737,8 @@ mod tests {
     /// (siblings/proved_pid) is unaffected.
     #[test]
     fn subdir_sessions_group_under_their_repo() {
-        let idx = Index::new(std::env::temp_dir().join("cm-group"), Vec::new());
+        let scratch = std::env::temp_dir().join(format!("cm-group-{}", std::process::id()));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
         let mut st = State::default();
         let mut a = growth_row("/repo/crate-a", false);
         a.repo = Some("/repo".into());
@@ -2645,7 +2772,8 @@ mod tests {
 
     #[test]
     fn growth_proves_which_session_an_agent_is_driving() {
-        let idx = Index::new(std::env::temp_dir().join("cm-proof"), Vec::new());
+        let scratch = std::env::temp_dir().join(format!("cm-proof-{}", std::process::id()));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
         let cwd = "/Users/x/proj";
         let procs = |spec: &str, lsof: &str| {
             let mut p = parse_ps(spec);

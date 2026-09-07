@@ -818,6 +818,33 @@ disposable dir would break pairing on a cache wipe (owner re-pairs); the OWNER-d
 was to move it with the hide list rather than defer. `LOCK`, `scratch/`, `html/`, `costs/`
 stay — they are genuinely cache.
 
+**#153 — the state dir is passed IN, never resolved at the point of use.** The move above
+solved where the hide list lives and left how it is *addressed* alone, and that was the
+remaining hole: `set_ignore` re-derived `state_dir()` from process-global env every time it
+saved. So an `Index` built over a scratch cache root still wrote the machine's real state
+directory — and the unit test that hides a key and then unhides it persisted `[]` over a live
+`ignored.json`, losing six hidden sessions. Reproduced from a clean machine: `HOME=<scratch>
+cargo test -p claude-monitor --lib` left exactly one file behind, a two-byte hide list.
+
+The fix is structural, not vigilant. `Index::new(cache_root, state_dir, only)` takes both
+roots and stores the state dir, so an index can only write where its constructor pointed it;
+the ambient `ignore_path()` helper is deleted rather than deprecated. `state_dir()` itself
+**panics under `cfg(test)`** when no override is set — a test that would touch the real
+directory now fails instead of succeeding quietly, and it found a second reader the audit had
+missed (the scan reads `consent_path()`, so the fixture test's view of the world depended on
+which projects this developer had granted). `StateEnv::set` replaces the hand-rolled
+`set_var`/`remove_var` pairs: it sets BOTH env names (`state_dir()` prefers
+`AGENT_MONITOR_STATE`, so a test setting only the legacy name was still pointed at the real
+dir whenever a shell exported the new one) and RESTORES the prior values rather than clearing
+to "no override". `claude-replay-html`'s `sig.rs` gets the same treatment for the render
+policy that `key()` already had, and its `state_dir()` is compiled out of the test build
+entirely — the compiler, not a comment, is what says the tests cannot reach it.
+
+The generalisation worth keeping: **an instance's identity must be captured, not ambient.**
+`cache_root` was a field and `state_dir` was a function call, and that asymmetry alone was the
+bug. #154 tracks the production half — a second monitor's *migration* fallback is still keyed
+to its own cache root while its save goes to the shared state path.
+
 **Release note for the downstream reader (agent-metrics):** `ignored.json`'s FORMAT is
 unchanged (a flat JSON array of `p:<cwd>`/`s:<sid>`/`a:<agent>`), but its LOCATION moved to
 `$XDG_STATE_HOME/claude-monitor/` (else `~/.local/state/claude-monitor/`). agent-metrics'

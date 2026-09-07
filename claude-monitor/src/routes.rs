@@ -130,7 +130,7 @@ mod tests {
         );
         Arc::new(Backend {
             service,
-            idx: Arc::new(Index::new(root, Vec::new())),
+            idx: Arc::new(Index::new(root.clone(), root.join("state"), Vec::new())),
             scratch,
             attempts: Mutex::new(Attempts::default()),
         })
@@ -154,13 +154,10 @@ mod tests {
     /// The table serves the same surface for both frontends; only the named differences vary.
     #[test]
     fn the_table_dispatches_the_shared_arms_and_the_named_differences() {
-        let _lock = crate::index::STATE_ENV
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let state = std::env::temp_dir().join(format!("cm-routes-state-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&state);
         std::fs::create_dir_all(&state).unwrap();
-        std::env::set_var("CLAUDE_MONITOR_STATE", &state);
+        let _env = crate::index::StateEnv::set(&state);
         // Hermetic: every store points into the scratch root, so `api/sessions` scans the
         // fixture world (empty here), never this machine's sessions.
         for var in [

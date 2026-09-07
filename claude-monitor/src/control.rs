@@ -455,14 +455,11 @@ mod tests {
     /// is idempotent (#197 — pairing twice does not rotate).
     #[test]
     fn ensure_token_persists_0600_in_state_and_is_idempotent() {
-        let _g = crate::index::STATE_ENV
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let state = std::env::temp_dir().join(format!("cm-tok-state-{}", std::process::id()));
         let cache = std::env::temp_dir().join(format!("cm-tok-cache-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&state);
         let _ = std::fs::remove_dir_all(&cache);
-        std::env::set_var("CLAUDE_MONITOR_STATE", &state);
+        let _env = crate::index::StateEnv::set(&state);
 
         let a = ensure_token(&cache).unwrap();
         assert_eq!(a.len(), 64, "32 bytes as hex");
@@ -485,7 +482,6 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "owner-only");
         }
-        std::env::remove_var("CLAUDE_MONITOR_STATE");
         let _ = std::fs::remove_dir_all(&state);
         let _ = std::fs::remove_dir_all(&cache);
     }
@@ -561,16 +557,13 @@ mod tests {
     /// the state path without rotating, leaving the cache copy for a downgrade.
     #[test]
     fn a_cache_token_migrates_to_state_without_re_pairing() {
-        let _g = crate::index::STATE_ENV
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let state = std::env::temp_dir().join(format!("cm-mig-state-{}", std::process::id()));
         let cache = std::env::temp_dir().join(format!("cm-mig-cache-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&state);
         let _ = std::fs::remove_dir_all(&cache);
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(cache.join("auth-token"), "legacy-token-xyz").unwrap();
-        std::env::set_var("CLAUDE_MONITOR_STATE", &state);
+        let _env = crate::index::StateEnv::set(&state);
 
         assert_eq!(
             read_token(&cache).as_deref(),
@@ -592,7 +585,6 @@ mod tests {
             "cache copy left for a downgrade"
         );
 
-        std::env::remove_var("CLAUDE_MONITOR_STATE");
         let _ = std::fs::remove_dir_all(&state);
         let _ = std::fs::remove_dir_all(&cache);
     }

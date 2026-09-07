@@ -25,6 +25,8 @@
 
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+// Both uses sit behind `#[cfg(not(test))]` — under test the key and the policy are fixed.
+#[cfg(not(test))]
 use std::sync::OnceLock;
 
 /// HMAC-SHA256 (RFC 2104) — written out rather than pulled in, because `sha2` is already in
@@ -56,10 +58,15 @@ fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
         .into()
 }
 
-/// Where the monitor keeps its 0600 secrets. Resolved by the same rule
+/// Where the monitor keeps its 0600 secrets. Compiled OUT of the test build (#153): with the
+/// key and the policy both fixed under `cfg(test)`, nothing in this crate's tests can reach
+/// the developer's real state directory, and the compiler is what says so.
+///
+/// Resolved by the same rule
 /// `claude_monitor::index::state_dir` uses — deliberately duplicated rather than depended on,
 /// since this crate sits BELOW the monitor and must not reach up. If the two ever disagreed
 /// the signature would simply fail to verify, which fails closed.
+#[cfg(not(test))]
 fn state_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("AGENT_MONITOR_STATE")
         .or_else(|| std::env::var_os("CLAUDE_MONITOR_STATE"))
@@ -171,33 +178,47 @@ pub(crate) enum Policy {
 /// It lives in the STATE dir on purpose. Losing a widening config fails safe; losing a
 /// NARROWING one silently widens, and the cache is a directory designed to be wiped.
 fn policy() -> &'static Policy {
-    static POLICY: OnceLock<Policy> = OnceLock::new();
-    POLICY.get_or_init(|| {
-        let Ok(raw) = std::fs::read_to_string(state_dir().join("render-policy.json")) else {
-            return Policy::Offered;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            return Policy::Offered;
-        };
-        match v.get("mode").and_then(|m| m.as_str()) {
-            Some("never") => Policy::Never,
-            Some("allowlist") => Policy::Allow(
-                v.get("dirs")
-                    .and_then(|d| d.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|x| x.as_str())
-                            .map(expand_tilde)
-                            .filter_map(|p| p.canonicalize().ok())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            ),
-            _ => Policy::Offered,
-        }
-    })
+    // Tests get the DEFAULT and never read the disk — the same argument `key()` makes one
+    // function up (#153). Reading the real file made every rendering assertion depend on
+    // whether this developer had narrowed their own policy: the suite would agree with CI
+    // only by coincidence, and a genuine allowlist regression would show up as "passes on
+    // CI, fails on my machine" rather than as a failing test.
+    #[cfg(test)]
+    {
+        static TEST_POLICY: Policy = Policy::Offered;
+        &TEST_POLICY
+    }
+    #[cfg(not(test))]
+    {
+        static POLICY: OnceLock<Policy> = OnceLock::new();
+        POLICY.get_or_init(|| {
+            let Ok(raw) = std::fs::read_to_string(state_dir().join("render-policy.json")) else {
+                return Policy::Offered;
+            };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                return Policy::Offered;
+            };
+            match v.get("mode").and_then(|m| m.as_str()) {
+                Some("never") => Policy::Never,
+                Some("allowlist") => Policy::Allow(
+                    v.get("dirs")
+                        .and_then(|d| d.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str())
+                                .map(expand_tilde)
+                                .filter_map(|p| p.canonicalize().ok())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                ),
+                _ => Policy::Offered,
+            }
+        })
+    }
 }
 
+#[cfg(not(test))]
 fn expand_tilde(s: &str) -> PathBuf {
     match s.strip_prefix("~/") {
         Some(rest) => std::env::var_os("HOME")

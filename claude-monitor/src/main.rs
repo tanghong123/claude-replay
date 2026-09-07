@@ -295,7 +295,7 @@ fn main() -> Result<()> {
         scratch: scratch.clone(),
         root_lock: RootLock::SingleWriter,
     })?);
-    let idx = Arc::new(index::Index::new(root.clone(), only));
+    let idx = Arc::new(index::Index::new(root.clone(), index::state_dir(), only));
 
     let rail = RAIL_TEMPLATE
         .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))

@@ -206,13 +206,10 @@ mod tests {
     /// how you look at the other one without changing your mind.
     #[test]
     fn an_explicit_ui_param_overrides_the_remembered_preference() {
-        let _g = crate::index::STATE_ENV
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("ui-pref-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("AGENT_MONITOR_STATE", &dir);
+        let _env = crate::index::StateEnv::set(&dir);
 
         assert_eq!(preference(), Shell::App, "app shell with nothing stored");
         assert_eq!(resolve(""), Shell::App);
@@ -235,7 +232,6 @@ mod tests {
 
         route("set=app");
         assert_eq!(preference(), Shell::App);
-        std::env::remove_var("AGENT_MONITOR_STATE");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

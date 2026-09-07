@@ -131,11 +131,13 @@ fn main() -> Result<()> {
         root_lock: RootLock::SingleWriter,
     })?);
     // THE index — v1's, from its library half. Its own cache root (so the two monitors keep
-    // separate durable entries and separate hide lists), but the same scan, the same proven
-    // session→process attribution and the same send decisions. This is what makes v2's compose
+    // separate durable entries) but the SAME state dir, so the hide list is one list across
+    // both binaries — the same reason the `cmauth` cookie is shared. Same scan, same proven
+    // session→process attribution, same send decisions: that is what makes v2's compose
     // affordance mean exactly what v1's means.
     let idx = Arc::new(index::Index::new(
         root.clone(),
+        index::state_dir(),
         only.into_iter().collect::<Vec<_>>(),
     ));
 
