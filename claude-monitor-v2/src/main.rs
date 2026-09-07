@@ -135,9 +135,20 @@ fn main() -> Result<()> {
     // both binaries — the same reason the `cmauth` cookie is shared. Same scan, same proven
     // session→process attribution, same send decisions: that is what makes v2's compose
     // affordance mean exactly what v1's means.
+    // #154: the same one-time adoption v1 does, and for the same reason — v2 keeps its OWN
+    // cache root while sharing the state dir, which is exactly the shape that used to migrate
+    // from nowhere and then persist an empty list over the shared one.
+    let state = index::state_dir();
+    index::migrate_hide_list(
+        &state,
+        &[
+            root.join("ignored.json"),
+            index::xdg_cache_root()?.join("ignored.json"),
+        ],
+    );
     let idx = Arc::new(index::Index::new(
         root.clone(),
-        index::state_dir(),
+        state,
         only.into_iter().collect::<Vec<_>>(),
     ));
 

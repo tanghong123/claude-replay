@@ -369,10 +369,19 @@ impl Index {
     /// than resolved here (#153): a binary passes [`state_dir()`], a test passes its own
     /// scratch, and neither can reach the other's files by accident.
     pub fn new(cache_root: PathBuf, state_dir: PathBuf, only: Vec<Agent>) -> Self {
-        let ignored = load_ignored(
-            &state_dir.join("ignored.json"),
-            &legacy_ignore_path(&cache_root),
-        );
+        // Reads the state path and NOTHING else (#154). Adopting a pre-#197 list is a one-time
+        // migration, so it belongs at startup — see [`migrate_hide_list`] — not in a constructor
+        // that runs on every launch and would have to reach outside the paths it was given.
+        let ignored = read_ignored(&state_dir.join("ignored.json"))
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "warning: the hide list at {} is unreadable ({e}) — NOT treating it as \
+                     \"nothing hidden\"; the list is left alone until it can be read",
+                    state_dir.join("ignored.json").display()
+                );
+                None
+            })
+            .unwrap_or_default();
         Self {
             cache_root,
             only,
@@ -1327,11 +1336,6 @@ pub fn renamed_dir(base: &std::path::Path, old: &str, new: &str) -> PathBuf {
     old_p
 }
 
-/// The pre-#197 location, kept only for the migration read (and a downgrade's safety net).
-fn legacy_ignore_path(cache_root: &Path) -> PathBuf {
-    cache_root.join("ignored.json")
-}
-
 /// Read one hide-list file: `Ok(None)` = ABSENT (normal first run — silent), `Ok(Some)` =
 /// parsed, `Err` = present but UNREADABLE or MALFORMED (a real problem, never "nothing is
 /// hidden"). Splitting the two is the #197 fix: the old code collapsed them into an empty
@@ -1347,30 +1351,45 @@ fn read_ignored(path: &Path) -> std::io::Result<Option<BTreeSet<String>>> {
         .map_err(std::io::Error::other)
 }
 
-/// Load the hide list with the #197 migration: prefer the state file, fall back to the old
-/// `<cache_root>/ignored.json` when the state file is ABSENT (so existing users keep their
-/// hidden projects with no re-hiding), and REPORT a malformed/unreadable file rather than
-/// silently reading it as an empty set.
-fn load_ignored(state: &Path, legacy: &Path) -> BTreeSet<String> {
-    match read_ignored(state) {
-        Ok(Some(set)) => return set,
-        Ok(None) => {} // absent → try the legacy cache location (migration)
-        Err(e) => eprintln!(
-            "warning: the hide list at {} is unreadable ({e}) — NOT treating it as \
-             \"nothing hidden\"; falling back to the previous location if present",
-            state.display()
-        ),
-    }
-    match read_ignored(legacy) {
-        Ok(Some(set)) => set, // migrated: used now, rewritten to the state path on next save
-        Ok(None) => BTreeSet::new(), // genuine first run
+/// Adopt a pre-#197 hide list into the state dir, once, if the state file is ABSENT (#154).
+///
+/// The candidates are passed IN rather than derived here, for the reason #153 exists: a
+/// function that resolves `~/.cache` on its own is a function a test cannot keep away from the
+/// developer's real files. Both binaries pass their own cache root first and the machine's
+/// env-free default second ([`xdg_cache_root`]).
+///
+/// The second candidate is the whole fix. A monitor started under its own
+/// `$AGENT_MONITOR_CACHE` shares the STATE dir by design but has no legacy list of its own, so
+/// with only the first candidate it concluded "nothing to migrate", started with an empty set,
+/// and its first hide-then-unhide persisted `[]` over the shared state path — losing a list it
+/// had never even read. The old copies are left in place, as #197 chose, so a downgrade is safe.
+pub fn migrate_hide_list(state_dir: &Path, candidates: &[PathBuf]) {
+    let state = state_dir.join("ignored.json");
+    match read_ignored(&state) {
+        Ok(Some(_)) => return, // already migrated (or genuinely empty by the user's choice)
+        Ok(None) => {}         // absent — the only case a migration may act on
         Err(e) => {
+            // Unreadable is NOT the same as absent: overwriting it with a legacy copy would
+            // silently discard whatever it holds. Leave it and say so.
             eprintln!(
-                "warning: the hide list at {} is unreadable ({e}) — starting with an EMPTY \
-                 hide set; hidden projects will reappear until this is fixed",
-                legacy.display()
+                "warning: the hide list at {} exists but cannot be read ({e}) — not migrating \
+                 over it; fix or remove the file",
+                state.display()
             );
-            BTreeSet::new()
+            return;
+        }
+    }
+    for candidate in candidates {
+        match read_ignored(candidate) {
+            Ok(Some(set)) if !set.is_empty() => {
+                save_ignored(&state, &set);
+                return;
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!(
+                "warning: the previous hide list at {} is unreadable ({e}) — skipping it",
+                candidate.display()
+            ),
         }
     }
 }
@@ -1861,6 +1880,18 @@ pub fn default_root() -> Result<PathBuf> {
     {
         return Ok(p);
     }
+    xdg_cache_root()
+}
+
+/// The cache root this machine would use with NO env override — `$XDG_CACHE_HOME` (else
+/// `~/.cache`) under [`renamed_dir`]'s migration rule.
+///
+/// Split out of [`default_root`] for #154. The hide list's one-time migration has to look
+/// where the entries actually ARE, and for an instance running under its own
+/// `$AGENT_MONITOR_CACHE` that is not its own root: `default_root()` would hand it back the
+/// override it was started with, which is empty, and the migration would conclude there was
+/// nothing to migrate.
+pub fn xdg_cache_root() -> Result<PathBuf> {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -2084,39 +2115,100 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// #197 migration (the case the owner asked for): a hide list that exists ONLY at the
-    /// old cache location is picked up, then written to the new STATE path on the next save,
-    /// and the set survives — an existing user re-hides nothing. The old copy is left in
-    /// place so a downgrade is safe.
+    /// #197 migration (the case the owner asked for): a hide list that exists ONLY at the old
+    /// cache location is adopted into the STATE dir, and the set survives from there alone — an
+    /// existing user re-hides nothing. The old copy is left in place so a downgrade is safe.
+    ///
+    /// #154 moved this out of `Index::new` and into an explicit startup step, so the test now
+    /// drives the function that actually migrates.
     #[test]
     fn the_hide_list_migrates_from_cache_to_state() {
         let d = std::env::temp_dir().join(format!("cm-hide-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        let state = d.join("state").join("ignored.json");
+        let state_dir = d.join("state");
         let legacy = d.join("cache").join("ignored.json");
         std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        // A user who hid two projects under the old (cache) location:
+        // A user who hid a project and a session under the old (cache) location:
         std::fs::write(&legacy, r#"["p:/a","s:sid-1"]"#).unwrap();
 
-        // State absent → the cache set is adopted (migration read).
-        let set = load_ignored(&state, &legacy);
+        migrate_hide_list(&state_dir, std::slice::from_ref(&legacy));
+        let want: BTreeSet<String> = ["p:/a".to_string(), "s:sid-1".to_string()]
+            .into_iter()
+            .collect();
         assert_eq!(
-            set,
-            ["p:/a".to_string(), "s:sid-1".to_string()]
-                .into_iter()
-                .collect(),
-            "the cache-only list is picked up"
-        );
-        // Next save writes the STATE path; the set survives a reload from there alone.
-        save_ignored(&state, &set);
-        assert!(state.exists(), "written to the new location");
-        let missing = d.join("no-such"); // legacy now irrelevant
-        assert_eq!(
-            load_ignored(&state, &missing),
-            set,
-            "survives from state alone"
+            read_ignored(&state_dir.join("ignored.json")).unwrap(),
+            Some(want.clone()),
+            "the cache-only list is adopted into the state dir"
         );
         assert!(legacy.exists(), "the cache copy is left for a downgrade");
+
+        // It is ONCE. A state file that exists wins over every candidate, so a later
+        // migration cannot resurrect entries the user has since removed.
+        save_ignored(&state_dir.join("ignored.json"), &BTreeSet::new());
+        migrate_hide_list(&state_dir, std::slice::from_ref(&legacy));
+        assert_eq!(
+            read_ignored(&state_dir.join("ignored.json")).unwrap(),
+            Some(BTreeSet::new()),
+            "an existing state file is never overwritten by a legacy copy"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #154: the bug. A second monitor under its OWN cache root shares the state dir but has no
+    /// legacy list of its own — so a migration that only looked at that root concluded there was
+    /// nothing to migrate, started empty, and its first hide-then-unhide persisted `[]` over the
+    /// shared state path, losing a list it had never read.
+    ///
+    /// The fix is the second candidate: the machine's env-free default cache location, where the
+    /// entries actually are. Passing the candidates in is what keeps this test hermetic — nothing
+    /// here resolves `~/.cache`, exactly as #153 stopped anything resolving `~/.local/state`.
+    #[test]
+    fn a_second_monitor_migrates_from_the_machine_default_not_its_own_root() {
+        let d = std::env::temp_dir().join(format!("cm-second-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let state_dir = d.join("state");
+        // The machine's real hide list, at the DEFAULT cache location.
+        let default_cache = d.join("default-cache").join("ignored.json");
+        std::fs::create_dir_all(default_cache.parent().unwrap()).unwrap();
+        std::fs::write(&default_cache, r#"["p:/kept","s:sid-kept"]"#).unwrap();
+        // This instance's own root — fresh, and therefore empty.
+        let own = d.join("own-cache").join("ignored.json");
+        std::fs::create_dir_all(own.parent().unwrap()).unwrap();
+
+        // THE BUG, stated first: with only its own root to look at, the migration finds nothing
+        // and the state file stays absent — which is how an instance started empty and then
+        // persisted that emptiness over a list it had never read.
+        migrate_hide_list(&state_dir, std::slice::from_ref(&own));
+        assert_eq!(
+            read_ignored(&state_dir.join("ignored.json")).unwrap(),
+            None,
+            "its own fresh root has nothing to offer — this is the state the bug started from"
+        );
+
+        // THE FIX: the machine's env-free default is the second candidate.
+        migrate_hide_list(&state_dir, &[own.clone(), default_cache]);
+        let got = read_ignored(&state_dir.join("ignored.json")).unwrap();
+        assert_eq!(
+            got,
+            Some(
+                ["p:/kept".to_string(), "s:sid-kept".to_string()]
+                    .into_iter()
+                    .collect()
+            ),
+            "the second monitor finds the list where it actually lives"
+        );
+
+        // And the index built afterwards sees it — which is the whole point: the next hide or
+        // unhide now writes a SUPERSET of what was there, not an empty list over the top of it.
+        let idx = Index::new(d.join("own-cache"), state_dir.clone(), Vec::new());
+        idx.set_ignore("p:/added", true);
+        let after = read_ignored(&state_dir.join("ignored.json"))
+            .unwrap()
+            .unwrap();
+        assert!(
+            after.contains("p:/kept") && after.contains("s:sid-kept") && after.contains("p:/added"),
+            "the migrated entries survive the next toggle: {after:?}"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -2140,14 +2232,18 @@ mod tests {
             read_ignored(&broken).is_err(),
             "malformed is an error, not empty"
         );
-        // And load's fallback: a broken STATE file with a good LEGACY file uses the legacy
-        // set (reported, not silently emptied).
+        // #154: a broken STATE file is never migrated OVER. Overwriting it with a legacy copy
+        // would silently discard whatever it holds — the file is unreadable, not known-empty.
+        let broken_state = d.join("broken-state");
+        std::fs::create_dir_all(&broken_state).unwrap();
+        std::fs::write(broken_state.join("ignored.json"), "{ not an array").unwrap();
         let good_legacy = d.join("good.json");
         std::fs::write(&good_legacy, r#"["p:/keep"]"#).unwrap();
+        migrate_hide_list(&broken_state, std::slice::from_ref(&good_legacy));
         assert_eq!(
-            load_ignored(&broken, &good_legacy),
-            ["p:/keep".to_string()].into_iter().collect(),
-            "a broken state file does not erase a readable legacy list"
+            std::fs::read_to_string(broken_state.join("ignored.json")).unwrap(),
+            "{ not an array",
+            "a broken state file is left exactly as it was, for a human to fix"
         );
         let _ = std::fs::remove_dir_all(&d);
     }

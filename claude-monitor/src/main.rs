@@ -295,7 +295,18 @@ fn main() -> Result<()> {
         scratch: scratch.clone(),
         root_lock: RootLock::SingleWriter,
     })?);
-    let idx = Arc::new(index::Index::new(root.clone(), index::state_dir(), only));
+    // #154: adopt a pre-#197 hide list ONCE, before the index reads the state path. Both
+    // candidates matter — this instance's own root, and the machine's env-free default, which
+    // is where the entries are when the monitor was started under an $AGENT_MONITOR_CACHE.
+    let state = index::state_dir();
+    index::migrate_hide_list(
+        &state,
+        &[
+            root.join("ignored.json"),
+            index::xdg_cache_root()?.join("ignored.json"),
+        ],
+    );
+    let idx = Arc::new(index::Index::new(root.clone(), state, only));
 
     let rail = RAIL_TEMPLATE
         .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
