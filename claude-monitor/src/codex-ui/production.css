@@ -357,6 +357,16 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .navbtn.attention-filter.on .label{font-weight:600}
 .navbtn.attention-filter.on .attention-count{min-width:18px;padding:0 5px;border-radius:999px;text-align:center;background:var(--attention);color:var(--attention-soft);font-weight:650}
 .sidebar-mini-button.attention-mini.on{background:var(--attention-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--attention) 55%,transparent);color:var(--attention)}
+/* "Show Hidden" is a toggle, so its pressed state has to be LIT (#163). It was not: the only
+   rule reaching it was the generic `.navbtn.on`, whose pressed ground here resolves to
+   rgba(255,255,255,.48) with no ring and the ordinary ink — measured — which reads as a button
+   sitting slightly proud, not as a control that is ON. Same three-part anatomy as the attention
+   filter above (tinted ground, inset ring, accent text), in primary rather than attention:
+   revealing what was put away is not a warning. */
+.navbtn.hidden-filter.on{background:var(--primary-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 55%,transparent);color:var(--primary)}
+.navbtn.hidden-filter.on .label{font-weight:600}
+.navbtn.hidden-filter.on .count{background:var(--primary);color:var(--primary-soft)}
+.sidebar-mini-button.hidden-mini.on{background:var(--primary-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 55%,transparent);color:var(--primary)}
 
 /* The info pane's subsections fold on their own label (#89): the label is a button in the
    pane's own type, with a chevron that says which way it goes.

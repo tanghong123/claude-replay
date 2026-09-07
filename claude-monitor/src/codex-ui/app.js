@@ -299,14 +299,17 @@ function renderTree() {
   byId("sidebarMiniAgents").innerHTML = agents.map(agent => { const first = agent.projects.flatMap(project => project.sessions).find(row => !row.hidden); return first ? `<button class="sidebar-mini-agent ${first.id === indexState.selected ? "selected" : ""}" data-mini-agent-session="${escapeText(first.id)}" title="${escapeText(agent.name)}">${agentLogo(agent.id)}</button>` : ""; }).join("");
 }
 
-// "Hidden (n)" — the way back for anything hidden. A navbtn beside the attention filter, in
+// "Show Hidden (n)" — the way back for anything hidden. A navbtn beside the attention filter, in
 // the same anatomy (icon · label · count), present only while something IS hidden, exactly as
 // the classic rail's toggle; the mini rail gets the matching badge. Reveal is a view state
-// (not persisted, like classic), so a reload starts clean.
+// (not persisted, like classic), so a reload starts clean. It is a TOGGLE and has to look like
+// one (#163): the label says what pressing it does, and the pressed state is lit. The state was
+// always tracked correctly — the class and `aria-pressed` both flipped — but nothing PAINTED it
+// beyond the generic `.navbtn.on`, which left the button with the ordinary ink and no ring.
 const hiddenBtn = document.createElement("button");
 hiddenBtn.className = "navbtn hidden-filter"; hiddenBtn.id = "hiddenBtn"; hiddenBtn.type = "button"; hiddenBtn.hidden = true;
 hiddenBtn.setAttribute("aria-pressed", "false");
-hiddenBtn.innerHTML = `${svg("x")}<span class="label">Hidden</span><span class="count attention-count" id="hiddenCount">0</span>`;
+hiddenBtn.innerHTML = `${svg("x")}<span class="label">Show Hidden</span><span class="count attention-count" id="hiddenCount">0</span>`;
 const hiddenCount = hiddenBtn.querySelector(".count");
 byId("attentionBtn").after(hiddenBtn);
 const hiddenMini = document.createElement("button");
@@ -319,7 +322,9 @@ function renderHiddenControl() {
   hiddenBtn.hidden = !n; hiddenMini.hidden = !n;
   hiddenCount.textContent = String(n);
   hiddenBtn.classList.toggle("on", indexState.showHidden);
+  hiddenMini.classList.toggle("on", indexState.showHidden); // same control, same lit state
   hiddenBtn.setAttribute("aria-pressed", String(indexState.showHidden));
+  hiddenMini.setAttribute("aria-pressed", String(indexState.showHidden));
   hiddenBtn.title = indexState.showHidden ? "Hide them again" : `Show ${n} hidden session${n === 1 ? "" : "s"}, projects and agents`;
   hiddenMini.setAttribute("aria-label", `${n} hidden`); hiddenMini.title = hiddenBtn.title;
 }

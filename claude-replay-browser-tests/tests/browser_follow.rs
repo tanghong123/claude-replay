@@ -5041,3 +5041,73 @@ fn the_app_shell_raw_user_text_keeps_the_turns_own_surface() {
         "…while still being the monospace the preference is FOR: {seen}"
     );
 }
+
+/// #163. "Show Hidden" is a toggle, and the bug was that nothing PAINTED its pressed state: the
+/// class and `aria-pressed` both flipped correctly, but the only rule reaching them was the
+/// generic `.navbtn.on`, which left the ordinary ink and no ring — measured on the old code as
+/// a lit ground of rgba(255,255,255,.48), ink unchanged, `box-shadow: none`. So this reads the
+/// RESOLVED colours rather than the class, which is the only way to see the difference: lit has
+/// to differ from unlit, carry the accent and the ring, and not be the hover colour either.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_show_hidden_reads_as_a_lit_toggle() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-show-hidden", 2882);
+    // Hide something, so the control has a reason to exist.
+    harness::until(
+        &tab,
+        "!!document.querySelector('[data-ignore-op]')",
+        "a tree row with a hide action",
+        std::time::Duration::from_secs(15),
+        "document.body.innerText.slice(0, 160)",
+    );
+    harness::eval(&tab, "document.querySelector('[data-ignore-op]').click()");
+    harness::until(
+        &tab,
+        "(function(){ var b = document.getElementById('hiddenBtn'); return !!b && !b.hidden; })()",
+        "the Show Hidden control to appear",
+        std::time::Duration::from_secs(15),
+        "(function(){ var b = document.getElementById('hiddenBtn'); return b ? 'hidden=' + b.hidden : 'absent'; })()",
+    );
+    let read = "(function(){ var b = document.getElementById('hiddenBtn'); var probe = document.createElement('div'); probe.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--hover').trim(); document.body.appendChild(probe); var hover = getComputedStyle(probe).backgroundColor; probe.remove(); var m = document.getElementById('sidebarMiniHidden'); return { label: b.querySelector('.label').textContent.trim(), bg: getComputedStyle(b).backgroundColor, ring: getComputedStyle(b).boxShadow, ink: getComputedStyle(b).color, hover: hover, pressed: b.getAttribute('aria-pressed'), mini: m ? m.classList.contains('on') : null }; })()";
+    let unlit = harness::probe(&tab, read);
+    assert_eq!(
+        unlit["label"].as_str().unwrap_or(""),
+        "Show Hidden",
+        "the label says what pressing it does: {unlit}"
+    );
+    assert_eq!(
+        unlit["pressed"].as_str().unwrap_or(""),
+        "false",
+        "it starts unpressed: {unlit}"
+    );
+    harness::eval(&tab, "document.getElementById('hiddenBtn').click()");
+    harness::until(
+        &tab,
+        "document.getElementById('hiddenBtn').getAttribute('aria-pressed') === 'true'",
+        "the toggle to go on",
+        std::time::Duration::from_secs(10),
+        "document.getElementById('hiddenBtn').getAttribute('aria-pressed')",
+    );
+    let lit = harness::probe(&tab, read);
+    assert_ne!(
+        lit["bg"], unlit["bg"],
+        "lit differs from unlit: {unlit} -> {lit}"
+    );
+    assert_ne!(
+        lit["bg"], lit["hover"],
+        "…and lit is NOT the hover colour, or a pressed toggle looks like a pointed-at one: {lit}"
+    );
+    assert_ne!(
+        lit["ink"], unlit["ink"],
+        "…the label takes the accent too: {unlit} -> {lit}"
+    );
+    assert!(
+        lit["ring"].as_str().unwrap_or("none") != "none",
+        "…and it carries the inset ring the other lit filter has: {lit}"
+    );
+    assert_eq!(
+        lit["mini"], true,
+        "the collapsed rail's button is the same control, so it lights too: {lit}"
+    );
+}
