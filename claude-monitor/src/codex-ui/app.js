@@ -688,8 +688,6 @@ function renderNavigator() {
   document.querySelectorAll("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   stackOutlineHeads();
   document.querySelector(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
-  document.querySelector(".workspace").classList.toggle("navigator-hidden", uiState.navigatorHidden);
-  byId("navigatorToggle").classList.toggle("active", uiState.navigatorOpen);
 }
 const outlineSummary = (active, done, total) => !total ? "0" : `${active ? `<span class="outline-stat-item active"><i class="outline-stat-dot"></i>${active} active</span>` : ""}<span class="outline-stat-item done"><i class="outline-stat-dot"></i>${done}/${total} done</span>`;
 // The info pane (#67, #68): only what the shell does not already show — the title, the agent and
@@ -1051,7 +1049,7 @@ readingSection.innerHTML = `<div class="scope-menu-head"><strong>Reading</strong
 <div class="reading-row"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>User turns as raw text</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="rawUser" aria-label="Show user turns as raw text — exactly as typed, whitespace intact" aria-checked="false"><span></span></button></div>`;
 // Production-only chrome, built here so the extracted demo shell stays byte-identical (the
-// same reason `navigatorRailHide` writes its own SVG). The cluster is the positioning
+// same reason the retired rail X wrote its own SVG). The cluster is the positioning
 // context the popover anchors to; `navigator-options` carries the shared popover styling,
 // including the narrow-window rule that turns it into a full-width sheet.
 const readingCluster = document.createElement("div");
@@ -1073,9 +1071,9 @@ readingOptions.className = "navigator-options reading-options";
 readingOptions.id = "readingOptions";
 readingOptions.append(readingSection);
 readingCluster.append(readingBtn, readingOptions);
-// Anchored on `sessionFoldAll`, NOT on `navigatorToggle`: same visual order today, but #148
-// deletes the outline toggle, and `.before()` on a missing node throws at module load — a
-// blank app shell that every static gate would pass.
+// Anchored on `sessionFoldAll`, not on the outline toggle: #148 has since removed that button,
+// and `.before()` on a missing node throws at module load — a blank app shell that every static
+// gate would pass.
 byId("sessionFoldAll").after(readingCluster);
 
 /** Only one header popover is open at a time — two overlapping sheets is not a menu. */
@@ -1291,25 +1289,26 @@ sidebarResizer.onkeydown = event => {
   event.preventDefault();
 };
 setSidebarWidth(localStorage.getItem(SIDEBAR_WIDTH_KEY) || SIDEBAR_DEFAULT, false);
-// The outline pane has three states (#55): open, collapsed to its icon rail ("off"), and
-// HIDDEN — gone altogether, the transcript taking the whole remaining width. The header's
-// toggle walks open ↔ rail as before and brings a hidden pane back; `o` and the rail's own
-// button hide it. Each change re-measures the transcript at its new width holding the unit at
-// the top of the view, so the reader's place does not move with the reflow.
-function toggleNavigator(open) { uiState.navigatorOpen = open; if (open) uiState.navigatorHidden = false; persist(); renderNavigator(); viewport.remeasure(); }
-function setNavigatorHidden(hidden) { uiState.navigatorHidden = hidden; persist(); renderNavigator(); viewport.remeasure(); }
-byId("navigatorToggle").onclick = () => (uiState.navigatorHidden ? setNavigatorHidden(false) : toggleNavigator(!uiState.navigatorOpen));
-const navigatorRailHide = document.createElement("button");
-navigatorRailHide.type = "button";
-navigatorRailHide.id = "navigatorRailHide";
-navigatorRailHide.title = `Hide the outline — the transcript takes the whole width  ( ${hintFor("navigator-toggle")} )`;
-navigatorRailHide.setAttribute("aria-label", navigatorRailHide.title);
-navigatorRailHide.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
-byId("navigatorRailExpand").insertAdjacentElement("afterend", navigatorRailHide);
-navigatorRailHide.onclick = () => setNavigatorHidden(true);
+// The outline pane has TWO states: open, and collapsed to its icon rail ("off"). #55 shipped a
+// third — HIDDEN, gone altogether with the transcript taking the whole width — and the owner
+// asked for it back out (#148): three states need three affordances, and the X that reached the
+// third one read as "close" rather than "hide", which is a different promise. The caption's
+// collapse button and the rail's expand button walk the two states, `o` toggles them, and the
+// change re-measures the transcript at its new width holding the unit at the top of the view,
+// so the reader's place does not move with the reflow.
+//
+// Retiring a shipped feature, not fixing a bug: the history should not read as a regression.
+function toggleNavigator(open) { uiState.navigatorOpen = open; persist(); renderNavigator(); viewport.remeasure(); }
 byId("navigatorClose").onclick = () => toggleNavigator(false);
 byId("navigatorRailExpand").onclick = () => toggleNavigator(true);
-byId("navigatorToggle").title = `Show, collapse or bring back the outline  ( ${hintFor("navigator-toggle")} hides it )`;
+// #148, at the owner's request: the top-bar toggle goes with the X. Its remaining job was
+// bringing a HIDDEN pane back, and there is no hidden state now — the caption's collapse
+// button and the rail's expand button already say everything two states can say, and the rail
+// is a real sticky column at every width (measured at 820px: 40x219, its expand button 32x32
+// and hit-testable), so nothing is stranded by removing it. The button lives in the GENERATED
+// demo shell, which is never hand-edited, so it is removed here at runtime — the same
+// production-chrome layering the X itself used.
+byId("navigatorToggle")?.remove();
 // The published-artifact roster (#78) lives in the right pane (#95), not in a header menu:
 // one row per URL with its republish count — twenty calls for two decks read as two rows —
 // as the pane's pinned first tab, and the count on the pane's own button so a closed pane
@@ -1390,7 +1389,6 @@ function centerTasks() {
   if (!target) return false;
   if (!uiState.navCards.has("tasks")) { uiState.navCards.add("tasks"); persist(); renderNavigator(); }
   slideDrawersTo(drawerPrefix("tasks")); // #139: give the tasks drawer the room to be looked at
-  if (uiState.navigatorHidden) setNavigatorHidden(false);
   if (!uiState.navigatorOpen) toggleNavigator(true);
   const row = document.querySelectorAll("#navigatorWork .work-task")[target.index];
   if (!row) return false;
@@ -1529,7 +1527,7 @@ const keyActions = {
   "page-down": () => pageTranscript(1), "page-up": () => pageTranscript(-1),
   "list-next": () => stepList(1), "list-prev": () => stepList(-1),
   "sidebar-toggle": () => toggleSidebar(!indexState.sidebarOpen),
-  "navigator-toggle": () => setNavigatorHidden(!uiState.navigatorHidden),
+  "navigator-toggle": () => toggleNavigator(!uiState.navigatorOpen),
   "tasks-center": () => centerTasks(),
   "parent": () => { if (parentBtn.dataset.parent) selectSession(parentBtn.dataset.parent, true); }
 };

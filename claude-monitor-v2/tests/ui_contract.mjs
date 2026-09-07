@@ -722,15 +722,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#54 sidebar rail cases passed");
 }
 
-// #55: the outline pane's third state — hidden outright by key from anywhere, the transcript
-// taking the whole remaining width; the header's toggle brings it back.
+// #55/#148: the outline pane has TWO states — open and collapsed to its icon rail. #55 shipped a
+// third (HIDDEN outright, the transcript taking the whole width) and the owner asked for it back
+// out: three states need three affordances, and the X that reached the third read as "close"
+// rather than "hide". These pins now assert the RETIREMENT as firmly as they once asserted the
+// feature, so nothing reintroduces it by accident.
 {
   const ev = (key, extra = {}) => ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...extra });
   assert.equal(resolveKey(ev("o"), "view").action, "navigator-toggle");
   assert.equal(resolveKey(ev("o"), "list").action, "navigator-toggle", "from the list too");
   assert.equal(resolveKey(ev("o"), "view", { tagName: "TEXTAREA" }), null, "never while typing");
-  assert.match(appSource, /"navigator-toggle": \(\) => setNavigatorHidden\(!uiState\.navigatorHidden\)/, "the key hides and shows");
-  assert.match(appSource, /function setNavigatorHidden\(hidden\) \{ uiState\.navigatorHidden = hidden; persist\(\); renderNavigator\(\); viewport\.remeasure\(\); \}/, "one path, remembered, re-measured");
+  assert.match(appSource, /"navigator-toggle": \(\) => toggleNavigator\(!uiState\.navigatorOpen\)/, "the key walks the two states it can reach");
+  assert.match(appSource, /function toggleNavigator\(open\) \{ uiState\.navigatorOpen = open; persist\(\); renderNavigator\(\); viewport\.remeasure\(\); \}/, "one path, remembered, re-measured");
+  assert.doesNotMatch(appSource, /setNavigatorHidden/, "#148: the third state has no setter left");
   // #88: the column is an accordion — the transform that moved a head alone (and left its body
   // in flow above it) is gone; each card sticks at its own slot with a rising z-index.
   assert.doesNotMatch(appSource, /head\.style\.transform/, "no head is moved by a transform any more");
@@ -743,15 +747,17 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const navCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(navCss, /\.session-navigator>\.outline-card\{position:sticky;top:var\(--slot,0px\);margin:0 0 8px;background:var\(--outline-surface,var\(--bg\)\)\}/, "the cards are sticky, opaque, and carry no top margin to push them off their slot");
   assert.doesNotMatch(navCss, /\.session-navigator:after\{content:""/, "the floor box is gone (#139) — it was dead scroll past the point where every drawer is shut");
-  assert.match(appSource, /uiState\.navigatorHidden \? setNavigatorHidden\(false\) : toggleNavigator\(!uiState\.navigatorOpen\)/, "the header's toggle brings a hidden pane back");
-  assert.match(appSource, /if \(open\) uiState\.navigatorHidden = false;/, "opening the pane un-hides it");
-  assert.match(appSource, /hintFor\("navigator-toggle"\)/, "the key is discoverable on the controls");
+  assert.doesNotMatch(appSource, /uiState\.navigatorHidden/, "#148: no hidden flag is read anywhere");
+  // The two affordances that remain have to BE there, since nothing else can reach the states.
+  assert.match(appSource, /byId\("navigatorClose"\)\.onclick = \(\) => toggleNavigator\(false\)/, "the caption collapses to the rail");
+  assert.match(appSource, /byId\("navigatorRailExpand"\)\.onclick = \(\) => toggleNavigator\(true\)/, "…and the rail expands back");
+  assert.match(appSource, /byId\("navigatorToggle"\)\?\.remove\(\)/, "#148: the top-bar toggle is removed at runtime — the demo shell it lives in is generated and never hand-edited");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
-  assert.match(css, /\.workspace\.navigator-hidden \.session-main\{grid-template-columns:0 minmax\(0,1fr\)\}/, "hidden: the transcript has the whole width");
-  assert.match(css, /\.workspace\.navigator-hidden \.session-navigator\{display:none\}/, "…and no rail remains");
+  assert.doesNotMatch(css, /navigator-hidden/, "#148: no CSS describes a state that cannot be reached");
   const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
-  assert.match(stateSrc, /navigatorHidden: localStorage\.getItem\("am-prod-navigator-hidden"\) === "1"/, "remembered per viewer");
-  console.log("#55 outline pane cases passed");
+  assert.doesNotMatch(stateSrc, /am-prod-navigator-hidden/, "#148: nothing is remembered for a retired state");
+  assert.match(stateSrc, /navigatorOpen/, "…while the two-state preference still is");
+  console.log("#55/#148 outline pane cases passed");
 }
 
 // #56: the tasks pane's order — by group, then by id — as a pure function.

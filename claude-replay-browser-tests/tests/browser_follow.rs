@@ -2550,14 +2550,28 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
     drop(monitor);
 }
 
-/// #55: the outline pane hides OUTRIGHT — not to its icon rail — and the transcript takes the
-/// whole remaining width, with the reader's view held through the reflow; the choice survives a
-/// reload; the key brings the pane back at its width.
+/// #55/#148: the outline pane has TWO states — open, and collapsed to its icon rail — and the
+/// vocabulary that walks them is complete without a third.
+///
+/// This case guarded #55's HIDDEN state: the pane gone outright, no rail, the transcript taking
+/// the whole width. The owner asked for that state back out, so the case is rewritten rather than
+/// deleted — what it protected is still worth protecting, and most of it never depended on the
+/// third state at all: the reader's view is held through the reflow, the choice survives a
+/// reload, and the key works from anywhere. Those move onto the open↔rail transition, which is
+/// where they now live.
+///
+/// What it asserts about the retirement is that both directions stay reachable BY CLICKING, at a
+/// narrow window as well as a wide one. That is the fact the whole decision rested on, and it was
+/// measured rather than read: below 900px the demo's stylesheet turns the OPEN navigator into an
+/// absolute overlay, which is what made the top-bar button look load-bearing — but the COLLAPSED
+/// navigator is a sticky 56px column there (`.workspace.navigator-off .session-navigator
+/// {position:sticky;width:56px}`), so the rail and its expand button are on screen at every
+/// width. Reading the CSS said the opposite; hit-testing said this.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn the_app_shell_gives_the_transcript_the_whole_width() {
+fn the_app_shell_walks_the_outline_between_its_two_states() {
     let _serial = serial();
-    let base = base("appshell-whole-width");
+    let base = base("appshell-two-states");
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000055".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
@@ -2576,38 +2590,56 @@ fn the_app_shell_gives_the_transcript_the_whole_width() {
         std::time::Duration::from_secs(30),
         "document.body.innerText.slice(0, 120)",
     );
-    let hidden = "document.querySelector('.workspace').classList.contains('navigator-hidden')";
+
+    // The retired state leaves nothing behind: no class, no control, no stored preference.
+    let retired = harness::probe(
+        &tab,
+        r#"(function(){ return { klass: document.querySelector('.workspace').classList.contains('navigator-hidden'), railX: !!document.getElementById('navigatorRailHide'), topToggle: !!document.getElementById('navigatorToggle'), stored: localStorage.getItem('am-prod-navigator-hidden') }; })()"#,
+    );
     assert_eq!(
-        harness::eval(&tab, hidden),
-        false,
-        "a fresh shell opens with the outline pane shown"
+        retired["klass"], false,
+        "#148: nothing carries the retired hidden class: {retired}"
     );
-    let widths = "(function(){ var t = document.querySelector('.transcript').getBoundingClientRect(), m = document.querySelector('.session-main').getBoundingClientRect(), n = document.querySelector('.session-navigator'); var nr = n.getBoundingClientRect(); return { transcript: Math.round(t.width), main: Math.round(m.width), navigator: getComputedStyle(n).display === 'none' ? 0 : Math.round(nr.width) }; })()";
-    let before = harness::probe(&tab, widths);
+    assert_eq!(retired["railX"], false, "…the rail's X is gone: {retired}");
+    assert_eq!(
+        retired["topToggle"], false,
+        "…and so is the top-bar toggle whose only remaining job was undoing it: {retired}"
+    );
     assert!(
-        before["navigator"].as_f64().unwrap_or(0.0) > 150.0,
-        "the pane has its width to begin with: {before}"
+        retired["stored"].is_null(),
+        "…and nothing is remembered for it: {retired}"
     );
+
+    let widths = "(function(){ var t = document.querySelector('.transcript').getBoundingClientRect(), m = document.querySelector('.session-main').getBoundingClientRect(), n = document.querySelector('.session-navigator'); var nr = n.getBoundingClientRect(); return { transcript: Math.round(t.width), main: Math.round(m.width), navigator: getComputedStyle(n).display === 'none' ? 0 : Math.round(nr.width) }; })()";
+    let open = harness::probe(&tab, widths);
+    assert!(
+        open["navigator"].as_f64().unwrap_or(0.0) > 150.0,
+        "a fresh shell opens with the pane at its width: {open}"
+    );
+
     // Read from the middle of the session, so the anchor is a real unit and not the tail.
     harness::scroll_by(&tab, harness::Surface::AppShell, -2400);
     std::thread::sleep(std::time::Duration::from_millis(600));
     let anchor_before = harness::view_anchor(&tab, harness::Surface::AppShell);
+
+    // The key collapses to the rail — from anywhere, no control focused.
+    let off = "document.querySelector('.workspace').classList.contains('navigator-off')";
     let press = "document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', bubbles: true, cancelable: true })); 'ok'";
     harness::eval(&tab, press);
     harness::until(
         &tab,
-        hidden,
-        "the key to hide the outline pane",
+        off,
+        "the key to collapse the pane to its rail",
         std::time::Duration::from_secs(5),
         "document.querySelector('.workspace').className",
     );
-    harness::until(&tab, "Math.abs(document.querySelector('.transcript').getBoundingClientRect().width - document.querySelector('.session-main').getBoundingClientRect().width) <= 2", "the transcript to take the whole width", std::time::Duration::from_secs(5), widths);
-    let after = harness::probe(&tab, widths);
-    assert_eq!(after["navigator"], 0, "no rail remains: {after}");
+    let railed = harness::probe(&tab, widths);
     assert!(
-        after["transcript"].as_f64().unwrap() > before["transcript"].as_f64().unwrap() + 100.0,
-        "the transcript grew by the pane's width: {before} → {after}"
+        railed["transcript"].as_f64().unwrap() > open["transcript"].as_f64().unwrap() + 100.0,
+        "the transcript takes the width the pane gave up: {open} → {railed}"
     );
+
+    // The reader's place survives the reflow — the half of #55 that was never about hiding.
     std::thread::sleep(std::time::Duration::from_millis(400));
     let anchor_after = harness::view_anchor(&tab, harness::Surface::AppShell);
     assert_eq!(
@@ -2620,6 +2652,7 @@ fn the_app_shell_gives_the_transcript_the_whole_width() {
         anchor_before.1,
         anchor_after.1
     );
+
     // The choice survives a reload.
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
@@ -2631,66 +2664,65 @@ fn the_app_shell_gives_the_transcript_the_whole_width() {
         "document.body.innerText.slice(0, 120)",
     );
     assert_eq!(
-        harness::eval(&tab, hidden),
+        harness::eval(&tab, off),
         true,
-        "the hidden pane is remembered across a reload"
+        "the collapsed pane is remembered across a reload"
     );
-    assert_eq!(
-        harness::probe(&tab, widths)["navigator"],
-        0,
-        "…with no rail"
-    );
-    // The key brings the pane back at its width.
-    harness::eval(&tab, press);
-    harness::until(
-        &tab,
-        &format!("!({hidden})"),
-        "the key to show the pane again",
-        std::time::Duration::from_secs(5),
-        "document.querySelector('.workspace').className",
-    );
-    harness::until(
-        &tab,
-        "document.querySelector('.session-navigator').getBoundingClientRect().width > 150",
-        "the pane back at its width",
-        std::time::Duration::from_secs(5),
-        widths,
-    );
-    // The rail's own hide button hides it too.
-    harness::eval(
-        &tab,
-        "document.getElementById('navigatorClose').click(); 'ok'",
-    );
-    harness::until(
-        &tab,
-        "document.querySelector('.workspace').classList.contains('navigator-off')",
-        "the pane to collapse to its rail",
-        std::time::Duration::from_secs(5),
-        "document.querySelector('.workspace').className",
-    );
-    harness::eval(
-        &tab,
-        "document.getElementById('navigatorRailHide').click(); 'ok'",
-    );
-    harness::until(
-        &tab,
-        hidden,
-        "the rail's hide button",
-        std::time::Duration::from_secs(5),
-        "document.querySelector('.workspace').className",
-    );
-    // And the header's toggle brings a hidden pane back.
-    harness::eval(
-        &tab,
-        "document.getElementById('navigatorToggle').click(); 'ok'",
-    );
-    harness::until(
-        &tab,
-        &format!("!({hidden})"),
-        "the header's toggle to bring the pane back",
-        std::time::Duration::from_secs(5),
-        "document.querySelector('.workspace').className",
-    );
+
+    // Both directions, by CLICK, at a wide window and a narrow one — the fact the decision to
+    // retire the third state rested on. Hit-tested: a control that cannot be reached still
+    // reports a perfect rectangle.
+    let hittable = r#"function (el) { if (!el) return false; var r = el.getBoundingClientRect(); if (r.width < 4 || r.height < 4) return false; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(hit && (hit === el || el.contains(hit) || hit.contains(el))); }"#;
+    for (label, w) in [("wide", 1500.0), ("narrow", 820.0)] {
+        harness::resize(&tab, w, 900.0);
+        std::thread::sleep(std::time::Duration::from_millis(700));
+
+        // From the rail: the expand button is there and clickable.
+        let expand = harness::probe(
+            &tab,
+            &format!("(function(){{ var hittable = {hittable}; var e = document.getElementById('navigatorRailExpand'); return {{ off: {off}, reachable: hittable(e) }}; }})()"),
+        );
+        assert_eq!(
+            expand["off"], true,
+            "at the {label} window the pane is collapsed to start this leg: {expand}"
+        );
+        assert_eq!(
+            expand["reachable"], true,
+            "at the {label} window the rail's expand button is genuinely clickable — this is what              makes the top-bar toggle unnecessary rather than merely redundant: {expand}"
+        );
+        harness::eval(
+            &tab,
+            "document.getElementById('navigatorRailExpand').click(); 'ok'",
+        );
+        harness::until(
+            &tab,
+            &format!("!({off})"),
+            "the rail's button to open the pane",
+            std::time::Duration::from_secs(5),
+            "document.querySelector('.workspace').className",
+        );
+
+        // …and back, from the caption.
+        let close = harness::probe(
+            &tab,
+            &format!("(function(){{ var hittable = {hittable}; return {{ reachable: hittable(document.getElementById('navigatorClose')) }}; }})()"),
+        );
+        assert_eq!(
+            close["reachable"], true,
+            "at the {label} window the caption's collapse button is clickable too: {close}"
+        );
+        harness::eval(
+            &tab,
+            "document.getElementById('navigatorClose').click(); 'ok'",
+        );
+        harness::until(
+            &tab,
+            off,
+            "the caption's button to collapse the pane",
+            std::time::Duration::from_secs(5),
+            "document.querySelector('.workspace').className",
+        );
+    }
     drop(monitor);
 }
 
@@ -3567,13 +3599,24 @@ fn the_app_shell_options_popover_fits_and_scrolls() {
     drop(monitor);
 }
 
-/// #137: the outline can be hidden, so the control that brings it back has to be THERE — a
-/// visible, hittable button in the top bar, at every width. The generated reference stylesheet
-/// hides `.navigator-toggle` outright (the demo has no outline), and nothing in production put
-/// it back: the pane went away and only a key the reader had to already know returned it.
+/// #137/#148: the control that brings the outline back has to be THERE — visible, hittable, and
+/// the same size at every width. A control that comes and goes with the window cannot be found.
+///
+/// #137 found this on the top-bar toggle: the generated reference stylesheet carries
+/// `.navigator-toggle{display:none!important}` (the demo has no outline to toggle) and nothing in
+/// production put it back, so the one control that returned a hidden pane measured 0x0 at
+/// 1280/1440/1800 — no box, no hit — and the only way back was a key the reader had to already
+/// know. #148 then retired the hidden state and the toggle with it, at the owner's request.
+///
+/// The RULE outlived both. It now falls on the rail's expand button, which is what returns a
+/// collapsed outline, so that is what this case sweeps — same three widths, same two questions
+/// (does it have a box a pointer can hit, and does the point at its centre actually reach it),
+/// and then the click itself. Keeping the sweep is the point: the bug #137 caught was a control
+/// that existed in the DOM and answered `getBoundingClientRect` while being unclickable, which is
+/// exactly what a rect assertion cannot see.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn the_app_shell_can_bring_a_hidden_outline_back() {
+fn the_app_shell_can_bring_a_collapsed_outline_back() {
     let _serial = serial();
     let base = base("appshell-outline-return");
     let stores = Stores::new(&base);
@@ -3591,11 +3634,22 @@ fn the_app_shell_can_bring_a_hidden_outline_back() {
         std::time::Duration::from_secs(20),
         "document.body.innerText.slice(0, 120)",
     );
-    let seen = "(function(){ var b = document.getElementById('navigatorToggle'); if (!b) return { there: false }; var r = b.getBoundingClientRect(); var hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2); return { there: true, w: Math.round(r.width), h: Math.round(r.height), hits: !!hit && (hit === b || b.contains(hit)), title: b.title || '' }; })()";
-    let hidden = "document.querySelector('.workspace').classList.contains('navigator-hidden')";
-    let shown = "!document.querySelector('.workspace').classList.contains('navigator-hidden') && !!document.querySelector('.session-navigator .outline-card')";
-    // Visible and reachable at a narrow window as well as a wide one — a control that comes and
-    // goes with the width cannot be found either.
+    // Collapse to the rail the way a reader does — the caption's own button.
+    let off = "document.querySelector('.workspace').classList.contains('navigator-off')";
+    let shown = "!document.querySelector('.workspace').classList.contains('navigator-off') && !!document.querySelector('.session-navigator .outline-card')";
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorClose').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        off,
+        "the outline to collapse to its rail",
+        std::time::Duration::from_secs(5),
+        "document.querySelector('.workspace').className",
+    );
+
+    let seen = "(function(){ var b = document.getElementById('navigatorRailExpand'); if (!b) return { there: false }; var r = b.getBoundingClientRect(); var hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2); return { there: true, w: Math.round(r.width), h: Math.round(r.height), hits: !!hit && (hit === b || b.contains(hit) || hit.contains(b)), title: b.title || '' }; })()";
     for width in [1280.0, 1440.0, 1800.0] {
         harness::resize(&tab, width, 900.0);
         harness::until(
@@ -3609,7 +3663,7 @@ fn the_app_shell_can_bring_a_hidden_outline_back() {
         let control = harness::probe(&tab, seen);
         assert_eq!(
             control["there"], true,
-            "the outline toggle exists: {control}"
+            "the control that reopens the outline exists: {control}"
         );
         assert!(
             control["w"].as_f64().unwrap_or(0.0) >= 24.0
@@ -3621,24 +3675,15 @@ fn the_app_shell_can_bring_a_hidden_outline_back() {
             "…and it answers a click at its own centre at {width}px: {control}"
         );
     }
-    // Hide the outline, then bring it back with that control alone.
-    // Hide it the way a reader does — the key the toggle's own tooltip names.
-    harness::eval(&tab, "document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', bubbles: true, cancelable: true })); 'ok'");
-    harness::until(
-        &tab,
-        hidden,
-        "the outline to hide",
-        std::time::Duration::from_secs(5),
-        "document.querySelector('.workspace').className",
-    );
+    // And it does the thing.
     harness::eval(
         &tab,
-        "document.getElementById('navigatorToggle').click(); 'ok'",
+        "document.getElementById('navigatorRailExpand').click(); 'ok'",
     );
     harness::until(
         &tab,
         shown,
-        "the toggle to bring the outline back",
+        "the rail's button to bring the outline back",
         std::time::Duration::from_secs(5),
         "document.querySelector('.workspace').className",
     );
