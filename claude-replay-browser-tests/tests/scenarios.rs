@@ -23,8 +23,8 @@ use harness::{
     last_mounted_turn, long_session, now_minus, open_last_fold, open_turn_session, probe,
     queued_at, queued_text, read_tool_at, scroll_by, selection_text, serial, session_id_chip,
     stub_clipboard, tap_console, tool_open_at, tool_result_at, tool_result_lines, tool_result_text,
-    turn_at_top, until, user_at, view_anchor_index, Kind, LiveGrowth, Monitor, Shape, Stores,
-    Surface,
+    turn_at_top, until, user_at, view_anchor_index, write_tool_at, Kind, LiveGrowth, Monitor,
+    Shape, Stores, Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -4742,4 +4742,232 @@ fn app_shell_a_record_measures_as_its_own_box() {
     let fx = fixture("scenario-measure-app", 120);
     let page = open(Surface::AppShell, &fx, 2913);
     scenario_a_record_measures_as_its_own_box(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a numbered code row gives its code the width, not the mark column (#146) ────────
+
+/// A fixture whose tail is a `Write` of 40 lines — so the record carries a NUMBERED source part —
+/// with a shebang first and one long unbroken line second.
+fn fixture_write(name: &str, turns: u32) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(turns, Shape::default());
+    jsonl += &write_tool_at("wr1", "/tmp/patch.py", 40, "2026-09-01T03:00:00.000Z");
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture { base, path, turns }
+}
+
+/// #146: a numbered source row is `[gutter, code]` — TWO cells — and the row's layout must give
+/// the code the room. The app shell laid those two cells into a THREE-column grid built for diff
+/// rows (`38px 16px minmax(max-content,1fr)`), so the code landed in the 16px MARK track: with
+/// wrapping on it wrapped at about one character per row (the owner's screenshot: a Write of 154
+/// lines rendered `#` / `!` / `/` / `u` / `s` / `r` …), and with wrapping off it ran past the
+/// card. The classic page never had it — its row is `display:flex` with a fixed-width gutter, so
+/// two cells and three cells both lay out — which is why this is written once and run on both:
+/// the reference page proves the rule is right before the other page is held to it.
+fn scenario_numbered_code_has_the_width(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the jump to land at the tail");
+    // Open the ONE fold that owns the numbered rows, and only it. Clicking every head in a single
+    // pass does not work on the app shell: the first click re-renders the window, so every later
+    // click in that pass lands on a detached node — which is why this measured nothing at all
+    // until the rows were reached this way.
+    for _ in 0..6 {
+        let state = eval(tab, "(function(){ var l = document.querySelector('.nrow, .line'); if (!l) return 'no rows'; var f = l.closest('.renderer, .fold'); if (!f) return 'no fold'; if (!f.classList.contains('closed') && f.dataset.open !== '0') return 'open'; var h = f.querySelector('button.renderer-head') || f.querySelector(':scope > .fold-h'); if (!h) return 'no head'; h.click(); return 'clicked'; })()");
+        settle();
+        if state == "open" || state == "no rows" {
+            break;
+        }
+    }
+    settle();
+    // Every VISIBLE numbered row: how wide its code cell is against the row, and whether the row
+    // overflows the box that is supposed to hold it.
+    let rows = probe(
+        tab,
+        r#"(function(){ var out = { rows: 0, thin: [], overflow: [] }; var sel = document.querySelectorAll('.nrow, .line'); for (var r of sel) { if (r.offsetParent === null) continue; var code = r.querySelector('.code, .codecell'); if (!code) continue; var rr = r.getBoundingClientRect(), cr = code.getBoundingClientRect(); if (rr.width < 40) continue; out.rows++; if (cr.width < rr.width * 0.5) out.thin.push(Math.round(cr.width) + '/' + Math.round(rr.width)); var box = r.closest('.codebox, .num, .codewrap') || r.parentElement; if (box && box.scrollWidth > box.clientWidth + 1 && box.clientWidth > 0) out.overflow.push((box.className.split(' ')[0] || 'box') + ':' + box.clientWidth + '/' + box.scrollWidth); } out.thin = out.thin.slice(0, 4); out.overflow = out.overflow.slice(0, 3); out.seen = { nrow: document.querySelectorAll('.nrow').length, line: document.querySelectorAll('.line').length, folds: document.querySelectorAll('.fold-h, .renderer-head').length }; return out; })()"#,
+    );
+    assert!(
+        rows["rows"].as_i64().unwrap_or(0) >= 5,
+        "the numbered rows are on screen to be measured: {rows}"
+    );
+    assert_eq!(
+        rows["thin"].as_array().map(Vec::len),
+        Some(0),
+        "every numbered row gives its CODE the width, not the mark column — a code cell under half \
+         the row's width is the squeeze that wraps a line one character at a time: {rows}"
+    );
+    assert_eq!(
+        rows["overflow"].as_array().map(Vec::len),
+        Some(0),
+        "…and no numbered row pushes its own box wider than the box can show: {rows}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_numbered_code_has_the_width() {
+    let _serial = serial();
+    let fx = fixture_write("scenario-numcode-classic", 12);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_numbered_code_has_the_width(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_numbered_code_has_the_width() {
+    let _serial = serial();
+    let fx = fixture_write("scenario-numcode-app", 12);
+    let page = open(Surface::AppShell, &fx, 2920);
+    scenario_numbered_code_has_the_width(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: an image PASTED INTO A PROMPT opens, like one a tool returned (#144) ───────────
+
+/// A fixture whose last turn carries a pasted screenshot: text and an inline base64 image in the
+/// same user message, which the engine surfaces as an `attachment` record attached to the prompt.
+fn fixture_pasted_image(name: &str, turns: u32) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(turns, Shape::default());
+    // A REAL screenshot's size, not a 1x1 (harness::BIG_PNG_B64): the owner's own session holds
+    // 138 embedded images with a median of 108 KB, and the bug this guards was invisible at the
+    // sizes the older image case used.
+    jsonl += &harness::pasted_image_sized(
+        "here is a screenshot",
+        "2026-09-01T04:00:00.000Z",
+        harness::BIG_PNG_B64,
+    );
+    jsonl += &assistant_at("looking", "2026-09-01T04:00:05.000Z");
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture { base, path, turns }
+}
+
+/// #144: an image the reader PASTED into a prompt must open at full size, exactly as one a tool
+/// returned does. The two arrive by different routes — a pasted image becomes a prompt
+/// attachment, a returned one a row inside a process — and only the second had a case, so the
+/// first was free to break: the owner clicked a thumbnail and got "That image cannot be opened".
+/// The thumbnail is the proof the bytes are there; what this holds is that CLICKING it works.
+fn scenario_a_pasted_image_opens(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    let thumb = match surface {
+        Surface::Classic => ".amark img",
+        Surface::AppShell => ".prompt-image img",
+    };
+    until(
+        tab,
+        &format!("(function(){{ var i = document.querySelector('{thumb}'); return !!i && i.naturalWidth >= 1 && i.getBoundingClientRect().height > 0; }})()"),
+        "the pasted image to show as a visible thumbnail",
+        Duration::from_secs(20),
+        &format!("(function(){{ var i = document.querySelector('{thumb}'); return i ? JSON.stringify({{ src: (i.getAttribute('src')||'').slice(0, 24), natural: i.naturalWidth }}) : 'no thumbnail: ' + document.querySelectorAll('.amark, .prompt-attachment').length + ' attachment cards'; }})()"),
+    );
+    if surface == Surface::AppShell {
+        // The classic page shows a pasted image inline and has nothing to click; the app shell
+        // makes the thumbnail the way in, so the click is the rule.
+        eval(tab, "document.querySelector('.prompt-image').click(); 'ok'");
+        until(
+            tab,
+            "(function(){ var l = document.querySelector('.image-lightbox'); if (!l || l.hidden) return false; var img = l.querySelector('img'); return l.dataset.state !== 'unavailable' && !!img && !img.hidden && img.naturalWidth >= 1; })()",
+            "the click to open the image, not the 'cannot be opened' card",
+            Duration::from_secs(10),
+            "(function(){ var l = document.querySelector('.image-lightbox'); if (!l) return 'no lightbox'; var i = l.querySelector('img'); return JSON.stringify({ state: l.dataset.state, hidden: l.hidden, src: (i && i.getAttribute('src') || '').slice(0, 24), natural: i ? i.naturalWidth : -1 }); })()",
+        );
+        // And the rule that made this bug possible at all: the lightbox must never show LESS
+        // than the thumbnail is already showing. The card was rendered from data the view held;
+        // looking the record up again by id is a second, weaker path to the same bytes, and when
+        // it misses — a tail rewrite replacing records, a stale id in a DOM that has not
+        // re-rendered — an embedded image has no path or stamp to fall back on. Simulate the miss
+        // exactly: point the card at a record id that is not in the stream, and click it.
+        eval(
+            tab,
+            "document.querySelector('.image-lightbox [data-lightbox-close]').click(); document.querySelector('.prompt-image').dataset.attachment = 'no-such-record'; 'ok'",
+        );
+        settle();
+        eval(tab, "document.querySelector('.prompt-image').click(); 'ok'");
+        until(
+            tab,
+            "(function(){ var l = document.querySelector('.image-lightbox'); if (!l || l.hidden) return false; var i = l.querySelector('img'); return l.dataset.state === 'ready' && !!i && i.naturalWidth >= 1; })()",
+            "the lightbox to show what the thumbnail showed even when the record lookup misses",
+            Duration::from_secs(10),
+            "(function(){ var l = document.querySelector('.image-lightbox'); var i = l && l.querySelector('img'); return JSON.stringify({ state: l && l.dataset.state, src: (i && i.getAttribute('src') || '').slice(0, 24), natural: i ? i.naturalWidth : -1 }); })()",
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_pasted_image_opens() {
+    let _serial = serial();
+    let fx = fixture_pasted_image("scenario-paste-classic", 8);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_pasted_image_opens(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_pasted_image_opens() {
+    let _serial = serial();
+    let fx = fixture_pasted_image("scenario-paste-app", 8);
+    let page = open(Surface::AppShell, &fx, 2921);
+    scenario_a_pasted_image_opens(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: descending from a fleet row leaves a way back (#143) ────────────────────────────
+
+/// #143: the app shell navigates IN-PAGE, so the way back to a parent is a hint recorded at the
+/// moment of descent — and the hint used to be written at one descent only, the Agents pane. A
+/// reader who went down from a workflow's fleet roster arrived with no way back, which is what the
+/// owner hit. Every descent now goes through one door (`descendTo`), and this is the behaviour
+/// that says so: descend by CLICKING a fleet row, and the parent control must come alive.
+///
+/// App-shell only, for a reason worth recording rather than hiding: the classic page reloads on a
+/// fleet-row click (the row is an `<a href="?session=…">`) and derives its `↑ parent › current`
+/// breadcrumb from the transcript's own `ancestors`. It keeps no hint, so it cannot lose one — a
+/// mechanism difference, not a missing feature.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_fleet_row_descent_keeps_the_way_back() {
+    let _serial = serial();
+    let fx = fixture_workflow("scenario-fleet-descent");
+    let page = open(Surface::AppShell, &fx, 2923);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "the jump to land at the tail");
+    until(
+        tab,
+        "!!document.querySelector('.fleet-name')",
+        "the workflow call to render its fleet roster",
+        Duration::from_secs(20),
+        "document.querySelectorAll('.fleet, .fleet-row').length + ' fleet nodes'",
+    );
+    // A reader clicks the member's name. Anything that navigates by hand instead would test the
+    // URL, not the descent — and the descent is where the way back is recorded.
+    eval(tab, "document.querySelector('.fleet-name').click(); 'ok'");
+    until(
+        tab,
+        &format!("new URLSearchParams(location.search).get('session') !== {SID:?}"),
+        "the click to open the member's own session",
+        Duration::from_secs(20),
+        "new URLSearchParams(location.search).get('session')",
+    );
+    until(
+        tab,
+        "document.getElementById('sessionParent').classList.contains('is-live')",
+        "the way back to the parent to be live after descending through a fleet row",
+        Duration::from_secs(20),
+        "(function(){ var b = document.getElementById('sessionParent'); return JSON.stringify({ live: b.classList.contains('is-live'), parent: b.dataset.parent, session: new URLSearchParams(location.search).get('session') }); })()",
+    );
+    let control = probe(tab, "(function(){ var b = document.getElementById('sessionParent'); var r = b.getBoundingClientRect(); return { visible: b.offsetParent !== null && r.width >= 24 && r.height >= 20, parent: b.dataset.parent }; })()");
+    assert_eq!(
+        control["visible"], true,
+        "…and it is VISIBLE, not merely present: {control}"
+    );
+    assert_eq!(
+        control["parent"], SID,
+        "…and it points at the session the reader came from: {control}"
+    );
 }

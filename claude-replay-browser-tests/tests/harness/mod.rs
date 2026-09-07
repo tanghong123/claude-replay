@@ -113,6 +113,27 @@ pub fn compaction_at(ts: &str) -> String {
 /// A one-pixel PNG, base64 — enough for a browser to decode to real dimensions.
 pub const TINY_PNG_B64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+/// A REAL screenshot's worth of base64 — 506 KB, the shape a pasted screenshot actually has
+/// (the owner's own session: 138 embedded images, median 108 KB, largest 402 KB). The 1×1
+/// [`TINY_PNG_B64`] proves the plumbing; only a real one proves the plumbing at real sizes.
+pub const BIG_PNG_B64: &str = include_str!("big-image.b64");
+
+/// A user turn with a PASTED image: text plus an inline base64 image in the SAME message, which
+/// is how a screenshot dropped into the prompt is recorded. The engine surfaces it as an
+/// `attachment` record right after the turn, and the pages attach it to the prompt — a different
+/// path from [`image_result_at`], whose image arrives as a tool RESULT inside a process.
+pub fn pasted_image_at(text: &str, ts: &str) -> String {
+    pasted_image_sized(text, ts, TINY_PNG_B64)
+}
+
+/// The same, with the payload named — so a case can ask for a REAL screenshot's size.
+pub fn pasted_image_sized(text: &str, ts: &str, b64: &str) -> String {
+    let b64 = b64.trim();
+    format!(
+        "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}},{{\"type\":\"image\",\"source\":{{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"{b64}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
 /// A tool result carrying an embedded image (what a Read of a PNG records).
 pub fn image_result_at(call_id: &str, ts: &str) -> String {
     format!(
@@ -165,6 +186,23 @@ pub fn read_tool_at(id: &str, path: &str, ts: &str) -> String {
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Read\",\"input\":{{\"file_path\":\"{path}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
     )
 }
+/// A `Write` call carrying `n` lines of content, so the record grows a NUMBERED source part
+/// (`{"p":"num"}`, `html_export/mod.rs:1054`). Line 1 is a shebang and line 2 is deliberately
+/// long and unbroken, which is what makes a code cell that has been squeezed to nothing visible:
+/// squeezed, it wraps one character per row; with wrapping off, it runs past its card.
+pub fn write_tool_at(id: &str, path: &str, n: usize, ts: &str) -> String {
+    let mut content = String::from("#!/usr/bin/env python3\\n");
+    content.push_str("SENTINEL_");
+    content.push_str(&"x".repeat(120));
+    content.push_str("\\n");
+    for k in 3..=n {
+        content.push_str(&format!("print({k})\\n"));
+    }
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Write\",\"input\":{{\"file_path\":\"{path}\",\"content\":\"{content}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"Wrote {n} lines to {path}\"}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
 /// A tool result of `n` numbered lines ("line 1" … "line n") — long enough to be capped.
 pub fn tool_result_lines(call_id: &str, n: usize, ts: &str) -> String {
     let body: String = (1..=n).map(|k| format!("line {k}\\n")).collect();

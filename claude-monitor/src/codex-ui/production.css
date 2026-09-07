@@ -384,3 +384,38 @@
 .virtual-window{display:flex;flex-direction:column}
 .virtual-window>*{flex:0 0 auto;margin-top:0}
 .virtual-window>*:has(+ .process-surface){margin-bottom:8px}
+
+/* ── the shared code renderer, dressed for this shell ──────────────────────────────────────
+   Three faults with one cause: the app shell renders the SHARED row markup
+   (`html/shared/parts.js`, `numRowsHtml`/`diffRowsHtml`) while its stylesheet was written for
+   the demo's own. reference.css is GENERATED and never hand-edited, so the reconciliation is
+   layered here.
+
+   1. #146 — a NUMBERED row is two cells, `[gutter, code]`; a DIFF row is three, with a mark
+   between. `.line` is one grid for both, `38px 16px minmax(max-content,1fr)`, so a numbered
+   row's code landed in the 16px MARK track: with wrapping on it wrapped at about one character
+   per row (a Write of 154 lines rendered `#` / `!` / `/` / `u` / `s` / `r` …), and with wrapping
+   off it ran past its card, which is the same fault wearing different clothes. A row with no
+   mark gets a two-column template. `:has` is the right test because the MARKUP is what differs;
+   a class would have to be threaded through the shared function for both pages. */
+.line:not(:has(> .mark)){grid-template-columns:38px minmax(max-content,1fr)}
+
+/* 2. #149 — Rust highlights the source and ships the spans (`syntax_class`, html_export/mod.rs:
+   79-89, emits exactly `kw`, `str`, `fn`, `com`), and the classic page colours all four. The app
+   shell styled NONE of them, so every code block rendered flat. The palettes are the classic
+   page's own values, because two surfaces running one renderer should not disagree about what a
+   keyword looks like. */
+:root{--kw:#6d4fa1;--str:#8f5a22;--fn:#28567e;--com:#a69e8e}
+:root[data-theme="dark"]{--kw:#b79ae8;--str:#d8a86a;--fn:#a5cdf0;--com:#6e675c}
+.kw{color:var(--kw)}
+.str{color:var(--str)}
+.fn{color:var(--fn)}
+.com{color:var(--com)}
+
+/* 3. #150 — command output was a literal near-black slab (`.renderer-terminal`, reference.css:
+   `background:#171a1f;color:#aeb7c3;border:1px solid #292e36`) whatever the theme, so the light
+   page carried a black box. The demo wanted a terminal; the product wants a surface that follows
+   its theme. It keeps its own faint tint, as the process content boxes do, so output still reads
+   as output — it is the COLOUR that was wrong, not the idea. */
+.renderer-terminal{background:var(--process-content-bg);color:var(--sub);border-color:var(--process-content-border)}
+.renderer-terminal .command{color:var(--ink)}
