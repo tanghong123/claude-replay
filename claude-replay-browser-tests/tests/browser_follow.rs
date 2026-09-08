@@ -3425,13 +3425,28 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
     // next head sits under the previous one; the window never scrolls.
     harness::eval(
         &tab,
-        "document.querySelector('.session-navigator').scrollTop = 400; 'ok'",
+        "(function(){ var nav = document.querySelector('.session-navigator'); nav.dispatchEvent(new WheelEvent('wheel', { deltaY: 400, bubbles: true, cancelable: true })); return 'ok'; })()",
     );
     std::thread::sleep(std::time::Duration::from_millis(400));
     let scrolled = harness::probe(&tab, state);
+    // #157: a push spends on the DRAWERS before it scrolls anything, so the column's own offset
+    // stays where it was until they are all shut — what moved is the panes. The sticky
+    // assertions below are the point of this case and are unchanged: the pile is the browser's
+    // own mechanism, and it is now the only thing stacking these heads.
+    let moved = scrolled["bodies"].as_array().unwrap();
     assert!(
-        scrolled["navScroll"].as_f64().unwrap_or(0.0) >= 200.0,
-        "the column scrolled: {scrolled}"
+        moved[0].as_str().unwrap().ends_with(":0"),
+        "the push shut the top pane: {scrolled}"
+    );
+    assert!(
+        moved[1..]
+            .iter()
+            .any(|b| !b.as_str().unwrap().ends_with(":0")),
+        "…and stopped before shutting them all, so the stack still has bodies in it: {scrolled}"
+    );
+    assert_eq!(
+        scrolled["navScroll"], 0,
+        "…while the column's own offset never moved: {scrolled}"
     );
     assert_eq!(scrolled["windowY"], 0, "the window did not: {scrolled}");
     let cap = &scrolled["caption"];
@@ -3748,7 +3763,7 @@ fn the_app_shell_outline_is_an_accordion() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     harness::eval(
         &tab,
-        "document.querySelector('.session-navigator').scrollTop = 400; 'ok'",
+        "(function(){ var nav = document.querySelector('.session-navigator'); nav.dispatchEvent(new WheelEvent('wheel', { deltaY: 400, bubbles: true, cancelable: true })); return 'ok'; })()",
     );
     std::thread::sleep(std::time::Duration::from_millis(400));
     let above = harness::probe(
@@ -3770,7 +3785,7 @@ fn the_app_shell_outline_is_an_accordion() {
     std::thread::sleep(std::time::Duration::from_millis(400));
     harness::eval(
         &tab,
-        "document.querySelector('.session-navigator').scrollTop = 600; 'ok'",
+        "(function(){ var nav = document.querySelector('.session-navigator'); nav.dispatchEvent(new WheelEvent('wheel', { deltaY: 600, bubbles: true, cancelable: true })); return 'ok'; })()",
     );
     std::thread::sleep(std::time::Duration::from_millis(300));
     harness::eval(&tab, "document.querySelector('[data-nav-card=\"session\"] [data-nav-card-toggle]').click(); 'ok'");
@@ -4637,7 +4652,7 @@ fn the_app_shell_outline_panes_are_drawers() {
     // Push the chain a little: the TOP drawer takes all of it, and only it.
     harness::eval(
         &tab,
-        "document.querySelector('.session-navigator').scrollTop = 200; 'ok'",
+        "(function(){ var nav = document.querySelector('.session-navigator'); nav.dispatchEvent(new WheelEvent('wheel', { deltaY: 200, bubbles: true, cancelable: true })); return 'ok'; })()",
     );
     std::thread::sleep(std::time::Duration::from_millis(300));
     let pushed = harness::probe(&tab, state);
@@ -4659,16 +4674,23 @@ fn the_app_shell_outline_panes_are_drawers() {
         pushed["gaps"], open["gaps"],
         "the gaps between drawers are rigid — the same at every openness: {open} -> {pushed}"
     );
+    // #157: the extent shrinks by exactly what the drawers gave up. The old model held it
+    // CONSTANT, with an invisible spacer re-adding the height the bodies lost — which is what
+    // made the scroll offset unable to express the state and left three shut panes unreachable.
+    // The reader's input is a push now, not a drag, so the content is simply as tall as it is.
     assert_eq!(
-        pushed["extent"], open["extent"],
-        "the column's scroll extent does not change under the reader's thumb: {open} -> {pushed}"
+        open["extent"].as_f64().unwrap_or(0.0) - pushed["extent"].as_f64().unwrap_or(0.0),
+        at_rest[0] - now[0],
+        "the column is shorter by exactly what closed — no spacer standing in for it: {open} -> {pushed}"
     );
     // Push past the top drawer's whole body: it is shut, and the SECOND one starts.
     harness::eval(
         &tab,
         &format!(
-            "document.querySelector('.session-navigator').scrollTop = {}; 'ok'",
-            at_rest[0] as i64 + 60
+            "(function(){{ document.querySelector('.session-navigator').dispatchEvent(new WheelEvent('wheel', {{ deltaY: {}, bubbles: true, cancelable: true }})); return 'ok'; }})()",
+            // Relative, not absolute: 200 of the top drawer is already spent, so this is what
+            // is left of it plus a little, which is where the SECOND drawer starts.
+            at_rest[0] as i64 - 200 + 60
         ),
     );
     std::thread::sleep(std::time::Duration::from_millis(300));
@@ -4687,10 +4709,10 @@ fn the_app_shell_outline_panes_are_drawers() {
         deep["gaps"], open["gaps"],
         "the gaps are still rigid: {deep}"
     );
-    // And back: openness is a pure function of the offset, so the column retraces exactly.
+    // And back: a pull gives back in the reverse order it took, so the column retraces exactly.
     harness::eval(
         &tab,
-        "document.querySelector('.session-navigator').scrollTop = 0; 'ok'",
+        "(function(){ var nav = document.querySelector('.session-navigator'); nav.dispatchEvent(new WheelEvent('wheel', { deltaY: -4000, bubbles: true, cancelable: true })); return 'ok'; })()",
     );
     std::thread::sleep(std::time::Duration::from_millis(300));
     let back = harness::probe(&tab, state);
@@ -4792,7 +4814,7 @@ fn the_app_shell_outline_toggle_completes_the_slide() {
     harness::eval(
         &tab,
         &format!(
-            "document.querySelector('.session-navigator').scrollTop = {}; 'ok'",
+            "(function(){{ document.querySelector('.session-navigator').dispatchEvent(new WheelEvent('wheel', {{ deltaY: {}, bubbles: true, cancelable: true }})); return 'ok'; }})()",
             (turns_natural * 0.4) as i64
         ),
     );
@@ -5239,4 +5261,84 @@ fn the_app_shell_chooses_which_outline_panes_exist() {
     );
     let open = harness::eval(&tab, "(function(){ var c = document.querySelector('[data-nav-card=\"tasks\"]'); return c ? c.classList.contains('open') : 'absent'; })()");
     assert_eq!(open, true, "…and it comes back open: {open}");
+}
+
+/// #157, the first bug the owner reported: "when a pane is explicitly toggled shut, we cannot
+/// re-open it via scrolling down." It could not, because the old model read a toggle-shut pane's
+/// natural height as 0 — it took no budget, so there was none to give back, and no amount of
+/// scrolling reached it. One number per pane fixes that by construction: a pane the toggle shut
+/// is a pane at 0, and the walk finds it like any other.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_reopens_a_toggled_shut_pane_by_pulling() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-reopen-by-pull", 2892);
+    let body_of = "(function(k){ var b = document.querySelector('[data-nav-card=\"' + k + '\"] > .outline-card-body'); return b ? Math.round(b.getBoundingClientRect().height) : -1; })";
+    // Every pane open, so the only thing a pull can act on is the one we shut.
+    harness::eval(&tab, "(function(){ ['turns','tasks','agents','session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (c && !c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); }); return 'ok'; })()");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let opened = harness::eval(&tab, &format!("{body_of}('tasks')"));
+    assert!(
+        opened.as_f64().unwrap_or(0.0) > 0.0,
+        "the tasks pane starts open: {opened}"
+    );
+    // Shut it with its own toggle — the gesture that used to make it unreachable.
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-nav-card=\"tasks\"] [data-nav-card-toggle]').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let shut = harness::eval(&tab, &format!("{body_of}('tasks')"));
+    assert_eq!(
+        shut.as_f64().unwrap_or(-1.0),
+        0.0,
+        "the toggle shut it: {shut}"
+    );
+    // Now pull. Under the old model this did nothing at all, for ever.
+    harness::eval(&tab, "(function(){ document.querySelector('.session-navigator').dispatchEvent(new WheelEvent('wheel', { deltaY: -4000, bubbles: true, cancelable: true })); return 'ok'; })()");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let back = harness::eval(&tab, &format!("{body_of}('tasks')"));
+    assert!(
+        (back.as_f64().unwrap_or(0.0) - opened.as_f64().unwrap_or(-1.0)).abs() <= 2.0,
+        "pulling brings it back, all the way: {opened} -> {shut} -> {back}"
+    );
+}
+
+/// #157, the second bug: "when a pane is shut via scrolling up, a click on the header does not
+/// pop it open." Now there is one state, so the head reads the same number the gesture wrote —
+/// at either end the toggle simply flips it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_opens_a_pushed_shut_pane_from_its_head() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-open-from-head", 2893);
+    let body_of = "(function(k){ var b = document.querySelector('[data-nav-card=\"' + k + '\"] > .outline-card-body'); return b ? Math.round(b.getBoundingClientRect().height) : -1; })";
+    harness::eval(&tab, "(function(){ ['turns','tasks','agents','session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (c && !c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); }); return 'ok'; })()");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let opened = harness::eval(&tab, &format!("{body_of}('turns')"));
+    assert!(
+        opened.as_f64().unwrap_or(0.0) > 0.0,
+        "the turns pane starts open: {opened}"
+    );
+    // Push far enough to shut the top pane and no further than the next one needs.
+    harness::eval(&tab, &format!("(function(){{ document.querySelector('.session-navigator').dispatchEvent(new WheelEvent('wheel', {{ deltaY: {}, bubbles: true, cancelable: true }})); return 'ok'; }})()", opened.as_f64().unwrap_or(0.0) as i64 + 10));
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let pushed = harness::eval(&tab, &format!("{body_of}('turns')"));
+    assert_eq!(
+        pushed.as_f64().unwrap_or(-1.0),
+        0.0,
+        "the push shut it: {opened} -> {pushed}"
+    );
+    // Its head. Under the old model this branch could not tell a slide-shut pane from an open
+    // one, because the boolean it read had never changed.
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-nav-card=\"turns\"] [data-nav-card-toggle]').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let reopened = harness::eval(&tab, &format!("{body_of}('turns')"));
+    assert!(
+        (reopened.as_f64().unwrap_or(0.0) - opened.as_f64().unwrap_or(-1.0)).abs() <= 2.0,
+        "the head pops it open, all the way: {opened} -> {pushed} -> {reopened}"
+    );
 }

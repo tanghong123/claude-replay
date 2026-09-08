@@ -395,6 +395,10 @@ same information in two places, disagreeing.
 
 ## #157, attempted: one state per pane, and the constraint that stops it (2026-09-07)
 
+> **Superseded the same day by "#157, built" below.** The constraint described here is real, but
+> it is a property of driving the chain from the scroll OFFSET, not of the owner's model. Driving
+> it from the reader's PUSH removes it.
+
 *If the spacer and the constant `scrollHeight` below are unfamiliar, read
 [`outline-spacer-explained.md`](outline-spacer-explained.md) first — it builds both up from
 the column's anatomy, with diagrams.*
@@ -466,3 +470,54 @@ The ways out are a decision, not a detail:
 The third is the smallest change and still delivers what was asked; the first is what most people
 mean by a drawer chain. The work is not committed — it is a patch on the session's scratch, and
 the four findings above are the part worth keeping either way.
+
+
+## #157, built: the gesture is the input (2026-09-07)
+
+**This supersedes both "The toggle on a drawer that is not the frontier" and "#157, attempted".**
+The owner's rule: build the behaviour as described unless it contradicts the physics. It does not.
+What contradicted the physics was one implementation choice, and it was not theirs.
+
+**The contradiction.** Closing a drawer REMOVES content, and a scroll offset only exists because
+there is content to scroll — so spending `scrollTop` on the drawers eats the room it needs to keep
+going. Every symptom followed from that: the invisible spacer re-adding the height the bodies gave
+up, the frozen scroll extent that came with it, and the cap it imposed (584px of state, 386px of
+range, three panes that could never be scrolled back open).
+
+**A push has no such limit.** The input is the wheel delta:
+
+| | |
+|---|---|
+| push down | spend it CLOSING, topmost pane with anything still open first; only the remainder scrolls the column |
+| pull up | give the scroll back FIRST, then reopen from the bottom, so a push and an equal pull cancel exactly |
+
+Which pane a delta reaches is read off the states of all of them — the owner's "scrolling needs to
+be able to reason about which drawer to open or close based on the current states of all outline
+panes" — and a pane the toggle shut is simply a pane at 0 that the walk finds like any other. The
+toggle is exactly as specified: flip at either end, follow `dir` part-way, and with no direction
+make the bigger visual change.
+
+**Deleted:** `drawerSlide` and its CSS, `applyDrawers`'s budget, `drawerPrefix`, `slideDrawersTo`,
+the column's scroll listener, and the constant scroll extent. The sticky slots stay and now have
+only one job — the pile is the browser's own mechanism and no longer competes with anything.
+
+**Three bugs of mine that the existing cases caught**, each worth keeping:
+
+1. **Seed openness on FIRST READ**, in an accessor. A gesture can land before the column has ever
+   been measured, and a bare `?? 1` then reads every unseeded pane as fully open.
+2. **Write the state classes before anything MEASURES.** The list's `max-height` is addressed to
+   `.outline-card.open`, so a pane measured without the class reports the wrong natural — 390
+   rather than 363 for the session pane, which is 27px of empty space under its rows.
+3. **The paint path reads no layout.** `B` changes only in `stackOutlineHeads`, on a render and a
+   resize. Refreshing it on every paint made a pane appear to *move* because its `B` had been
+   corrected underneath it, which a case read as "another drawer began to close".
+
+**Two existing cases needed correcting, not adapting.** One asserted the scroll extent never
+changes — that was the spacer's compensation, and it now asserts the extent is shorter by exactly
+what closed. Another asserted the column scrolled, which it no longer needs to; it now asserts the
+pile it was really about. A third class of change was mechanical: a test that drove the column with
+`scrollTop = N` was setting an ABSOLUTE position, and a wheel delta is RELATIVE, so the second
+drive in a sequence had to become the remainder.
+
+The reader-facing explanation, with diagrams, is
+[`outline-spacer-explained.md`](outline-spacer-explained.md).

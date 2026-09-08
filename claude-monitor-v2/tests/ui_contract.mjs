@@ -743,10 +743,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // #139 replaced #88's LANDING — a card that opens no longer has to be scrolled to its slot,
   // because a drawer opens where it already is and the slide holds the stack still.
   assert.doesNotMatch(appSource, /landOutlineCard/, "no card is scrolled to its slot any more — the drawer opens in place");
-  assert.match(appSource, /if \(!wasOpen\) \{/, "the toggle branches on whether the drawer was open at all");
+  // #157: ONE number per pane, and the GESTURE is what moves it. A push spends on the drawers
+  // first and only the remainder scrolls the column; a pull gives the scroll back before it
+  // reopens, so the column retraces exactly. Driving it from `scrollTop` instead is what forced
+  // the old spacer — closing removes content, so the offset ate the room it needed to keep going.
+  assert.match(appSource, /function routeDrawerDelta\(delta\) \{/, "one walk spends a delta on the panes, in the order their STATES imply");
+  assert.match(appSource, /const order = delta > 0 \? cards : \[\.\.\.cards\]\.reverse\(\);/, "…closing from the top, opening from the bottom, so a push and an equal pull cancel");
+  assert.match(appSource, /addEventListener\("wheel", event => \{/, "the reader's push is the input");
+  assert.match(appSource, /event\.preventDefault\(\);\n\}, \{ passive: false \}\);/, "…and the default never also lands, or a delta would be counted twice");
+  assert.doesNotMatch(appSource, /drawerSlide|outline-slide/, "the spacer is gone: nothing has to cancel a doubled movement any more");
+  assert.doesNotMatch(appSource, /drawerPrefix|slideDrawersTo/, "…and so is the budget-from-offset it existed to protect");
+  assert.doesNotMatch(appSource, /addEventListener\("scroll", applyDrawers/, "the column's own scroll no longer drives the panes");
+  assert.match(appSource, /const closing = dir === "closing" \? true : dir === "opening" \? false : open >= 0\.5;/, "part-way, the toggle follows the direction; with none, it makes the bigger visual change");
+  assert.match(appSource, /if \(open <= 0\) return setDrawerOpen\(key, 1\);\n  if \(open >= 1\) return setDrawerOpen\(key, 0\);/, "…and at either end it simply flips");
   const navCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(navCss, /\.session-navigator>\.outline-card\{position:sticky;top:var\(--slot,0px\);margin:0 0 8px;background:var\(--outline-surface,var\(--bg\)\)\}/, "the cards are sticky, opaque, and carry no top margin to push them off their slot");
   assert.doesNotMatch(navCss, /\.session-navigator:after\{content:""/, "the floor box is gone (#139) — it was dead scroll past the point where every drawer is shut");
+  assert.doesNotMatch(navCss, /\.outline-slide\{/, "#157: no spacer rule survives either");
   assert.doesNotMatch(appSource, /uiState\.navigatorHidden/, "#148: no hidden flag is read anywhere");
   // The two affordances that remain have to BE there, since nothing else can reach the states.
   assert.match(appSource, /byId\("navigatorClose"\)\.onclick = \(\) => toggleNavigator\(false\)/, "the caption collapses to the rail");
@@ -792,22 +805,26 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(css, /outline-card\.open\{flex:|\.focus\{flex:/, "no shared height, no focus share");
   assert.match(appSource, /function stackOutlineHeads\(\) \{/, "the stack offsets are measured");
   assert.match(appSource, /slot \+= head\.getBoundingClientRect\(\)\.height \+ \(parseFloat\(getComputedStyle\(card\)\.marginBottom\) \|\| 0\);/, "…each slot the caption plus the heads AND THE GAPS above it (#139), so a compacted card rests exactly on its slot");
-  assert.match(appSource, /byId\("sessionNavigator"\)\.addEventListener\("scroll", applyDrawers, \{ passive: true \}\);/, "…and a scroll spends the budget rather than re-measuring");
+  assert.match(appSource, /byId\("sessionNavigator"\)\.addEventListener\("wheel", event => \{/, "…and the reader's PUSH spends on the panes (#157), never the offset, which closing would eat as it went");
   assert.match(appSource, /toggleDrawer\(card\.dataset\.navCardToggle\);/, "a head opens and shuts ITS drawer, and nothing else changes")
   assert.doesNotMatch(appSource, /navFocus|classList\.toggle\("focus"/, "no focus state");
   const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
   assert.doesNotMatch(stateSrc, /navFocus/, "…nor remembered");
   assert.match(appSource, /revealInPane\(row\)/, "the focused turn is revealed through the pane's own scroller");
-  // #139: a drawer's body has a HEIGHT, and the scroll offset is a budget spent on those heights
-  // top-first. The gap never enters the budget, so it is the same at every openness; the slide box
-  // is what keeps the heads still and the scroll extent constant; and the list must NOT contain
-  // its own overscroll, or the wheel could never reach the chain once the list is at its end.
-  assert.match(appSource, /const closed = Math\.min\(budget, natural\);\s*\n\s*budget -= closed;\s*\n\s*spent \+= closed;/, "the budget is spent on the drawers in order — top-first is what 'in order' means");
-  assert.match(appSource, /body\.style\.height = `\$\{Math\.round\(natural \* openness\)\}px`;/, "openness is a height, so a drawer can sit anywhere between open and shut");
-  assert.match(appSource, /drawerSlide\.style\.height = `\$\{Math\.round\(spent\)\}px`;/, "…and the slide is as tall as the budget spent, so the heads do not move and the extent does not change");
-  assert.match(appSource, /drawers\.dir\.set\(key, openness < was \? "closing" : "opening"\)/, "each drawer remembers the direction of its last movement, for the toggle to complete");
-  assert.match(css, /\.outline-slide\{flex:0 0 auto;width:1px;pointer-events:none\}/, "the slide is a box, not a margin — a margin would collapse");
-  assert.match(css, /\.session-navigator\{overflow-anchor:none\}/, "scroll anchoring would undo the slide's growth");
+  // #139/#157: a drawer's body has a HEIGHT, and the reader's PUSH is spent on those heights,
+  // top-first. The gap never enters it, so it is the same at every openness. The scroll offset is
+  // NOT the input — closing removes content, so spending the offset ate the room it needed to keep
+  // going, and an invisible spacer had to re-add it, which froze the scroll extent and made three
+  // shut panes unreachable (584px owed, 386px of range). A push has no such limit.
+  assert.match(appSource, /const move = Math\.min\(left, room\);\s*\n\s*left -= move;/, "a delta is spent pane by pane until it runs out");
+  assert.match(appSource, /const room = \(delta > 0 \? open : 1 - open\) \* natural;/, "…each pane offering only what it actually has left to give");
+  assert.match(appSource, /body\.style\.height = `\$\{Math\.round\(\(drawers\.natural\.get\(key\) \|\| 0\) \* drawerOpenOf\(key\)\)\}px`;/, "openness is a height, so a drawer can sit anywhere between open and shut");
+  assert.match(appSource, /function paintDrawerClasses\(\) \{/, "…and the state classes go on before anything measures, since the list's max-height is addressed to `.open`");
+  assert.doesNotMatch(appSource, /function paintDrawers\(\) \{[^}]*offsetHeight/, "the paint path reads no layout: a pane must not appear to move because its B was re-measured under it");
+  assert.match(appSource, /drawers\.dir\.set\(key, delta > 0 \? "closing" : "opening"\);/, "each pane remembers the direction of its last movement, for the toggle to complete");
+  assert.match(appSource, /if \(dy > 0\) \{\n    dy = routeDrawerDelta\(dy\);\n    if \(dy > 0\) nav\.scrollTop \+= dy;/, "a push closes first and only the REMAINDER scrolls the column");
+  assert.match(appSource, /const used = Math\.min\(nav\.scrollTop, -dy\);/, "…and a pull gives the scroll back before it reopens, so the column retraces exactly");
+  assert.match(css, /\.session-navigator\{overflow-anchor:none\}/, "scroll anchoring would fight a body that is changing height");
   assert.doesNotMatch(css, /\.navigator-list\{[^}]*overscroll-behavior:contain/, "the list never contains its overscroll — the wheel reaches the chain once the list is at its end");
   console.log("#58/#59/#74 outline pane cases passed");
 }

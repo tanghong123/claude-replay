@@ -524,29 +524,37 @@ function directAgents(source = recordState.meta) {
   for (const run of meta.runs || []) for (const member of run.members || []) if (!ids.has(member.id)) { ids.add(member.id); result.push(member); }
   return result;
 }
-// The outline column is a stack of DRAWERS (#139, design/outline-drawers.md). A drawer's body has
-// a HEIGHT, not a display, so it can sit anywhere between open and shut; the column's scroll
-// offset is a BUDGET spent on the drawers in order, so the top one — the one with the least
-// friction — closes first, and the budget is given back from the bottom, so the column retraces
-// exactly on the way up. Openness is a pure function of the offset. The rigid 8px between cards
-// never enters the budget, so it is the same at every openness.
+// The outline column is a stack of DRAWERS (#139/#157, design/outline-drawers.md). A drawer's
+// body has a HEIGHT, not a display, so it can sit anywhere between open and shut, and ONE number
+// per pane says where it is: `drawers.open`, 0 to 1, with `drawers.dir` remembering which way it
+// was last moving. Both controls write that one number, which is what stops them disagreeing.
 //
-// Two mechanisms, each doing what it is good at. The SLIDE box above the stack is as tall as the
-// budget already spent: the scroller lifts the stack by `s`, the slide pushes it back down by
-// `s`, and the two cancel, so the heads stay where they are. It also keeps the column's
-// scrollHeight constant — caption + spent + Σ(H+G) + ΣB·p, with spent = ΣB − ΣB·p — so the
-// scrollbar does not shrink under the reader's thumb, and once every drawer is shut the slide
-// stops growing and the stack scrolls normally, which is a window too short for the heads.
+// THE INPUT IS THE GESTURE, NOT THE SCROLL POSITION (#157). That distinction is the whole design.
+// Closing a drawer REMOVES content, and the scroll position only exists because there is content
+// to scroll — so spending `scrollTop` on the drawers eats the very room it needs to keep going,
+// and the old model had to re-add the height the bodies gave up (an invisible spacer above the
+// stack) to stop the column collapsing under itself. That kept `scrollHeight` constant, which
+// fixed the scroll range, and the range is smaller than the state needs: measured, three panes
+// shut wants 584px of offset where only 386px exist, so scrolling back could never reopen them.
 //
-// #88's sticky SLOTS stay, to absorb the lag: the column scrolls on the compositor and this
-// handler runs on the main thread, so for a frame or two of a fling the scroller has moved and
-// the slide has not caught up. A card sticky at its own slot cannot rise above it, so that lag is
-// clamped instead of seen. The slot counts the GAP as well as the head now, so a fully compacted
-// card rests exactly on its slot and the clamp catches at the first pixel rather than after eight.
+// A push has no such limit. The wheel delta is a displacement the reader applies, so:
+//
+//   push down   spend it CLOSING, topmost pane with anything left open first — the one with the
+//               least friction — and only what is left over scrolls the column.
+//   pull up     give the scroll back FIRST, then reopen from the bottom, so the column retraces
+//               exactly the way it came.
+//
+// Which pane a delta reaches is therefore read off the states of all of them, never off a fixed
+// order, and a pane the toggle shut is simply a pane at 0 that the walk finds like any other.
+//
+// The bodies are painted at B·open, so the content is honestly shorter when drawers are shut —
+// no spacer, no frozen scrollHeight, nothing to reconcile.
+//
+// #88's sticky SLOTS stay and now have only one job. Each card is `position: sticky` at the sum
+// of the heads and gaps above it, stacked back-to-front, so when the OPEN content is taller than
+// the window the heads pile up at the top and each card slides over the one above it. That is the
+// browser's own mechanism and it no longer competes with anything.
 const drawers = { natural: new Map(), open: new Map(), dir: new Map() };
-const drawerSlide = document.createElement("div");
-drawerSlide.className = "outline-slide";
-drawerSlide.setAttribute("aria-hidden", "true");
 // A pane the reader has turned OFF (#159) is not a shut drawer — it does not exist. Filtering it
 // out here is the whole integration: the budget, the slots, the prefix and the toggle all read
 // the column through this one function, so none of them can see a pane that is not there.
@@ -562,14 +570,13 @@ function applyPanes() {
   }
   renderNavigator();
   stackOutlineHeads();
-  applyDrawers();
 }
 /** The slots (#88, kept) and B(i), each drawer's body at its NATURAL height. Only a render or a
  *  resize can change either; a scroll never does, so this is not on the scroll path. */
 function stackOutlineHeads() {
   const nav = byId("sessionNavigator");
+  paintDrawerClasses(); // before any measuring — the list's max-height is written for `.open`
   const caption = nav.querySelector(":scope > .outline-caption");
-  if (drawerSlide.parentNode !== nav) nav.insertBefore(drawerSlide, nav.querySelector(":scope > .outline-card"));
   let slot = caption ? caption.getBoundingClientRect().height : 0;
   let depth = 0;
   for (const card of drawerCards()) {
@@ -586,44 +593,99 @@ function stackOutlineHeads() {
     if (body) drawers.natural.set(card.dataset.navCard, list ? list.offsetHeight : body.scrollHeight);
     // The gap belongs to the slot: a compacted card rests on `slot`, so sticky catches at once.
     slot += head.getBoundingClientRect().height + (parseFloat(getComputedStyle(card).marginBottom) || 0);
+    drawerOpenOf(card.dataset.navCard); // seed it before anything measures the column
   }
-  applyDrawers();
+  paintDrawers();
 }
-/** Spend the scroll offset on the drawers, top first — the budget loop of the design note. */
-function applyDrawers() {
-  const nav = byId("sessionNavigator");
-  let budget = Math.max(0, nav.scrollTop);
-  let spent = 0;
+/** A pane's openness, seeded on FIRST READ from the boolean the reader left behind. An accessor
+ *  rather than an initialiser, because a gesture can land before the column has ever been
+ *  measured, and a bare `?? 1` would then read every unseeded pane as fully open. */
+function drawerOpenOf(key) {
+  if (!drawers.open.has(key)) drawers.open.set(key, uiState.navCards.has(key) ? 1 : 0);
+  return drawers.open.get(key);
+}
+/** Spend `delta` px on the panes and return what is LEFT OVER. Closing (`delta > 0`) walks from
+ *  the top and takes from the first pane with anything still open; opening walks from the bottom,
+ *  so the column gives back in the reverse order it took, and a push followed by an equal pull
+ *  lands exactly where it started. Both walks read the CURRENT states, which is what lets a pane
+ *  the toggle shut be reopened by pulling: it is a pane at 0, found like any other. */
+function routeDrawerDelta(delta) {
+  const cards = drawerCards();
+  const order = delta > 0 ? cards : [...cards].reverse();
+  let left = Math.abs(delta);
+  for (const card of order) {
+    if (left <= 0.5) break;
+    const key = card.dataset.navCard;
+    const natural = drawers.natural.get(key) || 0;
+    if (!natural) continue;
+    const open = drawerOpenOf(key);
+    const room = (delta > 0 ? open : 1 - open) * natural;
+    if (room <= 0.5) continue;
+    const move = Math.min(left, room);
+    left -= move;
+    const next = delta > 0 ? open - move / natural : open + move / natural;
+    drawers.open.set(key, Math.min(1, Math.max(0, next)));
+    drawers.dir.set(key, delta > 0 ? "closing" : "opening");
+  }
+  return delta > 0 ? left : -left;
+}
+/** Paint the states. A pane at 100% is measured from its LIST right now: B is otherwise only
+ *  refreshed when the column is stacked, and a list that gained rows or its max-height since then
+ *  would leave the pane painted at a stale B — empty space under the rows, and a pane that
+ *  reopens to a different height than it had at rest. Only the ends are read, never the part-way
+ *  panes a gesture is animating. */
+/** ONE source for what a pane's state is: the number. `open` and `shut` are its two ends. They
+ *  are written before anything MEASURES the column, because the list's own max-height is
+ *  addressed to `.outline-card.open` — a pane measured without the class reports the wrong
+ *  natural, and the pane is then painted with empty space under its rows. */
+function paintDrawerClasses() {
+  for (const card of drawerCards()) {
+    const open = drawerOpenOf(card.dataset.navCard);
+    card.classList.toggle("shut", open === 0);
+    card.classList.toggle("open", open > 0);
+  }
+}
+/** Paint the states. Reads NOTHING: every height comes from the B measured at the last stack, so
+ *  the gesture path does no layout work, and — the part that matters — a pane cannot appear to
+ *  move because its B was re-measured underneath it. B changes only where it legitimately can,
+ *  in `stackOutlineHeads`, which runs on a render and on a resize. */
+function paintDrawers() {
+  paintDrawerClasses();
   for (const card of drawerCards()) {
     const key = card.dataset.navCard;
     const body = card.querySelector(":scope > .outline-card-body");
     if (!body) continue;
-    // A drawer the reader shut with its own toggle has no body to close, and takes no budget.
-    const natural = card.classList.contains("open") ? drawers.natural.get(key) || 0 : 0;
-    const closed = Math.min(budget, natural);
-    budget -= closed;
-    spent += closed;
-    const openness = natural ? 1 - closed / natural : 0;
-    const was = drawers.open.get(key);
-    if (was != null && Math.abs(openness - was) > 0.002) drawers.dir.set(key, openness < was ? "closing" : "opening");
-    drawers.open.set(key, openness);
-    body.style.height = `${Math.round(natural * openness)}px`;
-    card.classList.toggle("shut", openness === 0);
+    body.style.height = `${Math.round((drawers.natural.get(key) || 0) * drawerOpenOf(key))}px`;
   }
-  drawerSlide.style.height = `${Math.round(spent)}px`;
 }
-/** Σ B(j) over the drawers ABOVE `key`: the offset at which this one is open and those still are
- *  not — the budget that leaves it alone. */
-function drawerPrefix(key) {
-  let sum = 0;
-  for (const card of drawerCards()) {
-    if (card.dataset.navCard === key) break;
-    if (card.classList.contains("open")) sum += drawers.natural.get(card.dataset.navCard) || 0;
+/** A wheel delta in PIXELS, whatever units the device reports it in. */
+function wheelPixels(event) {
+  const nav = byId("sessionNavigator");
+  if (event.deltaMode === 1) return event.deltaY * 16;
+  if (event.deltaMode === 2) return event.deltaY * nav.clientHeight;
+  return event.deltaY;
+}
+/** The reader's push, applied to the drawers first and to the column with what is left. We drive
+ *  the offset ourselves rather than letting the default through, so a delta is never counted
+ *  twice — once by the drawers and again by the browser, which is what made the old model need a
+ *  spacer to cancel itself. */
+byId("sessionNavigator").addEventListener("wheel", event => {
+  const nav = byId("sessionNavigator");
+  let dy = wheelPixels(event);
+  if (!dy) return;
+  if (dy > 0) {
+    dy = routeDrawerDelta(dy);
+    if (dy > 0) nav.scrollTop += dy;
+  } else {
+    const used = Math.min(nav.scrollTop, -dy);
+    if (used > 0) nav.scrollTop -= used;
+    dy += used;
+    if (dy < 0) routeDrawerDelta(dy);
   }
-  return sum;
-}
-const slideDrawersTo = top => byId("sessionNavigator").scrollTo({ top: Math.max(0, top), behavior: "smooth" });
-/** A toggle's height change is animated; a slide's is not — that one tracks the wheel 1:1. */
+  paintDrawers();
+  event.preventDefault();
+}, { passive: false });
+/** A toggle's height change is animated; a gesture's is not — that one tracks the wheel 1:1. */
 let drawerAnimation = 0;
 function animateDrawers() {
   const nav = byId("sessionNavigator");
@@ -631,36 +693,29 @@ function animateDrawers() {
   clearTimeout(drawerAnimation);
   drawerAnimation = setTimeout(() => nav.classList.remove("drawers-animating"), 260);
 }
-/** The toggle: the only explicit open/close, and the only thing that acts on ONE drawer. On the
- *  frontier — the single drawer that is ever part-way — it completes the movement that was under
- *  way, or, with none behind it, the static half-way rule. At either endpoint it is the control
- *  it has always been: shutting Session never shuts Turns. */
-function toggleDrawer(key) {
-  const nav = byId("sessionNavigator");
-  const card = nav.querySelector(`[data-nav-card="${CSS.escape(key)}"]`);
-  if (!card) return;
-  const wasOpen = card.classList.contains("open");
-  const openness = wasOpen ? drawers.open.get(key) ?? 1 : 0;
-  if (!wasOpen) {
-    // Shut by its own toggle: open it, and hold the budget back so it cannot be spent here again.
-    uiState.navCards.add(key);
-    persist();
-    animateDrawers();
-    renderNavigator();
-    slideDrawersTo(Math.min(nav.scrollTop, drawerPrefix(key)));
-  } else if (openness === 0) {
-    slideDrawersTo(drawerPrefix(key)); // shut by the slide: give its budget back
-  } else if (openness === 1) {
-    uiState.navCards.delete(key); // fully open: shut this drawer, and only this one
-    persist();
-    animateDrawers();
-    renderNavigator();
-  } else {
-    const closing = drawers.dir.has(key) ? drawers.dir.get(key) === "closing" : openness >= 0.5;
-    slideDrawersTo(closing ? drawerPrefix(key) + (drawers.natural.get(key) || 0) : drawerPrefix(key));
-  }
+/** Set one pane's state. Re-stacks, because the slots and B move when a body does. */
+function setDrawerOpen(key, open) {
+  drawers.open.set(key, open);
+  drawers.dir.set(key, open >= 1 ? "opening" : "closing");
+  if (open >= 1) uiState.navCards.add(key);
+  else if (open <= 0) uiState.navCards.delete(key);
+  persist();
+  animateDrawers();
+  stackOutlineHeads();
 }
-byId("sessionNavigator").addEventListener("scroll", applyDrawers, { passive: true });
+/** The toggle, as the owner specified it (#157). At either END it flips. Part-way it finishes the
+ *  movement the pane was last making; with no direction to follow it makes the bigger visual
+ *  change, which is to close a pane that is mostly open and open one that is nearly shut. */
+function toggleDrawer(key) {
+  const card = byId("sessionNavigator").querySelector(`[data-nav-card="${CSS.escape(key)}"]`);
+  if (!card || card.classList.contains("pane-off")) return;
+  const open = drawerOpenOf(key);
+  if (open <= 0) return setDrawerOpen(key, 1);
+  if (open >= 1) return setDrawerOpen(key, 0);
+  const dir = drawers.dir.get(key);
+  const closing = dir === "closing" ? true : dir === "opening" ? false : open >= 0.5;
+  setDrawerOpen(key, closing ? 0 : 1);
+}
 window.addEventListener("resize", stackOutlineHeads);
 function renderNavigator() {
   const turns = recordState.units.filter(unit => unit.type === "user");
@@ -761,7 +816,7 @@ byId("sessionNavigator").onclick = event => {
     toggleDrawer(card.dataset.navCardToggle);
     return;
   }
-  const rail = event.target.closest("[data-nav-card-open]"); if (rail) { uiState.navCards.add(rail.dataset.navCardOpen); uiState.navigatorOpen = true; persist(); renderNavigator(); slideDrawersTo(drawerPrefix(rail.dataset.navCardOpen)); }
+  const rail = event.target.closest("[data-nav-card-open]"); if (rail) { uiState.navigatorOpen = true; persist(); renderNavigator(); setDrawerOpen(rail.dataset.navCardOpen, 1); }
 };
 
 // A record's lowercase text with its scope ownership (#101), cached per record object — the
@@ -1368,8 +1423,11 @@ panesOptions.onclick = event => {
     uiState.navPanes.add(key);
     // A pane coming BACK comes back open, so the reader is never handed a column where the thing
     // they just asked for is still hidden behind a second control. Only on the transition —
-    // doing it in `applyPanes` would force every pane open on load.
+    // doing it in `applyPanes` would force every pane open on load. Since #157 the drawer STATE
+    // is what open means, so that is the thing to set; the boolean follows it.
     uiState.navCards.add(key);
+    drawers.open.set(key, 1);
+    drawers.dir.set(key, "opening");
   }
   persist();
   applyPanes();
@@ -1478,7 +1536,7 @@ function centerTasks() {
   const target = taskCenterTarget(taskOrder(tasks));
   if (!target) return false;
   if (!uiState.navCards.has("tasks")) { uiState.navCards.add("tasks"); persist(); renderNavigator(); }
-  slideDrawersTo(drawerPrefix("tasks")); // #139: give the tasks drawer the room to be looked at
+  setDrawerOpen("tasks", 1); // #139: give the tasks drawer the room to be looked at
   if (!uiState.navigatorOpen) toggleNavigator(true);
   const row = document.querySelectorAll("#navigatorWork .work-task")[target.index];
   if (!row) return false;

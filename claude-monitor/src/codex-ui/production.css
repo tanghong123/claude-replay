@@ -223,7 +223,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    browser would "helpfully" undo the slide's growth. A drawer that reaches nought takes its head's
    full radius back, since there is no body under it to square off against. */
 .session-navigator{overflow-anchor:none}
-.outline-slide{flex:0 0 auto;width:1px;pointer-events:none}
 .session-navigator .outline-card>.outline-card-body{display:block;overflow:hidden;padding:0}
 /* A border box can never be shorter than its own padding, so a body with `padding:4px 3px 5px`
    floors at 9px and a shut drawer still shows a sliver. The padding moves inside, onto the list,
