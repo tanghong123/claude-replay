@@ -216,7 +216,7 @@
   var EST_H = 30;
   var MARGIN_PX = 1500;
   var prefix = null;     // prefix[i] = sum of effective heights of records[0..i)
-  var topPad = null, botPad = null;
+  var topPad = null, botPad = null, vwin = null;
   var searchNeedle = ""; // active search term (lowercase), re-marked on materialize
   var searchScope = null; // `uatobrew:` prefix parse; w modifies matching, null = unscoped
 
@@ -237,18 +237,22 @@
   function streamTop() {
     return stream.getBoundingClientRect().top + window.scrollY;
   }
+  // #140 step 4: the materialized run lives in its OWN box between the pads, because the shared
+  // engine owns that box — it calls `replaceChildren` on it and walks `firstElementChild`, so it
+  // cannot be a `#stream` that also holds the pads. The spacing rules move with the records
+  // (`#vwin > *`), since they are addressed to whatever is the records' parent.
   function ensurePads() {
     if (topPad) return;
     topPad = el("div", "vpad");
+    vwin = el("div", "vwin");
+    vwin.id = "vwin";
     botPad = el("div", "vpad");
     stream.appendChild(topPad);
+    stream.appendChild(vwin);
     stream.appendChild(botPad);
   }
   function matEls() {
-    var out = [];
-    if (!topPad) return out;
-    for (var n = topPad.nextSibling; n && n !== botPad; n = n.nextSibling) out.push(n);
-    return out;
+    return vwin ? Array.prototype.slice.call(vwin.children) : [];
   }
   function matBlock(i) {
     var b = records[i];
@@ -325,7 +329,7 @@
   // its border box plus its margins, the same function the app shell's engine measures with
   // (html/shared/virtual-window.js, rule 8). This page used to take the offsetTop delta to the
   // next sibling, which charges the gap between two blocks to the upper one; since #128 (step 1)
-  // gave `#stream` a flex column with `#stream > * { margin-top: 0 }`, the two bases agree here
+  // gave the records a flex column with `margin-top: 0` (now `#vwin`, #140 step 4), the two agree
   // and one function means they cannot drift apart again.
   //
   // NOT rounded any more (#156). It was, for one release: fractional heights made this page heal
@@ -367,15 +371,15 @@
         frag.appendChild(e);
         fresh.push(e);
       }
-      stream.insertBefore(frag, botPad);
+      vwin.appendChild(frag);
       loIdx = lo; hiIdx = hi;
     } else {
-      while (loIdx < lo && topPad.nextSibling !== botPad) {
+      while (loIdx < lo && vwin.firstChild) {
         // Trim by the element's REAL index (#94): with filter-hidden records the
         // first DOM child can sit far above loIdx — blindly removing one node per
         // index step deletes visible elements that belong INSIDE the new window.
-        if (+topPad.nextSibling.dataset.idx >= lo) break; // [loIdx..lo) is all hidden
-        topPad.nextSibling.remove();
+        if (+vwin.firstChild.dataset.idx >= lo) break; // [loIdx..lo) is all hidden
+        vwin.firstChild.remove();
         loIdx++;
         while (loIdx < lo && loIdx < hiIdx && isHiddenRec(loIdx)) loIdx++;
       }
@@ -388,14 +392,14 @@
           ftop.appendChild(ea);
           fresh.push(ea);
         }
-        stream.insertBefore(ftop, topPad.nextSibling);
+        vwin.insertBefore(ftop, vwin.firstChild);
         loIdx = lo;
       }
-      while (hiIdx > hi && botPad.previousSibling !== topPad) {
+      while (hiIdx > hi && vwin.lastChild) {
         // Same real-index guard as the top trim (#94): the last DOM child can sit
         // far below hiIdx when the tail range is filter-hidden.
-        if (+botPad.previousSibling.dataset.idx < hi) break; // [hi..hiIdx) is all hidden
-        botPad.previousSibling.remove();
+        if (+vwin.lastChild.dataset.idx < hi) break; // [hi..hiIdx) is all hidden
+        vwin.lastChild.remove();
         hiIdx--;
         while (hiIdx > hi && hiIdx > loIdx && isHiddenRec(hiIdx - 1)) hiIdx--;
       }
@@ -408,7 +412,7 @@
           fbot.appendChild(ec);
           fresh.push(ec);
         }
-        stream.insertBefore(fbot, botPad);
+        vwin.appendChild(fbot);
         hiIdx = hi;
       }
     }

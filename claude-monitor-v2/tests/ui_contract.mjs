@@ -824,6 +824,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /drawers\.dir\.set\(key, delta > 0 \? "closing" : "opening"\);/, "each pane remembers the direction of its last movement, for the toggle to complete");
   assert.match(appSource, /if \(dy > 0\) \{\n    dy = routeDrawerDelta\(dy\);\n    if \(dy > 0\) nav\.scrollTop \+= dy;/, "a push closes first and only the REMAINDER scrolls the column");
   assert.match(appSource, /const used = Math\.min\(nav\.scrollTop, -dy\);/, "…and a pull gives the scroll back before it reopens, so the column retraces exactly");
+  // #157, the owner's flow model: a run of wheel events with no real pause is ONE gesture and it
+  // owns whatever it started on, so the pointer drifting over a list mid-motion cannot steal the
+  // push — and stopping lets the next one aim afresh, which is how a PART-WAY pane's clipped list
+  // is scrollable at all. With friction at the handover, so a fling through a long list cannot
+  // carry on and shut every pane behind it.
+  assert.match(appSource, /let wheelOwner = null;/, "a gesture owns a target for its whole run");
+  assert.match(appSource, /wheelIdle = setTimeout\(\(\) => \{ wheelOwner = null; wheelResist = 0; \}, WHEEL_IDLE_MS\);/, "…and a pause is what ends it");
+  assert.match(appSource, /wheelResist \+= Math\.abs\(dy\);\n    if \(wheelResist < WHEEL_RESIST_PX\) \{ event\.preventDefault\(\); return; \}/, "…with static friction to overcome before the chain takes a push the list can no longer use");
+  assert.match(appSource, /if \(listWithRoom\(event\.target, dy\)\) \{ wheelResist = 0; return; \}/, "…and a list that can still move keeps it, scrolled by the browser itself");
   assert.match(css, /\.session-navigator\{overflow-anchor:none\}/, "scroll anchoring would fight a body that is changing height");
   assert.doesNotMatch(css, /\.navigator-list\{[^}]*overscroll-behavior:contain/, "the list never contains its overscroll — the wheel reaches the chain once the list is at its end");
   console.log("#58/#59/#74 outline pane cases passed");

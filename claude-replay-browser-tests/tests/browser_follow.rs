@@ -62,7 +62,7 @@ fn view_state(tab: &headless_chrome::Tab) -> serde_json::Value {
             following: document.body.classList.contains("following"),
             badge: (document.getElementById("newbadge") || {}).textContent || "",
             badgeOn: /\bon\b/.test((document.getElementById("newbadge") || {className:""}).className),
-            blocks: (document.getElementById("stream") || {childElementCount:-1}).childElementCount
+            blocks: document.querySelectorAll('#stream [data-idx]').length
         }"#,
         false,
     )
@@ -599,7 +599,7 @@ fn a_turn_landing_holds_through_late_reflow() {
         &tab,
         &format!(
             r##"(async function () {{
-                var above = Array.prototype.slice.call(document.querySelectorAll("#stream > *"))
+                var above = Array.prototype.slice.call(document.querySelectorAll("#vwin > *"))
                     .filter(function (e) {{ return e.getBoundingClientRect().top < 0; }}).pop();
                 if (!above) return {{grew: false}};
                 above.style.paddingTop = "2500px";
@@ -5225,8 +5225,8 @@ fn the_app_shell_chooses_which_outline_panes_exist() {
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-pane-picker", 2889);
     harness::until(
         &tab,
-        "!!document.getElementById('navigatorPanesBtn')",
-        "the pane selector on the outline caption",
+        "!!document.getElementById('navigatorPanesTrigger')",
+        "the Outline title, which is the pane selector's trigger",
         std::time::Duration::from_secs(15),
         "document.querySelector('.outline-caption') ? document.querySelector('.outline-caption').innerHTML.slice(0, 120) : 'no caption'",
     );
@@ -5236,14 +5236,14 @@ fn the_app_shell_chooses_which_outline_panes_exist() {
         before["live"].as_i64().unwrap_or(0) >= 3,
         "the column starts with its panes: {before}"
     );
-    // Open the selector and turn Tasks off.
-    harness::eval(&tab, "document.getElementById('navigatorPanesBtn').click()");
+    // Open it the way a reader does — by hovering the word "Outline".
+    harness::eval(&tab, "document.getElementById('navigatorPanesTrigger').dispatchEvent(new PointerEvent('pointerenter', { bubbles: false })); 'ok'");
     harness::until(
         &tab,
         "!!document.querySelector('[data-pane-toggle=\"tasks\"]')",
         "the pane list",
         std::time::Duration::from_secs(10),
-        "document.getElementById('navigatorPanesOptions') ? document.getElementById('navigatorPanesOptions').className : 'absent'",
+        "document.getElementById('navigatorPanesMenu') ? document.getElementById('navigatorPanesMenu').className : 'absent'",
     );
     harness::eval(
         &tab,
@@ -5360,4 +5360,77 @@ fn the_app_shell_opens_a_pushed_shut_pane_from_its_head() {
         (reopened.as_f64().unwrap_or(0.0) - opened.as_f64().unwrap_or(-1.0)).abs() <= 2.0,
         "the head pops it open, all the way: {opened} -> {pushed} -> {reopened}"
     );
+}
+
+/// #157, the regression the owner hit: "I am no longer able to scroll the content in any pane
+/// now." The first version of the push model swallowed every wheel at the column, so a pane's own
+/// list — its `.navigator-list`, a scroller in its own right — never saw one.
+///
+/// The rule the fix encodes is the owner's, and it is about INTENTION FLOWING. A run of wheel
+/// events with no real pause is ONE gesture and it owns whatever it started on; stopping lets the
+/// next gesture aim afresh. So a list under the pointer takes the push, and the chain only gets
+/// it once the list has nothing left to give — and even then not immediately, because there is
+/// friction to overcome first, so a fling through a long list cannot carry on and shut every pane
+/// behind it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_a_panes_own_list_takes_the_wheel() {
+    let _serial = serial();
+    let base = base("appshell-pane-list-wheel");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000157".to_string();
+    // Enough turns that the Turns list overflows its own max-height and is genuinely scrollable.
+    stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2896, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length >= 60",
+        "the turns to list",
+        std::time::Duration::from_secs(30),
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+    );
+    let state = "(function(){ var list = document.querySelector('[data-nav-card=\"turns\"] .navigator-list'); var body = document.querySelector('[data-nav-card=\"turns\"] > .outline-card-body'); return { listTop: Math.round(list.scrollTop), listRoom: Math.round(list.scrollHeight - list.clientHeight), body: Math.round(body.getBoundingClientRect().height) }; })()";
+    let push = "(function(dy){ var list = document.querySelector('[data-nav-card=\"turns\"] .navigator-list'); list.dispatchEvent(new WheelEvent('wheel', { deltaY: dy, bubbles: true, cancelable: true })); return 'ok'; })";
+    let before = harness::probe(&tab, state);
+    assert!(
+        before["listRoom"].as_f64().unwrap_or(0.0) > 100.0,
+        "the turns list is long enough to scroll inside: {before}"
+    );
+    // A push with the pointer over the list scrolls the LIST, and leaves the drawer alone.
+    harness::eval(&tab, &format!("({push})(120)"));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let scrolled = harness::probe(&tab, state);
+    assert!(
+        scrolled["listTop"].as_f64().unwrap_or(0.0) > 0.0,
+        "the list scrolled: {before} -> {scrolled}"
+    );
+    assert_eq!(
+        scrolled["body"], before["body"],
+        "…and the drawer did not move while the list still had room: {before} -> {scrolled}"
+    );
+    // Send the list to its end and let the gesture lapse, so the next push aims afresh with the
+    // list unable to take it. The chain is still reachable — which is the other half of the rule,
+    // and the reason the list must not contain its own overscroll.
+    //
+    // (The FRICTION is deliberately not asserted here. It guards the handover WITHIN a gesture —
+    // a fling that exhausts the list mid-run must not carry on into the panes — whereas a push
+    // begun after a pause is the reader aiming again, and there is no transition to resist. The
+    // contract pins the friction directly, which is the honest place for a rule about a timer.)
+    harness::eval(&tab, "(function(){ var l = document.querySelector('[data-nav-card=\"turns\"] .navigator-list'); l.scrollTop = l.scrollHeight; return 'ok'; })()");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    for _ in 0..4 {
+        harness::eval(&tab, &format!("({push})(80)"));
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let handed = harness::probe(&tab, state);
+    assert!(
+        handed["body"].as_f64().unwrap_or(1e9) < before["body"].as_f64().unwrap_or(0.0),
+        "…and once the list has nothing left to give, the chain takes the push: {before} -> {handed}"
+    );
+    drop(monitor);
 }

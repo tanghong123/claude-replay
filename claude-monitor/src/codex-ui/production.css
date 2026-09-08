@@ -468,14 +468,56 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    the anchor, since it hangs off a topbar button rather than the search box. */
 .reading-cluster { position: relative; display: flex; align-items: center; flex: none; }
 
-/* #159. The pane selector sits on the Outline caption, and its popover hangs off it, so the
-   caption is the positioned ancestor. A pane the reader turned off renders NOTHING — not a head,
-   not a gap, not a slot — which is what makes it different from a drawer that is merely shut. */
+
+/* #159. The word "Outline" IS the control: hovering it opens the pane selector, the same model
+   the session title uses for its copy menu — and the same surface, so the two read as one idea.
+   The `:before` is a bridge across the gap, or the pointer travelling down to the menu would
+   leave the trigger and shut it. A pane the reader turns off renders NOTHING — no head, no gap,
+   no slot — which is what makes it different from a drawer that is merely shut. */
 .outline-caption { position: relative; }
 .outline-card.pane-off { display: none; }
-#navigatorPanesBtn { margin-left: auto; padding: 0 2px; background: transparent; color: var(--faint); cursor: pointer; display: grid; place-items: center; }
-#navigatorPanesBtn:hover, #navigatorPanesBtn[aria-expanded="true"] { color: var(--ink); }
-.outline-caption > .panes-options { position: absolute; left: 4px; right: 4px; top: 28px; width: auto; z-index: 48; text-transform: none; letter-spacing: normal; font-weight: 400; }
+.outline-caption-title {
+  padding: 0; border: 0; background: transparent; cursor: pointer;
+  color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit;
+}
+.outline-caption-title:hover, .outline-caption-title[aria-expanded="true"] { color: var(--ink); }
+.panes-menu {
+  position: absolute; left: -6px; top: calc(100% + 10px); z-index: 70;
+  width: min(230px, calc(100vw - 32px)); padding: 6px;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 98%, transparent);
+  box-shadow: 0 14px 38px rgba(34, 43, 73, .14);
+  opacity: 0; visibility: hidden; transform: translateY(-4px); pointer-events: none;
+  transition: opacity .12s ease, transform .12s ease, visibility .12s;
+  text-transform: none; letter-spacing: normal; font-weight: 400;
+}
+.panes-menu:before { content: ""; position: absolute; left: 0; right: 0; top: -11px; height: 11px; }
+.panes-menu.open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; }
+.panes-caption {
+  padding: 5px 8px 4px; color: var(--faint);
+  font-size: 9px; font-weight: 680; letter-spacing: .08em; text-transform: uppercase;
+}
+/* The filter menu's row, in the filter menu's type — one full-width button, the mark, the name.
+   A CHECKBOX and not the filter's dot: these are independent choices, and a dot reads as
+   one-of-many. */
+.pane-option {
+  width: 100%; height: 28px; padding: 0 8px; border: 0; border-radius: 8px;
+  background: transparent; cursor: pointer;
+  display: grid; grid-template-columns: 13px minmax(0, 1fr); align-items: center; gap: 9px;
+  text-align: left; color: var(--sub); font: 11.5px var(--sans, inherit);
+}
+.pane-option:hover, .pane-option:focus-visible { background: var(--hover); color: var(--ink); outline: 0; }
+.pane-option .pane-check {
+  width: 13px; height: 13px; border-radius: 4px; position: relative;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--faint) 60%, var(--line));
+  transition: background .12s ease, box-shadow .12s ease;
+}
+.pane-option.on { color: var(--ink); }
+.pane-option.on .pane-check { background: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.pane-option.on .pane-check:after {
+  content: ""; position: absolute; left: 4px; top: 1.5px; width: 3.5px; height: 7px;
+  border: solid var(--primary-soft); border-width: 0 1.6px 1.6px 0; transform: rotate(42deg);
+}
 /* The positioning is spelled out rather than inherited: the demo's own rule is
    `.header-search-cluster>.navigator-options`, a CHILD selector this popover cannot match from
    its own cluster. Without these it laid out as a static flex item — measured at top -40px,

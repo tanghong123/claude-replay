@@ -960,7 +960,7 @@ pub fn classic_view_state(tab: &headless_chrome::Tab) -> serde_json::Value {
             following: document.body.classList.contains("following"),
             badge: (document.getElementById("newbadge") || {}).textContent || "",
             badgeOn: /\bon\b/.test((document.getElementById("newbadge") || {className:""}).className),
-            blocks: (document.getElementById("stream") || {childElementCount:-1}).childElementCount
+            blocks: document.querySelectorAll('#stream [data-idx]').length
         })"#,
     )
 }

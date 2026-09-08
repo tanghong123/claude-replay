@@ -665,14 +665,54 @@ function wheelPixels(event) {
   if (event.deltaMode === 2) return event.deltaY * nav.clientHeight;
   return event.deltaY;
 }
-/** The reader's push, applied to the drawers first and to the column with what is left. We drive
- *  the offset ourselves rather than letting the default through, so a delta is never counted
- *  twice — once by the drawers and again by the browser, which is what made the old model need a
- *  spacer to cancel itself. */
+/* THE INTENTION FLOWS (#157, owner's model). A run of wheel events with no real pause is ONE
+ * gesture, and a gesture owns whatever it started on: begin on a list and the list keeps it,
+ * begin on the chain and the chain keeps it, whatever the pointer happens to be over as things
+ * move underneath. Stop, and the next push aims afresh — which is what lets the reader scroll the
+ * clipped list of a PART-WAY drawer: they stopped moving the drawer, so the new gesture is
+ * theirs to aim.
+ *
+ * And there is FRICTION at the handover. A list that runs out mid-gesture does not hand the push
+ * straight to the drawers: the overflow accumulates, and only once it passes `WHEEL_RESIST_PX`
+ * does the chain take over — static friction to overcome, so a fling through a long list cannot
+ * carry on and shut every pane behind it. */
+const WHEEL_IDLE_MS = 200;
+const WHEEL_RESIST_PX = 60;
+let wheelOwner = null;   // "list" | "chain" while a gesture is in flight
+let wheelResist = 0;     // overflow piled up since the list ran out
+let wheelIdle = 0;
+/** The scroller under the pointer that still has room in this direction, or null. */
+function listWithRoom(target, dy) {
+  const nav = byId("sessionNavigator");
+  for (let el = target; el && el !== nav; el = el.parentElement) {
+    if (!(el instanceof Element)) continue;
+    if (!/(auto|scroll)/.test(getComputedStyle(el).overflowY)) continue;
+    const room = el.scrollHeight - el.clientHeight;
+    if (room <= 1) continue;
+    return (dy > 0 ? el.scrollTop < room - 1 : el.scrollTop > 1) ? el : null;
+  }
+  return null;
+}
+/** The reader's push. Spent on whatever the gesture owns: a list scrolls itself and the browser
+ *  does that; the chain closes and opens panes, and only the remainder scrolls the column. When
+ *  we take the push we drive the offset ourselves, so a delta is never counted twice — once by
+ *  the drawers and again by the browser, which is what made the old model need a spacer. */
 byId("sessionNavigator").addEventListener("wheel", event => {
   const nav = byId("sessionNavigator");
   let dy = wheelPixels(event);
   if (!dy) return;
+  clearTimeout(wheelIdle);
+  wheelIdle = setTimeout(() => { wheelOwner = null; wheelResist = 0; }, WHEEL_IDLE_MS);
+  if (!wheelOwner) {
+    wheelOwner = listWithRoom(event.target, dy) ? "list" : "chain";
+    wheelResist = 0;
+  }
+  if (wheelOwner === "list") {
+    if (listWithRoom(event.target, dy)) { wheelResist = 0; return; } // the browser scrolls it
+    wheelResist += Math.abs(dy);
+    if (wheelResist < WHEEL_RESIST_PX) { event.preventDefault(); return; } // held at the end
+    wheelOwner = "chain";
+  }
   if (dy > 0) {
     dy = routeDrawerDelta(dy);
     if (dy > 0) nav.scrollTop += dy;
@@ -1386,66 +1426,83 @@ setSidebarWidth(localStorage.getItem(SIDEBAR_WIDTH_KEY) || SIDEBAR_DEFAULT, fals
 //
 // Retiring a shipped feature, not fixing a bug: the history should not read as a regression.
 function toggleNavigator(open) { uiState.navigatorOpen = open; persist(); renderNavigator(); viewport.remeasure(); }
-// #159. The pane selector, beside the Outline caption. Production-only chrome, layered on at
-// runtime like the reading cluster (#142) and the rail's own close button, because
-// `reference-shell.html` is extracted byte-for-byte from the demo and is never hand-edited.
-// The labels come off each card's own head, so they cannot drift from what the column says.
-const panesBtn = document.createElement("button");
-panesBtn.id = "navigatorPanesBtn";
-panesBtn.type = "button";
-panesBtn.title = "Which panes this outline shows";
-panesBtn.setAttribute("aria-label", "Which panes this outline shows");
-panesBtn.setAttribute("aria-haspopup", "true");
-panesBtn.setAttribute("aria-expanded", "false");
-panesBtn.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="7" cy="18" r="2"/></svg>';
-const panesOptions = document.createElement("div");
-panesOptions.className = "navigator-options panes-options";
-panesOptions.id = "navigatorPanesOptions";
-function renderPanesOptions() {
+// #159. The pane selector. No glyph of its own (owner, #159 follow-up): the word "Outline" IS
+// the trigger, hovered, exactly as the session title opens the copy menu — same surface, same
+// pointer bridge across the gap, same 120ms grace so the pointer can travel into it. Production
+// -only chrome layered on at runtime, because `reference-shell.html` is extracted from the demo.
+const panesTrigger = document.createElement("button");
+panesTrigger.id = "navigatorPanesTrigger";
+panesTrigger.type = "button";
+panesTrigger.className = "outline-caption-title";
+panesTrigger.textContent = "Outline";
+panesTrigger.title = "Which panes this outline shows";
+panesTrigger.setAttribute("aria-haspopup", "true");
+panesTrigger.setAttribute("aria-expanded", "false");
+const panesMenu = document.createElement("div");
+panesMenu.className = "panes-menu";
+panesMenu.id = "navigatorPanesMenu";
+panesMenu.setAttribute("role", "menu");
+panesMenu.setAttribute("aria-label", "Which panes this outline shows");
+function renderPanesMenu() {
+  // The filter menu's row, which is the owner's reference: one full-width button per choice, the
+  // mark on the left, the name beside it. A CHECKBOX rather than the filter's dot, because these
+  // are independent on/off choices and a dot reads as one-of-many.
   const rows = [...byId("sessionNavigator").querySelectorAll(":scope > .outline-card")].map(card => {
     const key = card.dataset.navCard;
     const label = card.querySelector(":scope > .outline-card-head strong")?.textContent?.trim() || key;
     const on = uiState.navPanes.has(key);
-    return `<div class="reading-row"><span>${escapeText(label)}</span><button class="mode-switch" type="button" role="switch" data-pane-toggle="${escapeText(key)}" aria-checked="${on}" aria-label="Show the ${escapeText(label)} pane"><span></span></button></div>`;
+    return `<button class="pane-option ${on ? "on" : ""}" type="button" role="menuitemcheckbox" aria-checked="${on}" data-pane-toggle="${escapeText(key)}"><span class="pane-check" aria-hidden="true"></span><span>${escapeText(label)}</span></button>`;
   });
-  panesOptions.innerHTML = `<div class="scope-menu-head"><strong>Panes</strong></div>${rows.join("")}`;
+  panesMenu.innerHTML = `<div class="panes-caption">Panes</div>${rows.join("")}`;
 }
-panesOptions.onclick = event => {
+let panesCloseTimer = 0;
+function setPanesMenu(open) {
+  clearTimeout(panesCloseTimer);
+  if (open) renderPanesMenu();
+  panesMenu.classList.toggle("open", open);
+  panesTrigger.setAttribute("aria-expanded", String(open));
+}
+function schedulePanesClose() {
+  clearTimeout(panesCloseTimer);
+  panesCloseTimer = setTimeout(() => {
+    if (!panesMenu.contains(document.activeElement) && document.activeElement !== panesTrigger) setPanesMenu(false);
+  }, 120);
+}
+panesMenu.onclick = event => {
   const toggle = event.target.closest("[data-pane-toggle]");
   if (!toggle) return;
   const key = toggle.dataset.paneToggle;
-  // The last pane cannot be turned off — an outline with no panes is a column of nothing, and
-  // the reader would have no control left to get one back except this popover.
+  // The last pane cannot be turned off — an outline with no panes is a column of nothing, and the
+  // reader would have no card left to hover for the control that brings one back.
   if (uiState.navPanes.has(key) && uiState.navPanes.size <= 1) return;
   if (uiState.navPanes.has(key)) {
     uiState.navPanes.delete(key);
   } else {
     uiState.navPanes.add(key);
     // A pane coming BACK comes back open, so the reader is never handed a column where the thing
-    // they just asked for is still hidden behind a second control. Only on the transition —
-    // doing it in `applyPanes` would force every pane open on load. Since #157 the drawer STATE
-    // is what open means, so that is the thing to set; the boolean follows it.
+    // they just asked for is still hidden behind a second control. Since #157 the drawer STATE is
+    // what open means, so that is the thing to set; the boolean follows it.
     uiState.navCards.add(key);
     drawers.open.set(key, 1);
     drawers.dir.set(key, "opening");
   }
   persist();
   applyPanes();
-  renderPanesOptions();
+  renderPanesMenu();
 };
-byId("navigatorClose").before(panesBtn, panesOptions);
-panesBtn.onclick = () => {
-  const open = panesOptions.classList.contains("open");
-  if (!open) renderPanesOptions();
-  panesOptions.classList.toggle("open", !open);
-  panesBtn.setAttribute("aria-expanded", String(!open));
-};
-addEventListener("pointerdown", event => {
-  if (!panesBtn.contains(event.target) && !panesOptions.contains(event.target) && panesOptions.classList.contains("open")) {
-    panesOptions.classList.remove("open");
-    panesBtn.setAttribute("aria-expanded", "false");
+{
+  const caption = byId("sessionNavigator").querySelector(":scope > .outline-caption");
+  const label = caption && caption.querySelector(":scope > span");
+  if (label) label.replaceWith(panesTrigger);
+  if (caption) caption.append(panesMenu);
+  for (const type of ["pointerenter", "focus"]) panesTrigger.addEventListener(type, () => setPanesMenu(true));
+  for (const node of [panesTrigger, panesMenu]) {
+    node.addEventListener("pointerleave", schedulePanesClose);
+    node.addEventListener("focusout", schedulePanesClose);
   }
-}, true);
+  panesMenu.addEventListener("pointerenter", () => clearTimeout(panesCloseTimer));
+  panesTrigger.addEventListener("keydown", event => { if (event.key === "Escape") setPanesMenu(false); });
+}
 applyPanes(); // the stored choice, before anything measures the column
 byId("navigatorClose").onclick = () => toggleNavigator(false);
 byId("navigatorRailExpand").onclick = () => toggleNavigator(true);

@@ -128,6 +128,9 @@ function classifyScroll(following, userIntent, gap, acquire, hold, heal) {
  *   identityAt   — a string stable across a rewrite that re-emits the same positions.
  *   estimateAt   — an item's height before it has been measured. UNDER, never over (rule 5).
  *   heightFor / setHeight / clearHeights — where measured heights live.
+ *   clampIndex   (default true) whether an offset past the end reads as the last item.
+ *   skipAt       (default none) an item the page is hiding: no height, and never mounted.
+ *   renderAll    (default never) mount every item, whatever the offset says.
  *   renderItem   — index → an element, already stamped with its identity.
  *   following    — the page's own flag (both pages render from it), through a get/set pair.
  *   afterRender / afterScroll / followChanged / remember — the page's hooks.
@@ -152,7 +155,7 @@ function itemHeight(element) {
 
 class VirtualWindow {
   constructor(options) {
-    const { frame, mount, overscan, slacks, userIntentMs, rememberMs } = options;
+    const { frame, mount, overscan, slacks, userIntentMs, rememberMs, clampIndex, skipAt, renderAll } = options;
     this.frame = frame;
     this.mount = mount.window;
     this.topPad = mount.top;
@@ -160,6 +163,19 @@ class VirtualWindow {
     this.overscan = overscan;
     this.slacks = slacks;
     this.userIntentMs = userIntentMs;
+    // #140 step 4, the three things the classic page needs and the app shell does not. Each is a
+    // PARAMETER with the shell's behaviour as its default, not a fork:
+    //   clampIndex  the shell asks "which item is at this offset" and wants the last one when the
+    //               offset runs past the end; the classic page wants PAST THE END to read as past
+    //               the end, because that is what places its bottom pad under a filter.
+    //   skipAt      an item the page is hiding. It cannot be expressed as a zero height, because
+    //               `heightOf` falls through to `estimateAt` whenever a height is falsy.
+    //   renderAll   mount everything, whatever the offset. The classic page renders a SMALL
+    //               filtered set in full so its sums are exact and a one-hit jump cannot land in
+    //               a pad; hundreds of force-opened folds is why that is conditional, not always.
+    this.clampIndex = clampIndex !== false;
+    this.skipAt = skipAt || (() => false);
+    this.renderAll = renderAll || (() => false);
     this.rememberMs = rememberMs;
     this.prefix = [0];
     this.lo = 0;
@@ -221,6 +237,9 @@ class VirtualWindow {
 
   /** An item's height as the sums see it: what was measured, or the page's estimate. */
   heightOf(index) {
+    // A skipped item takes NO space — the pads absorb it. Asked BEFORE the estimate, because a
+    // falsy height falls through to `estimateAt` and a skip would come back as an estimate.
+    if (this.skipAt(index)) return 0;
     return this.heightFor(index) || this.estimateAt(index);
   }
 
@@ -229,7 +248,7 @@ class VirtualWindow {
   }
 
   indexAt(y) {
-    return indexAt(this.prefix, this.count, y, true);
+    return indexAt(this.prefix, this.count, y, this.clampIndex);
   }
 
   rangeForScroll() {
@@ -415,17 +434,23 @@ class VirtualWindow {
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
    *  whose content changed; `refresh` rebuilds everything mounted. */
   reconcile(lo, hi, dirtyFrom = Infinity, refresh = false, anchor = this.following ? null : this.captureDomAnchor()) {
+    // The page can ask for the whole thing (#140 step 4): a small filtered set rendered in FULL
+    // has every height real, so the sums are exact and a jump cannot land in a pad.
+    if (this.renderAll()) { lo = 0; hi = this.count; }
     ({ lo, hi } = clampRange(lo, hi, this.count));
     if (!refresh && dirtyFrom === Infinity && lo === this.lo && hi === this.hi) return false;
 
     this.observer.disconnect();
     for (const child of [...this.mount.children]) {
       const index = Number(child.dataset.unitIndex);
-      if (index < lo || index >= hi) child.remove();
+      if (index < lo || index >= hi || this.skipAt(index)) child.remove();
     }
 
     let cursor = this.mount.firstElementChild;
     for (let index = lo; index < hi; index++) {
+      // A skipped item is not mounted at all — the range walks OVER it and the pads, which count
+      // it at zero height, absorb the space. That is what makes a sparse window sparse.
+      if (this.skipAt(index)) continue;
       while (cursor && Number(cursor.dataset.unitIndex) < index) {
         const stale = cursor;
         cursor = cursor.nextElementSibling;
@@ -567,6 +592,26 @@ class VirtualWindow {
 }
 
 /** The element-scroller frame: a div that scrolls its own content. */
+/** The same contract over the DOCUMENT scroller (#140 step 4). The classic page scrolls the page
+ *  itself, not a box inside it, and the differences are all real ones rather than aliases:
+ *  `viewportTop` is 0 because the document's own client box IS the viewport; the events are on
+ *  `window`, since `scroll` does not fire on `document.scrollingElement`; and a pointer on the
+ *  document's scrollbar lands on `<html>`, which is the scrolling element itself — the same test
+ *  `elementFrame` makes, but its target is the one the document reports. */
+function documentFrame() {
+  const el = () => document.scrollingElement || document.documentElement;
+  return {
+    scrollTop: () => el().scrollTop,
+    scrollTo: y => { el().scrollTop = y; },
+    scrollBy: dy => { el().scrollTop += dy; },
+    clientHeight: () => el().clientHeight,
+    scrollHeight: () => el().scrollHeight,
+    viewportTop: () => 0,
+    on: (type, fn, options) => window.addEventListener(type, fn, options),
+    isScrollbarTarget: event => event.target === el() || event.target === document.body,
+  };
+}
+
 function elementFrame(scroller) {
   return {
     scrollTop: () => scroller.scrollTop,
@@ -583,4 +628,4 @@ function elementFrame(scroller) {
   };
 }
 
-export { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, correction, firstVisible, classifyScroll, itemHeight, VirtualWindow, elementFrame };
+export { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, correction, firstVisible, classifyScroll, itemHeight, VirtualWindow, elementFrame, documentFrame };

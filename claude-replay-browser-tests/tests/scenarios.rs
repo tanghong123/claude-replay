@@ -2886,7 +2886,7 @@ fn app_shell_spot_controls_hold_their_slot() {
 /// them, and `matBlock` stamps each one: `data-idx` is its record index, `data-kind` its kind,
 /// and a filter marks a turn record `filter-dim` and a matching record's header `filter-hit`.
 /// So a mounted element that is neither is a record the filter hid — a `stray`.
-const WINDOW_PROBE: &str = "(function(){ var els = [...document.querySelectorAll('#stream > [data-idx]')]; if (!els.length) return { mounted: 0, span: 0, stray: 0, pads: 0 }; var idxs = els.map(function (e) { return +e.dataset.idx; }); var lo = Math.min.apply(null, idxs), hi = Math.max.apply(null, idxs); var stray = els.filter(function (e) { return e.dataset.kind !== 'user' && e.dataset.kind !== 'command' && !e.querySelector('.fold-h.filter-hit'); }).length; var pads = [...document.querySelectorAll('#stream > .vpad')].reduce(function (a, p) { return a + p.getBoundingClientRect().height; }, 0); return { mounted: els.length, lo: lo, hi: hi, span: hi - lo + 1, stray: stray, pads: Math.round(pads) }; })()";
+const WINDOW_PROBE: &str = "(function(){ var els = [...document.querySelectorAll('#vwin > [data-idx]')]; if (!els.length) return { mounted: 0, span: 0, stray: 0, pads: 0 }; var idxs = els.map(function (e) { return +e.dataset.idx; }); var lo = Math.min.apply(null, idxs), hi = Math.max.apply(null, idxs); var stray = els.filter(function (e) { return e.dataset.kind !== 'user' && e.dataset.kind !== 'command' && !e.querySelector('.fold-h.filter-hit'); }).length; var pads = [...document.querySelectorAll('#stream > .vpad')].reduce(function (a, p) { return a + p.getBoundingClientRect().height; }, 0); return { mounted: els.length, lo: lo, hi: hi, span: hi - lo + 1, stray: stray, pads: Math.round(pads) }; })()";
 
 /// Row 5.8 of design/rendering-parity-audit.md, and the case #140 step 3 asks for. Under a
 /// filter the classic page is SPARSE: it mounts only the records that match (plus the turn
@@ -5066,7 +5066,7 @@ fn scenario_a_record_measures_as_its_own_box(
     _fx: &Fixture,
 ) {
     let children = match surface {
-        Surface::Classic => "document.querySelectorAll('#stream > .blk')",
+        Surface::Classic => "document.querySelectorAll('#vwin > .blk')",
         Surface::AppShell => "document.querySelectorAll('.virtual-window > [data-unit-from]')",
     };
     // Every mounted record, in document order: its own measure against the true stacking

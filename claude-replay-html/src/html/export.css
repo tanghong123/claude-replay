@@ -644,11 +644,17 @@ body.selecting #toolmenu, body.selecting #agentmenu {
    to be asked for, and it belongs to the container — a block's own top margin is exactly what
    the sums cannot survive. `getBoundingClientRect().top` is read AFTER margins resolve, so the
    engine's origin is untouched. */
-#stream { display: flex; flex-direction: column; margin-top: 16px; }
-#stream > * { flex: 0 0 auto; margin-top: 0; }
-#stream > .blk:has(+ .uturn:not(.fold)) { margin-bottom: 16px; }
-#stream > .blk:has(+ .amark), #stream > .blk:has(+ .qmarker) { margin-bottom: 10px; }
-#stream > .ablock:has(+ .fold) { margin-bottom: 2px; }
+/* #128 gave the records their own box; #140 step 4 moved that box inside `#vwin`, the run the
+   shared engine owns. Both are flex columns so no margin can collapse, and the rules that hand a
+   record the air belonging to what FOLLOWS it are addressed to the records' parent, which is now
+   the wrapper. */
+#stream, #vwin { display: flex; flex-direction: column; }
+#stream { margin-top: 16px; }
+#vwin { flex: 0 0 auto; }
+#stream > *, #vwin > * { flex: 0 0 auto; margin-top: 0; }
+#vwin > .blk:has(+ .uturn:not(.fold)) { margin-bottom: 16px; }
+#vwin > .blk:has(+ .amark), #vwin > .blk:has(+ .qmarker) { margin-bottom: 10px; }
+#vwin > .ablock:has(+ .fold) { margin-bottom: 2px; }
 .fold { border-radius: 8px; margin: 0 0 2px; }
 .fold[data-open="1"]:not(.uturn) { background: var(--openbg); border: 1px solid var(--border); margin: 0 0 8px; }
 /* §8.1 One shared 20px line box, top-aligned so a wrapping target keeps the
