@@ -524,9 +524,12 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
 /// target at its landing offset while the page settles; this pins that, by growing a block
 /// ABOVE the target after the jump — exactly what an image finishing decode does.
 ///
-/// Note the hold ticks on a 16 ms timer rather than `requestAnimationFrame`, which is what
-/// makes this testable: this harness drives the page in a background tab, where rAF never
-/// ticks at all (verified — an rAF version of the hold recorded zero ticks here).
+/// The hold ticks on a 16 ms timer rather than `requestAnimationFrame`. That is the right choice
+/// for a REAL hidden or occluded tab, where rAF stops; it is NOT because rAF is dead here. This
+/// comment used to claim it was ("verified — an rAF version recorded zero ticks"), and #140 step 4
+/// measured otherwise: 38 rAF ticks in 600 ms, `visibilityState: "visible"`. `chrome()` passes
+/// `--disable-renderer-backgrounding` and friends (harness/mod.rs:744-746), so the tab is not
+/// backgrounded at all. Left as a timer on purpose, but do not port anything on the old premise.
 #[test]
 #[ignore] // needs a local Chrome/Chromium; see the module docs
 fn a_turn_landing_holds_through_late_reflow() {

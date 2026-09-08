@@ -133,7 +133,7 @@ function classifyScroll(following, userIntent, gap, acquire, hold, heal) {
  *   renderAll    (default never) mount every item, whatever the offset says.
  *   renderItem   — index → an element, already stamped with its identity.
  *   following    — the page's own flag (both pages render from it), through a get/set pair.
- *   afterRender / afterScroll / followChanged / remember — the page's hooks.
+ *   afterMount / afterRender / afterScroll / followChanged / remember — the page's hooks.
  *
  * Every layout read and DOM write in here is the engine's own; the arithmetic above stays pure
  * so the node contract can test the rules directly. */
@@ -431,6 +431,15 @@ class VirtualWindow {
     this.bottomPad.style.height = "0px";
   }
 
+  /** The elements just mounted, ATTACHED, before anything has measured them (#140 step 4). A page
+   *  that must write to a fresh element before its height counts does it here — the classic page
+   *  clamps a long user turn there. Clamping after the measure would remember the UNCLAMPED
+   *  height and then shrink it, which is the shrink above the reader that rule 5 forbids;
+   *  `afterRender` is too late (it fires past `measureMounted`) and `renderItem` too early (the
+   *  element is still detached, so `scrollHeight` reads 0). A no-op here so a subclass that has
+   *  nothing to do — the app shell has nothing — needs no change. */
+  afterMount(_fresh) {}
+
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
    *  whose content changed; `refresh` rebuilds everything mounted. */
   reconcile(lo, hi, dirtyFrom = Infinity, refresh = false, anchor = this.following ? null : this.captureDomAnchor()) {
@@ -446,6 +455,7 @@ class VirtualWindow {
       if (index < lo || index >= hi || this.skipAt(index)) child.remove();
     }
 
+    const fresh = [];
     let cursor = this.mount.firstElementChild;
     for (let index = lo; index < hi; index++) {
       // A skipped item is not mounted at all — the range walks OVER it and the pads, which count
@@ -461,14 +471,15 @@ class VirtualWindow {
         cursor = cursor.nextElementSibling;
         continue;
       }
-      const fresh = this.renderItem(index);
-      fresh.dataset.unitIndex = index;
+      const item = this.renderItem(index);
+      item.dataset.unitIndex = index;
+      fresh.push(item);
       if (cursor && Number(cursor.dataset.unitIndex) === index) {
         const next = cursor.nextElementSibling;
-        cursor.replaceWith(fresh);
+        cursor.replaceWith(item);
         cursor = next;
       } else {
-        this.mount.insertBefore(fresh, cursor);
+        this.mount.insertBefore(item, cursor);
       }
     }
     while (cursor) {
@@ -479,6 +490,7 @@ class VirtualWindow {
 
     this.lo = lo;
     this.hi = hi;
+    this.afterMount(fresh);
     this.updatePads();
     this.measureMounted(anchor);
     this.restoreDomAnchor(anchor);
@@ -628,7 +640,15 @@ function documentFrame() {
     scrollHeight: () => el().scrollHeight,
     viewportTop: () => 0,
     on: (type, fn, options) => window.addEventListener(type, fn, options),
-    isScrollbarTarget: event => event.target === el() || event.target === document.body,
+    // A pointer on the DOCUMENT's scrollbar lands on the scrolling element itself. It must NOT
+    // also accept `body`: the classic page centres `.layout` at max-width 1160px (export.css:338),
+    // so on any wider window the left and right GUTTERS are body — and treating a gutter click as
+    // a thumb grab would put the page in drag mode, where `onScroll` calls every scroll the
+    // reader's and the drag-select auto-scroll would silently unpin a followed view. Where a
+    // classic scrollbar reserves a gutter the coordinate test catches it; where an overlay one
+    // does not (macOS), it sits over the scrolling element and the target test does.
+    isScrollbarTarget: event => event.target === el()
+      || (event.clientX != null && event.clientX > document.documentElement.clientWidth),
   };
 }
 
