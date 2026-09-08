@@ -214,6 +214,19 @@ export const promptShouldCollapse = html => strip(html).length > 560;
 
 function renderPromptAttachments(attachments = []) {
   if (!attachments.length) return "";
+  // #171: the card names WHY the file is here before it names what a click does. `att_kind`
+  // ("edited" / "ref" / "plan" / "file") is the reason the transcript recorded, the classic page
+  // has always shown it beside the name, and this card — the one a previewable file actually
+  // takes — was the only place the shell dropped it. Ranking is #166's: what was DONE outranks
+  // what the UI offers, so the verb joins the title row and the affordance stays in the `small`
+  // below. The image card is the exception: it IS the image, and its hint already says so, so a
+  // kind of "image" would only repeat the medium — any OTHER kind on an image-shaped file (a
+  // `ref` to a .png) is a real reason and still shows.
+  const titleCopy = (h, name) => {
+    const kind = String(h.att_kind || "file");
+    const verb = kind === "image" ? "" : `<span class="prompt-file-kind">${escapeText(kind)}</span>`;
+    return `<span class="prompt-file-title">${verb}<strong>${escapeText(name)}</strong></span>`;
+  };
   const cards = attachments.map(view => {
     const h = view.attachment || {};
     const capability = attachmentCapability(h);
@@ -223,10 +236,10 @@ function renderPromptAttachments(attachments = []) {
     // lookup misses (#144) — the lightbox reading "attachment" over a card that says "image.png"
     // is the visible fingerprint of that miss.
     const action = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
-    if (isImage && source) return `<button class="prompt-attachment prompt-image" type="button" ${action} title="Enlarge ${escapeText(h.att_name || "image")}"><span class="prompt-image-thumb"><img src="${escapeText(source)}" alt=""></span><span class="prompt-file-copy"><strong>${escapeText(h.att_name || "image")}</strong><small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">⤢</span></button>`;
+    if (isImage && source) return `<button class="prompt-attachment prompt-image" type="button" ${action} title="Enlarge ${escapeText(h.att_name || "image")}"><span class="prompt-image-thumb"><img src="${escapeText(source)}" alt=""></span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "image")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">⤢</span></button>`;
     const ext = String(h.att_name || "file").split(".").pop().slice(0, 4).toUpperCase();
     const glyph = capability.action === "download" ? "↓" : capability.action === "copy" ? "⎘" : "↗";
-    return `<button class="prompt-attachment prompt-file" type="button" ${action}><span class="prompt-file-icon">${escapeText(ext)}</span><span class="prompt-file-copy"><strong>${escapeText(h.att_name || "Attachment")}</strong><small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">${glyph}</span></button>`;
+    return `<button class="prompt-attachment prompt-file" type="button" ${action}><span class="prompt-file-icon">${escapeText(ext)}</span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "Attachment")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">${glyph}</span></button>`;
   }).join("");
   return `<div class="prompt-attachments" aria-label="Prompt attachments">${cards}</div>`;
 }

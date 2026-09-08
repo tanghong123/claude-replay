@@ -35,6 +35,7 @@ const productionCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/pr
 const viewportSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
 const previewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
+const componentsText = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
 const extractedCss = `${demo.slice(demo.indexOf("<style>\n") + 8, demo.indexOf("\n</style>", demo.indexOf("<style>\n")))}\n`;
 const extractedShell = demo.slice(demo.indexOf("<body>\n") + 7, demo.indexOf('<script src="sample-transcript-data.js"></script>'));
 assert.equal(referenceCss, extractedCss, "reference CSS must remain an exact demo extraction");
@@ -46,6 +47,13 @@ assert.match(viewportSource, /reconcile\(/, "scrolling must incrementally reconc
 assert.doesNotMatch(viewportSource, /behavior:\s*smooth/, "tail following must converge without cancellable smooth scrolling");
 assert.match(productionCss, /markdown-table-scroll>table\{display:table!important;width:100%!important/, "production markdown tables must fill their scroll viewport");
 assert.match(productionCss, /\.prompt-attachments\{/, "production-only prompt attachments must have a dedicated layout");
+// #171: the prompt attachment card names the reason before the affordance. The verb comes from
+// `att_kind` — the field the classic page and the shell's own renderer-note fallback have always
+// read — and it is fixed-width beside a name that ellipsizes, so a long filename cannot squeeze
+// the reason off the card.
+assert.match(componentsText, /class="prompt-file-kind">\$\{escapeText\(kind\)\}/, "the attachment card must render att_kind, not only the capability hint");
+assert.match(componentsText, /kind === "image" \? "" :/, "…and suppress it only for images, whose card already IS the medium");
+assert.match(productionCss, /\.prompt-file-kind\{flex:none/, "the reason must hold its width while the filename ellipsizes");
 assert.match(productionCss, /\.input-request\{/, "native input history must not render as raw JSON");
 assert.match(productionCss, /\.turn\.proposed-plan\{/, "semantic proposed plans must have a dedicated surface");
 assert.match(productionCss, /\.fence-h\{/, "safe markdown fences must keep their toolbar inside the code surface");
