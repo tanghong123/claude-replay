@@ -79,7 +79,11 @@ function rendererBody(view, state) {
     return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button>${capability.action !== "reveal" && h.att_path && h.att_sig ? `<button class="artifact-link artifact-link-secondary" data-attachment="${escapeText(view.id || "")}" data-attachment-action="reveal" data-path="${escapeText(h.att_path)}" data-sig="${escapeText(h.att_sig)}">Reveal in file manager</button>` : ""}</div>`;
   }
   if (view.renderer === "bash") return `<div class="renderer-terminal ${view.error ? "error" : ""}"><span class="output">${bodyHtml(view, state) || "No output recorded"}</span></div>`;
-  return bodyHtml(view, state) || `<div class="renderer-note"><p>No additional details recorded.</p></div>`;
+  // #168: a record with nothing to show renders NOTHING. A card whose only content is a sentence
+  // saying it has no content is furniture — a border, a ground and ~50px of column to tell the
+  // reader what the head already told them. The head stops offering a chevron for it too (see
+  // `noninteractive` below), so it never opens onto emptiness either.
+  return bodyHtml(view, state) || "";
 }
 
 function renderRenderer(view, index, state) {
@@ -89,7 +93,12 @@ function renderRenderer(view, index, state) {
   // input requests and queued/running work remain open because they need immediate attention.
   const defaultClosed = rendererStartsClosed(view);
   const closed = state.folds.has(key) ? state.folds.get(key) : defaultClosed;
-  const noninteractive = view.renderer === "thinking" && !view.html && !children;
+  // A head is interactive when there is something under it. Asked of the BODY THAT WILL RENDER
+  // rather than of `view.html`, because a record can have parts and no html, or html and a body
+  // that renders to nothing — and #168 made the empty case really empty, so the two questions
+  // ("is there a body" and "does the body render") had to become one.
+  const bodyMarkup = rendererBody(view, state);
+  const noninteractive = !bodyMarkup && !children;
   const title = view.name || view.renderer || "Record";
   // The state word and the pill are the shared head module's (#117): a failure names its word
   // and its exit code, anything else shows the chips' text.
@@ -98,7 +107,7 @@ function renderRenderer(view, index, state) {
     ? `<div class="renderer-head" aria-label="Thinking recorded"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span><span class="renderer-target"></span><span class="renderer-state"></span></div>`
     : `<button class="renderer-head" type="button" aria-expanded="${!closed}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${view.path && (view.fileSig || view.revealSig) ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${referenceAction(view) === "preview" ? "Open in the preview pane" : "Reveal in file manager"}">${escapeText(view.summary || "")}</span>` : `<span class="renderer-target">${escapeText(view.summary || "")}</span>`}<span class="renderer-state" title="${escapeText(status)}">${escapeText(view.state ? view.pill : status === "completed" ? "" : status)}</span></button>`;
   const toolName = view.t === "tool" ? ` data-tool-name="${escapeText(view.name)}"` : "";
-  return `<div class="turn assistant renderer-turn"${view.run ? ` data-run="${escapeText(view.run)}"` : ""} data-kind="${escapeText(view.t)}" data-record-kind="${escapeText(view.raw?.kind || view.renderer)}"${toolName} data-block-index="${escapeText(index)}"><div class="renderer ${noninteractive ? "noninteractive" : closed ? "closed" : ""}" data-renderer data-record-id="${escapeText(key)}" data-renderer-kind="${escapeText(view.renderer)}" data-state="${escapeText(status)}"${state.fullTargets?.has(key) ? ' data-target="full"' : ""}>${head}${view.id ? `<button class="spot-link renderer-spot" type="button" data-spot-link="${escapeText(view.id)}" aria-label="Copy a link to this call" title="Copy a link to this call"><span aria-hidden="true">#</span></button>` : ""}${view.children?.length ? `<button class="renderer-children-toggle" type="button" data-renderer-children-bulk aria-pressed="false" title="Expand all nested levels">${svg("expandStack")}</button>` : ""}${noninteractive ? "" : `<div class="renderer-body"><div class="renderer-output">${rendererBody(view, state)}</div>${children}</div>`}${view.run ? fleetHtml(view.run, state) : ""}</div></div>`;
+  return `<div class="turn assistant renderer-turn"${view.run ? ` data-run="${escapeText(view.run)}"` : ""} data-kind="${escapeText(view.t)}" data-record-kind="${escapeText(view.raw?.kind || view.renderer)}"${toolName} data-block-index="${escapeText(index)}"><div class="renderer ${noninteractive ? "noninteractive" : closed ? "closed" : ""}" data-renderer data-record-id="${escapeText(key)}" data-renderer-kind="${escapeText(view.renderer)}" data-state="${escapeText(status)}"${state.fullTargets?.has(key) ? ' data-target="full"' : ""}>${head}${view.id ? `<button class="spot-link renderer-spot" type="button" data-spot-link="${escapeText(view.id)}" aria-label="Copy a link to this call" title="Copy a link to this call"><span aria-hidden="true">#</span></button>` : ""}${view.children?.length ? `<button class="renderer-children-toggle" type="button" data-renderer-children-bulk aria-pressed="false" title="Expand all nested levels">${svg("expandStack")}</button>` : ""}${noninteractive ? "" : `<div class="renderer-body"><div class="renderer-output">${bodyMarkup}</div>${children}</div>`}${view.run ? fleetHtml(view.run, state) : ""}</div></div>`;
 }
 
 /** The fleet a workflow call launched (#119), as the classic page's `fillFleet` draws it: one

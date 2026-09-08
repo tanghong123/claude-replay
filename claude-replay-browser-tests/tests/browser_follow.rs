@@ -3356,10 +3356,10 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
     );
     harness::until(
         &tab,
-        "!document.querySelector('[data-nav-card=\"turns\"]').classList.contains('open')",
-        "the turns head (its label) to fold its pane",
+        "(function(){ var c = document.querySelector('[data-nav-card=\"turns\"]'); var b = c.querySelector(':scope > .outline-card-body'); return !c.classList.contains('open') && Math.round(b.getBoundingClientRect().height) === 0; })()",
+        "the turns head (its label) to fold its pane, all the way shut",
         std::time::Duration::from_secs(5),
-        "document.querySelector('[data-nav-card=\"turns\"]').className",
+        "(function(){ var c = document.querySelector('[data-nav-card=\"turns\"]'); return c.className + ' h=' + Math.round(c.querySelector(':scope > .outline-card-body').getBoundingClientRect().height); })()",
     );
     let folded = harness::probe(&tab, state);
     assert_eq!(
@@ -5202,15 +5202,22 @@ fn the_app_shell_raw_toggle_reveals_the_same_way_on_every_turn() {
             "…and agent turns behave identically, which is the whole point: {seen}"
         );
     }
-    // The anchor is the control that stays, and it stays on both kinds alike.
-    assert_eq!(
-        seen["userAnchor"]["shown"], seen["userAnchor"]["n"],
-        "the anchor is drawn at rest on a user turn: {seen}"
-    );
-    assert_eq!(
-        seen["agentAnchor"]["shown"], seen["agentAnchor"]["n"],
-        "…and on an agent turn: {seen}"
-    );
+    // #167 reversed #162 here: the anchor is NOT drawn at rest either. The owner asked for the
+    // chip, not a column of them — "too many #s" — so both controls follow one rule, and the
+    // reader sees the pair only on the block they are pointing at. Because #162 gave each a real
+    // SLOT the reveal costs no reflow, which is why hiding them is safe to do.
+    if !hoverless {
+        assert_eq!(
+            seen["userAnchor"]["shown"].as_i64().unwrap_or(-1),
+            0,
+            "no anchor is drawn at rest on a user turn either: {seen}"
+        );
+        assert_eq!(
+            seen["agentAnchor"]["shown"].as_i64().unwrap_or(-1),
+            0,
+            "…nor on an agent turn: {seen}"
+        );
+    }
 }
 
 /// #159. The reader chooses which panes the outline has at all, from a control on its caption.
@@ -5354,11 +5361,13 @@ fn the_app_shell_opens_a_pushed_shut_pane_from_its_head() {
         &tab,
         "document.querySelector('[data-nav-card=\"turns\"] [data-nav-card-toggle]').click(); 'ok'",
     );
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let reopened = harness::eval(&tab, &format!("{body_of}('turns')"));
-    assert!(
-        (reopened.as_f64().unwrap_or(0.0) - opened.as_f64().unwrap_or(-1.0)).abs() <= 2.0,
-        "the head pops it open, all the way: {opened} -> {pushed} -> {reopened}"
+    let want = opened.as_f64().unwrap_or(-1.0);
+    harness::until(
+        &tab,
+        &format!("Math.abs({body_of}('turns') - {want}) <= 2"),
+        "the head to pop the pane open all the way",
+        std::time::Duration::from_secs(5),
+        &format!("{body_of}('turns') + ' (was shut at ' + {pushed} + ')'"),
     );
 }
 
@@ -5431,6 +5440,59 @@ fn the_app_shell_a_panes_own_list_takes_the_wheel() {
     assert!(
         handed["body"].as_f64().unwrap_or(1e9) < before["body"].as_f64().unwrap_or(0.0),
         "…and once the list has nothing left to give, the chain takes the push: {before} -> {handed}"
+    );
+    drop(monitor);
+}
+
+/// #168. A record with nothing to show renders nothing. The owner photographed an Activity fold
+/// whose body was a bordered card containing only "No additional details recorded." — a card
+/// whose sole content is a sentence saying it has no content, costing a border, a ground and
+/// ~50px of column to repeat what the head already said.
+///
+/// The second half matters as much: a head with nothing under it must not present itself as
+/// openable, or removing the placeholder just trades a useless card for a fold that opens onto
+/// emptiness.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_renders_nothing_for_a_record_with_nothing_to_show() {
+    let _serial = serial();
+    let base = base("appshell-empty-body");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000168".to_string();
+    // A tool call whose result carries no text at all — the shape that produced the screenshot.
+    let mut transcript = harness::long_session(8, harness::Shape::default());
+    transcript += &harness::user_at("run the thing", &harness::now_minus(90));
+    transcript += &harness::tool_open_at("t-empty", &harness::now_minus(80));
+    transcript += &harness::tool_result_text("t-empty", "", &harness::now_minus(70));
+    transcript += &harness::assistant_at("done", &harness::now_minus(60));
+    stores.claude_session(&sid, &transcript);
+    let monitor = Monitor::spawn(Kind::V2, 2897, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window')",
+        "the app shell to mount the fixture",
+        std::time::Duration::from_secs(20),
+        "document.body.innerText.slice(0, 120)",
+    );
+    // Open everything, so an empty body would have been rendered if there were one.
+    for _ in 0..2 {
+        harness::eval(&tab, "(function(){ document.querySelectorAll('.process-surface.closed [data-process-toggle]').forEach(function (b) { b.click(); }); document.querySelectorAll('.renderer.closed > button.renderer-head').forEach(function (h) { h.click(); }); return 'ok'; })()");
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let seen = harness::probe(&tab, "(function(){ var t = document.querySelector('.transcript'); var empties = [...t.querySelectorAll('.renderer-output')].filter(function (o) { return !o.innerHTML.trim(); }).length; var openable = [...t.querySelectorAll('.renderer')].filter(function (r) { var body = r.querySelector(':scope > .renderer-body'); var head = r.querySelector(':scope > button.renderer-head'); return head && body && !body.textContent.trim(); }).length; return { placeholder: t.innerText.indexOf('No additional details recorded.'), emptyOutputs: empties, openableButEmpty: openable }; })()");
+    assert_eq!(
+        seen["placeholder"].as_i64().unwrap_or(0),
+        -1,
+        "nothing says it has nothing to say: {seen}"
+    );
+    assert_eq!(
+        seen["openableButEmpty"].as_i64().unwrap_or(-1),
+        0,
+        "…and no head offers to open onto emptiness: {seen}"
     );
     drop(monitor);
 }

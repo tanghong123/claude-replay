@@ -760,6 +760,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(navCss, /\.session-navigator>\.outline-card\{position:sticky;top:var\(--slot,0px\);margin:0 0 8px;background:var\(--outline-surface,var\(--bg\)\)\}/, "the cards are sticky, opaque, and carry no top margin to push them off their slot");
   assert.doesNotMatch(navCss, /\.session-navigator:after\{content:""/, "the floor box is gone (#139) — it was dead scroll past the point where every drawer is shut");
   assert.doesNotMatch(navCss, /\.outline-slide\{/, "#157: no spacer rule survives either");
+  // #167: the anchor is revealed on the block the pointer is over, not drawn on every one. A
+  // hover RULE is the one thing a browser case cannot drive without synthesising a real pointer,
+  // so it is pinned here — the case next door holds the half that is observable, that nothing is
+  // drawn at rest.
+  assert.match(navCss, /\.turn:hover>\.spot-link,\.turn:focus-within>\.spot-link,\.spot-link:focus-visible\{opacity:1\}/, "a turn reveals its own spot controls");
+  assert.match(navCss, /\.renderer:hover>\.renderer-spot,\.renderer:focus-within>\.renderer-spot/, "…and so does a fold head");
+  assert.match(navCss, /@media\(hover:none\)\{\.spot-link,\.renderer>\.renderer-spot\{opacity:1\}/, "…while a device that cannot hover keeps both reachable");
   assert.doesNotMatch(appSource, /uiState\.navigatorHidden/, "#148: no hidden flag is read anywhere");
   // The two affordances that remain have to BE there, since nothing else can reach the states.
   assert.match(appSource, /byId\("navigatorClose"\)\.onclick = \(\) => toggleNavigator\(false\)/, "the caption collapses to the rail");
