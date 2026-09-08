@@ -5496,3 +5496,62 @@ fn the_app_shell_renders_nothing_for_a_record_with_nothing_to_show() {
     );
     drop(monitor);
 }
+
+/// #166. The transcript's ranking, read at a glance: what the agent CHOSE to tell the reader —
+/// its Progress commentary — outranks what it did to get there, the Thinking and Activity that
+/// carried it. The owner reported the inverse: "the progress blocks are the ones that agents
+/// intend to communicate to the user, while thinking and activities are really background."
+///
+/// Asserted as CONTRAST against the ground rather than as darkness, so the same case holds in
+/// both themes: in light the message is darker than the background labels, in dark it is
+/// lighter, and in both it stands further from the page than they do.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_ranks_progress_above_thinking_and_activity() {
+    let _serial = serial();
+    let base = base("appshell-progress-rank");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000166".to_string();
+    let mut transcript = harness::long_session(6, harness::Shape::default());
+    transcript += &harness::user_at("do the thing", &harness::now_minus(120));
+    transcript += &harness::thinking_at("weighing how to start", &harness::now_minus(110));
+    // COMMENTARY, and the signal for it is `stop_reason: "tool_use"` — Claude writes no phase
+    // field, but a completed message that stopped to call a tool has introduced more work in
+    // this turn, which is what makes its prose Progress rather than the answer
+    // (`assistant_phase`, claude/model.rs). The harness's own builder sets no stop_reason, so
+    // this record is written here rather than borrowed.
+    transcript += &format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"stop_reason\":\"tool_use\",\"content\":[{{\"type\":\"text\",\"text\":\"Reading the config first.\"}}]}},\"timestamp\":\"{}\"}}\n",
+        harness::now_minus(100)
+    );
+    transcript += &harness::tool_open_at("t-rank", &harness::now_minus(90));
+    transcript += &harness::tool_result_at("t-rank", &harness::now_minus(80));
+    transcript += &harness::assistant_at("done", &harness::now_minus(70));
+    stores.claude_session(&sid, &transcript);
+    let monitor = Monitor::spawn(Kind::V2, 2898, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.process-commentary-copy') && !!document.querySelector('.renderer[data-renderer-kind=\"thinking\"] .renderer-title')",
+        "a progress commentary and a thinking head to render",
+        std::time::Duration::from_secs(20),
+        "document.body.innerText.slice(0, 160)",
+    );
+    let seen = harness::probe(&tab, "(function(){ function lum(c){ var m = c.match(/[\\d.]+/g).map(Number); var f = m.slice(0,3).map(function (v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); return 0.2126*f[0] + 0.7152*f[1] + 0.0722*f[2]; } function read(sel){ var e = document.querySelector(sel); if (!e) return null; var cs = getComputedStyle(e); return { size: parseFloat(cs.fontSize), lum: lum(cs.color) }; } function ground(el){ for (var e = el; e; e = e.parentElement) { var c = getComputedStyle(e).backgroundColor; var m = c.match(/[\\d.]+/g); if (m && (m.length < 4 || Number(m[3]) > 0)) return lum(c); } return 1; } var bg = ground(document.querySelector('.process-commentary-copy')); var msg = read('.process-commentary-copy'); var label = read('.process-commentary-label'); var think = read('.renderer[data-renderer-kind=\"thinking\"] .renderer-title'); return { bg: bg, msgSize: msg.size, msgContrast: Math.abs(msg.lum - bg), labelSize: label.size, thinkSize: think.size, thinkContrast: Math.abs(think.lum - bg) }; })()");
+    assert!(
+        seen["msgContrast"].as_f64().unwrap_or(0.0) > seen["thinkContrast"].as_f64().unwrap_or(1.0),
+        "the message stands further from the page than the background labels do: {seen}"
+    );
+    assert!(
+        seen["msgSize"].as_f64().unwrap_or(0.0) >= seen["thinkSize"].as_f64().unwrap_or(99.0),
+        "…and is at least as large: {seen}"
+    );
+    assert!(
+        seen["labelSize"].as_f64().unwrap_or(0.0) >= seen["thinkSize"].as_f64().unwrap_or(99.0),
+        "…as is the Progress label itself: {seen}"
+    );
+    drop(monitor);
+}
