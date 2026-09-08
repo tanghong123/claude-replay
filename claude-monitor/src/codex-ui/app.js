@@ -809,19 +809,67 @@ const outlineSummary = (active, done, total) => !total ? "0" : `${active ? `<spa
 // The info pane (#67, #68): only what the shell does not already show — the title, the agent and
 // the project are in the header and the tree row, so the Session group carries status and
 // counts; the Usage group has the cached-read tokens and, when the session compacted, the
+/* #170. INFO LEAVES THE DRAWER STACK. Its content is reference material — model, token columns,
+ * cwd, the runtime settings — asked once and not acted on, so a quarter of the column for it is
+ * over-weighted. But two of its values are not reference material at all: the COST, which the
+ * reader watches climb through a long run, and CONTEXT LEFT, which predicts the next compaction.
+ * Those two stay ambient in a one-line footer strip, in the same ~40px the card head used, and
+ * the rest goes behind the glyph beside them.
+ *
+ * Peek on HOVER, pin on CLICK. Auto-hide alone would strand `infoFolds` (#89 persists per-group
+ * fold state precisely because readers keep some of this standing), leave keyboard users no
+ * target, and make a value impossible to select and copy — a hover popover is fine for an action
+ * menu and wrong for a surface you read inside.
+ */
+const outlineFooter = document.createElement("div");
+outlineFooter.className = "outline-footer";
+outlineFooter.id = "outlineFooter";
+outlineFooter.innerHTML = '<span class="outline-footer-cost" id="outlineFooterCost">—</span><span class="outline-footer-context" id="outlineFooterContext"></span><button class="outline-footer-info" id="outlineFooterInfo" type="button" aria-haspopup="dialog" aria-expanded="false" title="Session details"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></button>';
+/** Cost, short enough for a 40px rail. "$6.9k" keeps the reader watching it move; the exact
+ *  figure is one hover away, which is the trade the owner chose over dropping it. */
+function shortCost(value) {
+  const n = Number(value);
+  if (!isFinite(n)) return "—";
+  if (n >= 1000) return `$${(n / 1000).toFixed(1)}k`;
+  if (n >= 100) return `$${n.toFixed(0)}`;
+  return `$${n.toFixed(2)}`;
+}
+// Held by REFERENCE, never through `byId`: these are built here, and the contract's rule that
+// every `byId` names an element of the generated shell is worth keeping exact.
+const footerCost = outlineFooter.querySelector(".outline-footer-cost");
+const footerContext = outlineFooter.querySelector(".outline-footer-context");
+const footerInfo = outlineFooter.querySelector(".outline-footer-info");
+function paintOutlineFooter(row, usage) {
+  const cost = row && row.cost != null ? Number(row.cost) : null;
+  const subs = row && row.costSubs ? Number(row.costSubs) : 0;
+  // A sub-agent roll-up shows SPLIT (own + sub-agents) with the total in the hover: the own share
+  // is what the transcript's usage panel reports, so one opaque total read as a mismatch.
+  if (cost != null && subs) {
+    footerCost.textContent = `~$${(cost - subs).toFixed(2)} + $${subs.toFixed(2)} sub`;
+    footerCost.title = `total ~$${cost.toFixed(2)} = this session $${(cost - subs).toFixed(2)} + sub-agents $${subs.toFixed(2)}`;
+  } else {
+    footerCost.textContent = cost != null ? `~$${cost.toFixed(2)}` : usage.cost || "—";
+    footerCost.title = "";
+  }
+  footerCost.dataset.short = cost != null ? shortCost(cost) : "—";
+  const rt = usage.runtime || {};
+  const left = rt.context_left != null ? `${rt.context_left}% left` : "";
+  footerContext.textContent = left;
+  footerContext.hidden = !left;
+}
 // classic panel's summary ("24× compacted, 4.0M dropped" — a real fact even at zero tokens).
 function renderSessionInfo(turns, agents) {
   const row = selectedRow(), meta = recordState.meta || {}, usage = meta.usage || {};
+  // #170: BEFORE the early return. The strip is always on screen, so it always has to say
+  // something — a session with no cost yet shows an em dash rather than a stale figure or a gap.
+  paintOutlineFooter(row, usage);
   if (!row) {
-    byId("navigatorSessionSummary").textContent = "—";
     byId("navigatorSession").innerHTML = '<div class="activity-empty">No session selected</div>';
     return;
   }
-  // A sub-agent roll-up shows SPLIT (own + sub-agents), the total in the hover: the own share
-  // is what the transcript's usage panel reports, so one opaque total read as a mismatch.
-  const summary = byId("navigatorSessionSummary");
-  if (row.cost != null && row.costSubs) { const own = Number(row.cost) - Number(row.costSubs); summary.textContent = `~$${own.toFixed(2)} + $${Number(row.costSubs).toFixed(2)} sub-agents`; summary.title = `total ~$${Number(row.cost).toFixed(2)} = this session $${own.toFixed(2)} + sub-agents $${Number(row.costSubs).toFixed(2)}`; }
-  else { summary.textContent = row.cost != null ? `~$${Number(row.cost).toFixed(2)}` : usage.cost || "—"; summary.title = ""; }
+  // #170: the card head's cost summary went with the card. Cost is the FOOTER STRIP's now, split
+  // the same way — the own share in the text, the total in the hover — because the own share is
+  // what the transcript's usage panel reports and one opaque total read as a mismatch.
   // Each subsection folds on its own label and the choice is the READER's, kept across sessions
   // and reloads (#89): a folded group is its label alone, and the rows are not rendered at all.
   const group = (label, rows) => {
@@ -830,10 +878,17 @@ function renderSessionInfo(turns, agents) {
     const body = folded ? "" : rows.map(([name, value]) => `<div class="session-info-row"><span>${escapeText(name)}</span><strong>${escapeText(value ?? "—")}</strong></div>`).join("");
     return `<div class="session-info-group${folded ? " folded" : ""}" data-info-group="${escapeText(key)}"><button class="session-info-label" type="button" data-info-fold="${escapeText(key)}" aria-expanded="${!folded}"><span class="session-info-chevron" aria-hidden="true">${folded ? "▸" : "▾"}</span>${escapeText(label)}</button>${body}</div>`;
   };
-  byId("navigatorSession").innerHTML = `<div class="session-info">${group("Session", [["status", displayState(row).label], ["turns", turns], ["children", agents]])}${group("Usage", [["model", usage.model], ["input", usage.input || usage.input_tokens], ["output", usage.output || usage.output_tokens], ["cache read", usage.cache_read], ...(usage.compacted ? [["compacted", usage.compacted]] : []), ["est. cost", usage.cost || (row.cost != null ? `~$${Number(row.cost).toFixed(2)}` : "—")]])}${group("Runtime", [["cwd", meta.cwd || row._group?.secondary], ...runtimeRows(usage.runtime).filter(r => r.state !== "absent" || RUNTIME_ALWAYS.includes(r.key)).map(r => [r.label, runtimeText(r, agentName(row.agent))])])}</div>`;
+  // #170: the SESSION group is gone rather than relocated. All three rows are already ambient
+  // within 40px of here — status is the topbar `#statusChip` (with its dot and "inferred"
+  // detail) and the sidebar row chip, turns is `#navigatorTurnCount` on the Turns head,
+  // children is `#navigatorAgentCount` on the Agents head. Info's copy was duplication.
+  byId("navigatorSession").innerHTML = `<div class="session-info">${group("Usage", [["model", usage.model], ["input", usage.input || usage.input_tokens], ["output", usage.output || usage.output_tokens], ["cache read", usage.cache_read], ...(usage.compacted ? [["compacted", usage.compacted]] : []), ["est. cost", usage.cost || (row.cost != null ? `~$${Number(row.cost).toFixed(2)}` : "—")]])}${group("Runtime", [["cwd", meta.cwd || row._group?.secondary], ...runtimeRows(usage.runtime).filter(r => r.state !== "absent" || RUNTIME_ALWAYS.includes(r.key)).map(r => [r.label, runtimeText(r, agentName(row.agent))])])}</div>`;
 }
 
-byId("sessionNavigator").onclick = event => {
+// #170: the info content MOVED out of this column into the footer popover, so the delegation
+// has to reach both hosts — a handler bound to the navigator alone stopped hearing the fold
+// clicks the moment `#navigatorSession` left it.
+const navigatorClick = event => {
   const turn = event.target.closest("[data-turn-record]"); if (turn) { viewport.jumpToRecord(Number(turn.dataset.turnRecord), "turn"); return; }
   const infoFold = event.target.closest("[data-info-fold]");
   if (infoFold) {
@@ -858,6 +913,8 @@ byId("sessionNavigator").onclick = event => {
   }
   const rail = event.target.closest("[data-nav-card-open]"); if (rail) { uiState.navigatorOpen = true; persist(); renderNavigator(); setDrawerOpen(rail.dataset.navCardOpen, 1); }
 };
+byId("sessionNavigator").onclick = navigatorClick;
+outlineFooter.addEventListener("click", navigatorClick);
 
 // A record's lowercase text with its scope ownership (#101), cached per record object — the
 // store keeps committed records and re-creates rewritten ones, so a stale entry never lingers.
@@ -1502,6 +1559,64 @@ panesMenu.onclick = event => {
   }
   panesMenu.addEventListener("pointerenter", () => clearTimeout(panesCloseTimer));
   panesTrigger.addEventListener("keydown", event => { if (event.key === "Escape") setPanesMenu(false); });
+}
+{
+  // The Info card leaves the stack and its BODY becomes the popover's content, so everything
+  // `renderSessionInfo` writes — including the folding groups and their persisted state — keeps
+  // working untouched. The card itself is removed, not hidden: `drawerCards()` must not see it,
+  // and neither must the pane selector, which lists panes the reader can turn off.
+  const nav = byId("sessionNavigator");
+  const infoCard = nav.querySelector(':scope > [data-nav-card="session"]');
+  const infoBody = document.getElementById("navigatorSession"); // in the shell, but it MOVES here
+  const popover = document.createElement("div");
+  popover.className = "info-popover";
+  popover.id = "infoPopover";
+  popover.setAttribute("role", "dialog");
+  popover.setAttribute("aria-label", "Session details");
+  if (infoBody) popover.append(infoBody);
+  if (infoCard) infoCard.remove();
+  uiState.navPanes.delete("session");
+  outlineFooter.append(popover);
+  nav.after(outlineFooter);
+
+  const trigger = footerInfo;
+  let pinned = false;
+  let closeTimer = 0;
+  const show = open => {
+    popover.classList.toggle("open", open);
+    trigger.setAttribute("aria-expanded", String(open));
+  };
+  const peek = () => { clearTimeout(closeTimer); show(true); };
+  const leave = () => {
+    if (pinned) return;
+    clearTimeout(closeTimer);
+    closeTimer = setTimeout(() => {
+      if (!popover.contains(document.activeElement) && document.activeElement !== trigger) show(false);
+    }, 140);
+  };
+  for (const type of ["pointerenter", "focus"]) trigger.addEventListener(type, peek);
+  for (const node of [trigger, popover]) {
+    node.addEventListener("pointerleave", leave);
+    node.addEventListener("focusout", leave);
+  }
+  popover.addEventListener("pointerenter", () => clearTimeout(closeTimer));
+  // Click PINS it, so the reader can read inside it, fold a group, or select a value to copy.
+  trigger.addEventListener("click", () => { pinned = !pinned; show(pinned || true); if (!pinned) leave(); });
+  addEventListener("pointerdown", event => {
+    if (pinned && !popover.contains(event.target) && !trigger.contains(event.target)) { pinned = false; show(false); }
+  }, true);
+  addEventListener("keydown", event => { if (event.key === "Escape" && pinned) { pinned = false; show(false); } });
+  // The collapsed rail's Info button is the SAME control now — one gesture in both states,
+  // rather than click-in-rail and hover-when-open.
+  const railInfo = nav.parentElement?.querySelector('[data-nav-card-open="session"]');
+  if (railInfo) {
+    railInfo.removeAttribute("data-nav-card-open");
+    railInfo.id = "outlineRailInfo";
+    railInfo.title = "Session details";
+    for (const type of ["pointerenter", "focus"]) railInfo.addEventListener(type, peek);
+    railInfo.addEventListener("pointerleave", leave);
+    railInfo.addEventListener("click", () => { pinned = !pinned; show(pinned || true); if (!pinned) leave(); });
+  }
 }
 applyPanes(); // the stored choice, before anything measures the column
 byId("navigatorClose").onclick = () => toggleNavigator(false);

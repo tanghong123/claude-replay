@@ -892,7 +892,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // #67 / #68 / #69: the info pane shows only what the shell does not, with the cached-read and
 // compaction facts; the turns pane shows compactions as epoch ticks.
 {
-  assert.match(appSource, /group\("Session", \[\["status", displayState\(row\)\.label\], \["turns", turns\], \["children", agents\]\]\)/, "no title / agent / project rows — the header and the tree row show them");
+  // #170 went further than "only what the shell does not": the whole SESSION group is gone, and
+  // that is what the audit for moving Info out of the drawer stack found — status is already the
+  // topbar chip and the tree row chip, turns is on the Turns head, children is on the Agents
+  // head. The rule this pinned still holds, more strongly: the pane repeats nothing.
+  assert.doesNotMatch(appSource, /group\("Session",/, "the Session group is gone — every row of it was already ambient within 40px");
+  assert.match(appSource, /paintOutlineFooter\(row, usage\);/, "cost and context left are painted into the footer strip, where they stay visible");
+  assert.match(appSource, /function shortCost\(value\) \{/, "…and abbreviate for the 40px rail, so folding the column does not stop the reader watching cost");
   assert.match(appSource, /\["cache read", usage\.cache_read\], \.\.\.\(usage\.compacted \? \[\["compacted", usage\.compacted\]\] : \[\]\)/, "cached-read tokens and the compaction summary, when there is one");
   assert.match(appSource, /if \(record\.kind === "compaction"\) epochs\.push\(\{ at: i, tick: compactionTick\(record\.head \|\| \{\}\) \}\)/, "a compaction becomes an epoch tick from the record's facts");
   assert.match(appSource, /<button class="outline-epoch" type="button" data-turn-record="\$\{r\.at\}"/, "…that jumps to the compaction record");

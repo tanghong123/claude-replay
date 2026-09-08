@@ -1919,8 +1919,13 @@ fn the_classic_rail_clusters_a_family_and_hides_and_restores_a_row() {
     tab.navigate_to(&format!("http://127.0.0.1:2837/?ui=app&session={root_id}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
-    until(&tab, "!![...document.querySelectorAll('#navigatorSession .session-info-row')].find(r => r.querySelector('span') && r.querySelector('span').textContent === 'status')", "the app shell's info pane");
-    let status = eval(&tab, "([...document.querySelectorAll('#navigatorSession .session-info-row')].find(r => r.querySelector('span').textContent === 'status') || {}).querySelector('strong').textContent");
+    until(&tab, "!!document.getElementById('statusChip') && !!document.getElementById('statusChip').textContent.trim()", "the app shell's status chip");
+    // The chip carries a dot and, when the state was derived rather than stated, a "· inferred"
+    // suffix. The LABEL is the part the rail's tooltip is supposed to agree with.
+    let status = eval(
+        &tab,
+        "document.getElementById('statusChip').textContent.split('·')[0].trim()",
+    );
     let status = status.as_str().unwrap_or("").to_string();
     assert!(
         !status.is_empty() && tip.starts_with(&format!("{status} — ")),
@@ -3320,12 +3325,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
     let before = harness::probe(&tab, state);
     assert_eq!(
         before["open"],
-        serde_json::json!([
-            "turns:open",
-            "tasks:folded",
-            "agents:folded",
-            "session:folded"
-        ]),
+        serde_json::json!(["turns:open", "tasks:folded", "agents:folded"]),
         "a fresh shell: the turns pane open, the others folded: {before}"
     );
     harness::eval(
@@ -3342,12 +3342,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
     let opened = harness::probe(&tab, state);
     assert_eq!(
         opened["open"],
-        serde_json::json!([
-            "turns:open",
-            "tasks:open",
-            "agents:folded",
-            "session:folded"
-        ]),
+        serde_json::json!(["turns:open", "tasks:open", "agents:folded"]),
         "only the tasks pane changed: {opened}"
     );
     harness::eval(
@@ -3364,12 +3359,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
     let folded = harness::probe(&tab, state);
     assert_eq!(
         folded["open"],
-        serde_json::json!([
-            "turns:folded",
-            "tasks:open",
-            "agents:folded",
-            "session:folded"
-        ]),
+        serde_json::json!(["turns:folded", "tasks:open", "agents:folded"]),
         "folding turns left tasks open: {folded}"
     );
     // 3 + 4: a folded pane is its head alone — no body, no rows.
@@ -3380,9 +3370,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
     assert!(
-        bodies.iter().any(|b| b == "turns:0")
-            && bodies.iter().any(|b| b == "agents:0")
-            && bodies.iter().any(|b| b == "session:0"),
+        bodies.iter().any(|b| b == "turns:0") && bodies.iter().any(|b| b == "agents:0"),
         "folded panes show nothing: {folded}"
     );
     assert!(
@@ -3392,11 +3380,11 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
         "the open pane shows its body: {folded}"
     );
     // Open every pane: 5, they stack top to bottom in order; 6, the column scrolls as a whole.
-    harness::eval(&tab, "['turns', 'agents', 'session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (!c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"' + k + '\"]').click(); }); 'ok'");
+    harness::eval(&tab, "['turns', 'agents', 'tasks'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (!c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"' + k + '\"]').click(); }); 'ok'");
     harness::until(
         &tab,
-        "document.querySelectorAll('.outline-card.open').length === 4",
-        "all four panes to open",
+        "document.querySelectorAll('.outline-card.open').length === 3",
+        "all three panes to open",
         std::time::Duration::from_secs(5),
         "document.querySelectorAll('.outline-card.open').length",
     );
@@ -3759,7 +3747,7 @@ fn the_app_shell_outline_is_an_accordion() {
         std::time::Duration::from_secs(20),
         "document.body.innerText.slice(0, 120)",
     );
-    harness::eval(&tab, "['turns', 'agents', 'session', 'tasks'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (c && !c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); }); 'ok'");
+    harness::eval(&tab, "['turns', 'agents', 'tasks'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (c && !c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); }); 'ok'");
     std::thread::sleep(std::time::Duration::from_millis(500));
     harness::eval(
         &tab,
@@ -3781,16 +3769,22 @@ fn the_app_shell_outline_is_an_accordion() {
     // one asserted: the opened drawer's body is directly below its own head, and it is really
     // OPEN, at its natural height, not immediately eaten again by a budget the slide had already
     // spent. (That is what `slideDrawersTo(min(s, prefix))` is for.)
-    harness::eval(&tab, "document.querySelector('[data-nav-card=\"session\"] [data-nav-card-toggle]').click(); 'ok'");
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-nav-card=\"agents\"] [data-nav-card-toggle]').click(); 'ok'",
+    );
     std::thread::sleep(std::time::Duration::from_millis(400));
     harness::eval(
         &tab,
         "(function(){ var nav = document.querySelector('.session-navigator'); nav.dispatchEvent(new WheelEvent('wheel', { deltaY: 600, bubbles: true, cancelable: true })); return 'ok'; })()",
     );
     std::thread::sleep(std::time::Duration::from_millis(300));
-    harness::eval(&tab, "document.querySelector('[data-nav-card=\"session\"] [data-nav-card-toggle]').click(); 'ok'");
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-nav-card=\"agents\"] [data-nav-card-toggle]').click(); 'ok'",
+    );
     std::thread::sleep(std::time::Duration::from_millis(900));
-    let landed = harness::probe(&tab, "(function(){ var card = document.querySelector('[data-nav-card=\"session\"]'); var head = card.querySelector(':scope > .outline-card-head'); var body = card.querySelector(':scope > .outline-card-body'); var was = body.style.height; body.style.height = 'auto'; var natural = body.offsetHeight; body.style.height = was; return { open: card.classList.contains('open'), height: Math.round(body.getBoundingClientRect().height), natural: natural, bodyBelow: Math.round(body.getBoundingClientRect().top - head.getBoundingClientRect().bottom) }; })()");
+    let landed = harness::probe(&tab, "(function(){ var card = document.querySelector('[data-nav-card=\"agents\"]'); var head = card.querySelector(':scope > .outline-card-head'); var body = card.querySelector(':scope > .outline-card-body'); var was = body.style.height; body.style.height = 'auto'; var natural = body.offsetHeight; body.style.height = was; return { open: card.classList.contains('open'), height: Math.round(body.getBoundingClientRect().height), natural: natural, bodyBelow: Math.round(body.getBoundingClientRect().top - head.getBoundingClientRect().bottom) }; })()");
     assert_eq!(landed["open"], true, "the drawer opened: {landed}");
     assert!(
         (landed["height"].as_f64().unwrap_or(0.0) - landed["natural"].as_f64().unwrap_or(-1.0))
@@ -3826,7 +3820,7 @@ fn the_app_shell_info_subsections_fold_and_the_choice_persists() {
     let tab = browser.new_tab().unwrap();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={first}"));
-    let open_info = "var c = document.querySelector('[data-nav-card=\"session\"]'); if (c && !c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); 'ok'";
+    let open_info = "(function(){ var t = document.querySelector('.outline-footer-info'); if (t && !document.getElementById('infoPopover').classList.contains('open')) t.click(); return 'ok'; })()";
     let usage_rows = "(function(){ var g = document.querySelector('[data-info-group=\"usage\"]'); return g ? g.querySelectorAll('.session-info-row').length : -1; })()";
     let usage_expanded = "(function(){ var b = document.querySelector('[data-info-fold=\"usage\"]'); return b ? b.getAttribute('aria-expanded') : 'missing'; })()";
     harness::eval(&tab, open_info);
@@ -3995,10 +3989,12 @@ fn the_app_shell_info_and_turns_panes_show_the_compaction() {
             "the {gone} row is gone — the header shows it: {info}"
         );
     }
-    assert!(
-        info.get("status").is_some() && info.get("turns").is_some(),
-        "status and counts stay: {info}"
-    );
+    for gone in ["status", "turns", "children"] {
+        assert!(
+            info.get(gone).is_none(),
+            "the {gone} row is gone too (#170) — the topbar chip and the pane heads carry it: {info}"
+        );
+    }
     assert!(
         info.get("cache read").is_some(),
         "the cached-read row is there: {info}"
@@ -4794,11 +4790,17 @@ fn the_app_shell_outline_toggle_completes_the_slide() {
     // 1. At rest, the toggle shuts THAT drawer and no other.
     harness::eval(
         &tab,
-        "document.querySelector('[data-nav-card-toggle=\"session\"]').click(); 'ok'",
+        "document.querySelector('[data-nav-card-toggle=\"agents\"]').click(); 'ok'",
     );
-    std::thread::sleep(std::time::Duration::from_millis(600));
+    harness::until(
+        &tab,
+        "Math.round(document.querySelector('[data-nav-card=\"agents\"] > .outline-card-body').getBoundingClientRect().height) === 0",
+        "the agents drawer to shut, all the way",
+        std::time::Duration::from_secs(5),
+        "Math.round(document.querySelector('[data-nav-card=\"agents\"] > .outline-card-body').getBoundingClientRect().height)",
+    );
     let one = harness::probe(&tab, heights);
-    assert_eq!(read(&one, "session"), 0.0, "the session drawer shut: {one}");
+    assert_eq!(read(&one, "agents"), 0.0, "the agents drawer shut: {one}");
     assert_eq!(
         read(&one, "turns"),
         turns_natural,
@@ -5554,4 +5556,141 @@ fn the_app_shell_ranks_progress_above_thinking_and_activity() {
         "…as is the Progress label itself: {seen}"
     );
     drop(monitor);
+}
+
+/// #170. Info leaves the drawer stack, and what was LIVE in it stays visible. The design review
+/// caught the regression this could have been: `row.cost` had exactly two homes in the app shell,
+/// both inside the Info pane, and the classic page — the reference — carries cost on every session
+/// card. Hiding it behind a hover would have made the shell worse than the reference on the one
+/// number a reader watches through a long run, and it would have killed the derivative: glance,
+/// glance, glance gives you the RATE for free; a self-hiding popup gives two unrelated scalars.
+///
+/// So cost and context-left live in a one-line strip at the foot of the column, and the reference
+/// material goes behind the glyph beside them — peek on hover, PIN on click, because a surface you
+/// read inside cannot close when the pointer leaves.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-footer", 2899);
+    harness::until(
+        &tab,
+        "!!document.getElementById('outlineFooter') && !!document.getElementById('infoPopover')",
+        "the outline footer strip and its info popover",
+        std::time::Duration::from_secs(15),
+        "document.querySelector('.session-navigator') ? 'no footer' : 'no column'",
+    );
+    let state = "(function(){ var f = document.getElementById('outlineFooter'); var pop = document.getElementById('infoPopover'); var r = f.getBoundingClientRect(); return { cards: [...document.querySelectorAll('#sessionNavigator > .outline-card')].map(function (c) { return c.dataset.navCard; }), footerH: Math.round(r.height), costShown: !!f.querySelector('.outline-footer-cost').textContent.trim(), short: f.querySelector('.outline-footer-cost').dataset.short, infoInside: !!pop.querySelector('#navigatorSession'), open: pop.classList.contains('open') }; })()";
+    let seen = harness::probe(&tab, state);
+    // Info is not a pane any more, and no pane was lost in the move.
+    assert!(
+        !seen["cards"]
+            .as_array()
+            .map(|c| c.iter().any(|v| v == "session"))
+            .unwrap_or(true),
+        "Info is out of the drawer stack: {seen}"
+    );
+    assert!(
+        seen["cards"].as_array().map(Vec::len).unwrap_or(0) >= 3,
+        "…and the other panes are still there: {seen}"
+    );
+    // What was live is still visible without asking for it.
+    assert!(
+        seen["footerH"].as_f64().unwrap_or(0.0) > 10.0 && seen["costShown"] == true,
+        "the strip carries cost, on screen, with nothing to open: {seen}"
+    );
+    assert!(
+        seen["short"].as_str().map(|v| !v.is_empty()).unwrap_or(false),
+        "…and an abbreviated form for the 40px rail, so folding does not stop the reader watching it: {seen}"
+    );
+    assert_eq!(
+        seen["infoInside"], true,
+        "the reference material moved wholesale, so its folding groups keep working: {seen}"
+    );
+    assert_eq!(seen["open"], false, "…and it starts shut: {seen}");
+    // Peek on hover.
+    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerenter', { bubbles: false })); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('infoPopover').classList.contains('open')",
+        "the glyph to peek",
+        std::time::Duration::from_secs(5),
+        "document.getElementById('infoPopover').className",
+    );
+    // Leaving closes a peek…
+    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false })); 'ok'");
+    harness::until(
+        &tab,
+        "!document.getElementById('infoPopover').classList.contains('open')",
+        "the peek to close when the pointer leaves",
+        std::time::Duration::from_secs(5),
+        "document.getElementById('infoPopover').className",
+    );
+    // …but a PIN survives it, which is what makes the panel readable and its values selectable.
+    harness::eval(
+        &tab,
+        "document.querySelector('.outline-footer-info').click(); 'ok'",
+    );
+    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false })); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let pinned = harness::probe(&tab, state);
+    assert_eq!(
+        pinned["open"], true,
+        "a pinned panel stays open after the pointer leaves: {pinned}"
+    );
+}
+
+/// #159 layout, reported with a screenshot: the Outline title had drifted to the centre and the
+/// selector's rows were 24px squares with their labels spilling outside the menu.
+///
+/// One cause for both, and it is a cascade collision no static check could see:
+/// `.outline-caption button` in reference.css is a DESCENDANT rule — `margin-left:auto` plus a
+/// 24x24 grid box — written for the single icon button the caption used to hold. Making the title
+/// a button (#159) and putting the menu inside the caption handed both of them that styling.
+/// Measured, not asserted from the CSS, because that is the only way this class of bug shows.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_outline_caption_and_its_menu_lay_out() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-caption-layout", 2901);
+    harness::until(
+        &tab,
+        "!!document.getElementById('navigatorPanesTrigger')",
+        "the Outline title",
+        std::time::Duration::from_secs(15),
+        "document.querySelector('.outline-caption') ? document.querySelector('.outline-caption').innerHTML.slice(0, 120) : 'no caption'",
+    );
+    harness::eval(&tab, "document.getElementById('navigatorPanesTrigger').dispatchEvent(new PointerEvent('pointerenter', { bubbles: false })); 'ok'");
+    harness::until(
+        &tab,
+        "!!document.querySelector('#navigatorPanesMenu .pane-option')",
+        "the pane rows",
+        std::time::Duration::from_secs(10),
+        "document.getElementById('navigatorPanesMenu') ? document.getElementById('navigatorPanesMenu').className : 'absent'",
+    );
+    let seen = harness::probe(&tab, "(function(){ function box(e){ var r = e.getBoundingClientRect(); return { l: Math.round(r.left), r: Math.round(r.right), w: Math.round(r.width), h: Math.round(r.height) }; } var cap = document.querySelector('.outline-caption'); var title = document.getElementById('navigatorPanesTrigger'); var menu = document.getElementById('navigatorPanesMenu'); var rows = [...menu.querySelectorAll('.pane-option')]; return { titleLeftAligned: Math.abs(title.getBoundingClientRect().left - (cap.getBoundingClientRect().left + parseFloat(getComputedStyle(cap).paddingLeft))) <= 2, title: box(title), rowsInside: rows.every(function (a) { var b = a.getBoundingClientRect(), m = menu.getBoundingClientRect(); return b.left >= m.left - 1 && b.right <= m.right + 1; }), narrowest: Math.min.apply(null, rows.map(function (a) { return Math.round(a.getBoundingClientRect().width); })), rowCount: rows.length, labels: rows.map(function (a) { return a.textContent.trim(); }) }; })()");
+    assert_eq!(
+        seen["titleLeftAligned"], true,
+        "the Outline title sits at the caption's left edge, not adrift in the middle: {seen}"
+    );
+    assert!(
+        seen["title"]["w"].as_f64().unwrap_or(0.0) > 30.0,
+        "…and is sized to its word, not squeezed into an icon button's 24px box: {seen}"
+    );
+    assert_eq!(
+        seen["rowsInside"], true,
+        "every row of the menu lies inside the menu: {seen}"
+    );
+    assert!(
+        seen["narrowest"].as_f64().unwrap_or(0.0) > 100.0,
+        "…at a readable width rather than an icon's: {seen}"
+    );
+    // #170 moved Info out of the stack, so it is not a pane the reader can turn off any more.
+    assert!(
+        !seen["labels"]
+            .as_array()
+            .map(|l| l.iter().any(|v| v == "Info"))
+            .unwrap_or(true),
+        "Info is not listed as a pane: {seen}"
+    );
 }
