@@ -193,7 +193,7 @@ export class Viewport extends VirtualWindow {
     this.state.following = true;
     this.state.newRecords = 0;
     this.actions.followChanged?.();
-    this.convergeBottom();
+    this.convergeBottom(true); // the reader ASKED for the end (#165)
     this.remember();
   }
 

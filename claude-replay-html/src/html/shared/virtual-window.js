@@ -551,10 +551,30 @@ class VirtualWindow {
   }
 
   /** Sit on the tail and stay there while the heights under it settle. */
-  convergeBottom() {
+  convergeBottom(commanded) {
     clearTimeout(this.bottomTimer);
     const settle = pass => {
       if (!this.following || !this.count) return;
+      // #165: the pin does not outrank a hand on the wheel. Converging writes `scrollTop`, and
+      // writing it under a reader who is mid-gesture is the same act `restoreDomAnchor` already
+      // refuses (#132 step 3) — the guard was simply never on this path. What it cost: measured
+      // on a session with queued prompts, whose pickups REWRITE the tail rather than extend it,
+      // an apply landed once a second through a five-second gesture and reset the reader to the
+      // end every time. They crawled 21px up and were slammed back, seven times, never reaching
+      // the 80px the hysteresis needs to unfollow. "It scrolls up and gets pulled down
+      // immediately", and "only after a few trials it would eventually allow me to scroll" —
+      // a trial only succeeded when no apply happened to land inside it.
+      //
+      // Deferred, never dropped: the reader is still following, so the tail is still theirs to
+      // sit on once they stop. Re-armed while they keep moving, exactly as `scheduleSettle`
+      // does for the correction it owes, and ended by the `following` check above the moment
+      // their gesture finally clears the slack. `commanded` is the exception: the jump-to-end
+      // pill, a keyboard End, a session opening at its tail. That click stamps input like any
+      // other, so without it the one converge the reader ASKED for would be the one deferred.
+      if (!commanded && this.readerOwnsPosition()) {
+        this.bottomTimer = setTimeout(() => settle(pass), this.userIntentMs);
+        return;
+      }
       const range = this.rangeAround(this.count - 1);
       this.reconcile(range.lo, range.hi, Infinity, false, null);
       this.frame.scrollTo(this.frame.scrollHeight());

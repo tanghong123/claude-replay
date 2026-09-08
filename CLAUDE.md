@@ -309,7 +309,16 @@ session picker · `clipboard.rs`. Only `app`/`view` are public.
 render core · `bundle.rs` the `--dump-html`/`--dump-all-html` offline writers · `serve.rs` the
 `--html` live server, which always tails; it serves over a loopback HTTP server since a
 `file://` page can't `fetch`) → one self-contained `.html` (fixed shell + `html/export.{css,js}` embedded; Rust
-emits an append-only JSON block stream, the JS renders it).
+emits a JSON block stream, the JS renders it).
+
+The stream is **append-only almost always, and the exception matters** (#165). A live delta
+carries `changed_from` — the index from which records were REWRITTEN — and the one thing that
+routinely makes it non-zero is a QUEUED prompt being picked up: the marker for it disappears and
+every marker still queued behind it shifts up a slot, so `[…, queue"second", queue"third"]`
+becomes `[…, queue"third", user"second"]`. Record ids are `b{n}` from a positional counter, so
+after that rewrite the SAME id names a DIFFERENT record — an anchor held across it resolves, to
+the wrong thing, rather than failing loudly. Anything that assumes the tail only grows (a
+viewport anchor, a height cache, an incremental index) has to survive this.
 
 **`claude-replay`** (root) — the thin assembly crate: clap CLI (`run_viewer`), `jdi/` the
 **`agent-jdi`** binary (unattended-run supervisor; see `src/jdi/DESIGN.md`), and compat

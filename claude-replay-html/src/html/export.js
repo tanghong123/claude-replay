@@ -1927,7 +1927,29 @@
       lastInputStamp = e.timeStamp || performance.now();
     }, { passive: true, capture: true });
   });
-  function toBottom() {
+  // The converge deferred while the reader is moving (#165), and the timer that pays it.
+  var bottomTimer = 0;
+  function toBottom(commanded) {
+    // #165: the pin does not outrank a hand on the wheel. Converging writes the scroll offset,
+    // and writing it under a reader mid-gesture is the same act `restoreAnchor` already refuses
+    // above — the guard was simply never on this path. What it cost, traced on the app shell's
+    // copy of this logic: a session with QUEUED prompts, whose pickups rewrite the tail rather
+    // than extend it, landed an apply once a second through a five-second gesture and reset the
+    // reader to the end every time. They crawled 21px up and were slammed back, seven times,
+    // never reaching the 80px the hysteresis needs to unpin. That is "it scrolls up and gets
+    // pulled down immediately", and "only after a few trials it would eventually allow me to
+    // scroll" is a trial that happened to fall between two applies.
+    //
+    // Deferred, never dropped — they are still following, so the tail is still theirs to sit on
+    // once they stop — and re-armed while they keep moving, as `scheduleSettle` does for the
+    // correction IT owes. `commanded` is the exception: the jump-to-bottom pill, a restore, the
+    // opening view. That click stamps input like any other, so without it the one converge the
+    // reader actually asked for would be the one deferred.
+    clearTimeout(bottomTimer);
+    if (!commanded && following && readerOwnsPosition()) {
+      bottomTimer = setTimeout(function () { if (following) toBottom(); }, USER_MS);
+      return;
+    }
     // CONVERGE, don't correct once. Each jump materializes a different tail whose real
     // heights replace estimates, which moves the true bottom again — so the fixed point
     // has to be iterated to. A single correction was enough while every measured height
@@ -2065,7 +2087,7 @@
   }
   badge.addEventListener("click", function () {
     setFollowing(true);
-    toBottom();
+    toBottom(true);
     clearNew();
   });
 
@@ -2170,7 +2192,7 @@
       }
     }
     setFollowing(true); // following when we left, or nothing left to land on — the tail
-    toBottom();
+    toBottom(true);
   }
 
   // Initial render from the inlined snapshot, then drop the inline copy: the
@@ -3632,7 +3654,7 @@
     // tail here first would flash the bottom on every session switch.
     if (!pendingRestore) {
       setFollowing(true);
-      toBottom();
+      toBottom(true);
     }
   }
 })();

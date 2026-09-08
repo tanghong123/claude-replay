@@ -5699,3 +5699,132 @@ fn app_shell_an_attachment_says_why_it_is_there() {
     let page = open(Surface::AppShell, &fx, 2925);
     scenario_an_attachment_says_why_it_is_there(&page.tab, Surface::AppShell, &fx);
 }
+
+// ── scenario: a converge must not outrank a hand on the wheel (#165) ─────────────────────────
+
+/// A session that ends the way the owner's did when they reported this: the agent is working and
+/// several prompts are QUEUED behind it. Queued markers are the one thing in the stream that is
+/// not append-only — measured with `--dump - --json` on a two-prompt fixture, a pickup rewrites
+/// the tail in place rather than extending it:
+///
+/// ```text
+/// before: [user, assistant, queue"second", queue"third"]
+/// after:  [user, assistant, queue"third",  user "second"]
+/// ```
+///
+/// So every pickup changes the identity AND the height of every record still queued behind it,
+/// once per poll, in exactly the region the reader is trying to scroll away from.
+fn fixture_queued_tail(name: &str, turns: u32) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(turns, Shape::default());
+    jsonl += &user_at("kick off the long one", &now_minus(300));
+    jsonl += &assistant_at("starting on it now", &now_minus(295));
+    for (i, text) in QUEUED.iter().enumerate() {
+        jsonl += &queued_at(text, &now_minus(290 - (i as u64 * 5)));
+    }
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture { base, path, turns }
+}
+
+const QUEUED: [&str; 4] = [
+    "queued one: check the formatter",
+    "queued two: then the linter",
+    "queued three: and the docs",
+    "queued four: finally the release notes",
+];
+
+/// #165, the owner on v1.234.0: "trying to scroll down the page at the bottom is not smooth. I
+/// see page flickering and only after a few trials it would eventually allow me to scroll. Feels
+/// like it scrolls up and gets pulled down immediately." Then the clue that made it
+/// reproducible: "often happens when there are queued messages."
+///
+/// NAMED FROM A TRACE, not from reading — the first reproduction attempt PASSED, because a fast
+/// gesture (six notches in 540ms) finished between two polls and no apply ever landed inside it.
+/// Instrumenting the engine's own decision points showed the real shape, once per poll for the
+/// whole five seconds of a slow gesture:
+///
+/// ```text
+/// t=2993 scroll   following=true owns=true gap=21  top=7116  verdict "none"
+/// t=3066 converge following=true owns=true gap=103 top=7116  from "apply"
+/// t=3067 scroll   following=true owns=true gap=0   top=7219  ← slammed back
+/// ```
+///
+/// The reader's gap NEVER passed 28px, so it never reached the 80px the hysteresis needs to
+/// unpin: every apply reset the accumulation before the next notch could add to it. That is the
+/// whole bug — `classifyScroll`'s verdicts were correct throughout ("none", `user: true`).
+///
+/// So the hand here is a SLOW one, 7px every 200ms: well inside the 320ms intent window, so the
+/// reader owns the position continuously, and slow enough that clearing the slack takes longer
+/// than one poll on either surface (shell 1000ms, classic 2000ms). That guarantees an apply
+/// lands mid-gesture, which is the condition the fast version only hit by luck.
+fn scenario_a_converge_yields_to_the_reader(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    // The agent takes the queued prompts one at a time — each pickup rewrites what is left.
+    let script: Vec<String> = QUEUED
+        .iter()
+        .enumerate()
+        .flat_map(|(i, text)| {
+            let at = now_minus(120 - (i as u64 * 10));
+            [user_at(text, &at), assistant_at("on it", &at)]
+        })
+        .collect();
+    let growth = LiveGrowth::start(fx.path.clone(), script, Duration::from_millis(1000));
+    let scroller = surface.scroller();
+    let target = match surface {
+        Surface::Classic => "window",
+        Surface::AppShell => scroller,
+    };
+    for _ in 0..25 {
+        eval(
+            tab,
+            &format!(
+                "(function(){{ var s = {scroller}; {target}.dispatchEvent(new WheelEvent('wheel', {{deltaY: -7, bubbles: true}})); s.scrollTo({{ top: Math.max(0, s.scrollTop - 7), behavior: 'instant' }}); return 'ok'; }})()"
+            ),
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    growth.finish(Duration::from_secs(30));
+    let gap = eval(
+        tab,
+        &format!("(function(){{ var s = {scroller}; return s.scrollHeight - s.clientHeight - s.scrollTop; }})()"),
+    )
+    .as_f64()
+    .unwrap_or(0.0);
+    // 175px asked for, 25 notches of 7. Measured on the fix: 222 on the shell, 572 on the classic
+    // page (which grows more between polls); measured on the code before it: 0 and 7. The band is
+    // wide because the two surfaces legitimately differ, and because what is being asserted is
+    // "the reader got away", not a pixel.
+    assert!(
+        gap > 100.0,
+        "{surface:?}: a converge must not outrank a hand on the wheel — the reader asked for 175px \
+         and ended {gap}px from the tail (before the fix: 0 on the shell, 7 on the classic page)"
+    );
+    assert!(
+        !at_tail(tab, surface),
+        "{surface:?}: and the position they scrolled to is theirs — gap {gap}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_converge_yields_to_the_reader() {
+    let _serial = serial();
+    let fx = fixture_queued_tail("scenario-qtail-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_converge_yields_to_the_reader(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_converge_yields_to_the_reader() {
+    let _serial = serial();
+    let fx = fixture_queued_tail("scenario-qtail-app", 40);
+    let page = open(Surface::AppShell, &fx, 2926);
+    scenario_a_converge_yields_to_the_reader(&page.tab, Surface::AppShell, &fx);
+}
