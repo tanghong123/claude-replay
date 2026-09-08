@@ -171,6 +171,7 @@ class VirtualWindow {
     // read the load sequence's own scrolls (and the browser's async scroll restoration) as the
     // reader moving, and unpin a fresh page (#89).
     this.lastUserInput = -1e9;
+    this.lastInputStamp = -1e9;
     this.anchor = null;
     this.dragging = false;
     this.bottomTimer = 0;
@@ -204,11 +205,14 @@ class VirtualWindow {
       if (event.type === "keydown" && event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
       if (event.type === "pointermove" && !event.buttons) return;
       this.lastUserInput = performance.now();
+      // …and the same moment on the EVENT's clock (#156), for the one question handler time
+      // cannot answer: how long after the gesture a SCROLL EVENT was created.
+      this.lastInputStamp = event.timeStamp || performance.now();
     };
     for (const type of ["pointerdown", "pointermove", "wheel", "touchstart", "touchmove", "keydown"]) {
       frame.on(type, noteIntent, { passive: true, capture: true });
     }
-    frame.on("scroll", () => this.onScroll(), { passive: true });
+    frame.on("scroll", event => this.onScroll(event), { passive: true });
     // The scrollbar thumb owns the position while the pointer holds it (#98).
     frame.on("pointerdown", event => { if (frame.isScrollbarTarget(event)) this.beginDrag(); }, { passive: true, capture: true });
     for (const type of ["pointerup", "pointercancel", "mouseup"]) addEventListener(type, () => this.endDrag(), { passive: true, capture: true });
@@ -484,8 +488,17 @@ class VirtualWindow {
     return this.frame.scrollHeight() - this.frame.clientHeight() - this.frame.scrollTop();
   }
 
-  onScroll() {
-    const user = performance.now() - this.lastUserInput < this.userIntentMs;
+  /** Measured on the EVENT'S clock, never on the handler's (#156). A scroll event carries the
+   *  time it was CREATED, and the handler can run much later because a long task on the main
+   *  thread holds the queue. Measured on the classic page, which had the same bug: a 908ms
+   *  handler lag turned the reader's own scroll into "560ms since input" — outside the window —
+   *  so the page called it displacement and healed them back to the tail, throwing away 1400px
+   *  they had just scrolled. On the event's clock that same scroll is -348ms from the input:
+   *  created before the gesture that followed it. `dragging` still answers for a held thumb,
+   *  which produces no input event of its own. */
+  onScroll(event) {
+    const at = event && event.timeStamp ? event.timeStamp : performance.now();
+    const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
     const verdict = classifyScroll(this.following, user, this.gapToBottom(), this.slacks.acquire, this.slacks.hold, this.slacks.heal);
     if (verdict === "follow" || verdict === "unfollow") {
       this.following = verdict === "follow";

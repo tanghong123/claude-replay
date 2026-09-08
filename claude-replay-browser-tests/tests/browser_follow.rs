@@ -5167,22 +5167,41 @@ fn the_app_shell_raw_toggle_reveals_the_same_way_on_every_turn() {
         std::time::Duration::from_secs(10),
         "document.body.innerText.slice(0, 120)",
     );
-    let seen = harness::probe(&tab, "(function(){ function rest(sel){ var els = [...document.querySelectorAll(sel)].filter(function (e) { var r = e.getBoundingClientRect(); return r.width > 0; }); return { n: els.length, shown: els.filter(function (e) { return Number(getComputedStyle(e).opacity) > 0.05; }).length }; } return { userRaw: rest('.turn.user .spot-link.raw-toggle'), agentRaw: rest('.turn.assistant .spot-link.raw-toggle'), userAnchor: rest('.turn.user .spot-link:not(.raw-toggle)'), agentAnchor: rest('.turn.assistant .spot-link:not(.raw-toggle)') }; })()");
+    let seen = harness::probe(&tab, "(function(){ function rest(sel){ var els = [...document.querySelectorAll(sel)].filter(function (e) { var r = e.getBoundingClientRect(); return r.width > 0; }); return { n: els.length, shown: els.filter(function (e) { return Number(getComputedStyle(e).opacity) > 0.05; }).length }; } return { hoverless: matchMedia('(hover: none)').matches, userRaw: rest('.turn.user .spot-link.raw-toggle'), agentRaw: rest('.turn.assistant .spot-link.raw-toggle'), userAnchor: rest('.turn.user .spot-link:not(.raw-toggle)'), agentAnchor: rest('.turn.assistant .spot-link:not(.raw-toggle)') }; })()");
     assert!(
         seen["userRaw"]["n"].as_i64().unwrap_or(0) >= 1
             && seen["agentRaw"]["n"].as_i64().unwrap_or(0) >= 1,
         "both kinds of turn carry a raw toggle, which is what makes them comparable: {seen}"
     );
+    // The rule is that the two kinds behave the SAME — that is what the owner reported, and it
+    // holds everywhere. Whether the toggle is hidden at rest depends on the DEVICE: a pointer
+    // that cannot hover has no way to reveal it, so `@media (hover: none)` keeps it visible.
+    // CI's headless Chrome matches that query and a developer's does not, which is exactly the
+    // difference that made this case pass locally and fail there.
+    let hoverless = seen["hoverless"].as_bool().unwrap_or(false);
+    let user_all = seen["userRaw"]["shown"] == seen["userRaw"]["n"];
+    let agent_all = seen["agentRaw"]["shown"] == seen["agentRaw"]["n"];
     assert_eq!(
-        seen["userRaw"]["shown"].as_i64().unwrap_or(-1),
-        0,
-        "no raw toggle is pinned open on a user turn, even with the global preference on: {seen}"
+        user_all, agent_all,
+        "a user turn's raw toggle is revealed by the same rule as an agent turn's: {seen}"
     );
-    assert_eq!(
-        seen["agentRaw"]["shown"].as_i64().unwrap_or(-1),
-        0,
-        "…and agent turns behave identically, which is the whole point: {seen}"
-    );
+    if hoverless {
+        assert!(
+            user_all && agent_all,
+            "with no hover to reveal them, both kinds keep their toggles reachable: {seen}"
+        );
+    } else {
+        assert_eq!(
+            seen["userRaw"]["shown"].as_i64().unwrap_or(-1),
+            0,
+            "no raw toggle is pinned open on a user turn, even with the global preference on: {seen}"
+        );
+        assert_eq!(
+            seen["agentRaw"]["shown"].as_i64().unwrap_or(-1),
+            0,
+            "…and agent turns behave identically, which is the whole point: {seen}"
+        );
+    }
     // The anchor is the control that stays, and it stays on both kinds alike.
     assert_eq!(
         seen["userAnchor"]["shown"], seen["userAnchor"]["n"],

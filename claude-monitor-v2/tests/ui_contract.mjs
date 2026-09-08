@@ -1499,7 +1499,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(rules, /function itemHeight/, "itemHeight reads layout, so it sits below the engine marker");
   assert.match(module, /const height = itemHeight\(child\);/, "the engine measures through it");
   const classic = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
-  assert.match(classic, /var h = Math\.round\(shared\.itemHeight\(els\[k\]\)\);/, "the classic page measures through it too — ROUNDED, because fractional heights made a following page heal a scrolled-up reader in half of eight runs and integer heights are what this page always had; the cause is #156");
+  assert.match(classic, /var h = shared\.itemHeight\(els\[k\]\);/, "the classic page measures through it too, and no longer rounds: #156 found the real cause, and it was not the basis");
+  // #156. A scroll event carries the time it was CREATED; the handler can run much later, because
+  // a long task holds the queue. Measuring intent at handler time turned the reader's own scroll
+  // into displacement and healed them back to the tail — 908ms of lag reading as 560ms since
+  // input, where the event's clock says -348ms. BOTH pages classify on the event.
+  assert.match(classic, /var userScroll = \(scrollEvent\.timeStamp \|\| performance\.now\(\)\) - lastInputStamp < USER_MS;/, "the classic page classifies a scroll on the EVENT's clock");
+  assert.match(module, /const at = event && event\.timeStamp \? event\.timeStamp : performance\.now\(\);/, "…and so does the engine");
+  assert.match(module, /const user = this\.dragging \|\| at - this\.lastInputStamp < this\.userIntentMs;/, "…with a held thumb still answering for itself, since a drag fires no input event of its own");
   assert.doesNotMatch(classic, /\.offsetTop - /, "no page measures top-to-next-top any more (#140 step 2)");
   // Step 3: the estimate is a FLOOR per unit type — under the real height, never over, so
   // learning a height only grows the page below the reader (rule 5).

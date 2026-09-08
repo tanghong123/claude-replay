@@ -2625,6 +2625,69 @@ fn classic_page_tool_filter_hides_and_lands() {
     scenario_tool_filter_hides_and_lands(&page.tab, Surface::Classic, &fx);
 }
 
+// ── scenario: a scroll the main thread delivered LATE is still the reader's (#156) ──────────
+
+/// #156, reproduced deterministically rather than 4-times-in-8. A scroll event carries the time
+/// it was CREATED, but the handler that classifies it runs whenever the main thread is free — and
+/// a long task holds the queue. Measured on the classic page before the fix: 908ms of handler lag
+/// turned the reader's own scroll into "560ms since input", outside the 300ms intent window, so a
+/// following page called it displacement and healed them back to the tail, throwing away the
+/// 1400px they had just scrolled. On the event's clock that scroll is -348ms from the input.
+///
+/// The case blocks the thread ON PURPOSE, so the lag is not left to chance: scroll away from the
+/// tail, then hold the thread through the intent window, then let the handler run. The reader
+/// must still be where they put themselves.
+fn scenario_a_late_scroll_is_still_the_readers(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let gap_of = match surface {
+        Surface::Classic => "Math.round(document.scrollingElement.scrollHeight - document.scrollingElement.clientHeight - document.scrollingElement.scrollTop)",
+        Surface::AppShell => "(function(){ var t = document.querySelector('.transcript'); return Math.round(t.scrollHeight - t.clientHeight - t.scrollTop); })()",
+    };
+    // One gesture and one move, then BLOCK — all inside a single task, so the scroll event cannot
+    // be delivered until the block ends and the intent window has already gone by.
+    let shove = match surface {
+        Surface::Classic => "(function(){ var want = Math.max(0, document.scrollingElement.scrollTop - 1400); dispatchEvent(new WheelEvent('wheel', { deltaY: -1400, bubbles: true })); scrollTo({ top: want, behavior: 'instant' }); var until = performance.now() + 900; while (performance.now() < until) {} return 'shoved'; })()",
+        Surface::AppShell => "(function(){ var t = document.querySelector('.transcript'); var want = Math.max(0, t.scrollTop - 1400); t.dispatchEvent(new WheelEvent('wheel', { deltaY: -1400, bubbles: true })); t.scrollTo({ top: want, behavior: 'instant' }); var until = performance.now() + 900; while (performance.now() < until) {} return 'shoved'; })()",
+    };
+    assert_eq!(
+        eval(tab, shove),
+        "shoved",
+        "the reader scrolled and the thread stalled"
+    );
+    settle();
+    settle();
+    let gap = eval(tab, gap_of).as_f64().unwrap_or(0.0);
+    assert!(
+        gap > 400.0,
+        "a scroll delivered late is still the reader's — the page must not heal them back to the \
+         tail because its own handler ran after the intent window: gap {gap}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_late_scroll_is_still_the_readers() {
+    let _serial = serial();
+    let fx = fixture("scenario-late-scroll-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_late_scroll_is_still_the_readers(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_late_scroll_is_still_the_readers() {
+    let _serial = serial();
+    let fx = fixture("scenario-late-scroll-app", 40);
+    let page = open(Surface::AppShell, &fx, 2894);
+    scenario_a_late_scroll_is_still_the_readers(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: wrap reaches every rendering that can hold a long line (#161) ─────────────────
 
 /// A transcript whose every long-line rendering carries one unbroken 420-character line: a Bash

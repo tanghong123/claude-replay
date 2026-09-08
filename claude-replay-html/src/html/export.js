@@ -328,31 +328,21 @@
   // gave `#stream` a flex column with `#stream > * { margin-top: 0 }`, the two bases agree here
   // and one function means they cannot drift apart again.
   //
-  // ROUNDED, and that part is not cosmetic. `offsetTop` is an integer, so this page's heights
-  // always were; a rect is fractional, and handing this page fractional heights made it heal a
-  // scrolled-up reader back to the tail in 4 of 8 serial runs of
-  // `classic_page_holds_to_the_pixel_when_unpinned_through_growth` — 8/8 green before the change
-  // and 8/8 green again with this round, measured back to back on an idle machine. WHY is not
-  // known and is #156's job: the two bases agree (0.61px of rounding apart, over every mounted
-  // record), the cost is the same (0.020ms vs 0.013ms per pass over 23 elements), and in a
-  // failing run the page never unfollows at all — it is still `following` when the reader's
-  // scroll lands, and the next settle heals it back. The obvious suspect, the corrective
-  // `window.scrollBy` at the end of updateView, is NOT it: wrapped and counted, it fires zero
-  // times. Every attempt to instrument the page also stops the race reproducing, which is why
-  // this ships as a restored invariant (integer heights, which is what this page always had)
-  // rather than as a fix for a cause anyone has seen.
-  //
-  // What rounding costs, so #156 can weigh it: the old measure was a POSITION delta, so a sum
-  // over any range telescoped and was exact to 1px. A sum of rounded SIZES does not telescope —
-  // on the fixture above every record rounds down by 0.39px, so P() drifts about -0.4px per
-  // record. The fractional basis is the exact one; this page cannot hold it yet.
+  // NOT rounded any more (#156). It was, for one release: fractional heights made this page heal
+  // a scrolled-up reader in 4 runs of 8, and integer heights are what it had always had, so the
+  // round restored the invariant while the cause was unknown. The cause turned out to have
+  // nothing to do with the basis — a long task on the main thread delayed the scroll handler past
+  // the 300ms intent window, so the reader's own scroll was classified as displacement. Fractional
+  // heights only lengthened those tasks. The classifier reads the event's clock now, and the
+  // fractional basis is the exact one: a sum of rounded sizes does not telescope, so rounding cost
+  // about -0.4px per record against a position delta that was exact over any range.
   function measureWindow() {
     var els = matEls();
     if (!els.length) return false;
     var changed = false;
     for (var k = 0; k < els.length; k++) {
       var i = +els[k].dataset.idx;
-      var h = Math.round(shared.itemHeight(els[k]));
+      var h = shared.itemHeight(els[k]);
       if (h > 0 && Math.abs(h - recHeights[i]) > 0.5) {
         recHeights[i] = h;
         changed = true;
@@ -1919,11 +1909,18 @@
   // init would classify the load sequence's own scrolls (and the browser's async
   // scroll restoration) as user input and wrongly unpin the fresh page (#89).
   var lastUserInput = -1e9;
+  // …and the same moment on the EVENT's clock (#156). Both stamps are needed because they answer
+  // different questions: `lastUserInput` is "how long since the reader touched anything", asked
+  // by code running now; `lastInputStamp` is compared against a SCROLL EVENT's own timestamp, to
+  // ask how long after the gesture that scroll was CREATED. Handler time cannot answer the second
+  // one — see the scroll listener.
+  var lastInputStamp = -1e9;
   ["pointerdown", "wheel", "keydown", "touchstart", "touchmove"].forEach(function (ev) {
     window.addEventListener(ev, function (e) {
       // Typing in the search box is not scroll intent.
       if (ev === "keydown" && e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
       lastUserInput = performance.now();
+      lastInputStamp = e.timeStamp || performance.now();
     }, { passive: true, capture: true });
   });
   function toBottom() {
@@ -3576,11 +3573,21 @@
     });
   }
   var lastActiveId = null;
-  window.addEventListener("scroll", function () {
+  window.addEventListener("scroll", function (scrollEvent) {
     // What a scroll MEANS is the shared rule (#107): the reader's input decides following —
     // acquiring the pin needs the true end, keeping it only the old slack — and a scroll with
     // no input behind it is displacement, healed while pinned. The slacks are this page's.
-    var userScroll = performance.now() - lastUserInput < USER_MS;
+    //
+    // Measured on the EVENT'S clock, never on the handler's (#156). A scroll event carries the
+    // time it was CREATED; the handler can run much later, because a long task on the main
+    // thread holds the queue. Measured: a 908ms handler lag turned the reader's own scroll into
+    // "560ms since input" — outside the 300ms window — so the page called it displacement and
+    // healed them back to the tail, losing 1400px of scrolling they had just done. On the
+    // event's clock the same scroll is -348ms from the input: created before the gesture that
+    // followed it, which is as much the reader's as a scroll can be. That flake was 4 runs in 8
+    // when record heights went fractional, because fractional heights lengthen the very tasks
+    // that block the queue — the heights were the trigger, this was the cause.
+    var userScroll = (scrollEvent.timeStamp || performance.now()) - lastInputStamp < USER_MS;
     var verdict = shared.classifyScroll(following, userScroll, gapToBottom(), PIN_SLACK, BOTTOM_SLACK, BOTTOM_SLACK);
     if (verdict === "follow" || verdict === "unfollow") setFollowing(verdict === "follow");
     else if (verdict === "heal") toBottom(); // browser displacement while pinned
