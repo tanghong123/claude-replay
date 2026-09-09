@@ -6150,7 +6150,8 @@ fn scenario_a_code_control_moves_its_own_pane_only(
     };
     // Always reports what it SAW — a bare unwrap hides whether the pane is unmounted, the fold
     // never opened, or the bar is missing, which are three different bugs.
-    let probe_js = &format!("(function(){{ \
+    let probe_js = &format!(
+        "(function(){{ \
          var panes = [].slice.call(document.querySelectorAll('{pane_sel}')); \
          var sizeOf = function (p) {{ \
            var cell = p.querySelector('.code, .codecell') || p; \
@@ -6159,18 +6160,24 @@ fn scenario_a_code_control_moves_its_own_pane_only(
                   marked: document.querySelectorAll('[data-code]').length, \
                   bars: document.querySelectorAll('.codebar').length, \
                   a: panes.length > 0 ? sizeOf(panes[0]) : -1, \
-                  b: panes.length > 1 ? sizeOf(panes[1]) : -1 }}; }})()");
+                  b: panes.length > 1 ? sizeOf(panes[1]) : -1 }}; }})()"
+    );
     let before = harness::probe(tab, probe_js);
     assert!(
         before["n"].as_i64().unwrap_or(0) >= 2,
         "{surface:?}: the fixture must mount two marked code panes, saw: {before}"
     );
     // Press A− on the FIRST pane's own bar.
-    let pressed = eval(tab, &format!("(function(){{ \
+    let pressed = eval(
+        tab,
+        &format!(
+            "(function(){{ \
          var pane = document.querySelector('{pane_sel}'); if (!pane) return 'no pane'; \
          var box = pane.closest('.codewrap, .codebox') || pane.parentElement; \
          var btn = box.querySelector('.ms-dn, [data-code-size=\"-1\"]'); \
-         if (!btn) return 'no smaller button'; btn.click(); return 'pressed'; }})()"));
+         if (!btn) return 'no smaller button'; btn.click(); return 'pressed'; }})()"
+        ),
+    );
     assert_eq!(
         pressed.as_str().unwrap_or(""),
         "pressed",
