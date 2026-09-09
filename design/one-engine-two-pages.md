@@ -638,13 +638,22 @@ kind of thing.** Only the first is a difference #174 should ALLOW:
 
 - **Accepted.** The anchor's above-the-fold epsilon is 1px on both pages now; the classic page
   used 0. One rule, one number, no symptom — an allowlist entry.
-- **Deferred, with a known symptom.** #98's ROW-level anchor needs `[data-block-index]` rows,
-  which only `components.js` emits (`export.js` has none), so on the classic page the engine's
-  anchor degrades to the item-level one. That is what the page always had, so it is not a
-  regression — but it is not a difference to bless either: defect 6 above IS its symptom, a
-  user-visible landing that walked 956px, and `holdLanding` papers over that one site rather
-  than closing the gap. #174 should report this as a FAIL with the symptom attached, not as an
-  allowlist row; the fix is `export.js` emitting the rows, filed as **#176**.
+- **Deferred, and CORRECTED after this note first shipped** (2026-09-09). The first version of
+  this bullet said the classic page lacks #98's ROW-level anchor and that defect 6 was its
+  symptom. Both halves were wrong, and they were wrong in the way this whole document warns
+  about — read off a comment rather than off `captureDomAnchor`.
+  The anchor has two levels: the mounted ITEM, then a refinement to the first `[data-block-index]`
+  inside it. The app shell mounts UNITS holding several records and indexes each (nested children
+  included, by the dotted path at `components.js:95`), so the refinement addresses RECORDS. The
+  classic page mounts ONE RECORD PER ITEM — so item-level already IS record-level, and the
+  "degradation" is harmless. Neither page anchors BELOW a record.
+  The real difference is narrower: a classic mounted item can still hold NESTED records
+  (`export.js:189`, the `blocks` part) which carry an id but no `data-block-index`, so a nested
+  child growing above the reader moves them. That is **#176**, rewritten to this scope.
+  And defect 6 is NOT its symptom. That growth is inside one record's BODY, below record
+  granularity, where neither page anchors — and it was never an anchor failure: the reader's
+  anchor held, the MARK moved. A landing problem, which is why `holdLanding` at the navigation
+  site is the whole of the fix rather than a paper-over.
 
 **Three scenarios** were written for the risks that had no coverage, each run on both surfaces:
 a landing holds through a growth above it (`holdLanding` against the engine's kept anchor); a
