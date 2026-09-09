@@ -322,7 +322,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const raw = rawTurnHtml({ kind: "user", body: [{ p: "md", h: "<p>x</p>" }] });
   assert.match(raw, /^<pre class="turn-raw">/); assert.ok(raw.includes("&lt;p&gt;x&lt;\/p&gt;") || raw.includes("&lt;p&gt;x&lt;/p&gt;"), "the raw record is escaped, never re-entered as markup");
   assert.match(productionCss, /#app\{--code-size:12px;--measure:820px\}/, "reading preferences are custom properties on the app root");
-  assert.match(productionCss, /#app\.wrap-code \.markdown pre/, "wrap is a class on the app root");
+  // #173: wrap is still a class on the app root, but its DOMAIN is now derived rather than
+  // enumerated — every `pre` in the transcript, plus whatever carries the code marker. The old
+  // pin named `.markdown pre`, one entry of the list this change deleted.
+  assert.match(productionCss, /#app\.wrap-code \.transcript pre,#app\.wrap-code \[data-code\]/, "wrap reaches the transcript's pre elements and the code marker");
+  // The contract's explicit DROP: `.transcript code` swept inline backtick code into a code
+  // control, forcing pre-wrap on prose. Inline code has no line identity and is not a wrap surface.
+  assert.doesNotMatch(productionCss, /wrap-code[^{]*\.transcript code/, "inline code is not a wrap surface");
   assert.match(readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8"), /if \(uiState\.readingChosen\) localStorage\.setItem\(READING_KEY, JSON\.stringify\(uiState\.reading\)\)/, "reading preferences persist with the other production preferences — once chosen (#45)");
   assert.match(appSource, /recordState\.rawTurns\.clear\(\)/, "raw turns reset when a session opens");
   console.log("reading + raw cases passed");
@@ -1203,7 +1209,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(css, /\.codebox \.ln,\.codebox \.mark\{user-select:none\}/, "gutters and marks are unselectable");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
-  assert.match(app, /readingStep: delta => setReading\(\{ size: uiState\.reading\.size \+ delta \* SIZE_STEP \}\)/, "the bar drives the reading size");
+  // #173: the bar drove the PAGE-WIDE preference while sitting on a block — global masquerading
+  // as per-block. It now sets an override for the block it belongs to, keyed by record.
+  assert.match(app, /codeSize: \(key, delta\) => setCodeOverride\(key, \{ size: clampSize\(effectiveCode\(key\)\.size \+ delta \* SIZE_STEP\) \}\)/, "the bar drives THIS BLOCK's size");
+  assert.match(app, /codeWrap: key => setCodeOverride\(key, \{ wrap: !effectiveCode\(key\)\.wrap \}\)/, "the bar drives THIS BLOCK's wrapping");
   console.log("#115 code pane cases passed");
 }
 

@@ -37,6 +37,11 @@ export const recordState = {
   filterHits: null, filterDirect: null, filterSnapshot: null,
   searchMask: 0, searchWhole: false, recSizes: [], pendingSearch: false,
   capOpen: new Set(), openImages: new Set(),
+  // Per-block code overrides (#173): `{ size?, wrap? }` by record id, set by a code pane's own
+  // A− / A+ / wrap bar. EPHEMERAL on purpose — the reading preference stays the baseline every
+  // block starts from, and these are one reader's one-off look at one block, so they live here
+  // and nowhere else: `persist()` never writes them and a reload starts clean.
+  codeOverrides: new Map(),
   taskTargets: new Map(), agentTargets: new Map()
 };
 

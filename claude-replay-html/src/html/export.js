@@ -29,6 +29,12 @@
   var ms = reading.size;
   var wrap = reading.wrap;
   var wide = reading.wide;
+  // #173: STAMPED HERE, not at the applyWrap() call far below — `consume()` materializes,
+  // MEASURES and clamps the first window synchronously long before that line runs, so a page
+  // whose stored (or default) preference is "wrap" would lay its opening screen out unwrapped
+  // and measure those heights. The class is what the CSS keys on, so it has to precede the
+  // first render, not merely the first keystroke.
+  document.body.classList.toggle("wrap-code", wrap);
   // The size control reads as a RELATIVE step, never as a pixel count (#160): an absolute number
   // pins the reader to one base size and forecloses variable sizes later, and the adjustment has
   // always been relative. The baseline is THIS page's own default — the two pages set type at
@@ -46,6 +52,11 @@
   // would invalidate).
   var rawUser = reading.rawUser; // #109: one preference with the app shell (the old key folded in once)
   var rawOne = {};
+  // #173 the OTHER per-block override map, beside `rawOne` and keyed the same way (block id,
+  // never a position): a pane's own code size / wrap. Declared here rather than beside the
+  // functions that use it because `applyMono` runs at load and reaches it through
+  // `refreshCode` — a `var` read before its initializer is `undefined`, not a hoisted `{}`.
+  var codeOne = {}; // block id -> { size: px, wrap: bool }, ephemeral (see setWrap's note)
   var root = document.documentElement;
   var stream = document.getElementById("stream");
   var turnlist = document.getElementById("turnlist");
@@ -162,6 +173,11 @@
     }
     if (p.p === "num" || p.p === "diff") {
       var box2 = el("div", p.p === "num" ? "numbered" : "diff");
+      // #173 THE code marker. "Code" is bytes that came from a FILE ON DISK, rendered
+      // structurally — provenance, not appearance — and measured, that is exactly this
+      // branch: `num` is a Write body or Read output, `diff` is an Edit. Nothing else in
+      // the document carries it, so the size control's domain is one attribute selector.
+      box2.dataset.code = "";
       var holder = el("div");
       // The final rendered row's line number, for the "· to line M" expander label.
       capped(box2, p.rows, p.p === "num" ? numberedRows : diffRows, p.cap, holder, shared.toLineOf(p));
@@ -273,7 +289,7 @@
   // window rebuild on this page.
   function postMat(e) {
     buildStripsIn(e);
-    applyWrapIn(e);
+    applyCodeIn(e); // #173 re-apply this block's ephemeral size/wrap override, and its bar's state
     if (e.dataset.run) fillFleet(e, e.dataset.run);
     reapplySmallMore(e);
     if (searchNeedle && searchInScope(+e.dataset.idx)) {
@@ -1999,6 +2015,8 @@
       sessionStorage.setItem(VS_KEY, JSON.stringify({
         v: 1, following: following, anchor: key, dy: a ? Math.round(a.top) : 0,
         y: Math.round(window.scrollY), // coarse fallback, for when the anchor is gone
+        // #173 `codeOne` is deliberately NOT here: a pane's size/wrap override is ephemeral,
+        // so a reload starts from the persisted baseline again, on both pages alike.
         folds: userFolds, raws: rawOne, caps: Array.from(capOpen), seen: records.length
       }));
     } catch (e) { /* private mode or quota: the view just starts fresh */ }
@@ -2320,6 +2338,7 @@
   // took effect only after the next −/+ keystroke. Applied, not persisted (see applyMono).
   applyMono(ms);
   applyWide(wide);
+  applyWrap(wrap); // #173 wrap is a body class now, so the stored preference has to be stamped
   fitBar();
 
   // ── single-file live companion (`--dump-html -f`) ─────────────────────
@@ -2429,17 +2448,20 @@
   // "⋯ N more lines" expander: expander left, controls (A− size A+ wrap copy) right.
   // Static button styling lives in the stylesheet; only state goes on classes.
   function buildStripsIn(root_) {
-    Array.prototype.slice.call(root_.querySelectorAll(".numbered, .diff")).forEach(function (c) {
+    Array.prototype.slice.call(root_.querySelectorAll("[data-code]")).forEach(function (c) {
       if (c.parentElement.classList.contains("codewrap")) return;
       var wrapEl = el("div", "codewrap");
       c.parentElement.insertBefore(wrapEl, c);
       wrapEl.appendChild(c);
       function b(cls, label, title) { var x = el("button", cls, label); x.title = title; return x; }
       var bar = el("div", "codebar");
-      bar.appendChild(b("ms-dn", "A−", "Smaller code (−) — applies to all code blocks"));
+      // #173 A pane's own bar moves THIS block, and its words say so. The page-wide
+      // baseline is the keyboard's (− + w); a bar that called the global setter was a
+      // per-pane control masquerading as a page-wide one.
+      bar.appendChild(b("ms-dn", "A−", "Smaller code in this block"));
       bar.appendChild(el("span", "ms-val", sizeStepLabel(ms)));
-      bar.appendChild(b("ms-up", "A+", "Larger code (+) — applies to all code blocks"));
-      bar.appendChild(b("ms-wrap", wrap ? "⤶" : "↔", "Long lines: wrap / scroll (" + shared.hintFor("wrap") + ")"));
+      bar.appendChild(b("ms-up", "A+", "Larger code in this block"));
+      bar.appendChild(b("ms-wrap", wrap ? "⤶" : "↔", "Long lines in this block: wrap / scroll"));
       bar.appendChild(b("cpy-code", "copy", "Copy this block"));
       var foot = el("div", "codefoot");
       var next = wrapEl.nextElementSibling; // the "⋯ N more lines" expander, if any
@@ -2453,53 +2475,90 @@
   // and the app shell keeps its own defaults; a keystroke or click persists.
   function applyMono(v) {
     ms = shared.clampSize(v);
-    root.style.setProperty("--ms", ms + "px");
-    all(".ms-val").forEach(function (n) { n.textContent = sizeStepLabel(ms); });
+    root.style.setProperty("--code-size", ms + "px");
+    refreshCode();
   }
   function setMono(v) { applyMono(v); saveReading(); }
-  function setWrap(on) {
+  // #173 Wrap is a RULE now, not a selector list styled imperatively: one class on the body
+  // (the `following` idiom) and the stylesheet decides what it reaches — every `pre` in the
+  // stream (pasted art in a user turn included, the deliberate behaviour the `.raw` note
+  // records) plus every `[data-code]` container. A rendering added later obeys the control
+  // without being added to a list, which is exactly how #161 hid.
+  function applyWrap(on) {
     wrap = on;
-    saveReading();
-    all(".ms-wrap").forEach(function (b) {
-      b.textContent = on ? "⤶" : "↔";
-      b.title = on
-        ? "Long lines: wrapping — click to scroll instead"
-        : "Long lines: scrolling — click to wrap instead";
-      b.classList.toggle("on", !on);
+    document.body.classList.toggle("wrap-code", on);
+    refreshCode();
+  }
+  function setWrap(on) { applyWrap(on); saveReading(); }
+
+  // ── #173 the per-block reading override ──────────────────────────────────────────
+  // A pane's own A−/A+/wrap moves THAT BLOCK and nothing else, EPHEMERALLY: in memory,
+  // keyed by block id, never written to storage (`saveView` deliberately does not carry it),
+  // so a reload is back at the baseline. The baseline itself is the persisted preference
+  // (`am-prod-reading`) and only the keyboard (− + w) moves it. There is no reset button
+  // because none is needed: a step that lands back ON the baseline RELEASES the block
+  // rather than pinning it at today's value, so a later keystroke moves it again.
+  // (`codeOne` itself is declared at the top, beside `rawOne`: `applyMono` reaches it at load.)
+  function codeBlk(node) { return node.closest(".blk"); }
+  function codeKey(node) {
+    // The nearest `.blk`, not the top-level record: a fold holds nested blocks with their own
+    // ids and their own panes, and one Edit's bar must not resize its siblings.
+    var b = codeBlk(node), id = b && b.id;
+    return id && id !== "undefined" ? id : null; // `el.id = undefined` stringifies
+  }
+  function codeOneOf(node) { var k = codeKey(node); return k ? codeOne[k] : null; }
+  function sizeOf(o) { return o && o.size !== undefined ? o.size : ms; }
+  function wrapOf(o) { return o && o.wrap !== undefined ? o.wrap : wrap; }
+  // Every mounted pane and bar under `root_` reads its OWN block's state — which makes this
+  // both the global refresh (over `vwin`) and the re-apply a freshly materialized block needs
+  // (#50 unmounts blocks as the reader scrolls), the same way `applyUserFolds` re-applies folds.
+  function applyCodeIn(root_) {
+    Array.prototype.slice.call(root_.querySelectorAll("[data-code]")).forEach(function (c) {
+      var o = codeOneOf(c);
+      // The size rule reads `--code-size` off the container, so an override is that one
+      // property on that one element — no rule of its own.
+      if (o && o.size !== undefined) c.style.setProperty("--code-size", o.size + "px");
+      else c.style.removeProperty("--code-size");
+      if (o && o.wrap !== undefined) c.setAttribute("data-wrap", o.wrap ? "1" : "0");
+      else c.removeAttribute("data-wrap");
     });
-    all(".numbered, .diff").forEach(function (c) {
-      c.style.overflowX = on ? "hidden" : "auto";
-      c.classList.toggle("scrollx", !on);
-    });
-    all(".numbered .code, .diff .code").forEach(function (c) {
-      c.style.whiteSpace = on ? "pre-wrap" : "pre";
-      c.style.wordBreak = on ? "break-word" : "normal";
-    });
-    // Verbatim user-turn text obeys the same control: a long pasted line wraps rather than
-    // hiding in a side-scroll, and turning wrapping off keeps drawn art intact.
-    all(".raw").forEach(function (c) {
-      c.style.whiteSpace = on ? "pre-wrap" : "pre";
-      c.style.overflowWrap = on ? "anywhere" : "normal";
+    Array.prototype.slice.call(root_.querySelectorAll(".codebar")).forEach(function (bar) {
+      var o = codeOneOf(bar);
+      var v = bar.querySelector(".ms-val");
+      if (v) v.textContent = sizeStepLabel(sizeOf(o));
+      var w = bar.querySelector(".ms-wrap");
+      if (!w) return;
+      var on = wrapOf(o);
+      w.textContent = on ? "⤶" : "↔";
+      w.title = on
+        ? "Long lines in this block: wrapping — click to scroll instead"
+        : "Long lines in this block: scrolling — click to wrap instead";
+      w.classList.toggle("on", !on);
     });
   }
-  // The per-element form of setWrap's styling, for freshly materialized blocks (#50).
-  function applyWrapIn(root_) {
-    Array.prototype.slice.call(root_.querySelectorAll(".numbered, .diff")).forEach(function (c) {
-      c.style.overflowX = wrap ? "hidden" : "auto";
-      c.classList.toggle("scrollx", !wrap);
-    });
-    Array.prototype.slice.call(root_.querySelectorAll(".numbered .code, .diff .code")).forEach(function (c) {
-      c.style.whiteSpace = wrap ? "pre-wrap" : "pre";
-      c.style.wordBreak = wrap ? "break-word" : "normal";
-    });
-    Array.prototype.slice.call(root_.querySelectorAll(".raw")).forEach(function (c) {
-      c.style.whiteSpace = wrap ? "pre-wrap" : "pre";
-      c.style.overflowWrap = wrap ? "anywhere" : "normal";
-    });
-    Array.prototype.slice.call(root_.querySelectorAll(".ms-wrap")).forEach(function (b) {
-      b.textContent = wrap ? "⤶" : "↔";
-      b.classList.toggle("on", !wrap);
-    });
+  function refreshCode() { applyCodeIn(vwin); }
+  function codeOverride(node) {
+    var k = codeKey(node);
+    return k ? (codeOne[k] || (codeOne[k] = {})) : null;
+  }
+  function codeSettled(node) {
+    var k = codeKey(node), o = k && codeOne[k];
+    if (o && o.size === undefined && o.wrap === undefined) delete codeOne[k];
+    applyCodeIn(codeBlk(node) || vwin);
+  }
+  function stepBlockSize(node, d) {
+    var o = codeOverride(node);
+    if (!o) return;
+    var next = shared.clampSize(sizeOf(o) + d);
+    if (next === ms) delete o.size; else o.size = next;
+    codeSettled(node);
+  }
+  function toggleBlockWrap(node) {
+    var o = codeOverride(node);
+    if (!o) return;
+    var next = !wrapOf(o);
+    if (next === wrap) delete o.wrap; else o.wrap = next;
+    codeSettled(node);
   }
   function applyWide(on) {
     wide = on;
@@ -2795,13 +2854,16 @@
       copyBtn(cpy, pre.textContent);
       return;
     }
-    // §8.3 per-pane code controls (event-delegated).
-    if (e.target.closest(".ms-dn")) { setMono(ms - 0.5); return; }
-    if (e.target.closest(".ms-up")) { setMono(ms + 0.5); return; }
-    if (e.target.closest(".ms-wrap")) { setWrap(!wrap); return; }
+    // §8.3 per-pane code controls (event-delegated). #173: these are the PANE's controls, so
+    // they move THAT block only, and only for this reading — the keyboard (− + w) is what
+    // moves the page-wide baseline, and it is the only thing that persists.
+    var dn = e.target.closest(".ms-dn"), up = e.target.closest(".ms-up");
+    if (dn || up) { stepBlockSize(up || dn, up ? 0.5 : -0.5); return; }
+    var wb = e.target.closest(".ms-wrap");
+    if (wb) { toggleBlockWrap(wb); return; }
     var cc = e.target.closest(".cpy-code");
     if (cc) {
-      var blk = cc.closest(".codewrap").querySelector(".numbered, .diff");
+      var blk = cc.closest(".codewrap").querySelector("[data-code]");
       var codeText = Array.prototype.map
         .call(blk.querySelectorAll(".code"), function (n) { return n.textContent; })
         .join("\n");

@@ -2746,7 +2746,21 @@ fn scenario_wrap_reaches_every_rendering(
     let wrapped = match surface {
         // `.ms-wrap` carries `on` when wrapping is OFF (the button offers the other mode).
         Surface::Classic => eval(tab, "(function(){ var b = [...document.querySelectorAll('#stream .codebar .ms-wrap')].pop(); if (!b) return 'no bar'; if (b.classList.contains('on')) b.click(); return 'wrapping'; })()"),
-        Surface::AppShell => eval(tab, "(function(){ var app = document.getElementById('app'); if (!app.classList.contains('wrap-code')) { document.getElementById('readingBtn').click(); var t = document.querySelector('[data-reading-toggle=\"wrap\"]'); if (!t) return 'no toggle'; t.click(); document.getElementById('readingBtn').click(); } return app.classList.contains('wrap-code') ? 'wrapping' : 'still off'; })()"),
+        // #173: the reading popover's "Wrap long lines" row is gone — a page-wide control that
+        // sat in a menu while an identical-looking one sat on every block. The BASELINE now moves
+        // by keyboard only (`w`, shared/keymap.js:21), which is the route this drives; the bars on
+        // the blocks set per-block overrides and would answer only for their own block.
+        Surface::AppShell => {
+            if eval(tab, "document.getElementById('app').classList.contains('wrap-code')")
+                .as_bool()
+                != Some(true)
+            {
+                eval(tab, "(function(){ var t = document.querySelector('.transcript'); if (t) t.focus(); return 'ok'; })()");
+                key(tab, "w", false);
+                settle();
+            }
+            eval(tab, "document.getElementById('app').classList.contains('wrap-code') ? 'wrapping' : 'still off'")
+        }
     };
     assert_eq!(
         wrapped.as_str().unwrap_or(""),
@@ -6076,4 +6090,137 @@ fn app_shell_a_press_in_the_gutter_is_not_a_thumb() {
     let fx = fixture("scenario-gutter-app", 40);
     let page = open(Surface::AppShell, &fx, 2929);
     scenario_a_press_in_the_gutter_is_not_a_thumb(&page.tab, Surface::AppShell, &fx);
+}
+
+/// A fixture with TWO code panes, so a per-block control has something to leave alone.
+fn fixture_two_code_blocks(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(20, Shape::default());
+    transcript += &user_at("question 20: write both files", &now_minus(90));
+    transcript += &write_tool_at("cw1", "/first.py", 10, &now_minus(88));
+    transcript += &assistant_at("answer 20: first written", &now_minus(86));
+    transcript += &write_tool_at("cw2", "/second.py", 10, &now_minus(84));
+    transcript += &assistant_at("answer 21: second written", &now_minus(82));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 22,
+    }
+}
+
+/// #173. The code size control sits ON a pane, so it must act on THAT pane. It did not: on both
+/// pages the bar drove the page-wide preference — global chrome wearing per-block clothes — and
+/// on the app shell it did not even reach the pane it sat on (`.codebox .lines` was matched by
+/// neither reading rule, and its `wrap` class was a literal in the template). So this case fails
+/// on BOTH surfaces before the fix, for OPPOSITE reasons: the classic page moves every pane, the
+/// shell moves none. That is the whole of the bug in one assertion.
+fn scenario_a_code_control_moves_its_own_pane_only(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    match surface {
+        Surface::Classic => {
+            eval(tab, "(function(){ document.querySelectorAll('#stream .fold').forEach(function (f) { if (f.dataset.open === '0') { var h = f.querySelector('.fold-h'); if (h) h.click(); } }); return 'opened'; })()");
+        }
+        Surface::AppShell => {
+            for _ in 0..2 {
+                eval(tab, "(function(){ document.querySelectorAll('.renderer.closed > button.renderer-head').forEach(function (h) { h.click(); }); document.querySelectorAll('.cap-more-btn').forEach(function (b) { b.click(); }); return 'opened'; })()");
+                settle();
+            }
+        }
+    }
+    settle();
+    // Both pages mark a code pane the same way since #173 — the marker is the contract, so the
+    // probe needs no per-surface selector for it. `.codebar` is the pane's own bar on both.
+    // Panes are found by each page's OWN long-standing selector, never by `[data-code]`. The
+    // marker is what this task ADDS, so probing for it would make the case fail on the old code
+    // merely because the attribute is absent — a red in the wrong place, proving the marker is
+    // new rather than that the control was broken. These selectors exist on both sides, so the
+    // press really happens on the old code and the two behavioural assertions below are what
+    // fails there.
+    let pane_sel = match surface {
+        Surface::Classic => ".numbered, .diff",
+        Surface::AppShell => ".codebox .lines",
+    };
+    // Always reports what it SAW — a bare unwrap hides whether the pane is unmounted, the fold
+    // never opened, or the bar is missing, which are three different bugs.
+    let probe_js = &format!("(function(){{ \
+         var panes = [].slice.call(document.querySelectorAll('{pane_sel}')); \
+         var sizeOf = function (p) {{ \
+           var cell = p.querySelector('.code, .codecell') || p; \
+           return Math.round(parseFloat(getComputedStyle(cell).fontSize) * 100) / 100; }}; \
+         return {{ n: panes.length, \
+                  marked: document.querySelectorAll('[data-code]').length, \
+                  bars: document.querySelectorAll('.codebar').length, \
+                  a: panes.length > 0 ? sizeOf(panes[0]) : -1, \
+                  b: panes.length > 1 ? sizeOf(panes[1]) : -1 }}; }})()");
+    let before = harness::probe(tab, probe_js);
+    assert!(
+        before["n"].as_i64().unwrap_or(0) >= 2,
+        "{surface:?}: the fixture must mount two marked code panes, saw: {before}"
+    );
+    // Press A− on the FIRST pane's own bar.
+    let pressed = eval(tab, &format!("(function(){{ \
+         var pane = document.querySelector('{pane_sel}'); if (!pane) return 'no pane'; \
+         var box = pane.closest('.codewrap, .codebox') || pane.parentElement; \
+         var btn = box.querySelector('.ms-dn, [data-code-size=\"-1\"]'); \
+         if (!btn) return 'no smaller button'; btn.click(); return 'pressed'; }})()"));
+    assert_eq!(
+        pressed.as_str().unwrap_or(""),
+        "pressed",
+        "{surface:?}: the first pane carries its own size control: {pressed}"
+    );
+    settle();
+    let after = harness::probe(tab, probe_js);
+    let (a0, b0) = (
+        before["a"].as_f64().unwrap_or(-1.0),
+        before["b"].as_f64().unwrap_or(-1.0),
+    );
+    let (a1, b1) = (
+        after["a"].as_f64().unwrap_or(-1.0),
+        after["b"].as_f64().unwrap_or(-1.0),
+    );
+    assert!(
+        a0 > 0.0 && b0 > 0.0 && a1 > 0.0 && b1 > 0.0,
+        "{surface:?}: every pane reports a real font size; before {before}, after {after}"
+    );
+    // The pane whose button was pressed gets smaller. Before #173 the app shell failed HERE:
+    // `--code-size` reached three enumerated selectors and `.lines` was in none of them, so the
+    // pane the reader was looking at ignored its own control.
+    assert!(
+        a1 < a0,
+        "{surface:?}: the pane whose control was pressed got smaller ({a0} -> {a1}); before: \
+         {before}, after: {after}"
+    );
+    // …and NO OTHER pane moves. Before #173 the classic page failed HERE: the bar wrote the
+    // page-wide preference, so pressing it on one pane resized every pane on the page.
+    assert!(
+        (b1 - b0).abs() < 0.01,
+        "{surface:?}: the other pane is untouched ({b0} -> {b1}) — a control on a pane is not a \
+         page-wide control; before: {before}, after: {after}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_code_control_moves_its_own_pane_only() {
+    let _serial = serial();
+    let fx = fixture_two_code_blocks("scenario-codectl-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_code_control_moves_its_own_pane_only(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_code_control_moves_its_own_pane_only() {
+    let _serial = serial();
+    let fx = fixture_two_code_blocks("scenario-codectl-app");
+    let page = open(Surface::AppShell, &fx, 2930);
+    scenario_a_code_control_moves_its_own_pane_only(&page.tab, Surface::AppShell, &fx);
 }

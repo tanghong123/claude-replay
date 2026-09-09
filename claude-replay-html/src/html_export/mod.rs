@@ -1054,7 +1054,18 @@ impl Emitter<'_> {
                             body.push(numbered_part(content, token, WRITE_PREVIEW));
                         }
                     }
-                    "read" => {
+                    // #173: `BlockKind::Read` covers five tools, but only two of them return
+                    // the BYTES OF A FILE — and a numbered gutter is a claim about a file.
+                    // On a Grep/Glob/LS result the gutter counts RESULT ROWS 1..n, numbers
+                    // that look like file line numbers sitting next to Grep's own `path:line:`
+                    // prefixes; and the highlight token is the TARGET's extension
+                    // (`token_for_target`), so `Glob("**/*.rs")` syntax-highlighted a listing
+                    // of PATHS as Rust. The search tools take the generic stream arm below,
+                    // which is what their output has always been.
+                    "read" if matches!(name.as_str(), "Read" | "NotebookRead") => {
+                        // A FILE fact (`toolUseResult.file.numLines`) — present only for the
+                        // two arms that read a file, which is why the chip stays here and the
+                        // search tools fall through to the generic output-line count.
                         if let Some(n) = read_lines {
                             head.insert("chips".into(), json!([chip(format!("{n} lines"))]));
                         }
@@ -3862,6 +3873,65 @@ mod tests {
             "all 30 rows emitted, not truncated"
         );
         assert_eq!(num["cap"], json!(WRITE_PREVIEW));
+    }
+
+    /// #173: the five tools behind `BlockKind::Read` are ONE kind but not one provenance.
+    /// Only `Read`/`NotebookRead` hand back the bytes of a file, so only they earn the
+    /// numbered gutter; a `Grep`/`Glob`/`LS` result is a stream and renders as one.
+    #[test]
+    fn only_file_reads_get_the_numbered_gutter() {
+        let part = |b: Block| -> String {
+            let out = stream(&[b], &FoldPolicy::none());
+            let parts = out[0]["body"].as_array().unwrap().clone();
+            assert_eq!(parts.len(), 1, "one body part: {parts:?}");
+            parts[0]["p"].as_str().unwrap().to_string()
+        };
+        // The two that read a file keep the gutter.
+        assert_eq!(part(tool("Read", "/f.rs")), "num");
+        assert_eq!(part(tool("NotebookRead", "/n.ipynb")), "num");
+        // The three that list or search do not — a gutter there numbers RESULT rows, and
+        // `token_for_target` would highlight a listing of paths as the target's language.
+        assert_eq!(part(tool("Grep", "needle")), "pre");
+        assert_eq!(part(tool("Glob", "**/*.rs")), "pre");
+        assert_eq!(part(tool("LS", "/dir")), "pre");
+        // All five stay the `read` kind — the keyline and the type filter are unchanged.
+        for name in ["Read", "NotebookRead", "Grep", "Glob", "LS"] {
+            let out = stream(&[tool(name, "/x")], &FoldPolicy::none());
+            assert_eq!(out[0]["kind"], json!("read"), "{name} keeps its kind");
+        }
+    }
+
+    /// The "n lines" chip follows the same provenance split: a file read reports the FILE's
+    /// line count (`toolUseResult.file.numLines`), which the search tools never carry, so
+    /// their chip is the generic count of the output they actually printed.
+    #[test]
+    fn the_lines_chip_is_the_file_count_only_where_a_file_was_read() {
+        let with_read_lines = |name: &str, n: Option<usize>| -> Value {
+            let block = Block::ToolUse {
+                name: name.into(),
+                target: "/f.rs".into(),
+                diffs: vec![],
+                output: Some("one\ntwo".into()),
+                patch: None,
+                read_lines: n,
+                cwd: String::new(),
+                execution: None,
+                published: None,
+            };
+            stream(&[block], &FoldPolicy::none())[0]["head"]["chips"].clone()
+        };
+        // 42 is the FILE's length; the two printed lines are only the preview.
+        assert_eq!(
+            with_read_lines("Read", Some(42)),
+            json!([chip("42 lines".to_string())]),
+        );
+        // No file fact, no chip — the read arm has never invented one.
+        assert_eq!(with_read_lines("Read", None), Value::Null);
+        // A Grep result carries no `file.numLines`, so it reports what it printed.
+        assert_eq!(
+            with_read_lines("Grep", None),
+            json!([chip("2 lines".to_string())]),
+        );
     }
 
     #[test]

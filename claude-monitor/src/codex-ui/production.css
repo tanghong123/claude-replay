@@ -122,18 +122,55 @@
    production sizes them through custom properties the app root carries, so a preference is one
    property change, not a rule per element. */
 #app{--code-size:12px;--measure:820px}
-#app .markdown pre code,#app .renderer-terminal .output,#app .turn-raw{font-size:var(--code-size)}
-/* #161. The preference reaches every `pre` and `code` in the transcript, not an enumerated set
-   of containers. `white-space` inherits, but the UA stylesheet sets it EXPLICITLY on `pre`, and
-   an explicit UA declaration beats an inherited author value — so a bare `<pre>` inside an
-   already-wrapping box kept `white-space: pre` and quietly ignored the control. Measured: the
-   terminal computed `pre-wrap` while the `<pre>` inside it computed `pre`, which is the "wrap
-   long lines does not apply to bash output" the owner reported. Keyed on the ELEMENTS rather
-   than on class names, so a rendering added later obeys it without being added to a list. */
-#app.wrap-code .markdown pre,#app.wrap-code .markdown pre code,#app.wrap-code .renderer-terminal .output{white-space:pre-wrap;word-break:break-word}
-#app.wrap-code .transcript pre,#app.wrap-code .transcript code{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
-#app.wrap-code .transcript pre{overflow-x:hidden}
-#app:not(.wrap-code) .transcript pre{white-space:pre;overflow-x:auto}
+/* #173. Size is a CODE control: it applies to bytes that came from a FILE ON DISK, rendered
+   structurally — a Write body, a Read's output, an Edit's diff — which the renderer marks with
+   `data-code` and nothing else in the document carries. It used to reach markdown code blocks,
+   terminal output and a raw turn as well; those are STREAMS, and a reader who wanted the code
+   smaller got the whole page smaller. `--code-size` is the app root's property, so a block that
+   sets its own (the per-block override below) simply shadows it. */
+#app [data-code]{font-size:var(--code-size)}
+/* #161 + #173. Wrap is WIDER than code: it is a verbatim-TEXT control — every run of text that
+   keeps its own line breaks. That is every `pre` in the transcript (a markdown block, bash
+   output inside a terminal, a raw turn — `code` inside a `pre` inherits from it) plus the marked
+   code panes. Keyed on the ELEMENTS rather than on an enumerated set of containers, so a
+   rendering added later obeys it without being added to a list; `white-space` inherits, but the
+   UA stylesheet sets it EXPLICITLY on `pre` and an explicit UA declaration beats an inherited
+   author value, so a bare `<pre>` inside an already-wrapping box kept `white-space: pre` and
+   quietly ignored the control (measured: the terminal computed `pre-wrap` while the `<pre>`
+   inside it computed `pre` — the "wrap long lines does not apply to bash output" the owner
+   reported). What #173 removes is `.transcript code`: it swept in INLINE backticks in prose,
+   which have no line identity, are not a wrap surface, and had their whitespace rewritten. */
+#app.wrap-code .transcript pre,#app.wrap-code [data-code]:not([data-wrap]){white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden}
+#app:not(.wrap-code) .transcript pre,#app:not(.wrap-code) [data-code]:not([data-wrap]){white-space:pre;overflow-x:auto}
+#app.wrap-code [data-code]:not([data-wrap]){--code-track:0}
+#app:not(.wrap-code) [data-code]:not([data-wrap]){--code-track:max-content}
+/* The NEUTRALIZER, and it is required (#161, the lesson above): the UA stylesheet sets
+   `white-space` EXPLICITLY on `pre`, and reference.css:161 sets it on `.codecell` and a font
+   SHORTHAND on `.lines` — an explicit declaration beats an inherited author value at ANY
+   specificity. So the marked container's descendants are told to inherit. `#app [data-code] *`
+   is (1,1,0), which beats `.lines.wrap .codecell` (0,2,0) and `.codecell` (0,1,0). */
+#app [data-code] *{font:inherit;white-space:inherit}
+/* …and the FLOOR under the text column, which is what makes wrapping visible at all. A code row
+   is a grid whose text column is `minmax(max-content,1fr)` (reference.css:161, and the numbered
+   shape in rule 1 of the reconciliation below, #146) — and max-content ignores every soft-wrap
+   opportunity: `overflow-wrap:anywhere` moves MIN-content only. So the column could never be
+   narrower than the longest line, and a pane with `white-space:pre-wrap` did not wrap, it
+   SCROLLED — the wrap control was a no-op on code whatever the class said. The floor rides a
+   property the wrap rules set, so the two shapes (with a mark, without) are stated once each
+   here instead of once per wrap state. */
+#app [data-code] .line{grid-template-columns:38px 16px minmax(var(--code-track,max-content),1fr)}
+#app [data-code] .line:not(:has(> .mark)){grid-template-columns:38px minmax(var(--code-track,max-content),1fr)}
+/* The per-block override (#173): the pane's own A− / A+ / wrap. Size shadows `--code-size` on
+   the marked container (inline, so no rule of its own); wrap is `data-wrap`.
+   The two sets are MUTUALLY EXCLUSIVE, not ranked — the page-wide branches above carry
+   `:not([data-wrap])`, so an element is matched by exactly one of them and no tie has to be
+   broken. Ranking them was the first draft and it was wrong twice over: an attribute weighs the
+   same as a class, so `#app [data-code][data-wrap="1"]` and `#app.wrap-code [data-code]` are
+   BOTH (1,2,0), and the override won only by sitting later in the file — which a later edit that
+   merely regroups these rules would have silently reversed, with no test able to see it.
+   Ephemeral: in memory, keyed by record, never written to storage. */
+#app [data-code][data-wrap="1"]{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden;--code-track:0}
+#app [data-code][data-wrap="0"]{white-space:pre;overflow-x:auto;--code-track:max-content}
 #app .transcript-inner{width:min(var(--measure),calc(100% - 64px))}
 .reading-row{height:30px;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;color:var(--sub);font-size:11.5px}
 .reading-step{display:inline-flex;align-items:center;gap:4px}
@@ -336,9 +373,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .cap-more-btn:hover,.cap-more-btn:focus-visible{color:var(--ink);border-color:var(--sub);outline:0}
 .renderer .codebox .lines{max-height:none}
 .codebox .codecell:empty::before{content:"\00a0"}
-/* #109: a user turn as typed — pre-formatted; wrap follows the reading preference like code. */
+/* #109: a user turn as typed — pre-formatted; wrap follows the reading preference like code,
+   which it gets by being a `<pre>` in the transcript (#173) — this is only its resting shape. */
 .turn-raw-text{white-space:pre-wrap;overflow-wrap:anywhere}
-#app:not(.wrap-code) .turn-raw-text{white-space:pre;overflow-x:auto}
 /* #110: the tool filter hides what does not match; user turns stay as dimmed landmarks. */
 .filter-hidden{display:none!important}
 .renderer-head.filter-hit{box-shadow:inset 3px 0 0 var(--blue)}

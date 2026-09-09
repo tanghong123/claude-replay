@@ -2083,7 +2083,7 @@ fn the_classic_page_keys_resolve_through_the_shared_table() {
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
-    let migrated = eval(&tab, "JSON.stringify({ms: getComputedStyle(document.documentElement).getPropertyValue('--ms').trim(), key: localStorage.getItem('am-prod-reading'), old: localStorage.getItem('claude-replay-export-ms')})");
+    let migrated = eval(&tab, "JSON.stringify({ms: getComputedStyle(document.documentElement).getPropertyValue('--code-size').trim(), key: localStorage.getItem('am-prod-reading'), old: localStorage.getItem('claude-replay-export-ms')})");
     let migrated: serde_json::Value =
         serde_json::from_str(migrated.as_str().unwrap_or("null")).unwrap_or_default();
     assert_eq!(
@@ -4984,18 +4984,41 @@ fn the_app_shell_reading_glyph_matches_its_neighbours() {
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn the_app_shell_size_control_reads_as_a_relative_step() {
     let _serial = serial();
-    let (_monitor, _browser, tab) = shell_with_a_session("appshell-size-step", 2879);
-    harness::eval(&tab, "document.getElementById('readingBtn').click()");
+    // #173 moved this control: the reading popover's "Code size" row is gone, and the step now
+    // lives on the bar attached to each code pane. So the fixture needs a code pane — the shared
+    // `shell_with_a_session` has none, which is why the old case could only assert "or absent".
+    let base = base("appshell-size-step");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000173".to_string();
+    let mut transcript = harness::long_session(4, harness::Shape::default());
+    transcript += &harness::user_at("write it out", &harness::now_minus(60));
+    transcript += &harness::write_tool_at("cw1", "/step.py", 12, &harness::now_minus(58));
+    transcript += &harness::assistant_at("written", &harness::now_minus(50));
+    stores.claude_session(&sid, &transcript);
+    let _monitor = Monitor::spawn(Kind::V2, 2879, &base, Some(&stores), true);
+    let _browser = harness::chrome();
+    let tab = _browser.new_tab().unwrap();
+    _monitor.pair(&tab);
+    _monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
         &tab,
-        "!!document.querySelector('[data-reading-value]')",
-        "the reading popover",
-        std::time::Duration::from_secs(10),
+        "!!document.querySelector('.virtual-window')",
+        "the app shell to mount the fixture",
+        std::time::Duration::from_secs(20),
         "document.body.innerText.slice(0, 120)",
+    );
+    // The pane is a fold; open it so its bar is in the DOM.
+    harness::eval(&tab, "(function(){ document.querySelectorAll('.renderer.closed > button.renderer-head').forEach(function (h) { h.click(); }); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('[data-code-size-val]')",
+        "a code pane with its bar",
+        std::time::Duration::from_secs(10),
+        "document.body.innerText.slice(0, 200)",
     );
     let at_rest = harness::eval(
         &tab,
-        "document.querySelector('[data-reading-value]').textContent.trim()",
+        "document.querySelector('[data-code-size-val]').textContent.trim()",
     );
     let at_rest = at_rest.as_str().unwrap_or("").to_string();
     assert!(
@@ -5005,23 +5028,24 @@ fn the_app_shell_size_control_reads_as_a_relative_step() {
     assert_eq!(at_rest, "0", "…and is 0 at the default: {at_rest:?}");
     harness::eval(
         &tab,
-        "document.querySelector('[data-reading-size=\"1\"]').click()",
+        "document.querySelector('[data-code-size=\"1\"]').click()",
     );
     let bigger = harness::eval(
         &tab,
-        "document.querySelector('[data-reading-value]').textContent.trim()",
+        "document.querySelector('[data-code-size-val]').textContent.trim()",
     );
     assert_eq!(
         bigger.as_str().unwrap_or(""),
         "+1",
         "…and a step up says so: {bigger}"
     );
-    // The per-pane code bars say the same thing, in the same vocabulary.
-    let bar = harness::eval(&tab, "(function(){ var v = document.querySelector('[data-code-size-val]'); return v ? v.textContent.trim() : 'none'; })()");
-    let bar = bar.as_str().unwrap_or("").to_string();
+    // #173: and the step is THIS BLOCK's, not the page's — the baseline it is measured against
+    // has not moved, which is the whole difference between the old control and this one.
+    let persisted = harness::eval(&tab, "localStorage.getItem('am-prod-reading')");
     assert!(
-        bar == "none" || !bar.to_lowercase().contains("px"),
-        "the per-pane bar agrees: {bar:?}"
+        persisted.is_null(),
+        "a per-block step writes NOTHING page-wide — the shared #45 key stays untouched \
+         until a reader moves the baseline itself: {persisted}"
     );
 }
 

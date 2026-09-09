@@ -296,20 +296,32 @@ export function partsHtml(parts = [], recordId = "", state = null) {
     }
     if (part.p === "pre" || part.p === "raw") return `<pre>${escapeText(part.x || "")}</pre>`;
     if (part.p === "note") return `<div class="renderer-note"><p>${escapeText(part.x || "")}</p></div>`;
-    if (part.p === "num" || part.p === "diff") return codeRows(part, capped);
+    if (part.p === "num" || part.p === "diff") return codeRows(part, capped, recordId, state);
     if (part.p === "blocks") return "";
     return `<div class="renderer-fallback"><div class="renderer-fallback-row"><span>unknown part</span><code>${escapeText(JSON.stringify(part))}</code></div></div>`;
   }).join("");
 }
 
-function codeRows(part, capped) {
+function codeRows(part, capped, recordId = "", state = null) {
   const build = part.p === "num" ? rows => numRowsHtml(rows, APP_ROWS) : rows => diffRowsHtml(rows, APP_ROWS, APP_MARKS);
   const cut = capped(part.rows || [], part.cap, build, toLineOf(part));
-  // The per-pane code bar (#115, the classic page's): size and wrap for every code block,
-  // tuned from the pane the reader is looking at, and a copy of this pane's code — no gutters,
-  // no marks. The expander shares the foot.
-  const bar = `<div class="codebar"><button type="button" class="code-size" data-code-size="-1" title="Smaller code (−) — applies to all code blocks">A−</button><span class="code-size-val" data-code-size-val></span><button type="button" class="code-size" data-code-size="1" title="Larger code (+) — applies to all code blocks">A+</button><button type="button" class="code-wrap" data-code-wrap title="Long lines: wrap / scroll (w)"></button><button type="button" class="code-copy" data-code-copy title="Copy this block">copy</button></div>`;
-  return `<div class="codebox" data-codebox><div class="lines wrap">${cut.shown}${cut.hidden}</div><div class="codefoot">${cut.button}${bar}</div></div>`;
+  // The per-pane code bar (#115, the classic page's): a copy of this pane's code — no gutters,
+  // no marks — and, since #173, size and wrap for THIS BLOCK. They used to call the page-wide
+  // preference, so a bar reported a state it did not have; the keyboard (− / + / w) still moves
+  // the page-wide baseline, and these move one block off it. The expander shares the foot.
+  const bar = `<div class="codebar"><button type="button" class="code-size" data-code-size="-1" title="Smaller code in this block">A−</button><span class="code-size-val" data-code-size-val></span><button type="button" class="code-size" data-code-size="1" title="Larger code in this block">A+</button><button type="button" class="code-wrap" data-code-wrap title="Long lines in this block: wrap / scroll"></button><button type="button" class="code-copy" data-code-copy title="Copy this block">copy</button></div>`;
+  // #173: `data-code` marks what IS code — bytes that came from a FILE ON DISK, rendered
+  // structurally (a Write body, a Read's output, an Edit's diff). Size is scoped to it and to
+  // nothing else in the document; wrap reaches it and the transcript's `pre` elements. It sits
+  // on `.lines`, NOT on `.codebox`: the box also holds the foot, and the bar and the cap button
+  // must not resize with the code. `wrap` used to be a HARDCODED class here, so every code pane
+  // was permanently wrapped whatever the control said — wrapping now comes from the preference
+  // and from this block's override, which rides the MARKUP (keyed by record, kept in memory
+  // only) so a pane scrolled out and back comes back with it, and is MEASURED with it.
+  const over = state?.codeOverrides?.get(recordId) || null;
+  const size = Number.isFinite(over?.size) ? ` style="--code-size:${over.size}px"` : "";
+  const wrap = over?.wrap == null ? "" : ` data-wrap="${over.wrap ? "1" : "0"}"`;
+  return `<div class="codebox" data-codebox><div class="lines" data-code data-code-record="${escapeText(recordId)}"${size}${wrap}>${cut.shown}${cut.hidden}</div><div class="codefoot">${cut.button}${bar}</div></div>`;
 }
 
 export class Projection {
