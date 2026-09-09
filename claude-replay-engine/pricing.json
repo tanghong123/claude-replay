@@ -1,0 +1,49 @@
+{
+  "schema_version": 2,
+  "cache_write_basis": "5m",
+  "sources": {
+    "anthropic": {
+      "url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "queried_at": "2026-09-09T05:56:36Z"
+    },
+    "openai": {
+      "url": "https://developers.openai.com/api/docs/pricing",
+      "queried_at": "2026-09-09T05:56:36Z"
+    }
+  },
+  "units": {
+    "usd_per_million_tokens": {
+      "tokens": 1000000,
+      "currency": "USD"
+    }
+  },
+  "models": [
+    { "ids": ["claude-fable-5-1"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 10000000, "cache_write_micros": 12500000, "cache_read_micros": 250000, "output_micros": 50000000 },
+    { "ids": ["claude-mythos-5-1"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 10000000, "cache_write_micros": 12500000, "cache_read_micros": 250000, "output_micros": 50000000 },
+    { "ids": ["claude-fable-5"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 10000000, "cache_write_micros": 12500000, "cache_read_micros": 1000000, "output_micros": 50000000 },
+    { "ids": ["claude-mythos-5"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 10000000, "cache_write_micros": 12500000, "cache_read_micros": 1000000, "output_micros": 50000000 },
+    { "ids": ["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 5000000, "cache_write_micros": 6250000, "cache_read_micros": 500000, "output_micros": 25000000 },
+    { "ids": ["claude-opus-4-1", "claude-opus-4", "claude-3-opus"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 15000000, "cache_write_micros": 18750000, "cache_read_micros": 1500000, "output_micros": 75000000 },
+    { "ids": ["claude-sonnet-5"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 2000000, "cache_write_micros": 2500000, "cache_read_micros": 200000, "output_micros": 10000000 },
+    { "ids": ["claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4", "claude-3-7-sonnet", "claude-3-5-sonnet", "claude-3-sonnet"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 3000000, "cache_write_micros": 3750000, "cache_read_micros": 300000, "output_micros": 15000000 },
+    { "ids": ["claude-haiku-4-5"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 1000000, "cache_write_micros": 1250000, "cache_read_micros": 100000, "output_micros": 5000000 },
+    { "ids": ["claude-haiku-3-5", "claude-3-5-haiku"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 800000, "cache_write_micros": 1000000, "cache_read_micros": 80000, "output_micros": 4000000 },
+    { "ids": ["claude-3-haiku"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 250000, "cache_write_micros": 300000, "cache_read_micros": 30000, "output_micros": 1250000 },
+
+    { "ids": ["gpt-6-astra"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 10000000, "cache_write_micros": 10000000, "cache_read_micros": 1000000, "output_micros": 50000000 },
+    { "ids": ["gpt-5-6-sol", "gpt-daybreak-blue-latest"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 4000000, "cache_write_micros": 4000000, "cache_read_micros": 400000, "output_micros": 20000000 },
+    { "ids": ["gpt-5-6-terra"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 2000000, "cache_write_micros": 2000000, "cache_read_micros": 200000, "output_micros": 12000000 },
+    { "ids": ["gpt-5-6-luna"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 200000, "cache_write_micros": 200000, "cache_read_micros": 20000, "output_micros": 1200000 },
+    { "ids": ["gpt-5-6-cyber", "gpt-5-5-cyber", "gpt-daybreak-red-latest"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 12500000, "cache_write_micros": 12500000, "cache_read_micros": 1250000, "output_micros": 75000000 },
+    { "ids": ["gpt-5-1", "gpt-5", "gpt-5-codex", "gpt-5-1-codex", "gpt-5-1-codex-max"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 1250000, "cache_write_micros": 1250000, "cache_read_micros": 125000, "output_micros": 10000000 },
+    { "ids": ["gpt-5-5"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 5000000, "cache_write_micros": 5000000, "cache_read_micros": 500000, "output_micros": 30000000 },
+    { "ids": ["gpt-5-4"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 2500000, "cache_write_micros": 2500000, "cache_read_micros": 250000, "output_micros": 15000000 },
+    { "ids": ["gpt-5-4-mini"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 750000, "cache_write_micros": 750000, "cache_read_micros": 75000, "output_micros": 4500000 },
+    { "ids": ["gpt-5-4-nano"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 200000, "cache_write_micros": 200000, "cache_read_micros": 20000, "output_micros": 1250000 },
+    { "ids": ["gpt-5-3-codex"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 1750000, "cache_write_micros": 1750000, "cache_read_micros": 175000, "output_micros": 14000000 },
+    { "ids": ["gpt-5-2", "gpt-5-2-codex"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 1750000, "cache_write_micros": 1750000, "cache_read_micros": 175000, "output_micros": 14000000 },
+    { "ids": ["gpt-5-mini", "gpt-5-1-codex-mini"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 250000, "cache_write_micros": 250000, "cache_read_micros": 25000, "output_micros": 2000000 },
+    { "ids": ["gpt-5-nano"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 50000, "cache_write_micros": 50000, "cache_read_micros": 5000, "output_micros": 400000 },
+    { "ids": ["gpt-5-search-api"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 1250000, "cache_write_micros": 1250000, "cache_read_micros": 125000, "output_micros": 10000000 }
+  ]
+}

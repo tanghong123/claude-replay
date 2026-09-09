@@ -269,7 +269,7 @@ mod tests {
         let d = scratch("fold");
         let t = d.join("rollout-2026-08-12T01-00-00-fold-test.jsonl");
         let mut f = std::fs::File::create(&t).unwrap();
-        write!(f, "{}", turn_context("gpt-5.6")).unwrap();
+        write!(f, "{}", turn_context("gpt-5")).unwrap();
         write!(
             f,
             "{}",
@@ -392,7 +392,7 @@ mod tests {
             &t,
             format!(
                 "{}{}",
-                turn_context("gpt-5.6"),
+                turn_context("gpt-5"),
                 token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0)
             ),
         )
@@ -439,7 +439,7 @@ mod tests {
             &t,
             format!(
                 "{}{}",
-                turn_context("gpt-5.6"),
+                turn_context("gpt-5"),
                 token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0)
             ),
         )

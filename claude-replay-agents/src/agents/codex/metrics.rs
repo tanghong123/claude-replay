@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn uses_newest_cumulative_usage_and_keeps_cached_input_separate() {
         let jsonl = r#"
-{"timestamp":"2026-07-18T01:00:00Z","type":"turn_context","payload":{"model":"gpt-5.6"}}
+{"timestamp":"2026-07-18T01:00:00Z","type":"turn_context","payload":{"model":"gpt-5"}}
 {"timestamp":"2026-07-18T01:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":20}}}}
 {"timestamp":"2026-07-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"output_tokens":80}}}}
 "#;
@@ -702,14 +702,14 @@ mod tests {
         assert_eq!(metrics.input_tokens, 100);
         assert_eq!(metrics.cache_read_tokens, 200);
         assert_eq!(metrics.output_tokens, 80);
-        assert_eq!(metrics.model, "gpt-5.6");
+        assert_eq!(metrics.model, "gpt-5");
         assert_eq!(metrics.duration_secs, 60);
-        // gpt-5 family is priced: 100 in + 200 cached·0.10 + 80 out → non-zero.
+        // gpt-5 is priced: 100 in + 200 cached·0.10 + 80 out → non-zero.
         let cost = metrics.cost_usd.expect("gpt-5 should be priced");
         let expected = (100.0 + 200.0 * 0.10) / 1e6 * 1.25 + 80.0 / 1e6 * 10.0;
         assert!((cost - expected).abs() < 1e-9, "cost: {cost}");
         let footer = metrics.footer();
-        assert!(footer.contains("gpt-5.6"), "footer: {footer}");
+        assert!(footer.contains("gpt-5"), "footer: {footer}");
         assert!(footer.contains("100 in"), "footer: {footer}");
         assert!(footer.contains("200 cached"), "footer: {footer}");
         assert!(footer.contains('$'), "footer: {footer}");
@@ -829,7 +829,7 @@ mod tests {
             token_count(300, 200, 30),
             turn_context("gpt-5.6-sol"), // the session finally names one
             token_count(400, 250, 45),
-            turn_context("gpt-5.6-mini"), // and later switches
+            turn_context("gpt-5-mini"), // and later switches
             token_count(500, 300, 55),
         ] {
             acc.push(&l);
@@ -841,13 +841,13 @@ mod tests {
             m.per_model.keys().collect::<Vec<_>>()
         );
         // The FIRST name claims the inherited readings — the model in force closest to when
-        // those tokens were produced — not `gpt-5.6-mini`, the one merely in force at the end.
+        // those tokens were produced — not `gpt-5-mini`, the one merely in force at the end.
         //   gpt-5.6-sol: inherited (100 cumulative, of which 40 cached → 60 in / 40 cache / 10 out)
         //          + its own (300→400 in, 200→250 cached, 30→45 out)
         assert_eq!(m.per_model["gpt-5.6-sol"].input, 150, "400 - 250 cached");
         assert_eq!(m.per_model["gpt-5.6-sol"].cache_read, 250);
         assert_eq!(m.per_model["gpt-5.6-sol"].output, 45);
-        assert_eq!(m.per_model["gpt-5.6-mini"].output, 10, "55 - 45");
+        assert_eq!(m.per_model["gpt-5-mini"].output, 10, "55 - 45");
         assert!(
             !m.cost_partial,
             "every token now belongs to a priced model, so the cost is not a lower bound"
@@ -887,7 +887,7 @@ mod tests {
 
         let mut tail = CodexMetricsAcc::default();
         tail.restore(&cursor);
-        tail.push(&turn_context("gpt-5.6-mini")); // the suffix only ever sees the SECOND name
+        tail.push(&turn_context("gpt-5-mini")); // the suffix only ever sees the SECOND name
         let m = tail.finish();
         assert!(
             !m.per_model.contains_key(""),

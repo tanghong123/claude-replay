@@ -434,7 +434,7 @@ mod tests {
                 "\n",
                 r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"child body"}]}}"#,
                 "\n",
-                r#"{"type":"turn_context","payload":{"model":"gpt-5.6"}}"#,
+                r#"{"type":"turn_context","payload":{"model":"gpt-5"}}"#,
                 "\n",
                 r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":80}}}}"#,
                 "\n",

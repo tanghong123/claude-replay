@@ -3,6 +3,8 @@
 
 use crate::model::UsdCost;
 use std::collections::BTreeMap;
+use std::fmt;
+use std::sync::{Arc, OnceLock};
 
 /// One persisted rate-limit window, normalized from an agent's usage snapshots.
 #[derive(Debug, Default, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
@@ -128,14 +130,14 @@ impl std::ops::AddAssign for TokenCounts {
 }
 
 impl TokenCounts {
-    /// This model's cost, or `None` when the model isn't priced.
-    pub fn cost(&self, model: &str) -> Option<UsdCost> {
-        self.cost_with(&PriceTable::default(), model)
+    /// This model context's exact estimated price, or `None` when it isn't priced.
+    pub fn price(&self, model: &ModelContext) -> Option<PriceEstimate> {
+        self.price_with(&PriceTable::default(), model)
     }
 
-    /// [`cost`](Self::cost) against host-supplied rates — see [`PriceTable`].
-    pub fn cost_with(&self, prices: &PriceTable, model: &str) -> Option<UsdCost> {
-        estimate_cost_with(
+    /// [`price`](Self::price) against host-supplied rates — see [`PriceTable`].
+    pub fn price_with(&self, prices: &PriceTable, model: &ModelContext) -> Option<PriceEstimate> {
+        estimate_price_with(
             prices,
             model,
             self.input,
@@ -143,6 +145,18 @@ impl TokenCounts {
             self.cache_read,
             self.output,
         )
+    }
+
+    /// Backward-compatible USD projection for callers that still carry only a model name.
+    pub fn cost(&self, model: &str) -> Option<UsdCost> {
+        self.cost_with(&PriceTable::default(), model)
+    }
+
+    /// [`cost`](Self::cost) against host-supplied rates. A rate without an explicit USD currency
+    /// is intentionally not projected into this legacy USD-only return type.
+    pub fn cost_with(&self, prices: &PriceTable, model: &str) -> Option<UsdCost> {
+        self.price_with(prices, &ModelContext::new(model))
+            .and_then(|price| price.amount_in("USD"))
     }
 }
 
@@ -158,11 +172,10 @@ pub type MetricsTotals = (
 /// Sum the per-model costs, and say whether the sum covers **every** model that produced
 /// tokens (the returned flag is `true` when some model was OMITTED).
 ///
-/// The flag is not decoration. Pricing is name-matched (`price`), so a model the table does not
+/// The flag is not decoration. Pricing is exact-name matched, so a model the catalog does not
 /// know contributes **nothing** — and per-model attribution makes that visible where a single
-/// flat counter hid it. A real case from the byte-gate fixture: 97% of its tokens are
-/// `claude-fable-5`, unpriced, so the sum covers 3% of the session. Reporting that as "the
-/// cost" would be worse than the bug this fixes; reporting it as a LOWER BOUND is honest.
+/// flat counter hid it. Reporting a partially covered sum as "the cost" would be worse than the
+/// omission; reporting it as a LOWER BOUND is honest.
 pub fn total_cost(per_model: &BTreeMap<String, TokenCounts>) -> (Option<UsdCost>, bool) {
     total_cost_with(&PriceTable::default(), per_model)
 }
@@ -174,16 +187,25 @@ pub fn total_cost_with(
     prices: &PriceTable,
     per_model: &BTreeMap<String, TokenCounts>,
 ) -> (Option<UsdCost>, bool) {
-    let (mut total, mut partial) = (None, false);
-    for (m, c) in per_model {
-        match c.cost_with(prices, m) {
-            Some(v) => *total.get_or_insert(0.0) += v,
+    let (mut total, mut partial): (Option<PriceEstimate>, bool) = (None, false);
+    for (name, counts) in per_model {
+        let context = ModelContext::new(name);
+        match counts.price_with(prices, &context) {
+            Some(price) if price.is_currency("USD") => match total.as_ref() {
+                Some(current) => match current.checked_add(&price) {
+                    Some(sum) => total = Some(sum),
+                    // Preserve the known subtotal. Dropping it would make a later priced model
+                    // silently restart the sum rather than extend an honest lower bound.
+                    None => partial = true,
+                },
+                None => total = Some(price),
+            },
             // Only tokens make a gap: a model that produced none costs nothing either way.
-            None if *c != TokenCounts::default() => partial = true,
-            None => {}
+            Some(_) | None if *counts != TokenCounts::default() => partial = true,
+            Some(_) | None => {}
         }
     }
-    (total, partial)
+    (total.and_then(|price| price.amount_in("USD")), partial)
 }
 
 /// USD per Qoder **credit** — the published subscription rate, checked 2026-08-27 against
@@ -249,29 +271,323 @@ impl TimeSpan {
     }
 }
 
-/// Per-model rate overrides supplied by the host application, consulted ahead of the built-in
-/// table by [`estimate_cost_with`] and friends.
+const AMOUNT_MICROS_PER_UNIT: u64 = 1_000_000;
+
+/// Context used to resolve a model's price.
 ///
-/// **Why this exists, and why it is a parameter rather than a file.** Published rates move
-/// between releases, and a host that has to ship a new binary to correct a number will instead
-/// show a wrong one. But the engine reading `~/.config/…` itself would make every rendered
-/// figure a function of the machine — the byte-identical gate measures the binary, not the box
-/// (see `scripts/gate/README.md`) — so the file-reading, the schema and the blame for a bad
-/// entry all belong to whoever chose to expose them. An empty table (the [`Default`], and what
-/// [`estimate_cost`] passes) is exactly the built-in behaviour, so nothing that does not opt in
-/// can change by a single byte.
+/// The field is deliberately private: callers construct a context from a model name today, while
+/// future billing dimensions can be added without changing every pricing API signature.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ModelContext {
+    name: String,
+}
+
+impl ModelContext {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl From<&str> for ModelContext {
+    fn from(name: &str) -> Self {
+        Self::new(name)
+    }
+}
+
+/// Replaceable policy for turning a recorded model context into a catalog key.
+pub trait ModelNormalizer: Send + Sync {
+    fn normalize(&self, context: &ModelContext) -> String;
+}
+
+/// The built-in conservative normalizer: case/separator normalization plus a valid terminal
+/// snapshot date. It does not perform family or substring matching.
+#[derive(Debug, Default)]
+pub struct DefaultModelNormalizer;
+
+impl ModelNormalizer for DefaultModelNormalizer {
+    fn normalize(&self, context: &ModelContext) -> String {
+        normalize_model_name(context.name())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RateError {
+    ZeroTokenUnit,
+    EmptyCurrency,
+    InvalidDecimal,
+    TooManyDecimalPlaces,
+    Overflow,
+    MismatchedUnits,
+}
+
+impl fmt::Display for RateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::ZeroTokenUnit => "a token-rate unit must cover at least one token",
+            Self::EmptyCurrency => "currency must be omitted or non-empty",
+            Self::InvalidDecimal => "rate must be a non-negative plain decimal",
+            Self::TooManyDecimalPlaces => "rate supports at most six decimal places",
+            Self::Overflow => "rate is too large",
+            Self::MismatchedUnits => "all four model rates must use the same unit",
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for RateError {}
+
+/// The denominator and optional currency attached to a token rate.
 ///
-/// **Matching is exact and case-insensitive**, deliberately unlike the substring family
-/// matching in [`price`]. The built-in table is curated and ordered, and its ordering is load-
-/// bearing (`is_bare_opus_4`, `names_version`); letting arbitrary user strings join that
-/// cascade would mean a one-line override could silently reprice a whole family, and which
-/// entry won would depend on insertion order. Naming a model outright can only affect that
-/// model — and it is the name the host already displays, so it can be copied rather than
-/// guessed.
-#[derive(Debug, Default, Clone, PartialEq)]
+/// `tokens` is mandatory. `currency` is optional so the pricing core can represent non-monetary
+/// or not-yet-classified rates without pretending they are dollars. Amounts are stored as integer
+/// millionths of the unit named here.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TokenRateUnit {
+    tokens: u64,
+    currency: Option<String>,
+}
+
+impl TokenRateUnit {
+    pub fn new(tokens: u64, currency: Option<String>) -> Result<Self, RateError> {
+        if tokens == 0 {
+            return Err(RateError::ZeroTokenUnit);
+        }
+        let currency = currency
+            .map(|value| {
+                let value = value.trim().to_ascii_uppercase();
+                (!value.is_empty() && !value.chars().any(char::is_whitespace))
+                    .then_some(value)
+                    .ok_or(RateError::EmptyCurrency)
+            })
+            .transpose()?;
+        Ok(Self { tokens, currency })
+    }
+
+    pub fn usd_per_million_tokens() -> Self {
+        Self {
+            tokens: 1_000_000,
+            currency: Some("USD".to_string()),
+        }
+    }
+
+    pub fn tokens(&self) -> u64 {
+        self.tokens
+    }
+
+    pub fn currency(&self) -> Option<&str> {
+        self.currency.as_deref()
+    }
+}
+
+/// An exact amount per [`TokenRateUnit`], stored in millionths rather than binary floating point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenRate {
+    amount_micros: u64,
+    unit: TokenRateUnit,
+}
+
+impl TokenRate {
+    pub fn from_micros(amount_micros: u64, unit: TokenRateUnit) -> Self {
+        Self {
+            amount_micros,
+            unit,
+        }
+    }
+
+    pub fn from_decimal(value: &str, unit: TokenRateUnit) -> Result<Self, RateError> {
+        if value.is_empty() || value.starts_with(['-', '+']) {
+            return Err(RateError::InvalidDecimal);
+        }
+        let mut parts = value.split('.');
+        let whole = parts.next().ok_or(RateError::InvalidDecimal)?;
+        let fraction = parts.next().unwrap_or("");
+        if parts.next().is_some()
+            || whole.is_empty()
+            || !whole.bytes().all(|byte| byte.is_ascii_digit())
+            || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(RateError::InvalidDecimal);
+        }
+        if fraction.len() > 6 {
+            return Err(RateError::TooManyDecimalPlaces);
+        }
+        let whole = whole.parse::<u64>().map_err(|_| RateError::Overflow)?;
+        let fraction = if fraction.is_empty() {
+            0
+        } else {
+            fraction
+                .parse::<u64>()
+                .map_err(|_| RateError::Overflow)?
+                .checked_mul(10u64.pow((6 - fraction.len()) as u32))
+                .ok_or(RateError::Overflow)?
+        };
+        let amount_micros = whole
+            .checked_mul(AMOUNT_MICROS_PER_UNIT)
+            .and_then(|value| value.checked_add(fraction))
+            .ok_or(RateError::Overflow)?;
+        Ok(Self::from_micros(amount_micros, unit))
+    }
+
+    pub fn amount_micros(&self) -> u64 {
+        self.amount_micros
+    }
+
+    pub fn unit(&self) -> &TokenRateUnit {
+        &self.unit
+    }
+}
+
+/// One model's complete four-tier price estimate.
+///
+/// `cache_write` is the 5-minute prompt-cache write rate. The transcript currently stores one
+/// aggregate cache-creation count and cannot distinguish 5-minute from 1-hour writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelPrice {
+    input: TokenRate,
+    cache_write: TokenRate,
+    cache_read: TokenRate,
+    output: TokenRate,
+}
+
+impl ModelPrice {
+    pub fn new(
+        input: TokenRate,
+        cache_write: TokenRate,
+        cache_read: TokenRate,
+        output: TokenRate,
+    ) -> Result<Self, RateError> {
+        if [cache_write.unit(), cache_read.unit(), output.unit()]
+            .into_iter()
+            .any(|unit| unit != input.unit())
+        {
+            return Err(RateError::MismatchedUnits);
+        }
+        Ok(Self {
+            input,
+            cache_write,
+            cache_read,
+            output,
+        })
+    }
+
+    pub fn from_micros(unit: TokenRateUnit, amounts: [u64; 4]) -> Self {
+        Self {
+            input: TokenRate::from_micros(amounts[0], unit.clone()),
+            cache_write: TokenRate::from_micros(amounts[1], unit.clone()),
+            cache_read: TokenRate::from_micros(amounts[2], unit.clone()),
+            output: TokenRate::from_micros(amounts[3], unit),
+        }
+    }
+
+    pub fn input(&self) -> &TokenRate {
+        &self.input
+    }
+
+    pub fn cache_write(&self) -> &TokenRate {
+        &self.cache_write
+    }
+
+    pub fn cache_read(&self) -> &TokenRate {
+        &self.cache_read
+    }
+
+    pub fn output(&self) -> &TokenRate {
+        &self.output
+    }
+
+    pub fn unit(&self) -> &TokenRateUnit {
+        self.input.unit()
+    }
+}
+
+/// An exact rational price accumulated from token counts. Floating point is used only when a
+/// presentation-facing compatibility API requests a decimal value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PriceEstimate {
+    numerator: u128,
+    denominator: u128,
+    currency: Option<String>,
+}
+
+impl PriceEstimate {
+    fn new(numerator: u128, denominator: u128, currency: Option<String>) -> Self {
+        Self {
+            numerator,
+            denominator,
+            currency,
+        }
+    }
+
+    pub fn currency(&self) -> Option<&str> {
+        self.currency.as_deref()
+    }
+
+    pub fn is_currency(&self, currency: &str) -> bool {
+        self.currency()
+            .is_some_and(|value| value.eq_ignore_ascii_case(currency))
+    }
+
+    pub fn amount(&self) -> f64 {
+        self.numerator as f64 / self.denominator as f64
+    }
+
+    pub fn amount_in(&self, currency: &str) -> Option<f64> {
+        self.is_currency(currency).then(|| self.amount())
+    }
+
+    pub fn checked_add(&self, other: &Self) -> Option<Self> {
+        if self.currency != other.currency {
+            return None;
+        }
+        let divisor = gcd(self.denominator, other.denominator);
+        let left_factor = other.denominator / divisor;
+        let right_factor = self.denominator / divisor;
+        let numerator = self
+            .numerator
+            .checked_mul(left_factor)?
+            .checked_add(other.numerator.checked_mul(right_factor)?)?;
+        let denominator = self.denominator.checked_mul(left_factor)?;
+        Some(Self::new(numerator, denominator, self.currency.clone()))
+    }
+}
+
+fn gcd(mut left: u128, mut right: u128) -> u128 {
+    while right != 0 {
+        (left, right) = (right, left % right);
+    }
+    left
+}
+
+/// Per-model overrides plus the replaceable normalization policy used for built-in lookup.
+///
+/// Overrides match the complete raw recorded name before normalization, folding ASCII case only.
+/// This lets a host override one snapshot without accidentally repricing every alias that
+/// normalizes to the same catalog key.
+#[derive(Clone)]
 pub struct PriceTable {
-    /// Keyed by lowercased model name → `(input, output)` USD per million tokens.
-    rates: BTreeMap<String, (f64, f64)>,
+    rates: BTreeMap<String, ModelPrice>,
+    normalizer: Arc<dyn ModelNormalizer>,
+}
+
+impl fmt::Debug for PriceTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PriceTable")
+            .field("rates", &self.rates)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for PriceTable {
+    fn default() -> Self {
+        Self {
+            rates: BTreeMap::new(),
+            normalizer: Arc::new(DefaultModelNormalizer),
+        }
+    }
 }
 
 impl PriceTable {
@@ -279,228 +595,240 @@ impl PriceTable {
         Self::default()
     }
 
-    /// Record `model`'s rates in USD per million tokens, replacing any earlier entry.
-    ///
-    /// Returns `false` — storing nothing — when either rate is negative or not finite. A price
-    /// table is worth having only if a bad entry is *visible*, and silently keeping a `NaN`
-    /// would poison the sum into `NaN` with nothing to point at, so rejection is reported to the
-    /// caller (`#[must_use]`) for it to surface where it knows the provenance.
-    #[must_use = "a rejected rate means the host's own input was invalid; report it"]
-    pub fn set(&mut self, model: &str, input: f64, output: f64) -> bool {
-        let sane = |v: f64| v.is_finite() && v >= 0.0;
-        if !sane(input) || !sane(output) {
-            return false;
+    pub fn with_normalizer(normalizer: impl ModelNormalizer + 'static) -> Self {
+        Self {
+            rates: BTreeMap::new(),
+            normalizer: Arc::new(normalizer),
         }
-        self.rates.insert(model.to_lowercase(), (input, output));
-        true
     }
 
-    /// This table's rate for `model`, or `None` to fall through to the built-in table.
-    fn get(&self, model: &str) -> Option<(f64, f64)> {
-        // Nothing to lowercase for the overwhelmingly common empty table.
-        if self.rates.is_empty() {
-            return None;
-        }
-        self.rates.get(&model.to_lowercase()).copied()
+    /// Record one raw context's complete rates, returning the replaced value when present.
+    pub fn set(&mut self, context: &ModelContext, price: ModelPrice) -> Option<ModelPrice> {
+        self.rates
+            .insert(context.name().to_ascii_lowercase(), price)
+    }
+
+    /// Resolve a raw context through complete-name overrides (ASCII case-insensitive), then the
+    /// configured normalizer and embedded catalog. No family fallback is performed.
+    pub fn resolve(&self, context: &ModelContext) -> Option<ModelPrice> {
+        self.rates
+            .get(&context.name().to_ascii_lowercase())
+            .cloned()
+            .or_else(|| {
+                let normalized = self.normalizer.normalize(context);
+                builtin_prices().get(&normalized).cloned()
+            })
     }
 }
 
-/// The rate for `model`: the host's override if it names it, else the built-in table.
-fn resolve_price(prices: &PriceTable, model: &str) -> Option<(f64, f64)> {
-    prices.get(model).or_else(|| price(model))
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PricingCatalog {
+    schema_version: u64,
+    cache_write_basis: String,
+    sources: BTreeMap<String, PricingSource>,
+    units: BTreeMap<String, PricingUnit>,
+    models: Vec<PricingEntry>,
 }
 
-/// Rough USD/1M-token (input, output) list prices for cost estimation.
-/// Best-effort — rates are approximate and drift over time.
-/// `(input, output)` USD per million tokens, from each vendor's official table: Anthropic's
-/// (<https://platform.claude.com/docs/en/about-claude/pricing>, checked 2026-08-05) inline
-/// below, OpenAI's in [`openai_price`], which carries its own source and check date.
-///
-/// **Why this is code and not configuration.** Rates change, and a table baked into a binary
-/// goes stale — which is exactly what happened here: every `opus` was priced at the retired
-/// $15/$75 long after Opus 4.5+ moved to $5/$25, inflating real estimates ~3×. But moving the
-/// numbers to a config file would not have caught that, because nothing would have told anyone
-/// the file was wrong. Two things actually help, and both are here: the estimate is marked
-/// `≥` when any model is unpriced (so a NEW model is visibly missing rather than silently
-/// free), and `price_tests` pins every rate against the published table, so a stale entry is a
-/// failing test at the next touch rather than a wrong number in a footer.
-///
-/// A user-editable file would add a way for the number to be wrong that no test can see, so the
-/// engine still reads none: this table is the only rate source `price` consults, it ships with
-/// the binary, and `price_tests` keeps it honest. What a HOST application may now do instead is
-/// pass an explicit [`PriceTable`] to [`estimate_cost_with`] — an override it obtained itself and
-/// whose correctness it owns, per-model and additive, leaving every model it does not name on the
-/// tested rates below. That keeps the failure contained: an override can only be wrong about the
-/// models someone deliberately typed out, never about the ones they didn't, and a model neither
-/// source prices is still marked `≥` rather than silently free.
-///
-/// **Order matters**: the deprecated Opus 4/4.1 cost 3× what Opus 4.5+ do, so the specific
-/// matches must precede the family fallback. Getting this wrong is not cosmetic — a table that
-/// priced every `opus` at the retired $15/$75 rate inflated a real session's estimate ~3×.
-fn price(model: &str) -> Option<(f64, f64)> {
-    let m = model.to_lowercase();
-    // ── Anthropic ──
-    if m.contains("fable") || m.contains("mythos") {
-        return Some((10.0, 50.0));
-    }
-    if m.contains("opus") {
-        // Opus 4 and 4.1 are retired/deprecated and were priced 3× the current family.
-        let legacy = m.contains("opus-4-1") || m.contains("opus-4.1") || is_bare_opus_4(&m);
-        return Some(if legacy { (15.0, 75.0) } else { (5.0, 25.0) });
-    }
-    if m.contains("sonnet") {
-        // Sonnet 5 runs introductory pricing through 2026-08-31, then $3/$15 like Sonnet 4.x.
-        // Not date-aware: a transcript read after the change prices its Sonnet 5 turns at the
-        // introductory rate. Revisit when that matters more than the added plumbing.
-        return Some(if m.contains("sonnet-5") {
-            (2.0, 10.0)
-        } else {
-            (3.0, 15.0)
-        });
-    }
-    if m.contains("haiku") {
-        return Some(if m.contains("haiku-3") {
-            (0.80, 4.0)
-        } else {
-            (1.0, 5.0)
-        });
-    }
-    // ── OpenAI (Codex) ──
-    openai_price(&m)
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PricingSource {
+    url: String,
+    queried_at: String,
 }
 
-/// OpenAI list prices, `(input, output)` USD per million tokens, from the published table
-/// (<https://developers.openai.com/api/docs/pricing>, Standard tier, checked 2026-09-08).
-///
-/// **Two columns are deliberately not modelled.** Every rate here is the *Standard*,
-/// *short-context* one, because neither of the other axes is visible in a model name: the page
-/// prices contexts over 272K tokens up to 2× higher, and `gpt-5.3-codex`'s Fast mode at exactly
-/// 2×, and a transcript records `gpt-5.3-codex` either way. So a long-context or Fast-mode
-/// session is UNDER-estimated. That is the direction the rest of this module already errs in
-/// (`cost_partial`, the `≥` marker) and the opposite of the Opus bug that motivated the pins.
-///
-/// **Codenames are tested before version numbers, but only as exact published IDs.** Astra,
-/// sol, terra and luna each name one model; `cyber` names two priced versions and one unpriced
-/// version. A substring check would let `gpt-7-astra` or `gpt-5.4-sol` borrow a plausible but
-/// false rate. `gpt-6-astra` needs this explicit row because it contains no `gpt-5`, no `gpt5`
-/// and no `codex` and therefore reaches none of the version branches below.
-///
-/// **Order matters here for the same reason it does in [`price`]**: the flat $1.25/$10 baseline
-/// priced a real sol-heavy session tree at ~$118 when the tier rates said ~$436.
-fn openai_price(m: &str) -> Option<(f64, f64)> {
-    // `gpt-5.6-sol` and `gpt-5-6-sol` are one model; normalize the separator once here rather
-    // than spelling both out in every branch below.
-    let g = m.replace('.', "-");
-    if !g.contains("gpt") && !g.contains("codex") {
-        return None;
-    }
-    match g.as_str() {
-        "gpt-6-astra" => return Some((10.0, 50.0)),
-        // Promotional, published as holding "at least through November 21, 2026". Not
-        // date-aware, exactly as the Sonnet 5 note above: a transcript read afterwards is
-        // priced at the promotional rate until this table is next refreshed. Daybreak blue is
-        // listed at the same rate and currently resolves to sol.
-        "gpt-5-6-sol" | "gpt-daybreak-blue-latest" => return Some((4.0, 20.0)),
-        // Terra/luna are the STANDARD rates — #19 initially carried exactly half for both,
-        // which is the Batch-API discount; Codex traffic is interactive and bills at standard.
-        "gpt-5-6-terra" => return Some((2.0, 12.0)),
-        "gpt-5-6-luna" => return Some((0.20, 1.20)),
-        // 5.6-cyber and 5.5-cyber are both $12.50/$75. Daybreak red is listed at the same rate
-        // and currently resolves to 5.6-cyber. The 5.4-cyber row is empty and remains unpriced.
-        "gpt-5-6-cyber" | "gpt-5-5-cyber" | "gpt-daybreak-red-latest" => {
-            return Some((12.50, 75.0));
-        }
-        "gpt-5-4-cyber" => return None,
-        _ => {}
-    }
-    if ["astra", "sol", "terra", "luna", "cyber"]
-        .iter()
-        .any(|codename| g.contains(codename))
-    {
-        return None;
-    }
-    if names_version(&g, "gpt-5-5") {
-        return Some(if g.contains("pro") {
-            (30.0, 180.0)
-        } else {
-            (5.0, 30.0)
-        });
-    }
-    if names_version(&g, "gpt-5-4") {
-        // Pro before the size tiers and before the base rate: it costs 12× the base.
-        if g.contains("pro") {
-            return Some((30.0, 180.0));
-        }
-        if g.contains("mini") {
-            return Some((0.75, 4.50));
-        }
-        if g.contains("nano") {
-            return Some((0.20, 1.25));
-        }
-        return Some((2.50, 15.0));
-    }
-    // 5.3 ships only as `-codex`, at 5.2's rate.
-    if names_version(&g, "gpt-5-3") {
-        return Some((1.75, 14.0));
-    }
-    if names_version(&g, "gpt-5-2") {
-        return Some(if g.contains("pro") {
-            (21.0, 168.0)
-        } else {
-            (1.75, 14.0)
-        });
-    }
-    // Everything below is the gpt-5/5.1 generation and the codex builds on it. A version this
-    // table has never seen (`gpt-6-<something-new>`) must reach `None` and render as a visible
-    // `≥` rather than quietly borrow these rates — that is the whole point of the marker.
-    if !g.contains("gpt-5") && !g.contains("gpt5") && !g.contains("codex") {
-        return None;
-    }
-    if g.contains("pro") {
-        return Some((15.0, 120.0));
-    }
-    if g.contains("mini") {
-        return Some((0.25, 2.0));
-    }
-    if g.contains("nano") {
-        return Some((0.05, 0.40));
-    }
-    // gpt-5, gpt-5.1, the codex builds, `gpt-5-search-api`, and any 5.6 tier whose codename is
-    // absent from the id all bill at the generation's baseline.
-    Some((1.25, 10.0))
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PricingUnit {
+    tokens: u64,
+    #[serde(default)]
+    currency: Option<String>,
 }
 
-/// Does the dot-normalized id `g` name this exact `gpt-<major>-<minor>` line?
-///
-/// OpenAI puts a RELEASE DATE where a minor version sits: `gpt-5-2025-08-07` is GPT-5, and a
-/// plain `contains("gpt-5-2")` reads the year's first digit as a minor version and prices it as
-/// GPT-5.2 — $1.75/$14 against a true $1.25/$10. So the character after the minor must not be
-/// another digit. This is [`is_bare_opus_4`]'s problem seen from the other side: there a date
-/// had to be told from a minor version, here a minor version has to be told from a date.
-fn names_version(g: &str, version: &str) -> bool {
-    g.split(version)
-        .skip(1)
-        .any(|rest| !rest.starts_with(|c: char| c.is_ascii_digit()))
+impl PricingUnit {
+    fn rate_unit(&self) -> Result<TokenRateUnit, RateError> {
+        TokenRateUnit::new(self.tokens, self.currency.clone())
+    }
 }
 
-/// Is this the retired original `claude-opus-4`, as opposed to `claude-opus-4-5` and later?
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PricingEntry {
+    ids: Vec<String>,
+    source: String,
+    unit: String,
+    input_micros: u64,
+    cache_write_micros: u64,
+    cache_read_micros: u64,
+    output_micros: u64,
+}
+
+impl PricingEntry {
+    fn price(&self, unit: TokenRateUnit) -> ModelPrice {
+        ModelPrice::from_micros(
+            unit,
+            [
+                self.input_micros,
+                self.cache_write_micros,
+                self.cache_read_micros,
+                self.output_micros,
+            ],
+        )
+    }
+}
+
+/// Parse and validate the repository-owned default catalog once. Keeping the data in JSON makes
+/// adding a model a table edit; code owns only exact arithmetic, validation, and lookup semantics.
+fn builtin_prices() -> &'static BTreeMap<String, ModelPrice> {
+    static PRICES: OnceLock<BTreeMap<String, ModelPrice>> = OnceLock::new();
+    PRICES.get_or_init(|| {
+        let catalog: PricingCatalog = serde_json::from_str(include_str!("../pricing.json"))
+            .expect("embedded pricing.json must parse");
+        assert_eq!(catalog.schema_version, 2, "unsupported pricing schema");
+        assert_eq!(
+            catalog.cache_write_basis, "5m",
+            "aggregate cache writes must use the documented 5m rate"
+        );
+        assert!(!catalog.sources.is_empty(), "pricing catalog needs sources");
+        for (name, source) in &catalog.sources {
+            assert!(
+                source.url.starts_with("https://"),
+                "pricing source {name} needs an HTTPS URL"
+            );
+            assert!(
+                parse_ts(&source.queried_at).is_some(),
+                "pricing source {name} needs an RFC3339 queried_at"
+            );
+        }
+
+        let mut prices = BTreeMap::new();
+        for entry in catalog.models {
+            assert!(!entry.ids.is_empty(), "pricing entry must name a model");
+            assert!(
+                catalog.sources.contains_key(&entry.source),
+                "pricing entry references unknown source {}",
+                entry.source
+            );
+            let unit = catalog
+                .units
+                .get(&entry.unit)
+                .unwrap_or_else(|| panic!("pricing entry references unknown unit {}", entry.unit))
+                .rate_unit()
+                .expect("embedded pricing unit must be valid");
+            let price = entry.price(unit);
+            for id in entry.ids {
+                let normalized = normalize_model_name(&id);
+                assert_eq!(id, normalized, "pricing ids must already be normalized");
+                assert!(
+                    prices.insert(id.clone(), price.clone()).is_none(),
+                    "duplicate pricing id {id}"
+                );
+            }
+        }
+        prices
+    })
+}
+
+/// Whether three decimal fields form a plausible API snapshot date.
 ///
-/// The two are only distinguishable by what follows: a MINOR VERSION is one digit (`-4-8`)
-/// while a RELEASE DATE is eight (`-4-20250514`). A naive `contains("opus-4")` prices every
-/// 4.x at the retired rate — 3× too high — and a naive "next char is `-`" cannot tell the dated
-/// original from a minor version at all.
-fn is_bare_opus_4(m: &str) -> bool {
-    let Some(rest) = m.split("opus-4").nth(1) else {
+/// The year range is deliberately bounded: model snapshots are contemporary API artifacts, not
+/// arbitrary numeric suffixes that should be allowed to borrow another model's price.
+fn is_snapshot_date(year: &str, month: &str, day: &str) -> bool {
+    if year.len() != 4 || month.len() != 2 || day.len() != 2 {
+        return false;
+    }
+    let (Ok(year), Ok(month), Ok(day)) = (
+        year.parse::<u32>(),
+        month.parse::<u32>(),
+        day.parse::<u32>(),
+    ) else {
         return false;
     };
-    let tail = rest.trim_start_matches(['-', '.']);
-    // Nothing after it, or a date-length digit run ⇒ the original.
-    rest.is_empty() || tail.chars().take_while(char::is_ascii_digit).count() >= 4
+    if !(2000..=2999).contains(&year) || !(1..=12).contains(&month) {
+        return false;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    (1..=days).contains(&day)
 }
 
-/// Best-effort USD cost from a model name and its token tiers. Cache writes bill
-/// at ~1.25× base input, cache reads at ~0.1× (prompt-caching discount). Returns
-/// `None` when the model isn't in the price table.
+/// Normalize separators and strip a terminal API snapshot date. This handles
+/// `claude-opus-4-1-20250805` and `gpt-5-2025-08-07` without family substring matching; every
+/// non-date portion still has to be listed explicitly in `pricing.json`.
+fn normalize_model_name(model: &str) -> String {
+    let normalized = model.to_lowercase().replace('.', "-");
+    let parts: Vec<&str> = normalized.split('-').collect();
+    let trim = match parts.as_slice() {
+        [prefix @ .., year, month, day] if is_snapshot_date(year, month, day) => Some(prefix.len()),
+        [prefix @ .., date]
+            if date.len() == 8
+                && date.is_ascii()
+                && is_snapshot_date(&date[..4], &date[4..6], &date[6..]) =>
+        {
+            Some(prefix.len())
+        }
+        _ => None,
+    };
+    trim.map_or(normalized.clone(), |len| parts[..len].join("-"))
+}
+
+/// Exact best-effort price for a model context and its four recorded token tiers.
+pub fn estimate_price(
+    model: &ModelContext,
+    input: u64,
+    cache_creation: u64,
+    cache_read: u64,
+    output: u64,
+) -> Option<PriceEstimate> {
+    estimate_price_with(
+        &PriceTable::default(),
+        model,
+        input,
+        cache_creation,
+        cache_read,
+        output,
+    )
+}
+
+/// [`estimate_price`] against host-supplied rates. Each tier uses its explicit exact rate;
+/// `cache_creation` is aggregate and therefore uses the catalog's documented 5-minute rate.
+pub fn estimate_price_with(
+    prices: &PriceTable,
+    model: &ModelContext,
+    input: u64,
+    cache_creation: u64,
+    cache_read: u64,
+    output: u64,
+) -> Option<PriceEstimate> {
+    let price = prices.resolve(model)?;
+    let numerator = [
+        (input, price.input()),
+        (cache_creation, price.cache_write()),
+        (cache_read, price.cache_read()),
+        (output, price.output()),
+    ]
+    .into_iter()
+    .try_fold(0u128, |sum, (tokens, rate)| {
+        let component = u128::from(tokens).checked_mul(u128::from(rate.amount_micros()))?;
+        sum.checked_add(component)
+    })?;
+    let denominator =
+        u128::from(price.unit().tokens()).checked_mul(u128::from(AMOUNT_MICROS_PER_UNIT))?;
+    Some(PriceEstimate::new(
+        numerator,
+        denominator,
+        price.unit().currency().map(str::to_string),
+    ))
+}
+
+/// Backward-compatible USD projection from a model name. New code should use [`estimate_price`]
+/// with [`ModelContext`] and keep the exact [`PriceEstimate`] until presentation.
 pub fn estimate_cost(
     model: &str,
     input: u64,
@@ -518,14 +846,8 @@ pub fn estimate_cost(
     )
 }
 
-/// [`estimate_cost`] against host-supplied rates: `prices` wins where it names the model, the
-/// built-in table covers the rest. An empty `prices` is [`estimate_cost`] exactly.
-///
-/// Cache multipliers preserve the estimator's existing best-effort contract: cache writes use
-/// the Anthropic 1.25× convention and cache reads use the 0.10× ratio used by current GPT-5+
-/// Standard rows. Older OpenAI families and tiers without published cache prices vary, but the
-/// transcript does not carry enough billing context to select another rate. Host overrides stay
-/// limited to the agreed input/output schema rather than pretending to resolve that ambiguity.
+/// [`estimate_cost`] against host-supplied rates. Rates without explicit USD currency are not
+/// projected into this USD-only compatibility API.
 pub fn estimate_cost_with(
     prices: &PriceTable,
     model: &str,
@@ -534,10 +856,15 @@ pub fn estimate_cost_with(
     cache_read: u64,
     output: u64,
 ) -> Option<UsdCost> {
-    resolve_price(prices, model).map(|(pi, po)| {
-        (input as f64 + cache_creation as f64 * 1.25 + cache_read as f64 * 0.10) / 1e6 * pi
-            + output as f64 / 1e6 * po
-    })
+    estimate_price_with(
+        prices,
+        &ModelContext::new(model),
+        input,
+        cache_creation,
+        cache_read,
+        output,
+    )
+    .and_then(|price| price.amount_in("USD"))
 }
 
 /// Metrics via the reader through `adapter` — the engine-side form (the facade's
@@ -784,94 +1111,112 @@ impl Metrics {
 mod price_tests {
     use super::*;
 
-    /// Every rate against the official tables (Anthropic checked 2026-08-05, OpenAI
-    /// 2026-09-08). Pins the version-specific splits, which are where a family-only match goes
-    /// wrong: Opus 4/4.1 cost 3× Opus 4.5+, and matching `opus-4` naively would catch every
-    /// 4.x; on the OpenAI side `gpt-6-astra` reaches no version branch at all and was priced at
-    /// nothing before it was listed, while a pro tier the fallback DID catch is 12× the base
-    /// rate it was given.
+    fn p(input: &str, cache_write: &str, cache_read: &str, output: &str) -> ModelPrice {
+        let unit = TokenRateUnit::usd_per_million_tokens();
+        ModelPrice::new(
+            TokenRate::from_decimal(input, unit.clone()).unwrap(),
+            TokenRate::from_decimal(cache_write, unit.clone()).unwrap(),
+            TokenRate::from_decimal(cache_read, unit.clone()).unwrap(),
+            TokenRate::from_decimal(output, unit).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn resolve(table: &PriceTable, model: &str) -> Option<ModelPrice> {
+        table.resolve(&ModelContext::new(model))
+    }
+
+    /// Pins all four billing tiers where vendor/model families differ. Both vendors' tables were
+    /// queried 2026-09-09; `pricing.json` records the exact query timestamp and source URLs.
     #[test]
-    fn prices_match_the_published_table() {
+    fn prices_match_the_published_tables() {
         for (model, want) in [
-            ("claude-fable-5", (10.0, 50.0)),
-            ("claude-mythos-5", (10.0, 50.0)),
-            ("claude-opus-5", (5.0, 25.0)),
-            ("claude-opus-4-8", (5.0, 25.0)),
-            ("claude-opus-4-5", (5.0, 25.0)),
-            ("claude-opus-4-1-20250805", (15.0, 75.0)),
-            ("claude-opus-4-20250514", (15.0, 75.0)),
-            ("claude-sonnet-5", (2.0, 10.0)),
-            ("claude-sonnet-4-6", (3.0, 15.0)),
-            ("claude-haiku-4-5-20251001", (1.0, 5.0)),
-            ("claude-haiku-3-5", (0.80, 4.0)),
-            ("gpt-6-astra", (10.0, 50.0)),
-            ("gpt-5.6-sol", (4.0, 20.0)),
-            ("gpt-5-6-sol", (4.0, 20.0)),
-            ("gpt-5.6-terra", (2.0, 12.0)),
-            ("gpt-5.6-luna", (0.20, 1.20)),
-            ("gpt-5.6-cyber", (12.50, 75.0)),
-            ("gpt-daybreak-blue-latest", (4.0, 20.0)),
-            ("gpt-daybreak-red-latest", (12.50, 75.0)),
-            ("gpt-5.5", (5.0, 30.0)),
-            ("gpt-5.5-cyber", (12.50, 75.0)),
-            ("gpt-5.5-pro", (30.0, 180.0)),
-            ("gpt-5.4", (2.50, 15.0)),
-            ("gpt-5.4-mini", (0.75, 4.50)),
-            ("gpt-5.4-nano", (0.20, 1.25)),
-            ("gpt-5.4-pro", (30.0, 180.0)),
-            ("gpt-5.3-codex", (1.75, 14.0)),
-            ("gpt-5.2", (1.75, 14.0)),
-            ("gpt-5.2-pro", (21.0, 168.0)),
-            ("gpt-5.1", (1.25, 10.0)),
-            ("gpt-5", (1.25, 10.0)),
-            ("gpt-5-mini", (0.25, 2.0)),
-            ("gpt-5-nano", (0.05, 0.40)),
-            ("gpt-5-pro", (15.0, 120.0)),
-            ("gpt-5-search-api", (1.25, 10.0)),
-            ("gpt-5.6", (1.25, 10.0)),
-            ("gpt-5.1-codex", (1.25, 10.0)),
+            ("claude-fable-5-1", p("10", "12.5", "0.25", "50")),
+            ("claude-mythos-5", p("10", "12.5", "1", "50")),
+            ("claude-opus-5", p("5", "6.25", "0.5", "25")),
+            ("claude-opus-4-8", p("5", "6.25", "0.5", "25")),
+            ("claude-opus-4-1-20250805", p("15", "18.75", "1.5", "75")),
+            ("claude-sonnet-5", p("2", "2.5", "0.2", "10")),
+            ("claude-sonnet-4-6", p("3", "3.75", "0.3", "15")),
+            ("claude-3-7-sonnet-20250219", p("3", "3.75", "0.3", "15")),
+            ("claude-haiku-4-5-20251001", p("1", "1.25", "0.1", "5")),
+            ("claude-haiku-3-5", p("0.8", "1", "0.08", "4")),
+            ("claude-3-5-haiku-20241022", p("0.8", "1", "0.08", "4")),
+            ("claude-3-haiku-20240307", p("0.25", "0.3", "0.03", "1.25")),
+            ("gpt-6-astra", p("10", "10", "1", "50")),
+            ("gpt-5.6-sol", p("4", "4", "0.4", "20")),
+            ("gpt-5-6-terra", p("2", "2", "0.2", "12")),
+            ("gpt-5.6-luna", p("0.2", "0.2", "0.02", "1.2")),
+            ("gpt-daybreak-red-latest", p("12.5", "12.5", "1.25", "75")),
+            ("gpt-5.5", p("5", "5", "0.5", "30")),
+            ("gpt-5.4-mini", p("0.75", "0.75", "0.075", "4.5")),
+            ("gpt-5.3-codex", p("1.75", "1.75", "0.175", "14")),
+            ("gpt-5.2", p("1.75", "1.75", "0.175", "14")),
+            ("gpt-5-2025-08-07", p("1.25", "1.25", "0.125", "10")),
+            ("gpt-5-mini", p("0.25", "0.25", "0.025", "2")),
+            ("gpt-5.1-codex-mini", p("0.25", "0.25", "0.025", "2")),
+            ("gpt-5-nano", p("0.05", "0.05", "0.005", "0.4")),
         ] {
-            assert_eq!(price(model), Some(want), "{model}");
+            assert_eq!(resolve(&PriceTable::new(), model), Some(want), "{model}");
         }
-        assert_eq!(price("some-unknown-model"), None, "unknown stays unpriced");
     }
 
-    /// A dated id is not a minor version: `gpt-5-2025-08-07` is GPT-5 at $1.25/$10, and the
-    /// substring match this replaced read the year's leading digit as GPT-5.2 and billed it 40%
-    /// high on input.
+    /// Lookup normalizes only documented spelling variations and terminal snapshot dates. It
+    /// never lets an unlisted family member borrow a plausible sibling's price.
     #[test]
-    fn a_dated_gpt_5_is_not_gpt_5_2() {
-        assert_eq!(price("gpt-5-2025-08-07"), Some((1.25, 10.0)));
-        assert!(!names_version("gpt-5-2025-08-07", "gpt-5-2"));
-        assert!(names_version("gpt-5-2", "gpt-5-2"), "nothing after it");
-        assert!(names_version("gpt-5-2-pro", "gpt-5-2"), "a tier after it");
-    }
-
-    /// Unpriced ON PURPOSE, so each renders as a visible `≥` instead of a plausible wrong
-    /// number. The published empty cyber row and unknown/misleading codename IDs must not
-    /// borrow a sibling's rate just because one word happens to match.
-    #[test]
-    fn deliberately_unpriced_openai_models() {
+    fn lookup_is_normalized_but_exact() {
+        for model in ["GPT-5.6-SOL-20260908", "gpt-5.6-sol-2026-09-08"] {
+            assert_eq!(
+                resolve(&PriceTable::new(), model),
+                Some(p("4", "4", "0.4", "20")),
+                "{model}"
+            );
+        }
         for model in [
+            "some-unknown-model",
             "gpt-5.4-cyber",
-            "gpt-6-cyber",
+            "gpt-5.6",
+            "gpt-5.6-mini",
+            "gpt-5.5-pro",
+            "gpt-5.4-pro",
+            "gpt-5.2-pro",
+            "gpt-5-pro",
+            "codex",
             "gpt-7-astra",
             "gpt-5.4-sol",
             "gpt-5.6-sol-preview",
             "gpt-6-some-unannounced-tier",
+            "gpt-5.6-sol-99999999",
+            "gpt-5.6-sol-20260230",
+            "gpt-5.6-sol-2026-13-01",
         ] {
-            assert_eq!(price(model), None, "{model}");
+            assert_eq!(resolve(&PriceTable::new(), model), None, "{model}");
         }
     }
 
-    /// The override must be inert until used. This is what keeps the byte-identical gate
-    /// meaningful: every existing caller goes through the empty table.
+    /// The four independent columns must all reach the formula; otherwise Claude's exceptional
+    /// Fable/Mythos 5.1 cache-read discount is lost behind a universal multiplier.
+    #[test]
+    fn cost_uses_each_catalog_rate() {
+        assert_eq!(
+            estimate_cost(
+                "claude-fable-5-1",
+                1_000_000,
+                1_000_000,
+                1_000_000,
+                1_000_000
+            ),
+            Some(72.75)
+        );
+    }
+
+    /// The override must be inert until used. This keeps every caller that passes an empty table
+    /// on the built-in catalog path.
     #[test]
     fn an_empty_table_is_the_builtin_table() {
         let empty = PriceTable::new();
-        assert_eq!(empty.get("anything"), None);
+        assert_eq!(resolve(&empty, "anything"), None);
         for model in ["claude-fable-5", "gpt-6-astra", "gpt-5.4-cyber", "unknown"] {
-            assert_eq!(resolve_price(&empty, model), price(model), "{model}");
             assert_eq!(
                 estimate_cost_with(&empty, model, 1_000, 2_000, 3_000, 4_000),
                 estimate_cost(model, 1_000, 2_000, 3_000, 4_000),
@@ -881,33 +1226,45 @@ mod price_tests {
     }
 
     #[test]
-    fn a_named_model_takes_the_hosts_rate() {
-        let mut t = PriceTable::new();
-        assert!(t.set("gpt-6-astra", 3.0, 6.0));
-        assert_eq!(resolve_price(&t, "gpt-6-astra"), Some((3.0, 6.0)));
-        // 1M plain input at $3 + 1M output at $6.
+    fn a_named_model_takes_the_hosts_complete_rate() {
+        let custom = p("3", "4", "0.5", "6");
+        let mut table = PriceTable::new();
         assert_eq!(
-            estimate_cost_with(&t, "gpt-6-astra", 1_000_000, 0, 0, 1_000_000),
-            Some(9.0)
+            table.set(&ModelContext::new("gpt-6-astra"), custom.clone()),
+            None
         );
-        // Everything it does not name is untouched.
-        assert_eq!(resolve_price(&t, "gpt-5-mini"), Some((0.25, 2.0)));
+        assert_eq!(resolve(&table, "gpt-6-astra"), Some(custom));
+        assert_eq!(
+            estimate_cost_with(
+                &table,
+                "gpt-6-astra",
+                1_000_000,
+                1_000_000,
+                1_000_000,
+                1_000_000
+            ),
+            Some(13.5)
+        );
+        assert_eq!(
+            resolve(&table, "gpt-5-mini"),
+            Some(p("0.25", "0.25", "0.025", "2"))
+        );
     }
 
-    /// Exact match, so a family name in the override cannot silently reprice its members — the
-    /// built-in cascade keeps them.
     #[test]
     fn override_matching_is_exact_but_case_insensitive() {
-        let mut t = PriceTable::new();
-        assert!(t.set("GPT-5", 99.0, 99.0));
-        assert_eq!(resolve_price(&t, "gpt-5"), Some((99.0, 99.0)));
-        assert_eq!(resolve_price(&t, "GpT-5"), Some((99.0, 99.0)));
-        // `gpt-5-mini` CONTAINS `gpt-5` but is not it.
-        assert_eq!(resolve_price(&t, "gpt-5-mini"), Some((0.25, 2.0)));
-        assert_eq!(resolve_price(&t, "gpt-5-2025-08-07"), Some((1.25, 10.0)));
+        let custom = p("99", "98", "97", "96");
+        let mut table = PriceTable::new();
+        assert_eq!(table.set(&ModelContext::new("GPT-5"), custom.clone()), None);
+        assert_eq!(resolve(&table, "gpt-5"), Some(custom.clone()));
+        assert_eq!(resolve(&table, "GpT-5"), Some(custom));
+        assert_eq!(
+            resolve(&table, "gpt-5-mini"),
+            Some(p("0.25", "0.25", "0.025", "2"))
+        );
     }
 
-    /// Pricing a model the built-in table misses both adds it to the sum and clears the `≥`.
+    /// Pricing a model the built-in catalog misses both adds it to the sum and clears the `≥`.
     #[test]
     fn an_override_can_close_the_lower_bound_gap() {
         let tokens = TokenCounts {
@@ -916,49 +1273,144 @@ mod price_tests {
             ..Default::default()
         };
         let per_model = BTreeMap::from([("gpt-5.4-cyber".to_string(), tokens)]);
+        assert_eq!(total_cost(&per_model), (None, true));
 
-        let (cost, partial) = total_cost(&per_model);
+        let mut table = PriceTable::new();
         assert_eq!(
-            (cost, partial),
-            (None, true),
-            "unpriced by the built-in table"
+            table.set(
+                &ModelContext::new("gpt-5.4-cyber"),
+                p("12.5", "12.5", "1.25", "75")
+            ),
+            None
         );
-
-        let mut t = PriceTable::new();
-        assert!(t.set("gpt-5.4-cyber", 12.50, 75.0));
-        assert_eq!(total_cost_with(&t, &per_model), (Some(87.50), false));
-        assert_eq!(tokens.cost_with(&t, "gpt-5.4-cyber"), Some(87.50));
+        assert_eq!(total_cost_with(&table, &per_model), (Some(87.5), false));
+        assert_eq!(tokens.cost_with(&table, "gpt-5.4-cyber"), Some(87.5));
     }
 
-    /// A rate that cannot be a price is refused rather than stored, so it can be reported
-    /// against whatever the host read it from instead of poisoning a sum into `NaN`.
     #[test]
-    fn nonsense_rates_are_rejected() {
-        let mut t = PriceTable::new();
-        for (input, output) in [
-            (-1.0, 5.0),
-            (5.0, -1.0),
-            (f64::NAN, 5.0),
-            (5.0, f64::INFINITY),
-        ] {
-            assert!(!t.set("some-model", input, output), "{input} / {output}");
+    fn sum_overflow_preserves_the_known_lower_bound() {
+        let unit = TokenRateUnit::new(1, Some("USD".into())).unwrap();
+        let price = ModelPrice::from_micros(unit, [u64::MAX, 0, 0, 0]);
+        let mut table = PriceTable::new();
+        for model in ["overflow-a", "overflow-b"] {
+            table.set(&ModelContext::new(model), price.clone());
         }
-        assert_eq!(t.get("some-model"), None, "nothing was stored");
-        assert!(t.set("some-model", 0.0, 0.0), "free is a legitimate rate");
-        assert_eq!(t.get("some-model"), Some((0.0, 0.0)));
+        let tokens = TokenCounts {
+            input: u64::MAX,
+            ..Default::default()
+        };
+        let per_model = BTreeMap::from([
+            ("overflow-a".to_string(), tokens),
+            ("overflow-b".to_string(), tokens),
+        ]);
+
+        let one_known = (u128::from(u64::MAX) * u128::from(u64::MAX)) as f64 / 1_000_000.0;
+        assert_eq!(total_cost_with(&table, &per_model), (Some(one_known), true));
     }
 
-    /// `claude-opus-4-8` must NOT be read as the retired `claude-opus-4` — a substring match
-    /// would triple its price.
     #[test]
-    fn versioned_opus_is_not_the_retired_one() {
-        assert!(!is_bare_opus_4("claude-opus-4-8"));
-        assert!(!is_bare_opus_4("claude-opus-4-5"));
-        assert!(is_bare_opus_4("claude-opus-4"));
-        assert!(
-            is_bare_opus_4("claude-opus-4-20250514"),
-            "a DATE, not a minor version"
+    fn decimals_are_exact_and_invalid_values_are_rejected() {
+        let unit = TokenRateUnit::usd_per_million_tokens();
+        for (value, micros) in [("0.075", 75_000), ("0.025", 25_000), ("0.005", 5_000)] {
+            assert_eq!(
+                TokenRate::from_decimal(value, unit.clone())
+                    .unwrap()
+                    .amount_micros(),
+                micros,
+                "{value}"
+            );
+        }
+        for value in ["-1", "+1", "1e-3", "", ".5", "1.2.3"] {
+            assert_eq!(
+                TokenRate::from_decimal(value, unit.clone()),
+                Err(RateError::InvalidDecimal),
+                "{value}"
+            );
+        }
+        assert_eq!(
+            TokenRate::from_decimal("0.0000001", unit),
+            Err(RateError::TooManyDecimalPlaces)
         );
+    }
+
+    #[test]
+    fn units_are_required_and_four_tiers_must_agree() {
+        assert_eq!(
+            TokenRateUnit::new(0, Some("USD".into())),
+            Err(RateError::ZeroTokenUnit)
+        );
+        for currency in ["", "   ", "US D"] {
+            assert_eq!(
+                TokenRateUnit::new(1_000_000, Some(currency.into())),
+                Err(RateError::EmptyCurrency),
+                "{currency:?}"
+            );
+        }
+
+        let usd = TokenRateUnit::usd_per_million_tokens();
+        let credits = TokenRateUnit::new(1_000_000, None).unwrap();
+        assert_eq!(
+            ModelPrice::new(
+                TokenRate::from_micros(1, usd.clone()),
+                TokenRate::from_micros(1, usd.clone()),
+                TokenRate::from_micros(1, credits),
+                TokenRate::from_micros(1, usd),
+            ),
+            Err(RateError::MismatchedUnits)
+        );
+    }
+
+    #[test]
+    fn currency_is_optional_but_legacy_cost_is_usd_only() {
+        let unit = TokenRateUnit::new(1_000, None).unwrap();
+        let price = ModelPrice::from_micros(unit, [250_000, 250_000, 25_000, 2_000_000]);
+        let context = ModelContext::new("local-model");
+        let mut table = PriceTable::new();
+        table.set(&context, price);
+
+        let estimate = estimate_price_with(&table, &context, 1_000, 0, 0, 0).unwrap();
+        assert_eq!(estimate.currency(), None);
+        assert_eq!(estimate.amount(), 0.25);
+        assert_eq!(
+            estimate_cost_with(&table, "local-model", 1_000, 0, 0, 0),
+            None
+        );
+        assert_eq!(
+            total_cost_with(
+                &table,
+                &BTreeMap::from([(
+                    "local-model".to_string(),
+                    TokenCounts {
+                        input: 1_000,
+                        ..Default::default()
+                    }
+                )])
+            ),
+            (None, true)
+        );
+    }
+
+    #[test]
+    fn normalizer_is_replaceable_but_raw_override_wins() {
+        struct AliasNormalizer;
+        impl ModelNormalizer for AliasNormalizer {
+            fn normalize(&self, context: &ModelContext) -> String {
+                match context.name() {
+                    "internal-astra" => "gpt-6-astra".to_string(),
+                    other => other.to_lowercase(),
+                }
+            }
+        }
+
+        let mut table = PriceTable::with_normalizer(AliasNormalizer);
+        assert_eq!(
+            resolve(&table, "internal-astra"),
+            Some(p("10", "10", "1", "50"))
+        );
+
+        let custom = p("1", "2", "0.1", "3");
+        table.set(&ModelContext::new("internal-astra"), custom.clone());
+        assert_eq!(resolve(&table, "internal-astra"), Some(custom));
     }
 }
 

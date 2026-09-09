@@ -453,10 +453,10 @@ mod tests {
         assert!(!m.cost_partial, "both models are priced");
     }
 
-    /// Per-model attribution EXPOSES a gap flat counters hid: a model the price table does not
-    /// know contributes nothing, so a sum over models can silently cover a fraction of the
-    /// session. The byte-gate fixture is exactly this — 97% of its tokens are `claude-fable-5`,
-    /// unpriced — and reporting 3% as "the cost" would be worse than the bug being fixed.
+    /// Per-model attribution exposes a gap flat counters hid: a model the price catalog does not
+    /// know contributes nothing, so a sum over models can silently cover only a fraction of the
+    /// session. Reporting that partial sum as "the cost" would be worse than marking it as a
+    /// lower bound.
     #[test]
     fn an_unpriced_model_makes_the_cost_a_lower_bound() {
         let line = |model: &str, out: u64| {

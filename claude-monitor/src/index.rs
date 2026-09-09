@@ -2555,7 +2555,7 @@ mod tests {
             )
         };
         let usage_1m = "{\"timestamp\":\"2026-08-12T01:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1000000,\"cached_input_tokens\":0,\"output_tokens\":0}}}}\n";
-        let named = "{\"timestamp\":\"2026-08-12T01:00:02Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.6\"}}\n";
+        let named = "{\"timestamp\":\"2026-08-12T01:00:02Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5\"}}\n";
         let main_id = "eeeeeeee-0000-0000-0000-00000000000e";
         let sub1 = "eeeeeeee-1111-0000-0000-00000000000e";
         let sub2 = "eeeeeeee-2222-0000-0000-00000000000e";
