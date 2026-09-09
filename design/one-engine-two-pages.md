@@ -552,7 +552,8 @@ the code turned out to be simpler than the reading of it.
 | 8 | the four `scrollBy` sites must come across | **wrong** — only 2 of 8 are follow corrections and both are already the engine's absolute anchor path; the other six are navigation, a fold hold and drag-select. The engine pin stands untouched |
 | 9 | #156 sits across the path | **held, and it was not the heights** — a long main-thread task delayed the scroll handler past the intent window. Both pages classify on the event's clock now |
 
-**Five defects the port found**, each fixed where the rule lives:
+**Six defects the port found**, each fixed where the rule lives — five here, and a sixth
+below that took longer to see than the other five together:
 
 1. **`rangeForScroll` indexes `scrollTop` straight into the sums** — right only when the pads are
    the first thing in the scroller, which they are on neither page (`.transcript-inner` has 24px
@@ -632,13 +633,18 @@ naming one, and then a trace of `goTo`'s own arithmetic, which showed the landin
 something moved it afterwards. A wrong bisect off one sample cost two rebuild-and-run cycles and
 a filed-then-cancelled task (#175).
 
-**Two differences accepted, written down rather than left to drift** (they belong in #174's
-allowlist, which is where a deliberate difference is supposed to live):
+**Two differences remain, written down rather than left to drift — and they are not the same
+kind of thing.** Only the first is a difference #174 should ALLOW:
 
-- the anchor's above-the-fold epsilon is 1px on both pages now; the classic page used 0.
-- #98's ROW-level anchor needs `[data-block-index]` rows, which only `components.js` emits
-  (`export.js` has none). On the classic page the engine's anchor degrades to the item-level
-  one — exactly what that page always had, so no regression, but not parity either.
+- **Accepted.** The anchor's above-the-fold epsilon is 1px on both pages now; the classic page
+  used 0. One rule, one number, no symptom — an allowlist entry.
+- **Deferred, with a known symptom.** #98's ROW-level anchor needs `[data-block-index]` rows,
+  which only `components.js` emits (`export.js` has none), so on the classic page the engine's
+  anchor degrades to the item-level one. That is what the page always had, so it is not a
+  regression — but it is not a difference to bless either: defect 6 above IS its symptom, a
+  user-visible landing that walked 956px, and `holdLanding` papers over that one site rather
+  than closing the gap. #174 should report this as a FAIL with the symptom attached, not as an
+  allowlist row; the fix is `export.js` emitting the rows, filed as **#176**.
 
 **Three scenarios** were written for the risks that had no coverage, each run on both surfaces:
 a landing holds through a growth above it (`holdLanding` against the engine's kept anchor); a
