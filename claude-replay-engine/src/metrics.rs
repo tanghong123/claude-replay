@@ -130,7 +130,13 @@ impl std::ops::AddAssign for TokenCounts {
 impl TokenCounts {
     /// This model's cost, or `None` when the model isn't priced.
     pub fn cost(&self, model: &str) -> Option<UsdCost> {
-        estimate_cost(
+        self.cost_with(&PriceTable::default(), model)
+    }
+
+    /// [`cost`](Self::cost) against host-supplied rates — see [`PriceTable`].
+    pub fn cost_with(&self, prices: &PriceTable, model: &str) -> Option<UsdCost> {
+        estimate_cost_with(
+            prices,
             model,
             self.input,
             self.cache_creation,
@@ -158,9 +164,19 @@ pub type MetricsTotals = (
 /// `claude-fable-5`, unpriced, so the sum covers 3% of the session. Reporting that as "the
 /// cost" would be worse than the bug this fixes; reporting it as a LOWER BOUND is honest.
 pub fn total_cost(per_model: &BTreeMap<String, TokenCounts>) -> (Option<UsdCost>, bool) {
+    total_cost_with(&PriceTable::default(), per_model)
+}
+
+/// [`total_cost`] against host-supplied rates — see [`PriceTable`]. An override narrows the gap
+/// the flag reports: a model the built-in table misses but the host names is now covered, and
+/// counts towards the sum rather than towards the `≥`.
+pub fn total_cost_with(
+    prices: &PriceTable,
+    per_model: &BTreeMap<String, TokenCounts>,
+) -> (Option<UsdCost>, bool) {
     let (mut total, mut partial) = (None, false);
     for (m, c) in per_model {
-        match c.cost(m) {
+        match c.cost_with(prices, m) {
             Some(v) => *total.get_or_insert(0.0) += v,
             // Only tokens make a gap: a model that produced none costs nothing either way.
             None if *c != TokenCounts::default() => partial = true,
@@ -233,10 +249,72 @@ impl TimeSpan {
     }
 }
 
+/// Per-model rate overrides supplied by the host application, consulted ahead of the built-in
+/// table by [`estimate_cost_with`] and friends.
+///
+/// **Why this exists, and why it is a parameter rather than a file.** Published rates move
+/// between releases, and a host that has to ship a new binary to correct a number will instead
+/// show a wrong one. But the engine reading `~/.config/…` itself would make every rendered
+/// figure a function of the machine — the byte-identical gate measures the binary, not the box
+/// (see `scripts/gate/README.md`) — so the file-reading, the schema and the blame for a bad
+/// entry all belong to whoever chose to expose them. An empty table (the [`Default`], and what
+/// [`estimate_cost`] passes) is exactly the built-in behaviour, so nothing that does not opt in
+/// can change by a single byte.
+///
+/// **Matching is exact and case-insensitive**, deliberately unlike the substring family
+/// matching in [`price`]. The built-in table is curated and ordered, and its ordering is load-
+/// bearing (`is_bare_opus_4`, `names_version`); letting arbitrary user strings join that
+/// cascade would mean a one-line override could silently reprice a whole family, and which
+/// entry won would depend on insertion order. Naming a model outright can only affect that
+/// model — and it is the name the host already displays, so it can be copied rather than
+/// guessed.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct PriceTable {
+    /// Keyed by lowercased model name → `(input, output)` USD per million tokens.
+    rates: BTreeMap<String, (f64, f64)>,
+}
+
+impl PriceTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record `model`'s rates in USD per million tokens, replacing any earlier entry.
+    ///
+    /// Returns `false` — storing nothing — when either rate is negative or not finite. A price
+    /// table is worth having only if a bad entry is *visible*, and silently keeping a `NaN`
+    /// would poison the sum into `NaN` with nothing to point at, so rejection is reported to the
+    /// caller (`#[must_use]`) for it to surface where it knows the provenance.
+    #[must_use = "a rejected rate means the host's own input was invalid; report it"]
+    pub fn set(&mut self, model: &str, input: f64, output: f64) -> bool {
+        let sane = |v: f64| v.is_finite() && v >= 0.0;
+        if !sane(input) || !sane(output) {
+            return false;
+        }
+        self.rates.insert(model.to_lowercase(), (input, output));
+        true
+    }
+
+    /// This table's rate for `model`, or `None` to fall through to the built-in table.
+    fn get(&self, model: &str) -> Option<(f64, f64)> {
+        // Nothing to lowercase for the overwhelmingly common empty table.
+        if self.rates.is_empty() {
+            return None;
+        }
+        self.rates.get(&model.to_lowercase()).copied()
+    }
+}
+
+/// The rate for `model`: the host's override if it names it, else the built-in table.
+fn resolve_price(prices: &PriceTable, model: &str) -> Option<(f64, f64)> {
+    prices.get(model).or_else(|| price(model))
+}
+
 /// Rough USD/1M-token (input, output) list prices for cost estimation.
 /// Best-effort — rates are approximate and drift over time.
-/// `(input, output)` USD per million tokens, from the official table
-/// (<https://platform.claude.com/docs/en/about-claude/pricing>, checked 2026-08-05).
+/// `(input, output)` USD per million tokens, from each vendor's official table: Anthropic's
+/// (<https://platform.claude.com/docs/en/about-claude/pricing>, checked 2026-08-05) inline
+/// below, OpenAI's in [`openai_price`], which carries its own source and check date.
 ///
 /// **Why this is code and not configuration.** Rates change, and a table baked into a binary
 /// goes stale — which is exactly what happened here: every `opus` was priced at the retired
@@ -247,9 +325,14 @@ impl TimeSpan {
 /// free), and `price_tests` pins every rate against the published table, so a stale entry is a
 /// failing test at the next touch rather than a wrong number in a footer.
 ///
-/// A user-editable file would add a way for the number to be wrong that no test can see. If
-/// rates ever move faster than releases, the shape to reach for is a *shipped* data file
-/// (updated by upgrade, still covered by those tests) — not user configuration.
+/// A user-editable file would add a way for the number to be wrong that no test can see, so the
+/// engine still reads none: this table is the only rate source `price` consults, it ships with
+/// the binary, and `price_tests` keeps it honest. What a HOST application may now do instead is
+/// pass an explicit [`PriceTable`] to [`estimate_cost_with`] — an override it obtained itself and
+/// whose correctness it owns, per-model and additive, leaving every model it does not name on the
+/// tested rates below. That keeps the failure contained: an override can only be wrong about the
+/// models someone deliberately typed out, never about the ones they didn't, and a model neither
+/// source prices is still marked `≥` rather than silently free.
 ///
 /// **Order matters**: the deprecated Opus 4/4.1 cost 3× what Opus 4.5+ do, so the specific
 /// matches must precede the family fallback. Getting this wrong is not cosmetic — a table that
@@ -282,28 +365,122 @@ fn price(model: &str) -> Option<(f64, f64)> {
             (1.0, 5.0)
         });
     }
-    // ── OpenAI (Codex) — best-effort list price (tiers checked 2026-08-13) ──
-    // Tier matches must precede the family fallback, same reason as Opus above: the flat
-    // $1.25/$10 rate priced a real sol-heavy session tree at ~$118 when the tier rates say
-    // ~$436 — a 3.7× understatement.
-    if m.contains("gpt-5.6") || m.contains("gpt-5-6") {
-        if m.contains("sol") {
-            return Some((5.0, 30.0));
-        }
-        // Terra/luna are the STANDARD rates effective 2026-07-30 — #19 initially carried
-        // exactly half for both, which is the Batch-API discount; Codex traffic is
-        // interactive and bills at standard rates.
-        if m.contains("terra") {
-            return Some((2.0, 12.0));
-        }
-        if m.contains("luna") {
-            return Some((0.20, 1.20));
-        }
+    // ── OpenAI (Codex) ──
+    openai_price(&m)
+}
+
+/// OpenAI list prices, `(input, output)` USD per million tokens, from the published table
+/// (<https://developers.openai.com/api/docs/pricing>, Standard tier, checked 2026-09-08).
+///
+/// **Two columns are deliberately not modelled.** Every rate here is the *Standard*,
+/// *short-context* one, because neither of the other axes is visible in a model name: the page
+/// prices contexts over 272K tokens up to 2× higher, and `gpt-5.3-codex`'s Fast mode at exactly
+/// 2×, and a transcript records `gpt-5.3-codex` either way. So a long-context or Fast-mode
+/// session is UNDER-estimated. That is the direction the rest of this module already errs in
+/// (`cost_partial`, the `≥` marker) and the opposite of the Opus bug that motivated the pins.
+///
+/// **Codenames are tested before version numbers, but only as exact published IDs.** Astra,
+/// sol, terra and luna each name one model; `cyber` names two priced versions and one unpriced
+/// version. A substring check would let `gpt-7-astra` or `gpt-5.4-sol` borrow a plausible but
+/// false rate. `gpt-6-astra` needs this explicit row because it contains no `gpt-5`, no `gpt5`
+/// and no `codex` and therefore reaches none of the version branches below.
+///
+/// **Order matters here for the same reason it does in [`price`]**: the flat $1.25/$10 baseline
+/// priced a real sol-heavy session tree at ~$118 when the tier rates said ~$436.
+fn openai_price(m: &str) -> Option<(f64, f64)> {
+    // `gpt-5.6-sol` and `gpt-5-6-sol` are one model; normalize the separator once here rather
+    // than spelling both out in every branch below.
+    let g = m.replace('.', "-");
+    if !g.contains("gpt") && !g.contains("codex") {
+        return None;
     }
-    if m.contains("codex") || m.contains("gpt-5") || m.contains("gpt5") {
-        return Some((1.25, 10.0));
+    match g.as_str() {
+        "gpt-6-astra" => return Some((10.0, 50.0)),
+        // Promotional, published as holding "at least through November 21, 2026". Not
+        // date-aware, exactly as the Sonnet 5 note above: a transcript read afterwards is
+        // priced at the promotional rate until this table is next refreshed. Daybreak blue is
+        // listed at the same rate and currently resolves to sol.
+        "gpt-5-6-sol" | "gpt-daybreak-blue-latest" => return Some((4.0, 20.0)),
+        // Terra/luna are the STANDARD rates — #19 initially carried exactly half for both,
+        // which is the Batch-API discount; Codex traffic is interactive and bills at standard.
+        "gpt-5-6-terra" => return Some((2.0, 12.0)),
+        "gpt-5-6-luna" => return Some((0.20, 1.20)),
+        // 5.6-cyber and 5.5-cyber are both $12.50/$75. Daybreak red is listed at the same rate
+        // and currently resolves to 5.6-cyber. The 5.4-cyber row is empty and remains unpriced.
+        "gpt-5-6-cyber" | "gpt-5-5-cyber" | "gpt-daybreak-red-latest" => {
+            return Some((12.50, 75.0));
+        }
+        "gpt-5-4-cyber" => return None,
+        _ => {}
     }
-    None
+    if ["astra", "sol", "terra", "luna", "cyber"]
+        .iter()
+        .any(|codename| g.contains(codename))
+    {
+        return None;
+    }
+    if names_version(&g, "gpt-5-5") {
+        return Some(if g.contains("pro") {
+            (30.0, 180.0)
+        } else {
+            (5.0, 30.0)
+        });
+    }
+    if names_version(&g, "gpt-5-4") {
+        // Pro before the size tiers and before the base rate: it costs 12× the base.
+        if g.contains("pro") {
+            return Some((30.0, 180.0));
+        }
+        if g.contains("mini") {
+            return Some((0.75, 4.50));
+        }
+        if g.contains("nano") {
+            return Some((0.20, 1.25));
+        }
+        return Some((2.50, 15.0));
+    }
+    // 5.3 ships only as `-codex`, at 5.2's rate.
+    if names_version(&g, "gpt-5-3") {
+        return Some((1.75, 14.0));
+    }
+    if names_version(&g, "gpt-5-2") {
+        return Some(if g.contains("pro") {
+            (21.0, 168.0)
+        } else {
+            (1.75, 14.0)
+        });
+    }
+    // Everything below is the gpt-5/5.1 generation and the codex builds on it. A version this
+    // table has never seen (`gpt-6-<something-new>`) must reach `None` and render as a visible
+    // `≥` rather than quietly borrow these rates — that is the whole point of the marker.
+    if !g.contains("gpt-5") && !g.contains("gpt5") && !g.contains("codex") {
+        return None;
+    }
+    if g.contains("pro") {
+        return Some((15.0, 120.0));
+    }
+    if g.contains("mini") {
+        return Some((0.25, 2.0));
+    }
+    if g.contains("nano") {
+        return Some((0.05, 0.40));
+    }
+    // gpt-5, gpt-5.1, the codex builds, `gpt-5-search-api`, and any 5.6 tier whose codename is
+    // absent from the id all bill at the generation's baseline.
+    Some((1.25, 10.0))
+}
+
+/// Does the dot-normalized id `g` name this exact `gpt-<major>-<minor>` line?
+///
+/// OpenAI puts a RELEASE DATE where a minor version sits: `gpt-5-2025-08-07` is GPT-5, and a
+/// plain `contains("gpt-5-2")` reads the year's first digit as a minor version and prices it as
+/// GPT-5.2 — $1.75/$14 against a true $1.25/$10. So the character after the minor must not be
+/// another digit. This is [`is_bare_opus_4`]'s problem seen from the other side: there a date
+/// had to be told from a minor version, here a minor version has to be told from a date.
+fn names_version(g: &str, version: &str) -> bool {
+    g.split(version)
+        .skip(1)
+        .any(|rest| !rest.starts_with(|c: char| c.is_ascii_digit()))
 }
 
 /// Is this the retired original `claude-opus-4`, as opposed to `claude-opus-4-5` and later?
@@ -331,7 +508,33 @@ pub fn estimate_cost(
     cache_read: u64,
     output: u64,
 ) -> Option<UsdCost> {
-    price(model).map(|(pi, po)| {
+    estimate_cost_with(
+        &PriceTable::default(),
+        model,
+        input,
+        cache_creation,
+        cache_read,
+        output,
+    )
+}
+
+/// [`estimate_cost`] against host-supplied rates: `prices` wins where it names the model, the
+/// built-in table covers the rest. An empty `prices` is [`estimate_cost`] exactly.
+///
+/// Cache multipliers preserve the estimator's existing best-effort contract: cache writes use
+/// the Anthropic 1.25× convention and cache reads use the 0.10× ratio used by current GPT-5+
+/// Standard rows. Older OpenAI families and tiers without published cache prices vary, but the
+/// transcript does not carry enough billing context to select another rate. Host overrides stay
+/// limited to the agreed input/output schema rather than pretending to resolve that ambiguity.
+pub fn estimate_cost_with(
+    prices: &PriceTable,
+    model: &str,
+    input: u64,
+    cache_creation: u64,
+    cache_read: u64,
+    output: u64,
+) -> Option<UsdCost> {
+    resolve_price(prices, model).map(|(pi, po)| {
         (input as f64 + cache_creation as f64 * 1.25 + cache_read as f64 * 0.10) / 1e6 * pi
             + output as f64 / 1e6 * po
     })
@@ -581,9 +784,12 @@ impl Metrics {
 mod price_tests {
     use super::*;
 
-    /// Every rate against the official table (checked 2026-08-05). Pins the version-specific
-    /// splits, which are where a family-only match goes wrong: Opus 4/4.1 cost 3× Opus 4.5+,
-    /// and matching `opus-4` naively would catch every 4.x.
+    /// Every rate against the official tables (Anthropic checked 2026-08-05, OpenAI
+    /// 2026-09-08). Pins the version-specific splits, which are where a family-only match goes
+    /// wrong: Opus 4/4.1 cost 3× Opus 4.5+, and matching `opus-4` naively would catch every
+    /// 4.x; on the OpenAI side `gpt-6-astra` reaches no version branch at all and was priced at
+    /// nothing before it was listed, while a pro tier the fallback DID catch is 12× the base
+    /// rate it was given.
     #[test]
     fn prices_match_the_published_table() {
         for (model, want) in [
@@ -598,15 +804,148 @@ mod price_tests {
             ("claude-sonnet-4-6", (3.0, 15.0)),
             ("claude-haiku-4-5-20251001", (1.0, 5.0)),
             ("claude-haiku-3-5", (0.80, 4.0)),
-            ("gpt-5.6-sol", (5.0, 30.0)),
+            ("gpt-6-astra", (10.0, 50.0)),
+            ("gpt-5.6-sol", (4.0, 20.0)),
+            ("gpt-5-6-sol", (4.0, 20.0)),
             ("gpt-5.6-terra", (2.0, 12.0)),
             ("gpt-5.6-luna", (0.20, 1.20)),
+            ("gpt-5.6-cyber", (12.50, 75.0)),
+            ("gpt-daybreak-blue-latest", (4.0, 20.0)),
+            ("gpt-daybreak-red-latest", (12.50, 75.0)),
+            ("gpt-5.5", (5.0, 30.0)),
+            ("gpt-5.5-cyber", (12.50, 75.0)),
+            ("gpt-5.5-pro", (30.0, 180.0)),
+            ("gpt-5.4", (2.50, 15.0)),
+            ("gpt-5.4-mini", (0.75, 4.50)),
+            ("gpt-5.4-nano", (0.20, 1.25)),
+            ("gpt-5.4-pro", (30.0, 180.0)),
+            ("gpt-5.3-codex", (1.75, 14.0)),
+            ("gpt-5.2", (1.75, 14.0)),
+            ("gpt-5.2-pro", (21.0, 168.0)),
+            ("gpt-5.1", (1.25, 10.0)),
+            ("gpt-5", (1.25, 10.0)),
+            ("gpt-5-mini", (0.25, 2.0)),
+            ("gpt-5-nano", (0.05, 0.40)),
+            ("gpt-5-pro", (15.0, 120.0)),
+            ("gpt-5-search-api", (1.25, 10.0)),
             ("gpt-5.6", (1.25, 10.0)),
             ("gpt-5.1-codex", (1.25, 10.0)),
         ] {
             assert_eq!(price(model), Some(want), "{model}");
         }
         assert_eq!(price("some-unknown-model"), None, "unknown stays unpriced");
+    }
+
+    /// A dated id is not a minor version: `gpt-5-2025-08-07` is GPT-5 at $1.25/$10, and the
+    /// substring match this replaced read the year's leading digit as GPT-5.2 and billed it 40%
+    /// high on input.
+    #[test]
+    fn a_dated_gpt_5_is_not_gpt_5_2() {
+        assert_eq!(price("gpt-5-2025-08-07"), Some((1.25, 10.0)));
+        assert!(!names_version("gpt-5-2025-08-07", "gpt-5-2"));
+        assert!(names_version("gpt-5-2", "gpt-5-2"), "nothing after it");
+        assert!(names_version("gpt-5-2-pro", "gpt-5-2"), "a tier after it");
+    }
+
+    /// Unpriced ON PURPOSE, so each renders as a visible `≥` instead of a plausible wrong
+    /// number. The published empty cyber row and unknown/misleading codename IDs must not
+    /// borrow a sibling's rate just because one word happens to match.
+    #[test]
+    fn deliberately_unpriced_openai_models() {
+        for model in [
+            "gpt-5.4-cyber",
+            "gpt-6-cyber",
+            "gpt-7-astra",
+            "gpt-5.4-sol",
+            "gpt-5.6-sol-preview",
+            "gpt-6-some-unannounced-tier",
+        ] {
+            assert_eq!(price(model), None, "{model}");
+        }
+    }
+
+    /// The override must be inert until used. This is what keeps the byte-identical gate
+    /// meaningful: every existing caller goes through the empty table.
+    #[test]
+    fn an_empty_table_is_the_builtin_table() {
+        let empty = PriceTable::new();
+        assert_eq!(empty.get("anything"), None);
+        for model in ["claude-fable-5", "gpt-6-astra", "gpt-5.4-cyber", "unknown"] {
+            assert_eq!(resolve_price(&empty, model), price(model), "{model}");
+            assert_eq!(
+                estimate_cost_with(&empty, model, 1_000, 2_000, 3_000, 4_000),
+                estimate_cost(model, 1_000, 2_000, 3_000, 4_000),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_named_model_takes_the_hosts_rate() {
+        let mut t = PriceTable::new();
+        assert!(t.set("gpt-6-astra", 3.0, 6.0));
+        assert_eq!(resolve_price(&t, "gpt-6-astra"), Some((3.0, 6.0)));
+        // 1M plain input at $3 + 1M output at $6.
+        assert_eq!(
+            estimate_cost_with(&t, "gpt-6-astra", 1_000_000, 0, 0, 1_000_000),
+            Some(9.0)
+        );
+        // Everything it does not name is untouched.
+        assert_eq!(resolve_price(&t, "gpt-5-mini"), Some((0.25, 2.0)));
+    }
+
+    /// Exact match, so a family name in the override cannot silently reprice its members — the
+    /// built-in cascade keeps them.
+    #[test]
+    fn override_matching_is_exact_but_case_insensitive() {
+        let mut t = PriceTable::new();
+        assert!(t.set("GPT-5", 99.0, 99.0));
+        assert_eq!(resolve_price(&t, "gpt-5"), Some((99.0, 99.0)));
+        assert_eq!(resolve_price(&t, "GpT-5"), Some((99.0, 99.0)));
+        // `gpt-5-mini` CONTAINS `gpt-5` but is not it.
+        assert_eq!(resolve_price(&t, "gpt-5-mini"), Some((0.25, 2.0)));
+        assert_eq!(resolve_price(&t, "gpt-5-2025-08-07"), Some((1.25, 10.0)));
+    }
+
+    /// Pricing a model the built-in table misses both adds it to the sum and clears the `≥`.
+    #[test]
+    fn an_override_can_close_the_lower_bound_gap() {
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            output: 1_000_000,
+            ..Default::default()
+        };
+        let per_model = BTreeMap::from([("gpt-5.4-cyber".to_string(), tokens)]);
+
+        let (cost, partial) = total_cost(&per_model);
+        assert_eq!(
+            (cost, partial),
+            (None, true),
+            "unpriced by the built-in table"
+        );
+
+        let mut t = PriceTable::new();
+        assert!(t.set("gpt-5.4-cyber", 12.50, 75.0));
+        assert_eq!(total_cost_with(&t, &per_model), (Some(87.50), false));
+        assert_eq!(tokens.cost_with(&t, "gpt-5.4-cyber"), Some(87.50));
+    }
+
+    /// A rate that cannot be a price is refused rather than stored, so it can be reported
+    /// against whatever the host read it from instead of poisoning a sum into `NaN`.
+    #[test]
+    fn nonsense_rates_are_rejected() {
+        let mut t = PriceTable::new();
+        for (input, output) in [
+            (-1.0, 5.0),
+            (5.0, -1.0),
+            (f64::NAN, 5.0),
+            (5.0, f64::INFINITY),
+        ] {
+            assert!(!t.set("some-model", input, output), "{input} / {output}");
+        }
+        assert_eq!(t.get("some-model"), None, "nothing was stored");
+        assert!(t.set("some-model", 0.0, 0.0), "free is a legitimate rate");
+        assert_eq!(t.get("some-model"), Some((0.0, 0.0)));
     }
 
     /// `claude-opus-4-8` must NOT be read as the retired `claude-opus-4` — a substring match
