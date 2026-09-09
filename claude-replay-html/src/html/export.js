@@ -270,6 +270,21 @@
     var e = renderBlock(b);
     e.dataset.idx = i;
     e.dataset.kind = b.kind;
+    // #176: index the NESTED records inside this one. The engine's anchor has two levels — the
+    // mounted item, then the first `[data-block-index]` INSIDE it (shared/virtual-window.js
+    // `captureDomAnchor`) — and it holds the reader by that inner element's screen position. A
+    // mounted item here IS one record, so the outer level already addresses records; what it
+    // could not address is a record nested inside another (a `blocks` part: a Thinking's absorbed
+    // tool calls, an agent's children). Without this, a nested child growing above the reader
+    // moves them, because the enclosing fold's own top never moves.
+    // Every element `renderBlock` returns carries `.blk`, and `querySelectorAll` matches
+    // DESCENDANTS only — so this is exactly the nested set, in document order.
+    // The value is the position WITHIN THIS ITEM, deliberately not the record index: the lookup
+    // is scoped to the item (`item.querySelector`), so uniqueness is only needed locally, and a
+    // positional record index would be REWRITTEN under the anchor when a queued prompt is picked
+    // up (#165) — an anchor held across that rewrite would then resolve to a different child.
+    var nested = e.querySelectorAll(".blk");
+    for (var n = 0; n < nested.length; n++) nested[n].dataset.blockIndex = n;
     if (filter) {
       if (isTurnKind(b)) e.classList.add("filter-dim");
       else if (recHit[i]) {

@@ -6231,3 +6231,297 @@ fn app_shell_a_code_control_moves_its_own_pane_only() {
     let page = open(Surface::AppShell, &fx, 2930);
     scenario_a_code_control_moves_its_own_pane_only(&page.tab, Surface::AppShell, &fx);
 }
+
+/// A fixture whose tail holds ONE record with three records nested inside it: a thinking that
+/// absorbs three tool calls, which the engine folds into a single `act` carrying a `blocks` part
+/// (measured: `act -> blocks with 3 items`). That is the only shape where a mounted item on the
+/// classic page contains more than one record.
+fn fixture_nested_records(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(18, Shape::default());
+    transcript += &user_at("question 18: work through it", &now_minus(120));
+    transcript += &thinking_at("deliberation: three steps to run", &now_minus(118));
+    for i in 1..=3 {
+        transcript += &tool_open_at(&format!("nt{i}"), &now_minus(116 - i * 2));
+        transcript += &tool_result_lines(&format!("nt{i}"), 40, &now_minus(115 - i * 2));
+    }
+    transcript += &assistant_at("answer 18: all three done", &now_minus(100));
+    // MORE TURNS AFTER IT. The nested record must sit MID-document: parked at the tail the page
+    // is still FOLLOWING, `readerAnchor()` returns null by design, and the engine simply
+    // converges to the end — so the anchor path this case exists to test never runs, and the
+    // reference sits still for the wrong reason (measured: scrollY 4495 of docH 5252).
+    for i in 19..27 {
+        transcript += &user_at(
+            &format!("question {i}: keep going with more prose to push the tail well clear"),
+            &now_minus(96 - (i as u64 - 19) * 4),
+        );
+        transcript += &assistant_at(
+            &format!(
+                "answer {i}: {}",
+                "more text to make the tail tall. ".repeat(8)
+            ),
+            &now_minus(94 - (i as u64 - 19) * 4),
+        );
+    }
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 27,
+    }
+}
+
+/// #176. The engine's anchor has TWO levels — the mounted item, then the first
+/// `[data-block-index]` inside it — and it holds the reader by that inner element's screen
+/// position. A mounted item is one record on the classic page and a whole unit on the app shell,
+/// but EITHER can contain records nested inside it. The app shell indexes those; the classic page
+/// did not, so its anchor could only hold the enclosing fold — whose own top never moves when a
+/// child inside it grows. Park the reader below one child, expand a child ABOVE them, and the
+/// reader should not travel.
+fn scenario_a_growth_in_a_nested_record_holds_the_reader(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // LEAVE FOLLOW WITH THE READER'S OWN SCROLL, and SEARCH for the record rather than guessing
+    // a distance. `scrollIntoView` cannot leave follow at all: a programmatic scroll carries no
+    // intent, so the page reads it as displacement and HEALS a following view back to the tail
+    // (harness `scroll_by` says so in as many words; this case measured it). And a fixed scroll
+    // distance marked the wrong record — `long_session` emits activity records of its own, each
+    // absorbing exactly ONE tool, while the one this fixture appends absorbs three. So the
+    // target is identified BY CONTENT: the only activity record with three nested children.
+    // Identify the target by its RECORD ID, not by an attribute stamped on the element. The app
+    // shell RE-RENDERS a unit from state when a fold is toggled, which discards any marker put on
+    // the DOM — measured: `n: 0` after opening. The classic page only flips `dataset.open`, so a
+    // marker survives there; an id-based scope survives on both.
+    let target_js = match surface {
+        Surface::Classic => "(function(){ var all = document.querySelectorAll('#stream .fold[data-kind=\"act\"]');              for (var i = 0; i < all.length; i++) { var f = all[i];                if (f.querySelectorAll('.fold-b .blk').length >= 3) {                  if (f.dataset.open === '0') { var h = f.querySelector(':scope > .fold-h'); if (h) h.click(); }                  return f.id || 'none'; } } return 'none'; })()",
+        Surface::AppShell => "(function(){ var all = document.querySelectorAll('.renderer[data-renderer-kind=\"activity\"]');              for (var i = 0; i < all.length; i++) { var r = all[i];                if (r.querySelectorAll('.renderer-children > .renderer-turn').length >= 3) {                  var h = r.querySelector(':scope > button.renderer-head');                  if (r.classList.contains('closed') && h) h.click();                  return r.dataset.recordId || 'none'; } } return 'none'; })()",
+    };
+    let mut found = eval(tab, target_js);
+    for _ in 0..14 {
+        if found.as_str().map(|v| v != "none").unwrap_or(false) {
+            break;
+        }
+        scroll_by(tab, surface, -900);
+        settle();
+        found = eval(tab, target_js);
+    }
+    let target_id = found.as_str().unwrap_or("none").to_string();
+    assert_ne!(
+        target_id, "none",
+        "{surface:?}: scrolled back to the fixture's own activity record — the one with three \
+         nested children, not `long_session`'s single-tool ones"
+    );
+    let scope = match surface {
+        Surface::Classic => format!("#{target_id}"),
+        Surface::AppShell => format!("[data-record-id=\"{target_id}\"]"),
+    };
+    // Nested children by each page's OWN long-standing structure — NOT by `[data-block-index]`,
+    // which is what this task adds and would make the red land on a missing attribute rather
+    // than on the behaviour (#173's lesson).
+    let kids = &match surface {
+        Surface::Classic => format!("{scope} .fold-b .blk"),
+        Surface::AppShell => format!("{scope} .renderer-children > .renderer-turn"),
+    };
+    let head_of = match surface {
+        Surface::Classic => ":scope > .fold-h",
+        Surface::AppShell => ":scope > .renderer > button.renderer-head",
+    };
+    // A STABLE handle for the reference child. Re-querying `k[k.length - 1]` after the growth
+    // was the first version and it was wrong: opening a child changes what the node list holds,
+    // so "the last kid" before and after could be two different elements and the measurement
+    // compared unrelated rects. Both pages already carry a record identity — use it.
+    let id_of = match surface {
+        Surface::Classic => "e.id",
+        Surface::AppShell => "(e.querySelector('[data-record-id]') || {}).dataset?.recordId",
+    };
+    let seen = harness::probe(
+        tab,
+        &format!("(function(){{ var k = document.querySelectorAll('{kids}'); var laid = 0; \
+             for (var i = 0; i < k.length; i++) if (k[i].getBoundingClientRect().height > 0) laid++; \
+             return {{ n: k.length, laid_out: laid }}; }})()"),
+    );
+    assert!(
+        seen["n"].as_i64().unwrap_or(0) >= 3 && seen["laid_out"].as_i64().unwrap_or(0) >= 3,
+        "{surface:?}: three nested records mounted AND laid out inside one item — a hidden one \
+         has no geometry and would make every measurement below vacuous, saw: {seen}"
+    );
+    // Put the LAST child at the top of the viewport, so the two above it are off-screen upward
+    // and the reader is genuinely parked below them.
+    // Open every child EXCEPT the first, so they are tall. Two reasons: the reader needs room to
+    // sit below the growth, and — the point of the case — THE ANCHOR IS THE FIRST VISIBLE ROW.
+    // With all three children on screen the anchor is the one that grows, whose own top does not
+    // move, so the engine correctly holds it and the case measures nothing. The growth has to be
+    // OFF-SCREEN ABOVE, with the first visible row BELOW it. (Measured the wrong way round first:
+    // the reference moved 299px both WITH and WITHOUT the fix, because it was never the anchor.)
+    eval(
+        tab,
+        &format!(
+            "(function(){{ var k = document.querySelectorAll('{kids}'); \
+             for (var i = 1; i < k.length; i++) {{ var h = k[i].querySelector('{head_of}'); if (h) h.click(); }} \
+             return 'opened rest'; }})()"
+        ),
+    );
+    settle();
+    settle();
+    // Opening the record grew it and pushed its children off the top. Bring the reference back
+    // into view with the READER'S OWN scroll (a programmatic one would be classified as
+    // displacement), bounded so a page that will not converge fails instead of looping.
+    for _ in 0..10 {
+        let where_now = harness::probe(
+            tab,
+            &format!(
+                "(function(){{ var k = document.querySelectorAll('{kids}'); \
+                 if (k.length < 2) return {{ t: 0, firstBottom: 1 }}; \
+                 return {{ t: Math.round(k[1].getBoundingClientRect().top), \
+                           secondBottom: Math.round(k[1].getBoundingClientRect().bottom), \
+                           firstBottom: Math.round(k[0].getBoundingClientRect().bottom) }}; }})()"
+            ),
+        );
+        let t = where_now["t"].as_f64().unwrap_or(0.0);
+        let first_bottom = where_now["firstBottom"].as_f64().unwrap_or(1.0);
+        let second_bottom = where_now["secondBottom"].as_f64().unwrap_or(0.0);
+        // The growing child ENTIRELY above the viewport, and the next one still VISIBLE — which
+        // means STRADDLING the top edge, not sitting fully inside it. They are adjacent siblings,
+        // so `k0.bottom < 0` and `k1.top > 0` cannot both hold: their edges nearly coincide.
+        // `firstVisible` takes the first row whose BOTTOM is past the viewport top, so a
+        // straddling row is exactly what the engine anchors to.
+        if first_bottom < 0.0 && second_bottom > 40.0 {
+            break;
+        }
+        // Sign matters and it is the opposite of the instinct: a NEGATIVE dy scrolls up, which
+        // moves content DOWN and RAISES an element's `top`. Getting it backwards walked the
+        // reader to the tail, re-acquired the pin, and froze the measurement at a constant.
+        // Proportional, not a fixed stride: a 240px step overshoots a band only tens of pixels
+        // wide and the loop ends ten iterations later still outside it.
+        // Target a SLIGHTLY NEGATIVE top: the anchor row straddles the edge and the child above
+        // it clears the viewport. Steering at +120 was self-defeating — it guarantees the growing
+        // child stays visible (measured: firstBottom 118), which is the very thing the break
+        // condition forbids, so the loop could never converge on its own target.
+        // dy = t - target, because scrolling by dy changes an element's top by -dy.
+        let want = (t + 20.0) as i64;
+        scroll_by(tab, surface, want.clamp(-900, 900));
+        settle();
+    }
+    // No parking gesture beyond that: the reader is where their own scroll left them. All this
+    // needs is the reference child ON SCREEN and BELOW the one about to grow — asserted, not
+    // assumed.
+    let parked = harness::probe(
+        tab,
+        &format!(
+            "(function(){{ var k = document.querySelectorAll('{kids}'); var e = k[1]; \
+             var r = e.getBoundingClientRect(); var f = k[0].getBoundingClientRect(); \
+             return {{ id: {id_of}, top: Math.round(r.top), firstBottom: Math.round(f.bottom), \
+                       onScreen: r.bottom > 40 && r.top < innerHeight, below: f.bottom <= 0 }}; }})()"
+        ),
+    );
+    assert_eq!(
+        parked["onScreen"].as_bool(),
+        Some(true),
+        "{surface:?}: the reference child is on screen where the reader can see it move: {parked}"
+    );
+    assert_eq!(
+        parked["below"].as_bool(),
+        Some(true),
+        "{surface:?}: the child that will grow sits ENTIRELY ABOVE the viewport, so the anchor is \
+         a row BELOW it: {parked}"
+    );
+    // Centring must not have walked the reader back onto the tail — that would restore the
+    // follow converge and hold the reference for a reason unrelated to the anchor.
+    assert!(
+        !at_tail(tab, surface),
+        "{surface:?}: still off the tail after centring, so the ANCHOR is what holds the reader"
+    );
+    let ref_id = parked["id"].as_str().unwrap_or("").to_string();
+    assert!(
+        !ref_id.is_empty(),
+        "{surface:?}: the reference child has a stable identity to measure by: {parked}"
+    );
+    settle();
+    settle();
+    // The reader must NOT be following. Following returns a null anchor by design and converges
+    // to the end on every growth, which holds the reference for a reason that has nothing to do
+    // with the anchor under test — the first version of this case measured exactly that.
+    assert!(
+        !at_tail(tab, surface),
+        "{surface:?}: parked away from the tail, so the ANCHOR is what holds the reader and not \
+         the follow converge"
+    );
+    let where_js = format!(
+        "(function(){{ var k = document.querySelectorAll('{kids}'); var hit = null; \
+         for (var i = 0; i < k.length; i++) {{ var e = k[i]; if (({id_of}) === '{ref_id}') hit = e; }} \
+         if (!hit) return {{ err: 'reference child gone' }}; \
+         return {{ n: k.length, top: Math.round(hit.getBoundingClientRect().top) }}; }})()"
+    );
+    let before = harness::probe(tab, &where_js);
+    // Grow the FIRST child, above the reader: open its fold. A real gesture, and a real growth.
+    let grew = harness::probe(
+        tab,
+        &format!(
+            "(function(){{ var k = document.querySelectorAll('{kids}'); var first = k[0]; \
+             var h = first.querySelector('{head_of}'); if (!h) return {{ err: 'no head' }}; \
+             var before = first.getBoundingClientRect().height; h.click(); \
+             return {{ before: Math.round(before) }}; }})()"
+        ),
+    );
+    assert!(
+        grew.get("err").is_none(),
+        "{surface:?}: the first nested child has a head to open: {grew}"
+    );
+    settle();
+    settle();
+    let after_growth = harness::probe(
+        tab,
+        &format!(
+            "(function(){{ var k = document.querySelectorAll('{kids}'); var first = k[0]; \
+             return {{ h: Math.round(first.getBoundingClientRect().height) }}; }})()"
+        ),
+    );
+    assert!(
+        after_growth["h"].as_f64().unwrap_or(0.0) > grew["before"].as_f64().unwrap_or(0.0) + 8.0,
+        "{surface:?}: opening the first child actually grew it ({grew} -> {after_growth}) — with \
+         no growth there is nothing for the anchor to absorb and the case proves nothing"
+    );
+    let after = harness::probe(tab, &where_js);
+    let (t0, t1) = (
+        before["top"].as_f64().unwrap_or(f64::NAN),
+        after["top"].as_f64().unwrap_or(f64::NAN),
+    );
+    assert!(
+        before.get("err").is_none() && after.get("err").is_none(),
+        "{surface:?}: the reference child survives the growth; before {before}, after {after}"
+    );
+    assert!(
+        (t1 - t0).abs() <= 4.0,
+        "{surface:?}: the reader stays where they were reading when a record NESTED above them \
+         grows ({t0} -> {t1}) — the enclosing item's own top never moves, so an anchor that can \
+         only address the item holds nothing"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_growth_in_a_nested_record_holds_the_reader() {
+    let _serial = serial();
+    let fx = fixture_nested_records("scenario-nested-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_growth_in_a_nested_record_holds_the_reader(&page.tab, Surface::Classic, &fx);
+}
+
+/// KNOWN RED (#177): the app shell displaces the reader by 354px here, the same signature the
+/// classic page showed before #176. Emitting `data-block-index` on nested children is NOT
+/// sufficient — this case found that on the surface assumed to be correct. The gate skips
+/// `known_red`; the fix removes the marker, and the case is never weakened to make it pass.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_known_red_177_a_growth_in_a_nested_record_holds_the_reader() {
+    let _serial = serial();
+    let fx = fixture_nested_records("scenario-nested-app");
+    let page = open(Surface::AppShell, &fx, 2931);
+    scenario_a_growth_in_a_nested_record_holds_the_reader(&page.tab, Surface::AppShell, &fx);
+}
