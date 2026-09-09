@@ -48,7 +48,17 @@ function rangeForScroll(sums, count, scrollTop, clientHeight, overscan) {
 }
 
 /** The window around one item: `overscan` of content above it, a viewport plus `overscan` below
- *  — the shape a jump wants, where the target sits at the top and the reader looks down. */
+ *  — the shape a jump wants, where the target sits at the top and the reader looks down.
+ *
+ *  At the LAST item there is nothing below to spend the downward budget on, so the window is
+ *  `overscan` alone — which is also the window the tail converge asks for, and it leaves the
+ *  classic page opening at its tail with about a screenful less mounted than its own anchored
+ *  walk used to give it. Handing the unspent budget to the upward walk was tried for #140 step 4
+ *  and REVERTED: it widens every anchored update near the end, which on a page opened at its end
+ *  is most of them, and three app-shell cases that had every right to stay put moved. The
+ *  estimate error it was chasing had a nearer cause (the classic page never re-measured on a
+ *  width change) and fixing that made this unnecessary. Left here so it is not tried a third
+ *  time. */
 function rangeAround(index, count, heightAt, clientHeight, overscan) {
   let lo = index, hi = index + 1, above = overscan, below = clientHeight + overscan;
   while (lo > 0 && above > 0) { lo--; above -= heightAt(lo); }
@@ -180,7 +190,10 @@ class VirtualWindow {
     this.prefix = [0];
     this.lo = 0;
     this.hi = 0;
-    // The width the remembered heights were measured at (#132 step 4).
+    // The width the remembered heights were measured at (#132 step 4). Zero until the first
+    // `remeasure`, so the first one has no ratio and clears instead of scaling; a page for which
+    // the FIRST width change is the one that matters seeds it itself, from the mount, which is
+    // attached and empty here and therefore already at the width its items will be laid out at.
     this.lastWidth = 0;
     this.pendingScroll = false;
     // Sentinel far in the past: performance.now() is small right after load, so a 0 init would
@@ -217,13 +230,26 @@ class VirtualWindow {
     // the browser cuts short with "undelivered notifications", deferring the very correction
     // this delivery exists to make.
     this.contentObserver.observe(mount.window);
+    // …and the same signal from AROUND the window (#140 step 4). The observer above hears the
+    // mounted run's own height; nothing else. A header wrapping to a second line, a panel
+    // opening, a font arriving in the chrome above the run — each moves everything below it,
+    // fires no scroll event, and leaves a pinned view parked above the tail and a reader pushed
+    // silently down the page. The classic page has heard this since #89/#98 by observing
+    // `document.body`; the engine could not simply do the same, because that element also holds
+    // the pads and measuring WRITES them, so a delivery would re-fire itself (the loop the
+    // browser cuts short with "undelivered notifications", dropping the very correction it
+    // exists to make). The guard is what makes it safe: only a change in where the content
+    // BEGINS counts, and a pad write never moves that.
+    this.lastContentTop = null;
+    this.outerObserver = new ResizeObserver(() => this.displaced());
+    // BORDER-box, not the default content-box: what moves the run is often the chrome's own
+    // padding — a header gaining a line of chips, a pane's inset — and a padding change leaves
+    // the content box exactly as it was, so the default box hears nothing at all.
+    if (mount.content) this.outerObserver.observe(mount.content, { box: "border-box" });
     const noteIntent = event => {
       if (event.type === "keydown" && event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
       if (event.type === "pointermove" && !event.buttons) return;
-      this.lastUserInput = performance.now();
-      // …and the same moment on the EVENT's clock (#156), for the one question handler time
-      // cannot answer: how long after the gesture a SCROLL EVENT was created.
-      this.lastInputStamp = event.timeStamp || performance.now();
+      this.markIntent(event.timeStamp);
     };
     for (const type of ["pointerdown", "pointermove", "wheel", "touchstart", "touchmove", "keydown"]) {
       frame.on(type, noteIntent, { passive: true, capture: true });
@@ -251,8 +277,19 @@ class VirtualWindow {
     return indexAt(this.prefix, this.count, y, this.clampIndex);
   }
 
+  /** Where the content the sums describe BEGINS, in the scroller's own coordinate (#140 step 4).
+   *  Never zero on either page — the app shell's pads sit under the transcript's own top padding
+   *  and the classic page's under a whole topbar and session header. Scroll-invariant by
+   *  construction: a scroll of `d` moves the pad's rect by `-d` and `scrollTop` by `+d`, and the
+   *  engine's own pad writes never move it either, which is what makes it safe for `displaced`
+   *  to watch. Both readers want the same thing: an offset handed straight to the sums names an
+   *  item about 250px late on the classic page and 24px late on the shell. */
+  contentTop() {
+    return this.topPad.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop();
+  }
+
   rangeForScroll() {
-    return rangeForScroll(this.prefix, this.count, this.frame.scrollTop(), this.frame.clientHeight(), this.overscan);
+    return rangeForScroll(this.prefix, this.count, this.frame.scrollTop() - this.contentTop(), this.frame.clientHeight(), this.overscan);
   }
 
   rangeAround(index) {
@@ -346,6 +383,32 @@ class VirtualWindow {
     return this.dragging || performance.now() - this.lastUserInput < this.userIntentMs;
   }
 
+  /** The reader just did something. Two clocks, because they answer different questions: handler
+   *  time is "how long since they touched anything", the EVENT's own stamp is what a later scroll
+   *  event is compared against (#156). Public, because a page can move the view on the reader's
+   *  behalf where no input event of its own fires — the classic page's drag-select auto-scroll
+   *  runs on a 16ms timer while the pointer rests in the band, and without this stamp the engine
+   *  reads each of those scrolls as displacement and, while pinned, heals it straight back. */
+  markIntent(stamp) {
+    this.lastUserInput = performance.now();
+    this.lastInputStamp = stamp || performance.now();
+  }
+
+  /** Something around the mounted window changed size. Only a change in where the content BEGINS
+   *  is a displacement — the pads move the content's END, and those are the engine's own writes —
+   *  so this is a cheap no-op on everything except the case it is for. Following: the tail moved
+   *  away and is converged back on. Reading: what they are looking at moved down by the growth
+   *  above it, and the anchor puts it back. */
+  displaced() {
+    const top = this.contentTop();
+    if (this.lastContentTop !== null && Math.abs(top - this.lastContentTop) < 0.5) return;
+    const first = this.lastContentTop === null;
+    this.lastContentTop = top;
+    if (first || !this.count) return;
+    if (this.following) { if (this.gapToBottom() > 1) this.convergeBottom(); }
+    else this.restoreDomAnchor(this.readerAnchor());
+  }
+
   /** What happens once the reader comes to rest (#138). NOT "pay the correction that was owed":
    *  the position that correction was protecting is from BEFORE they moved, and writing it back
    *  afterwards moves the page under someone who has stopped — a small jump every time they stop
@@ -413,8 +476,7 @@ class VirtualWindow {
    *  are measured, so the restore prefers the item's own rect and this serves the case that has
    *  no rect — an anchor that is not mounted at all. */
   documentTopOf(index) {
-    const contentTop = this.topPad.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop();
-    return contentTop + (this.prefix[index] || 0);
+    return this.contentTop() + (this.prefix[index] || 0);
   }
 
   updatePads() {
@@ -491,8 +553,15 @@ class VirtualWindow {
     this.lo = lo;
     this.hi = hi;
     this.afterMount(fresh);
-    this.updatePads();
+    // MEASURE, then pad (#140 step 4). The other order writes the pads from the sums the mount
+    // is about to replace, and what a mount replaces is an ESTIMATE with a real height — by rule
+    // 5 always an increase, so the pads are briefly SHORT by the whole difference and a browser
+    // clamps a scroll offset to a page that has just shrunk. The classic page had always
+    // measured first; matching it costs nothing, since `measureMounted` writes the pads itself
+    // whenever a height moved and the call below covers the case where none did and only the
+    // RANGE changed.
     this.measureMounted(anchor);
+    this.updatePads();
     this.restoreDomAnchor(anchor);
     for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
     this.afterRender();
@@ -661,10 +730,21 @@ function elementFrame(scroller) {
     scrollHeight: () => scroller.scrollHeight,
     viewportTop: () => scroller.getBoundingClientRect().top,
     on: (type, fn, options) => scroller.addEventListener(type, fn, options),
-    // A pointer that lands on the scroller ITSELF is on its scrollbar: content lands on a
-    // descendant. Not a coordinate test — an overlay scrollbar (macOS) sits inside the client
-    // box. A false positive (the border) costs one window update on release.
-    isScrollbarTarget: event => event.target === scroller,
+    // A pointer that lands on the scroller ITSELF is on its scrollbar OR in a GUTTER: content
+    // lands on a descendant, but a centred child leaves the scroller's own background exposed on
+    // both sides, and `.transcript-inner` is `margin: 0 auto` inside `min(880px, 100% - 76px)`.
+    // Reading a gutter press as a thumb grab puts the engine in drag mode for as long as the
+    // button is held — where every scroll counts as the reader's and no anchor is held at all —
+    // which is the whole of a drag-select. So the target test stays and a coordinate band is
+    // added: a scrollbar sits against the inline end whichever kind it is. `clientWidth` EXCLUDES
+    // a classic scrollbar's gutter and INCLUDES an overlay one (macOS), and the 20px band covers
+    // both without a media query. (#140 step 4 — the twin of `documentFrame`'s predicate, which
+    // wrongly accepted `body` for the same reason, found on the other page.)
+    isScrollbarTarget: event => {
+      if (event.target !== scroller) return false;
+      if (event.clientX == null) return true;
+      return event.clientX > scroller.getBoundingClientRect().left + scroller.clientWidth - 20;
+    },
   };
 }
 

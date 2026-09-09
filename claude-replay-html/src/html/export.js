@@ -212,47 +212,42 @@
   var recSearchParts = []; // lazy {start,end,mask} ownership spans into recText
   var recHit = [];       // with a filter active: does this record (or a nested one) match?
   var idIndex = {};      // block id (incl. nested items) -> top-level record index
-  var loIdx = 0, hiIdx = 0; // materialized window [loIdx, hiIdx)
   var EST_H = 30;
   var MARGIN_PX = 1500;
-  var prefix = null;     // prefix[i] = sum of effective heights of records[0..i)
-  var topPad = null, botPad = null, vwin = null;
+  // The first index whose CONTENT was rewritten by the apply in flight (#140 step 4). The
+  // engine reuses a mounted element whose index and identity both still match, so a
+  // provisional turn that grew under its own id would never re-render without this.
+  var dirtyFrom = Infinity;
+  // #140 step 4: the materialized run lives in its OWN box between the pads, because the
+  // shared engine owns that box — it calls `replaceChildren` on it and walks
+  // `firstElementChild`, so it cannot be a `#stream` that also holds the pads. The spacing
+  // rules move with the records (`#vwin > *`), since they are addressed to whatever is the
+  // records' parent. Built eagerly: the engine is handed the three of them at construction.
+  var topPad = el("div", "vpad");
+  var vwin = el("div", "vwin");
+  var botPad = el("div", "vpad");
+  vwin.id = "vwin";
+  stream.appendChild(topPad);
+  stream.appendChild(vwin);
+  stream.appendChild(botPad);
   var searchNeedle = ""; // active search term (lowercase), re-marked on materialize
   var searchScope = null; // `uatobrew:` prefix parse; w modifies matching, null = unscoped
 
   function isTurnKind(b) { return b.kind === "user" || b.kind === "command"; }
   function isHiddenRec(i) { return !!filter && !isTurnKind(records[i]) && !recHit[i]; }
-  function effH(i) { return isHiddenRec(i) ? 0 : recHeights[i]; }
   // The sums, the search and the pads are the shared engine's (#107, html/shared/virtual-window.js)
-  // — the same arithmetic the app shell runs. Kept LAZY here (`prefix = null` invalidates), and
-  // the search stays UNCLAMPED: with a filter on, an offset past the last visible record must
-  // read as past the end, which is what places the bottom pad.
-  function P() {
-    if (!prefix) prefix = shared.prefixSums(records.length, effH);
-    return prefix;
-  }
-  function idxAt(y) {
-    return shared.indexAt(P(), records.length, y, false);
-  }
+  // — the same arithmetic the app shell runs, and since #140 step 4 the same STATE MACHINE too.
+  // Both stay LAZY here (`vw.rebuildPrefix()` marks, the getter pays): a live apply pushes
+  // records one at a time, and a rebuild per push is a rebuild per record. The search stays
+  // UNCLAMPED (`clampIndex: false`): with a filter on, an offset past the last visible record
+  // must read as past the end, which is what places the bottom pad.
+  function P() { return vw.prefix; }
+  function idxAt(y) { return vw.indexAt(y); }
   function streamTop() {
     return stream.getBoundingClientRect().top + window.scrollY;
   }
-  // #140 step 4: the materialized run lives in its OWN box between the pads, because the shared
-  // engine owns that box — it calls `replaceChildren` on it and walks `firstElementChild`, so it
-  // cannot be a `#stream` that also holds the pads. The spacing rules move with the records
-  // (`#vwin > *`), since they are addressed to whatever is the records' parent.
-  function ensurePads() {
-    if (topPad) return;
-    topPad = el("div", "vpad");
-    vwin = el("div", "vwin");
-    vwin.id = "vwin";
-    botPad = el("div", "vpad");
-    stream.appendChild(topPad);
-    stream.appendChild(vwin);
-    stream.appendChild(botPad);
-  }
   function matEls() {
-    return vwin ? Array.prototype.slice.call(vwin.children) : [];
+    return Array.prototype.slice.call(vwin.children);
   }
   function matBlock(i) {
     var b = records[i];
@@ -319,160 +314,28 @@
       r.md.after(btn);
     });
   }
-  function updatePads() {
-    ensurePads();
-    var pads = shared.padHeights(P(), loIdx, hiIdx, records.length);
-    topPad.style.height = pads.top + "px";
-    botPad.style.height = pads.bottom + "px";
-  }
-  // Measure the materialized run through the SHARED measure (#140 step 2): a block's height is
-  // its border box plus its margins, the same function the app shell's engine measures with
-  // (html/shared/virtual-window.js, rule 8). This page used to take the offsetTop delta to the
-  // next sibling, which charges the gap between two blocks to the upper one; since #128 (step 1)
-  // gave the records a flex column with `margin-top: 0` (now `#vwin`, #140 step 4), the two agree
-  // and one function means they cannot drift apart again.
+  // Rule 8, #140 step 2: a block's height is its border box plus its margins — the same
+  // function the app shell measures with, so the two cannot drift apart again. The page used to
+  // take the offsetTop delta to the next sibling, which charges the gap between two blocks to
+  // the upper one; #128 gave the records a flex column with `margin-top: 0` (now `#vwin`), so
+  // the two agree and one function means they stay agreed. Since #140 step 4 the page does not
+  // call it at all: the engine measures what it has just mounted, and every path that used to
+  // ask for a measure by hand goes through a reconcile that already did one.
   //
-  // NOT rounded any more (#156). It was, for one release: fractional heights made this page heal
-  // a scrolled-up reader in 4 runs of 8, and integer heights are what it had always had, so the
-  // round restored the invariant while the cause was unknown. The cause turned out to have
-  // nothing to do with the basis — a long task on the main thread delayed the scroll handler past
-  // the 300ms intent window, so the reader's own scroll was classified as displacement. Fractional
-  // heights only lengthened those tasks. The classifier reads the event's clock now, and the
-  // fractional basis is the exact one: a sum of rounded sizes does not telescope, so rounding cost
-  // about -0.4px per record against a position delta that was exact over any range.
-  function measureWindow() {
-    var els = matEls();
-    if (!els.length) return false;
-    var changed = false;
-    for (var k = 0; k < els.length; k++) {
-      var i = +els[k].dataset.idx;
-      var h = shared.itemHeight(els[k]);
-      if (h > 0 && Math.abs(h - recHeights[i]) > 0.5) {
-        recHeights[i] = h;
-        changed = true;
-      }
-    }
-    if (changed) prefix = null;
-    return changed;
-  }
-  // Materialize exactly [lo, hi): incremental trim/extend at both ends; a disjoint
-  // jump rebuilds. Skips filter-hidden records (they contribute 0 height).
-  function setWindow(lo, hi) {
-    lo = Math.max(0, Math.min(lo, records.length));
-    hi = Math.max(lo, Math.min(hi, records.length));
-    ensurePads();
-    var fresh = [];
-    if (lo >= hiIdx || hi <= loIdx || hiIdx === loIdx) {
-      matEls().forEach(function (e) { e.remove(); });
-      var frag = document.createDocumentFragment();
-      for (var i = lo; i < hi; i++) {
-        if (isHiddenRec(i)) continue;
-        var e = matBlock(i);
-        frag.appendChild(e);
-        fresh.push(e);
-      }
-      vwin.appendChild(frag);
-      loIdx = lo; hiIdx = hi;
-    } else {
-      while (loIdx < lo && vwin.firstChild) {
-        // Trim by the element's REAL index (#94): with filter-hidden records the
-        // first DOM child can sit far above loIdx — blindly removing one node per
-        // index step deletes visible elements that belong INSIDE the new window.
-        if (+vwin.firstChild.dataset.idx >= lo) break; // [loIdx..lo) is all hidden
-        vwin.firstChild.remove();
-        loIdx++;
-        while (loIdx < lo && loIdx < hiIdx && isHiddenRec(loIdx)) loIdx++;
-      }
-      if (loIdx < lo && loIdx < hiIdx) loIdx = lo;
-      if (lo < loIdx) {
-        var ftop = document.createDocumentFragment();
-        for (var a = lo; a < loIdx; a++) {
-          if (isHiddenRec(a)) continue;
-          var ea = matBlock(a);
-          ftop.appendChild(ea);
-          fresh.push(ea);
-        }
-        vwin.insertBefore(ftop, vwin.firstChild);
-        loIdx = lo;
-      }
-      while (hiIdx > hi && vwin.lastChild) {
-        // Same real-index guard as the top trim (#94): the last DOM child can sit
-        // far below hiIdx when the tail range is filter-hidden.
-        if (+vwin.lastChild.dataset.idx < hi) break; // [hi..hiIdx) is all hidden
-        vwin.lastChild.remove();
-        hiIdx--;
-        while (hiIdx > hi && hiIdx > loIdx && isHiddenRec(hiIdx - 1)) hiIdx--;
-      }
-      if (hiIdx > hi) hiIdx = hi;
-      if (hi > hiIdx) {
-        var fbot = document.createDocumentFragment();
-        for (var c = hiIdx; c < hi; c++) {
-          if (isHiddenRec(c)) continue;
-          var ec = matBlock(c);
-          fbot.appendChild(ec);
-          fresh.push(ec);
-        }
-        vwin.appendChild(fbot);
-        hiIdx = hi;
-      }
-    }
-    fresh.forEach(postMat);   // writes only — no layout reads
-    clampBatch(fresh);        // one batched read pass + writes
-    measureWindow();          // one layout read pass
-    updatePads();
-  }
-  // Recompute the window for the current scroll position, anchoring the content
-  // under the viewport so height-measurement drift never visibly jumps the page.
-  function updateView() {
-    if (!records.length) return;
-    // Fully-rendered filter mode (#94): the whole (small) visible set stays
-    // materialized — no windowing, no estimate churn.
-    if (filter && filterFull) {
-      if (loIdx !== 0 || hiIdx !== records.length) setWindow(0, records.length);
-      return;
-    }
-    // Prefer INDEX-anchored windowing (#66): when a materialized element is visible,
-    // extend the window around ITS record index by walking effective heights — immune
-    // to prefix-estimate drift, which otherwise makes a post-jump updateView compute
-    // a window that EXCLUDES the very block just navigated to (scrollY maps through
-    // stale estimates to different indices than the real rects on screen).
-    var anchorEl = null, anchorTop = 0;
-    matEls().some(function (e) {
-      var r = e.getBoundingClientRect();
-      if (r.bottom > 0 && r.top < window.innerHeight) { anchorEl = e; anchorTop = r.top; return true; }
-      return false;
-    });
-    var lo, hi;
-    if (anchorEl) {
-      var ai = +anchorEl.dataset.idx;
-      lo = ai;
-      var px = anchorTop + MARGIN_PX; // content to keep above the viewport top
-      while (lo > 0 && px > 0) { lo--; px -= effH(lo); }
-      hi = ai;
-      px = window.innerHeight - anchorTop + MARGIN_PX;
-      while (hi < records.length && px > 0) { px -= effH(hi); hi++; }
-    } else {
-      var y0 = window.scrollY - streamTop();
-      lo = idxAt(y0 - MARGIN_PX);
-      hi = idxAt(y0 + window.innerHeight + MARGIN_PX) + 1;
-    }
-    setWindow(lo, hi);
-    if (anchorEl && anchorEl.isConnected) {
-      var d = anchorEl.getBoundingClientRect().top - anchorTop;
-      if (Math.abs(d) > 1) window.scrollBy(0, d);
-    }
-    // The page's height is only true once a window has been measured, and `atBottom()` is
-    // a question about the height — so the pill has to be reconsidered wherever the height
-    // can move, not only on scroll (#170/#171). Guarded to a no-op unless it changed.
-    paintBadge();
-  }
+  // Materialize exactly [lo, hi). Every remaining caller is a JUMP — search nav, a deep link,
+  // a restore — which is why the anchor is explicitly null: the reader is being MOVED, and
+  // holding where they were is the one thing that must not happen.
+  function setWindow(lo, hi) { vw.reconcile(lo, hi, Infinity, false, null); }
+  // Recompute the window for the current position. INDEX-anchored when a mounted element is
+  // visible (#66) — immune to prefix-estimate drift, which otherwise makes a post-jump update
+  // compute a window that EXCLUDES the very block just navigated to.
+  //
+  // The page's height is only true once a window has been measured, and `atBottom()` is a
+  // question about the height — so the pill has to be reconsidered wherever the height can
+  // move, not only on scroll (#170/#171). Guarded to a no-op unless it changed.
+  function updateView() { vw.updateWindow(); paintBadge(); }
   // Re-render the materialized window in place (fold/filter state changed).
-  function refreshWindow() {
-    var lo = loIdx, hi = hiIdx;
-    loIdx = hiIdx = 0;
-    matEls().forEach(function (e) { e.remove(); });
-    setWindow(lo, hi);
-  }
+  function refreshWindow() { vw.render(); }
   // Register a record's ids (its own + nested items') for deep links and search nav.
   function indexIds(b, top) {
     if (b.id) idIndex[b.id] = top;
@@ -536,6 +399,11 @@
     records.push(b);
     recSize.push(shared.recordTextSize(b));
     recHeights.push(EST_H);
+    // O(1): the sums are LAZY, so this only marks them. It has to happen per record and not
+    // once per batch, because an observer delivery can reconcile in between — and a reconcile
+    // reads the sums to place the pads, where a prefix shorter than the record list reads
+    // `undefined` for the total and writes a pad height of NaN.
+    vw.rebuildPrefix();
     recText.push(null);
     recSearchParts.push(null);
     recHit.push(false);
@@ -1508,9 +1376,14 @@
     renderArtifactMenu();
     buildToolMenu();
     if (filter) computeFilterHits();
-    prefix = null;
-    updatePads();
-    updateView();
+    vw.rebuildPrefix();
+    // Everything from `dirtyFrom` on was REWRITTEN rather than appended — a queued prompt
+    // picked up, a provisional turn extended — and the engine reuses a mounted element whose
+    // index AND identity both still match. Without the mark, a record that grew under its own
+    // id would keep the DOM it had when it was shorter.
+    var from = dirtyFrom;
+    dirtyFrom = Infinity;
+    vw.applyWindow(from);
   }
 
   // Whole-text, record-counter based: the inline snapshot and the single-file `-f`
@@ -1544,11 +1417,11 @@
     records.forEach(function (b, i) { indexIds(b, i); });
     turnlist.textContent = "";
     records.forEach(function (b) { if (b.turn != null) addTurn(b); else if (b.epoch) addEpoch(b); });
-    prefix = null;
-    if (loIdx > from) loIdx = from;
-    if (hiIdx > from) hiIdx = from;
-    matEls().forEach(function (e) { if (+e.dataset.idx >= from) e.remove(); });
-    updatePads();
+    vw.rebuildPrefix();
+    // The elements are NOT removed here (#140 step 4): the engine drops what falls outside the
+    // range and re-renders what `dirtyFrom` marks, and removing them behind its back would
+    // leave its own [lo, hi) describing a window that no longer exists.
+    dirtyFrom = Math.min(dirtyFrom, from);
   }
 
   // ── pull-client transport (`/pull?session=&cursor=`) ───────────────────
@@ -1842,7 +1715,7 @@
           if (b.id && savedFolds[b.id] !== undefined) b.open = savedFolds[b.id] === "1" ? 1 : 0;
         });
       }
-      prefix = null;
+      vw.rebuildPrefix();
       refreshWindow();
       if (anchorId != null && idIndex[anchorId] != null) {
         var ti = idIndex[anchorId];
@@ -1851,7 +1724,7 @@
       }
     } else {
       computeFilterHits();
-      prefix = null;
+      vw.rebuildPrefix();
       refreshWindow();
       updateView();
       // #49: land on the nearest hit so the filter visibly did something (the
@@ -1868,179 +1741,195 @@
     spy();
   }
 
-  // ── follow-the-bottom (live tail UX) ──────────────────────────────────
-  // Are we scrolled to (near) the end of the page?
-  var BOTTOM_SLACK = 80;
-  function atBottom() {
-    return window.innerHeight + window.scrollY >= document.body.scrollHeight - BOTTOM_SLACK;
-  }
-  // #103: pin ACQUISITION is stricter than pin HOLDING. Reading the last message
-  // naturally sits within BOTTOM_SLACK, and a scroll ending there used to acquire
-  // the pin silently — then any provisional reshape (a duration tick, a result
-  // back-patch: no visible new message) yanked the page to the exact bottom with
-  // the badge suppressed. Acquire only at the true end — browsers clamp a
-  // scrolled-to-the-end position to scrollHeight, so wheel, trackpad and scrollbar
-  // all genuinely reach it. The generous slack still governs holding and healing,
-  // which the virtualizer's pad shifts need (#88/#89).
-  var PIN_SLACK = 2;
-  function atEnd() {
-    return window.innerHeight + window.scrollY >= document.body.scrollHeight - PIN_SLACK;
-  }
-  // How far the end is from the view — the one number the shared follow rule reads (#107).
-  function gapToBottom() {
-    return document.body.scrollHeight - window.innerHeight - window.scrollY;
-  }
-  // Whether the view is PINNED to the live tail. An explicit mode, not inferred from
-  // pixel proximity each tick (#88): under the virtualizer, materializing the tail
-  // corrects estimated heights and silently moves the true bottom away from the
-  // viewport — proximity-based following then unlatches on its own.
+  // ── the reader's position: the shared engine (#107 step 4, #140) ──────────────────────
+  // The window and its pads, the sums, the anchor and the debt it can owe, the two height
+  // observers, the follow state, the thumb-drag mode, the tail converge and the settle
+  // debounce are ALL the shared engine's now (html/shared/virtual-window.js). Both pages had
+  // every one of them, twice, each in its own words — and the distance between those words is
+  // what #98, #132, #156 and #165 each turned out to be. One implementation cannot drift.
   //
-  // Who may flip it (#89): ONLY the user. A scroll event within USER_MS of real
-  // input (wheel, keys, pointer — incl. scrollbar drags —, touch) is the user
-  // moving: position decides (at the bottom ⇒ pin, away ⇒ unpin). Every other
-  // scroll — ours, or the BROWSER's own (scroll-anchoring adjustments and
-  // clamp-on-shrink fire the same event with no marker) — carries no intent:
-  // while pinned it is displacement to heal with a re-pin, never a state change.
-  var following = false;
-  // #103: the pin state is VISIBLE — body.following drives the #livechip — so a
-  // page that moves by itself is never a mystery.
-  function setFollowing(v) {
-    following = v;
-    document.body.classList.toggle("following", v);
-  }
+  // What stays here is what a RECORD is — how one renders, what it estimates at, which ones a
+  // filter hides — and the chrome that hangs off the reader's position: the pill, the
+  // scrollspy, the position memory. The genuine differences between the two pages are engine
+  // PARAMETERS, named at the call site rather than forked:
+  //
+  //   clampIndex:false  an offset past the last visible record must read as PAST THE END,
+  //                     which is what places the bottom pad while a filter is on.
+  //   skipAt            a filter-hidden record is never mounted and takes no space. It cannot
+  //                     be said as a zero height: `heightOf` falls through to the estimate
+  //                     whenever a height is falsy, so a skip would come back AS an estimate.
+  //   renderAll         a small filtered set is rendered WHOLE (#94), so its sums are exact
+  //                     and a one-hit jump cannot land in a pad. Hundreds of force-opened
+  //                     folds is why that is conditional and not always.
+  //
+  // The slacks are this page's own: #103's hysteresis, where ACQUIRING the pin needs the true
+  // end — reading the last message naturally sits within the slack, and a scroll ending there
+  // used to acquire the pin silently, after which any provisional reshape yanked the page to
+  // the bottom with the badge suppressed — and KEEPING it only the old 80px, which the
+  // virtualizer's pad shifts need (#88/#89).
+  var BOTTOM_SLACK = 80;
+  var PIN_SLACK = 2;
   var USER_MS = 300;
-  // Sentinel far in the past: performance.now() is small right after load, so a 0
-  // init would classify the load sequence's own scrolls (and the browser's async
-  // scroll restoration) as user input and wrongly unpin the fresh page (#89).
-  var lastUserInput = -1e9;
-  // …and the same moment on the EVENT's clock (#156). Both stamps are needed because they answer
-  // different questions: `lastUserInput` is "how long since the reader touched anything", asked
-  // by code running now; `lastInputStamp` is compared against a SCROLL EVENT's own timestamp, to
-  // ask how long after the gesture that scroll was CREATED. Handler time cannot answer the second
-  // one — see the scroll listener.
-  var lastInputStamp = -1e9;
-  ["pointerdown", "wheel", "keydown", "touchstart", "touchmove"].forEach(function (ev) {
-    window.addEventListener(ev, function (e) {
-      // Typing in the search box is not scroll intent.
-      if (ev === "keydown" && e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
-      lastUserInput = performance.now();
-      lastInputStamp = e.timeStamp || performance.now();
-    }, { passive: true, capture: true });
+  // Whether the view is PINNED to the live tail. An explicit mode, not inferred from pixel
+  // proximity each tick (#88): under the virtualizer, materializing the tail corrects estimated
+  // heights and silently moves the true bottom away from the viewport, so proximity-based
+  // following unlatches on its own. The flag lives here because the page reads it everywhere;
+  // the engine owns who may FLIP it, which since #89 is only ever the reader.
+  var following = false;
+
+  var vw = new (class extends shared.VirtualWindow {
+    // The sums stay LAZY on this page (they were before the port, and for the same reason): a
+    // live apply pushes records one at a time, and an eager rebuild per push is O(n) per
+    // record. `rebuildPrefix` marks; the getter pays, once, at the next read.
+    get prefix() {
+      if (this._dirty || !this._prefix) {
+        this._dirty = false;
+        this._prefix = shared.prefixSums(this.count, this.heightOf.bind(this));
+      }
+      return this._prefix;
+    }
+    set prefix(value) { this._prefix = value; this._dirty = false; }
+    rebuildPrefix() { this._dirty = true; }
+
+    get count() { return records.length; }
+    // A string stable across a rewrite that re-emits the same positions. The fallback is
+    // defensive rather than reached: every one of the 14,242 records of a real 282 MB session
+    // carries an id, but keying them all `"undefined"` would make each reusable as any other,
+    // and one character of prefix costs nothing to rule that out by shape.
+    identityAt(index) { var b = records[index]; return b && b.id ? b.id : "@" + index; }
+    // UNDER, never over (rule 5): learning a real height then only ever grows the page BELOW
+    // the reader, which nobody feels. Guess high and it SHRINKS, and a shrink above the
+    // viewport is a jump unless the anchor catches it.
+    estimateAt() { return EST_H; }
+    heightFor(index) { return recHeights[index]; }
+    setHeight(index, height) { recHeights[index] = height; this.rebuildPrefix(); }
+    clearHeights() { recHeights.length = 0; this.rebuildPrefix(); }
+    /** #132 step 4, and #140 step 4 brings it to this page: a block of text is about as tall as
+     *  its measure is narrow, so a width change RE-GUESSES the remembered heights rather than
+     *  throwing them away. Throwing them away drops every record the reader cannot see back to
+     *  the 30px floor, which shrinks the page under them by thousands of pixels; keeping them
+     *  unchanged is what left this page believing in a bottom that was 693px from the real one
+     *  after the monitor's rail opened. Rule 5 still holds — an estimate is a FLOOR, so a widen
+     *  that scales a height down may not take it under it. */
+    scaleHeights(ratio) {
+      for (var i = 0; i < recHeights.length; i++) {
+        // A record that has never been measured is still the FLOOR, and this page seeds the floor
+        // into the array rather than leaving a hole, so it would otherwise be scaled like a real
+        // height. Scaling a floor UP is rule 5's wrong side: the record is then over-estimated
+        // and learning its real height SHRINKS the page.
+        if (recHeights[i] === EST_H) continue;
+        recHeights[i] = Math.max(EST_H, recHeights[i] * ratio);
+      }
+      this.rebuildPrefix();
+    }
+    renderItem(index) {
+      var e = matBlock(index);
+      e.dataset.unitKey = this.identityAt(index);
+      return e;
+    }
+    // Attached, and before anything has measured them (#140 step 4). The clamp on a long user
+    // turn HAS to be written here: after the measure it would remember the unclamped height and
+    // then shrink it, which is the shrink above the reader that rule 5 forbids.
+    afterMount(fresh) {
+      fresh.forEach(postMat);   // writes only — no layout reads
+      clampBatch(fresh);        // one batched read pass, then all the writes
+    }
+    get following() { return following; }
+    set following(value) {
+      following = value;
+      // #103: the pin state is VISIBLE — `body.following` drives the #livechip — so a page that
+      // moves by itself is never a mystery.
+      document.body.classList.toggle("following", value);
+    }
+    followChanged() {
+      if (following) clearNew();
+      paintBadge();
+    }
+    afterRender() { paintBadge(); }
+    afterScroll() {
+      if (newCount && atBottom()) newCount = 0; // caught up by scrolling down
+      // NOT inside the frame below: a background tab pauses `requestAnimationFrame`, and the
+      // pill has to be right the moment the tab is looked at. It is guarded to a no-op unless
+      // the state actually changed, so running it per scroll event costs a comparison.
+      paintBadge();
+      if (raf) return;
+      raf = requestAnimationFrame(function () { raf = null; spy(); });
+    }
+    // This page keeps no debounced position memory: it writes the WHOLE view — offset, folds,
+    // how much had been read — on `pagehide` and `visibilitychange` instead (#170). So the
+    // engine's own debounce has nothing to pay.
+    remember() {}
+    /** `updateWindow`, plus "everything from here on has been rewritten". The pull client's
+     *  tail rewrite re-emits records at the SAME indices, and reconcile reuses a mounted
+     *  element whose index and identity both still match — so without the mark, a provisional
+     *  turn that grew under its own id keeps the DOM it had when it was shorter. */
+    applyWindow(dirty) {
+      if (!this.count) return;
+      var anchor = this.following ? null : this.captureDomAnchor();
+      var at = anchor ? this.indexOfIdentity(anchor.key) : -1;
+      var range = at >= 0 ? this.rangeAround(at) : this.rangeForScroll();
+      this.reconcile(range.lo, range.hi, dirty, false, anchor);
+    }
+    /** Re-render ONE mounted element in place. `goToId` opens a fold chain on a record that may
+     *  already be mounted, and rebuilding the whole window to show it would move the reader
+     *  before the jump has decided where they are going. */
+    replaceMounted(index) {
+      var old = null;
+      for (var c = this.mount.firstElementChild; c; c = c.nextElementSibling) {
+        if (Number(c.dataset.unitIndex) === index) { old = c; break; }
+      }
+      if (!old) return;
+      var item = this.renderItem(index);
+      item.dataset.unitIndex = index;
+      old.replaceWith(item);
+      this.afterMount([item]);
+      this.observer.observe(item, { box: "border-box" });
+      this.measureMounted(null);
+      this.updatePads();
+    }
+  })({
+    frame: shared.documentFrame(),
+    // `content` is the whole document, not `#stream`: what displaces a reader on THIS page
+    // grows outside the run — the session header's meta chips wrapping to a second line, the
+    // sticky turn bar appearing, the task panel opening. `#stream` holds only the pads and the
+    // window, and would never hear any of it. The engine's guard (only a change in where the
+    // content BEGINS counts, and its own pad writes never move that) is what makes an element
+    // containing the pads safe to watch.
+    mount: { top: topPad, window: vwin, bottom: botPad, content: document.body },
+    overscan: MARGIN_PX,
+    slacks: { acquire: PIN_SLACK, hold: BOTTOM_SLACK, heal: BOTTOM_SLACK },
+    userIntentMs: USER_MS,
+    rememberMs: 250,
+    clampIndex: false,
+    skipAt: isHiddenRec,
+    renderAll: function () { return !!filter && filterFull; },
   });
-  // The converge deferred while the reader is moving (#165), and the timer that pays it.
-  var bottomTimer = 0;
-  function toBottom(commanded) {
-    // #165: the pin does not outrank a hand on the wheel. Converging writes the scroll offset,
-    // and writing it under a reader mid-gesture is the same act `restoreAnchor` already refuses
-    // above — the guard was simply never on this path. What it cost, traced on the app shell's
-    // copy of this logic: a session with QUEUED prompts, whose pickups rewrite the tail rather
-    // than extend it, landed an apply once a second through a five-second gesture and reset the
-    // reader to the end every time. They crawled 21px up and were slammed back, seven times,
-    // never reaching the 80px the hysteresis needs to unpin. That is "it scrolls up and gets
-    // pulled down immediately", and "only after a few trials it would eventually allow me to
-    // scroll" is a trial that happened to fall between two applies.
-    //
-    // Deferred, never dropped — they are still following, so the tail is still theirs to sit on
-    // once they stop — and re-armed while they keep moving, as `scheduleSettle` does for the
-    // correction IT owes. `commanded` is the exception: the jump-to-bottom pill, a restore, the
-    // opening view. That click stamps input like any other, so without it the one converge the
-    // reader actually asked for would be the one deferred.
-    clearTimeout(bottomTimer);
-    if (!commanded && following && readerOwnsPosition()) {
-      bottomTimer = setTimeout(function () { if (following) toBottom(); }, USER_MS);
-      return;
-    }
-    // CONVERGE, don't correct once. Each jump materializes a different tail whose real
-    // heights replace estimates, which moves the true bottom again — so the fixed point
-    // has to be iterated to. A single correction was enough while every measured height
-    // matched the current width; it is not after a RESIZE, when hundreds of heights were
-    // measured at a width that no longer applies (the monitor's rail opening or closing
-    // resizes the session frame). There the page keeps growing as those blocks are
-    // re-measured, one pass lands thousands of pixels short, and nothing retries once the
-    // size stops changing — the page then sits "following" but nowhere near the end, and
-    // the jump-to-bottom pill appears not to work.
-    //
-    // A smooth scroll is not survivable here — any DOM mutation under it cancels the
-    // animation — and the loop is capped so a pathological reflow cannot spin.
-    for (var i = 0; i < 8; i++) {
-      window.scrollTo({ top: document.body.scrollHeight });
-      updateView();
-      if (atBottom()) return;
-    }
-    window.scrollTo({ top: document.body.scrollHeight });
-  }
-  // Displacement is a HEIGHT signal, not a scroll signal (#89): late reflows —
-  // fonts arriving, images sizing, estimate-vs-real pad shifts — grow the page
-  // below the viewport WITHOUT firing any scroll event, silently parking a pinned
-  // view above the tail. Observe the body: any size change while pinned that
-  // leaves the bottom is healed on the spot. (toBottom moves scroll, not size —
-  // no feedback loop.)
-  // Unpinned, the same signal heals the reader (#98): a growth above the viewport — an image
-  // decoding, a late reflow — moves what is being read by its height, and no scroll event
-  // says so. The last anchor the reader settled on (kept by the scroll handler and every apply)
-  // is put back at its offset; a growth below the viewport moves nothing and this is a no-op.
-  if (window.ResizeObserver) {
-    new ResizeObserver(function () {
-      if (following && !atBottom()) toBottom();
-      else if (!following && viewAnchor) restoreAnchor(viewAnchor);
-    }).observe(document.body);
-  }
-  // The pre-apply viewport anchor (#89): while unpinned, a content apply must not
-  // shift what the reader is looking at — capture the first on-screen materialized
-  // element, and afterwards put it back at the exact same viewport offset (the tail
-  // rewrite dropped measured heights back to estimates below it; without this the
-  // resulting pad shifts + the browser's own anchoring walk the page around).
-  // The anchor the reader last settled on (#98): captured after every scroll frame and every
-  // apply, cleared the moment a scroll begins (so a resize heard between the scroll and its
-  // frame cannot undo the scroll), and read by the body observer above for changes nobody asked
-  // for.
-  var viewAnchor = null;
-  // Which element the reader is looking at, and by how much it has to move back: the shared
-  // rules (#107). This page measures; the module decides. No epsilon above the fold here (the
-  // app shell allows a pixel) and no height test — an id is what makes a record an anchor.
-  function captureAnchor() {
-    if (following) return null;
-    var items = matEls().filter(function (e) { return !!e.id; }).map(function (e) {
-      var r = e.getBoundingClientRect();
-      return { element: e, top: r.top, bottom: r.bottom, height: r.height };
-    });
-    var first = shared.firstVisible(items, 0, Infinity, 0, false);
-    return first ? { id: first.element.id, top: first.top } : null;
-  }
-  // A correction the reader's own motion postponed (#134), and the timer that pays it.
-  var owedAnchor = null, settleTimer = 0;
-  // Is the position the READER's right now? For USER_MS after a wheel, a key, a touch or a
-  // pointer (a scrollbar drag is a pointerdown here) — which is a fling still travelling, or a
-  // thumb still held. Writing the offset under either fights whoever owns the motion: the fling
-  // stutters or dies, the thumb jumps under the pointer. The correction is not dropped, it is
-  // OWED — the app shell's rule since #132, and this page wrote through it twice per fling.
-  function readerOwnsPosition() {
-    return performance.now() - lastUserInput < USER_MS;
-  }
-  function scheduleSettle() {
-    clearTimeout(settleTimer);
-    settleTimer = setTimeout(function () {
-      if (following) { owedAnchor = null; return; }
-      if (readerOwnsPosition()) { scheduleSettle(); return; }
-      // Where the reader is NOW is the reference (#138) — not the position the correction was
-      // protecting before they moved, which writes a small jump under someone who has stopped.
-      owedAnchor = null;
-      viewAnchor = captureAnchor();
-    }, USER_MS);
-  }
-  function restoreAnchor(a) {
-    if (!a) return;
-    var e = document.getElementById(a.id);
-    if (!e) return; // the anchor was inside the rewritten tail — nothing stable to hold
-    var delta = shared.correction(e.getBoundingClientRect().top, a.top, 1);
-    if (!delta) return;
-    if (readerOwnsPosition()) { owedAnchor = a; scheduleSettle(); return; }
-    window.scrollBy(0, delta);
-  }
-  // Shared apply epilogue: settle the viewport (pin or anchor), then refresh the
-  // spy at the FINAL position — a rewrite that nets zero new records still rebuilt
-  // the sidebar, and without this the active-turn highlight silently vanished.
-  function settleAfterApply(anchor, added) {
+
+  // #132 step 4's ratio needs a width to compare against, and the engine's is zero until the
+  // first `remeasure`. On THIS page the first width change is the one that matters — the
+  // monitor's rail opening or closing beside it — and with no ratio to apply, `remeasure` falls
+  // through to clearing every remembered height: every record the reader cannot see drops to the
+  // 30px floor and the page shrinks under them by thousands of pixels. The mount is attached and
+  // empty at this moment, so its width is already the one its records will be laid out at. Set
+  // here rather than in the engine: the app shell's first remeasure is a pane opening, where
+  // clearing is what its own cases were written against.
+  vw.lastWidth = vwin.getBoundingClientRect().width || 0;
+
+  // Are we scrolled to (near) the end of the page, and are we at the TRUE end? The two
+  // questions #103 separated: the generous slack governs holding and healing, the strict one
+  // acquisition.
+  function atBottom() { return vw.gapToBottom() <= BOTTOM_SLACK; }
+  function atEnd() { return vw.gapToBottom() <= PIN_SLACK; }
+  function setFollowing(v) { vw.following = v; }
+  // Sit on the tail and stay there while the heights under it settle. `commanded` is the pill,
+  // a restore, the opening view: a click stamps input like any other, so without it the one
+  // converge the reader actually asked for would be the one deferred (#165).
+  function toBottom(commanded) { vw.convergeBottom(commanded); }
+  // Shared apply epilogue: settle the viewport, then refresh the spy at the FINAL position — a
+  // rewrite that nets zero new records still rebuilt the sidebar, and without this the
+  // active-turn highlight silently vanished. The window itself was already reconciled by
+  // `postRender`, with the rewritten range marked and the reader's anchor held across it.
+  function settleAfterApply(added) {
     if (pendingRestore) { // the first apply: land where we left off, not where we are
       applyPendingRestore();
       spy();
@@ -2049,11 +1938,9 @@
     if (following) {
       toBottom();
       clearNew();
-    } else {
-      restoreAnchor(anchor);
-      if (added > 0) showNew(added);
+    } else if (added > 0) {
+      showNew(added);
     }
-    viewAnchor = captureAnchor();
     spy();
   }
   var newCount = 0;
@@ -2104,9 +1991,13 @@
   var pendingRestore = null;
   function saveView() {
     try {
-      var a = captureAnchor(); // null while following — then the tail IS the position
+      // null while following — then the tail IS the position. `@n` is the engine's
+      // positional fallback for a record with no id of its own, and a position is exactly
+      // what does not survive a reload, so it is not worth storing.
+      var a = following ? null : vw.captureDomAnchor();
+      var key = a && a.key && a.key.charAt(0) !== "@" ? a.key : null;
       sessionStorage.setItem(VS_KEY, JSON.stringify({
-        v: 1, following: following, anchor: a && a.id, dy: a ? Math.round(a.top) : 0,
+        v: 1, following: following, anchor: key, dy: a ? Math.round(a.top) : 0,
         y: Math.round(window.scrollY), // coarse fallback, for when the anchor is gone
         folds: userFolds, raws: rawOne, caps: Array.from(capOpen), seen: records.length
       }));
@@ -2144,7 +2035,7 @@
   function landOn(id, dy) {
     var ti = idIndex[id];
     if (ti == null) return false;
-    lastUserInput = performance.now(); // this is the user's own position, not displacement
+    vw.markIntent(); // this is the user's own position, not displacement
     var y = streamTop() + P()[ti];
     setWindow(idxAt(y - streamTop() - MARGIN_PX),
               idxAt(y - streamTop() + window.innerHeight + MARGIN_PX) + 1);
@@ -2173,7 +2064,7 @@
       // tail, which is the one place they had already chosen not to be.
       var landed = st.anchor ? landOn(st.anchor, st.dy) : false;
       if (!landed && st.y != null) {
-        lastUserInput = performance.now();
+        vw.markIntent();
         window.scrollTo(0, st.y);
         updateView();
         landed = true;
@@ -2207,11 +2098,10 @@
   // Render freshly consumed content, following/flagging the new tail. Shared by every
   // feed. Any change settles through the epilogue — pin or anchor, then spy (#89).
   function ingest(text) {
-    var anchor = captureAnchor();
     var before = records.length;
     var beforeConsumed = consumed;
     consume(text);
-    if (consumed > beforeConsumed) settleAfterApply(anchor, records.length - before);
+    if (consumed > beforeConsumed) settleAfterApply(records.length - before);
   }
 
   if (multi) {
@@ -2283,7 +2173,6 @@
           })
           .then(function (reply) {
             if (!reply) return; // routed away, or nothing left to serve
-            var anchor = captureAnchor();
             var before = records.length;
             var changed = false;
             try {
@@ -2297,7 +2186,7 @@
               pc = shared.freshCursor();
               return;
             }
-            if (changed) settleAfterApply(anchor, records.length - before);
+            if (changed) settleAfterApply(records.length - before);
           })
           .catch(function () { /* server gone / mid-write / stale range — retry next tick */ })
           .finally(function () { inflightP = false; });
@@ -2366,8 +2255,10 @@
         if (!live || !speed) return;
         // #103: this scroll IS the user moving — mark it, or the follow classifier
         // reads it as browser displacement and (while pinned) heals it straight
-        // back to the bottom, fighting the drag.
-        lastUserInput = performance.now();
+        // back to the bottom, fighting the drag. The engine stamps `pointermove` with a
+        // button down, which covers the moving pointer — but not a pointer RESTING in the
+        // band, where this timer is the only thing still scrolling.
+        vw.markIntent();
         window.scrollBy(0, -speed);
         extendTo(lastX, bandBottom() + 2);
         tick(); // keep scrolling while the pointer rests in the band
@@ -2654,12 +2545,14 @@
       if (p.classList && p.classList.contains("fold")) setFold(p, true);
     }
     // Folds opened above may have moved it, so the visibility test comes after them.
-    if (!(keepIfVisible && inComfortableView(target))) {
+    var moved = !(keepIfVisible && inComfortableView(target));
+    if (moved) {
       var top = target.getBoundingClientRect().top + window.scrollY - GOTO_Y;
       window.scrollTo({ top: top, behavior: instant ? "auto" : "smooth" });
     }
     target.classList.add("flash");
     setTimeout(function () { target.classList.remove("flash"); }, 1000);
+    return moved;
   }
   // Navigate to a block id through the virtual layer (#50): open its record's fold
   // chain, materialize its region, then land on the element (nested ids included).
@@ -2669,20 +2562,12 @@
     // Every goToId is user-initiated navigation (sidebar, search, filter) — mark it
     // as intent so the follow classifier reads the jump's scrolls as the user moving
     // (position decides the pin), never as displacement to heal (#94).
-    lastUserInput = performance.now();
+    vw.markIntent();
     withChain(records[ti], id, function (n) { if (isFoldRec(n)) n.open = 1; });
     var y = streamTop() + P()[ti];
     setWindow(idxAt(y - streamTop() - MARGIN_PX), idxAt(y - streamTop() + window.innerHeight + MARGIN_PX) + 1);
     // The chain-open may have changed an already-materialized element — refresh it.
-    var e0 = document.getElementById(records[ti].id);
-    if (e0 && e0.dataset.idx != null) {
-      var repl = matBlock(ti);
-      e0.replaceWith(repl);
-      postMat(repl);
-      clampBatch([repl]);
-      measureWindow();
-      updatePads();
-    }
+    vw.replaceMounted(ti);
     var target = document.getElementById(id);
     if (target) goTo(target, true);
     else window.scrollTo({ top: streamTop() + P()[ti] - GOTO_Y });
@@ -2724,8 +2609,10 @@
   //
   // This watches the TARGET's position rather than the page's size, because in a
   // virtualized list size is the one thing that does NOT change: a block growing inside
-  // the window is absorbed by the spacer pads, so `document.body` keeps its height and a
-  // ResizeObserver on it — the signal the follow heal uses — never fires. Only the
+  // the window is absorbed by the spacer pads, so the document keeps its height and the
+  // engine's outer observer — which asks only where the content BEGINS — hears nothing.
+  // (The engine's per-item observer does hear it and re-measures, but a measure holds the
+  // reader's anchor, and after a jump the reader's anchor is not the target.) Only the
   // target's own rect tells the truth.
   //
   // It runs for the whole settle window rather than stopping at the first still frame:
@@ -2738,15 +2625,15 @@
   // correction exactly when a background tab finishes decoding its images and makes the
   // behaviour untestable headless (this repo's browser tests drive the page in a
   // background tab, where rAF never ticks at all).
-  function holdLanding(id) {
+  function holdLanding(what) {
     var started = performance.now();
     var HOLD_MS = 2000;
     var tick = function () {
-      // `lastUserInput` was stamped by this very navigation BEFORE `started`, so only a
+      // The engine's stamp was written by this very navigation BEFORE `started`, so only a
       // NEW gesture reads as the reader taking over.
-      if (lastUserInput > started || performance.now() - started > HOLD_MS) return;
-      var t = document.getElementById(id);
-      if (t) {
+      if (vw.lastUserInput > started || performance.now() - started > HOLD_MS) return;
+      var t = typeof what === "string" ? document.getElementById(what) : what;
+      if (t && t.isConnected) {
         var d = t.getBoundingClientRect().top - GOTO_Y;
         if (Math.abs(d) > 2) {
           window.scrollBy(0, d);
@@ -3286,7 +3173,7 @@
     // the follow classifier reads the jump's scroll as the user moving. Without this,
     // a step from a PINNED live view is displacement, healed by an instant snap back
     // to the tail — a search that "finds 14 hits you can never see".
-    lastUserInput = performance.now();
+    vw.markIntent();
     // Continuing the SEQUENCE only makes sense while the reader is still at the current
     // hit. If they moved — scrolled away, clicked a turn, jumped through the sidebar — the
     // stored position is where the search was, not where they are, and "next" means next
@@ -3368,15 +3255,23 @@
       // stepping back through those used to yank each one up to the same fixed offset —
       // discarding the position the reader chose to read from. A match already on screen
       // is simply highlighted where it is; one off screen is brought in as before.
-      goTo(m, true, true);
+      // …and HOLD it while the page settles (#140 step 4). `revealMark` above expanded a cap to
+      // get here, and the engine measures that growth under its own observer a frame later; the
+      // anchor it holds the reader by is the RECORD, because this page has no per-row markers
+      // for #98's row-level anchor, so a record that grows INSIDE keeps its top exactly where it
+      // was and pushes everything below it — the mark included — down. Measured: a step into a
+      // capped tool output landed correctly and was 956px past the viewport a moment later, which
+      // is precisely the report #94's `holdLanding` was written for. `goToId` has held its
+      // landing since then; this path never did.
+      if (goTo(m, true, true)) holdLanding(m);
     } else if (el) {
-      goTo(el, true, true); // mark-less hit record: land on it, never skip it
+      if (goTo(el, true, true)) holdLanding(el); // mark-less hit record: land on it, never skip it
     }
     // Settle the pin SYNCHRONOUSLY, position deciding — the async classifiers race:
-    // the jump's own materialization resizes the body, and the ResizeObserver heal
-    // consults only `following`, not intent. If it wins the race against the scroll
-    // event, a still-pinned page snaps back to the tail over the landing. By deciding
-    // here, the observers find the pin already correct and heal nothing.
+    // the jump's own materialization changes heights, and the engine's height observers
+    // consult only `following`, not intent. If one wins the race against the scroll event,
+    // a still-pinned page converges back to the tail over the landing. By deciding here,
+    // the observers find the pin already correct and heal nothing.
     setFollowing(atBottom());
     spy();
   }
@@ -3599,44 +3494,25 @@
     });
   }
   var lastActiveId = null;
-  window.addEventListener("scroll", function (scrollEvent) {
-    // What a scroll MEANS is the shared rule (#107): the reader's input decides following —
-    // acquiring the pin needs the true end, keeping it only the old slack — and a scroll with
-    // no input behind it is displacement, healed while pinned. The slacks are this page's.
-    //
-    // Measured on the EVENT'S clock, never on the handler's (#156). A scroll event carries the
-    // time it was CREATED; the handler can run much later, because a long task on the main
-    // thread holds the queue. Measured: a 908ms handler lag turned the reader's own scroll into
-    // "560ms since input" — outside the 300ms window — so the page called it displacement and
-    // healed them back to the tail, losing 1400px of scrolling they had just done. On the
-    // event's clock the same scroll is -348ms from the input: created before the gesture that
-    // followed it, which is as much the reader's as a scroll can be. That flake was 4 runs in 8
-    // when record heights went fractional, because fractional heights lengthen the very tasks
-    // that block the queue — the heights were the trigger, this was the cause.
-    var userScroll = (scrollEvent.timeStamp || performance.now()) - lastInputStamp < USER_MS;
-    var verdict = shared.classifyScroll(following, userScroll, gapToBottom(), PIN_SLACK, BOTTOM_SLACK, BOTTOM_SLACK);
-    if (verdict === "follow" || verdict === "unfollow") setFollowing(verdict === "follow");
-    else if (verdict === "heal") toBottom(); // browser displacement while pinned
-    // A correction owed from before the reader moved is void (#138): their own scroll makes
-    // their position the authoritative one, and paying an old debt afterwards drags them back.
-    // Every click counts as intent here too, so a fold owes a correction that would land a
-    // third of a second after they scrolled away from it.
-    if (userScroll && owedAnchor) { owedAnchor = null; clearTimeout(settleTimer); }
-    if (newCount && atBottom()) newCount = 0; // caught up by scrolling down
-    // NOT inside the rAF below: a background tab pauses `requestAnimationFrame`, and the pill
-    // has to be right the moment the tab is looked at. It is guarded to a no-op unless the
-    // state actually changed, so running it per scroll event costs a comparison.
-    paintBadge();
-    viewAnchor = null; // this scroll moved the reader; the frame below re-reads where to
-    if (raf) return;
-    raf = requestAnimationFrame(function () {
-      raf = null;
-      updateView(); // #50: materialize the window the scroll landed on
-      spy();
-      viewAnchor = captureAnchor();
-    });
-  }, { passive: true });
-  window.addEventListener("resize", function () { updateView(); }, { passive: true });
+  // The scroll handler is the ENGINE's (#140 step 4). What a scroll MEANS — the reader's input
+  // decides following, acquiring the pin needs the true end, keeping it only the old slack, and
+  // a scroll with no input behind it is displacement to heal while pinned — was already the
+  // shared rule (#107); since the port, so is the handler that asks it, the debt it voids
+  // (#138) and the deferred window update it schedules. This page hears the result through
+  // `afterScroll` above: the pill, the caught-up count and the scrollspy frame.
+  //
+  // Measured on the EVENT'S clock, never on the handler's (#156) — a scroll event carries the
+  // time it was CREATED, and a long task on the main thread can hold the queue long enough for
+  // handler time to call the reader's own scroll displacement and heal away 1400px they had
+  // just scrolled. That rule now exists once, in the engine, for both pages.
+  // A resize changes the viewport AND every wrapped height under it, so it is the engine's
+  // `remeasure` and not a plain window update (#132 step 4, brought to this page by #140 step 4):
+  // the remembered heights are re-guessed for the new measure, the window is rebuilt around
+  // whatever the reader was on, and a pinned view converges on the tail — which iterates to the
+  // fixed point as the re-measured heights keep moving it. That is the monitor's rail opening or
+  // closing beside this page, and leaving the heights alone is what made a jump to the end land
+  // 693px short of it afterwards.
+  window.addEventListener("resize", function () { vw.remeasure(); }, { passive: true });
   spy();
 
   // On load, deep-link wins; otherwise jump to the end so the newest messages

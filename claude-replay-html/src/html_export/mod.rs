@@ -3384,12 +3384,36 @@ mod tests {
             .any(|(name, _)| *name == "parts"));
     }
 
+    /// #98: a growth the reader did not cause is healed against the last anchor they settled
+    /// on, whether they are following the tail or reading. Since #140 step 4 this page owns
+    /// none of that machinery — the anchor, the observers and the healing are the shared
+    /// engine's, and the rule is pinned where it now lives. The page's side of the contract is
+    /// that it hands the engine an element whose size change carries the signal.
     #[test]
     fn unpinned_growth_is_healed_by_the_last_anchor() {
-        assert!(JS.contains("else if (!following && viewAnchor) restoreAnchor(viewAnchor);"));
-        assert!(JS.contains("viewAnchor = null; // this scroll moved the reader"));
-        assert!(JS.contains("      spy();\n      viewAnchor = captureAnchor();\n    });"));
-        assert!(JS.contains("    viewAnchor = captureAnchor();\n    spy();\n  }"));
+        let engine = super::shared::shared_source("virtual-window").expect("the engine is shared");
+        // Following: the tail moved away and is converged back on. Reading: what they are
+        // looking at moved, and the anchor puts it back.
+        assert!(engine.contains(
+            "if (this.following) { if (this.gapToBottom() > 1) this.convergeBottom(); }\n    else this.restoreDomAnchor(this.readerAnchor());"
+        ));
+        // The anchor is KEPT — a change heard after the fact is measured against where the
+        // reader was, not against the view it has already moved — and cleared the instant a
+        // scroll begins, then re-read once the window has caught up.
+        assert!(engine.contains("this.anchor = null;\n    // …and a correction owed from BEFORE they moved is void (#138)"));
+        assert!(engine.contains("return this.anchor || this.captureDomAnchor();"));
+        assert!(engine.contains(
+            "this.anchor = this.following || this.dragging ? null : this.captureDomAnchor();"
+        ));
+        // …and this page hands over the two elements whose size changes carry it: the mounted
+        // run, and the whole document for a growth in the chrome AROUND it.
+        assert!(JS.contains(
+            "mount: { top: topPad, window: vwin, bottom: botPad, content: document.body },"
+        ));
+        assert!(
+            !JS.contains("viewAnchor"),
+            "the page keeps no anchor of its own"
+        );
     }
 
     #[test]

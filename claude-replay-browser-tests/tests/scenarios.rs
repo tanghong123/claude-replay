@@ -5828,3 +5828,252 @@ fn app_shell_a_converge_yields_to_the_reader() {
     let page = open(Surface::AppShell, &fx, 2926);
     scenario_a_converge_yields_to_the_reader(&page.tab, Surface::AppShell, &fx);
 }
+
+// ── scenarios: the three risks the #140 step-4 port had no case for ──────────────────────────
+//
+// Written BEFORE the port, against the page as it stood, because that is what a regression
+// guard is: each one passes on the old code and must still pass on the new. They are here
+// because the swap replaces the reference page's most sensitive ~200 lines — its follow state,
+// its anchor, its converge and its correction sites — with engine wiring, and each of these
+// three is a place where the page's own mechanism and the engine's could plausibly disagree.
+
+/// The element the reader can see, grown by `px` from ABOVE — a growth that fires no scroll
+/// event and moves everything below it by its own height. The rule it exercises is rule 5's
+/// other half: what the anchor is FOR.
+fn grow_above(tab: &headless_chrome::Tab, surface: Surface, px: i64) -> bool {
+    let js = match surface {
+        Surface::Classic => format!(
+            "(function(){{ var es = [...document.querySelectorAll('#vwin > [data-idx]')]; var e = es.reverse().find(function (x) {{ return x.getBoundingClientRect().bottom <= 0; }}); if (!e) return false; e.style.paddingTop = ((parseFloat(e.style.paddingTop) || 0) + {px}) + 'px'; return true; }})()"
+        ),
+        Surface::AppShell => format!(
+            "(function(){{ var s = document.querySelector('.transcript').getBoundingClientRect(); var es = [...document.querySelectorAll('.virtual-window > [data-unit-index]')]; var e = es.reverse().find(function (x) {{ return x.getBoundingClientRect().bottom <= s.top; }}); if (!e) return false; e.style.paddingTop = ((parseFloat(e.style.paddingTop) || 0) + {px}) + 'px'; return true; }})()"
+        ),
+    };
+    eval(tab, &js).as_bool().unwrap_or(false)
+}
+
+/// R5. A jump lands a turn at the top of the view, and something ABOVE it then grows — an image
+/// decoding, a font arriving, an estimated height replaced by a real one. The reader must still
+/// be looking at the turn they asked for.
+///
+/// The case exists because after the port TWO mechanisms write that offset. The classic page
+/// holds a just-landed target for two seconds on a 16ms timer (`holdLanding`, #94), correcting
+/// against the target's own rect; the engine holds the READER's anchor, corrected inside the
+/// height observer's delivery. They agree here — the anchor after a landing IS the target — but
+/// "they agree" was an argument, and an argument about the reference page's landing behaviour
+/// is worth a measurement.
+fn scenario_a_landing_holds_through_a_growth_above_it(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    let target = fx.turns / 2;
+    assert!(
+        harness::jump_to_turn(tab, surface, target),
+        "the pane lists turn {target}"
+    );
+    settle();
+    settle();
+    let landed = turn_at_top(tab, surface);
+    assert!(
+        (landed - target as i64).abs() <= 1,
+        "{surface:?}: the jump landed on turn {target}: top {landed}"
+    );
+    // Inside the hold window on the classic page — the two mechanisms are both live here.
+    assert!(
+        grow_above(tab, surface, 400),
+        "{surface:?}: a mounted record sits above the viewport after a deep jump"
+    );
+    settle();
+    settle();
+    let after = turn_at_top(tab, surface);
+    assert_eq!(
+        after, landed,
+        "{surface:?}: 400px appeared above the landing and the reader stayed on turn {landed}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_landing_holds_through_a_growth_above_it() {
+    let _serial = serial();
+    let fx = fixture("scenario-hold-classic", 120);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_landing_holds_through_a_growth_above_it(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_landing_holds_through_a_growth_above_it() {
+    let _serial = serial();
+    let fx = fixture("scenario-hold-app", 120);
+    let page = open(Surface::AppShell, &fx, 2927);
+    scenario_a_landing_holds_through_a_growth_above_it(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a growth AROUND the run displaces the reader too ───────────────────────────────
+
+/// Grow the chrome that sits above the mounted run, inside the scroller but outside the window
+/// the engine mounts into. On the classic page that is the session header, whose meta chips wrap
+/// to a second line as the live feed reports them; on the app shell the transcript's own top
+/// padding. Both move every record down by the same amount and fire no scroll event.
+fn grow_around(tab: &headless_chrome::Tab, surface: Surface, px: i64) -> bool {
+    let js = match surface {
+        Surface::Classic => format!(
+            "(function(){{ var h = document.querySelector('.session-header'); if (!h) return false; h.style.paddingBottom = ((parseFloat(h.style.paddingBottom) || 0) + {px}) + 'px'; return true; }})()"
+        ),
+        Surface::AppShell => format!(
+            "(function(){{ var i = document.querySelector('.transcript-inner'); if (!i) return false; i.style.paddingTop = ((parseFloat(getComputedStyle(i).paddingTop) || 0) + {px}) + 'px'; return true; }})()"
+        ),
+    };
+    eval(tab, &js).as_bool().unwrap_or(false)
+}
+
+/// R6b. The engine's content observer watches the MOUNTED window, because that element does not
+/// hold the pads and measuring writes the pads — an observer over an element containing them
+/// feeds itself, and the browser cuts that short by dropping notifications, which loses the very
+/// correction the delivery exists to make. So a growth OUTSIDE the run was heard by neither
+/// observer, and the classic page had been hearing it since #89/#98 through a `ResizeObserver`
+/// on `document.body`.
+///
+/// Two readers, because the displacement means something different to each: one pinned to the
+/// tail, whose tail has just moved away; one reading, whose page has just been pushed down.
+///
+/// Confirmed RED on the code without the fix: with `outerObserver.observe(mount.content)` taken
+/// out, both surfaces fail on the first assertion — "pinned, 320px appeared above the run and the
+/// tail is still the tail". The observer watches the BORDER box on purpose: what moves the run is
+/// usually the chrome's own padding, and a padding change leaves the content box untouched, so
+/// the default box hears nothing at all (that is how the app-shell half of this case failed once
+/// the rest was working).
+fn scenario_a_growth_around_the_run_displaces_the_reader(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    assert!(
+        grow_around(tab, surface, 320),
+        "{surface:?}: the chrome above the run can be grown"
+    );
+    settle();
+    settle();
+    assert!(
+        at_tail(tab, surface),
+        "{surface:?}: pinned, 320px appeared above the run and the tail is still the tail"
+    );
+    // …and the same growth for a reader who is not pinned: it must move nothing they can see.
+    let target = fx.turns / 2;
+    assert!(
+        harness::jump_to_turn(tab, surface, target),
+        "the pane lists turn {target}"
+    );
+    settle();
+    settle();
+    let reading = turn_at_top(tab, surface);
+    // Past the classic page's 2s landing hold, so this measures the ENGINE's anchor and not
+    // `holdLanding` standing in for it.
+    std::thread::sleep(Duration::from_millis(2400));
+    assert!(
+        grow_around(tab, surface, 320),
+        "{surface:?}: …and grown again"
+    );
+    settle();
+    settle();
+    assert_eq!(
+        turn_at_top(tab, surface),
+        reading,
+        "{surface:?}: reading turn {reading}, 320px appeared above the run, and it stayed there"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_growth_around_the_run_displaces_the_reader() {
+    let _serial = serial();
+    let fx = fixture("scenario-around-classic", 120);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_growth_around_the_run_displaces_the_reader(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_growth_around_the_run_displaces_the_reader() {
+    let _serial = serial();
+    let fx = fixture("scenario-around-app", 120);
+    let page = open(Surface::AppShell, &fx, 2928);
+    scenario_a_growth_around_the_run_displaces_the_reader(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a press in the gutter is not a hand on the scrollbar ───────────────────────────
+
+/// R7. Both scrollers centre their content and leave their own background exposed on either
+/// side, so a press in a gutter lands on the scroller itself — the exact test each frame used
+/// for "the reader has grabbed the thumb". Taking it for a thumb grab puts the engine in drag
+/// mode for as long as the button is held, which is the whole of a drag-selection: there every
+/// scroll counts as the reader's, no anchor is held at all, and a converge is deferred
+/// indefinitely. So a pinned view drops its pin the moment the next record lands.
+///
+/// The press here has no matching release, because that is the shape of the gesture that hurts.
+///
+/// Confirmed RED on the code without the fix: with `elementFrame.isScrollbarTarget` back to
+/// `event.target === scroller`, the app-shell half fails — the press in the gutter takes the
+/// engine into drag mode and the pin is gone by the time the next record lands.
+fn scenario_a_press_in_the_gutter_is_not_a_thumb(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    let pressed = match surface {
+        // `.layout` is `max-width: 1160px; margin: 0 auto` in a 1400px window, so x = 20 is the
+        // left gutter — and what a real press finds there is `body`, not the scrolling element.
+        Surface::Classic => eval(tab, "(function(){ var t = document.elementFromPoint(20, 300); if (!t) return 'none'; t.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 20, clientY: 300, pointerId: 1, buttons: 1, isPrimary: true })); return t.tagName; })()"),
+        // `.transcript-inner` is `min(880px, 100% - 76px)`, centred: 38px of gutter each side,
+        // and there a press lands on `.transcript` — which IS the scroller.
+        Surface::AppShell => eval(tab, "(function(){ var s = document.querySelector('.transcript'); var r = s.getBoundingClientRect(); var x = Math.round(r.left + 8), y = Math.round(r.top + 120); var t = document.elementFromPoint(x, y); if (!t) return 'none'; t.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x, clientY: y, pointerId: 1, buttons: 1, isPrimary: true })); return t.className || t.tagName; })()"),
+    };
+    assert_ne!(
+        pressed, "none",
+        "{surface:?}: the gutter is where it should be"
+    );
+    // The tail keeps arriving under the held button. A thumb grab would have unpinned on the
+    // first of these, and deferred every converge behind a reader who never lets go.
+    let script: Vec<String> = (0..4)
+        .map(|i| {
+            let at = now_minus(60 - i * 10);
+            format!(
+                "{}{}",
+                user_at("another one", &at),
+                assistant_at("on it", &at)
+            )
+        })
+        .collect();
+    let growth = LiveGrowth::start(fx.path.clone(), script, Duration::from_millis(1200));
+    growth.finish(Duration::from_secs(30));
+    settle();
+    settle();
+    assert!(
+        at_tail(tab, surface),
+        "{surface:?}: a press in the gutter is not a hand on the thumb — the pin survives it"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_press_in_the_gutter_is_not_a_thumb() {
+    let _serial = serial();
+    let fx = fixture("scenario-gutter-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_press_in_the_gutter_is_not_a_thumb(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_press_in_the_gutter_is_not_a_thumb() {
+    let _serial = serial();
+    let fx = fixture("scenario-gutter-app", 40);
+    let page = open(Surface::AppShell, &fx, 2929);
+    scenario_a_press_in_the_gutter_is_not_a_thumb(&page.tab, Surface::AppShell, &fx);
+}
