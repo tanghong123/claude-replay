@@ -317,7 +317,22 @@ class VirtualWindow {
     const child = firstVisible([...this.mount.children].map(rects), viewportTop, viewportBottom, 1, false);
     if (!child) return null;
     const anchor = { key: child.element.dataset.unitKey, top: child.top - viewportTop, block: null, blockTop: 0 };
-    const row = firstVisible([...child.element.querySelectorAll("[data-block-index]")].map(rects), viewportTop, Infinity, 1, true);
+    const rowIn = element => firstVisible([...element.querySelectorAll("[data-block-index]")].map(rects), viewportTop, Infinity, 1, true);
+    // A parent qualifies whenever a child does and document order offers it first, so this pick is
+    // the OUTERMOST row — on the app shell, the wrapper around the record the reader is actually
+    // inside (#177), whose own top is far above them and does not move when the record grows. Its
+    // top anchors fine while the reader can SEE it, so descend only where they cannot: while the
+    // pick straddles the viewport edge, replace it with the first qualifying row INSIDE it. A pick
+    // that starts in view never descends — re-anchoring it below the head being read would send
+    // that head off-screen on the next growth. Residual: a straddling parent whose own body fills
+    // the edge and whose first child begins well below it anchors lower than the reader is
+    // reading; that case is uncorrected today too, and needs a tall body ahead of the children.
+    let row = rowIn(child.element);
+    while (row && row.top < viewportTop) {
+      const inner = rowIn(row.element);
+      if (!inner) break;
+      row = inner;
+    }
     if (row) { anchor.block = row.element.dataset.blockIndex; anchor.blockTop = row.top - viewportTop; }
     return anchor;
   }

@@ -1050,7 +1050,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const src = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   const vpSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   // The rule is the shared module's since #107; this page measures the rects and reads it.
-  assert.match(src, /const row = firstVisible\(\[\.\.\.child\.element\.querySelectorAll\("\[data-block-index\]"\)\]\.map\(rects\), viewportTop, Infinity, 1, true\);/, "the anchor descends to the first visible row of the unit");
+  assert.match(src, /const rowIn = element => firstVisible\(\[\.\.\.element\.querySelectorAll\("\[data-block-index\]"\)\]\.map\(rects\), viewportTop, Infinity, 1, true\);/, "the anchor descends to the first visible row of the unit");
+  assert.match(src, /while \(row && row\.top < viewportTop\) \{\n\s+const inner = rowIn\(row\.element\);\n\s+if \(!inner\) break;\n\s+row = inner;\n\s+\}/, "…and keeps descending WHILE THE PICK STRADDLES THE EDGE, so a reader inside a nested record is anchored by that record and not by its wrapper (#177) — the guard is the load-bearing half: a pick the reader can SEE is never re-anchored below the head they are reading");
   assert.equal(firstVisible([{ index: 0, top: 900, bottom: 1000, height: 100 }], 0, 500, 1, false), null, "a unit below the viewport is no anchor — the scroll offset places the window");
   assert.match(src, /const row = item\.querySelector\(`\[data-block-index="\$\{anchor\.block\}"\]`\);/, "…and the restore puts that row back");
   assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\)\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");

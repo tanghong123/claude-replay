@@ -6311,6 +6311,10 @@ fn scenario_a_growth_in_a_nested_record_holds_the_reader(
         settle();
         found = eval(tab, target_js);
     }
+    // The eval that FINDS the record also OPENS it, and on the app shell an open re-renders the
+    // unit from state and re-anchors it. Reading the DOM in the same breath caught it mid-flight
+    // — measured `n: 0` once in five runs, which reads exactly like the record not existing.
+    settle();
     let target_id = found.as_str().unwrap_or("none").to_string();
     assert_ne!(
         target_id, "none",
@@ -6519,7 +6523,7 @@ fn classic_page_a_growth_in_a_nested_record_holds_the_reader() {
 /// `known_red`; the fix removes the marker, and the case is never weakened to make it pass.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn app_shell_known_red_177_a_growth_in_a_nested_record_holds_the_reader() {
+fn app_shell_a_growth_in_a_nested_record_holds_the_reader() {
     let _serial = serial();
     let fx = fixture_nested_records("scenario-nested-app");
     let page = open(Surface::AppShell, &fx, 2931);
