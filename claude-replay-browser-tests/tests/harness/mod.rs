@@ -294,6 +294,20 @@ pub fn agent_result(call_id: &str, agent_id: &str, subagent_type: &str, s: u32) 
     )
 }
 
+/// Turn OFF the outline panes' live-only filter (#186), which is on by default.
+///
+/// A case about the whole BOARD — the order across groups, the boundary between done and
+/// pending, a pane with enough rows to scroll, a completed task's card — is a case about rows
+/// the filter exists to hide. Saying so at the top of such a case is the honest way round; the
+/// alternative is a default nobody sees in the suite, which is how a default stops being tested.
+/// A no-op where the control is absent (the classic page has no such pane) or already off.
+pub fn show_every_pane_row(tab: &headless_chrome::Tab) {
+    eval(
+        tab,
+        "(function(){ for (const id of ['tasksLiveOnly', 'agentsLiveOnly']) { const b = document.getElementById(id); if (b && b.getAttribute('aria-pressed') === 'true') b.click(); } return 'ok'; })()",
+    );
+}
+
 /// The notification that CLOSES a spawn (#26): Claude records an async agent's completion as a
 /// `queue-operation`/`enqueue` whose content carries `<task-id>`, `<status>` and a `<summary>`
 /// beginning `Agent "`. Nothing else marks a sub-agent terminal — measured while building #186's

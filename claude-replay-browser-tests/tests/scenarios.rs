@@ -4109,6 +4109,9 @@ fn scenario_a_task_reads_like_the_board(
     surface: Surface,
     _fx: &Fixture,
 ) {
+    // #186: this case opens a FINISHED task, which is exactly what the live-only filter holds
+    // back. A no-op on the classic page, which has no such pane.
+    harness::show_every_pane_row(tab);
     // Open the panel that holds the tasks, then the task itself.
     let open = match surface {
         Surface::Classic => "(function(){ var b = document.getElementById('btn-tasks'); if (b) b.click(); var it = document.querySelector('#taskbox .task-item'); if (it) it.classList.add('open'); return 'ok'; })()",

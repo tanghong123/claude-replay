@@ -2765,6 +2765,8 @@ fn the_app_shell_orders_tasks_by_group_then_id() {
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
     // The tasks card is closed by default; open it.
     harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    // #186: this case is about the whole board, which is what the live-only filter hides.
+    harness::show_every_pane_row(&tab);
     harness::until(
         &tab,
         "document.querySelectorAll('#navigatorWork .work-task').length === 6",
@@ -2912,6 +2914,8 @@ fn the_app_shell_tasks_pane_scrolls_itself() {
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
     harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    // #186: this case is about the whole board, which is what the live-only filter hides.
+    harness::show_every_pane_row(&tab);
     harness::until(
         &tab,
         "document.querySelectorAll('#navigatorWork .work-task').length === 40",
@@ -2984,6 +2988,8 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
     harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    // #186: this case is about the whole board, which is what the live-only filter hides.
+    harness::show_every_pane_row(&tab);
     harness::until(
         &tab,
         "document.querySelectorAll('#navigatorWork .work-task').length === 33",
@@ -3061,6 +3067,8 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     tab2.wait_until_navigated().unwrap();
     harness::until(&tab2, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the second shell to mount", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
     harness::eval(&tab2, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    // #186: this case is about the whole board, which is what the live-only filter hides.
+    harness::show_every_pane_row(&tab2);
     harness::until(
         &tab2,
         "document.querySelectorAll('#navigatorWork .work-task').length === 33",
@@ -3125,6 +3133,8 @@ fn the_app_shell_opens_a_task_details_popover() {
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
     harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    // #186: this case is about the whole board, which is what the live-only filter hides.
+    harness::show_every_pane_row(&tab);
     harness::until(
         &tab,
         "document.querySelectorAll('#navigatorWork .work-task').length === 3",
