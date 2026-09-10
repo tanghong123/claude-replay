@@ -955,9 +955,11 @@
     // Some agents (QoderWork) emit a usage object that is ALL ZEROS with no model — no real
     // token accounting. Showing "0 tok / 0 tok" and no cost is noise, so omit the whole Usage
     // block when there is nothing to report. (`compacted` is a real signal even at 0 tokens —
-    // it keeps the block, but not the token rows; see #152 below.)
+    // it keeps the block, but not the token rows; see #152 below.) A null cost with
+    // `cost_partial` is different: token usage exists, but no observed model has a known price.
+    var usageCost = u.cost || (u.cost_partial ? "unpriced" : null);
     var hasTokens = (u.input && u.input !== "0") || (u.output && u.output !== "0") ||
-                    (u.cache_read && u.cache_read !== "0") || u.cost;
+                    (u.cache_read && u.cache_read !== "0") || usageCost;
     // #152's guard, SCOPED to the usage box it is about. It used to `return` out of the whole
     // meta renderer, which silently dropped everything rendered below it — the task panel, the
     // ancestor crumbs, the Back synthesis, and the Agents menu — for exactly the sessions the
@@ -992,7 +994,7 @@
       // #108: only sessions that actually compacted get a row, so the panel keeps its shape.
       // Without it the token totals look inexplicable beside a short-looking replay.
       if (u.compacted) row("compacted", u.compacted);
-      if (u.cost) row("est. cost", u.cost, "total");
+      if (usageCost) row("est. cost", usageCost, "total");
       // Credits-billed agents (Qoder): zero tokens, no USD — credits are the cost figure.
       if (u.credits) row("credits", u.credits, "total");
     }

@@ -332,11 +332,10 @@
       var pp=[];
       var span=fmtSpan(r.startTs,r.activityTs);
       if(span)pp.push(span);
-      // §14: split only a COMPLETE roll-up. A lower bound stays one number; splitting known
-      // components would make an unpriced main or child disappear from the presentation.
-      if(display.kind==="priced"&&r.costSubs!=null){
-        var own=display.known-r.costSubs;
-        pp.push("~$"+own.toFixed(2)+" +"+(r.visited&&r.subs?r.subs+" sub ":"sub ")+"~$"+r.costSubs.toFixed(2));
+      // §14: split only a COMPLETE roll-up whose root has priced usage. `costOwn` is the
+      // ledger's affirmative signal; total == children is not evidence for an own `$0.00`.
+      if(display.kind==="priced"&&r.costOwn!=null&&r.costSubs!=null){
+        pp.push("~$"+r.costOwn.toFixed(2)+" +"+(r.visited&&r.subs?r.subs+" sub ":"sub ")+"~$"+r.costSubs.toFixed(2));
       }else{
         if(r.visited&&r.subs)pp.push(r.subs+" sub");
         if(display.label)pp.push(display.label);
@@ -349,11 +348,11 @@
     if(display.label)parts.push(display.label);
     return parts.join(" · ");
   }
-  // The hover breakdown is valid only when both the total and sub-agent subtotal are complete.
+  // The hover breakdown is valid only when the complete total has explicit own and sub totals.
   function costTip(r){
     var display=shared.costDisplay(r);
-    if(display.kind!=="priced"||r.costSubs==null)return "";
-    return "total "+display.label+" = this session ~$"+(display.known-r.costSubs).toFixed(2)
+    if(display.kind!=="priced"||r.costOwn==null||r.costSubs==null)return "";
+    return "total "+display.label+" = this session ~$"+r.costOwn.toFixed(2)
       +" + sub-agents ~$"+r.costSubs.toFixed(2);
   }
   // #148 (design/compose-to-terminal.md §5.1): the R8-safe half of "reach this session" —

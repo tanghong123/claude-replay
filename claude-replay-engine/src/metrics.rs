@@ -301,13 +301,15 @@ impl From<&str> for ModelContext {
     }
 }
 
-/// Replaceable policy for turning a recorded model context into a catalog key.
+/// Host-supplied explicit alias policy for turning a recorded model context into a catalog key.
+/// Implementations are responsible for mapping only aliases whose identity the host can establish;
+/// the built-in policy remains exact and does not guess families or snapshots.
 pub trait ModelNormalizer: Send + Sync {
     fn normalize(&self, context: &ModelContext) -> String;
 }
 
-/// The built-in conservative normalizer: case/separator normalization plus a valid terminal
-/// snapshot date. It does not perform family or substring matching.
+/// The built-in conservative normalizer changes only case and separator spelling. It does not
+/// remove snapshot dates or perform family, prefix, or substring matching.
 #[derive(Debug, Default)]
 pub struct DefaultModelNormalizer;
 
@@ -777,52 +779,11 @@ fn builtin_prices() -> &'static BTreeMap<String, ModelPrice> {
     })
 }
 
-/// Whether three decimal fields form a plausible API snapshot date.
-///
-/// The year range is deliberately bounded: model snapshots are contemporary API artifacts, not
-/// arbitrary numeric suffixes that should be allowed to borrow another model's price.
-fn is_snapshot_date(year: &str, month: &str, day: &str) -> bool {
-    if year.len() != 4 || month.len() != 2 || day.len() != 2 {
-        return false;
-    }
-    let (Ok(year), Ok(month), Ok(day)) = (
-        year.parse::<u32>(),
-        month.parse::<u32>(),
-        day.parse::<u32>(),
-    ) else {
-        return false;
-    };
-    if !(2000..=2999).contains(&year) || !(1..=12).contains(&month) {
-        return false;
-    }
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days = match month {
-        2 if leap => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    };
-    (1..=days).contains(&day)
-}
-
-/// Normalize separators and strip a terminal API snapshot date. This handles
-/// `claude-opus-4-1-20250805` and `gpt-5-2025-08-07` without family substring matching; every
-/// non-date portion still has to be listed explicitly in `pricing.json`.
+/// Normalize only ASCII spelling that cannot change model identity. Snapshot suffixes are not
+/// removed, and Unicode lookalikes are not folded: every dated model ID and alias must be listed
+/// explicitly in `pricing.json`, so an unknown name can never borrow another model's price.
 fn normalize_model_name(model: &str) -> String {
-    let normalized = model.to_lowercase().replace('.', "-");
-    let parts: Vec<&str> = normalized.split('-').collect();
-    let trim = match parts.as_slice() {
-        [prefix @ .., year, month, day] if is_snapshot_date(year, month, day) => Some(prefix.len()),
-        [prefix @ .., date]
-            if date.len() == 8
-                && date.is_ascii()
-                && is_snapshot_date(&date[..4], &date[4..6], &date[6..]) =>
-        {
-            Some(prefix.len())
-        }
-        _ => None,
-    };
-    trim.map_or(normalized.clone(), |len| parts[..len].join("-"))
+    model.to_ascii_lowercase().replace('.', "-")
 }
 
 /// Exact best-effort price for a model context and its four recorded token tiers.
@@ -1012,8 +973,8 @@ impl Metrics {
         if self.duration_secs > 0 {
             segs.push((human_dur(self.duration_secs), 6));
         }
-        if let Some(c) = self.cost_usd {
-            segs.push((self.cost_label(c), 7));
+        if let Some(label) = self.cost_display_label() {
+            segs.push((label, 7));
         }
         if let Some(label) = self.credits_label() {
             segs.push((label, 7));
@@ -1055,6 +1016,12 @@ impl Metrics {
         } else {
             format!("~${c:.2}")
         }
+    }
+
+    fn cost_display_label(&self) -> Option<String> {
+        self.cost_usd
+            .map(|cost| self.cost_label(cost))
+            .or_else(|| self.cost_partial.then(|| "unpriced".to_string()))
     }
 
     /// How many times this session's context was compacted, and how many tokens that
@@ -1114,8 +1081,8 @@ impl Metrics {
             format!("{} · ", self.model_label())
         };
         let cost = self
-            .cost_usd
-            .map(|c| format!(" · {}", self.cost_label(c)))
+            .cost_display_label()
+            .map(|label| format!(" · {label}"))
             .unwrap_or_default();
         let credits = self
             .credits_label()
@@ -1205,6 +1172,8 @@ mod price_tests {
                 .map(|evidence| evidence.source.as_str())
         };
         assert_eq!(evidence_for("gpt-5-6"), Some("openai_gpt_5_6_sol_alias"));
+        assert_eq!(evidence_for("gpt-daybreak-blue-latest"), Some("openai"));
+        assert_eq!(evidence_for("gpt-daybreak-red-latest"), Some("openai"));
         assert_eq!(
             evidence_for("us-anthropic-claude-opus-4-20250514-v1:0"),
             Some("aws_bedrock_opus_4_snapshot")
@@ -1276,6 +1245,7 @@ mod price_tests {
             ("gpt-6-astra", p("10", "10", "1", "50")),
             ("gpt-5.6-sol", p("4", "4", "0.4", "20")),
             ("gpt-5.6", p("4", "4", "0.4", "20")),
+            ("gpt-daybreak-blue-latest", p("4", "4", "0.4", "20")),
             ("gpt-5-6-terra", p("2", "2", "0.2", "12")),
             ("gpt-5.6-luna", p("0.2", "0.2", "0.02", "1.2")),
             ("gpt-daybreak-red-latest", p("12.5", "12.5", "1.25", "75")),
@@ -1292,17 +1262,14 @@ mod price_tests {
         }
     }
 
-    /// Lookup normalizes only documented spelling variations and terminal snapshot dates. It
-    /// never lets an unlisted family member borrow a plausible sibling's price.
+    /// Lookup normalizes only case and separator spelling. It never removes snapshot dates or lets
+    /// an unlisted family member borrow a plausible sibling's price.
     #[test]
     fn lookup_is_normalized_but_exact() {
-        for model in ["GPT-5.6-SOL-20260908", "gpt-5.6-sol-2026-09-08"] {
-            assert_eq!(
-                resolve(&PriceTable::new(), model),
-                Some(p("4", "4", "0.4", "20")),
-                "{model}"
-            );
-        }
+        assert_eq!(
+            resolve(&PriceTable::new(), "GPT-5.6-SOL"),
+            Some(p("4", "4", "0.4", "20"))
+        );
         for model in [
             "some-unknown-model",
             "gpt-5.4-cyber",
@@ -1317,6 +1284,10 @@ mod price_tests {
             "gpt-5.4-sol",
             "gpt-5.6-sol-preview",
             "gpt-6-some-unannounced-tier",
+            "GPT-5.6-SOL-20260908",
+            "gpt-5.6-sol-2026-09-08",
+            "gpt-5-2099-01-01",
+            "claude-haiKu-4-5",
             "gpt-5.6-sol-99999999",
             "gpt-5.6-sol-20260230",
             "gpt-5.6-sol-2026-13-01",
@@ -1552,6 +1523,26 @@ mod price_tests {
         let custom = p("1", "2", "0.1", "3");
         table.set(&ModelContext::new("internal-astra"), custom.clone());
         assert_eq!(resolve(&table, "internal-astra"), Some(custom));
+    }
+
+    #[test]
+    fn footer_preserves_all_four_cost_states() {
+        let mut metrics = Metrics::default();
+        assert_eq!(metrics.cost_display_label(), None);
+        assert!(!metrics.footer().contains("unpriced"));
+
+        metrics.cost_partial = true;
+        assert_eq!(metrics.cost_display_label().as_deref(), Some("unpriced"));
+        assert!(metrics.footer().contains(" · unpriced"));
+        assert!(metrics
+            .footer_segments()
+            .iter()
+            .any(|(label, priority)| label == "unpriced" && *priority == 7));
+
+        metrics.cost_usd = Some(1.25);
+        assert_eq!(metrics.cost_display_label().as_deref(), Some("≥$1.25"));
+        metrics.cost_partial = false;
+        assert_eq!(metrics.cost_display_label().as_deref(), Some("~$1.25"));
     }
 }
 

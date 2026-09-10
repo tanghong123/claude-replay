@@ -22,7 +22,7 @@
 //! Cursors persist at the monitor's OWN root (`<cache_root>/costs/<stem>.json` — R5), so
 //! a restart resumes instead of re-reading the store.
 
-use claude_replay_core::{adapter, Agent, MetricsCursor, MetricsFold};
+use claude_replay_core::{adapter, Agent, CursorReject, FoldStart, MetricsCursor, MetricsFold};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -38,10 +38,14 @@ pub(crate) const COST_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 /// when the same fold starts producing a DIFFERENT `cost` for the same bytes. v2 priced
 /// credit-billed Qoder sessions from `usage.credits` (design/qoder-credits-usd.md). v3 invalidated
 /// token-priced entries after the model catalog moved from approximate family rates to exact
-/// four-tier rates. v4 stops treating a zero-token model bucket as a priced `$0.00` result.
+/// four-tier rates. v4 stops treating a zero-token model bucket as a priced `$0.00` result. v5
+/// records whether the persisted cursor reached EOF and uses nanosecond mtimes, so a restart can
+/// distinguish an authoritative fully-unpriced prefix from an unfinished one and invalidate
+/// same-size rewrites instead of serving stale prices. v6 retains that authoritative unpriced
+/// prefix while a later append is only partly folded, including across another restart.
 /// Without these bumps, the len/mtime fast path would serve stale costs forever for transcripts
 /// already scanned — the v8 lesson spelled out in [`ledger_version`], one layer up.
-const LEDGER_SHAPE: u32 = 4;
+const LEDGER_SHAPE: u32 = 6;
 
 /// The persisted entry's full version: the shape crossed with the engine's
 /// `FOLD_VERSION`, so a FOLD-BEHAVIOR bump invalidates priced state exactly like it
@@ -79,26 +83,59 @@ impl CostSummary {
     }
 }
 
-/// A ledger refresh either has no authoritative replacement yet or replaces the row's state.
-/// `Replace(None)` is deliberate: a completed fold found no usage and must clear an older cost.
+/// A ledger refresh either has no authoritative replacement yet, invalidates a stale display, or
+/// replaces the row's state. `Replace(None)` is deliberate: a completed fold found no usage and
+/// must clear an older cost. `Invalidate` only says that prior bytes were rewritten or truncated;
+/// unlike `Replace(None)`, it makes no claim about whether the new source contains usage.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CostUpdate {
     Keep,
+    Invalidate,
     Replace(Option<CostSummary>),
 }
 
 impl CostUpdate {
-    fn cached(entry: Option<&Entry>, file_len: u64) -> Self {
-        match entry {
+    fn cached(entry: Option<&Entry>, file_len: u64, file_mtime: Option<u64>) -> Self {
+        let Some(entry) = entry else {
+            return Self::Keep;
+        };
+        if entry.len > file_len || (entry.len == file_len && entry.mtime != file_mtime) {
+            return Self::Invalidate;
+        }
+        if entry.len == file_len {
+            return Self::Replace(entry.summary());
+        }
+
+        if entry.complete {
+            // This prefix was authoritative before the append. Preserve an explicit unpriced state
+            // across restart/zero-budget cycles; a known price becomes a lower bound because the
+            // unread suffix may still add unpriced usage. A formerly usage-free prefix has no cost
+            // state worth retaining while the appended bytes remain unread.
+            return match entry.summary() {
+                Some(mut summary) => {
+                    summary.partial = true;
+                    Self::Replace(Some(summary))
+                }
+                None => Self::Invalidate,
+            };
+        }
+
+        match entry.cost {
+            // A known subtotal from an unfinished fold is a lower bound even when every model
+            // observed so far was priced: the unread suffix may still add unpriced usage.
+            Some(known) => Self::Replace(Some(CostSummary {
+                known_usd: Some(known),
+                partial: true,
+            })),
+            // A previous EOF already proved an all-unpriced prefix. A partial append cannot revoke
+            // that fact, so retain it across persistence until the suffix establishes more.
+            None if entry.publish_unpriced => Self::Replace(Some(CostSummary {
+                known_usd: None,
+                partial: true,
+            })),
+            // A cold unfinished prefix with no known subtotal proves neither no usage nor a wholly
+            // unpriced transcript. Keep the row until the cursor reaches a stronger state.
             None => Self::Keep,
-            Some(entry) => match entry.summary() {
-                Some(summary) => Self::Replace(Some(summary)),
-                // A no-summary cursor short of the current file is only scan progress. It cannot
-                // prove no usage until the cursor reaches EOF, so a later zero-budget cycle must
-                // keep the row just like the cycle that created this partial entry did.
-                None if entry.len < file_len => Self::Keep,
-                None => Self::Replace(None),
-            },
         }
     }
 }
@@ -110,6 +147,12 @@ struct Entry {
     /// did not move costs one `stat`.
     len: u64,
     mtime: Option<u64>,
+    /// Whether `len` was EOF rather than a budget boundary. This makes an explicit fully-unpriced
+    /// result distinguishable from an unfinished all-unpriced prefix after a restart.
+    complete: bool,
+    /// An earlier EOF proved a fully-unpriced prefix which remains true while an append is only
+    /// partly folded. Unlike a cold unfinished prefix, this state is safe to publish after restart.
+    publish_unpriced: bool,
     cost: Option<f64>,
     /// Some models in the mix were unpriced — the cost is a `≥` lower bound.
     partial: bool,
@@ -165,14 +208,37 @@ impl CostLedger {
         }
         let cached = self.entries.get(&stem);
         if *budget == 0 {
-            // Nothing left this cycle — answer from the cache and continue next time.
-            return CostUpdate::cached(cached, len);
+            // A larger file is not proof of append: an atomically replaced transcript can be
+            // longer too. Validate the parked cursor's CRC window before publishing any cached
+            // prefix. This reads only the bounded witness window, not fresh transcript events.
+            if let Some(entry) = cached.filter(|entry| entry.len < len) {
+                let valid_prefix = entry
+                    .cursor
+                    .as_ref()
+                    .and_then(|cursor| MetricsFold::open(adapter(agent), path, Some(cursor)).ok())
+                    .is_some_and(|fold| {
+                        fold.start() == FoldStart::Resumed && fold.offset() == entry.len
+                    });
+                if !valid_prefix {
+                    return CostUpdate::Invalidate;
+                }
+            }
+            // Nothing left this cycle — answer from the validated cache and continue next time.
+            return CostUpdate::cached(cached, len, mtime);
         }
 
         let cursor = cached.and_then(|e| e.cursor.clone());
         let Ok(mut fold) = MetricsFold::open(adapter(agent), path, cursor.as_ref()) else {
-            return CostUpdate::cached(cached, len);
+            // Source facts changed but the replacement could not be opened. The old result is no
+            // longer safe to display; a later cycle can establish the replacement state.
+            return CostUpdate::Invalidate;
         };
+        let source_rewritten =
+            matches!(fold.start(), FoldStart::Cold(CursorReject::SourceRewritten));
+        let resumed_from_unpriced = fold.start() == FoldStart::Resumed
+            && cached.is_some_and(|entry| {
+                entry.publish_unpriced || (entry.complete && entry.cost.is_none() && entry.partial)
+            });
         // Fold under the cycle's remaining allowance, then STOP at a line boundary and bank
         // the cursor. `MetricsFold` is driven one event at a time and its cursor is valid
         // wherever it stands, so a transcript far bigger than any single cycle's budget makes
@@ -192,6 +258,7 @@ impl CostLedger {
         let read = fold.offset();
         *budget = budget.saturating_sub(read.saturating_sub(from));
         let m = fold.metrics();
+        let complete = read >= len;
         // `len` records HOW FAR THIS FILE IS FOLDED — the file's own length whenever the fold
         // reached EOF, which is the complete case and was every case before chunking. A
         // partial fold stores the offset it reached, so the no-op fast path (`e.len == len`)
@@ -199,29 +266,36 @@ impl CostLedger {
         let entry = Entry {
             len: read.min(len),
             mtime,
+            complete,
+            publish_unpriced: !complete && resumed_from_unpriced,
             cost: m.cost_usd,
             partial: m.cost_partial,
             cursor: fold.cursor().ok(),
         };
         save_entry(&self.dir.join(format!("{stem}.json")), &entry);
-        let out = entry.summary();
-        let complete = read >= len;
-        self.entries.insert(stem, entry);
-        if out.is_none() && !complete {
-            // The cursor advanced, but this prefix has not established a replacement state.
-            // In particular, a tiny first chunk may contain only model/context records while a
-            // token event lies later in the file. Clearing the row here would turn a byte budget
-            // boundary into a transient semantic answer; only EOF can prove "no usage".
-            CostUpdate::Keep
+        let update = if complete {
+            CostUpdate::Replace(entry.summary())
         } else {
-            CostUpdate::Replace(out)
-        }
+            // The unread suffix can add either priced or unpriced usage. A known prefix is therefore
+            // a lower bound; a prefix with no known subtotal is not yet an authoritative state.
+            let provisional = CostUpdate::cached(Some(&entry), len, mtime);
+            if source_rewritten && provisional == CostUpdate::Keep {
+                // `Keep` would preserve the previous file's row value. Once the cursor witness has
+                // proved replacement, clear that stale value until this new fold reaches a state it
+                // can publish independently.
+                CostUpdate::Invalidate
+            } else {
+                provisional
+            }
+        };
+        self.entries.insert(stem, entry);
+        update
     }
 }
 
 fn epoch(t: Option<SystemTime>) -> Option<u64> {
     t.and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        .and_then(|d| u64::try_from(d.as_nanos()).ok())
 }
 
 fn load_entry(path: &Path) -> Option<Entry> {
@@ -232,6 +306,8 @@ fn load_entry(path: &Path) -> Option<Entry> {
     Some(Entry {
         len: v.get("len").and_then(Value::as_u64)?,
         mtime: v.get("mtime").and_then(Value::as_u64),
+        complete: v.get("complete").and_then(Value::as_bool)?,
+        publish_unpriced: v.get("publish_unpriced").and_then(Value::as_bool)?,
         cost: v.get("cost").and_then(Value::as_f64),
         partial: v.get("partial").and_then(Value::as_bool).unwrap_or(false),
         cursor: v
@@ -250,6 +326,8 @@ fn save_entry(path: &Path, e: &Entry) {
         "v": ledger_version(),
         "len": e.len,
         "mtime": e.mtime,
+        "complete": e.complete,
+        "publish_unpriced": e.publish_unpriced,
         "cost": e.cost,
         "partial": e.partial,
         "cursor": e.cursor.as_ref().and_then(|c| serde_json::to_value(c).ok()),
@@ -302,7 +380,7 @@ mod tests {
 
     fn summary(update: CostUpdate) -> Option<CostSummary> {
         match update {
-            CostUpdate::Keep => None,
+            CostUpdate::Keep | CostUpdate::Invalidate => None,
             CostUpdate::Replace(summary) => summary,
         }
     }
@@ -444,9 +522,18 @@ mod tests {
                 got_cost <= want_cost + 1e-9,
                 "overshot the whole-file price — a resumed range was counted twice: {got:?} vs {want:?}"
             );
+            let folded_through = ledger
+                .entries
+                .get(&stem_of(&t))
+                .is_some_and(|entry| entry.len == full);
+            assert_eq!(
+                got.partial, !folded_through,
+                "a priced prefix is a lower bound until EOF, then becomes complete: {got:?}"
+            );
             last = got_cost;
             cycles += 1;
-            if (got_cost - want_cost).abs() < 1e-9 {
+            if folded_through {
+                assert!((got_cost - want_cost).abs() < 1e-9);
                 break;
             }
             assert!(cycles < 50, "never converged: {got:?} vs {want:?}");
@@ -467,7 +554,7 @@ mod tests {
     }
 
     /// An exhausted budget defers the fold and answers from the cache — `Keep` before any
-    /// fold ever ran, the stale replacement after one did.
+    /// fold ever ran, then the stale known subtotal marked partial after the file grows.
     #[test]
     fn an_exhausted_budget_defers_and_serves_the_cache() {
         let d = scratch("budget");
@@ -503,8 +590,11 @@ mod tests {
         let mut none2 = 0u64;
         assert_eq!(
             ledger.cost(Agent::CODEX, &t, &mut none2),
-            priced,
-            "deferred fold serves the cached value"
+            CostUpdate::Replace(Some(CostSummary {
+                known_usd: Some(4.0),
+                partial: true,
+            })),
+            "deferred fold serves the cached subtotal as a lower bound"
         );
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -583,6 +673,83 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// An unread suffix may change pricing completeness in either direction. A priced prefix is a
+    /// lower bound, while an all-unpriced prefix is not yet proof that the whole transcript is
+    /// unpriced; both classifications must survive a zero-budget restart.
+    #[test]
+    fn incomplete_pricing_states_are_never_presented_as_complete() {
+        let d = scratch("incomplete-pricing-state");
+        let known = turn_context("gpt-5.6");
+        let unknown = turn_context("gpt-5.6-codex");
+        let first = token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0);
+        let second = token_count("2026-08-12T01:00:02Z", 2_000_000, 0, 0);
+
+        let priced_prefix = format!("{known}{first}");
+        let priced_then_unknown = d.join("rollout-priced-then-unknown.jsonl");
+        std::fs::write(
+            &priced_then_unknown,
+            format!("{priced_prefix}{unknown}{second}"),
+        )
+        .unwrap();
+        let mut ledger = CostLedger::new(&d.join("priced-cache"));
+        let mut prefix_budget = priced_prefix.len() as u64;
+        let provisional =
+            summary(ledger.cost(Agent::CODEX, &priced_then_unknown, &mut prefix_budget))
+                .expect("priced prefix lower bound");
+        assert_eq!(provisional.known_usd, Some(4.0));
+        assert!(
+            provisional.partial,
+            "unread suffix makes the prefix partial"
+        );
+        let mut none = 0;
+        assert_eq!(
+            CostLedger::new(&d.join("priced-cache")).cost(
+                Agent::CODEX,
+                &priced_then_unknown,
+                &mut none,
+            ),
+            CostUpdate::Replace(Some(provisional)),
+            "a restart must not promote the prefix to a complete price"
+        );
+        let mut full = COST_BUDGET_BYTES;
+        let final_mixed = summary(ledger.cost(Agent::CODEX, &priced_then_unknown, &mut full))
+            .expect("mixed final state");
+        assert_eq!(final_mixed.known_usd, Some(4.0));
+        assert!(final_mixed.partial);
+
+        let unknown_prefix = format!("{unknown}{first}");
+        let unknown_then_priced = d.join("rollout-unknown-then-priced.jsonl");
+        std::fs::write(
+            &unknown_then_priced,
+            format!("{unknown_prefix}{known}{second}"),
+        )
+        .unwrap();
+        let mut ledger = CostLedger::new(&d.join("unknown-cache"));
+        let mut prefix_budget = unknown_prefix.len() as u64;
+        assert_eq!(
+            ledger.cost(Agent::CODEX, &unknown_then_priced, &mut prefix_budget),
+            CostUpdate::Keep,
+            "an all-unpriced prefix is not yet a whole-transcript verdict"
+        );
+        let mut none = 0;
+        assert_eq!(
+            CostLedger::new(&d.join("unknown-cache")).cost(
+                Agent::CODEX,
+                &unknown_then_priced,
+                &mut none,
+            ),
+            CostUpdate::Keep,
+            "a restart must keep an unfinished all-unpriced prefix non-authoritative"
+        );
+        let mut full = COST_BUDGET_BYTES;
+        let final_mixed = summary(ledger.cost(Agent::CODEX, &unknown_then_priced, &mut full))
+            .expect("mixed final state");
+        assert_eq!(final_mixed.known_usd, Some(4.0));
+        assert!(final_mixed.partial);
+
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// A source rewrite invalidates the cursor and replaces the old cost even when the new file
     /// has no usage. Returning `Keep` here would leave a stale dollar amount in the index forever.
     #[test]
@@ -615,6 +782,102 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// A changed source cannot borrow the old source's complete price while folding is deferred,
+    /// whether the cycle has zero bytes left or only enough to read a non-authoritative prefix.
+    /// `Invalidate` clears the row without claiming the replacement is usage-free.
+    #[test]
+    fn deferred_folds_invalidate_rewrites_and_truncations() {
+        let d = scratch("deferred-source-change");
+        let priced_body = format!(
+            "{}{}",
+            turn_context("gpt-5.6"),
+            token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0)
+        );
+
+        let rewritten = d.join("rollout-same-size-rewrite.jsonl");
+        std::fs::write(&rewritten, &priced_body).unwrap();
+        let rewrite_cache = d.join("rewrite-cache");
+        let mut ledger = CostLedger::new(&rewrite_cache);
+        let mut full = COST_BUDGET_BYTES;
+        assert!(matches!(
+            ledger.cost(Agent::CODEX, &rewritten, &mut full),
+            CostUpdate::Replace(Some(_))
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let unpriced_body = priced_body.replace("gpt-5.6", "gpt-x.x");
+        assert_eq!(priced_body.len(), unpriced_body.len());
+        std::fs::write(&rewritten, unpriced_body).unwrap();
+        let mut no_budget = 0;
+        assert_eq!(
+            CostLedger::new(&rewrite_cache).cost(Agent::CODEX, &rewritten, &mut no_budget),
+            CostUpdate::Invalidate,
+            "same-size rewrite must not expose the previous complete price"
+        );
+
+        let longer = d.join("rollout-longer-rewrite.jsonl");
+        std::fs::write(&longer, &priced_body).unwrap();
+        let longer_cache = d.join("longer-cache");
+        let mut ledger = CostLedger::new(&longer_cache);
+        let mut full = COST_BUDGET_BYTES;
+        assert!(matches!(
+            ledger.cost(Agent::CODEX, &longer, &mut full),
+            CostUpdate::Replace(Some(_))
+        ));
+        let unpriced_prefix = format!(
+            "{}{}",
+            turn_context("gpt-5.6-codex"),
+            token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0)
+        );
+        std::fs::write(
+            &longer,
+            format!(
+                "{unpriced_prefix}{}{}",
+                turn_context("gpt-5.6"),
+                token_count("2026-08-12T01:00:02Z", 2_000_000, 0, 0)
+            ),
+        )
+        .unwrap();
+        assert!(std::fs::metadata(&longer).unwrap().len() > priced_body.len() as u64);
+        let mut restarted = CostLedger::new(&longer_cache);
+        let mut no_budget = 0;
+        assert_eq!(
+            restarted.cost(Agent::CODEX, &longer, &mut no_budget),
+            CostUpdate::Invalidate,
+            "a longer rewrite must fail the cursor witness instead of masquerading as append"
+        );
+        let mut prefix_budget = unpriced_prefix.len() as u64;
+        assert_eq!(
+            restarted.cost(Agent::CODEX, &longer, &mut prefix_budget),
+            CostUpdate::Invalidate,
+            "a cold rewritten unpriced prefix must clear the old price rather than Keep it"
+        );
+        assert!(
+            restarted
+                .entries
+                .get(&stem_of(&longer))
+                .is_some_and(|entry| !entry.complete),
+            "the fixture must stop before EOF or it does not prove deferred invalidation"
+        );
+
+        let truncated = d.join("rollout-truncated.jsonl");
+        std::fs::write(&truncated, &priced_body).unwrap();
+        let truncate_cache = d.join("truncate-cache");
+        let mut ledger = CostLedger::new(&truncate_cache);
+        let mut full = COST_BUDGET_BYTES;
+        assert!(matches!(
+            ledger.cost(Agent::CODEX, &truncated, &mut full),
+            CostUpdate::Replace(Some(_))
+        ));
+        std::fs::write(&truncated, turn_context("gpt-5.6")).unwrap();
+        let mut no_budget = 0;
+        assert_eq!(
+            CostLedger::new(&truncate_cache).cost(Agent::CODEX, &truncated, &mut no_budget),
+            CostUpdate::Invalidate,
+            "truncation must not expose the previous complete price"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// A fully unpriced transcript is a KNOWN result, not the same as an unscanned or usage-free
     /// file. The state survives the persisted-ledger fast path so the UI can keep saying
     /// `unpriced` after a restart without re-reading the transcript.
@@ -634,18 +897,54 @@ mod tests {
 
         let mut ledger = CostLedger::new(&d.join("cache"));
         let mut budget = COST_BUDGET_BYTES;
-        let summary = summary(ledger.cost(Agent::CODEX, &t, &mut budget))
+        let unpriced = summary(ledger.cost(Agent::CODEX, &t, &mut budget))
             .expect("the unpriced state is explicit");
-        assert_eq!(summary.known_usd, None);
-        assert!(summary.partial);
+        assert_eq!(unpriced.known_usd, None);
+        assert!(unpriced.partial);
 
         let mut restarted = CostLedger::new(&d.join("cache"));
         let mut no_budget = 0;
         assert_eq!(
             restarted.cost(Agent::CODEX, &t, &mut no_budget),
-            CostUpdate::Replace(Some(summary)),
+            CostUpdate::Replace(Some(unpriced)),
             "the persisted fast path must retain fully-unpriced state"
         );
+
+        let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+        write!(
+            f,
+            "{}{}{}",
+            token_count("2026-08-12T01:00:02Z", 2_000_000, 0, 0),
+            turn_context("gpt-5.6"),
+            token_count("2026-08-12T01:00:03Z", 3_000_000, 0, 0)
+        )
+        .unwrap();
+        drop(f);
+        let mut restarted_after_append = CostLedger::new(&d.join("cache"));
+        let mut no_budget = 0;
+        assert_eq!(
+            restarted_after_append.cost(Agent::CODEX, &t, &mut no_budget),
+            CostUpdate::Replace(Some(unpriced)),
+            "a complete fully-unpriced prefix remains explicit while an append is deferred"
+        );
+        let mut tiny = 1;
+        assert_eq!(
+            restarted_after_append.cost(Agent::CODEX, &t, &mut tiny),
+            CostUpdate::Replace(Some(unpriced)),
+            "partly folding an append must not erase the authoritative unpriced prefix"
+        );
+        let mut restarted_after_partial = CostLedger::new(&d.join("cache"));
+        let mut no_budget = 0;
+        assert_eq!(
+            restarted_after_partial.cost(Agent::CODEX, &t, &mut no_budget),
+            CostUpdate::Replace(Some(unpriced)),
+            "the partially advanced cursor must retain unpriced across another restart"
+        );
+        let mut full = COST_BUDGET_BYTES;
+        let mixed = summary(restarted_after_partial.cost(Agent::CODEX, &t, &mut full))
+            .expect("the appended priced usage produces a mixed total");
+        assert_eq!(mixed.known_usd, Some(4.0));
+        assert!(mixed.partial);
 
         let empty = d.join("rollout-2026-08-12T01-00-00-no-usage.jsonl");
         std::fs::write(&empty, turn_context("gpt-5.6-codex")).unwrap();

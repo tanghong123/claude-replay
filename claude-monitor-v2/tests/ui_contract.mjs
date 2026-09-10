@@ -37,6 +37,9 @@ const viewportSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/v
 const appSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
 const previewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
 const componentsText = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+const classicRailSource = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
+const classicExportSource = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+const v2ShellSource = readFileSync(new URL("../src/shell.html", import.meta.url), "utf8");
 const extractedCss = `${demo.slice(demo.indexOf("<style>\n") + 8, demo.indexOf("\n</style>", demo.indexOf("<style>\n")))}\n`;
 const extractedShell = demo.slice(demo.indexOf("<body>\n") + 7, demo.indexOf('<script src="sample-transcript-data.js"></script>'));
 assert.equal(referenceCss, extractedCss, "reference CSS must remain an exact demo extraction");
@@ -107,9 +110,18 @@ assert.deepEqual(costDisplay({ cost: 12 }), { kind: "priced", known: 12, label: 
 assert.deepEqual(costDisplay({ cost: 12, costPartial: true }), { kind: "partial", known: 12, label: "≥$12.00" });
 assert.deepEqual(costDisplay({ costPartial: true }), { kind: "unpriced", known: null, label: "unpriced" });
 assert.equal(costDisplay({ cost: 1234, costPartial: true }, true).label, "≥$1.2k");
+assert.match(v2ShellSource, /window\.__shared\.costDisplay\(r, true\)\.label/, "the v2 classic shell must render all four states through the shared formatter");
+assert.match(v2ShellSource, /if \(r\.turns == null\) return cost \|\| "not yet opened"/, "an unvisited v2 row must retain a ledger cost state when one exists");
+assert.doesNotMatch(v2ShellSource, /r\.turns == null \? "not yet opened" : counterText\(r\)/, "unvisited rows must not bypass the shared cost formatter");
+assert.doesNotMatch(v2ShellSource, /if \(r\.cost\) out\.push\("~\$"/, "the v2 classic shell must not keep a truthy-number cost formatter");
+assert.match(classicRailSource, /display\.kind==="priced"&&r\.costOwn!=null&&r\.costSubs!=null/, "the classic rail splits a family total only with explicit priced root usage");
+assert.match(appSource, /row && row\.costOwn != null \? Number\(row\.costOwn\) : null/, "the app footer must read the authoritative root cost instead of deriving one by subtraction");
+assert.doesNotMatch(appSource, /const own = display\.known - subs/, "the app footer must not manufacture an own zero from total minus children");
 assert.match(appSource, /const usageCostLabel = usage => usage && \(usage\.cost \|\| \(usage\.cost_partial \? "unpriced" : null\)\)/, "direct transcript usage must distinguish wholly unpriced from no usage");
 assert.match(appSource, /\["est\. cost", usageCostLabel\(usage\) \|\| "—"\]/, "the Usage panel must show this transcript's cost, not its family roll-up");
 assert.match(appSource, /footerCost\.textContent = display\.label \|\| ownCost \|\| "—"/, "a direct sub-agent footer must fall back to its own four-state usage cost");
+assert.match(classicExportSource, /var usageCost = u\.cost \|\| \(u\.cost_partial \? "unpriced" : null\)/, "the classic transcript Usage panel must distinguish wholly unpriced from no usage");
+assert.match(classicExportSource, /if \(usageCost\) row\("est\. cost", usageCost, "total"\)/, "the classic transcript Usage row must render the four-state cost label");
 
 for (const moduleName of ["app.js", "control-store.js", "preview.js"]) {
   const module = readFileSync(new URL(`../../claude-monitor/src/codex-ui/${moduleName}`, import.meta.url), "utf8");

@@ -836,11 +836,11 @@ function paintOutlineFooter(row, usage) {
   const display = costDisplay(row);
   const short = costDisplay(row, true);
   const ownCost = usageCostLabel(usage);
+  const own = row && row.costOwn != null ? Number(row.costOwn) : null;
   const subs = row && row.costSubs != null ? Number(row.costSubs) : null;
-  // Split only a COMPLETE roll-up. A partial total is one lower bound; breaking it into components
-  // would imply that the known own/sub amounts account for all token-bearing models.
-  if (display.kind === "priced" && subs != null && Number.isFinite(subs)) {
-    const own = display.known - subs;
+  // Split only a COMPLETE roll-up with an affirmative priced root. A partial total is one lower
+  // bound, and total == children is not evidence for an own `$0.00`.
+  if (display.kind === "priced" && own != null && Number.isFinite(own) && subs != null && Number.isFinite(subs)) {
     footerCost.textContent = `~$${own.toFixed(2)} + ~$${subs.toFixed(2)} sub`;
     footerCost.title = `total ${display.label} = this session ~$${own.toFixed(2)} + sub-agents ~$${subs.toFixed(2)}`;
   } else {

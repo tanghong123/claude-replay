@@ -260,7 +260,7 @@
           r1.appendChild(x);
           var r2 = el("div", "v2r2");
           r2.appendChild(el("span", "v2counters" + (r.turns == null ? " unvisited" : ""),
-            r.turns == null ? "not yet opened" : counterText(r)));
+            counterText(r)));
           r2.appendChild(el("span", "v2age", r.activity + " ago"));
           a.appendChild(r1); a.appendChild(r2);
           box.appendChild(a);
@@ -343,13 +343,17 @@
     }
   }, true);
 
-  // "792 turns · 10.2k calls · 17 sub · ~$4,626" — the same facts v1 shows, from this
-  // monitor's own durable entry. A session it has never opened has none, and says so.
+  // "792 turns · 10.2k calls · 17 sub · ~$4.6k" — the same facts v1 shows, from this
+  // monitor's own durable entry. Cost has the same four states in both shells because the text
+  // comes from the shared formatter rather than a second truth table here. An unvisited row has no
+  // counters, but its independent ledger fold may already have a cost state worth showing.
   function counterText(r) {
+    var cost = window.__shared.costDisplay(r, true).label;
+    if (r.turns == null) return cost || "not yet opened";
     var out = [r.turns + (r.turns === 1 ? " turn" : " turns")];
     if (r.tools) out.push(compact(r.tools) + " calls");
     if (r.subs) out.push(r.subs + " sub");
-    if (r.cost) out.push("~$" + (r.cost >= 100 ? Math.round(r.cost).toLocaleString() : r.cost.toFixed(2)));
+    if (cost) out.push(cost);
     return out.join(" · ");
   }
   function compact(n) { return n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n); }

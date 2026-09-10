@@ -301,7 +301,7 @@ fn apply_sub_cost_update(
         crate::cost::CostUpdate::Replace(Some(summary)) => {
             entries.insert(path.to_path_buf(), (root, summary));
         }
-        crate::cost::CostUpdate::Replace(None) => {
+        crate::cost::CostUpdate::Invalidate | crate::cost::CostUpdate::Replace(None) => {
             entries.remove(path);
         }
     }
@@ -676,10 +676,10 @@ impl Index {
             .ledger
             .get_or_insert_with(|| crate::cost::CostLedger::new(&self.cache_root));
         for row in st.rows.values_mut() {
-            if let crate::cost::CostUpdate::Replace(cost) =
-                ledger.cost(row.agent, &row.path, &mut budget)
-            {
-                row.cost = cost;
+            match ledger.cost(row.agent, &row.path, &mut budget) {
+                crate::cost::CostUpdate::Keep => {}
+                crate::cost::CostUpdate::Invalidate => row.cost = None,
+                crate::cost::CostUpdate::Replace(cost) => row.cost = cost,
             }
         }
         // Sub-agent roll-up (§14): price every sub-agent rollout and bank it on the MAIN
@@ -1085,7 +1085,9 @@ impl Index {
             // Cost from the LEDGER (§14), not the visit-gated meta stream: the row's own
             // transcript plus every sub-agent rollout banked on it. `costPartial` survives every
             // aggregation level: with a known subtotal it means `≥`; without one it means the
-            // whole token-bearing mix is explicitly `unpriced`.
+            // whole token-bearing mix is explicitly `unpriced`. `costOwn` is deliberately
+            // separate from the total: the shells may split a complete roll-up only when the root
+            // itself has priced usage, never by manufacturing `$0.00` from total == children.
             let sub = st.sub_costs.get(sid).copied();
             let total_cost = merge_cost(row.cost, sub);
             if let Some(total) = total_cost {
@@ -1094,6 +1096,9 @@ impl Index {
                 }
                 if total.partial {
                     j["costPartial"] = json!(true);
+                }
+                if let Some(own) = row.cost.and_then(|summary| summary.known_usd) {
+                    j["costOwn"] = json!(own);
                 }
                 if let Some(sub) = sub {
                     if let Some(known) = sub.known_usd {
@@ -2007,7 +2012,7 @@ mod tests {
     }
 
     #[test]
-    fn sub_cost_entries_survive_keep_and_only_authoritative_none_removes_them() {
+    fn sub_cost_entries_survive_keep_and_are_removed_by_clear_updates() {
         let priced = crate::cost::CostSummary {
             known_usd: Some(4.0),
             partial: false,
@@ -2050,12 +2055,21 @@ mod tests {
 
         apply_sub_cost_update(
             &mut entries,
+            &p1,
+            "root-b".into(),
+            crate::cost::CostUpdate::Invalidate,
+        );
+        assert!(!entries.contains_key(&p1));
+        assert_eq!(aggregate_sub_costs(&entries).get("root-a"), Some(&unpriced));
+
+        apply_sub_cost_update(
+            &mut entries,
             &p2,
             "root-a".into(),
             crate::cost::CostUpdate::Replace(None),
         );
         assert!(!entries.contains_key(&p2));
-        assert_eq!(aggregate_sub_costs(&entries).get("root-b"), Some(&priced));
+        assert!(aggregate_sub_costs(&entries).is_empty());
     }
 
     /// The rename migration rule (owner, 2026-08-22): an existing `claude-monitor` dir
@@ -2717,6 +2731,8 @@ mod tests {
         let sub3 = "eeeeeeee-3333-0000-0000-00000000000e";
         let arch_id = "ffffffff-0000-0000-0000-00000000000f";
         let unpriced_id = "99999999-0000-0000-0000-000000000009";
+        let sub_only_root_id = "77777777-0000-0000-0000-000000000007";
+        let sub_only_child_id = "77777777-1111-0000-0000-000000000007";
         // Main: usage FIRST, model named after — $4 only if the blank bucket is attributed,
         // $0 under the old per-model re-derivation.
         std::fs::write(
@@ -2753,6 +2769,23 @@ mod tests {
             ),
         )
         .unwrap();
+        std::fs::write(
+            dated.join(format!(
+                "rollout-2026-08-12T01-03-00-{sub_only_root_id}.jsonl"
+            )),
+            meta_main(sub_only_root_id),
+        )
+        .unwrap();
+        std::fs::write(
+            archive.join(format!(
+                "rollout-2026-08-12T01-03-10-{sub_only_child_id}.jsonl"
+            )),
+            format!(
+                "{}{named}{usage_1m}",
+                meta_sub(sub_only_child_id, sub_only_root_id)
+            ),
+        )
+        .unwrap();
         std::thread::sleep(Duration::from_millis(2100));
         let v: Value = serde_json::from_str(&idx.sessions_json(|_| {})).unwrap();
         let row = |id: &str| -> Value {
@@ -2771,6 +2804,10 @@ mod tests {
             "own $4 (blank bucket attributed) + two sub-agents chased to the root: {main}"
         );
         assert!(
+            (main["costOwn"].as_f64().unwrap() - 4.0).abs() < 1e-9,
+            "the priced root share is an explicit fact: {main}"
+        );
+        assert!(
             (main["costSubs"].as_f64().unwrap() - 8.0).abs() < 1e-9,
             "the known sub-agent share is named: {main}"
         );
@@ -2781,6 +2818,19 @@ mod tests {
         assert_eq!(
             main["costSubsPartial"], true,
             "the sub-agent subtotal carries its own partial state: {main}"
+        );
+        let sub_only_root = row(sub_only_root_id);
+        assert!(
+            (sub_only_root["cost"].as_f64().unwrap() - 4.0).abs() < 1e-9,
+            "the priced child still rolls up to its root: {sub_only_root}"
+        );
+        assert!(
+            (sub_only_root["costSubs"].as_f64().unwrap() - 4.0).abs() < 1e-9,
+            "the total is entirely the child subtotal: {sub_only_root}"
+        );
+        assert!(
+            sub_only_root.get("costOwn").is_none(),
+            "a usage-free root must not acquire an own zero-cost component: {sub_only_root}"
         );
         let archived = row(arch_id);
         assert!(
@@ -2803,8 +2853,8 @@ mod tests {
             .find(|g| g["label"] == "codex-repo")
             .expect("codex group");
         assert_eq!(
-            codex_group["metaLine"], "≥$16.00 · 2",
-            "the group keeps the known subtotal and marks the unpriced child"
+            codex_group["metaLine"], "≥$20.00 · 3",
+            "the group keeps every known subtotal and marks the unpriced child"
         );
         assert_eq!(codex_group["costPartial"], true);
         let unpriced_group = v["groups"]
