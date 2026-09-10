@@ -185,6 +185,25 @@ const AUDIT_JS: &str = r##"(function () {
       this.snap.forEach(function (e) { census[groupOf(e)]++; });
       return { elements: this.snap.size, census: census };
     },
+    // The effect set as CELLS — `<record id>|<group>` — which is the only shape that compares
+    // across the two pages (P3). Neither the class names nor the child-index paths agree between
+    // them and they are not meant to; what does agree is the record (one transcript, one
+    // emitter, one set of ids) and the group, which is derived from structure and from the
+    // measured font, never from a class. A cell present on one page and absent on the other is
+    // a rendering difference; a cell present on both where only one page's control reaches it
+    // is an equivalence GAP, and that is what P3 exists to find.
+    reportCells: function (prop) {
+      var before = this.snap, after = capture(this.sel, this.idAttr);
+      var present = {}, changed = {};
+      before.forEach(function (a, key) {
+        var id = key.slice(0, key.indexOf("/"));
+        var cell = id + "|" + groupOf(a);
+        present[cell] = (present[cell] || 0) + 1;
+        var b = after.get(key);
+        if (b && a.props[prop] !== b.props[prop]) changed[cell] = (changed[cell] || 0) + 1;
+      });
+      return { present: present, changed: changed };
+    },
     // The same effect set, partitioned by RECORD instead of by kind of content. A control that
     // sits ON a record (a fold head, a pane's own bar, a turn's raw toggle) claims to act on
     // THAT record and no other — #173 is what happens when it does not — and the element key is
@@ -291,18 +310,33 @@ fn open_everything(tab: &headless_chrome::Tab, surface: Surface) {
     }
 }
 
-/// Arm the instrument over everything currently mounted, and report what it can see. A vacuous
-/// audit is the failure mode that matters most here, so the census is asserted, not logged.
+/// Arm the instrument over everything currently mounted — and prove the page is QUIET first.
+///
+/// A page that is still settling moves properties on its own: an open animation finishing, a
+/// re-measure landing, a font swapping in. The instrument cannot tell that from a control's
+/// effect, and the confusion is not theoretical — one run of the fold case reported a
+/// cross-record change that four later runs could not reproduce, in the run immediately after
+/// the release binaries were replaced. So arming is a LOOP: snapshot, wait, and take the effect
+/// set of doing nothing at all. Only when that is empty is the page a fair baseline.
 fn arm(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
     let (sel, id_attr) = roots(surface);
     eval(tab, AUDIT_JS);
-    probe(
-        tab,
-        &format!(
-            "window.__audit.arm('{}', '{}')",
-            sel.replace('\'', "\\'"),
-            id_attr
-        ),
+    let mut census = probe(tab, &format!("window.__audit.arm('{sel}', '{id_attr}')"));
+    for _ in 0..8 {
+        settle();
+        let idle = report(tab);
+        if idle["changedTotal"].as_i64() == Some(0)
+            && idle["gone"].as_i64() == Some(0)
+            && idle["added"].as_i64() == Some(0)
+        {
+            return census;
+        }
+        census = probe(tab, &format!("window.__audit.arm('{sel}', '{id_attr}')"));
+    }
+    panic!(
+        "{surface:?}: the page never went quiet — doing NOTHING kept changing computed style, so \
+         nothing measured after this point could be attributed to a control. Last idle set: {}",
+        report(tab)
     )
 }
 
@@ -734,4 +768,272 @@ fn app_shell_a_fold_acts_on_its_own_record() {
     let fx = fixture_audit("audit-fold-app");
     let page = open(Surface::AppShell, &fx, 2958);
     scenario_a_fold_acts_on_its_own_record(&page.tab, Surface::AppShell);
+}
+
+/// ── STAGE C — P3: EQUIVALENCE IS A SET DIFFERENCE ───────────────────────────────────────────
+///
+/// The same corpus, the same control, both pages, compared. This is the property the owner
+/// actually asked for — "we have done the exercise multiple times … and each time it fails at
+/// the goal of discovering all equivalence gaps" — and the reason every previous pass could not
+/// deliver it is that the comparison was always a person reading two renderings side by side.
+///
+/// The comparable unit is the CELL, `<record id>|<group>`. Neither page's class names nor its
+/// child-index paths agree with the other's, and they are not meant to. What does agree is the
+/// record — one transcript, one emitter, one set of ids — and the group, which is derived from
+/// the DOM's structure and from the measured font rather than from any class. So:
+///
+///   * a cell present on one page and absent on the other is a RENDERING difference — one page
+///     draws something there and the other does not;
+///   * a cell present on BOTH where only one page's control reaches it is an EQUIVALENCE GAP,
+///     and it is exactly the shape of #161 and #173.
+///
+/// The allowlist is the one place a human judgement enters, which is where it belongs: visible,
+/// small, and reviewed. It is empty today for these two controls, and that is a measurement, not
+/// an aspiration.
+struct Cells {
+    present: std::collections::BTreeMap<String, i64>,
+    changed: std::collections::BTreeMap<String, i64>,
+}
+
+fn cells(tab: &headless_chrome::Tab, surface: Surface, key: &str, prop: &str) -> Cells {
+    jump_to_end(tab, surface);
+    settle();
+    open_everything(tab, surface);
+    settle();
+    settle();
+    arm(tab, surface);
+    press(tab, key);
+    let got = probe(tab, &format!("window.__audit.reportCells('{prop}')"));
+    let map = |field: &str| -> std::collections::BTreeMap<String, i64> {
+        got[field]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(k, v)| (k.clone(), v.as_i64().unwrap_or(0)))
+            .collect()
+    };
+    Cells {
+        present: map("present"),
+        changed: map("changed"),
+    }
+}
+
+/// Deliberate, RECORDED differences between the two pages. Each entry is a cell and the reason
+/// it is allowed to differ; anything not here is a finding. Empty for these controls today.
+const ALLOWED_DIFFERENCES: [(&str, &str); 0] = [];
+
+fn compare_surfaces(classic: &Cells, shell: &Cells, control: &str, prop: &str) {
+    let allowed: std::collections::BTreeSet<&str> =
+        ALLOWED_DIFFERENCES.iter().map(|(cell, _)| *cell).collect();
+    // A cell BOTH pages draw, where only one page's control reaches it. This is the gap.
+    let mut gaps: Vec<String> = Vec::new();
+    for cell in classic.present.keys() {
+        if !shell.present.contains_key(cell) || allowed.contains(cell.as_str()) {
+            continue;
+        }
+        let on_classic = classic.changed.contains_key(cell);
+        let on_shell = shell.changed.contains_key(cell);
+        if on_classic != on_shell {
+            gaps.push(format!(
+                "{cell} (classic {}, shell {})",
+                if on_classic { "reached" } else { "MISSED" },
+                if on_shell { "reached" } else { "MISSED" }
+            ));
+        }
+    }
+    // Non-vacuity: the comparison has to be over a real shared population, or "no gaps" means
+    // "nothing was compared" — which is how an audit passes while missing everything.
+    let shared = classic
+        .present
+        .keys()
+        .filter(|cell| shell.present.contains_key(*cell))
+        .count();
+    assert!(
+        shared > 20,
+        "{control}: the two pages share a population to compare ({shared} cells) — otherwise the \
+         set difference is empty because nothing was in it: classic {} cells, shell {} cells",
+        classic.present.len(),
+        shell.present.len()
+    );
+    // …and the comparison covers the WHOLE of the smaller population. Measured: every cell the
+    // app shell draws is also drawn by the classic page, so "no gaps" is a statement about all
+    // of the shell's renderings and not about an overlap that happens to be clean. The reverse
+    // is not true and does not need to be — the classic page mounts more of the PADDING above
+    // the corpus, which neither control touches; if the shell ever draws a cell the classic page
+    // does not, that is a rendering difference and belongs in front of a person.
+    let shell_only: Vec<&String> = shell
+        .present
+        .keys()
+        .filter(|cell| !classic.present.contains_key(*cell))
+        .collect();
+    assert!(
+        shell_only.is_empty(),
+        "{control}: the app shell draws {} cell(s) the classic page does not, so the comparison \
+         no longer covers everything the shell renders: {shell_only:?}",
+        shell_only.len()
+    );
+    assert!(
+        !classic.changed.is_empty() && !shell.changed.is_empty(),
+        "{control}: …and the control moved `{prop}` on BOTH pages, so a clean difference is not \
+         two pages doing nothing: classic {} changed, shell {} changed",
+        classic.changed.len(),
+        shell.changed.len()
+    );
+    assert!(
+        gaps.is_empty(),
+        "{control}: the two pages disagree about `{prop}` on {} cell(s) they BOTH draw. A cell is \
+         `<record id>|<group>`; `MISSED` is the page whose control did not reach a rendering the \
+         other page's did. This is the shape of #161 and #173.\n  {}",
+        gaps.len(),
+        gaps.join("\n  ")
+    );
+}
+
+/// The rendering differences the comparison turns up on the way — cells one page draws and the
+/// other does not. Not a failure: the pages legitimately build different trees. Printed so the
+/// set is visible and can be watched, rather than discovered again by the owner.
+fn report_rendering_differences(classic: &Cells, shell: &Cells, control: &str) {
+    let only_classic: Vec<&String> = classic
+        .present
+        .keys()
+        .filter(|c| !shell.present.contains_key(*c))
+        .collect();
+    let only_shell: Vec<&String> = shell
+        .present
+        .keys()
+        .filter(|c| !classic.present.contains_key(*c))
+        .collect();
+    println!(
+        "RENDERING-DIFF {control}: classic-only {:?} | shell-only {:?}",
+        only_classic, only_shell
+    );
+}
+
+fn both_surfaces(fx: &Fixture, port: u16) -> (Opened, Opened) {
+    // TWO tabs, but the SAME monitor and the same session: a comparison between two servers or
+    // two fixtures would be a comparison of two coincidences.
+    let classic = open(Surface::Classic, fx, port);
+    let shell = open(Surface::AppShell, fx, port + 1);
+    (classic, shell)
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_two_pages_agree_about_what_the_size_control_reaches() {
+    let _serial = serial();
+    let fx = fixture_audit("audit-p3-size");
+    let (classic, shell) = both_surfaces(&fx, 2959);
+    let a = cells(&classic.tab, Surface::Classic, "-", "font-size");
+    let b = cells(&shell.tab, Surface::AppShell, "-", "font-size");
+    report_rendering_differences(&a, &b, "size");
+    compare_surfaces(&a, &b, "the code-size control (-)", "font-size");
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_two_pages_agree_about_what_the_wrap_control_reaches() {
+    let _serial = serial();
+    let fx = fixture_audit("audit-p3-wrap");
+    let (classic, shell) = both_surfaces(&fx, 2961);
+    let a = cells(&classic.tab, Surface::Classic, "w", "text-wrap-mode");
+    let b = cells(&shell.tab, Surface::AppShell, "w", "text-wrap-mode");
+    report_rendering_differences(&a, &b, "wrap");
+    compare_surfaces(&a, &b, "the wrap control (w)", "text-wrap-mode");
+}
+
+/// ── STAGE D — P4: A CONTROL THAT CHANGES NOTHING MUST NOT MOVE THE READER ───────────────────
+///
+/// CLAIM. A control press whose effect set is EMPTY leaves the reader's scroll position exactly
+/// where it was.
+///
+/// This is #173's other half, and the audit is where it belongs rather than in a one-off case:
+/// `applyReading` used to end in an unconditional `viewport.remeasure()`, so `−` held down at
+/// the size floor, `Reset` on an already-default panel, or a second click on the same switch
+/// each cleared the height cache and rewrote the reader's position from estimates. The fix was
+/// `if (layoutChanged)`, and what makes it an AUDIT rather than a regression test is that the
+/// premise — "this press changed nothing" — is MEASURED by the same instrument, not asserted.
+///
+/// The reader is parked MID-DOCUMENT on purpose. At the tail the page converges to the bottom on
+/// its own, so a position that was rewritten and a position that was kept look identical — the
+/// lesson #185's fixture had to learn from the other direction.
+fn scroll_top(tab: &headless_chrome::Tab, surface: Surface) -> f64 {
+    let s = surface.scroller();
+    probe(
+        tab,
+        &format!("(function(){{ var s = {s}; return s ? s.scrollTop : -1; }})()"),
+    )
+    .as_f64()
+    .unwrap_or(-1.0)
+}
+
+fn scenario_a_press_that_changes_nothing_does_not_move_the_reader(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    jump_to_end(tab, surface);
+    settle();
+    open_everything(tab, surface);
+    settle();
+    settle();
+    // Walk the code size down to its FLOOR, which is where a press stops changing anything.
+    // Bounded, and the premise is CHECKED below rather than assumed: if the floor were never
+    // reached, the press would change something and the case would say so.
+    for _ in 0..14 {
+        press(tab, "-");
+    }
+    settle();
+    // Park mid-document, then let the page settle so nothing is still in flight.
+    harness::scroll_by(tab, surface, -2500);
+    settle();
+    settle();
+    arm(tab, surface);
+    let before = scroll_top(tab, surface);
+    assert!(
+        before > 50.0,
+        "{surface:?}: the reader is parked away from the top, where a rewritten position is \
+         visible at all: scrollTop {before}"
+    );
+    press(tab, "-");
+    let report = report(tab);
+    let after = scroll_top(tab, surface);
+    // The premise, measured: this press really did change nothing.
+    assert_eq!(
+        report["changedTotal"].as_i64(),
+        Some(0),
+        "{surface:?}: the press at the floor changed nothing — if it did, this case is testing a \
+         different claim than the one it states: {report}"
+    );
+    assert_eq!(
+        report["gone"].as_i64(),
+        Some(0),
+        "{surface:?}: …and unmounted nothing: {report}"
+    );
+    // …and therefore the reader did not move. An exact equality: there is no rounding to be
+    // generous about when nothing rendered differently.
+    assert_eq!(
+        after,
+        before,
+        "{surface:?}: a press that changed NOTHING moved the reader {} px. #173: `applyReading` \
+         ended in an unconditional `viewport.remeasure()`, so the height cache was cleared and \
+         the position re-derived from estimates even when the page rendered identically.",
+        (after - before).abs()
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn classic_page_a_press_that_changes_nothing_does_not_move_the_reader() {
+    let _serial = serial();
+    let fx = fixture_audit("audit-p4-classic");
+    let page = open(Surface::Classic, &fx, 2963);
+    scenario_a_press_that_changes_nothing_does_not_move_the_reader(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_press_that_changes_nothing_does_not_move_the_reader() {
+    let _serial = serial();
+    let fx = fixture_audit("audit-p4-app");
+    let page = open(Surface::AppShell, &fx, 2964);
+    scenario_a_press_that_changes_nothing_does_not_move_the_reader(&page.tab, Surface::AppShell);
 }
