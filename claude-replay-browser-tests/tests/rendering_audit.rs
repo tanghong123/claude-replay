@@ -1,4 +1,4 @@
-//! **#174 P2 — the rendering-control audit, by MEASURED EFFECT.**
+//! **#174 — the rendering-control audit, by MEASURED EFFECT (P2, P3, P4).**
 //!
 //! Every previous equivalence audit in this repo was built on a hand-made list: someone
 //! enumerates the controls, enumerates the renderings, checks the cells. That method has the
@@ -28,8 +28,23 @@
 //! pages, and P3 has to compare across them. The walk stops at a NESTED record root so each
 //! element is keyed once, under the record it belongs to.
 //!
-//! Run: `cargo build --release -p claude-monitor-v2 && cargo test -p claude-replay-browser-tests
-//! --test rendering_audit -- --ignored`.
+//! What each stage adds, all on the one instrument:
+//!
+//! * **P2** — a control's REACH, as a predicate quantified over the DOM: `−` changes `font-size`
+//!   on everything inside a `[data-code]` container and nothing outside one; `w` changes the wrap
+//!   longhand on every `<pre>` and everything inside `[data-code]`; a fold changes its own record
+//!   and what that record CONTAINS.
+//! * **P3** — EQUIVALENCE as a set difference, over cells keyed `<record id>|<group>` so the two
+//!   pages can be compared despite legitimately different trees and class names.
+//! * **P4** — a press whose effect set is EMPTY must not move the reader, at two widths and two
+//!   themes: cascade bugs hide at a narrow window and colour rules hide in the other theme.
+//!
+//! Every claim here has been verified by MUTATION in both directions — break the rule and the
+//! case names the bug; over-reach and it names that too. A green audit that has never gone red
+//! is worth nothing, and that is the whole history of this task.
+//!
+//! Run: `cargo build --release -p claude-monitor -p claude-monitor-v2 && cargo test -p
+//! claude-replay-browser-tests --test rendering_audit -- --ignored`.
 
 mod harness;
 
@@ -140,7 +155,13 @@ const AUDIT_JS: &str = r##"(function () {
           props[p] = cs.getPropertyValue(p);
         }
         var fam = (props["font-family"] || "").trim();
+        // Whether the reader can SEE this element right now. A windowing page unmounts what has
+        // scrolled out of range and that is its job (#50) — turning wrap on makes the document
+        // taller and the classic page drops a block twenty records above the reader. What a
+        // control may never do is take away something on screen.
+        var box = el.getBoundingClientRect();
         snap.set(id + "/" + path, {
+          view: box.bottom > 0 && box.top < (window.innerHeight || 0) && box.width > 0,
           props: props,
           tag: el.tagName,
           // For the FAILURE MESSAGE only — a class name never enters a predicate, but a key
@@ -231,11 +252,11 @@ const AUDIT_JS: &str = r##"(function () {
       var before = this.snap, after = capture(this.sel, this.idAttr);
       var props = {}, groups = {};
       GROUPS.forEach(function (g) { groups[g] = { n: 0, changed: 0, props: {}, changedSample: [], unchangedSample: [] }; });
-      var gone = [], added = [], changedTotal = 0;
+      var gone = [], goneInView = [], added = [], changedTotal = 0;
       after.forEach(function (_, key) { if (!before.has(key)) added.push(key); });
       before.forEach(function (a, key) {
         var b = after.get(key);
-        if (!b) { gone.push(key); return; }
+        if (!b) { gone.push(key); if (a.view) goneInView.push(key); return; }
         var g = groups[groupOf(a)];
         g.n++;
         var moved = [];
@@ -248,8 +269,9 @@ const AUDIT_JS: &str = r##"(function () {
         moved.forEach(function (p) { props[p] = (props[p] || 0) + 1; g.props[p] = (g.props[p] || 0) + 1; });
       });
       return { elements: before.size, matched: before.size - gone.length,
-               gone: gone.length, added: added.length,
-               goneSample: gone.slice(0, 6), addedSample: added.slice(0, 6),
+               gone: gone.length, goneInView: goneInView.length, added: added.length,
+               goneSample: gone.slice(0, 6), goneInViewSample: goneInView.slice(0, 6),
+               addedSample: added.slice(0, 6),
                changedTotal: changedTotal, props: props, groups: groups };
     }
   };
@@ -326,7 +348,7 @@ fn arm(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
         settle();
         let idle = report(tab);
         if idle["changedTotal"].as_i64() == Some(0)
-            && idle["gone"].as_i64() == Some(0)
+            && idle["goneInView"].as_i64() == Some(0)
             && idle["added"].as_i64() == Some(0)
         {
             return census;
@@ -566,9 +588,12 @@ fn assert_governs(
         }
     }
     assert_eq!(
-        report["gone"].as_i64(),
+        report["goneInView"].as_i64(),
         Some(0),
-        "{surface:?}: {control} unmounted nothing the reader was looking at: {report}"
+        "{surface:?}: {control} took away something ON SCREEN. Unmounting what has scrolled out \
+         of range is a windowing page's job (#50) — turning wrap on makes the document taller \
+         and the classic page drops a block far above the reader — but a control may never \
+         remove a rendering the reader can see: {report}"
     );
 }
 
@@ -956,16 +981,6 @@ fn the_two_pages_agree_about_what_the_wrap_control_reaches() {
 /// The reader is parked MID-DOCUMENT on purpose. At the tail the page converges to the bottom on
 /// its own, so a position that was rewritten and a position that was kept look identical — the
 /// lesson #185's fixture had to learn from the other direction.
-fn scroll_top(tab: &headless_chrome::Tab, surface: Surface) -> f64 {
-    let s = surface.scroller();
-    probe(
-        tab,
-        &format!("(function(){{ var s = {s}; return s ? s.scrollTop : -1; }})()"),
-    )
-    .as_f64()
-    .unwrap_or(-1.0)
-}
-
 fn scenario_a_press_that_changes_nothing_does_not_move_the_reader(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -987,7 +1002,7 @@ fn scenario_a_press_that_changes_nothing_does_not_move_the_reader(
     settle();
     settle();
     arm(tab, surface);
-    let before = scroll_top(tab, surface);
+    let before = harness::scroll_top(tab, surface);
     assert!(
         before > 50.0,
         "{surface:?}: the reader is parked away from the top, where a rewritten position is \
@@ -995,7 +1010,7 @@ fn scenario_a_press_that_changes_nothing_does_not_move_the_reader(
     );
     press(tab, "-");
     let report = report(tab);
-    let after = scroll_top(tab, surface);
+    let after = harness::scroll_top(tab, surface);
     // The premise, measured: this press really did change nothing.
     assert_eq!(
         report["changedTotal"].as_i64(),
@@ -1004,9 +1019,9 @@ fn scenario_a_press_that_changes_nothing_does_not_move_the_reader(
          different claim than the one it states: {report}"
     );
     assert_eq!(
-        report["gone"].as_i64(),
+        report["goneInView"].as_i64(),
         Some(0),
-        "{surface:?}: …and unmounted nothing: {report}"
+        "{surface:?}: …and took away nothing on screen: {report}"
     );
     // …and therefore the reader did not move. An exact equality: there is no rounding to be
     // generous about when nothing rendered differently.
@@ -1036,4 +1051,104 @@ fn app_shell_a_press_that_changes_nothing_does_not_move_the_reader() {
     let fx = fixture_audit("audit-p4-app");
     let page = open(Surface::AppShell, &fx, 2964);
     scenario_a_press_that_changes_nothing_does_not_move_the_reader(&page.tab, Surface::AppShell);
+}
+
+/// ── STAGE D — THE CONDITIONS: TWO WIDTHS AND TWO THEMES ─────────────────────────────────────
+///
+/// The task's own reason for them, and both are lessons this repo paid for: cascade bugs hide at
+/// a NARROW window — a control that measures a perfectly good rect while sitting behind its own
+/// header (#155, and "rect is not visibility" from #98) — and colour and contrast rules hide in
+/// the OTHER THEME, which nothing in a light-theme run ever evaluates.
+///
+/// One case per surface rather than four, because the claims are the same claims: what changes
+/// is the DOM they are quantified over, and the condition travels in the failure message. Each
+/// press is undone before the next, so the size never walks down to its floor and leaves a later
+/// iteration measuring a control that can no longer move.
+fn set_theme(tab: &headless_chrome::Tab, dark: bool) {
+    eval(
+        tab,
+        &format!(
+            "(function(){{ var want = {}; var root = document.documentElement; \
+             var now = root.getAttribute('data-theme') === 'dark'; \
+             if (now !== want) {{ var b = document.getElementById('themeBtn') || document.getElementById('btn-theme'); \
+             if (b) b.click(); else root.setAttribute('data-theme', want ? 'dark' : ''); }} \
+             return root.getAttribute('data-theme') || 'light'; }})()",
+            if dark { "true" } else { "false" }
+        ),
+    );
+}
+
+fn scenario_the_claims_hold_at_every_width_and_theme(tab: &headless_chrome::Tab, surface: Surface) {
+    for (width, dark) in [
+        (1400.0, false),
+        (1400.0, true),
+        (900.0, false),
+        (900.0, true),
+    ] {
+        let condition = format!("{}px {}", width as i64, if dark { "dark" } else { "light" });
+        harness::resize(tab, width, 950.0);
+        // `set_bounds` is asynchronous and CI's headless Linux has been seen to ignore a width
+        // outright, so the case measures what it actually GOT and says so rather than assuming.
+        harness::until(
+            tab,
+            &format!("Math.abs(innerWidth - {}) < 120", width as i64),
+            "the window to reach the requested width",
+            Duration::from_secs(10),
+            "innerWidth",
+        );
+        set_theme(tab, dark);
+        settle();
+        jump_to_end(tab, surface);
+        settle();
+        // A resize re-renders and re-windows, so what was open may not be.
+        open_everything(tab, surface);
+        settle();
+
+        arm(tab, surface);
+        press(tab, "-");
+        let size = report(tab);
+        assert_governs(
+            &size,
+            surface,
+            &format!("the code-size control (−) at {condition}"),
+            "font-size",
+            &["code-mono", "code-other"],
+            &["mono", "pre", "other"],
+        );
+        press(tab, "+"); // …and put it back, so the next iteration is not measuring the floor.
+        settle();
+
+        arm(tab, surface);
+        press(tab, "w");
+        let wrap = report(tab);
+        let prop = wrap_prop(&wrap);
+        assert_governs(
+            &wrap,
+            surface,
+            &format!("the wrap control (w) at {condition}"),
+            prop,
+            &["code-mono", "code-other", "pre"],
+            &["mono", "other"],
+        );
+        press(tab, "w");
+        settle();
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn classic_page_the_claims_hold_at_every_width_and_theme() {
+    let _serial = serial();
+    let fx = fixture_audit("audit-conditions-classic");
+    let page = open(Surface::Classic, &fx, 2965);
+    scenario_the_claims_hold_at_every_width_and_theme(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_claims_hold_at_every_width_and_theme() {
+    let _serial = serial();
+    let fx = fixture_audit("audit-conditions-app");
+    let page = open(Surface::AppShell, &fx, 2966);
+    scenario_the_claims_hold_at_every_width_and_theme(&page.tab, Surface::AppShell);
 }
