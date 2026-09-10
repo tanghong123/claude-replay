@@ -808,7 +808,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const same = [{ id: "x", status: "pending" }, { id: "x", status: "pending" }];
   assert.deepEqual(taskOrder(same).map(r => r.index), [0, 1], "ties keep the stream's order");
   assert.deepEqual(taskGroups([]), [], "no tasks, no groups");
-  assert.match(appSource, /taskGroups\(tasks\)\.map\(group => `<div class="work-group" data-task-group="\$\{group\.key\}">/, "the pane renders the groups with a boundary");
+  assert.match(appSource, /const taskShown = taskGroups\(tasks\)\.filter\(group => !liveTasksOnly \|\| group\.key !== "completed"\);/, "#186: the pane filters the GROUPS, never the list — each row carries its index into `meta.tasks` and `data-task-open` hands that index straight back to `openTaskPopover`, so a filtered array would open the wrong task's details");
+  assert.match(appSource, /taskShown\.map\(group => `<div class="work-group" data-task-group="\$\{group\.key\}">/, "the pane renders the groups with a boundary");
+  const stateSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  assert.match(stateSource, /liveOnly: new Set\(json\("am-prod-live-only", \["tasks", "agents"\]\)\),/, "…live-only is ON for both panes by default (#186), and remembered per viewer like the other outline choices");
+  assert.match(stateSource, /localStorage\.setItem\("am-prod-live-only", JSON\.stringify\(\[\.\.\.uiState\.liveOnly\]\)\);/, "…and `persist` actually writes it — a filter a reader must set again every reload is one they stop using");
   console.log("#56 task order cases passed");
 }
 

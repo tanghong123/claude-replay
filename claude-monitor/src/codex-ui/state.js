@@ -57,6 +57,11 @@ export const uiState = {
   // Which info subsections the reader has folded away (#89). Per VIEWER, not per session: a
   // reader who does not care about Usage does not care about it in the next session either.
   infoFolds: new Set(json("am-prod-info-folds", [])),
+  // Which outline panes show only their LIVE rows (#186). ON for tasks and agents by default,
+  // because a long session's finished work is a wall nobody reads — the owner's words were that
+  // showing everything "renders it useless". Per VIEWER, like the other outline choices, and the
+  // pane's own header keeps showing both counts so what is held back is never a secret.
+  liveOnly: new Set(json("am-prod-live-only", ["tasks", "agents"])),
   searchTab: "all", searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), searchWhole: false, toolFilters: new Set(),
   globalResults: [], globalIndex: 0,
   reading: parseReading(localStorage.getItem(READING_KEY)) || { ...DEFAULT_READING },
@@ -80,6 +85,7 @@ export function persist() {
   localStorage.setItem("am-prod-nav-cards", JSON.stringify([...uiState.navCards]));
   localStorage.setItem("am-prod-nav-panes", JSON.stringify([...uiState.navPanes]));
   localStorage.setItem("am-prod-info-folds", JSON.stringify([...uiState.infoFolds]));
+  localStorage.setItem("am-prod-live-only", JSON.stringify([...uiState.liveOnly]));
   localStorage.setItem("am-prod-read", JSON.stringify(indexState.read));
   if (uiState.readingChosen) localStorage.setItem(READING_KEY, JSON.stringify(uiState.reading));
 }

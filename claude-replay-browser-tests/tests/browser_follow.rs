@@ -5771,3 +5771,130 @@ fn the_app_shell_outline_caption_and_its_menu_lay_out() {
         "Info is not listed as a pane: {seen}"
     );
 }
+
+/// #186: the tasks and agents panes open on what is LIVE, and say what they are holding back.
+///
+/// The owner's report was that a pane listing everything "renders it useless" on a long session.
+/// So the default is live-only — running and pending tasks, running sub-agents — with one control
+/// per pane for the rest. Two things this case insists on beyond the filtering itself: the head's
+/// counts keep naming BOTH halves, so what is hidden is never a secret; and the choice survives a
+/// reload, because a filter a reader has to set again every time is a filter they stop using.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_panes_open_on_what_is_live() {
+    let _serial = serial();
+    let base = base("appshell-live-only");
+    let stores = Stores::new(&base);
+    let sid = "eeeeeeee-0000-4000-8000-000000000186".to_string();
+    // One sub-agent that FINISHED and one still out. What closes a spawn is the completion
+    // NOTIFICATION, not the tool result — measured while building this: a spawn plus its
+    // `agent-result` leaves the agent `running`, because the result names the child without
+    // saying it is done. And a spawn with NO result is not a child at all: `collect_child_refs`
+    // keeps only a `SubAgent` with a non-empty `agent_id`, and the id is what the result carries.
+    let mut transcript = harness::long_session(20, harness::Shape::default());
+    transcript += &harness::agent_spawn("call_done", "Explore", 21);
+    transcript += &harness::agent_result("call_done", "aDone-186", "Explore", 22);
+    transcript += &harness::agent_finished("aDone-186", "look around", 23);
+    transcript += &harness::agent_spawn("call_live", "general-purpose", 24);
+    transcript += &harness::agent_result("call_live", "aLive-186", "general-purpose", 25);
+    transcript += &harness::long_session(6, harness::Shape::default());
+    stores.claude_session(&sid, &transcript);
+    for child in ["aDone-186", "aLive-186"] {
+        stores.claude_child(
+            &sid,
+            child,
+            &harness::long_session(4, harness::Shape::default()),
+        );
+    }
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, done", "completed"),
+            ("3", "three, running", "in_progress"),
+            ("4", "four, pending", "pending"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V2, 2885, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    let open = |tab: &headless_chrome::Tab| {
+        tab.navigate_to(&format!("http://127.0.0.1:2885/?ui=app&session={sid}"))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+        // Both panes have to EXIST and be open before anything can be counted in them.
+        harness::eval(tab, "for (const key of ['tasks', 'agents']) { var c = document.querySelector('[data-nav-card=\"' + key + '\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"' + key + '\"]').click(); } 'ok'");
+        harness::until(
+            tab,
+            "!!document.getElementById('tasksLiveOnly') && !!document.getElementById('agentsLiveOnly')",
+            "both live-only controls to be built",
+            std::time::Duration::from_secs(10),
+            "document.querySelector('.session-navigator').innerText.slice(0, 200)",
+        );
+    };
+    let state = "(function(){ var q = function (s) { return [...document.querySelectorAll(s)].map(function (e) { return e.textContent.trim(); }); }; return { tasks: q('#navigatorWork .work-task strong'), groups: q('#navigatorWork .work-group span:first-child'), agents: q('#navigatorAgents .outline-agent-copy strong'), taskCount: document.getElementById('navigatorWorkCount').textContent.replace(/\\s+/g, ' ').trim(), agentCount: document.getElementById('navigatorAgentCount').textContent.replace(/\\s+/g, ' ').trim(), tasksOn: document.getElementById('tasksLiveOnly').getAttribute('aria-pressed'), agentsOn: document.getElementById('agentsLiveOnly').getAttribute('aria-pressed'), agentsEmpty: (document.querySelector('#navigatorAgents .activity-empty') || {}).textContent || '' }; })()";
+
+    open(&tab);
+    let live = harness::probe(&tab, state);
+    assert_eq!(live["tasksOn"], "true", "live-only is the default: {live}");
+    assert_eq!(live["agentsOn"], "true", "…in both panes: {live}");
+    let tasks: Vec<String> = live["tasks"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|t| t.as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        tasks,
+        vec!["three, running".to_string(), "four, pending".to_string()],
+        "the two completed tasks are held back, the running and the pending one are not — a \
+         PENDING task is live work, it just has not started: {live}"
+    );
+    let agents: Vec<String> = live["agents"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|t| t.as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(agents.len(), 1, "only the sub-agent still out: {live}");
+    // The head must keep naming both halves, or a short list is indistinguishable from no data.
+    assert!(
+        live["taskCount"].as_str().unwrap_or("").contains('2'),
+        "the head still counts what is hidden: {live}"
+    );
+
+    // …and the rest is one click away.
+    harness::eval(&tab, "document.getElementById('tasksLiveOnly').click(); document.getElementById('agentsLiveOnly').click(); 'ok'");
+    let all = harness::probe(&tab, state);
+    assert_eq!(all["tasksOn"], "false", "the control flips: {all}");
+    assert_eq!(
+        all["tasks"].as_array().map(|a| a.len()),
+        Some(4),
+        "every task is back: {all}"
+    );
+    assert_eq!(
+        all["agents"].as_array().map(|a| a.len()),
+        Some(2),
+        "…and both sub-agents: {all}"
+    );
+
+    // A filter a reader has to set again on every reload is a filter they stop using.
+    open(&tab);
+    let after = harness::probe(&tab, state);
+    assert_eq!(
+        after["tasksOn"], "false",
+        "the choice survived the reload: {after}"
+    );
+    assert_eq!(
+        after["tasks"].as_array().map(|a| a.len()),
+        Some(4),
+        "…and so did what it shows: {after}"
+    );
+    drop(monitor);
+}

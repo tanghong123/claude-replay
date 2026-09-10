@@ -294,6 +294,18 @@ pub fn agent_result(call_id: &str, agent_id: &str, subagent_type: &str, s: u32) 
     )
 }
 
+/// The notification that CLOSES a spawn (#26): Claude records an async agent's completion as a
+/// `queue-operation`/`enqueue` whose content carries `<task-id>`, `<status>` and a `<summary>`
+/// beginning `Agent "`. Nothing else marks a sub-agent terminal — measured while building #186's
+/// case: a spawn plus its `agent-result` leaves the agent `running`, because the result names the
+/// child but does not say it finished.
+pub fn agent_finished(agent_id: &str, description: &str, s: u32) -> String {
+    format!(
+        "{{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"{}\",\"content\":\"<task-notification><task-id>{agent_id}</task-id><status>completed</status><summary>Agent \\\"{description}\\\" finished</summary></task-notification>\"}}\n",
+        stamp(s)
+    )
+}
+
 /// An ISO timestamp `secs_ago` seconds before now — for records that must read as live.
 pub fn now_minus(secs_ago: u64) -> String {
     let t = std::time::SystemTime::now() - Duration::from_secs(secs_ago);
