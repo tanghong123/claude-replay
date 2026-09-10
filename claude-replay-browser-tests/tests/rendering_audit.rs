@@ -64,6 +64,31 @@ const SID: &str = "aaaaaaaa-0000-4000-8000-000000000174";
 /// level fails here rather than shrinking the audit in silence.
 const NESTED_ONLY: [&str; 0] = [];
 
+/// **THE INSTRUMENT'S OWN BLIND SPOT, written down and asserted so it cannot widen in silence.**
+///
+/// A record root is where a page stamps a record id, and the two pages disagree about which
+/// records get one. The classic page stamps every mounted block (`matBlock`: `e.dataset.kind`,
+/// `e.id`), prose turns included. The app shell stamps `data-record-id` on a `.renderer` — a TOOL
+/// rendering — while a user or assistant turn is a prose view addressed by `data-block-index`
+/// instead (`components.js`; the same asymmetry Stage A recorded as "the two kinds with no
+/// renderer key are the prose views"). A slash-command turn is the third: it is a `.turn user
+/// command` card, prose-addressed like the other two. A slash-command turn is the third: it is a `.turn user
+/// command` card, prose-addressed like the other two.
+///
+/// So every app-shell claim in this file is quantified over the TOOL renderings and not over the
+/// prose turns. That is a real limit on what the audit has proved, and it was found by adding a
+/// control whose domain is exactly those turns — the raw-text preference — which reported that no
+/// `user` record existed at all. Closing it means deciding how a prose turn is ADDRESSED on the
+/// app shell so that P3's cells still line up with the classic page's `t18`/`b42` ids, and that
+/// is a design decision, not a selector tweak.
+///
+/// Until then the coverage case asserts this exact difference, so the day it changes — in either
+/// direction — the audit says so.
+const NOT_CAPTURED: [(&str, &[&str]); 2] = [
+    ("Classic", &[]),
+    ("AppShell", &["assistant", "command", "user"]),
+];
+
 struct Fixture {
     base: PathBuf,
     path: PathBuf,
@@ -134,7 +159,7 @@ const AUDIT_JS: &str = r##"(function () {
   // memory-based omission this audit exists to remove, and it is exactly how #161 and #173 hid.
   function capture(sel, idAttr) {
     var snap = new Map();
-    var owner = {};
+    var owner = {}, kind = {};
     [].slice.call(document.querySelectorAll(sel)).forEach(function (root) {
       var id = idAttr === "id" ? root.id : root.getAttribute(idAttr);
       if (!id) return;
@@ -144,6 +169,12 @@ const AUDIT_JS: &str = r##"(function () {
       // only the tree can tell the two apart.
       var up = root.parentElement ? root.parentElement.closest(sel) : null;
       owner[id] = up ? (idAttr === "id" ? up.id : up.getAttribute(idAttr)) : null;
+      // The record's KIND, from whichever stamp the page carries — the classic page writes
+      // `data-kind` in `matBlock`, the app shell `data-record-kind` on the turn wrapper. A third
+      // partition, over the same snapshot: some controls govern a kind of RECORD rather than a
+      // kind of content.
+      var owning = root.closest("[data-kind], [data-record-kind]");
+      kind[id] = owning ? (owning.dataset.recordKind || owning.dataset.kind || "") : "";
       (function walk(el, path) {
         var cs = getComputedStyle(el), props = {};
         for (var i = 0; i < cs.length; i++) {
@@ -184,6 +215,7 @@ const AUDIT_JS: &str = r##"(function () {
       })(root, "");
     });
     snap.owner = owner;
+    snap.kind = kind;
     return snap;
   }
   // ── the partition ─────────────────────────────────────────────────────────────────────
@@ -205,6 +237,29 @@ const AUDIT_JS: &str = r##"(function () {
       GROUPS.forEach(function (g) { census[g] = 0; });
       this.snap.forEach(function (e) { census[groupOf(e)]++; });
       return { elements: this.snap.size, census: census };
+    },
+    // The effect set partitioned by RECORD KIND. A control can govern a kind of RECORD rather
+    // than a kind of content — the raw-text preference is about USER turns and about nothing
+    // else — and the kind comes from each page's own stamp, so no vocabulary of mine enters it.
+    reportKinds: function () {
+      var before = this.snap, after = capture(this.sel, this.idAttr);
+      var kinds = {};
+      before.forEach(function (a, key) {
+        var id = key.slice(0, key.indexOf("/"));
+        var k = before.kind[id] || "?";
+        var g = kinds[k] || (kinds[k] = { n: 0, changed: 0, records: {}, sample: [] });
+        g.n++;
+        var b = after.get(key);
+        if (!b) return;
+        var moved = [];
+        for (var p in a.props) if (a.props[p] !== b.props[p]) moved.push(p);
+        if (!moved.length) return;
+        g.changed++;
+        g.records[id] = true;
+        if (g.sample.length < 6) g.sample.push(key + " <" + b.tag.toLowerCase() + "." + (b.cls || "") + "> [" + moved.slice(0, 5).join(",") + "]");
+      });
+      for (var k in kinds) kinds[k].records = Object.keys(kinds[k].records);
+      return kinds;
     },
     // The effect set as CELLS — `<record id>|<group>` — which is the only shape that compares
     // across the two pages (P3). Neither the class names nor the child-index paths agree between
@@ -447,6 +502,35 @@ fn scenario_the_instrument_sees_the_whole_corpus(tab: &headless_chrome::Tab, sur
         "{surface:?}: nothing is left folded away — a rendering the instrument cannot see is \
          outside every predicate, and a predicate that passes over an empty domain is \
          indistinguishable from a clean audit: {seen}"
+    );
+
+    // Which kinds the INSTRUMENT can actually see, as against which the page mounted. The gap is
+    // the blind spot named at `NOT_CAPTURED`, asserted as an equality in both directions.
+    let (sel, id_attr) = roots(surface);
+    eval(tab, AUDIT_JS);
+    probe(tab, &format!("window.__audit.arm('{sel}', '{id_attr}')"));
+    let captured: std::collections::BTreeSet<String> = probe(
+        tab,
+        "(function(){ var k = window.__audit.snap.kind, out = {}; for (var id in k) out[k[id]] = 1; return Object.keys(out).sort(); })()",
+    )
+    .as_array()
+    .into_iter()
+    .flatten()
+    .filter_map(|k| k.as_str().filter(|s| !s.is_empty()).map(str::to_string))
+    .collect();
+    let blind: Vec<&String> = got.difference(&captured).collect();
+    let expected_blind = NOT_CAPTURED
+        .iter()
+        .find(|(name, _)| *name == format!("{surface:?}"))
+        .map(|(_, kinds)| *kinds)
+        .unwrap_or(&[]);
+    assert_eq!(
+        blind.iter().map(|k| k.as_str()).collect::<Vec<_>>(),
+        expected_blind.to_vec(),
+        "{surface:?}: the instrument sees every kind the page mounted, except the ones named at \
+         NOT_CAPTURED. A kind the page draws and the instrument cannot address is outside every \
+         predicate in this file, and a predicate that passes over an unreachable domain is \
+         indistinguishable from a clean audit. Mounted {got:?}, captured {captured:?}"
     );
 
     let census = arm(tab, surface)["census"].clone();
