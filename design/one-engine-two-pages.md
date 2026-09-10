@@ -527,3 +527,142 @@ not there.
    page heals a scrolled-up reader when it is given them. The port hands it exactly those
    heights. Whatever #156 turns out to be has to be understood BEFORE the port, not discovered
    underneath it.
+
+### Step 4, done (2026-09-09) — the port, and the score against the preconditions
+
+Shipped in three commits: the `#vwin` wrapper, `documentFrame`, `clampIndex`, `skipAt` and
+`renderAll` (`9c02aed`, riding along with #157/#159); the `afterMount` hook and the corrected
+document scrollbar predicate (v1.241.0, `5dae349`); and the swap itself. The classic page is now
+a subclass of `VirtualWindow` over `documentFrame()`; **59/59 classic scenarios pass**, and the
+app shell's are unchanged.
+
+**The preconditions above scored 5 wrong out of 9.** Recorded here because the pattern is the
+point: every one of them was written from reading, and every one that fell fell the same way —
+the code turned out to be simpler than the reading of it.
+
+| # | Claim | Outcome |
+|---|---|---|
+| 1 | `documentFrame`/`skip` are work, not hooks | **held** — all three written |
+| 2 | a wrapper breaks step 1's CSS | **wrong** — the rules moved to `#vwin` and all 57 scenarios passed, `a_record_measures_as_its_own_box` included |
+| 3 | four browser cases die on the wrapper | **wrong** — one harness probe, `#stream [data-idx]`, and three selectors |
+| 4 | the clamp is one option on the class | **held** — `clampIndex: false` |
+| 5 | a skip cannot be a zero height | **held** — `heightOf` falls through to the estimate |
+| 6 | `filterFull` is a second mount strategy | **held** — `renderAll` |
+| 7 | the document frame needs a scrollbar test | **held, and the first draft of it was wrong** — see below |
+| 8 | the four `scrollBy` sites must come across | **wrong** — only 2 of 8 are follow corrections and both are already the engine's absolute anchor path; the other six are navigation, a fold hold and drag-select. The engine pin stands untouched |
+| 9 | #156 sits across the path | **held, and it was not the heights** — a long main-thread task delayed the scroll handler past the intent window. Both pages classify on the event's clock now |
+
+**Six defects the port found**, each fixed where the rule lives — five here, and a sixth
+below that took longer to see than the other five together:
+
+1. **`rangeForScroll` indexes `scrollTop` straight into the sums** — right only when the pads are
+   the first thing in the scroller, which they are on neither page (`.transcript-inner` has 24px
+   of top padding; `#stream` sits under a topbar and a session header, measured at ~250px). So
+   the fallback range, taken exactly where a dragged thumb leaves the reader, names an item that
+   far late. `contentTop()` is the correction, scroll-invariant by construction, and `displaced`
+   watches it for the same reason.
+2. **`elementFrame.isScrollbarTarget` accepted any press on the scroller** — and
+   `.transcript-inner` is `margin: 0 auto` inside `min(880px, 100% - 76px)`, so 38px of gutter
+   each side IS the scroller. A gutter press entered drag mode for as long as the button was
+   held, which is the whole of a drag-selection: there every scroll counts as the reader's, no
+   anchor is held, and a converge is deferred indefinitely. This is the live twin of the
+   `documentFrame` predicate that precondition 7 got wrong in its first draft (it accepted
+   `body`, and `.layout` is centred at 1160px) — the same mistake, found from the other side.
+3. **The engine heard a growth only from inside the mounted window.** The classic page had heard
+   it from anywhere since #89/#98, through a `ResizeObserver` on `document.body`, and the port
+   would have dropped that: the session header's meta chips wrapping to a second line move every
+   record down and fire no scroll event. The engine cannot simply watch the content — that
+   element holds the pads and measuring writes them, so the delivery re-fires itself — so
+   `displaced()` is guarded on where the content BEGINS, which a pad write never moves.
+4. **The classic page never re-guessed its heights on a width change.** #132 step 4 gave the
+   engine `remeasure()` — scale the remembered heights by the width ratio rather than discard
+   them — and this page's resize handler had always just re-windowed, keeping heights measured at
+   the old width. That is exactly what `jump_to_bottom_lands_after_a_viewport_resize` was written
+   about ("closing the rail widens the frame, so every height the virtualizer measured at the old
+   width is suddenly wrong"), and the old page survived it only by luck of arithmetic. The page
+   now calls `remeasure()`, with a `scaleHeights` of its own so the fallback is not
+   `clearHeights` — which would drop every unseen record to the 30px floor and shrink the page
+   under the reader, the one direction rule 5 forbids — and it seeds `lastWidth` from the mount,
+   because the engine's is zero until the first remeasure and on this page the FIRST width change
+   is the one that matters.
+5. **The lazy sums needed marking per push, not per batch.** An observer delivery can reconcile
+   between two pushes, and a reconcile reads the sums to place the pads; a prefix shorter than
+   the record list reads `undefined` for the total and writes a pad height of `NaN`. The old
+   code had the same shape and got away with it because only `postRender` and the scroll handler
+   ever reconciled.
+
+Defects 4 and 5 were found together, from `jump_to_bottom_lands_after_a_viewport_resize` — the
+one case in the whole suite that the swap turned red. Both pages were instrumented side by side
+through the same gesture, which is what separated them: the classifier's verdict was *identical*
+on the two pages (`user: false`, gap 0, "none", 307ms since the last wheel), so the pin was never
+the difference. The old page simply did not move, because its tail window had been twice as tall
+and its heights therefore real. Reading alone would have blamed the classifier.
+
+**Three wider fixes were written for it first, and all three were withdrawn by measurement.**
+Widening `rangeAround` so the tail window is not a screenful short: three app-shell cases. Giving
+the converge its own tail window instead: one. Holding the end as a POSITION for a reader who is
+at it without following: five more — the shell's cases assert that a reader at the bottom keeps
+their OFFSET when a pane opens, not that they keep the bottom, and that is a genuine difference
+between the two pages rather than a bug in either. Seeding `lastWidth` in the engine rather than
+on the page: three, because the shell's first remeasure is a pane opening, where clearing is what
+its own cases were written against.
+
+Each of those was a plausible reading of the failure and each reached the other page through the
+shared engine, where only the shell's own suite could say so. What shipped is the narrowest thing
+that was actually true: this page had never used a rule the engine has had since #132, and once
+it did, the two withdrawn fixes were not needed at all — the case passes without them. That is
+the argument for one engine restated as a hazard: a shared rule is shared in both directions, and
+"it fixes the page I am looking at" is not evidence about the other one.
+
+**One more defect, found last and the hardest to see.** The hit-nav's landing was not held.
+`revealMark` expands a capped tool output to get to a hit; the engine measures that growth under
+its own observer a frame later and holds the reader by their anchor — which on this page can only
+be the RECORD, because `export.js` emits no `[data-block-index]` rows for #98's row-level anchor.
+A record that grows INSIDE keeps its own top exactly where it is and pushes everything below it
+down, the mark included: measured, the landing was correct and 956px past the viewport a moment
+later. `goToId` has called `holdLanding` since #94 for exactly this ("a turn full of images moves
+the page by thousands of pixels"); the hit nav never did, and relied on the scroll handler.
+It does now — `holdLanding` takes an element as well as an id, and `goTo` reports whether it
+actually moved the page so the hold is armed only when there is a landing to hold.
+
+That one cost the most, and the reason is worth recording: the first bisect said the cause was
+`contentTop` in `rangeForScroll` (three failures with it, one pass without). It was not — the
+case fails without it too, and the single pass was luck read as a clean split. What settled it was
+running the case three times on the PRE-SWAP page (3/3 green), which proved a regression without
+naming one, and then a trace of `goTo`'s own arithmetic, which showed the landing was correct and
+something moved it afterwards. A wrong bisect off one sample cost two rebuild-and-run cycles and
+a filed-then-cancelled task (#175).
+
+**Two differences remain, written down rather than left to drift — and they are not the same
+kind of thing.** Only the first is a difference #174 should ALLOW:
+
+- **Accepted.** The anchor's above-the-fold epsilon is 1px on both pages now; the classic page
+  used 0. One rule, one number, no symptom — an allowlist entry.
+- **Deferred, and CORRECTED after this note first shipped** (2026-09-09). The first version of
+  this bullet said the classic page lacks #98's ROW-level anchor and that defect 6 was its
+  symptom. Both halves were wrong, and they were wrong in the way this whole document warns
+  about — read off a comment rather than off `captureDomAnchor`.
+  The anchor has two levels: the mounted ITEM, then a refinement to the first `[data-block-index]`
+  inside it. The app shell mounts UNITS holding several records and indexes each (nested children
+  included, by the dotted path at `components.js:95`), so the refinement addresses RECORDS. The
+  classic page mounts ONE RECORD PER ITEM — so item-level already IS record-level, and the
+  "degradation" is harmless. Neither page anchors BELOW a record.
+  The real difference is narrower: a classic mounted item can still hold NESTED records
+  (`export.js:189`, the `blocks` part) which carry an id but no `data-block-index`, so a nested
+  child growing above the reader moves them. That is **#176**, rewritten to this scope.
+  And defect 6 is NOT its symptom. That growth is inside one record's BODY, below record
+  granularity, where neither page anchors — and it was never an anchor failure: the reader's
+  anchor held, the MARK moved. A landing problem, which is why `holdLanding` at the navigation
+  site is the whole of the fix rather than a paper-over.
+
+**Three scenarios** were written for the risks that had no coverage, each run on both surfaces:
+a landing holds through a growth above it (`holdLanding` against the engine's kept anchor); a
+growth around the run displaces the reader, pinned and reading; a press in the gutter is not a
+thumb.
+
+**The ten `#107` `export.js` pins in `ui_contract.mjs` are rewritten.** They named this page's
+own sums, pads, anchor, owed correction and scroll classifier — every one of those rules MOVED
+rather than weakened, and the engine pins above them now hold each once for both pages. In their
+place is what only this page can say: that it extends the engine, that it keeps none of the
+machinery (`doesNotMatch` on the scroll listener, the body observer and the rule calls), and the
+three parameters that carry its genuine differences.

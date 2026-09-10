@@ -334,7 +334,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const raw = rawTurnHtml({ kind: "user", body: [{ p: "md", h: "<p>x</p>" }] });
   assert.match(raw, /^<pre class="turn-raw">/); assert.ok(raw.includes("&lt;p&gt;x&lt;\/p&gt;") || raw.includes("&lt;p&gt;x&lt;/p&gt;"), "the raw record is escaped, never re-entered as markup");
   assert.match(productionCss, /#app\{--code-size:12px;--measure:820px\}/, "reading preferences are custom properties on the app root");
-  assert.match(productionCss, /#app\.wrap-code \.markdown pre/, "wrap is a class on the app root");
+  // #173: wrap is still a class on the app root, but its DOMAIN is now derived rather than
+  // enumerated — every `pre` in the transcript, plus whatever carries the code marker. The old
+  // pin named `.markdown pre`, one entry of the list this change deleted.
+  assert.match(productionCss, /#app\.wrap-code \.transcript pre,#app\.wrap-code \[data-code\]/, "wrap reaches the transcript's pre elements and the code marker");
+  // The contract's explicit DROP: `.transcript code` swept inline backtick code into a code
+  // control, forcing pre-wrap on prose. Inline code has no line identity and is not a wrap surface.
+  assert.doesNotMatch(productionCss, /wrap-code[^{]*\.transcript code/, "inline code is not a wrap surface");
   assert.match(readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8"), /if \(uiState\.readingChosen\) localStorage\.setItem\(READING_KEY, JSON\.stringify\(uiState\.reading\)\)/, "reading preferences persist with the other production preferences — once chosen (#45)");
   assert.match(appSource, /recordState\.rawTurns\.clear\(\)/, "raw turns reset when a session opens");
   console.log("reading + raw cases passed");
@@ -1044,7 +1050,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(appSource, /context compacted/, "…and no prose");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(css, /\.outline-epoch\{[^}]*font-size:11\.5px;line-height:1\.4;/, "the rows' own type (the reference's final .outline-label size)");
-  assert.match(css, /\.session-navigator>\.outline-caption\{position:sticky;top:0;z-index:3;background:var\(--bg\)\}/, "the Outline caption takes the page background (#87)");
+  assert.match(css, /\.session-navigator>\.outline-caption\{position:sticky;top:0;z-index:20;background:var\(--bg\)\}/, "the Outline caption takes the page background (#87)");
   const modRs = readFileSync(new URL("../../claude-replay-html/src/html_export/mod.rs", import.meta.url), "utf8");
   assert.match(modRs, /head\.insert\("compact_trigger"\.into\(\), json!\(trigger\.as_str\(\)\)\);/, "the wire carries the trigger");
   console.log("#86/#87 compaction tick cases passed");
@@ -1058,7 +1064,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const src = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   const vpSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   // The rule is the shared module's since #107; this page measures the rects and reads it.
-  assert.match(src, /const row = firstVisible\(\[\.\.\.child\.element\.querySelectorAll\("\[data-block-index\]"\)\]\.map\(rects\), viewportTop, Infinity, 1, true\);/, "the anchor descends to the first visible row of the unit");
+  assert.match(src, /const rowIn = element => firstVisible\(\[\.\.\.element\.querySelectorAll\("\[data-block-index\]"\)\]\.map\(rects\), viewportTop, Infinity, 1, true\);/, "the anchor descends to the first visible row of the unit");
+  assert.match(src, /for \(let scope = child; scope\.top < viewportTop; scope = row\) \{\n\s+const inner = rowIn\(scope\.element\);\n\s+if \(!inner\) break;\n\s+row = inner;\n\s+\}/, "ONE predicate from the ITEM down: refine only while the thing being held STRADDLES the edge. Descending reaches the nested record the reader is inside rather than its wrapper (#177); STOPPING keeps a record whose own top is visible as the anchor, instead of handing it to a child below the head being read (#178, measured at 420px on the classic page)");
   assert.equal(firstVisible([{ index: 0, top: 900, bottom: 1000, height: 100 }], 0, 500, 1, false), null, "a unit below the viewport is no anchor — the scroll offset places the window");
   assert.match(src, /const row = item\.querySelector\(`\[data-block-index="\$\{anchor\.block\}"\]`\);/, "…and the restore puts that row back");
   assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\)\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");
@@ -1217,7 +1224,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(css, /\.codebox \.ln,\.codebox \.mark\{user-select:none\}/, "gutters and marks are unselectable");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
-  assert.match(app, /readingStep: delta => setReading\(\{ size: uiState\.reading\.size \+ delta \* SIZE_STEP \}\)/, "the bar drives the reading size");
+  // #173: the bar drove the PAGE-WIDE preference while sitting on a block — global masquerading
+  // as per-block. It now sets an override for the block it belongs to, keyed by record.
+  assert.match(app, /codeSize: \(key, delta\) => setCodeOverride\(key, \{ size: clampSize\(effectiveCode\(key\)\.size \+ delta \* SIZE_STEP\) \}\)/, "the bar drives THIS BLOCK's size");
+  assert.match(app, /codeWrap: key => setCodeOverride\(key, \{ wrap: !effectiveCode\(key\)\.wrap \}\)/, "the bar drives THIS BLOCK's wrapping");
   console.log("#115 code pane cases passed");
 }
 
@@ -1522,6 +1532,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   assert.match(engine, /this\.prefix = prefixSums\(this\.count, index => this\.heightOf\(index\)\);/);
   assert.match(engine, /const verdict = classifyScroll\(this\.following, user, this\.gapToBottom\(\), this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal\);/);
+
   assert.match(vp, /slacks: \{ acquire: ACQUIRE_SLACK, hold: HOLD_SLACK, heal: HOLD_SLACK \},/, "both pages now acquire at the true end and hold through a nudge (#127)");
   assert.doesNotMatch(vp, /new ResizeObserver|addEventListener\("scroll"/, "the observers and the scroll listener are the engine's now");
   const module = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
@@ -1543,12 +1554,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(rules, /function itemHeight/, "itemHeight reads layout, so it sits below the engine marker");
   assert.match(module, /const height = itemHeight\(child\);/, "the engine measures through it");
   const classic = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
-  assert.match(classic, /var h = shared\.itemHeight\(els\[k\]\);/, "the classic page measures through it too, and no longer rounds: #156 found the real cause, and it was not the basis");
+  assert.match(module, /const height = itemHeight\(child\);/, "the engine measures, for both pages");
+  assert.doesNotMatch(classic, /shared\.itemHeight\(/, "…and the classic page no longer measures at all (#140 step 4)");
   // #156. A scroll event carries the time it was CREATED; the handler can run much later, because
   // a long task holds the queue. Measuring intent at handler time turned the reader's own scroll
   // into displacement and healed them back to the tail — 908ms of lag reading as 560ms since
-  // input, where the event's clock says -348ms. BOTH pages classify on the event.
-  assert.match(classic, /var userScroll = \(scrollEvent\.timeStamp \|\| performance\.now\(\)\) - lastInputStamp < USER_MS;/, "the classic page classifies a scroll on the EVENT's clock");
+  // input, where the event's clock says -348ms. Since #140 step 4 there is ONE classifier and it
+  // reads the event, so neither page can drift off that clock.
   assert.match(module, /const at = event && event\.timeStamp \? event\.timeStamp : performance\.now\(\);/, "…and so does the engine");
   assert.match(module, /const user = this\.dragging \|\| at - this\.lastInputStamp < this\.userIntentMs;/, "…with a held thumb still answering for itself, since a drag fires no input event of its own");
   assert.doesNotMatch(classic, /\.offsetTop - /, "no page measures top-to-next-top any more (#140 step 2)");
@@ -1556,16 +1568,37 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // learning a height only grows the page below the reader (rule 5).
   assert.match(vp, /const ESTIMATES = \{ user: 44, assistant: 40, process: 34 \};/);
   assert.match(vp, /estimateAt\(index\) \{ return ESTIMATES\[this\.units\[index\]\?\.type\] \|\| ESTIMATE; \}/, "the estimate is this shell's answer to the engine's question");
-  // Step 2: the classic page — the reference — runs the same arithmetic, with its own numbers.
+  // #132 step 4, reaching the classic page with #140 step 4: a width change RE-GUESSES the
+  // remembered heights instead of keeping them (which is what left that page believing in a
+  // bottom 693px from the real one after the monitor's rail opened) and instead of clearing them
+  // (which drops every unseen record to the floor and shrinks the page under the reader). Both
+  // pages scale, both floor at their own estimate, and this page seeds the width the ratio is
+  // taken against — the engine's is zero until the first remeasure, and on this page the FIRST
+  // width change is the one that matters.
+  assert.match(classic, /window\.addEventListener\("resize", function \(\) \{ vw\.remeasure\(\); \}, \{ passive: true \}\);/, "the classic page re-measures on a resize");
+  assert.match(classic, /if \(recHeights\[i\] === EST_H\) continue;\s*\n\s*recHeights\[i\] = Math\.max\(EST_H, recHeights\[i\] \* ratio\);/, "…scaling what was measured, floored, and leaving the floors alone");
+  assert.match(classic, /vw\.lastWidth = vwin\.getBoundingClientRect\(\)\.width \|\| 0;/, "…against a width seeded from the mount");
+  // Step 4: the classic page — the REFERENCE — is the engine's second consumer, not a second
+  // copy of it. The ten pins that stood here until #140 step 4 named this page's own sums, its
+  // own pads, its own anchor, its own owed correction and its own scroll classifier. None of
+  // those rules was weakened; every one of them moved, and the pins above now hold each of them
+  // ONCE, for both pages. What only this page can still say is pinned instead: that it extends
+  // the engine, that it keeps none of the machinery, and the three parameters that carry its
+  // genuine differences from the shell.
   const cls = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
-  assert.match(cls, /if \(!prefix\) prefix = shared\.prefixSums\(records\.length, effH\);/, "the classic sums stay LAZY and shared");
-  assert.match(cls, /return shared\.indexAt\(P\(\), records\.length, y, false\);/, "…and its search stays unclamped");
-  assert.match(cls, /var pads = shared\.padHeights\(P\(\), loIdx, hiIdx, records\.length\);/);
-  assert.match(cls, /var first = shared\.firstVisible\(items, 0, Infinity, 0, false\);/, "no epsilon above the fold on this page");
-  assert.match(cls, /var delta = shared\.correction\(e\.getBoundingClientRect\(\)\.top, a\.top, 1\);/, "the classic page measures its correction with the shared rule…");
-  assert.match(cls, /if \(readerOwnsPosition\(\)\) \{ owedAnchor = a; scheduleSettle\(\); return; \}\s*\n\s*window\.scrollBy\(0, delta\);/, "…and owes it rather than writing under the reader's own motion (#134)");
-  assert.match(cls, /var verdict = shared\.classifyScroll\(following, userScroll, gapToBottom\(\), PIN_SLACK, BOTTOM_SLACK, BOTTOM_SLACK\);/, "the classic page holds the pin through a nudge");
-  assert.match(cls, /if \(userScroll && owedAnchor\) \{ owedAnchor = null; clearTimeout\(settleTimer\); \}/, "…and a correction owed from before the reader moved is void (#138)");
+  assert.match(cls, /var vw = new \(class extends shared\.VirtualWindow \{/, "the classic page IS the shared engine (#140 step 4)");
+  assert.match(cls, /frame: shared\.documentFrame\(\),/, "…over the DOCUMENT scroller, where the shell has an element one");
+  assert.match(cls, /mount: \{ top: topPad, window: vwin, bottom: botPad, content: document\.body \},/, "…watching the whole document for a displacement from around the run");
+  assert.match(cls, /slacks: \{ acquire: PIN_SLACK, hold: BOTTOM_SLACK, heal: BOTTOM_SLACK \},/, "#103's hysteresis, with this page's own numbers");
+  assert.match(cls, /clampIndex: false,/, "an offset past the last visible record reads as PAST THE END — what places its bottom pad under a filter");
+  assert.match(cls, /skipAt: isHiddenRec,/, "a filter-hidden record is skipped, never given a zero height (`heightOf` would answer with the estimate)");
+  assert.match(cls, /renderAll: function \(\) \{ return !!filter && filterFull; \},/, "a small filtered set is rendered whole, so a one-hit jump cannot land in a pad (#94)");
+  assert.match(cls, /this\._prefix = shared\.prefixSums\(this\.count, this\.heightOf\.bind\(this\)\);/, "the sums stay LAZY here: a live apply pushes one record at a time");
+  assert.match(cls, /function P\(\) \{ return vw\.prefix; \}/, "…and every reader of them goes through the engine");
+  assert.match(cls, /function idxAt\(y\) \{ return vw\.indexAt\(y\); \}/);
+  assert.doesNotMatch(cls, /addEventListener\("scroll"/, "the scroll listener is the engine's now — the same pin the app shell carries");
+  assert.doesNotMatch(cls, /\.observe\(document\.body\)/, "…and so are both height observers");
+  assert.doesNotMatch(cls, /shared\.classifyScroll\(|shared\.correction\(|shared\.firstVisible\(|shared\.padHeights\(/, "…and the rules they ask are asked from one place");
   console.log("#107 virtual window cases passed");
 }
 
@@ -1682,7 +1715,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /this\.observer = new ResizeObserver\(\(\) => this\.measureNow\(\)\);/, "the observer measures NOW, inside its delivery — no task in between");
   assert.doesNotMatch(src, /scheduleMeasure|pendingMeasure/, "…and the deferral is gone");
   assert.match(src, /this\.contentObserver\.observe\(mount\.window\);/, "the content observer watches the mounted window, not the pads it would loop on");
-  assert.match(src, /const contentTop = this\.topPad\.getBoundingClientRect\(\)\.top - this\.frame\.viewportTop\(\) \+ this\.frame\.scrollTop\(\);\s*\n\s*return contentTop \+ \(this\.prefix\[index\] \|\| 0\);/, "an item's document top is the pads' edge plus the sums before it");
+  assert.match(src, /contentTop\(\) \{\s*\n\s*return this\.topPad\.getBoundingClientRect\(\)\.top - this\.frame\.viewportTop\(\) \+ this\.frame\.scrollTop\(\);/, "where the content the sums describe BEGINS, in the scroller's coordinate");
+  assert.match(src, /return this\.contentTop\(\) \+ \(this\.prefix\[index\] \|\| 0\);/, "an item's document top is that edge plus the sums before it");
+  // #140 step 4: and an offset handed to the sums is measured from the SAME edge. It never was —
+  // `scrollTop` went in raw, which is right only when the pads are the first thing in the
+  // scroller. The shell's transcript has its own top padding and the classic page's stream sits
+  // under a topbar and a session header, so the fallback range — the one taken when no mounted
+  // element is visible, which is exactly where a jump from far away leaves the reader — named an
+  // item that far late.
+  assert.match(src, /rangeForScroll\(this\.prefix, this\.count, this\.frame\.scrollTop\(\) - this\.contentTop\(\), this\.frame\.clientHeight\(\), this\.overscan\)/, "…and so is the range a scroll offset asks for");
   assert.match(src, /const want = itemTop \+ within - sat;\s*\n\s*if \(!correction\(this\.frame\.scrollTop\(\), want, 1\)\) return;[\s\S]{0,420}?this\.frame\.scrollTo\(want\);/, "the write-back is absolute — scrollTo a position derived from the anchor, not scrollBy an accumulating difference");
   assert.match(src, /\/\/ Not mounted: nothing to hold it by\./, "…and an anchor the window has left behind stays put — the sums there are estimates");
   assert.doesNotMatch(src, /this\.frame\.scrollBy\(/, "…and nothing in the engine nudges the offset by an increment any more");
@@ -1702,4 +1743,97 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /if \(ratio && Math\.abs\(ratio - 1\) > 0\.01 && this\.scaleHeights\) this\.scaleHeights\(ratio\);\s*\n\s*else this\.clearHeights\(\);/, "…and scales the remembered heights; anything else still relearns them");
   assert.match(vpSrc, /this\.state\.heights\.set\(key, Math\.max\(ESTIMATE, height \* ratio\)\)/, "…never under the floor an estimate must be (rule 5)");
   console.log("#132 steps 3-4 cases passed");
+}
+
+// #174 P1 — THE TWO TOTALITY CHECKS, one per surface. Both quantify over a kind vocabulary
+// DERIVED from the engine's `BlockKind` (read out of its Rust source right here), never typed
+// into this file: an audit whose coverage depends on someone remembering to add a rendering
+// inherits the very omission it is auditing for. `BlockKind` has 16 variants and `html()` maps
+// `ToolResult` and `Tool` both to "tool", so the record stream carries exactly 15 kind strings.
+//
+// The two checks differ because the two pages FAIL differently, which is what makes them worth
+// having: the app shell dispatches on the kind, so a kind it does not know lands in the
+// "fallback" renderer and draws raw JSON; the classic page's dispatch is total by construction
+// ("Everything else is a fold"), but its enumeration did not disappear — it MOVED INTO CSS,
+// where a missing entry renders and looks wrong. A check that reads one layer finds one bug.
+{
+  const modelRs = readFileSync(new URL("../../claude-replay-engine/src/model.rs", import.meta.url), "utf8");
+  const enumAt = modelRs.indexOf("pub enum BlockKind {");
+  assert.ok(enumAt > 0, "the engine must still declare BlockKind — the whole derivation hangs on it");
+  const enumBody = modelRs.slice(enumAt, modelRs.indexOf("\n}", enumAt));
+  const variants = enumBody.split("\n").slice(1).map(line => line.trim()).filter(line => /^[A-Z][A-Za-z]*,$/.test(line)).map(line => line.slice(0, -1));
+  assert.ok(variants.length >= 16, `the BlockKind parse found ${variants.length} variants — the derivation went vacuous`);
+
+  const htmlAt = modelRs.indexOf("pub fn html(self)");
+  const htmlBody = modelRs.slice(htmlAt, modelRs.indexOf("\n    }", htmlAt));
+  const arms = [...htmlBody.matchAll(/([A-Z][A-Za-z]*) => "([a-z]+)"/g)];
+  assert.deepEqual(arms.map(arm => arm[1]), variants, "BlockKind::html must answer for every variant, in order");
+  const kinds = [...new Set(arms.map(arm => arm[2]))];
+  assert.equal(kinds.length, 15, `the wire vocabulary is fifteen kinds: ${kinds.join(" ")}`);
+
+  // ── the app shell: no emitted kind may reach the "fallback" renderer ────────────────────
+  // Its dispatch is ten explicit branches and a hand-written Set, and a Set lookup cannot fail
+  // loudly — so nothing but this check stands between a new BlockKind and a record drawn as
+  // raw JSON.
+  const NO_SUCH_KIND = "__audit_no_such_kind";
+  for (const kind of kinds) {
+    const view = viewRecord({ t: "block", kind, id: `audit-${kind}`, head: {}, body: [] });
+    assert.notEqual(view.renderer, "fallback", `the app shell has no renderer for a "${kind}" record — viewRecord drops it in fallback, which draws its JSON`);
+    // …and the kinds that legitimately carry no `renderer` are the prose views, not an
+    // accident: without this, `renderer !== "fallback"` passes vacuously for them.
+    assert.ok(view.renderer || view.t === "user" || view.t === "assistant", `a "${kind}" record with no renderer must be one of the two prose views, not an unnamed shape`);
+  }
+  // The negative control — without it the loop above says nothing about the check itself.
+  assert.equal(viewRecord({ t: "block", kind: NO_SUCH_KIND, id: "audit-none", head: {}, body: [] }).renderer, "fallback", "an unknown kind must still fall back — that is what makes the check falsifiable");
+
+  // The shell's own hand-written kind set may not name a kind the emitter cannot produce: the
+  // same drift pointing the other way, a dead entry nobody can reach. (`processKinds`, a Set of
+  // eighteen strings that was unreachable in both directions, was deleted for #174.)
+  const viewModel = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
+  const toolKinds = [...(viewModel.match(/const toolKinds = new Set\(\[([^\]]*)\]\)/) || [, ""])[1].matchAll(/"([a-z_]+)"/g)].map(match => match[1]);
+  assert.ok(toolKinds.length >= 1, "the toolKinds parse matched nothing — the derivation went vacuous");
+  for (const kind of toolKinds) assert.ok(kinds.includes(kind), `view-model.js routes "${kind}" as a tool, but BlockKind::html never emits it`);
+
+  // ── the classic page: every kind is a special case or a data-kind the CSS selects on ─────
+  const exportJs = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  const exportCss = readFileSync(new URL("../../claude-replay-html/src/html/export.css", import.meta.url), "utf8");
+  const foldGuard = exportJs.match(/function isFoldRec\(b\) \{\s*return !\(([^)]*)\);/);
+  assert.ok(foldGuard, "isFoldRec is the classic page's statement of which kinds are NOT folds");
+  const special = [...foldGuard[1].matchAll(/b\.kind === "([a-z]+)"/g)].map(match => match[1]);
+  assert.equal(special.length, 4, `the four always-open cards: ${special.join(" ")}`);
+  // renderBlock's own guards are a second copy of that list; they may not drift apart.
+  const guards = [...exportJs.slice(exportJs.indexOf("function renderBlock(b) {")).matchAll(/if \(b\.kind === "([a-z]+)"\)/g)].map(match => match[1]);
+  assert.deepEqual([...guards].sort(), [...special].sort(), "renderBlock's special cases and isFoldRec's exclusions are the same set");
+  // Attribute-PRESENCE selectors (`.fold[data-kind]`) style every fold and say nothing about a
+  // kind, so only a selector carrying the VALUE counts as the page having an opinion.
+  const styled = new Set([...exportCss.matchAll(/\[data-kind="([a-z]+)"\]/g)].map(match => match[1]));
+  // A floor against a regex that silently matches nothing (which would make the loop below
+  // vacuously true) — deliberately not a count of the enumeration, which is what the loop is for.
+  assert.ok(styled.size >= 1, "the export.css data-kind parse matched nothing — the derivation went vacuous");
+  for (const kind of kinds) {
+    assert.ok(special.includes(kind) || styled.has(kind), `the classic page draws a "${kind}" record as a generic fold that export.css never selects on — it renders, and it looks wrong`);
+  }
+  assert.ok(!special.includes(NO_SUCH_KIND) && !styled.has(NO_SUCH_KIND), "the negative control must be neither special-cased nor styled");
+  for (const kind of styled) assert.ok(kinds.includes(kind), `export.css styles [data-kind="${kind}"], which BlockKind::html never emits — a dead rule`);
+
+  // ── the PART axis, the same property one level down ──────────────────────────────────────
+  // The record stream's other closed set: what a record's body carries. There is ONE part
+  // vocabulary — the emitter writes it, and both pages read it — so the honest check is a
+  // three-way equality, each side scanned anchored on its own dispatch key. (Anchoring is the
+  // point: an unanchored grep once "found" `cap`/`items`/`rows`, which are FIELDS of a part,
+  // and `search`/`truncate`/`wrap`, which are CSS classes, and invented a discrepancy.)
+  // Asymmetry worth knowing when this ever fails: `partsHtml` ends in a loud `renderer-fallback`
+  // "unknown part" box, while `renderPart` has no terminal arm at all — a part only one side
+  // knows is drawn wrong on the shell and SILENTLY DROPPED on the classic page.
+  const emitterRs = readFileSync(new URL("../../claude-replay-html/src/html_export/mod.rs", import.meta.url), "utf8");
+  const emitted = [...new Set([...emitterRs.matchAll(/"p"\s*:\s*"([a-z]+)"/g)].map(match => match[1]))].sort();
+  assert.ok(emitted.length >= 1, "the emitter's part-key scan matched nothing — the derivation went vacuous");
+  const renderPart = exportJs.slice(exportJs.indexOf("function renderPart(p, into) {"));
+  const classicParts = [...new Set([...renderPart.slice(0, renderPart.indexOf("\n  }")).matchAll(/p\.p === "([a-z]+)"/g)].map(match => match[1]))].sort();
+  const partsHtml = viewModel.slice(viewModel.indexOf("export function partsHtml("));
+  const shellParts = [...new Set([...partsHtml.slice(0, partsHtml.indexOf("\n}")).matchAll(/part\.p === "([a-z]+)"/g)].map(match => match[1]))].sort();
+  assert.deepEqual(classicParts, emitted, "the classic page must render every body part the emitter writes, and no phantom");
+  assert.deepEqual(shellParts, emitted, "…and so must the app shell — one part vocabulary, not two");
+
+  console.log(`#174 P1 totality: ${kinds.length} emitted kinds x ${emitted.length} body parts, one vocabulary, both surfaces total`);
 }

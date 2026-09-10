@@ -10,7 +10,9 @@
   /* The fixed top bar's height (#127: two rows). The sidebar, the sticky turn bar and
      the task panel all hang off its bottom edge — one definition, no drift. */
   --topbar-h: 78px;
-  --ms: 12.5px;
+  /* The CODE size control (#173). Named `--code-size` for one vocabulary with the app shell
+     and with shared/reading.js `readingVars`; its domain is `[data-code]` and nothing else. */
+  --code-size: 12.5px;
   --bg: #faf9f7;
   --fg: #26241f;
   --muted: #716a5c;
@@ -457,9 +459,12 @@ body[data-shell] #newbadge { left: calc(50% + var(--host-inset, 0px) / 2); }
 .planview { margin-left: 10px; }
 .plan-body {
   display: none; flex-basis: 100%; margin: 6px 0 2px 22px; padding: 8px 10px;
-  font: var(--ms)/1.5 var(--mono); color: var(--fg); background: var(--panel);
+  /* #173 a plan is prose the agent wrote, not bytes from a file, so it sets its own type
+     and no longer follows the code control. It IS a `pre` in the stream, so whitespace and
+     breaking come from the wrap control's rules — declaring them here would be dead. */
+  font: 12.5px/1.5 var(--mono); color: var(--fg); background: var(--panel);
   border: 1px solid var(--border); border-radius: 8px;
-  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh; overflow-y: auto;
+  max-height: 60vh; overflow-y: auto;
 }
 .plan-body.shown { display: block; }
 .urow { display: flex; justify-content: space-between; gap: 8px; }
@@ -726,20 +731,24 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 
 /* ── tool result rows ────────────────────────────────────────────────── */
 
+/* #173 a tool's output is a STREAM, not a file's bytes, so it sets its own type rather than
+   following the code size control. It is still verbatim text, so its `pre` follows WRAP. */
 .result {
-  display: flex; gap: 8px; font-family: var(--mono); font-size: var(--ms);
+  display: flex; gap: 8px; font-family: var(--mono); font-size: 12.5px;
   line-height: 1.7; color: var(--muted);
 }
 .result > .lead { flex: none; }
 .result > .resultbox { flex: 1; min-width: 0; }
-.result pre { margin: 0; font: inherit; white-space: pre-wrap; word-break: break-word; }
+.result pre { margin: 0; font: inherit; }
 .note { display: flex; gap: 8px; font: 11.5px var(--mono); color: var(--muted); margin: 2px 0 6px; }
 
 /* ── an agent's question to the reader (#121, shared/interaction.js) ─────── */
 .irq {
   display: flex; align-items: flex-start; gap: 10px; margin: 3px 0; padding: 10px 12px;
   border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
-  font-family: var(--sans); font-size: var(--ms); line-height: 1.55;
+  /* #173 an INVERSE leak, now fixed: sans-serif PROSE sized by the CODE control, so `−`/`+`
+     resized the agent's question. It sets its own type, at `.think-body`'s quiet size. */
+  font-family: var(--sans); font-size: 13.5px; line-height: 1.55;
 }
 .irq.waiting { border-color: color-mix(in srgb, var(--link) 45%, var(--border)); }
 .irq > .irq-icon { flex: none; width: 18px; height: 18px; border-radius: 50%; text-align: center;
@@ -780,14 +789,55 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 
 .numbered, .diff {
   border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
-  background: var(--bg); font-family: var(--mono); font-size: var(--ms); line-height: 1.5;
+  background: var(--bg); font-family: var(--mono); line-height: 1.5;
 }
+
+/* ── #173 the two reading controls, and the domain each governs ──────────────
+   `data-code` is stamped on the container the num/diff branch builds — bytes that came from
+   a FILE ON DISK, rendered structurally. Provenance, not appearance; nothing else carries it.
+
+   SIZE is a CODE control: `[data-code]` and NOTHING else. A tool result, a plan body, an
+   agent's question, a fleet row are prose or chrome and set their own type. One custom
+   property carries both the page-wide baseline (`--code-size` on :root, moved by `−`/`+`)
+   and a per-block override (the same property set on ONE container by its own bar), so an
+   override needs no rule of its own.
+
+   WRAP is a VERBATIM-TEXT control, wider than code: every `pre` in the stream — pasted art
+   in a user turn, a tool result, a plan body, a fenced block — plus every code container.
+   `body.wrap-code` is the baseline (`w`); `data-wrap` on a container beats it for THAT block.
+   Rules, not an enumerated selector list styled imperatively, so a rendering added later
+   obeys the control without being added to a list — which is exactly how #161 hid. INLINE
+   `code` is deliberately absent: it has no line identity, and sweeping it in rewrote the
+   whitespace inside backticks in prose.
+
+   These sit AFTER `.numbered, .diff` on purpose: `[data-code]` and `.numbered` weigh the
+   same, so source order is what lets the overflow rules land on the box. */
+[data-code] { font-size: var(--code-size); }
+#stream pre, [data-code] { white-space: pre; overflow-wrap: normal; word-break: normal; overflow-x: auto; }
 /* §8.8 scroll mode reserves a strip so an overlay scrollbar can't strike the last row. */
-.numbered.scrollx, .diff.scrollx { padding-bottom: 10px; }
+[data-code] { padding-bottom: 10px; }
+body.wrap-code #stream pre, body.wrap-code [data-code] {
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; overflow-x: hidden;
+}
+body.wrap-code [data-code] { padding-bottom: 0; }
+#stream [data-code][data-wrap="1"] {
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; overflow-x: hidden;
+  padding-bottom: 0;
+}
+#stream [data-code][data-wrap="0"] {
+  white-space: pre; overflow-wrap: normal; word-break: normal; overflow-x: auto;
+  padding-bottom: 10px;
+}
+/* #161: the UA stylesheet sets `white-space` EXPLICITLY on `pre`, and an explicit declaration
+   beats an inherited author value at ANY specificity — so a marked container hands its font
+   and its whitespace to every descendant BY NAME rather than trusting inheritance. */
+[data-code] * { font: inherit; white-space: inherit; }
+
 .nrow { display: flex; }
 .gut { flex: none; width: 42px; text-align: right; padding-right: 10px; color: var(--gut); user-select: none; }
 .mark { flex: none; width: 16px; color: var(--gut); user-select: none; }
-.code { flex: 1; white-space: pre-wrap; word-break: break-word; padding-right: 10px; }
+/* Whitespace and breaking come from the container above (the wrap control's domain). */
+.code { flex: 1; padding-right: 10px; }
 .diff .nrow { color: var(--muted); }
 /* §8.8 tint the CODE COLUMN only — gutters stay neutral, the +/− markers carry the
    signal. A deliberate divergence from the TUI's full-row tint (see the spec note). */
@@ -853,11 +903,11 @@ hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 
 /* Verbatim text in a user turn — pasted art the detector lifted, or the whole turn when
    the reader asks for raw. It sits in the turn's OWN card, so it gets no second box:
-   just monospace, with the whitespace exact. Long lines follow the page's wrap control
-   (`w`, and the per-pane ⤶/↔ button) exactly as code panes do: wrapping by default,
-   scrolling in its own gutter when the reader turns wrapping off. The size follows the
-   same `--ms` the code controls (`−`/`+`) drive, so art a touch too wide to fit can be
-   made to fit rather than wrapped or scrolled. */
+   just monospace, with the whitespace exact. Long lines still follow the page's wrap control
+   (`w`) exactly as code panes do — it is a `pre` in the stream, which is the wrap domain:
+   wrapping by default, scrolling in its own gutter when the reader turns wrapping off.
+   Its SIZE no longer follows the code control (#173): a pasted screenful is text the user
+   typed, not bytes from a file, and `−`/`+` is a control over code. */
 /* Per-turn "show as raw" control: as quiet as the anchor beside it, and only offered
    once the pointer is on the turn. Tinted when that turn is showing raw. */
 /* #99: a turn's chrome never enters a selection — a drag across a one-line prompt selected the
@@ -871,10 +921,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 .rawbtn.on { color: var(--tool); }
 .rawbtn:hover { color: var(--ink); }
 
-.raw {
-  margin: 6px 0; font: var(--ms)/1.5 var(--mono);
-  white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto;
-}
+.raw { margin: 6px 0; font: 12.5px/1.5 var(--mono); }
 
 .fence {
   border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
@@ -932,9 +979,11 @@ body.following #livechip { opacity: 0.85; }
 /* A workflow call's fleet (#38) — attached to the launching block from the meta, never part
    of the block record, because the roster keeps changing after the block settles. */
 .fleet { margin: 4px 0 2px 18px; display: flex; flex-direction: column; gap: 2px; }
-.fleet-row { display: flex; align-items: baseline; gap: 6px; font-size: var(--ms); }
+/* #173 the other inverse leak: a roster of running agents is chrome, sized by the CODE
+   control until now. Its own type, in keeping with the meta rows around it. */
+.fleet-row { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
 .fleet-dot { color: var(--dim); }
 .fleet-dot.on { color: var(--accent, currentColor); }
 .fleet-name { color: inherit; text-decoration: none; border-bottom: 1px solid transparent; }
 .fleet-name:hover { border-bottom-color: currentColor; }
-.fleet-id { color: var(--dim); font: var(--ms)/1.4 var(--mono); }
+.fleet-id { color: var(--dim); font: 11.5px/1.4 var(--mono); }

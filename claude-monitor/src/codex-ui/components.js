@@ -36,6 +36,11 @@ function bodyHtml(view, state) {
 /** This shell's names for the shared request-for-input card (html/shared/interaction.js). */
 const APP_INTERACTION = { card: "input-request", icon: "input-request-icon", copy: "input-request-copy", meta: "input-request-meta", answers: "input-answers", answer: "input-answer" };
 
+/** The record a code pane belongs to (#173): its per-block size / wrap override is keyed by it,
+ *  and view-model's `codeRows` stamps it on the marked container, so the bar and the markup read
+ *  the same string rather than each deriving one from the DOM. */
+const codeRecordOf = element => element.closest("[data-codebox]")?.querySelector("[data-code-record]")?.dataset.codeRecord || "";
+
 /** This shell's names for the shared result body (html/shared/parts.js). */
 const APP_RESULT = { result: "renderer-result", lead: "renderer-result-lead", box: "renderer-result-box" };
 
@@ -293,11 +298,15 @@ export function bindComponentEvents(root, state, actions) {
       actions.openChild(child.dataset.childSession);
       return;
     }
-    // The per-pane code bar (#115): size and wrap are the reading preferences (global, as on the
-    // classic page); copy joins this pane's code cells — no gutters, no +/− marks.
+    // The per-pane code bar (#115): size and wrap move THIS BLOCK (#173) — an ephemeral override
+    // keyed by the record the pane belongs to, which the marked container carries so the click
+    // and the markup name the same block. They used to call the page-wide preference, so every
+    // bar reported a state no single block had; the keyboard still moves that baseline. Copy
+    // joins this pane's code cells — no gutters, no +/− marks.
     const sizeStep = event.target.closest("[data-code-size]");
-    if (sizeStep) { event.preventDefault(); event.stopPropagation(); actions.readingStep?.(Number(sizeStep.dataset.codeSize) || 0); return; }
-    if (event.target.closest("[data-code-wrap]")) { event.preventDefault(); event.stopPropagation(); actions.readingWrap?.(); return; }
+    if (sizeStep) { event.preventDefault(); event.stopPropagation(); actions.codeSize?.(codeRecordOf(sizeStep), Number(sizeStep.dataset.codeSize) || 0); return; }
+    const wrapToggle = event.target.closest("[data-code-wrap]");
+    if (wrapToggle) { event.preventDefault(); event.stopPropagation(); actions.codeWrap?.(codeRecordOf(wrapToggle)); return; }
     const codeCopy = event.target.closest("[data-code-copy]");
     if (codeCopy) {
       event.preventDefault(); event.stopPropagation();

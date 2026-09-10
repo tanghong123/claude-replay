@@ -30,6 +30,7 @@ use std::path::Path;
 // The offline bundles (`dump_html`/`dump_all_html`) live in `bundle`; the `--html` live
 // server in `serve`. All three public entries are re-exported so `html_export::{dump_html,
 // dump_all_html, serve}` stays the crate's surface.
+pub mod audit; // the derived rendering-audit corpus (#174 P1)
 mod bundle;
 mod record_store;
 mod serve;
@@ -1054,7 +1055,18 @@ impl Emitter<'_> {
                             body.push(numbered_part(content, token, WRITE_PREVIEW));
                         }
                     }
-                    "read" => {
+                    // #173: `BlockKind::Read` covers five tools, but only two of them return
+                    // the BYTES OF A FILE — and a numbered gutter is a claim about a file.
+                    // On a Grep/Glob/LS result the gutter counts RESULT ROWS 1..n, numbers
+                    // that look like file line numbers sitting next to Grep's own `path:line:`
+                    // prefixes; and the highlight token is the TARGET's extension
+                    // (`token_for_target`), so `Glob("**/*.rs")` syntax-highlighted a listing
+                    // of PATHS as Rust. The search tools take the generic stream arm below,
+                    // which is what their output has always been.
+                    "read" if matches!(name.as_str(), "Read" | "NotebookRead") => {
+                        // A FILE fact (`toolUseResult.file.numLines`) — present only for the
+                        // two arms that read a file, which is why the chip stays here and the
+                        // search tools fall through to the generic output-line count.
                         if let Some(n) = read_lines {
                             head.insert("chips".into(), json!([chip(format!("{n} lines"))]));
                         }
@@ -3404,12 +3416,36 @@ mod tests {
             .any(|(name, _)| *name == "parts"));
     }
 
+    /// #98: a growth the reader did not cause is healed against the last anchor they settled
+    /// on, whether they are following the tail or reading. Since #140 step 4 this page owns
+    /// none of that machinery — the anchor, the observers and the healing are the shared
+    /// engine's, and the rule is pinned where it now lives. The page's side of the contract is
+    /// that it hands the engine an element whose size change carries the signal.
     #[test]
     fn unpinned_growth_is_healed_by_the_last_anchor() {
-        assert!(JS.contains("else if (!following && viewAnchor) restoreAnchor(viewAnchor);"));
-        assert!(JS.contains("viewAnchor = null; // this scroll moved the reader"));
-        assert!(JS.contains("      spy();\n      viewAnchor = captureAnchor();\n    });"));
-        assert!(JS.contains("    viewAnchor = captureAnchor();\n    spy();\n  }"));
+        let engine = super::shared::shared_source("virtual-window").expect("the engine is shared");
+        // Following: the tail moved away and is converged back on. Reading: what they are
+        // looking at moved, and the anchor puts it back.
+        assert!(engine.contains(
+            "if (this.following) { if (this.gapToBottom() > 1) this.convergeBottom(); }\n    else this.restoreDomAnchor(this.readerAnchor());"
+        ));
+        // The anchor is KEPT — a change heard after the fact is measured against where the
+        // reader was, not against the view it has already moved — and cleared the instant a
+        // scroll begins, then re-read once the window has caught up.
+        assert!(engine.contains("this.anchor = null;\n    // …and a correction owed from BEFORE they moved is void (#138)"));
+        assert!(engine.contains("return this.anchor || this.captureDomAnchor();"));
+        assert!(engine.contains(
+            "this.anchor = this.following || this.dragging ? null : this.captureDomAnchor();"
+        ));
+        // …and this page hands over the two elements whose size changes carry it: the mounted
+        // run, and the whole document for a growth in the chrome AROUND it.
+        assert!(JS.contains(
+            "mount: { top: topPad, window: vwin, bottom: botPad, content: document.body },"
+        ));
+        assert!(
+            !JS.contains("viewAnchor"),
+            "the page keeps no anchor of its own"
+        );
     }
 
     #[test]
@@ -3858,6 +3894,65 @@ mod tests {
             "all 30 rows emitted, not truncated"
         );
         assert_eq!(num["cap"], json!(WRITE_PREVIEW));
+    }
+
+    /// #173: the five tools behind `BlockKind::Read` are ONE kind but not one provenance.
+    /// Only `Read`/`NotebookRead` hand back the bytes of a file, so only they earn the
+    /// numbered gutter; a `Grep`/`Glob`/`LS` result is a stream and renders as one.
+    #[test]
+    fn only_file_reads_get_the_numbered_gutter() {
+        let part = |b: Block| -> String {
+            let out = stream(&[b], &FoldPolicy::none());
+            let parts = out[0]["body"].as_array().unwrap().clone();
+            assert_eq!(parts.len(), 1, "one body part: {parts:?}");
+            parts[0]["p"].as_str().unwrap().to_string()
+        };
+        // The two that read a file keep the gutter.
+        assert_eq!(part(tool("Read", "/f.rs")), "num");
+        assert_eq!(part(tool("NotebookRead", "/n.ipynb")), "num");
+        // The three that list or search do not — a gutter there numbers RESULT rows, and
+        // `token_for_target` would highlight a listing of paths as the target's language.
+        assert_eq!(part(tool("Grep", "needle")), "pre");
+        assert_eq!(part(tool("Glob", "**/*.rs")), "pre");
+        assert_eq!(part(tool("LS", "/dir")), "pre");
+        // All five stay the `read` kind — the keyline and the type filter are unchanged.
+        for name in ["Read", "NotebookRead", "Grep", "Glob", "LS"] {
+            let out = stream(&[tool(name, "/x")], &FoldPolicy::none());
+            assert_eq!(out[0]["kind"], json!("read"), "{name} keeps its kind");
+        }
+    }
+
+    /// The "n lines" chip follows the same provenance split: a file read reports the FILE's
+    /// line count (`toolUseResult.file.numLines`), which the search tools never carry, so
+    /// their chip is the generic count of the output they actually printed.
+    #[test]
+    fn the_lines_chip_is_the_file_count_only_where_a_file_was_read() {
+        let with_read_lines = |name: &str, n: Option<usize>| -> Value {
+            let block = Block::ToolUse {
+                name: name.into(),
+                target: "/f.rs".into(),
+                diffs: vec![],
+                output: Some("one\ntwo".into()),
+                patch: None,
+                read_lines: n,
+                cwd: String::new(),
+                execution: None,
+                published: None,
+            };
+            stream(&[block], &FoldPolicy::none())[0]["head"]["chips"].clone()
+        };
+        // 42 is the FILE's length; the two printed lines are only the preview.
+        assert_eq!(
+            with_read_lines("Read", Some(42)),
+            json!([chip("42 lines".to_string())]),
+        );
+        // No file fact, no chip — the read arm has never invented one.
+        assert_eq!(with_read_lines("Read", None), Value::Null);
+        // A Grep result carries no `file.numLines`, so it reports what it printed.
+        assert_eq!(
+            with_read_lines("Grep", None),
+            json!([chip("2 lines".to_string())]),
+        );
     }
 
     #[test]

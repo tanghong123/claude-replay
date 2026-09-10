@@ -12,7 +12,7 @@ import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
 import { displayState, needsPerson as needs, denoteState } from "./shared/state-labels.js";
-import { DEFAULT_READING, SIZE_MAX, SIZE_MIN, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
+import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, parseScope, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt } from "./shared/search.js";
@@ -170,8 +170,8 @@ let turnStickyAt = null;
 turnStickyBar.onclick = () => { if (turnStickyAt != null) viewport.jumpToRecord(turnStickyAt, "turn"); };
 bindComponentEvents(transcript, recordState, {
   rerender: () => { viewport.render(); viewport.scheduleRemember(); },
-  readingStep: delta => setReading({ size: uiState.reading.size + delta * SIZE_STEP }),
-  readingWrap: () => setReading({ wrap: !uiState.reading.wrap }),
+  codeSize: (key, delta) => setCodeOverride(key, { size: clampSize(effectiveCode(key).size + delta * SIZE_STEP) }),
+  codeWrap: key => setCodeOverride(key, { wrap: !effectiveCode(key).wrap }),
   remember: () => viewport.scheduleRemember(),
   copySpot: async (id, button) => {
     const url = new URL(location.href);
@@ -217,7 +217,7 @@ const sessionIndex = new SessionIndexStore({
   error: () => toast("Session scan failed — retrying")
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   error: (error, hasRecords) => hasRecords ? toast(`${error.message}；retrying`) : viewport.showEmpty("Cannot read this session", `${error.message}；The monitor will retry.`, true)
 });
@@ -1212,11 +1212,15 @@ function applyToolFilter() {
 // means one thing — funnel: what is shown; this one: how it reads. They apply as custom
 // properties and two classes on the app root (see production.css), persist with the other
 // production preferences, and are also what the `w` / `-` / `+` keys drive.
+// #173: code size and wrap left this panel. They were the only rows here that governed ONE
+// KIND of content rather than the page, and a global control read as "everything, always" —
+// the reader who wants one diff bigger got the whole transcript bigger. The preference is
+// still the baseline every block starts from and the keys still move it; the per-block bars
+// move a single block off it. What is left here is the page: its width, and how a user turn
+// is drawn.
 const readingSection = document.createElement("div");
 readingSection.className = "reading-section";
 readingSection.innerHTML = `<div class="scope-menu-head"><strong>Reading</strong><button class="scope-menu-action" type="button" data-reading-reset>Reset</button></div>
-<div class="reading-row"><span>Code size</span><span class="reading-step"><button type="button" data-reading-size="-1" aria-label="Smaller code">−</button><span class="reading-value" data-reading-value></span><button type="button" data-reading-size="1" aria-label="Larger code">+</button></span></div>
-<div class="reading-row"><span>Wrap long lines</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wrap" aria-label="Wrap long lines" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>User turns as raw text</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="rawUser" aria-label="Show user turns as raw text — exactly as typed, whitespace intact" aria-checked="false"><span></span></button></div>`;
 // Production-only chrome, built here so the extracted demo shell stays byte-identical (the
@@ -1229,13 +1233,12 @@ const readingBtn = document.createElement("button");
 readingBtn.className = "iconbtn reading-toggle";
 readingBtn.id = "readingBtn";
 readingBtn.type = "button";
-readingBtn.title = "How the transcript reads — size, wrapping, width";
-readingBtn.setAttribute("aria-label", "How the transcript reads — size, wrapping, width");
+readingBtn.title = "How the transcript reads — width, raw text";
+readingBtn.setAttribute("aria-label", "How the transcript reads — width, raw text");
 readingBtn.setAttribute("aria-haspopup", "true");
 readingBtn.setAttribute("aria-expanded", "false");
 // "Aa" — the one glyph every reader already knows for text preferences, and the icon set has
-// nothing for it (`wrap` is spoken for by the toggle inside this very popover). Drawn in the
-// SET'S OWN wrapper, though (#160): `class="icon"` on a 24 grid with no inline fill, stroke or
+// nothing for it. Drawn in the SET'S OWN wrapper, though (#160): `class="icon"` on a 24 grid with no inline fill, stroke or
 // weight, exactly what `svg()` in the generated icons.js emits. It used to carry its own 16
 // grid and its own `stroke-width="1.5"`, so it sat outside `.icon`'s 13px/1.6 and read a size
 // and a weight apart from every other glyph on the bar.
@@ -1271,14 +1274,61 @@ function sizeStepLabel(size) {
   const steps = Math.round((clampSize(size) - DEFAULT_READING.size) / SIZE_STEP);
   return steps > 0 ? `+${steps}` : steps < 0 ? `\u2212${-steps}` : "0";
 }
-/** The per-pane code bars show the current size and wrap (#115); fresh panes are painted here. */
-function paintCodeBars() {
-  const prefs = uiState.reading;
-  for (const value of viewport.window.querySelectorAll("[data-code-size-val]")) value.textContent = sizeStepLabel(prefs.size);
-  for (const button of viewport.window.querySelectorAll("[data-code-wrap]")) button.textContent = prefs.wrap ? "⤶" : "↔";
+/** The per-block code override (#173). A pane's A− / A+ / wrap move THAT BLOCK: an EPHEMERAL
+ *  entry keyed by the record it belongs to, held in memory only — no localStorage on either
+ *  page, so a reload is a clean slate — and cleared when a session opens. There is no reset
+ *  control because none is needed: A−/A+ walk back and wrap toggles back. What a block SHOWS is
+ *  its override when it has one and the reading preference otherwise, so a block never claims a
+ *  state it does not have (which is what the bar did while it drove the global preference). */
+function codeOverride(key) { return recordState.codeOverrides.get(key) || null; }
+function effectiveCode(key) {
+  const over = codeOverride(key);
+  return { size: over && over.size != null ? over.size : uiState.reading.size, wrap: over && over.wrap != null ? over.wrap : !!uiState.reading.wrap };
 }
+function setCodeOverride(key, patch) {
+  if (!key) return;
+  const before = effectiveCode(key);
+  const next = { ...codeOverride(key), ...patch };
+  // A value that lands back ON the baseline RELEASES the field instead of pinning the block to a
+  // number that merely happens to match today (the classic page does the same, export.js:2553).
+  // The contract has no reset control because walking back IS the reset — and a block left
+  // holding `{size: 12}` would silently stop following the baseline the next time it moved.
+  if (next.size === uiState.reading.size) delete next.size;
+  if (next.wrap === !!uiState.reading.wrap) delete next.wrap;
+  if (next.size == null && next.wrap == null) recordState.codeOverrides.delete(key);
+  else recordState.codeOverrides.set(key, next);
+  // At the clamp ceiling or floor a press changes nothing. Re-rendering anyway would re-measure
+  // and re-anchor the reader for no visible reason — #173's other half, in miniature.
+  const after = effectiveCode(key);
+  if (after.size === before.size && after.wrap === before.wrap) return;
+  // The override rides the MARKUP (view-model's `codeRows`), so re-rendering the mounted window
+  // is what applies it: `render` rebuilds every mounted unit from the current state, measures
+  // them and holds the reader's anchor — the same call a fold uses, and for the same reason.
+  // Not `remeasure`, which throws away the height of every unit in the session: what changed
+  // here is one block, and one block is what the mount pass re-measures.
+  viewport.render();
+}
+/** The per-pane code bars show what THEIR OWN block reads at (#115, #173); fresh panes are
+ *  painted here, and so is every pane when the baseline underneath them moves. */
+function paintCodeBars() {
+  for (const box of viewport.window.querySelectorAll("[data-codebox]")) {
+    const shown = effectiveCode(box.querySelector("[data-code-record]")?.dataset.codeRecord || "");
+    const value = box.querySelector("[data-code-size-val]"); if (value) value.textContent = sizeStepLabel(shown.size);
+    const wrap = box.querySelector("[data-code-wrap]"); if (wrap) wrap.textContent = shown.wrap ? "⤶" : "↔";
+  }
+}
+let readingApplied = null;
 function applyReading() {
   const prefs = uiState.reading;
+  // #173's other half: a preference that changed NOTHING must not re-guess every height. Every
+  // one of these four moves layout — size and width through the app root's properties, wrap
+  // through its class, raw text through a re-render — and nothing else here does, so this is
+  // the whole test. `-` held down at the floor, `Reset` on an already-default panel, a second
+  // click on the same switch: each used to clear the height cache and rewrite the reader's
+  // position from estimates. The first application has no `readingApplied` and so still
+  // measures, as it always did.
+  const layoutChanged = !readingApplied || ["size", "wrap", "wide", "rawUser"].some(key => readingApplied[key] !== prefs[key]);
+  readingApplied = { size: prefs.size, wrap: !!prefs.wrap, wide: !!prefs.wide, rawUser: !!prefs.rawUser };
   // #109: the raw-text preference is the renderer's business — mirror it and re-render the
   // mounted turns when it changes (the first application, before any session, renders nothing).
   const rawChanged = recordState.rawUser !== !!prefs.rawUser;
@@ -1287,18 +1337,14 @@ function applyReading() {
   if (rawChanged && recordState.records.length) viewport.render();
   for (const [name, value] of Object.entries(readingVars(prefs))) app.style.setProperty(name, value);
   app.classList.toggle("wrap-code", !!prefs.wrap); app.classList.toggle("wide", !!prefs.wide);
-  readingSection.querySelector("[data-reading-value]").textContent = sizeStepLabel(prefs.size);
   for (const toggle of readingSection.querySelectorAll("[data-reading-toggle]")) toggle.setAttribute("aria-checked", String(!!prefs[toggle.dataset.readingToggle]));
-  // The per-pane code bars (#115) mirror the preferences in place — no re-render for a label.
-  for (const value of viewport.window.querySelectorAll("[data-code-size-val]")) value.textContent = sizeStepLabel(prefs.size);
-  for (const button of viewport.window.querySelectorAll("[data-code-wrap]")) button.textContent = prefs.wrap ? "⤶" : "↔";
-  readingSection.querySelector('[data-reading-size="-1"]').disabled = prefs.size <= SIZE_MIN;
-  readingSection.querySelector('[data-reading-size="1"]').disabled = prefs.size >= SIZE_MAX;
-  viewport.remeasure();
+  // The per-pane bars (#115) mirror the baseline in place — no re-render for a label — but only
+  // for the blocks that have no override of their own (#173).
+  paintCodeBars();
+  if (layoutChanged) viewport.remeasure();
 }
 function setReading(patch) { uiState.reading = { ...uiState.reading, ...patch, size: clampSize(patch.size ?? uiState.reading.size) }; uiState.readingChosen = true; persist(); applyReading(); }
 readingSection.onclick = event => {
-  const step = event.target.closest("[data-reading-size]"); if (step) { setReading({ size: uiState.reading.size + Number(step.dataset.readingSize) * SIZE_STEP }); return; }
   const toggle = event.target.closest("[data-reading-toggle]"); if (toggle) { const key = toggle.dataset.readingToggle; setReading({ [key]: !uiState.reading[key] }); return; }
   if (event.target.closest("[data-reading-reset]")) setReading({ size: 12, wrap: false, wide: false });
 };
@@ -1856,8 +1902,6 @@ byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNe
 byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNext").title = `Next turn (${hintFor("turn-next")})`;
 // The header's own turn steppers were in the design but never bound; they step the same way the keys do.
 byId("turnPrev").onclick = () => stepTurn(-1); byId("turnNext").onclick = () => stepTurn(1);
-readingSection.querySelector('[data-reading-toggle="wrap"]').title = `Wrap long lines (${hintFor("wrap")})`;
-readingSection.querySelector('[data-reading-size="-1"]').title = `Smaller code (${hintFor("size-down")})`; readingSection.querySelector('[data-reading-size="1"]').title = `Larger code (${hintFor("size-up")})`;
 addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openGlobalSearch(); } else if (event.key === "Escape") { setSessionCopyMenu(false); byId("searchLayer").classList.remove("production-open"); setPopover(null); } });
 
 app.classList.toggle("sidebar-off", !indexState.sidebarOpen);
