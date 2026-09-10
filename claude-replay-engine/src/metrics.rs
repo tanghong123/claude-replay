@@ -1136,6 +1136,10 @@ mod price_tests {
             ("claude-opus-5", p("5", "6.25", "0.5", "25")),
             ("claude-opus-4-8", p("5", "6.25", "0.5", "25")),
             ("claude-opus-4-1-20250805", p("15", "18.75", "1.5", "75")),
+            (
+                "us.anthropic.claude-opus-4-20250514-v1:0",
+                p("15", "18.75", "1.5", "75"),
+            ),
             ("claude-sonnet-5", p("2", "2.5", "0.2", "10")),
             ("claude-sonnet-4-6", p("3", "3.75", "0.3", "15")),
             ("claude-3-7-sonnet-20250219", p("3", "3.75", "0.3", "15")),
@@ -1190,6 +1194,7 @@ mod price_tests {
             "gpt-5.6-sol-99999999",
             "gpt-5.6-sol-20260230",
             "gpt-5.6-sol-2026-13-01",
+            "us.anthropic.claude-opus-6-20260901-v1:0",
         ] {
             assert_eq!(resolve(&PriceTable::new(), model), None, "{model}");
         }
