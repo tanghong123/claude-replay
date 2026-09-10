@@ -328,6 +328,10 @@ export function bindComponentEvents(root, state, actions) {
       if (hidden) hidden.classList.add("shown");
       rememberCap(state.capOpen, capMore.dataset.capRecord, capMore.dataset.capOrd, Number(capMore.dataset.capLines) || 0);
       capMore.remove();
+      // #185: this branch reveals in place and never reaches `rerender`, so the growth arrives at
+      // the engine through the observer instead — and parked at the tail the follow rule converges
+      // on it and scrolls away the very lines the click revealed. The pin is the reader's to keep.
+      actions.reshaped?.();
       actions.remember?.();
       return;
     }

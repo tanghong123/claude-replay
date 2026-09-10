@@ -6922,8 +6922,15 @@ fn scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
         if !after["ok"].as_bool().unwrap_or(false) {
             continue;
         }
-        let grew = after["h"].as_f64().unwrap_or(0.0) - before["h"].as_f64().unwrap_or(0.0);
-        if grew > 1.0 {
+        // The page's height CHANGED on this step, so the engine met a record whose real height
+        // it did not have — which is what "fresh ground" means. It used to read `grew > 1.0`,
+        // because with a constant floor the error was one-signed: every real height was above
+        // the floor, so learning one could only grow the page. Since #184 the estimate is a
+        // learned mean, so a record shorter than the mean SHRINKS it, and a one-signed test
+        // would call a step over fresh ground vacuous.
+        let moved_h =
+            (after["h"].as_f64().unwrap_or(0.0) - before["h"].as_f64().unwrap_or(0.0)).abs();
+        if moved_h > 1.0 {
             reached_fresh = true;
         }
         let moved = after["top"].as_f64().unwrap_or(0.0) - before["top"].as_f64().unwrap_or(0.0);
@@ -6946,8 +6953,8 @@ fn scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
     // jump leaves roughly 1500px above it measured, and the first steps never leave that.
     assert!(
         reached_fresh,
-        "{surface:?}: the walk never reached UNMEASURED ground — scrollHeight never grew, so every \
-         step was over heights the engine already knew and the case proved nothing. Worst \
+        "{surface:?}: the walk never reached UNMEASURED ground — scrollHeight never moved, so \
+         every step was over heights the engine already knew and the case proved nothing. Worst \
          overshoot seen was {worst}px."
     );
 }
@@ -6956,7 +6963,7 @@ fn scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn classic_page_a_scroll_up_over_fresh_ground_moves_by_what_was_asked() {
     let _serial = serial();
-    let fx = fixture_tall_prose("scenario-fresh-ground-classic");
+    let fx = fixture_varied_prose("scenario-fresh-ground-classic");
     let page = open(Surface::Classic, &fx, 0);
     scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
         &page.tab,
@@ -6969,7 +6976,7 @@ fn classic_page_a_scroll_up_over_fresh_ground_moves_by_what_was_asked() {
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn app_shell_a_scroll_up_over_fresh_ground_moves_by_what_was_asked() {
     let _serial = serial();
-    let fx = fixture_tall_prose("scenario-fresh-ground-app");
+    let fx = fixture_varied_prose("scenario-fresh-ground-app");
     let page = open(Surface::AppShell, &fx, 2934);
     scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
         &page.tab,
@@ -6981,6 +6988,43 @@ fn app_shell_a_scroll_up_over_fresh_ground_moves_by_what_was_asked() {
 /// Tall enough that a walk upward LEAVES the region the tail jump already measured — the whole
 /// point of #180's case. An 18-turn session (~5.5k px) is not: every 900px step stays inside
 /// `convergeBottom`'s measured window and reads zero drift.
+/// The same 120 turns, but with answers whose heights are all over the place — one line, then
+/// forty, then five. A MEAN is right about uniform prose and wrong about this, which is what makes
+/// it the right ground for #180: the point of that case is that the reader lands where they asked
+/// even when the engine's guess for the run above them is badly wrong, and since #184 the guess
+/// over `fixture_tall_prose` is so nearly right that the case could no longer produce the error it
+/// exists to survive (measured: `scrollHeight` did not move once across the whole walk, and the
+/// case failed its own not-vacuous guard).
+///
+/// It is also the honest statement of what #184 leaves behind: a running mean shrinks the error on
+/// a page whose records are alike, and does much less for one whose records are not.
+fn fixture_varied_prose(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = String::new();
+    for i in 0..120 {
+        transcript += &user_at(
+            &format!("question {i}: a prompt with enough words to make a real record"),
+            &now_minus(4000 - i as u64 * 30),
+        );
+        // 1 / 40 / 5 / 18 lines, cycling: no mean fits more than a quarter of them.
+        let lines = [1usize, 40, 5, 18][i % 4];
+        transcript += &assistant_at(
+            &format!(
+                "answer {i}: {}",
+                "a paragraph of prose to make a line of real height. ".repeat(lines)
+            ),
+            &now_minus(3990 - i as u64 * 30),
+        );
+    }
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 120,
+    }
+}
+
 fn fixture_tall_prose(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
@@ -7083,4 +7127,270 @@ fn app_shell_the_tail_is_a_wall() {
     let fx = fixture_tall_prose("scenario-tail-wall-app");
     let page = open(Surface::AppShell, &fx, 2938);
     scenario_the_tail_is_a_wall(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: the page stops growing once it knows what a record costs (#184) ────────────────
+
+/// Walk up a long transcript from the tail and watch the page's own height. Every step mounts
+/// records the engine has never measured, and the difference between what it GUESSED they cost
+/// and what they really cost lands on `scrollHeight`. Over a walk of several thousand pixels that
+/// difference has to stay small.
+///
+/// What it is measuring, and why it is not the same case as #180. #180 asserts the READER ends up
+/// where they asked to be — that the correction for the difference LANDS. This asserts the
+/// difference itself is small, which is what decides whether that correction is a stutter or
+/// invisible. With the old constant floor (30px classic, 34/40/44 on the shell) against records
+/// that really run 78 and 184, a 9000px walk grew the page by thousands of pixels and every one
+/// of them had to be corrected under the reader. With a running mean seeded from the records the
+/// tail jump already measured, a prompt is guessed high and its answer low and the run they form
+/// comes out very nearly exact.
+fn scenario_the_page_stops_growing_once_it_knows_what_a_record_costs(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    let s = surface.scroller();
+    let at = |tab: &headless_chrome::Tab| {
+        harness::probe(
+            tab,
+            &format!("(function(){{var s={s};return {{st:Math.round(s.scrollTop),h:Math.round(s.scrollHeight)}};}})()"),
+        )
+    };
+
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // Leave follow first, for #180's reason: parked at the tail the page is still following and
+    // heals a small scroll straight back, which would be measured as the engine's own growth.
+    scroll_by(tab, surface, -900);
+    settle();
+
+    const STEP: i64 = 900;
+    const STEPS: i64 = 9;
+    let asked = (STEP * STEPS) as f64;
+    let start = at(tab);
+    let first_turn = turn_at_top(tab, surface);
+    for _ in 0..STEPS {
+        scroll_by(tab, surface, -STEP);
+        settle();
+    }
+    let end = at(tab);
+    let last_turn = turn_at_top(tab, surface);
+
+    let grew = (end["h"].as_f64().unwrap_or(0.0) - start["h"].as_f64().unwrap_or(0.0)).abs();
+    // Not vacuous, measured in TURNS rather than in scroll offset. The offset is exactly the
+    // quantity the defect corrupts — with a constant floor the page grows above the reader as
+    // fast as they climb, so `scrollTop` moved only 2561px of the 8100px they asked for and a
+    // guard written on it would fail the good case and the bad one alike. How many records they
+    // travelled past is independent of what the engine believed those records weighed.
+    let travelled = first_turn - last_turn;
+    assert!(
+        travelled >= 15,
+        "{surface:?}: the walk passed only {travelled} turns (top turn {first_turn} -> \
+         {last_turn}), so it never left the region the tail jump had already measured and the \
+         case proved nothing."
+    );
+    assert!(
+        grew <= asked * 0.2,
+        "{surface:?}: the reader asked to climb {asked}px, passing {travelled} turns, and the \
+         page's own height moved {grew}px doing it — {:.0}% of the distance. Every one of those \
+         pixels is a record whose guessed height was wrong, landing ABOVE the reader and needing \
+         a correction under them (#184). scrollHeight {} -> {}, scrollTop {} -> {}",
+        grew / asked * 100.0,
+        start["h"],
+        end["h"],
+        start["st"],
+        end["st"]
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn classic_page_the_page_stops_growing_once_it_knows_what_a_record_costs() {
+    let _serial = serial();
+    let fx = fixture_tall_prose("scenario-learned-height-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_the_page_stops_growing_once_it_knows_what_a_record_costs(
+        &page.tab,
+        Surface::Classic,
+        &fx,
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_page_stops_growing_once_it_knows_what_a_record_costs() {
+    let _serial = serial();
+    let fx = fixture_tall_prose("scenario-learned-height-app");
+    let page = open(Surface::AppShell, &fx, 2940);
+    scenario_the_page_stops_growing_once_it_knows_what_a_record_costs(
+        &page.tab,
+        Surface::AppShell,
+        &fx,
+    );
+}
+
+/// A long session whose LAST record is a capped tool output — so a "⋯ N more lines" expander sits
+/// at the tail, below the reader, which is the position #185 was reported from. The generic
+/// `fixture()` has no record long enough to be capped at all.
+fn fixture_capped_tail(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let turns = 60u32;
+    let mut transcript = long_session(turns, Shape::default());
+    transcript += &tool_open_at("t-capped-tail", &now_minus(90));
+    transcript += &tool_result_lines("t-capped-tail", 200, &now_minus(80));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture { base, path, turns }
+}
+
+// ── scenario: a fold opened at the tail does not snap the reader back to it (#185) ───────────
+
+/// Park at the tail, open a fold, and stay where the growth left you.
+///
+/// What it caught (#185, reported by the owner on v1.248.0): "I scroll to the end, then click show
+/// more on a block, the block unfolds downward correctly (anything above it is not moved), so now
+/// the page is no longer at the bottom. However, apparently the engine did not think so and
+/// immediately snaps the page to the bottom."
+///
+/// The growth is correct and the pin is wrong. Parked at the tail the page is still FOLLOWING; the
+/// fold makes it taller BELOW the reader — the anchor doing exactly its job — and the follow rule
+/// then does its own job on a page that is no longer at its tail, converges, and scrolls away the
+/// very thing the click asked to see. The fix is that growth the reader ASKED for drops the pin
+/// (`readerReshaped`), which is a different question from #165's: there the tail really did move,
+/// because new content arrived.
+///
+/// Deliberately not a height test. One was considered and withdrawn — "I think I am fine to just
+/// drop the pin regardless how tall the unfolded block is… It is just one scroll away to re-pin
+/// the tail, and feels natural" — because the same click doing two things depending on the block
+/// is not predictable from the outside.
+fn scenario_a_fold_opened_at_the_tail_does_not_snap_back(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    let s = surface.scroller();
+    let gap_js = format!(
+        "(function(){{var s={s};return Math.round(s.scrollHeight-s.clientHeight-s.scrollTop);}})()"
+    );
+    let height_js = format!("(function(){{var s={s};return Math.round(s.scrollHeight);}})()");
+
+    // Click a fold whose head is BELOW the reader's anchor — which is what the report describes
+    // ("the block unfolds downward correctly, anything above it is not moved"). A head ABOVE the
+    // anchor is a different situation with a different right answer: content grew over the row
+    // the reader is on, and the anchor moving them down to keep that row still is the anchor
+    // WORKING. Measured while building this case: `open_last_fold` takes the last head in the
+    // DOM, which inside a tall process unit can sit above the viewport top, and the case then
+    // measured the anchor instead of the pin — +1786px on the shell, exactly the growth, and a
+    // classic run that passed once and failed the next time on the same code.
+    // "⋯ N more lines" — the control the owner was actually clicking, and the one that only ever
+    // GROWS. A fold head was tried first and is the wrong instrument twice over: its click is a
+    // four-step cycle, so on a head the page had already opened it CLOSES (measured: the classic
+    // page shrank 76px and the case reported itself vacuous), and it routes through the shells'
+    // re-render path while a cap expander reveals in place and reaches the engine only through
+    // the resize observer — which is exactly the path that was left uncovered.
+    let head_selector = match surface {
+        Surface::Classic => ".morebtn",
+        Surface::AppShell => "[data-cap-more]",
+    };
+    let click_below = format!(
+        r#"(function(){{var s={s};var vt=s===document.scrollingElement?0:s.getBoundingClientRect().top;
+var vb=vt+s.clientHeight;var hs=[].slice.call(document.querySelectorAll('{head_selector}'));
+var pick=null;for(var i=0;i<hs.length;i++){{var r=hs[i].getBoundingClientRect();
+if(r.top>vt+4&&r.top<vb-4&&r.height>0)pick=hs[i];}}
+if(!pick)return{{ok:false,heads:hs.length,vt:Math.round(vt),vb:Math.round(vb),rects:hs.map(function(h){{var q=h.getBoundingClientRect();return [Math.round(q.top),Math.round(q.height)];}})}};var r=pick.getBoundingClientRect();
+var f=pick.closest('.fold')||pick.closest('[data-renderer]');
+var was={{open:f?(f.dataset.open||(f.classList.contains('closed')?'0':'1')):'?',cls:f?f.className:'',id:f?(f.id||f.dataset.recordId||''):''}};
+pick.click();
+return{{ok:true,top:Math.round(r.top-vt),vh:Math.round(s.clientHeight),heads:hs.length,was:was}};}})()"#
+    );
+
+    // A capped output lives inside a fold, and a tool fold opens CLOSED — so the expander is in
+    // the DOM but has no box. Open the fold first, then jump back to the tail: that is the state
+    // the report is from, a reader parked at the end with a long output on screen. The jump is a
+    // commanded converge, so it re-pins after the fold's own `readerReshaped` dropped the pin.
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the jump to land at the tail");
+    settle();
+    // A capped output can sit several folds deep — measured: the expander's own renderer inside a
+    // closed parent renderer whose body is `display:none`, so opening the innermost one leaves it
+    // with no box at all. Open the whole ancestor chain, outermost first, re-querying each time
+    // because a shell re-render replaces the nodes underneath.
+    let (fold_sel, head_sel, closed_test) = match surface {
+        Surface::Classic => (".fold", ".fold-h", "f.dataset.open==='0'"),
+        Surface::AppShell => (
+            "[data-renderer]",
+            "button.renderer-head",
+            "f.classList.contains('closed')",
+        ),
+    };
+    let reveal = format!(
+        r#"(function(){{var clicked=0;
+for(var pass=0;pass<6;pass++){{
+  var cap=document.querySelector('{head_selector}');
+  if(!cap)return{{ok:false,why:'no cap expander in the document'}};
+  if(cap.getBoundingClientRect().height>0)return{{ok:true,clicked:clicked}};
+  var outer=null;for(var e=cap.parentElement;e&&e!==document.body;e=e.parentElement){{
+    if(e.matches('{fold_sel}')){{var f=e;if({closed_test})outer=e;}}}}
+  if(!outer)return{{ok:false,why:'the expander has no box and no closed fold above it',clicked:clicked}};
+  var h=outer.querySelector(':scope > {head_sel}')||outer.querySelector('{head_sel}');
+  if(!h)return{{ok:false,why:'a closed fold above the expander has no head',clicked:clicked}};
+  h.click();clicked++;}}
+return{{ok:false,why:'still hidden after six passes',clicked:clicked}};}})()"#
+    );
+    let revealed = harness::probe(tab, &reveal);
+    assert!(
+        revealed["ok"].as_bool().unwrap_or(false),
+        "{surface:?}: could not bring the capped output on screen: {revealed}"
+    );
+    settle();
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the second jump to land back at the tail");
+    settle();
+    let before_h = harness::eval(tab, &height_js).as_f64().unwrap_or(0.0);
+
+    let opened = harness::probe(tab, &click_below);
+    assert!(
+        opened["ok"].as_bool().unwrap_or(false),
+        "{surface:?}: no fold head sits below the reader and inside the viewport at the tail, so \
+         there is nothing to open in the position the report describes: {opened}"
+    );
+    settle();
+
+    let after_h = harness::eval(tab, &height_js).as_f64().unwrap_or(0.0);
+    let gap = harness::eval(tab, &gap_js).as_f64().unwrap_or(0.0);
+    // Not vacuous: if the fold added nothing there is no growth to be snapped over, and a page
+    // that is still at its tail proves nothing either way.
+    assert!(
+        after_h - before_h > 40.0,
+        "{surface:?}: opening the fold grew the page by only {}px, so there was nothing for the \
+         pin to snap over and the case proved nothing. scrollHeight {before_h} -> {after_h}; the \
+         head it clicked was {opened}",
+        after_h - before_h
+    );
+    assert!(
+        gap > 20.0,
+        "{surface:?}: the fold grew the page by {}px below the reader and the engine put them \
+         back on the tail anyway — gap {gap}px. Growth the reader ASKED for is not the tail \
+         moving away from them (#185); it drops the pin. scrollHeight {before_h} -> {after_h}",
+        after_h - before_h
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_fold_opened_at_the_tail_does_not_snap_back() {
+    let _serial = serial();
+    let fx = fixture_capped_tail("scenario-fold-tail-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_fold_opened_at_the_tail_does_not_snap_back(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_fold_opened_at_the_tail_does_not_snap_back() {
+    let _serial = serial();
+    let fx = fixture_capped_tail("scenario-fold-tail-app");
+    let page = open(Surface::AppShell, &fx, 2942);
+    scenario_a_fold_opened_at_the_tail_does_not_snap_back(&page.tab, Surface::AppShell, &fx);
 }

@@ -84,6 +84,75 @@ function heightChanged(known, measured, minHeight, threshold) {
   return measured > minHeight && Math.abs(known - measured) > threshold;
 }
 
+/** A learned height for the items that have not been measured yet (#184 — and the amendment to
+ *  rule 5 that it is).
+ *
+ *  Rule 5 said "estimate UNDER, never over", and half its reason still holds: guess HIGH and
+ *  learning the truth SHRINKS the page. What it missed is that a constant FLOOR is not the neutral
+ *  choice — it is the choice that MAXIMISES the distance between the guess and the truth, and that
+ *  distance is exactly what displaces a reader when a run mounted ABOVE them turns from estimates
+ *  into real heights. Measured under #180, walking up a 120-turn transcript in 900px steps: the
+ *  record under the reader moved 2355px and 2854px on the app shell and 3263px on the classic page
+ *  for a 900px request, and `scrollHeight` grew by the same amount each time — because every record
+ *  above them was being carried at 30px against a real 78 or 184.
+ *
+ *  #179 then took away the other half of the old fear. The pads now carry the page's height BEFORE
+ *  anything forces layout, so a page that shrinks under a reader no longer clamps them: the anchor
+ *  correction is the only thing that has to catch it, and it is computed against the position they
+ *  are at, in both directions equally.
+ *
+ *  So the rule becomes: **estimate CLOSE, and let the floor stand only while there is nothing to
+ *  learn from.** A mean over one page's own records is right for the one quantity that matters —
+ *  the SUM of a mounted run — even where it is wrong about any single record: guessing a prompt
+ *  high and its answer low leaves the run they form exact.
+ *
+ *  Two guards, because a bad mean is worse than a floor. Nothing is used until `minSamples`
+ *  records have been seen, so one short record cannot set the page's idea of a height. And a
+ *  sample is CLAMPED to `outlier` times the running mean rather than rejected: one enormous record
+ *  must not drag the mean, but dropping it altogether biases the mean low, which is the old bug
+ *  wearing a hat.
+ *
+ *  It learns from MEASUREMENTS, not from items, so a record measured repeatedly as it streams in
+ *  counts more than once, at the heights it passed through. That skews the mean DOWN — toward the
+ *  floor, the side rule 5 always preferred — and only while a record is growing under the reader's
+ *  eye. Keeping a per-item sample would cost an array the page already has no use for. */
+class HeightGuess {
+  constructor(floor, minSamples = 8, outlier = 4) {
+    this.floor = floor;
+    this.minSamples = minSamples;
+    this.outlier = outlier;
+    this.count = 0;
+    this.sum = 0;
+  }
+
+  /** One measured height. At or under the floor teaches nothing: it is the floor itself, or an
+   *  element the layout has not reached. */
+  learn(height) {
+    if (!(height > this.floor)) return;
+    const mean = this.count ? this.sum / this.count : 0;
+    this.sum += this.count >= this.minSamples ? Math.min(height, this.outlier * mean) : height;
+    this.count += 1;
+  }
+
+  /** The floor until there is enough to say otherwise, then the running mean — never under the
+   *  floor, which is a real lower bound on what a record can occupy. */
+  value() {
+    return this.count < this.minSamples ? this.floor : Math.max(this.floor, this.sum / this.count);
+  }
+
+  /** A width change re-guesses what has been learned, exactly as #132 step 4 re-guesses the
+   *  measured heights: a block of text is about as tall as its measure is narrow. */
+  scale(ratio) {
+    this.sum *= ratio;
+  }
+
+  /** Nothing learned here applies any more — a new session, a font that changed the metrics. */
+  reset() {
+    this.count = 0;
+    this.sum = 0;
+  }
+}
+
 /** The scroll correction that puts an anchored element back where it was: the page measures
  *  `currentTop` and remembers `wantTop`, both relative to the viewport. Below `epsilon` the
  *  correction is noise and scrolling by it would fight the reader. */
@@ -635,6 +704,39 @@ class VirtualWindow {
     this.syncAnchor(); // an unchanged window returns early above; the anchor is re-read either way
   }
 
+  /** The reader changed what is ON the page — opened a fold, expanded a cap, asked for the whole
+   *  of a capped output. **The pin is dropped** (#185).
+   *
+   *  Growth the reader ASKED for is not the tail moving away from them; it is them choosing
+   *  something to read. Parked at the tail, following, a fold opens BELOW them: nothing above them
+   *  moves — which is the anchor doing exactly its job — and the page is simply taller than it
+   *  was, so it is no longer at its tail. The follow rule then does its own job on that, converges,
+   *  and scrolls away the very thing the click asked to see. Reported as: "the block unfolds
+   *  downward correctly (anything above it is not moved), so now the page is no longer at the
+   *  bottom. However, apparently the engine did not think so and immediately snaps the page to the
+   *  bottom."
+   *
+   *  Unconditional, on purpose. A height test was considered and withdrawn by the owner: converge
+   *  when the opened block is short, unfollow when it is tall, means the same click does two
+   *  different things depending on the block, which nobody can predict from the outside. "It is
+   *  just one scroll away to re-pin the tail, and feels natural."
+   *
+   *  This is NOT #165's rule and does not weaken it. #165 defers a converge while a GESTURE is in
+   *  flight and keeps the pin, because there the tail really did move — new content arrived. Here
+   *  nothing arrived; the reader reshaped the page themselves, and who caused the growth is the
+   *  whole distinction. So every path where the growth is not the reader's keeps the converge it
+   *  has today, which is why this could not be "delete the converge from `render`".
+   *
+   *  A no-op when not following, so a call site may arm it without asking. */
+  readerReshaped() {
+    if (!this.following) return;
+    this.following = false;
+    this.followChanged();
+    // The converge already queued by an earlier growth checks `following` on each pass and stops
+    // itself; the anchor is re-read because from here the reader's own position is the reference.
+    this.syncAnchor();
+  }
+
   /** Rebuild what is mounted — a fold opened, a filter changed — holding the reader's place. */
   render(forceIndex = null) {
     if (!this.count) return;
@@ -810,4 +912,4 @@ function elementFrame(scroller) {
   };
 }
 
-export { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, correction, firstVisible, classifyScroll, itemHeight, VirtualWindow, elementFrame, documentFrame };
+export { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, itemHeight, VirtualWindow, elementFrame, documentFrame };

@@ -168,7 +168,13 @@ byId("transcript").prepend(turnStickyBar);
 let turnStickyAt = null;
 turnStickyBar.onclick = () => { if (turnStickyAt != null) viewport.jumpToRecord(turnStickyAt, "turn"); };
 bindComponentEvents(transcript, recordState, {
-  rerender: () => { viewport.render(); viewport.scheduleRemember(); },
+  // #185: `bindComponentEvents` is a CLICK handler, so everything that reaches `rerender` is the
+  // reader reshaping the page themselves — a fold, a cap, a prompt expanded, a raw toggle. Parked
+  // at the tail that growth would otherwise be read as the tail moving away and converged on,
+  // scrolling away the thing the click asked to see. The pin is dropped instead.
+  rerender: () => { viewport.readerReshaped(); viewport.render(); viewport.scheduleRemember(); },
+  // …and for the branches that grow the page IN PLACE without a re-render (the cap expander).
+  reshaped: () => viewport.readerReshaped(),
   codeSize: (key, delta) => setCodeOverride(key, { size: clampSize(effectiveCode(key).size + delta * SIZE_STEP) }),
   codeWrap: key => setCodeOverride(key, { wrap: !effectiveCode(key).wrap }),
   remember: () => viewport.scheduleRemember(),
@@ -1705,7 +1711,6 @@ function openTaskPopover(index, opener) {
   if (!task) return;
   const key = String(task.id ?? index);
   const d = taskDetails(task, recordState.taskTargets.get(key) ?? null);
-  const list = (items, empty) => items.length ? items.map(i => `<code>#${escapeText(i)}</code>`).join(" ") : `<span class="task-popover-none">${empty}</span>`;
   const jump = d.target == null
     ? `<button type="button" class="task-popover-jump" disabled title="This record stream did not keep where the task's status was set">Go to the turn — not kept in this stream</button>`
     : `<button type="button" class="task-popover-jump" data-task-record="${d.target}">Go to the turn where this task's status was recorded</button>`;

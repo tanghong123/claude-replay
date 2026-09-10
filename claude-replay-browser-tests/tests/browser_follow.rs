@@ -3189,8 +3189,26 @@ fn the_app_shell_opens_a_task_details_popover() {
         shown["focusInside"], true,
         "focus moved into the dialog: {shown}"
     );
+    // #187: the title has to be a LINE, not a column of letters. A rect is not visibility (the
+    // lesson from #98) and this is that lesson one level further on — a heading squeezed to
+    // 12px still opens, still measures a rect, and still contains exactly the right text. It
+    // set itself one character per line for as long as `.task-popover-head` declared four grid
+    // columns for a head with two children, so the subject sat in the FIXED 12px track.
+    let title = harness::probe(&tab, "(function(){ var e = document.querySelector('#taskPopover .task-popover-head strong'); var r = e.getBoundingClientRect(); var cs = getComputedStyle(e); var size = parseFloat(cs.fontSize); var line = parseFloat(cs.lineHeight) || size * 1.5; return { w: Math.round(r.width), h: Math.round(r.height), size: size, lines: Math.round(r.height / line), chars: e.textContent.length }; })()");
+    let width = title["w"].as_f64().unwrap_or(0.0);
+    let size = title["size"].as_f64().unwrap_or(14.0);
+    assert!(
+        width > size * 4.0,
+        "the popover's title is {width}px wide at {size}px type — narrower than four characters,          so it is setting itself down the page rather than across it (#187): {title}"
+    );
+    assert_eq!(
+        title["lines"], 1,
+        "…and a twelve-character subject fits on one line: {title}"
+    );
+
     harness::eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 'ok'");
     harness::until(&tab, "document.getElementById('taskPopover').hidden && document.activeElement === document.querySelectorAll('#navigatorWork .work-task-head')[1]", "Escape to close it and return focus to the row", std::time::Duration::from_secs(5), "String(document.getElementById('taskPopover').hidden) + ' ' + (document.activeElement && document.activeElement.className)");
+
     drop(monitor);
 }
 

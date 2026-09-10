@@ -14,7 +14,7 @@ import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/s
 import { isInteraction, interactionCard, interactionHtml } from "../../claude-replay-html/src/html/shared/interaction.js";
 import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE } from "../../claude-replay-html/src/html/shared/search.js";
 import { chainWalk } from "../../claude-replay-html/src/html/shared/filter.js";
-import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, correction, firstVisible, classifyScroll } from "../../claude-replay-html/src/html/shared/virtual-window.js";
+import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll } from "../../claude-replay-html/src/html/shared/virtual-window.js";
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml } from "../../claude-replay-html/src/html/shared/task-card.js";
 import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
@@ -1198,7 +1198,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(vp, /if \(this\.pendingView\) \{ applyViewChoices\(this\.state, this\.pendingView\); this\.pendingView = null; \}/, "restored with the first batch, after the store's reset");
   assert.match(vp, /const view = viewChoices\(this\.state\);/, "…and saved with the position");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
-  assert.match(app, /rerender: \(\) => \{ viewport\.render\(\); viewport\.scheduleRemember\(\); \}/, "every choice schedules a save");
+  assert.match(app, /rerender: \(\) => \{ viewport\.readerReshaped\(\); viewport\.render\(\); viewport\.scheduleRemember\(\); \}/, "every choice schedules a save — and drops the tail pin first (#185), because everything reaching `rerender` is the reader reshaping the page themselves");
+  assert.match(app, /reshaped: \(\) => viewport\.readerReshaped\(\),/, "…and the branches that grow the page IN PLACE, without a re-render, have their own way to say so — the cap expander reveals rows and never reaches `rerender`, which is the path #185 was actually reported from");
   assert.match(app, /addEventListener\("pagehide", \(\) => viewport\.remember\(\)\);/, "…and leaving saves at once");
   console.log("#114 view state cases passed");
 }
@@ -1553,10 +1554,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(module, /const at = event && event\.timeStamp \? event\.timeStamp : performance\.now\(\);/, "…and so does the engine");
   assert.match(module, /const user = this\.dragging \|\| at - this\.lastInputStamp < this\.userIntentMs;/, "…with a held thumb still answering for itself, since a drag fires no input event of its own");
   assert.doesNotMatch(classic, /\.offsetTop - /, "no page measures top-to-next-top any more (#140 step 2)");
-  // Step 3: the estimate is a FLOOR per unit type — under the real height, never over, so
-  // learning a height only grows the page below the reader (rule 5).
+  // Step 3: the estimate is a floor per unit type — and since #184 the floor is the SEED of a
+  // running mean rather than the answer, because a constant floor is the guess furthest from the
+  // truth and that distance is what displaces a reader when a run above them is measured (#180).
   assert.match(vp, /const ESTIMATES = \{ user: 44, assistant: 40, process: 34 \};/);
-  assert.match(vp, /estimateAt\(index\) \{ return ESTIMATES\[this\.units\[index\]\?\.type\] \|\| ESTIMATE; \}/, "the estimate is this shell's answer to the engine's question");
+  assert.match(vp, /user: new HeightGuess\(ESTIMATES\.user\),/, "each floor seeds a guess of its own — one population per unit type");
+  assert.match(vp, /estimateAt\(index\) \{ return this\.guessFor\(index\)\.value\(\); \}/, "the estimate is this shell's answer to the engine's question");
   // #132 step 4, reaching the classic page with #140 step 4: a width change RE-GUESSES the
   // remembered heights instead of keeping them (which is what left that page believing in a
   // bottom 693px from the real one after the monitor's rail opened) and instead of clearing them
@@ -1565,7 +1568,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // taken against — the engine's is zero until the first remeasure, and on this page the FIRST
   // width change is the one that matters.
   assert.match(classic, /window\.addEventListener\("resize", function \(\) \{ vw\.remeasure\(\); \}, \{ passive: true \}\);/, "the classic page re-measures on a resize");
-  assert.match(classic, /if \(recHeights\[i\] === EST_H\) continue;\s*\n\s*recHeights\[i\] = Math\.max\(EST_H, recHeights\[i\] \* ratio\);/, "…scaling what was measured, floored, and leaving the floors alone");
+  assert.match(classic, /if \(!recHeights\[i\]\) continue;\s*\n\s*recHeights\[i\] = Math\.max\(EST_H, recHeights\[i\] \* ratio\);\s*\n\s*\}\s*\n\s*estimator\.scale\(ratio\);/, "…scaling what was MEASURED, floored, and re-guessing the learned mean once for everything that was not (#184; the test was `=== EST_H` while this page seeded the floor into the array)");
   assert.match(classic, /vw\.lastWidth = vwin\.getBoundingClientRect\(\)\.width \|\| 0;/, "…against a width seeded from the mount");
   // Step 4: the classic page — the REFERENCE — is the engine's second consumer, not a second
   // copy of it. The ten pins that stood here until #140 step 4 named this page's own sums, its
@@ -1825,4 +1828,70 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(shellParts, emitted, "…and so must the app shell — one part vocabulary, not two");
 
   console.log(`#174 P1 totality: ${kinds.length} emitted kinds x ${emitted.length} body parts, one vocabulary, both surfaces total`);
+}
+
+// ── #184: the estimate is learned, not a constant floor ─────────────────────────────────────
+// The arithmetic is pure, so it is checked here rather than in a browser. What a browser case
+// cannot show and this can: the two guards, which are the whole difference between a mean that
+// helps and one that is worse than the floor it replaced.
+{
+  const floor = 30;
+
+  // Nothing learned: the floor. And still the floor at one sample short of the threshold — one
+  // record must never be allowed to set the page's idea of a height.
+  const cold = new HeightGuess(floor, 8);
+  assert.equal(cold.value(), floor, "with no samples the guess IS the floor");
+  for (let i = 0; i < 7; i++) cold.learn(200);
+  assert.equal(cold.value(), floor, "seven samples is not enough — the floor stands until minSamples");
+  cold.learn(200);
+  assert.equal(cold.value(), 200, "…and at minSamples the mean takes over");
+
+  // A height at or under the floor is not a sample: it is the floor itself, or an element the
+  // layout has not reached. Counting those would drag every page back toward 30.
+  const unlaid = new HeightGuess(floor, 2);
+  unlaid.learn(0);
+  unlaid.learn(floor);
+  assert.equal(unlaid.count, 0, "a zero or floor-sized measurement teaches nothing");
+
+  // The outlier guard: one enormous record is CLAMPED, not dropped. Dropping it biases the mean
+  // low, which is the very rule this replaces.
+  const spike = new HeightGuess(floor, 4, 4);
+  for (let i = 0; i < 4; i++) spike.learn(100);
+  spike.learn(100000);
+  assert.equal(spike.count, 5, "the outlier still counts as a sample — dropping it biases the mean low");
+  assert.equal(spike.value(), (400 + 400) / 5, "…but contributes at most `outlier` x the running mean");
+
+  // The mean is right about a RUN even where it is wrong about each record, which is the property
+  // that matters: what a mounted window costs the sums is a sum.
+  const mixed = new HeightGuess(floor, 4);
+  for (let i = 0; i < 4; i++) { mixed.learn(78); mixed.learn(184); }
+  assert.equal(Math.round(mixed.value() * 2), 78 + 184, "a prompt guessed high and its answer low leave the pair exact");
+
+  // A width change re-guesses what was learned, as #132 step 4 does for measured heights.
+  const narrowed = new HeightGuess(floor, 2);
+  narrowed.learn(100);
+  narrowed.learn(300);
+  narrowed.scale(2);
+  assert.equal(narrowed.value(), 400, "a width change scales the learned mean");
+  narrowed.reset();
+  assert.equal(narrowed.value(), floor, "…and a reset drops back to the floor");
+
+  // The floor is a real lower bound: a page whose records are all tiny must not guess UNDER it.
+  const tiny = new HeightGuess(floor, 2);
+  tiny.learn(31);
+  tiny.learn(32);
+  assert.ok(tiny.value() >= floor, "the mean never goes under the floor");
+
+  // Both pages have to actually use it, or the arithmetic above is decoration.
+  const engineSrc = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  const exportSrc = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  const viewportSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  assert.match(engineSrc, /return this\.heightFor\(index\) \|\| this\.estimateAt\(index\);/, "an unmeasured item still falls through to the estimate");
+  assert.match(exportSrc, /estimateAt\(\) \{ return estimator\.value\(\); \}/, "the classic page asks the learned guess, not EST_H");
+  assert.match(exportSrc, /recHeights\.push\(0\);/, "…which needs a FALSY seed in recHeights, or heightOf never reaches the estimate");
+  assert.match(exportSrc, /setHeight\(index, height\) \{ recHeights\[index\] = height; estimator\.learn\(height\); this\.rebuildPrefix\(\); \}/, "…and every measured height teaches it");
+  assert.match(viewportSrc, /estimateAt\(index\) \{ return this\.guessFor\(index\)\.value\(\); \}/, "the app shell asks a guess per unit type");
+  assert.match(viewportSrc, /this\.guessFor\(index\)\.learn\(height\)/, "…and teaches it from the same place it records the height");
+
+  console.log("#184 learned-height cases passed");
 }

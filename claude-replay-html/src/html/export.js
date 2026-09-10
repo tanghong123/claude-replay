@@ -223,12 +223,20 @@
   // over effective heights (0 when filter-hidden) drives scroll↔index mapping.
   // Fold/filter/search state lives on the records so it survives dematerialization.
   var records = [];      // block records, stream order — the source of truth
-  var recHeights = [];   // effective px height per record (EST_H until measured)
+  var recHeights = [];   // measured px height per record (0 = never measured; the guess stands in)
   var recText = [];      // lazy lowercase text per record, for search (null = unbuilt)
   var recSearchParts = []; // lazy {start,end,mask} ownership spans into recText
   var recHit = [];       // with a filter active: does this record (or a nested one) match?
   var idIndex = {};      // block id (incl. nested items) -> top-level record index
   var EST_H = 30;
+  // #184: EST_H is the SEED, not the answer. A constant floor is the guess that is furthest from
+  // the truth for a page of real records (prose, diffs, whole tool groups run 5-20x it), and that
+  // distance is what displaces a reader when a run above them is mounted and measured — #180
+  // measured 3263px of drift on this page for a 900px request. `HeightGuess` is the shared
+  // running mean; it stays at the floor until it has seen enough to do better. One mean for the
+  // whole page rather than one per kind: what a mounted run costs is a SUM, and a mean that
+  // guesses a prompt high and its answer low leaves that sum exact.
+  var estimator = new shared.HeightGuess(EST_H);
   var MARGIN_PX = 1500;
   // The first index whose CONTENT was rewritten by the apply in flight (#140 step 4). The
   // engine reuses a mounted element whose index and identity both still match, so a
@@ -429,7 +437,9 @@
     applyUserFolds(b);
     records.push(b);
     recSize.push(shared.recordTextSize(b));
-    recHeights.push(EST_H);
+    // 0, not the floor: `heightOf` is `heightFor(i) || estimateAt(i)`, so a falsy entry is what
+    // sends an unmeasured record to the guess. Seeding the floor here would freeze it (#184).
+    recHeights.push(0);
     // O(1): the sums are LAZY, so this only marks them. It has to happen per record and not
     // once per batch, because an observer delivery can reconcile in between — and a reconcile
     // reads the sums to place the pads, where a prefix shorter than the record list reads
@@ -1831,10 +1841,10 @@
     // UNDER, never over (rule 5): learning a real height then only ever grows the page BELOW
     // the reader, which nobody feels. Guess high and it SHRINKS, and a shrink above the
     // viewport is a jump unless the anchor catches it.
-    estimateAt() { return EST_H; }
+    estimateAt() { return estimator.value(); }
     heightFor(index) { return recHeights[index]; }
-    setHeight(index, height) { recHeights[index] = height; this.rebuildPrefix(); }
-    clearHeights() { recHeights.length = 0; this.rebuildPrefix(); }
+    setHeight(index, height) { recHeights[index] = height; estimator.learn(height); this.rebuildPrefix(); }
+    clearHeights() { recHeights.length = 0; estimator.reset(); this.rebuildPrefix(); }
     /** #132 step 4, and #140 step 4 brings it to this page: a block of text is about as tall as
      *  its measure is narrow, so a width change RE-GUESSES the remembered heights rather than
      *  throwing them away. Throwing them away drops every record the reader cannot see back to
@@ -1844,13 +1854,13 @@
      *  that scales a height down may not take it under it. */
     scaleHeights(ratio) {
       for (var i = 0; i < recHeights.length; i++) {
-        // A record that has never been measured is still the FLOOR, and this page seeds the floor
-        // into the array rather than leaving a hole, so it would otherwise be scaled like a real
-        // height. Scaling a floor UP is rule 5's wrong side: the record is then over-estimated
-        // and learning its real height SHRINKS the page.
-        if (recHeights[i] === EST_H) continue;
+        // A record that has never been measured has no height to scale — it carries the guess,
+        // and the guess is re-scaled once, below (#184). Before that this page seeded the floor
+        // into the array, and the test here was `=== EST_H`.
+        if (!recHeights[i]) continue;
         recHeights[i] = Math.max(EST_H, recHeights[i] * ratio);
       }
+      estimator.scale(ratio);
       this.rebuildPrefix();
     }
     renderItem(index) {
@@ -2437,6 +2447,11 @@
   function toggleFold(f, open, full) {
     if (!f) return;
     if (f.id) userFolds[f.id] = open ? 1 : 0; // an explicit user gesture (#61)
+    // …and an explicit gesture that RESHAPES the page drops the tail pin (#185): the growth is
+    // the reader's own, not the tail moving away from them, and converging on it would scroll
+    // away the block they just opened. This page grows the fold in place rather than through a
+    // reconcile, so without this the ResizeObserver's own measure reaches `convergeBottom`.
+    vw.readerReshaped();
     var h = f.querySelector(":scope > .fold-h");
     var y0 = h ? h.getBoundingClientRect().top : 0;
     setFold(f, open, full);
@@ -2455,6 +2470,7 @@
       b.open = open ? 1 : 0;
       if (b.id) userFolds[b.id] = b.open;
     });
+    vw.readerReshaped(); // #185 — reached only from the expand/collapse-all buttons
     refreshWindow();
   }
 
@@ -2888,6 +2904,7 @@
     // Clamp toggle on a long user turn: expand to full height, or re-collapse.
     var clamp = e.target.closest(".clampbtn");
     if (clamp) {
+      vw.readerReshaped(); // #185 — the reader asked for this growth; it is not the tail moving
       var body = clamp.previousElementSibling;
       if (body.classList.contains("clamped")) {
         body.classList.remove("clamped");
@@ -2902,6 +2919,10 @@
     }
     var more = e.target.closest(".morebtn");
     if (more) {
+      // #185: "⋯ N more lines" IS the control the owner was clicking. It reveals in place — no
+      // reconcile — so the growth reaches the engine through the observer, and parked at the tail
+      // the follow rule converges on it and scrolls away the lines just revealed.
+      vw.readerReshaped();
       // #67: a SMALL expansion (content within MAX_BUFFER_LINES) is recorded by
       // record-id + ordinal so it survives rematerialization; large ones reset.
       var blk67 = more.closest(".blk");

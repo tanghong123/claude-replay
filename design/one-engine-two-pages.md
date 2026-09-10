@@ -793,3 +793,99 @@ window, and a measure only ever corrects the ones inside it.
 moment ago.* Not "eventually right" — a browser reads the height synchronously, the moment anything
 forces layout, and it acts on it. The residual this leaves is a `renderItem` that reads layout mid-
 loop; neither page's does today.
+
+## Rule 5 amended: estimate CLOSE, not merely UNDER (2026-09-10, #184)
+
+Rule 5 has said, since `#107` step 3, *estimate UNDER, never over*. Its reason was sound as far as
+it went: guess HIGH and learning the real height SHRINKS the page, and a shrink above the viewport
+is a jump unless the anchor catches it. What it never said is what guessing LOW costs, and the
+answer turns out to be most of `#180`.
+
+A constant floor — 30px on the classic page, 34/40/44 on the shell — is not a neutral choice. It is
+the choice that **maximises** the distance between the guess and the truth, and that distance is
+exactly what lands above a reader when a run is mounted and measured. Measured on a 120-turn
+transcript, walking up from the tail in nine 900px steps against the floor:
+
+| | asked | turns passed | the page's own height moved |
+|---|---|---|---|
+| app shell | 8100px | 31 | **5539px (68%)** |
+| classic page | 8100px | 35 | **5643px (70%)** |
+
+Two-thirds of every pixel the reader climbed was the page growing under the correction that had to
+hold them still. `#180` made that correction land; it did nothing about its size.
+
+`#179` then removed the other half of the old fear. The pads now carry the page's height before
+anything forces layout, so a page that shrinks under a reader no longer clamps them — the anchor is
+the only thing that has to catch it, and it catches in both directions equally.
+
+So the rule becomes **estimate CLOSE, and let the floor stand only while there is nothing to learn
+from.** `HeightGuess` (shared) is a running mean over the heights this page has actually measured,
+seeded by the old floor. Both pages feed it from the one place they record a height and ask it from
+the one place they answer `estimateAt`.
+
+**Why a mean, when it is wrong about every individual record.** What a mounted run costs the sums is
+a SUM. A mean that guesses a 78px prompt high and its 184px answer low leaves the pair they form
+exact, which is the only quantity the reader can feel. That is also why the classic page keeps ONE
+mean for the whole page where the shell keeps one per unit type: the shell's three types are three
+populations that do not interleave, and the classic page's records do.
+
+**The two guards, which are the whole difference between a mean that helps and one that is worse
+than the floor.** Nothing is used until eight records have been seen, so one short record cannot set
+the page's idea of a height. And a sample is CLAMPED to four times the running mean rather than
+rejected: one enormous record must not drag the mean, but dropping it altogether biases the mean
+low, which is the old bug wearing a hat.
+
+**What it does not fix, stated plainly.** A mean shrinks the error on a page whose records are alike
+and does much less for one whose records are not. `#180`'s case now runs on `fixture_varied_prose`
+— answers of 1, 40, 5 and 18 lines, cycling — precisely because over uniform prose the guess became
+good enough that the case could no longer produce the error it exists to survive: `scrollHeight` did
+not move once across the whole walk, and the case failed its own not-vacuous guard. That guard is
+now `|Δh| > 1` rather than `Δh > 1`, because with a learned mean a record SHORTER than the mean
+shrinks the page, and a one-signed test would call a step over fresh ground vacuous.
+
+## Growth the reader ASKED for is not the tail moving away (2026-09-10, #185)
+
+Reported on v1.248.0, minutes after `#179` shipped:
+
+> "I scroll to the end, then click show more on a block, the block unfolds downward correctly
+> (anything above it is not moved), so now the page is no longer at the bottom. However, apparently
+> the engine did not think so and immediately snaps the page to the bottom."
+
+The first half of that sentence is the anchor working perfectly, and the second half is the follow
+rule working perfectly, on a page where they disagree. Parked at the tail the page is still
+`following`. The expansion makes it taller BELOW the reader, so it is no longer at its tail, and
+`convergeBottom` puts it back — scrolling away the very lines the click revealed.
+
+**The rule this adds:** *who caused the growth decides whether the pin survives it.* Growth that
+arrives on its own is the tail moving away from a follower, and the pin is what they asked for.
+Growth the reader produced by clicking is them choosing something to read, and the pin is then in
+their way. `readerReshaped()` drops it, and the pill lights up to offer it back.
+
+This does not weaken `#165`, which defers a converge while a GESTURE is in flight and KEEPS the pin.
+There the tail really did move; here nothing arrived. Same guard, opposite answer, because the
+question is different.
+
+**Unconditional, and that was a decision.** A height test was proposed and withdrawn by the owner
+within the hour — converge when the opened block is short, unfollow when it is tall — because the
+same click would then do two different things depending on the block, which nobody can predict from
+outside. "It is just one scroll away to re-pin the tail, and feels natural."
+
+**What the investigation actually cost, and the lesson in it.** The first fix covered fold heads
+only, and the case still failed on the app shell. There are TWO paths by which a reader grows the
+page, and they do not meet:
+
+| control | how the growth reaches the engine |
+|---|---|
+| a fold head | `rerender` → `render()` → `reconcile` — the engine is told |
+| **"⋯ N more lines"** | revealed in place; the engine hears it only through the ResizeObserver |
+
+The cap expander — the control the report was actually about — never reaches `rerender` on either
+page. So a fix written at the re-render seam covers the control nobody complained about and misses
+the one they did. Both seams need arming, and a scenario that clicks a fold head cannot tell you so.
+
+**A second thing the case had to learn the hard way.** A fold head is the wrong instrument for this
+measurement twice over: its click is a four-step cycle, so clicking a head the page had already
+opened CLOSES it (measured: the classic page shrank 76px and the case reported itself vacuous), and
+a capped output can sit several folds deep inside a parent whose body is `display: none`, so opening
+the innermost fold leaves the expander with no box at all. The case now opens the whole ancestor
+chain, outermost first, re-querying between clicks because a re-render replaces the nodes under it.
