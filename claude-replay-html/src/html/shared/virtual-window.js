@@ -355,7 +355,7 @@ class VirtualWindow {
    *  item goes is read from its own rect — the same quantity the sums stand for, known exactly
    *  where it is mounted, and not summed through heights a rewrite has just turned back into
    *  estimates. */
-  restoreDomAnchor(anchor) {
+  restoreDomAnchor(anchor, immediate = false) {
     if (!anchor) return;
     const item = [...this.mount.children].find(child => child.dataset.unitKey === anchor.key);
     // Not mounted: nothing to hold it by. Placing it from the sums was tried and reverted —
@@ -382,7 +382,23 @@ class VirtualWindow {
     if (!correction(this.frame.scrollTop(), want, 1)) return;
     // The reader is moving: do not write under them (#132 step 3). What they get instead is a
     // fresh anchor once they stop (#138) — never this position, replayed late.
-    if (this.readerOwnsPosition()) { this.owed = anchor; this.scheduleSettle(); return; }
+    //
+    // `immediate` is the one case where that rule INVERTS, and #180 measured why. On the SCROLL
+    // path the engine has just mounted items ABOVE the reader whose remembered height was a floor
+    // estimate (30px classic, 34 on the shell) against a real height five to twenty times that.
+    // The pads absorbed the estimate, the mount adds the real height, and the content under the
+    // reader moves down by the whole difference. Not writing does not leave the reader alone — it
+    // displaces them by exactly the correction being withheld. Measured on the app shell, walking
+    // up in 900px steps: +1954px of drift per step once the walk reaches unmeasured ground, more
+    // than twice the distance asked for, with scrollHeight growing by the same amount.
+    //
+    // This does not reopen #138. That dropped the debt because the correction restored a position
+    // captured BEFORE the reader moved — stale by the time it was paid, which is what dragged them
+    // back. The scroll-path correction is computed AT the position they are at now; it replays
+    // nothing. It only undoes the engine's OWN mount displacement, and over already-measured
+    // ground the correction is zero and returns above, so this fires only where it is the lesser
+    // harm.
+    if (!immediate && this.readerOwnsPosition()) { this.owed = anchor; this.scheduleSettle(); return; }
     this.frame.scrollTo(want);
   }
 
@@ -472,7 +488,7 @@ class VirtualWindow {
 
   /** Heights from `itemHeight` (rule 8) — the same function the classic page measures with.
    *  The sums do not have to be exact for the restore: that reads the item's own rect. */
-  measureMounted(anchor = this.readerAnchor()) {
+  measureMounted(anchor = this.readerAnchor(), immediate = false) {
     let changed = false;
     for (const child of this.mount.children) {
       const index = Number(child.dataset.unitIndex);
@@ -485,7 +501,7 @@ class VirtualWindow {
     if (!changed) return false;
     this.rebuildPrefix();
     this.updatePads();
-    if (!this.following) this.restoreDomAnchor(anchor);
+    if (!this.following) this.restoreDomAnchor(anchor, immediate);
     this.syncAnchor();
     return true;
   }
@@ -529,7 +545,7 @@ class VirtualWindow {
 
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
    *  whose content changed; `refresh` rebuilds everything mounted. */
-  reconcile(lo, hi, dirtyFrom = Infinity, refresh = false, anchor = this.following ? null : this.captureDomAnchor()) {
+  reconcile(lo, hi, dirtyFrom = Infinity, refresh = false, anchor = this.following ? null : this.captureDomAnchor(), immediate = false) {
     // The page can ask for the whole thing (#140 step 4): a small filtered set rendered in FULL
     // has every height real, so the sums are exact and a jump cannot land in a pad.
     if (this.renderAll()) { lo = 0; hi = this.count; }
@@ -585,21 +601,21 @@ class VirtualWindow {
     // measured first; matching it costs nothing, since `measureMounted` writes the pads itself
     // whenever a height moved and the call below covers the case where none did and only the
     // RANGE changed.
-    this.measureMounted(anchor);
+    this.measureMounted(anchor, immediate);
     this.updatePads();
-    this.restoreDomAnchor(anchor);
+    this.restoreDomAnchor(anchor, immediate);
     for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
     this.afterRender();
     this.syncAnchor();
     return true;
   }
 
-  updateWindow(forceIndex = null) {
+  updateWindow(forceIndex = null, immediate = false) {
     if (!this.count) return;
     const anchor = this.following || this.dragging ? null : this.captureDomAnchor();
     const anchorIndex = forceIndex == null && anchor ? this.indexOfIdentity(anchor.key) : -1;
     const range = forceIndex != null ? this.rangeAround(forceIndex) : anchorIndex >= 0 ? this.rangeAround(anchorIndex) : this.rangeForScroll();
-    this.reconcile(range.lo, range.hi, Infinity, false, anchor);
+    this.reconcile(range.lo, range.hi, Infinity, false, anchor, immediate);
     this.syncAnchor(); // an unchanged window returns early above; the anchor is re-read either way
   }
 
@@ -652,7 +668,12 @@ class VirtualWindow {
     this.pendingScroll = true;
     setTimeout(() => {
       this.pendingScroll = false;
-      this.updateWindow();
+      // The reader's OWN scroll is the one window update whose correction must land NOW (#180):
+      // what it corrects is this engine's own mount replacing floor estimates above them. Every
+      // other caller keeps #132's deferral — the drag end (the thumb owns the position and the
+      // anchor is null there anyway), the jump paths (they run their own landing loops and stamp
+      // lastUserInput precisely so the anchor does not fight them), and every apply path.
+      this.updateWindow(null, true);
     }, 0);
   }
 

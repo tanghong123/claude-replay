@@ -666,3 +666,79 @@ rather than weakened, and the engine pins above them now hold each once for both
 place is what only this page can say: that it extends the engine, that it keeps none of the
 machinery (`doesNotMatch` on the scroll listener, the body observer and the rule calls), and the
 three parameters that carry its genuine differences.
+
+## The anchor's two rules, amended (2026-09-10, #178 and #180)
+
+Two changes to `captureDomAnchor`/`restoreDomAnchor` landed within a day of each other, and both
+narrow a rule rather than adding one. They are recorded here because in each case the existing
+scenarios passed either way, so the suite is not where a later reader will find the reason.
+
+### #178 — one predicate, applied from the mounted item down
+
+`#177` made the anchor DESCEND from the first qualifying `[data-block-index]` into the innermost
+one, because a parent qualifies whenever a child does and document order offers the parent first —
+so an unrefined pick is always the OUTERMOST row, which on the app shell is the `.process-surface`
+wrapper rather than the record the reader is inside.
+
+Writing the case for that guard (`#178`) found a second defect, and the fix for both is the same
+predicate applied one level higher: **refine only while the thing being held STRADDLES the viewport
+edge.**
+
+```js
+let row = null;
+for (let scope = child; scope.top < viewportTop; scope = row) {
+  const inner = rowIn(scope.element);
+  if (!inner) break;
+  row = inner;
+}
+```
+
+Whatever straddles is the only thing whose top the reader cannot see, so it is the only thing whose
+top lies about where they are reading. When the item's own top IS visible the anchor now refines
+nothing — that top is already the better anchor, since every row inside sits at a fixed offset below
+it. On the classic page the mounted item IS the record and `matBlock` indexes only its nested `.blk`
+DESCENDANTS, so before this the anchor jumped to the child below a visible head and a growth in that
+head drove it **420px off the top of the screen** (measured 9 → -411). `#176` introduced that; before
+it, no `.blk` carried the attribute and the item's own top held the head correctly.
+
+**Reach, stated honestly:** because `firstVisible` picks the STRADDLER, "the item's top is visible"
+can only happen within one inter-item gap of the edge — about 10px on the classic page, about 52px
+on the app shell (the `.process-surface` margin plus its headbar). Worth doing for the correctness
+of the rule; not something a reader hits often.
+
+### #180 — "never write under a moving reader", except to undo our own displacement
+
+`#132` step 3 and `#134` added the guard that defers a correction while `readerOwnsPosition()` is
+true, and `#138` made the settle DROP the deferred debt instead of paying it. That was right for the
+case it was written against: the debt held a position captured BEFORE the reader moved, so paying it
+late dragged them back.
+
+It is wrong for one path. On a SCROLL, `rangeAround` mounts a run of items ABOVE the reader whose
+remembered height was a floor estimate — 30px classic, 34/40/44 on the shell — against a real height
+five to twenty times that. `measureMounted` replaces every estimate with the truth, the pads absorb
+only what is outside the window, and the difference lands above the reader with `scrollTop`
+unchanged. Not writing does not leave the reader alone: **it displaces them by exactly the correction
+being withheld,** and `#138`'s settle then drops it, so the displacement is permanent. `this.owed` is
+assigned in that one line and nowhere read back.
+
+Measured, walking up a 120-turn transcript in 900px steps: the record under the reader moved **2355px
+and 2854px** on the app shell and **3263px** on the classic page for a 900px request — an overshoot of
+up to 2363px per step — with `scrollHeight` growing by the same amount each time. Steps over ground
+the tail jump had already measured drifted 0, which is the first-time-only asymmetry the owner
+reported.
+
+So `restoreDomAnchor` takes an `immediate` flag, threaded through `measureMounted` → `reconcile` →
+`updateWindow`, and **`onScroll` is the only caller that opts in.** This does not reopen `#138`: that
+correction was stale, computed before the reader moved; this one is computed AT the position they are
+at now and replays nothing. Over already-measured ground the correction is zero and returns before the
+guard, so it fires only where it is the lesser harm.
+
+Every other caller keeps the deferral — the drag end (the thumb owns the position, and the anchor is
+null there anyway), the jump paths (they run their own landing loops and stamp `lastUserInput`
+precisely so the anchor does not fight them), and every apply path.
+
+**What the suite cannot tell you, and a hand-check should.** Headless Chrome has no momentum
+scrolling, so the case proves the correction LANDS but not how a trackpad fling feels once it does.
+The secondary mitigation is `#184`: the floor estimate is what makes the correction large, and rule 5
+("estimate UNDER, never over") is free only for learning BELOW the reader — above them it MAXIMISES
+the delta.

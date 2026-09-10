@@ -1054,10 +1054,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /for \(let scope = child; scope\.top < viewportTop; scope = row\) \{\n\s+const inner = rowIn\(scope\.element\);\n\s+if \(!inner\) break;\n\s+row = inner;\n\s+\}/, "ONE predicate from the ITEM down: refine only while the thing being held STRADDLES the edge. Descending reaches the nested record the reader is inside rather than its wrapper (#177); STOPPING keeps a record whose own top is visible as the anchor, instead of handing it to a child below the head being read (#178, measured at 420px on the classic page)");
   assert.equal(firstVisible([{ index: 0, top: 900, bottom: 1000, height: 100 }], 0, 500, 1, false), null, "a unit below the viewport is no anchor — the scroll offset places the window");
   assert.match(src, /const row = item\.querySelector\(`\[data-block-index="\$\{anchor\.block\}"\]`\);/, "…and the restore puts that row back");
-  assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\)\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");
+  assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\), immediate = false\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");
+  assert.match(src, /if \(!immediate && this\.readerOwnsPosition\(\)\) \{ this\.owed = anchor; this\.scheduleSettle\(\); return; \}/, "#132's 'never write under a moving reader' holds for every path EXCEPT the reader's own scroll (#180) — there the engine has just mounted items above them whose remembered height was a floor estimate, and withholding the correction displaces them by exactly it");
+  assert.match(src, /this\.updateWindow\(null, true\);/, "…and onScroll is the ONLY caller that opts in: the drag end, the jump paths and every apply path keep the deferral");
   assert.match(src, /return this\.anchor \|\| this\.captureDomAnchor\(\);/, "the kept anchor, else a fresh one");
   assert.match(src, /this\.anchor = null;\n(?:.*\n)*?    if \(user && this\.owed\) \{ this\.owed = null; clearTimeout\(this\.settleTimer\); \}/, "a scroll invalidates the kept anchor — and a correction owed from before the reader moved (#138)");
-  assert.match(src, /this\.reconcile\(range\.lo, range\.hi, Infinity, false, anchor\);\n    this\.syncAnchor\(\);/, "…and the deferred window update re-reads it once per batch");
+  assert.match(src, /this\.reconcile\(range\.lo, range\.hi, Infinity, false, anchor, immediate\);\n    this\.syncAnchor\(\);/, "…and the deferred window update re-reads it once per batch");
   assert.match(vpSrc, /export class Viewport extends VirtualWindow \{/, "the app shell's viewport IS the shared engine (#107)");
   assert.match(vpSrc, /frame: elementFrame\(scroller\),/, "…driving it through the element frame");
   assert.match(src, /frame\.on\("pointerdown", event => \{ if \(frame\.isScrollbarTarget\(event\)\) this\.beginDrag\(\); \}/, "a pointer that lands on the scroller itself is on its scrollbar — no coordinate test, overlay scrollbars sit inside the client box");
@@ -1710,7 +1712,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // element is visible, which is exactly where a jump from far away leaves the reader — named an
   // item that far late.
   assert.match(src, /rangeForScroll\(this\.prefix, this\.count, this\.frame\.scrollTop\(\) - this\.contentTop\(\), this\.frame\.clientHeight\(\), this\.overscan\)/, "…and so is the range a scroll offset asks for");
-  assert.match(src, /const want = itemTop \+ within - sat;\s*\n\s*if \(!correction\(this\.frame\.scrollTop\(\), want, 1\)\) return;[\s\S]{0,420}?this\.frame\.scrollTo\(want\);/, "the write-back is absolute — scrollTo a position derived from the anchor, not scrollBy an accumulating difference");
+  assert.match(src, /const want = itemTop \+ within - sat;\s*\n\s*if \(!correction\(this\.frame\.scrollTop\(\), want, 1\)\) return;[\s\S]{0,2400}?this\.frame\.scrollTo\(want\);/, "the write-back is absolute — scrollTo a position derived from the anchor, not scrollBy an accumulating difference");
   assert.match(src, /\/\/ Not mounted: nothing to hold it by\./, "…and an anchor the window has left behind stays put — the sums there are estimates");
   assert.doesNotMatch(src, /this\.frame\.scrollBy\(/, "…and nothing in the engine nudges the offset by an increment any more");
   console.log("#132 anchor-is-the-position cases passed");
@@ -1722,7 +1724,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const src = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   const vpSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(src, /readerOwnsPosition\(\) \{\s*\n\s*return this\.dragging \|\| performance\.now\(\) - this\.lastUserInput < this\.userIntentMs;/, "a held thumb and a travelling fling own the position");
-  assert.match(src, /if \(this\.readerOwnsPosition\(\)\) \{ this\.owed = anchor; this\.scheduleSettle\(\); return; \}/, "…so the correction is owed, not written under them");
+  assert.match(src, /if \(!immediate && this\.readerOwnsPosition\(\)\) \{ this\.owed = anchor; this\.scheduleSettle\(\); return; \}/, "…so the correction is owed, not written under them — on every path but the reader's own scroll, which #180 excepts because there the correction undoes the engine's OWN mount displacement rather than replaying a stale position");
   assert.match(src, /if \(this\.readerOwnsPosition\(\)\) \{ this\.scheduleSettle\(\); return; \}/, "…and the settle re-arms while they are still moving");
   assert.match(src, /this\.owed = null;\s*\n\s*this\.updateWindow\(\);/, "a drag ends in the model's own reset — the offset names a record, not the anchor from before the drag");
   assert.match(src, /const ratio = this\.lastWidth && width \? this\.lastWidth \/ width : 0;/, "a width change has a ratio…");

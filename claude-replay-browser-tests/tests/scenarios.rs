@@ -6835,3 +6835,171 @@ fn app_shell_a_growth_in_a_visible_records_head_holds_it() {
     let page = open(Surface::AppShell, &fx, 2932);
     scenario_a_growth_in_a_visible_records_head_holds_it(&page.tab, Surface::AppShell, &fx);
 }
+
+/// #180. Scrolling UP over ground the reader has not visited must move the content by exactly as
+/// far as they asked. Above the mounted window every item costs only its FLOOR estimate — 30px on
+/// the classic page, 34 on the app shell — against a real height five to twenty times that, so one
+/// step of upward scroll mounts a RUN of them and the measure that follows replaces every estimate
+/// with the truth. That difference lands ABOVE the reader, and `scrollTop` does not move with it,
+/// so the content under them slides down by the whole amount.
+///
+/// The engine computes exactly that correction in `restoreDomAnchor` and, before #180, threw it
+/// away: `readerOwnsPosition()` is true for the whole gesture (a wheel event stamps `lastUserInput`
+/// milliseconds earlier), so the write was deferred into `this.owed` — which nothing ever reads
+/// back. Measured on the app shell before the fix: +2355px and +2854px of movement for a 900px
+/// request, an overshoot of up to 1954px per step, with `scrollHeight` growing by the same amount.
+///
+/// So the assertion is the reader's own contract: the record you were looking at moves by the
+/// distance you scrolled, and by no more. The case walks up in steps and checks EVERY step, and it
+/// separately requires that at least one step actually reached unmeasured ground — otherwise it
+/// would pass over the region `convergeBottom` already measured and prove nothing.
+fn scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    let s = surface.scroller();
+    let root = match surface {
+        // The classic mount is the virtual-window container INSIDE #stream, not #stream itself:
+        // `#stream > *` is a single `DIV.vwin` (measured — it reported a constant -15px move while
+        // scrollTop fell 900, because the container does not move with its contents).
+        Surface::Classic => "(document.getElementById('vwin')||document.querySelector('#stream .vwin')||document.getElementById('stream'))",
+        Surface::AppShell => "document.querySelector('.virtual-window')",
+    };
+    let vt = match surface {
+        Surface::Classic => "0".to_string(),
+        Surface::AppShell => format!("{s}.getBoundingClientRect().top"),
+    };
+    // Hold the reference by the record's own IDENTITY, never by the node. The engine reconciles by
+    // REUSING mounted elements, so a node handle silently comes to hold a different record and the
+    // measurement compares two unrelated rects — measured while building this case: a constant
+    // -900 on the classic page, including over ground where nothing was re-measured.
+    let pick = format!(
+        r#"(function(){{var vt={vt};var k=[...{root}.children];var p=k.find(function(e){{var r=e.getBoundingClientRect();return r.height>0&&r.bottom>vt+1;}});if(!p)return{{ok:false}};var id=p.id||(p.dataset?p.dataset.unitKey:'');var s={s};return{{ok:!!id,id:id,tag:p.tagName+'.'+p.className,top:Math.round(p.getBoundingClientRect().top),st:Math.round(s.scrollTop),h:Math.round(s.scrollHeight)}};}})()"#
+    );
+    let reread = |id: &str| {
+        format!(
+            r#"(function(){{var e=document.getElementById("{id}")||document.querySelector('[data-unit-key="{id}"]');var s={s};if(!e)return{{ok:false,h:Math.round(s.scrollHeight)}};return{{ok:true,top:Math.round(e.getBoundingClientRect().top),st:Math.round(s.scrollTop),h:Math.round(s.scrollHeight)}};}})()"#
+        )
+    };
+
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+
+    // LEAVE FOLLOW FIRST, and prove it. Parked at the tail the page is still following, and the
+    // #103 hysteresis reads the first scroll inside its slack as displacement and HEALS it back —
+    // measured on the classic page: step 1 moved the reference -473px, the wrong way, with
+    // scrollHeight unchanged, which is a heal and not the defect this case is about.
+    let tail_top = harness::eval(tab, &format!("{s}.scrollTop"))
+        .as_f64()
+        .unwrap_or(0.0);
+    scroll_by(tab, surface, -900);
+    settle();
+    let left = harness::eval(tab, &format!("{s}.scrollTop"))
+        .as_f64()
+        .unwrap_or(0.0);
+    assert!(
+        tail_top - left > 400.0,
+        "{surface:?}: the reader's own scroll has to LEAVE the tail before this measures anything          — a following view heals a small scroll straight back and every step would read the heal          instead of the defect. scrollTop {tail_top} -> {left}"
+    );
+
+    let step = 900.0;
+    let mut reached_fresh = false;
+    let mut worst = 0.0_f64;
+    for n in 1..=8 {
+        let before = harness::probe(tab, &pick);
+        if !before["ok"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let id = before["id"].as_str().unwrap_or("").to_string();
+        scroll_by(tab, surface, -(step as i64));
+        settle();
+        let after = harness::probe(tab, &reread(&id));
+        // Scrolled clean past the reference (it left the mounted window): nothing to compare.
+        if !after["ok"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let grew = after["h"].as_f64().unwrap_or(0.0) - before["h"].as_f64().unwrap_or(0.0);
+        if grew > 1.0 {
+            reached_fresh = true;
+        }
+        let moved = after["top"].as_f64().unwrap_or(0.0) - before["top"].as_f64().unwrap_or(0.0);
+        let over = (moved - step).abs();
+        if over > worst {
+            worst = over;
+        }
+        assert!(
+            over <= 12.0,
+            "{surface:?}: step {n} asked to scroll up {step}px and the record the reader was on \
+             moved {moved}px — an overshoot of {over}px. Above the mounted window every item \
+             costs its FLOOR estimate; mounting replaces those with real heights ABOVE the \
+             reader, and the correction for it is computed and then dropped because the reader \
+             is mid-gesture (#180). scrollHeight {} -> {}",
+            before["h"],
+            after["h"]
+        );
+    }
+    // Without this the case would pass over already-measured ground and assert nothing: the tail
+    // jump leaves roughly 1500px above it measured, and the first steps never leave that.
+    assert!(
+        reached_fresh,
+        "{surface:?}: the walk never reached UNMEASURED ground — scrollHeight never grew, so every \
+         step was over heights the engine already knew and the case proved nothing. Worst \
+         overshoot seen was {worst}px."
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn classic_page_a_scroll_up_over_fresh_ground_moves_by_what_was_asked() {
+    let _serial = serial();
+    let fx = fixture_tall_prose("scenario-fresh-ground-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
+        &page.tab,
+        Surface::Classic,
+        &fx,
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_scroll_up_over_fresh_ground_moves_by_what_was_asked() {
+    let _serial = serial();
+    let fx = fixture_tall_prose("scenario-fresh-ground-app");
+    let page = open(Surface::AppShell, &fx, 2934);
+    scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
+        &page.tab,
+        Surface::AppShell,
+        &fx,
+    );
+}
+
+/// Tall enough that a walk upward LEAVES the region the tail jump already measured — the whole
+/// point of #180's case. An 18-turn session (~5.5k px) is not: every 900px step stays inside
+/// `convergeBottom`'s measured window and reads zero drift.
+fn fixture_tall_prose(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = String::new();
+    for i in 0..120 {
+        transcript += &user_at(
+            &format!("question {i}: a prompt with enough words to make a real record"),
+            &now_minus(4000 - i as u64 * 30),
+        );
+        transcript += &assistant_at(
+            &format!(
+                "answer {i}: {}",
+                "prose that is far taller than the 30px floor. ".repeat(10)
+            ),
+            &now_minus(3990 - i as u64 * 30),
+        );
+    }
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 120,
+    }
+}
