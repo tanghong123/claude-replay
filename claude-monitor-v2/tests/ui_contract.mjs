@@ -15,7 +15,7 @@ import { isInteraction, interactionCard, interactionHtml } from "../../claude-re
 import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE } from "../../claude-replay-html/src/html/shared/search.js";
 import { chainWalk } from "../../claude-replay-html/src/html/shared/filter.js";
 import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll } from "../../claude-replay-html/src/html/shared/virtual-window.js";
-import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml } from "../../claude-replay-html/src/html/shared/task-card.js";
+import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
 import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
@@ -1621,7 +1621,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(taskRowMeta({ id: "1", subject: "bare" }), "", "nothing to say leaves the row one line");
   assert.deepEqual(taskSections(done).map(s => s.label), ["description", "acceptance", "outcome", "worklog"]);
   assert.deepEqual(taskSections(done).at(-1).log, [{ ts: "09-04 22:49", by: "claude", msg: "found the seam" }]);
-  const classes = { card: "c", head: "h", glyph: "g", id: "i", title: "t", chips: "cs", chip: "ch", dates: "d", section: "s", label: "l", body: "b", item: "it", outcome: "o", log: "lg", logTime: "lt", logMsg: "lm", logBy: "lb" };
+  const classes = { card: "c", head: "h", glyph: "g", id: "i", title: "t", chips: "cs", chip: "ch", dates: "d", gap: "gp", section: "s", label: "l", body: "b", item: "it", outcome: "o", log: "lg", logTime: "lt", logMsg: "lm", logBy: "lb" };
   const html = taskCardHtml(done, classes);
   assert.match(html, /<span class="g" data-state="completed">✓<\/span><span class="i">#125<\/span>/);
   assert.match(html, /<div class="d">created 09-04 18:23 · claimed 09-04 22:14 · completed 09-04 22:53<\/div>/);
@@ -1636,6 +1636,39 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(js125, /row\.appendChild\(el\("span", "task-glyph", shared\.taskGlyph\(t\.status, t\.deferred\)\)\);/);
   assert.match(js125, /var meta = shared\.taskRowMeta\(card\(t\)\);/);
   console.log("#125 task card cases passed");
+}
+
+// #188: a task with no recorded title says WHY it has no details, on BOTH pages, in one wording.
+// The stub is the engine's own decision (`engine/tasks.rs`, TaskOp::Update): an update for a task
+// this transcript never saw created materializes id + status and NOTHING else, because per-queue
+// integer ids collide and a title fetched by id would be confidently wrong. Rendering that gap is
+// not the same as saying it — the card showed an id, a status chip and nothing else, which is how
+// it was reported.
+{
+  const classes = { card: "c", head: "h", glyph: "g", id: "i", title: "t", chips: "cs", chip: "ch", dates: "d", gap: "gp", section: "s", label: "l", body: "b", item: "it", outcome: "o", log: "lg", logTime: "lt", logMsg: "lm", logBy: "lb" };
+  const stub = taskCardHtml({ id: "q119", status: "Completed" }, classes);
+  assert.match(stub, /<div class="gp">Created outside this transcript/, "a titleless card explains itself");
+  assert.equal(stub.includes(TASK_NO_DETAILS), true, "…in the shared wording, once");
+  assert.equal(stub.match(/class="l"/g), null, "…and INVENTS NO SECTION: the labels name the queue's own fields");
+  assert.match(stub, /<span class="i">#q119<\/span>/, "the id it does have is still the queue's, prefix and all");
+  // The other direction, which is the half that rots silently: a task that HAS a title must not
+  // acquire the note just because it carries no description.
+  assert.equal(taskCardHtml({ id: "1", subject: "bare", status: "pending" }, classes).includes('class="gp"'), false, "a titled task with no description is terse, not unrecorded");
+  assert.equal(taskCardHtml({ id: "1", subject: "   ", status: "pending" }, classes).includes('class="gp"'), true, "whitespace is not a title");
+  // Both class maps must NAME the part — a missing key renders `class="undefined"` in silence.
+  const app188 = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  const js188 = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(app188, /dates: "task-card-dates", gap: "task-card-gap",/, "the app shell names the gap");
+  assert.match(js188, /dates: "tcard-dates", gap: "tcard-gap",/, "…and so does the classic page");
+  assert.match(productionCss, /\.task-card-gap\{/, "…and each page styles it");
+  const exportCss = readFileSync(new URL("../../claude-replay-html/src/html/export.css", import.meta.url), "utf8");
+  assert.match(exportCss, /\.tcard-gap \{/);
+  // The ROW's fallback title is the same wording on both pages. The app shell's read
+  // `Task ${index + 1}` — the row's POSITION — beside a tail carrying the real id.
+  assert.match(app188, /escapeText\(task\.subject \|\| task\.title \|\| TASK_NO_TITLE\)/, "the app shell row takes the shared phrase");
+  assert.match(js188, /var subj = t\.subject \|\| shared\.TASK_NO_TITLE;/, "…and the classic row, which had the words first");
+  assert.equal(TASK_NO_TITLE, "(no title recorded in this session)", "the wording is the classic page's, which shipped it");
+  console.log("#188 unrecorded-task cases passed");
 }
 
 // #89: the info pane's three subsections fold on their label, and the choice is the READER's —

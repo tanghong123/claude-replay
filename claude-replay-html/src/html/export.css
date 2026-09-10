@@ -774,6 +774,10 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 .tchip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border: 1px solid var(--border);
   border-radius: 999px; background: var(--panel); font-size: 11px; color: var(--muted); }
 .tcard-dates { font: 11px var(--mono); color: var(--muted); }
+/* #188: a card with no title has no sections either, and it says WHY — a quiet note against a
+   rule, never a labelled section (the labels name the queue's own fields). */
+.tcard-gap { max-width: 64ch; padding-left: 9px; border-left: 2px solid var(--border);
+  font: 12px var(--sans); line-height: 1.55; color: var(--faint); }
 .tcard-sec { display: flex; flex-direction: column; gap: 3px; }
 .tcard-label { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
 .tcard-body { max-width: 72ch; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }

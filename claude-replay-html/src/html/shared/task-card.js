@@ -12,6 +12,25 @@ const escapeTask = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&"
 /** The board's glyphs: pending, running, done, cancelled — and a parked task keeps its own. */
 const TASK_GLYPH = { pending: "○", in_progress: "◐", completed: "✓", cancelled: "✗" };
 
+/** What a task with NO RECORDED TITLE is called, and why it has none — one wording for both
+ *  pages (#125, #188).
+ *
+ *  The engine materializes a STUB when a transcript carries an UPDATE for a task it never saw
+ *  created (`engine/tasks.rs`, TaskOp::Update): id and status, subject deliberately EMPTY,
+ *  because the on-disk queues use per-queue integer ids that COLLIDE — `#8` is one queue's
+ *  "P1: agent-agnostic applications" and another's "Fix pre-existing docscroll fixture
+ *  regression" — so a title fetched by id would be confidently WRONG. That comment ends "The
+ *  frontends render the absence honestly instead", and #155 draws the same line: "When a title
+ *  is gone, the honest render is TaskItem::subject left empty and the frontends saying so
+ *  (#125) — a visible gap, not an invented one."
+ *
+ *  Rendering the gap is not the same as SAYING it. The classic page's row already named the
+ *  absence; every detail card on both pages showed an id, a status chip and nothing else, which
+ *  reads as broken rather than as honest — and that is exactly how it was reported (#187/#188).
+ *  Same register as the jump beside it: "Go to the turn — not kept in this stream." */
+const TASK_NO_TITLE = "(no title recorded in this session)";
+const TASK_NO_DETAILS = "Created outside this transcript — only its status was recorded here, so its title and details are not in this stream.";
+
 /** The wire's status vocabulary is the engine's (`Pending`/`InProgress`/`Completed`); the board's
  *  is lower-case with an underscore. One reading for both. */
 function taskStatus(status) {
@@ -90,8 +109,8 @@ function taskSections(task) {
 }
 
 /** The whole detail card as markup, with the page's class names. `classes` names every part:
- *  card, head, glyph, id, title, chips, chip, dates, section, label, body, item, outcome,
- *  log, logTime, logMsg, logBy. */
+ *  card, head, glyph, id, title, chips, chip, dates, gap, section, label, body, item,
+ *  outcome, log, logTime, logMsg, logBy. */
 function taskCardHtml(task, classes) {
   const status = taskStatus(task.status);
   const chips = taskChips(task)
@@ -109,14 +128,19 @@ function taskCardHtml(task, classes) {
     }
     return `<div class="${classes.section}${section.kind === "outcome" ? " " + classes.outcome : ""}"><span class="${classes.label}">${escapeTask(section.label)}</span>${body}</div>`;
   }).join("");
+  // #188: a card with no title has no sections either, and it must say WHY rather than leave
+  // the reader an id and a status chip. An ELEMENT, not a section: the labelled sections are
+  // the queue's own fields, and inventing a label there would be inventing a field.
+  const gap = String(task.subject || "").trim() ? "" : `<div class="${classes.gap}">${escapeTask(TASK_NO_DETAILS)}</div>`;
   return `<div class="${classes.card}" data-task-status="${escapeTask(status)}">`
     + `<div class="${classes.head}"><span class="${classes.glyph}" data-state="${escapeTask(status)}">${taskGlyph(status, task.deferred)}</span>`
     + `<span class="${classes.id}">#${escapeTask(task.id)}</span>`
     + `<span class="${classes.title}">${escapeTask(task.subject || "")}</span></div>`
     + `<div class="${classes.chips}">${chips}</div>`
     + (dates ? `<div class="${classes.dates}">${escapeTask(dates)}</div>` : "")
+    + gap
     + sections
     + `</div>`;
 }
 
-export { TASK_GLYPH, taskStatus, taskGlyph, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml };
+export { TASK_GLYPH, TASK_NO_TITLE, TASK_NO_DETAILS, taskStatus, taskGlyph, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml };

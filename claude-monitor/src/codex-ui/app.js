@@ -3,7 +3,7 @@ import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
 import { chainWalk } from "./shared/filter.js";
-import { taskCardHtml, taskRowMeta } from "./shared/task-card.js";
+import { taskCardHtml, taskRowMeta, TASK_NO_TITLE } from "./shared/task-card.js";
 import { ControlStore } from "./control-store.js";
 import { Preview } from "./preview.js";
 import { RecordStore } from "./record-store.js";
@@ -790,10 +790,13 @@ function renderNavigator() {
     // The row opens the task's details (#60); the jump to where its status was recorded is an
     // action inside the popover, so a click never moves the transcript by surprise.
     const status = taskStatus(task.status), statusClass = status === "in_progress" ? "running" : status;
+    // #188: a task with no recorded title takes the classic page's words for it, not an invented
+    // ordinal. This read `Task ${index + 1}` — the row's POSITION — beside a tail showing the real
+    // id, so a stub read "Task 1 … #q119": two numbers for one task, one of them made up.
     // A second line when there is something to say — who holds it, what blocks it, what gates
     // it, whether it is parked (#125, the queue board's two-line card). Silence keeps it to one.
     const meta = taskRowMeta({ ...task, blockedBy: task.blocked_by || task.blockedBy || [] });
-    return `<div class="work-task"><button class="work-task-head" type="button" data-task-open="${index}" title="Task details" aria-haspopup="dialog"><span class="task-state ${escapeText(statusClass)}"></span><span class="work-copy"><strong>${escapeText(task.subject || task.title || `Task ${index + 1}`)}</strong>${meta ? `<small class="work-task-meta">${escapeText(meta)}</small>` : ""}</span><span class="work-tail">#${escapeText(task.id || index + 1)}</span></button></div>`;
+    return `<div class="work-task"><button class="work-task-head" type="button" data-task-open="${index}" title="Task details" aria-haspopup="dialog"><span class="task-state ${escapeText(statusClass)}"></span><span class="work-copy"><strong>${escapeText(task.subject || task.title || TASK_NO_TITLE)}</strong>${meta ? `<small class="work-task-meta">${escapeText(meta)}</small>` : ""}</span><span class="work-tail">#${escapeText(task.id || index + 1)}</span></button></div>`;
   };
   // #186: live only, by default. A session with a hundred finished tasks shows a wall nobody
   // reads — "renders it useless" — so the pane opens on what is still moving and the reader asks
@@ -962,7 +965,7 @@ function searchTextOf(record) {
   return entry;
 }
 /** This shell's names for the shared task card (html/shared/task-card.js). */
-const APP_TASK = { card: "task-card", head: "task-card-head", glyph: "task-card-glyph", id: "task-card-id", title: "task-card-title", chips: "task-card-chips", chip: "task-chip", dates: "task-card-dates", section: "task-card-section", label: "task-card-label", body: "task-card-body", item: "task-card-item", outcome: "task-card-out", log: "task-card-log", logTime: "task-card-log-time", logMsg: "task-card-log-msg", logBy: "task-card-log-by" };
+const APP_TASK = { card: "task-card", head: "task-card-head", glyph: "task-card-glyph", id: "task-card-id", title: "task-card-title", chips: "task-card-chips", chip: "task-chip", dates: "task-card-dates", gap: "task-card-gap", section: "task-card-section", label: "task-card-label", body: "task-card-body", item: "task-card-item", outcome: "task-card-out", log: "task-card-log", logTime: "task-card-log-time", logMsg: "task-card-log-msg", logBy: "task-card-log-by" };
 const ALL_SCOPES = ["u", "a", "t", "o", "b", "r", "e"];
 /** The active scope as a set for the shared grammar; null when every class is on (no scope). */
 function activeScopeSet() {

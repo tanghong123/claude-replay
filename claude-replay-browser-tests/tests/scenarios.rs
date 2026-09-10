@@ -4210,6 +4210,143 @@ fn app_shell_a_task_reads_like_the_board() {
     scenario_a_task_reads_like_the_board(&page.tab, Surface::AppShell, &fx);
 }
 
+/// A fixture holding the #125 STUB and nothing else: a session with NO task store on disk, whose
+/// transcript carries one `taskq` audit line moving a task it never created.
+///
+/// Both halves are load-bearing. Only an UPDATE for an unseen id reaches the stub branch — a
+/// create carries its subject, and every task file on disk carries one too — and a `taskq` audit
+/// line is the shape of it this repo's own sessions produce. The store is ABSENT rather than
+/// merely lacking that id: `tasks::merged` takes disk per id and APPENDS what only the op-log
+/// saw, so a store here would work (measured) but would put two unrelated questions in one
+/// fixture.
+fn fixture_unrecorded_task(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(14, Shape::default());
+    jsonl += &harness::taskq_state("call-taskq", "119", "done", "in_progress", "completed", 51);
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture {
+        base,
+        path,
+        turns: 14,
+    }
+}
+
+/// A task whose title this transcript never saw says WHY it has none, rather than rendering an
+/// id, a status chip and silence (#188, the second half of the owner's #187 report: "it did not
+/// include all the task details").
+///
+/// The absence is the ENGINE's decision and it is deliberate. `engine/tasks.rs`, `TaskOp::Update`
+/// on an unknown id: "The subject stays EMPTY on purpose (#125). It is not recoverable … the
+/// on-disk store is keyed by session with per-queue integer ids that COLLIDE … Scanning sibling
+/// task directories for a matching id would attach a confidently WRONG title, which is worse than
+/// none. The frontends render the absence honestly instead." #155 draws the same line for a
+/// pruned title: "a visible gap, not an invented one."
+///
+/// Rendering the gap is not the same as SAYING it, and that is the whole of this case. Both
+/// pages showed the gap in silence, which reads as broken. So: the card explains itself, in one
+/// shared wording; the row names the absence instead of inventing a title; and — the half that
+/// would rot quietly — NO section is invented to carry the explanation, because the card's
+/// labels name the queue's own fields and a synthetic one would read as a field the task has.
+fn scenario_a_task_with_no_title_says_why(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    // The stub's status is COMPLETED — a transcript that only ever CLOSED a task is the ordinary
+    // way to get one — so #186's live-only filter holds it back by default. That is correct (it
+    // is finished work), and it is the first place the two features meet: a reader whose only
+    // trace of a task is its completion sees an empty pane until they ask for everything.
+    harness::show_every_pane_row(tab);
+    let open = match surface {
+        Surface::Classic => "(function(){ var b = document.getElementById('btn-tasks'); if (b) b.click(); var it = document.querySelector('#taskbox .task-item'); if (it) it.classList.add('open'); return 'ok'; })()",
+        Surface::AppShell => "(function(){ var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) { var h = c.querySelector('[data-nav-card-toggle]'); if (h) h.click(); } var t = document.querySelector('[data-task-open]'); if (t) t.click(); return 'ok'; })()",
+    };
+    eval(tab, open);
+    settle();
+    settle();
+    let card = match surface {
+        Surface::Classic => "(function(){ var c = document.querySelector('#taskbox .tcard'); if (!c) return null; return { rows: document.querySelectorAll('#taskbox .task-item').length, id: (c.querySelector('.tcard-id')||{}).textContent, title: (c.querySelector('.tcard-title')||{}).textContent, gap: (c.querySelector('.tcard-gap')||{}).textContent || '', labels: [...c.querySelectorAll('.tcard-label')].map(e => e.textContent), row: (document.querySelector('#taskbox .task-subj')||{}).textContent }; })()",
+        Surface::AppShell => "(function(){ var c = document.querySelector('.task-card'); if (!c) return null; return { rows: document.querySelectorAll('#navigatorWork .work-task').length, id: (c.querySelector('.task-card-id')||{}).textContent, title: (c.querySelector('.task-card-title')||{}).textContent, gap: (c.querySelector('.task-card-gap')||{}).textContent || '', labels: [...c.querySelectorAll('.task-card-label')].map(e => e.textContent), row: (document.querySelector('#navigatorWork .work-copy strong')||{}).textContent }; })()",
+    };
+    let seen = probe(tab, card);
+    assert!(
+        !seen.is_null(),
+        "the stub task reached the pane at all (panel: {:?}, nav: {:?})",
+        probe(tab, "(document.getElementById('taskbox')||{}).innerHTML"),
+        probe(
+            tab,
+            "(document.getElementById('navigatorWork')||{}).innerHTML"
+        )
+    );
+    assert_eq!(
+        seen["rows"], 1,
+        "one task, from one record and no store: {seen:?}"
+    );
+    // The `q` prefix is taskq's own: two queues number from 1 and the panel holds both, so a
+    // repo-tier task is `q119` everywhere it is keyed. Asserting the bare number would pass
+    // against a panel that had lost the prefix and started colliding with a native task.
+    assert_eq!(seen["id"], "#q119", "the id it does have: {seen:?}");
+    assert_eq!(
+        seen["title"], "",
+        "…and the title it does NOT have stays empty — the engine's whole point: {seen:?}"
+    );
+    let gap = seen["gap"].as_str().unwrap_or("");
+    assert!(
+        gap.contains("not in this stream"),
+        "the card says why it is empty, in the register of the jump beside it: {seen:?}"
+    );
+    assert!(
+        gap.contains("only its status was recorded here"),
+        "…and says which part of the task DID reach this transcript: {seen:?}"
+    );
+    assert_eq!(
+        seen["labels"],
+        serde_json::json!([]),
+        "…and invents no section to carry it: the labels name the queue's own fields: {seen:?}"
+    );
+    assert_eq!(
+        seen["row"], "(no title recorded in this session)",
+        "the pane row names the absence rather than inventing a title: {seen:?}"
+    );
+    // …and it has to be READABLE, which is not the same as present. #187 was a heading that
+    // still opened, still measured a rect and still held exactly the right text while setting
+    // itself one character per line inside a 12px grid track; a rect is not visibility (#98),
+    // and a sentence explaining an absence is worthless if it renders as a column of letters.
+    let gapbox = match surface {
+        Surface::Classic => probe(tab, "(function(){ var e = document.querySelector('#taskbox .tcard-gap'); if (!e) return null; var r = e.getBoundingClientRect(); var cs = getComputedStyle(e); var line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5; var hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + Math.min(r.height / 2, line / 2))); return { w: Math.round(r.width), lines: Math.round(r.height / line), chars: e.textContent.length, own: !!hit && e.contains(hit) }; })()"),
+        Surface::AppShell => probe(tab, "(function(){ var e = document.querySelector('#taskPopover .task-card-gap'); if (!e) return null; var r = e.getBoundingClientRect(); var cs = getComputedStyle(e); var line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5; var hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + Math.min(r.height / 2, line / 2))); return { w: Math.round(r.width), lines: Math.round(r.height / line), chars: e.textContent.length, own: !!hit && e.contains(hit) }; })()"),
+    };
+    let chars = gapbox["chars"].as_f64().unwrap_or(0.0);
+    let lines = gapbox["lines"].as_f64().unwrap_or(999.0);
+    assert!(
+        gapbox["w"].as_f64().unwrap_or(0.0) > 120.0 && lines <= 6.0 && chars > 100.0,
+        "the note sets itself ACROSS the card, not down it — {chars} characters in {lines} lines: {gapbox}"
+    );
+    assert_eq!(
+        gapbox["own"], true,
+        "…and nothing is drawn over it: {gapbox}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_task_with_no_title_says_why() {
+    let _serial = serial();
+    let fx = fixture_unrecorded_task("scenario-stub-task-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_task_with_no_title_says_why(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_task_with_no_title_says_why() {
+    let _serial = serial();
+    let fx = fixture_unrecorded_task("scenario-stub-task-app");
+    let page = open(Surface::AppShell, &fx, 2944);
+    scenario_a_task_with_no_title_says_why(&page.tab, Surface::AppShell, &fx);
+}
+
 /// A fixture whose tail holds a Bash call whose command runs far past the head's one line.
 fn fixture_long_command(name: &str) -> Fixture {
     let base = base(name);

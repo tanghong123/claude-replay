@@ -462,6 +462,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .task-card-chips{display:flex;flex-wrap:wrap;gap:5px}
 .task-chip{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border:1px solid var(--line);border-radius:999px;background:var(--panel);font-size:11.5px;color:var(--sub)}
 .task-card-dates{font:11.5px/1.6 var(--mono);color:var(--faint)}
+/* #188: when a task carries no title it carries no sections either, and the card says WHY —
+   a quiet note against a rule, not a labelled section, because the labels name the queue's own
+   fields and a synthetic one would read as a field the task has. */
+.task-card-gap{max-width:64ch;padding-left:9px;border-left:2px solid var(--line);font-size:12px;line-height:1.55;color:var(--faint)}
 .task-card-section{display:flex;flex-direction:column;gap:4px}
 .task-card-label{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
 .task-card-body{max-width:72ch;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--sub)}

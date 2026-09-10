@@ -98,7 +98,7 @@
   var CLASSIC_MARKS = { add: "+", del: "−", ctx: " " };
   var CLASSIC_RESULT = { result: "result", lead: "lead", box: "resultbox" };
   var CLASSIC_INTERACTION = { card: "irq", icon: "irq-icon", copy: "irq-copy", meta: "irq-meta", answers: "irq-answers", answer: "irq-answer" };
-  var CLASSIC_TASK = { card: "tcard", head: "tcard-head", glyph: "tcard-glyph", id: "tcard-id", title: "tcard-title", chips: "tcard-chips", chip: "tchip", dates: "tcard-dates", section: "tcard-sec", label: "tcard-label", body: "tcard-body", item: "tcard-item", outcome: "tcard-out", log: "tcard-log", logTime: "tcard-lt", logMsg: "tcard-lm", logBy: "tcard-lb" };
+  var CLASSIC_TASK = { card: "tcard", head: "tcard-head", glyph: "tcard-glyph", id: "tcard-id", title: "tcard-title", chips: "tcard-chips", chip: "tchip", dates: "tcard-dates", gap: "tcard-gap", section: "tcard-sec", label: "tcard-label", body: "tcard-body", item: "tcard-item", outcome: "tcard-out", log: "tcard-log", logTime: "tcard-lt", logMsg: "tcard-lm", logBy: "tcard-lb" };
 
   // A capped list: the first `cap` rows stay visible, the rest go into a hidden div revealed
   // by a "⋯ N more lines" button. All content is always present.
@@ -1170,7 +1170,7 @@
       // title is not recoverable — the tool result says "Updated task #5 status" and
       // nothing more. "(untitled)" read as a broken task; this says what is actually
       // true, beside the #id that already identifies the row.
-      var subj = t.subject || "(no title recorded in this session)";
+      var subj = t.subject || shared.TASK_NO_TITLE;
       if (t.status === "InProgress" && t.active_form) subj += " · " + t.active_form;
       row.appendChild(el("span", "task-subj", subj));
       it.appendChild(row);
