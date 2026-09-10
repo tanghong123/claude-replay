@@ -31,7 +31,7 @@ use crate::model::{
     AgentStatus, AttachmentContent, AttachmentKind, Block, BlockKind, CompactTrigger, Hunk,
     SubAgent,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 /// Every `BlockKind` variant, in the engine's declaration order.
@@ -408,6 +408,166 @@ fn tool_use(
     }
 }
 
+/// The corpus again, as a Claude-shaped `.jsonl` a monitor can SERVE (#174 P2).
+///
+/// WHY THIS EXISTS AT ALL. [`audit_corpus`] builds [`Block`]s directly, which is the right shape
+/// for the Rust half — it can state a cell without inventing a transcript that produces it. The
+/// browser half cannot: `claude-replay-browser-tests` can only point a monitor at a store, and a
+/// store holds transcripts. So the same corpus has to exist twice, in two forms, and the ONLY
+/// thing that makes that safe is the test below: `the_two_corpora_cover_the_same_cells` parses
+/// this text back through the real adapter and asserts the cells it yields cover every cell
+/// [`audit_corpus`] yields. Two hand-made lists that are asserted to match is exactly the failure
+/// mode P1 was written to remove; two hand-made lists with a proof between them is not.
+///
+/// It lives HERE rather than in the browser crate for the same reason: `parse_session_as` is
+/// crate-private to the layers below, so the proof can only run beside the corpus it is proving.
+pub fn audit_jsonl() -> String {
+    let mut out = String::new();
+    let mut at = 0u32;
+    let mut stamp = || {
+        at += 1;
+        format!("2026-06-30T03:{:02}:00.000Z", at)
+    };
+    let mut push = |value: Value| {
+        out.push_str(&value.to_string());
+        out.push('\n');
+    };
+
+    // user / md — the ordinary prompt.
+    push(json!({"type":"user","cwd":"/w","timestamp":stamp(),
+        "message":{"role":"user","content":[{"type":"text","text":"why does the audit need two corpora?"}]}}));
+    // user / raw — prose around a run the emitter LIFTS out of markdown (`preformatted_runs`:
+    // a leading indent is enough), which is the only way a user turn grows a `raw` part.
+    push(json!({"type":"user","cwd":"/w","timestamp":stamp(),
+        "message":{"role":"user","content":[{"type":"text","text":"it printed this:\n\n\u{256d}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256e}\n\u{2502} cells \u{2502}\n\u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256f}\n\nand then it stopped"}]}}));
+    // queue / md — a prompt typed while the agent was busy, not yet picked up.
+    push(
+        json!({"type":"queue-operation","operation":"enqueue","timestamp":stamp(),
+        "content":"and one more thing"}),
+    );
+    // assistant / md.
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"text","text":"Because a browser can only be pointed at a **store**."}],
+                   "usage":{"input_tokens":10,"output_tokens":20}}}));
+    // think / think — thinking with NO tool in the same message, which is what makes it `Think`
+    // rather than `Act` (the `blocks` part is unreachable from this kind; see CLAIMS).
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"thinking","thinking":"the two forms have to be proved equal, not asserted equal"}]}}));
+    // …and a turn between the two thinking records: a lone `think` that sits directly against
+    // the thinking-with-tools one never surfaces as its own kind (measured).
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"text","text":"So the twin has to earn its cells."}],
+                   "usage":{"input_tokens":4,"output_tokens":6}}}));
+    // act / think + act / blocks — thinking AND a tool in one message: the prose is the `think`
+    // part and the tools become the single `blocks` part.
+    let act = "call-act";
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[
+            {"type":"thinking","thinking":"check the emitter before guessing at the shape"},
+            {"type":"tool_use","id":act,"name":"Bash","input":{"command":"grep -n numbered_part mod.rs"}}]}}));
+    push(json!({"type":"user","timestamp":stamp(),
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":act,"content":"499:fn numbered_part(\n1055: body.push(numbered_part(\n"}]}}));
+    // attachment / (no body part at all) — the card IS the head.
+    push(json!({"type":"attachment","timestamp":stamp(),
+        "attachment":{"type":"edited_text_file","filename":"/w/src/html_export/audit.rs","snippet":"1\tintro"}}));
+    // agent / md + agent / note — the spawn's prompt and result as `md`, the agent id as a `note`.
+    let agent = "call-agent";
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"tool_use","id":agent,"name":"Agent",
+            "input":{"subagent_type":"general-purpose","description":"sweep the corpus","prompt":"sweep the corpus"}}]}}));
+    push(json!({"type":"user","timestamp":stamp(),
+        "toolUseResult":{"kind":"agent-result","agentId":"a-0001","agentType":"general-purpose","content":"swept"},
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":agent,"content":"swept"}]}}));
+    // command / md + command / pre — the args are `md`, each `local-command-stdout` chunk `pre`.
+    push(json!({"type":"user","cwd":"/w","timestamp":stamp(),
+        "message":{"role":"user","content":"<command-message>audit</command-message>\n<command-name>/audit</command-name>\n<command-args>--all</command-args>"}}));
+    push(json!({"type":"user","cwd":"/w","timestamp":stamp(),
+        "message":{"role":"user","content":"<local-command-stdout>23 cells covered, 0 uncovered</local-command-stdout>"}}));
+    // compaction / md — the continuation summary; the token counts are head fields.
+    push(
+        json!({"type":"system","subtype":"compact_boundary","timestamp":stamp(),
+        "content":"Conversation compacted","compactMetadata":{"trigger":"auto","preTokens":594718,"postTokens":8617}}),
+    );
+    // The boundary carries the SIZES; the summary prose arrives as the `isCompactSummary` user
+    // record that follows it (claude/model.rs pairs the two into one divider). Without it the
+    // block has an empty summary and no `md` part at all.
+    push(
+        json!({"type":"user","isCompactSummary":true,"timestamp":stamp(),
+        "message":{"content":"The audit derives its corpus from BlockKind and the emitter's parts."}}),
+    );
+    // bash / pre — the generic tool-output arm.
+    let bash = "call-bash";
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"tool_use","id":bash,"name":"Bash","input":{"command":"cargo test -p claude-replay-html audit"}}]}}));
+    push(json!({"type":"user","timestamp":stamp(),
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":bash,"content":"running 9 tests\ntest result: ok. 9 passed\n"}]}}));
+    // edit / note + edit / diff — a call whose result recorded rows to diff.
+    let edit = "call-edit";
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"tool_use","id":edit,"name":"Edit",
+            "input":{"file_path":"/w/src/html_export/audit.rs","old_string":"let cells = 0;","new_string":"let cells = 120;"}}]}}));
+    push(json!({"type":"user","timestamp":stamp(),
+        "toolUseResult":{"filePath":"/w/src/html_export/audit.rs",
+            "structuredPatch":[{"oldStart":12,"oldLines":3,"newStart":12,"newLines":3,
+                "lines":[" fn cells() {","-    let cells = 0;","+    let cells = 120;"," }"]}]},
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":edit,"content":"The file has been updated."}]}}));
+    // edit / pre — the same tool with NO rows to diff, which falls back to its raw output.
+    let edit_bare = "call-edit-bare";
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"tool_use","id":edit_bare,"name":"Edit",
+            "input":{"file_path":"/w/README.md"}}]}}));
+    push(json!({"type":"user","timestamp":stamp(),
+        "toolUseResult":{"filePath":"/w/README.md"},
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":edit_bare,"content":"applied 1 replacement in /w/README.md\nno rows recorded"}]}}));
+    // write / note + write / num — a FRESH file: the summary note and the numbered body.
+    let write = "call-write";
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"tool_use","id":write,"name":"Write",
+            "input":{"file_path":"/w/scripts/audit.py","content":"#!/usr/bin/env python3\nprint(\"cells\")\nprint(\"parts\")\n"}}]}}));
+    push(json!({"type":"user","timestamp":stamp(),
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":write,"content":"Wrote 3 lines to /w/scripts/audit.py"}]}}));
+    // write / note + write / diff — an OVERWRITE, whose result carries a patch.
+    let overwrite = "call-overwrite";
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"tool_use","id":overwrite,"name":"Write",
+            "input":{"file_path":"/w/scripts/audit.py","content":"#!/usr/bin/env python3\nprint(\"cells\")\nprint(\"claims\")\n"}}]}}));
+    push(json!({"type":"user","timestamp":stamp(),
+        "toolUseResult":{"filePath":"/w/scripts/audit.py",
+            "structuredPatch":[{"oldStart":3,"oldLines":1,"newStart":3,"newLines":1,
+                "lines":["-print(\"parts\")","+print(\"claims\")"]}]},
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":overwrite,"content":"The file has been updated."}]}}));
+    // read / num — Read returns the BYTES OF A FILE, so the gutter is a claim about a file.
+    let read = "call-read";
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"tool_use","id":read,"name":"Read","input":{"file_path":"/w/src/html_export/audit.rs"}}]}}));
+    push(json!({"type":"user","timestamp":stamp(),
+        "toolUseResult":{"type":"text","file":{"filePath":"/w/src/html_export/audit.rs","numLines":3,"startLine":1,"totalLines":3,
+            "content":"pub const ALL_KINDS: &[BlockKind] = &[\n    BlockKind::User,\n];\n"}},
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":read,
+            "content":"pub const ALL_KINDS: &[BlockKind] = &[\n    BlockKind::User,\n];\n"}]}}));
+    // read / pre — the SEARCH tools share this kind and return rows, not file bytes (#173).
+    let grep = "call-grep";
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"tool_use","id":grep,"name":"Grep","input":{"pattern":"numbered_part","path":"/w/src"}}]}}));
+    push(json!({"type":"user","timestamp":stamp(),
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":grep,
+            "content":"/w/src/html_export/mod.rs:499:fn numbered_part(\n/w/src/html_export/mod.rs:1055:body.push(numbered_part(\n"}]}}));
+    // skill / pre — the generic output arm again, under its own kind.
+    let skill = "call-skill";
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"tool_use","id":skill,"name":"Skill","input":{"command":"taskq list"}}]}}));
+    push(json!({"type":"user","timestamp":stamp(),
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":skill,"content":"#174 [in_progress] the matrix\n"}]}}));
+    // tool / pre — an unrecognised tool: the kind of last resort, and the one a new tool lands in.
+    let other = "call-other";
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"tool_use","id":other,"name":"Frobnicate","input":{"target":"the corpus"}}]}}));
+    push(json!({"type":"user","timestamp":stamp(),
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":other,"content":"frobnicated 23 cells\n"}]}}));
+
+    out
+}
+
 /// Render blocks the way the pages receive them: one wire record per block, through the same
 /// `render_blocks` the live server and the offline bundle both use.
 ///
@@ -472,6 +632,92 @@ fn walk(record: &Value, f: &mut impl FnMut(&Value)) {
 
 #[cfg(test)]
 mod tests {
+
+    /// The two forms of the corpus must cover the SAME cells.
+    ///
+    /// This is the only thing that makes the browser half of #174 trustworthy. `audit_corpus()`
+    /// states a cell by constructing the block; `audit_jsonl()` has to earn it, by writing a
+    /// transcript the real adapter turns into that block. If the two ever drift, every P2/P3
+    /// result is measured against a corpus nobody checked — which is the shape of every audit
+    /// this task exists to replace.
+    ///
+    /// Directional on purpose. The `.jsonl` must cover EVERY cell the block corpus declares;
+    /// it may cover more (a transcript record carries fields a hand-built block need not), and
+    /// an extra cell is reported rather than failed, because it is information about the
+    /// emitter and not a defect in either corpus.
+    #[test]
+    fn the_two_corpora_cover_the_same_cells() {
+        let dir = std::env::temp_dir().join("audit-jsonl-twin");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("audit.jsonl");
+        std::fs::write(&path, audit_jsonl()).expect("write the twin");
+
+        let session = crate::parse_session_as(crate::Agent::CLAUDE, &path).expect("parse the twin");
+        let served = audit_cells(&audit_records(&session.blocks()));
+        let built = audit_cells(&audit_records(&audit_corpus()));
+
+        // The ONE cell a Claude transcript cannot reach, and why — the only place a human
+        // judgement enters this proof, so it is written down rather than quietly subtracted.
+        //
+        // `edit`/`pre` is the emitter's fallback for an Edit that recorded no rows to diff:
+        // `else if let Some(out) = output { body.push(pre_part(out)) }` (mod.rs, the `"edit"`
+        // arm). It cannot fire on this agent, because the Claude adapter hard-codes
+        //
+        //     "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => None
+        //
+        // in `tool_output` (claude/model.rs:500) — an Edit NEVER carries output text on this
+        // agent, by design: "Edit/Write show their diff/code, not the boilerplate result".
+        // Measured, not assumed: an Edit with no `old_string`/`new_string` and no
+        // `structuredPatch` comes back with an EMPTY body — no diff, no pre, nothing.
+        //
+        // Two things follow, and both belong to #174 rather than to this test. The fallback is
+        // reachable only from an adapter that does give an edit-kind call an output, so it is
+        // not dead code — but nothing proves another one does. And a Claude Edit with no rows
+        // renders as a bare head with no body at all, which is a rendering nobody chose.
+        const UNREACHABLE_ON_CLAUDE: &[(&str, &str)] = &[("edit", "pre")];
+        let excused: BTreeSet<(String, String)> = UNREACHABLE_ON_CLAUDE
+            .iter()
+            .map(|(k, p)| ((*k).to_string(), (*p).to_string()))
+            .collect();
+        for cell in &excused {
+            assert!(
+                built.contains(cell),
+                "{cell:?} is excused from the twin but the built corpus no longer declares it — \
+                 delete the excuse rather than leaving it to hide a real gap"
+            );
+            assert!(
+                !served.contains(cell),
+                "{cell:?} is excused from the twin and the twin now REACHES it — delete the \
+                 excuse, the adapter must have changed"
+            );
+        }
+        let missing: Vec<_> = built
+            .difference(&served)
+            .filter(|c| !excused.contains(*c))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "the served corpus does not reach {} of the {} cells the built one declares: \
+             {missing:?}. A browser case run against it would be auditing a SMALLER matrix than \
+             the Rust half and would not say so.",
+            missing.len(),
+            built.len()
+        );
+        let extra: Vec<_> = served.difference(&built).collect();
+        if !extra.is_empty() {
+            println!(
+                "the served corpus also reaches {} cell(s) the built one does not: {extra:?}",
+                extra.len()
+            );
+        }
+        println!(
+            "both corpora cover the same {} of {} cells; {} excused: {UNREACHABLE_ON_CLAUDE:?}",
+            built.len() - excused.len(),
+            built.len(),
+            excused.len()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
