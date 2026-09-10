@@ -434,7 +434,7 @@ mod tests {
                 "\n",
                 r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"child body"}]}}"#,
                 "\n",
-                r#"{"type":"turn_context","payload":{"model":"gpt-5"}}"#,
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.6"}}"#,
                 "\n",
                 r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":80}}}}"#,
                 "\n",
@@ -466,7 +466,7 @@ mod tests {
             .iter()
             .any(|block| matches!(block, Block::UserText(text) if text == "child body")));
         assert!(
-            (agent.subtree_cost.expect("child cost") - 0.000925).abs() < 1e-12,
+            (agent.subtree_cost.expect("child cost") - 0.002).abs() < 1e-12,
             "{:?}",
             agent.subtree_cost
         );

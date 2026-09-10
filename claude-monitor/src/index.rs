@@ -2555,13 +2555,13 @@ mod tests {
             )
         };
         let usage_1m = "{\"timestamp\":\"2026-08-12T01:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1000000,\"cached_input_tokens\":0,\"output_tokens\":0}}}}\n";
-        let named = "{\"timestamp\":\"2026-08-12T01:00:02Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5\"}}\n";
+        let named = "{\"timestamp\":\"2026-08-12T01:00:02Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.6\"}}\n";
         let main_id = "eeeeeeee-0000-0000-0000-00000000000e";
         let sub1 = "eeeeeeee-1111-0000-0000-00000000000e";
         let sub2 = "eeeeeeee-2222-0000-0000-00000000000e";
         let arch_id = "ffffffff-0000-0000-0000-00000000000f";
-        // Main: usage FIRST, model named after — $1.25 only if the blank bucket is
-        // attributed, $0 under the old per-model re-derivation.
+        // Main: usage FIRST, model named after — $4 only if the blank bucket is attributed,
+        // $0 under the old per-model re-derivation.
         std::fs::write(
             dated.join(format!("rollout-2026-08-12T01-00-00-{main_id}.jsonl")),
             format!("{}{usage_1m}{named}", meta_main(main_id)),
@@ -2596,16 +2596,16 @@ mod tests {
         let main = row(main_id);
         assert_eq!(main["visited"], false, "never visited, yet priced: {main}");
         assert!(
-            (main["cost"].as_f64().unwrap() - 3.75).abs() < 1e-9,
-            "own $1.25 (blank bucket attributed) + two sub-agents chased to the root: {main}"
+            (main["cost"].as_f64().unwrap() - 12.0).abs() < 1e-9,
+            "own $4 (blank bucket attributed) + two sub-agents chased to the root: {main}"
         );
         assert!(
-            (main["costSubs"].as_f64().unwrap() - 2.50).abs() < 1e-9,
+            (main["costSubs"].as_f64().unwrap() - 8.0).abs() < 1e-9,
             "the sub-agent share is named: {main}"
         );
         let archived = row(arch_id);
         assert!(
-            (archived["cost"].as_f64().unwrap() - 1.25).abs() < 1e-9,
+            (archived["cost"].as_f64().unwrap() - 4.0).abs() < 1e-9,
             "an archived session is a row, and priced: {archived}"
         );
         let codex_group = v["groups"]
@@ -2615,7 +2615,7 @@ mod tests {
             .find(|g| g["label"] == "codex-repo")
             .expect("codex group");
         assert_eq!(
-            codex_group["metaLine"], "$5.00 · 2",
+            codex_group["metaLine"], "$16.00 · 2",
             "the group sums own + rolled-up spend"
         );
 

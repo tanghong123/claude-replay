@@ -443,8 +443,8 @@ impl TokenRate {
 
 /// One model's complete four-tier price estimate.
 ///
-/// `cache_write` is the 5-minute prompt-cache write rate. The transcript currently stores one
-/// aggregate cache-creation count and cannot distinguish 5-minute from 1-hour writes.
+/// `cache_write` is the 5-minute prompt-cache write rate. [`TokenCounts`] retains one aggregate
+/// cache-creation count, even when a source transcript exposes separate 5-minute and 1-hour writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelPrice {
     input: TokenRate,
@@ -1145,6 +1145,7 @@ mod price_tests {
             ("claude-3-haiku-20240307", p("0.25", "0.3", "0.03", "1.25")),
             ("gpt-6-astra", p("10", "10", "1", "50")),
             ("gpt-5.6-sol", p("4", "4", "0.4", "20")),
+            ("gpt-5.6", p("4", "4", "0.4", "20")),
             ("gpt-5-6-terra", p("2", "2", "0.2", "12")),
             ("gpt-5.6-luna", p("0.2", "0.2", "0.02", "1.2")),
             ("gpt-daybreak-red-latest", p("12.5", "12.5", "1.25", "75")),
@@ -1175,8 +1176,8 @@ mod price_tests {
         for model in [
             "some-unknown-model",
             "gpt-5.4-cyber",
-            "gpt-5.6",
             "gpt-5.6-mini",
+            "gpt-5.6-codex",
             "gpt-5.5-pro",
             "gpt-5.4-pro",
             "gpt-5.2-pro",

@@ -35,12 +35,12 @@ use std::time::SystemTime;
 pub(crate) const COST_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The ledger's own JSON-shape version — bumped when the entry's fields change, and equally
-/// when the same fold starts producing a DIFFERENT `cost` for the same bytes. v2: credit-billed
-/// sessions (Qoder) are now priced from `usage.credits` at the published plan rate
-/// (design/qoder-credits-usd.md), where v1 banked `None` for every one of them. Without the bump
-/// the len/mtime fast path would serve that cached `None` forever for any transcript already
-/// scanned — the v8 lesson spelled out in [`ledger_version`], one layer up.
-const LEDGER_SHAPE: u32 = 2;
+/// when the same fold starts producing a DIFFERENT `cost` for the same bytes. v2 priced
+/// credit-billed Qoder sessions from `usage.credits` (design/qoder-credits-usd.md). v3 invalidates
+/// token-priced entries after the model catalog moved from approximate family rates to exact
+/// four-tier rates. Without these bumps, the len/mtime fast path would serve stale costs forever
+/// for transcripts already scanned — the v8 lesson spelled out in [`ledger_version`], one layer up.
+const LEDGER_SHAPE: u32 = 3;
 
 /// The persisted entry's full version: the shape crossed with the engine's
 /// `FOLD_VERSION`, so a FOLD-BEHAVIOR bump invalidates priced state exactly like it
@@ -269,7 +269,7 @@ mod tests {
         let d = scratch("fold");
         let t = d.join("rollout-2026-08-12T01-00-00-fold-test.jsonl");
         let mut f = std::fs::File::create(&t).unwrap();
-        write!(f, "{}", turn_context("gpt-5")).unwrap();
+        write!(f, "{}", turn_context("gpt-5.6")).unwrap();
         write!(
             f,
             "{}",
@@ -281,7 +281,7 @@ mod tests {
         let mut ledger = CostLedger::new(&d.join("cache"));
         let mut budget = COST_BUDGET_BYTES;
         let (c1, partial) = ledger.cost(Agent::CODEX, &t, &mut budget).expect("priced");
-        assert!((c1 - 1.25).abs() < 1e-9, "1M input on gpt-5: {c1}");
+        assert!((c1 - 4.0).abs() < 1e-9, "1M input on gpt-5.6: {c1}");
         assert!(!partial);
         assert!(budget < COST_BUDGET_BYTES, "fresh bytes were charged");
 
@@ -308,7 +308,7 @@ mod tests {
         let (c2, _) = restarted
             .cost(Agent::CODEX, &t, &mut b3)
             .expect("still priced");
-        assert!((c2 - 2.50).abs() < 1e-9, "2M cumulative input: {c2}");
+        assert!((c2 - 8.0).abs() < 1e-9, "2M cumulative gpt-5.6 input: {c2}");
         // The resumed fold read only the appended line, not the whole file.
         let spent = COST_BUDGET_BYTES - b3;
         assert!(
@@ -392,7 +392,7 @@ mod tests {
             &t,
             format!(
                 "{}{}",
-                turn_context("gpt-5"),
+                turn_context("gpt-5.6"),
                 token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0)
             ),
         )
@@ -425,6 +425,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// A pricing-policy change needs the same cold re-fold as a JSON-shape change. This entry has
+    /// the current fold version and matching file facts, but v2's approximate-family price. If v3
+    /// were accidentally weakened back to v2, the quiet-file fast path would return 9999 forever.
+    #[test]
+    fn a_stale_pricing_shape_entry_refolds_cold() {
+        let d = scratch("priceshape");
+        let t = d.join("rollout-2026-08-12T01-00-00-priceshape-test.jsonl");
+        std::fs::write(
+            &t,
+            format!(
+                "{}{}",
+                turn_context("gpt-5.6"),
+                token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0)
+            ),
+        )
+        .unwrap();
+        let meta = std::fs::metadata(&t).unwrap();
+        let costs = d.join("cache").join("costs");
+        std::fs::create_dir_all(&costs).unwrap();
+        std::fs::write(
+            costs.join("rollout-2026-08-12T01-00-00-priceshape-test.json"),
+            serde_json::json!({
+                "v": (2u64 << 16)
+                    | u64::from(claude_replay_core::engine::meta_stream::FOLD_VERSION),
+                "len": meta.len(),
+                "mtime": epoch(meta.modified().ok()),
+                "cost": 9999.0,
+                "partial": false,
+                "cursor": Value::Null,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut ledger = CostLedger::new(&d.join("cache"));
+        let mut budget = COST_BUDGET_BYTES;
+        let (cost, _) = ledger.cost(Agent::CODEX, &t, &mut budget).expect("priced");
+        assert!((cost - 4.0).abs() < 1e-9, "stale v2 cost survived: {cost}");
+        assert!(budget < COST_BUDGET_BYTES, "a real re-fold spent bytes");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// A persisted entry from a DIFFERENT fold version is a cold re-fold, not a resume:
     /// its cursor carries totals folded under the old rules (the v8 lesson — v1.70.0
     /// halved the Claude fold, and shape-only versioning would have served the inflated
@@ -439,7 +480,7 @@ mod tests {
             &t,
             format!(
                 "{}{}",
-                turn_context("gpt-5"),
+                turn_context("gpt-5.6"),
                 token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0)
             ),
         )
@@ -467,7 +508,7 @@ mod tests {
         let mut budget = COST_BUDGET_BYTES;
         let (c, _) = ledger.cost(Agent::CODEX, &t, &mut budget).expect("priced");
         assert!(
-            (c - 1.25).abs() < 1e-9,
+            (c - 4.0).abs() < 1e-9,
             "the stale entry was discarded and the file re-folded: {c}"
         );
         assert!(budget < COST_BUDGET_BYTES, "a real re-fold spent bytes");

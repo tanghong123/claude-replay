@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn uses_newest_cumulative_usage_and_keeps_cached_input_separate() {
         let jsonl = r#"
-{"timestamp":"2026-07-18T01:00:00Z","type":"turn_context","payload":{"model":"gpt-5"}}
+{"timestamp":"2026-07-18T01:00:00Z","type":"turn_context","payload":{"model":"gpt-5.6"}}
 {"timestamp":"2026-07-18T01:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":20}}}}
 {"timestamp":"2026-07-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"output_tokens":80}}}}
 "#;
@@ -702,14 +702,14 @@ mod tests {
         assert_eq!(metrics.input_tokens, 100);
         assert_eq!(metrics.cache_read_tokens, 200);
         assert_eq!(metrics.output_tokens, 80);
-        assert_eq!(metrics.model, "gpt-5");
+        assert_eq!(metrics.model, "gpt-5.6");
         assert_eq!(metrics.duration_secs, 60);
-        // gpt-5 is priced: 100 in + 200 cached·0.10 + 80 out → non-zero.
-        let cost = metrics.cost_usd.expect("gpt-5 should be priced");
-        let expected = (100.0 + 200.0 * 0.10) / 1e6 * 1.25 + 80.0 / 1e6 * 10.0;
+        // OpenAI documents gpt-5.6 as the gpt-5.6-sol alias: $4 input, $0.40 cached, $20 output.
+        let cost = metrics.cost_usd.expect("gpt-5.6 should be priced");
+        let expected = (100.0 * 4.0 + 200.0 * 0.4 + 80.0 * 20.0) / 1e6;
         assert!((cost - expected).abs() < 1e-9, "cost: {cost}");
         let footer = metrics.footer();
-        assert!(footer.contains("gpt-5"), "footer: {footer}");
+        assert!(footer.contains("gpt-5.6"), "footer: {footer}");
         assert!(footer.contains("100 in"), "footer: {footer}");
         assert!(footer.contains("200 cached"), "footer: {footer}");
         assert!(footer.contains('$'), "footer: {footer}");
