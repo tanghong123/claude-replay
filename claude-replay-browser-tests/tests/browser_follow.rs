@@ -3345,6 +3345,11 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
         std::time::Duration::from_secs(30),
         "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
     );
+    // #186: this case is about panes COMPETING for room, and its fixture carries 12 completed
+    // tasks precisely to make the tasks pane tall enough to create that pressure. The live-only
+    // filter removes those rows and with them the pressure, so the case has to ask for the whole
+    // board — the same line the other board cases carry.
+    harness::show_every_pane_row(&tab);
     let state = r#"(function(){ var nav = document.querySelector('.session-navigator'), nr = nav.getBoundingClientRect(); var cap = nav.querySelector('.outline-caption'); return { open: [...document.querySelectorAll('.outline-card')].map(function (c) { return c.dataset.navCard + ':' + (c.classList.contains('open') ? 'open' : 'folded'); }), bodies: [...document.querySelectorAll('.outline-card')].map(function (c) { var body = c.querySelector('.outline-card-body'); return c.dataset.navCard + ':' + (body.offsetParent === null ? 0 : Math.round(body.getBoundingClientRect().height)); }), heads: [...document.querySelectorAll('.outline-card > .outline-card-head')].map(function (h) { var r = h.getBoundingClientRect(); return { key: h.dataset.navCardToggle, top: Math.round(r.top), bottom: Math.round(r.bottom), visible: r.top >= nr.top - 1 && r.bottom <= nr.bottom + 1 }; }), caption: cap ? { top: Math.round(cap.getBoundingClientRect().top), bottom: Math.round(cap.getBoundingClientRect().bottom) } : null, navTop: Math.round(nr.top + parseFloat(getComputedStyle(nav).paddingTop || '0')), navBottom: Math.round(nr.bottom), navScroll: nav.scrollTop, overflow: nav.scrollHeight - nav.clientHeight, windowY: window.scrollY }; })()"#;
     // #87: the "Outline" caption row, collapse control included, sits on the page background.
     let caption_bg = harness::eval(&tab, "getComputedStyle(document.querySelector('.session-navigator > .outline-caption')).backgroundColor");
