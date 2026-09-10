@@ -119,9 +119,16 @@ const AUDIT_JS: &str = r##"(function () {
   // memory-based omission this audit exists to remove, and it is exactly how #161 and #173 hid.
   function capture(sel, idAttr) {
     var snap = new Map();
+    var owner = {};
     [].slice.call(document.querySelectorAll(sel)).forEach(function (root) {
       var id = idAttr === "id" ? root.id : root.getAttribute(idAttr);
       if (!id) return;
+      // Which record CONTAINS this one. A record nested inside another (a Thinking that absorbed
+      // its tool calls, a sub-agent's children) is inside its parent's body, so a control that
+      // collapses the parent legitimately reaches it — that is containment, not leakage, and
+      // only the tree can tell the two apart.
+      var up = root.parentElement ? root.parentElement.closest(sel) : null;
+      owner[id] = up ? (idAttr === "id" ? up.id : up.getAttribute(idAttr)) : null;
       (function walk(el, path) {
         var cs = getComputedStyle(el), props = {};
         for (var i = 0; i < cs.length; i++) {
@@ -155,6 +162,7 @@ const AUDIT_JS: &str = r##"(function () {
         }
       })(root, "");
     });
+    snap.owner = owner;
     return snap;
   }
   // ── the partition ─────────────────────────────────────────────────────────────────────
@@ -176,6 +184,29 @@ const AUDIT_JS: &str = r##"(function () {
       GROUPS.forEach(function (g) { census[g] = 0; });
       this.snap.forEach(function (e) { census[groupOf(e)]++; });
       return { elements: this.snap.size, census: census };
+    },
+    // The same effect set, partitioned by RECORD instead of by kind of content. A control that
+    // sits ON a record (a fold head, a pane's own bar, a turn's raw toggle) claims to act on
+    // THAT record and no other — #173 is what happens when it does not — and the element key is
+    // already <record id>/<path>, so the partition costs nothing and needs no selector.
+    reportRecords: function () {
+      var before = this.snap, after = capture(this.sel, this.idAttr);
+      var records = {}, gone = 0, added = 0;
+      after.forEach(function (_, key) { if (!before.has(key)) added++; });
+      before.forEach(function (a, key) {
+        var id = key.slice(0, key.indexOf("/"));
+        var r = records[id] || (records[id] = { n: 0, changed: 0, props: {}, changedSample: [] });
+        r.n++;
+        var b = after.get(key);
+        if (!b) { gone++; r.changed++; return; }
+        var moved = [];
+        for (var p in a.props) if (a.props[p] !== b.props[p]) moved.push(p + ":" + a.props[p] + "->" + b.props[p]);
+        if (!moved.length) return;
+        r.changed++;
+        if (r.changedSample.length < 20) r.changedSample.push(key + " <" + b.tag.toLowerCase() + "." + (b.cls || "") + "> [" + moved.slice(0, 8).join(" | ") + "]");
+        moved.forEach(function (p) { var name = p.slice(0, p.indexOf(":")); r.props[name] = (r.props[name] || 0) + 1; });
+      });
+      return { gone: gone, added: added, records: records, owner: before.owner };
     },
     report: function () {
       var before = this.snap, after = capture(this.sel, this.idAttr);
@@ -594,4 +625,113 @@ fn app_shell_wrap_governs_exactly_the_verbatim_text() {
     let fx = fixture_audit("audit-wrap-app");
     let page = open(Surface::AppShell, &fx, 2956);
     scenario_wrap_governs_exactly_the_verbatim_text(&page.tab, Surface::AppShell);
+}
+
+/// ── STAGE B, a control that sits ON a record ────────────────────────────────────────────────
+///
+/// CLAIM. Folding one record changes the rendering of that record and of NO other record.
+///
+/// This is the scope half of #173 stated generally: "a control on a pane is not a page-wide
+/// control", where the classic page's bar wrote the page-wide preference and resized every pane
+/// on the page. The instrument needs nothing new for it — the element key is already
+/// `<record id>/<path>`, so the partition is by prefix, and the claim is checkable without any
+/// notion of what a fold looks like on either page.
+///
+/// It also exercises the half of the key scheme Stage C depends on: a fold RE-RENDERS on the app
+/// shell (`actions.rerender()` replaces every node in the window), so a key that survives it is
+/// the thing that makes two surfaces comparable at all. A key held by node reference would read
+/// a detached element here — the same mistake #180 made holding an anchor by node and reading a
+/// constant −900.
+fn scenario_a_fold_acts_on_its_own_record(tab: &headless_chrome::Tab, surface: Surface) {
+    jump_to_end(tab, surface);
+    settle();
+    open_everything(tab, surface);
+    settle();
+    settle();
+    let (sel, id_attr) = roots(surface);
+    eval(tab, AUDIT_JS);
+    probe(tab, &format!("window.__audit.arm('{sel}', '{id_attr}')"));
+    // Fold ONE record — whichever the page offers a head for — and take its id from the DOM
+    // rather than naming one, so the case does not depend on the corpus's ordering.
+    let folded = probe(
+        tab,
+        match surface {
+            Surface::Classic => "(function(){ var f = document.querySelector('#stream .fold[data-open=\"1\"]'); if (!f) return null; var h = f.querySelector(':scope > .fold-h'); if (!h) return null; h.click(); return f.id; })()",
+            Surface::AppShell => "(function(){ var r = document.querySelector('.virtual-window .renderer[data-record-id]:not(.closed):not(.noninteractive)'); if (!r) return null; var h = r.querySelector(':scope > button.renderer-head'); if (!h) return null; var id = r.dataset.recordId; h.click(); return id; })()",
+        },
+    );
+    let target = folded.as_str().unwrap_or_default().to_string();
+    assert!(
+        !target.is_empty(),
+        "{surface:?}: the corpus offers a record with a fold head to act on"
+    );
+    settle();
+    let report = probe(tab, "window.__audit.reportRecords()");
+    let records = report["records"].as_object().cloned().unwrap_or_default();
+    assert!(
+        records.len() > 5,
+        "{surface:?}: more than one record is under measurement, or the claim is vacuous: {report}"
+    );
+    // The claim's domain is the target AND WHAT IT CONTAINS. A record nested inside another —
+    // a Thinking that absorbed its tool calls, a sub-agent's children — is inside its parent's
+    // body, so collapsing the parent legitimately hides it. Measured, not assumed: the first run
+    // of this case failed on exactly that, and the values said so plainly
+    // (`display: block -> none`, and every used value falling back to `auto`, which is what
+    // `getComputedStyle` reports for an element that is no longer rendered).
+    let owner = report["owner"].as_object().cloned().unwrap_or_default();
+    let contained = |mut id: String| -> bool {
+        for _ in 0..16 {
+            if id == target {
+                return true;
+            }
+            match owner.get(&id).and_then(|v| v.as_str()) {
+                Some(up) => id = up.to_string(),
+                None => return false,
+            }
+        }
+        false
+    };
+    let leaked: Vec<&String> = records
+        .iter()
+        .filter(|(id, r)| r["changed"].as_i64().unwrap_or(0) > 0 && !contained((*id).clone()))
+        .map(|(id, _)| id)
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "{surface:?}: folding `{target}` reached {leaked:?}, which it does not contain — a control \
+         that sits on a record and moves another is #173 seen from the outside: {report}"
+    );
+    assert!(
+        records[&target]["changed"].as_i64().unwrap_or(0) > 0,
+        "{surface:?}: …and it did change something, so the claim is not vacuous: {report}"
+    );
+    // …and the domain is a small part of the whole. If `contained` ever returned true for
+    // everything the leak check above would pass over an empty complement, which is the failure
+    // mode this whole task exists to remove.
+    let inside = records.keys().filter(|id| contained((*id).clone())).count();
+    assert!(
+        inside * 4 < records.len(),
+        "{surface:?}: the target and what it contains are a small part of the records under \
+         measurement ({inside} of {}) — otherwise the leak check has nothing to be false about: \
+         {report}",
+        records.len()
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn classic_page_a_fold_acts_on_its_own_record() {
+    let _serial = serial();
+    let fx = fixture_audit("audit-fold-classic");
+    let page = open(Surface::Classic, &fx, 2957);
+    scenario_a_fold_acts_on_its_own_record(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_fold_acts_on_its_own_record() {
+    let _serial = serial();
+    let fx = fixture_audit("audit-fold-app");
+    let page = open(Surface::AppShell, &fx, 2958);
+    scenario_a_fold_acts_on_its_own_record(&page.tab, Surface::AppShell);
 }
