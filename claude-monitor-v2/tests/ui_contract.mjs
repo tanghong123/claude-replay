@@ -1671,6 +1671,24 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#188 unrecorded-task cases passed");
 }
 
+// #174: EVERY MOUNTED RECORD CARRIES ITS ID. The classic page has done this since `matBlock`
+// (`e.id = b.id`), for prose turns as much as for tool folds; the app shell stamped
+// `data-record-id` only on a `.renderer`, so a user turn, an assistant turn and a slash-command
+// card were addressable by block index and by nothing else. That asymmetry is not cosmetic: a
+// record the DOM cannot NAME is a record no audit can quantify over, and it is exactly how the
+// rendering audit came to be measuring the app shell's tool renderings and none of its prose.
+{
+  const components174 = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  const stamped = [...components174.matchAll(/<div class="turn [^"]*"[^>]*?data-record-id="\$\{escapeText\(unit\.view\?\.id \|\| ""\)\}"/g)];
+  assert.equal(stamped.length, 3, "the three prose turn wrappers — user, slash command, assistant — each stamp the record id the classic page has always carried");
+  assert.match(components174, /data-record-id="\$\{escapeText\(key\)\}"/, "…and a tool rendering still stamps its own, on the `.renderer` inside the turn");
+  // The painter that means "a tool head" must stay scoped to one, or widening the attribute
+  // silently widens what it paints.
+  const app174 = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app174, /querySelectorAll\("\.renderer\[data-record-id\]"\)/, "the filter-hit painter selects a RENDERER, not every record root");
+  console.log("#174 record-id stamping cases passed");
+}
+
 // #89: the info pane's three subsections fold on their label, and the choice is the READER's —
 // one key, kept across sessions and reloads.
 {

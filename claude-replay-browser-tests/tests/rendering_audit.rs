@@ -64,30 +64,27 @@ const SID: &str = "aaaaaaaa-0000-4000-8000-000000000174";
 /// level fails here rather than shrinking the audit in silence.
 const NESTED_ONLY: [&str; 0] = [];
 
-/// **THE INSTRUMENT'S OWN BLIND SPOT, written down and asserted so it cannot widen in silence.**
+/// **WHAT THE INSTRUMENT CANNOT ADDRESS, asserted so it cannot widen in silence.**
 ///
-/// A record root is where a page stamps a record id, and the two pages disagree about which
-/// records get one. The classic page stamps every mounted block (`matBlock`: `e.dataset.kind`,
-/// `e.id`), prose turns included. The app shell stamps `data-record-id` on a `.renderer` — a TOOL
-/// rendering — while a user or assistant turn is a prose view addressed by `data-block-index`
-/// instead (`components.js`; the same asymmetry Stage A recorded as "the two kinds with no
-/// renderer key are the prose views"). A slash-command turn is the third: it is a `.turn user
-/// command` card, prose-addressed like the other two. A slash-command turn is the third: it is a `.turn user
-/// command` card, prose-addressed like the other two.
+/// A record root is where a page stamps a record id, and the two pages used to disagree about
+/// which records get one. The classic page has stamped every mounted block since `matBlock`
+/// (`e.id = b.id`), prose turns included; the app shell stamped `data-record-id` only on a
+/// `.renderer` — a TOOL rendering — while a user turn, an assistant turn and a slash-command card
+/// were addressable by block index and by nothing else. Stage A had recorded the same asymmetry
+/// from the other side ("the two kinds with no renderer key are the prose views") without anyone
+/// connecting it to the capture.
 ///
-/// So every app-shell claim in this file is quantified over the TOOL renderings and not over the
-/// prose turns. That is a real limit on what the audit has proved, and it was found by adding a
-/// control whose domain is exactly those turns — the raw-text preference — which reported that no
-/// `user` record existed at all. Closing it means deciding how a prose turn is ADDRESSED on the
-/// app shell so that P3's cells still line up with the classic page's `t18`/`b42` ids, and that
-/// is a design decision, not a selector tweak.
+/// It surfaced when a control whose domain is exactly those turns — the raw-text preference —
+/// reported that no `user` record existed at all, which meant every app-shell claim here had been
+/// quantified over the tool renderings and none of the prose. The fix was in the SHELL, not in
+/// the audit: a record the DOM cannot name is a record no audit can quantify over, and the
+/// reference page had the property already. `unit.view.id` was right there feeding the deep-link
+/// button; it now stamps the turn wrapper too, so a prose turn is `t18` on both pages and P3's
+/// cells line up by construction rather than by a lookup.
 ///
-/// Until then the coverage case asserts this exact difference, so the day it changes — in either
-/// direction — the audit says so.
-const NOT_CAPTURED: [(&str, &[&str]); 2] = [
-    ("Classic", &[]),
-    ("AppShell", &["assistant", "command", "user"]),
-];
+/// Both lists are empty today. The equality is asserted in BOTH directions, so a kind that stops
+/// being addressable fails here rather than quietly leaving the quantifier.
+const NOT_CAPTURED: [(&str, &[&str]); 2] = [("Classic", &[]), ("AppShell", &[])];
 
 struct Fixture {
     base: PathBuf,
@@ -278,7 +275,7 @@ const AUDIT_JS: &str = r##"(function () {
         var b = after.get(key);
         if (b && a.props[prop] !== b.props[prop]) changed[cell] = (changed[cell] || 0) + 1;
       });
-      return { present: present, changed: changed };
+      return { present: present, changed: changed, kind: before.kind };
     },
     // The same effect set, partitioned by RECORD instead of by kind of content. A control that
     // sits ON a record (a fold head, a pane's own bar, a turn's raw toggle) claims to act on
@@ -902,6 +899,7 @@ fn app_shell_a_fold_acts_on_its_own_record() {
 struct Cells {
     present: std::collections::BTreeMap<String, i64>,
     changed: std::collections::BTreeMap<String, i64>,
+    kind: std::collections::BTreeMap<String, String>,
 }
 
 fn cells(tab: &headless_chrome::Tab, surface: Surface, key: &str, prop: &str) -> Cells {
@@ -924,6 +922,12 @@ fn cells(tab: &headless_chrome::Tab, surface: Surface, key: &str, prop: &str) ->
     Cells {
         present: map("present"),
         changed: map("changed"),
+        kind: got["kind"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+            .collect(),
     }
 }
 
@@ -964,22 +968,34 @@ fn compare_surfaces(classic: &Cells, shell: &Cells, control: &str, prop: &str) {
         classic.present.len(),
         shell.present.len()
     );
-    // …and the comparison covers the WHOLE of the smaller population. Measured: every cell the
-    // app shell draws is also drawn by the classic page, so "no gaps" is a statement about all
-    // of the shell's renderings and not about an overlap that happens to be clean. The reverse
-    // is not true and does not need to be — the classic page mounts more of the PADDING above
-    // the corpus, which neither control touches; if the shell ever draws a cell the classic page
-    // does not, that is a rendering difference and belongs in front of a person.
-    let shell_only: Vec<&String> = shell
+    // …and the comparison covers every KIND of record, on both pages. The obvious scope
+    // guarantee — "the shell's cells are a subset of the classic page's" — was true when I first
+    // measured it and true only by luck: the two pages window their DOM independently, so they
+    // mount different RANGES of the padding above the corpus, and the day the shell mounted four
+    // records the classic page had not, the assertion fired on a windowing difference and called
+    // it a rendering one. What actually matters is that no KIND fell out of the comparison, and
+    // that does not depend on which records each page happened to keep mounted.
+    let covered: std::collections::BTreeSet<&str> = classic
         .present
         .keys()
-        .filter(|cell| !classic.present.contains_key(*cell))
+        .filter(|cell| shell.present.contains_key(*cell))
+        .filter_map(|cell| classic.kind.get(cell.split('|').next().unwrap_or("")))
+        .map(String::as_str)
+        .filter(|k| !k.is_empty())
+        .collect();
+    let declared: std::collections::BTreeSet<String> = audit_kinds(&audit_records(&audit_corpus()))
+        .into_iter()
+        .collect();
+    let uncompared: Vec<&String> = declared
+        .iter()
+        .filter(|k| !covered.contains(k.as_str()))
         .collect();
     assert!(
-        shell_only.is_empty(),
-        "{control}: the app shell draws {} cell(s) the classic page does not, so the comparison \
-         no longer covers everything the shell renders: {shell_only:?}",
-        shell_only.len()
+        uncompared.is_empty(),
+        "{control}: {} record kind(s) fell out of the comparison entirely — a kind only one page \
+         had mounted is a kind this audit did not compare, and silence there is exactly what the \
+         task was written to remove: {uncompared:?}",
+        uncompared.len()
     );
     assert!(
         !classic.changed.is_empty() && !shell.changed.is_empty(),

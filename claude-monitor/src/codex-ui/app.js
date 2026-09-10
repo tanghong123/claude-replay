@@ -1162,7 +1162,10 @@ function applyFilters() {
   // height; the window stays dense.
   for (const element of viewport.window.querySelectorAll(".filter-hidden, .filter-hit")) element.classList.remove("filter-hidden", "filter-hit");
   if (!hits) return;
-  for (const renderer of viewport.window.querySelectorAll("[data-record-id]")) {
+  // `.renderer[data-record-id]`, not every record root: a prose turn carries its id too now
+  // (#174 — the classic page has stamped every mounted record since `matBlock`, and a record the
+  // DOM cannot name is a record no audit can address), and this paints a TOOL head.
+  for (const renderer of viewport.window.querySelectorAll(".renderer[data-record-id]")) {
     if (recordState.filterDirect?.has(renderer.dataset.recordId)) renderer.querySelector(":scope > .renderer-head")?.classList.add("filter-hit");
   }
 }
