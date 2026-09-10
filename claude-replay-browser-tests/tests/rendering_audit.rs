@@ -586,8 +586,16 @@ fn app_shell_the_instrument_sees_the_whole_corpus() {
 /// nothing moved EXCEPT geometry and colour — and it is where those two categories are named,
 /// each with its reason, so a control that started moving something else fails loudly.
 fn geometry_or_affordance(prop: &str) -> bool {
-    // Used values resolved by layout, not set by the cascade.
-    matches!(prop, "block-size" | "inline-size" | "height" | "width" | "perspective-origin" | "transform-origin")
+    // Used values resolved by layout, not set by the cascade. The MARGINS are here because
+    // `margin: auto` is resolved from the free space in the box, precisely like `width` — and
+    // that is not a guess: CI caught it and this machine did not. `.codebox .codebar` is
+    // right-aligned with `margin-left:auto`, so when wrap changes a code pane's width the bar's
+    // computed margin moves with it; the two machines differ in window size, so the pane
+    // overflowed on one and not the other. A property that can be `auto` is a property layout
+    // resolves, and belongs here rather than being discovered one CI run at a time.
+    matches!(prop, "block-size" | "inline-size" | "height" | "width" | "perspective-origin" | "transform-origin"
+        | "margin-top" | "margin-right" | "margin-bottom" | "margin-left"
+        | "margin-block-start" | "margin-block-end" | "margin-inline-start" | "margin-inline-end")
         // A control showing its own state. A suffix, not a list of properties.
         || prop == "color"
         || prop.ends_with("-color")
