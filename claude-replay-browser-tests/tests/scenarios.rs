@@ -2213,6 +2213,7 @@ fn app_shell_lets_the_thumb_own_the_position_while_dragged() {
     let fx = open_turn_fixture("scenario-thumb-app");
     let page = open(Surface::AppShell, &fx, 2879);
     let tab = &page.tab;
+    let heights = r#"(function(){var vw=document.querySelector('.virtual-window');var out={};for(const c of vw.children){out[(c.dataset.unitIndex||'?')+':'+(c.dataset.unitKey||'?')]=Math.round(c.getBoundingClientRect().height);}var t=document.querySelectorAll('.virtual-pad');out['__pads']=[t[0].style.height,t[1].style.height];return out;})()"#;
     jump_to_end(tab, Surface::AppShell);
     await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
     settle();
@@ -5332,6 +5333,7 @@ fn app_shell_a_fleet_row_descent_keeps_the_way_back() {
     let fx = fixture_workflow("scenario-fleet-descent");
     let page = open(Surface::AppShell, &fx, 2923);
     let tab = &page.tab;
+    let heights = r#"(function(){var vw=document.querySelector('.virtual-window');var out={};for(const c of vw.children){out[(c.dataset.unitIndex||'?')+':'+(c.dataset.unitKey||'?')]=Math.round(c.getBoundingClientRect().height);}var t=document.querySelectorAll('.virtual-pad');out['__pads']=[t[0].style.height,t[1].style.height];return out;})()"#;
     jump_to_end(tab, Surface::AppShell);
     await_tail(tab, Surface::AppShell, "the jump to land at the tail");
     until(
@@ -7002,4 +7004,83 @@ fn fixture_tall_prose(name: &str) -> Fixture {
         path,
         turns: 120,
     }
+}
+
+// ── scenario: the tail is a wall — a scroll DOWN never moves the reader away from it (#179) ──
+
+/// Jump to the end, scroll up a little, then walk back down. Every downward step must bring the
+/// reader CLOSER to the bottom, and the walk must land on the bottom and stay there.
+///
+/// What it caught (#179, app shell, measured on a 120-turn session): from a 62px gap one wheel
+/// down landed on the tail and the reader was thrown 262px back UP — then 200 down, then 262 up,
+/// for ever, between exactly two positions. The page "lets you keep scrolling" and only ever
+/// re-renders the last few records, which is how it was reported.
+///
+/// `reconcile` forces layout — `measureMounted` reads every mounted child's box — while the PADS
+/// still describe the window it is replacing. For the length of that measure the content is short
+/// by exactly what the new window drops off its top: one turn, 262px here. A browser clamps
+/// `scrollTop` to a page that has just shrunk, so a reader sitting ON the tail is pulled up by
+/// the whole difference; the pads are written a moment later and the page is its old height
+/// again, with the reader 262px above where they were. Worse, the clamp's own scroll event lands
+/// inside the intent window, so the engine reads it as the READER's scroll — and 262px is past
+/// the 80px hold slack, so it unfollows on it too.
+fn scenario_the_tail_is_a_wall(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    let s = surface.scroller();
+    let gap_js = format!(
+        "(function(){{var s={s};return Math.round(s.scrollHeight-s.clientHeight-s.scrollTop);}})()"
+    );
+    let gap = |tab: &headless_chrome::Tab| harness::eval(tab, &gap_js).as_f64().unwrap_or(-1.0);
+
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the tail before the walk back");
+    settle();
+    // A LITTLE way up — the report's own gesture. Far enough that the walk down has somewhere to
+    // go, near enough that one step of the same size should put the reader back on the tail.
+    scroll_by(tab, surface, -200);
+    settle();
+    let start = gap(tab);
+    assert!(
+        start > 20.0,
+        "{surface:?}: the scroll up never left the tail (gap {start}px), so the walk down would \
+         prove nothing"
+    );
+
+    let mut steps = vec![start];
+    let (mut prev, mut worst) = (start, 0f64);
+    for _ in 0..6 {
+        scroll_by(tab, surface, 200);
+        settle();
+        let now = gap(tab);
+        steps.push(now);
+        worst = worst.max(now - prev);
+        prev = now;
+    }
+    assert!(
+        worst <= 4.0,
+        "{surface:?}: a scroll DOWN moved the reader {worst}px AWAY from the bottom — the tail \
+         pushed back instead of holding. Gap after each step: {steps:?}"
+    );
+    assert!(
+        prev <= 2.0,
+        "{surface:?}: the walk down never reached the bottom — it stopped {prev}px short after \
+         six steps of 200px from a {start}px gap. Gap after each step: {steps:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn classic_page_the_tail_is_a_wall() {
+    let _serial = serial();
+    let fx = fixture_tall_prose("scenario-tail-wall-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_the_tail_is_a_wall(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_tail_is_a_wall() {
+    let _serial = serial();
+    let fx = fixture_tall_prose("scenario-tail-wall-app");
+    let page = open(Surface::AppShell, &fx, 2938);
+    scenario_the_tail_is_a_wall(&page.tab, Surface::AppShell, &fx);
 }

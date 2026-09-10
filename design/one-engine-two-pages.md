@@ -742,3 +742,54 @@ scrolling, so the case proves the correction LANDS but not how a trackpad fling 
 The secondary mitigation is `#184`: the floor estimate is what makes the correction large, and rule 5
 ("estimate UNDER, never over") is free only for learning BELOW the reader — above them it MAXIMISES
 the delta.
+
+## The pads are the page's height, and a page that shrinks moves the reader (2026-09-10, #179)
+
+Reported: *"jump to the bottom, then scroll up a little bit, then scroll down, and it would let me
+keep scrolling (not stop at the bottom), but the screen simply refreshes the last few messages."*
+
+It is a **two-cycle**. Measured on a 120-turn session, app shell, 200px steps:
+
+| step | scrollTop | gap to bottom | mounted | top record |
+|---|---|---|---|---|
+| at tail | 12972 | 0 | 15 | `user:t119` |
+| up 200 | 12772 | 200 | 17 | `assistant:b118` |
+| down 200 | **12710** | **262** | 18 | `user:t118` |
+| down 200 | 12910 | 62 | 17 | `assistant:b118` |
+| down 200 | **12710** | **262** | 18 | `user:t118` |
+
+— and so on for ever, between exactly two positions, which is what "the screen simply refreshes the
+last few messages" is. The classic page does the same thing at 228/28, its own turn height.
+
+**No script wrote that position.** Shadowing the scroller's own `scrollTop` setter and recording the
+stack of every write shows a write on the 62px step (`restoreDomAnchor`, 16px, correct) and **none at
+all** on the 262px step: two scroll events 28ms apart, 12972 then 12710, with nothing in between.
+`overflow-anchor` is `none`, so it is not native scroll anchoring either. The browser moved the reader
+because the page it was scrolling had got **shorter**: 12710 is the bottom of a 13358px page, and the
+page is 13620px before and after. 13620 − 13358 = 262 = one turn = 78 (a prompt) + 184 (its answer).
+
+The shrink is inside `reconcile`, and it is an ORDERING bug. `reconcile` mutates the mounted set, then
+`afterMount` (the classic page's clamp pass — one batched READ over the fresh elements) and
+`measureMounted` (every mounted child's box, both pages) **force layout while the pads still describe
+the window being replaced.** For the length of that measure the content is short by exactly what the
+new window dropped off its top, a browser clamps `scrollTop` to a page that has just shrunk, and a
+reader sitting ON the tail is pulled up by the whole difference. The pads land a moment later and the
+page is its old height again — with the reader 262px above the bottom.
+
+Then it compounds: the clamp's own scroll event arrives inside the intent window, so `onScroll`
+reads it as **the reader's**, and 262px is past the 80px hold slack, so the page unfollows on a
+movement the reader never made. The next wheel re-acquires the tail, and the cycle closes.
+
+The fix is one line moved: **pad, then measure.** `updatePads()` goes above `afterMount`, and the
+trailing call stays because `measureMounted` can still rebuild the sums under it.
+
+This is not the order `#140` step 4 rejected. That one wrote the pads for the NEW window while the OLD
+elements were still mounted, which is short whenever the window grows. These pads describe exactly
+what is mounted at that instant. And its stated worry — that a measure makes the pads wrong — cannot
+happen: the pads are `prefix[lo]` and `prefix[count] − prefix[hi]`, sums over the items OUTSIDE the
+window, and a measure only ever corrects the ones inside it.
+
+**The rule it adds:** *the scrollable content must never be shorter, at any instant, than it was a
+moment ago.* Not "eventually right" — a browser reads the height synchronously, the moment anything
+forces layout, and it acts on it. The residual this leaves is a `renderItem` that reads layout mid-
+loop; neither page's does today.

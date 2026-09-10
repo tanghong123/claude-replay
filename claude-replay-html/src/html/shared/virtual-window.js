@@ -593,14 +593,30 @@ class VirtualWindow {
 
     this.lo = lo;
     this.hi = hi;
+    // PAD, then measure (#179). The pads stand in for everything the window does not mount, and
+    // until they are written the page is short by exactly what the mutation above just dropped
+    // off the top of the window — one whole turn, measured: 262px on the app shell, 228 on the
+    // classic page. Anything that forces layout in that gap hands the browser a page that has
+    // SHRUNK, and a browser clamps `scrollTop` to it. A reader sitting on the TAIL is pulled up
+    // by the entire difference; the pads land a moment later and leave them that far above the
+    // bottom of a page that is its old height again. Worse, the clamp's own scroll event arrives
+    // inside the intent window, so the engine reads it as the reader's own — and past the hold
+    // slack, so it unfollows on it too. That is the whole of #179: a wheel down at the tail
+    // bounced the reader 262px back up, then 200 down, between exactly two positions for ever,
+    // "letting me keep scrolling" while only the last few records ever re-rendered.
+    //
+    // Two things below force layout: `afterMount` — the classic page clamps a long user turn
+    // there, one batched READ pass over the fresh elements — and `measureMounted`, which reads
+    // every mounted child's box on both pages. So the pads go above both.
+    //
+    // This is NOT the order #140 step 4 rejected. That one wrote the pads for the new window
+    // while the OLD elements were still mounted, which is short whenever the window grows. These
+    // describe exactly what is mounted right now. And a measure cannot change them: they are
+    // `prefix[lo]` and `prefix[count] - prefix[hi]`, sums over the items OUTSIDE the window,
+    // while a measure only ever corrects the ones inside it. The trailing call stays because
+    // `measureMounted` can still rebuild the sums under them.
+    this.updatePads();
     this.afterMount(fresh);
-    // MEASURE, then pad (#140 step 4). The other order writes the pads from the sums the mount
-    // is about to replace, and what a mount replaces is an ESTIMATE with a real height — by rule
-    // 5 always an increase, so the pads are briefly SHORT by the whole difference and a browser
-    // clamps a scroll offset to a page that has just shrunk. The classic page had always
-    // measured first; matching it costs nothing, since `measureMounted` writes the pads itself
-    // whenever a height moved and the call below covers the case where none did and only the
-    // RANGE changed.
     this.measureMounted(anchor, immediate);
     this.updatePads();
     this.restoreDomAnchor(anchor, immediate);
