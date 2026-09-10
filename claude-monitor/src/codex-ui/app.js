@@ -2,6 +2,7 @@ import { agentLogo, svg } from "./icons.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
+import { costDisplay } from "./shared/cost-display.js";
 import { chainWalk } from "./shared/filter.js";
 import { taskCardHtml, taskRowMeta } from "./shared/task-card.js";
 import { ControlStore } from "./control-store.js";
@@ -825,33 +826,30 @@ const outlineFooter = document.createElement("div");
 outlineFooter.className = "outline-footer";
 outlineFooter.id = "outlineFooter";
 outlineFooter.innerHTML = '<span class="outline-footer-cost" id="outlineFooterCost">—</span><span class="outline-footer-context" id="outlineFooterContext"></span><button class="outline-footer-info" id="outlineFooterInfo" type="button" aria-haspopup="dialog" aria-expanded="false" title="Session details"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></button>';
-/** Cost, short enough for a 40px rail. "$6.9k" keeps the reader watching it move; the exact
- *  figure is one hover away, which is the trade the owner chose over dropping it. */
-function shortCost(value) {
-  const n = Number(value);
-  if (!isFinite(n)) return "—";
-  if (n >= 1000) return `$${(n / 1000).toFixed(1)}k`;
-  if (n >= 100) return `$${n.toFixed(0)}`;
-  return `$${n.toFixed(2)}`;
-}
 // Held by REFERENCE, never through `byId`: these are built here, and the contract's rule that
 // every `byId` names an element of the generated shell is worth keeping exact.
 const footerCost = outlineFooter.querySelector(".outline-footer-cost");
 const footerContext = outlineFooter.querySelector(".outline-footer-context");
 const footerInfo = outlineFooter.querySelector(".outline-footer-info");
+const usageCostLabel = usage => usage && (usage.cost || (usage.cost_partial ? "unpriced" : null));
 function paintOutlineFooter(row, usage) {
-  const cost = row && row.cost != null ? Number(row.cost) : null;
-  const subs = row && row.costSubs ? Number(row.costSubs) : 0;
-  // A sub-agent roll-up shows SPLIT (own + sub-agents) with the total in the hover: the own share
-  // is what the transcript's usage panel reports, so one opaque total read as a mismatch.
-  if (cost != null && subs) {
-    footerCost.textContent = `~$${(cost - subs).toFixed(2)} + $${subs.toFixed(2)} sub`;
-    footerCost.title = `total ~$${cost.toFixed(2)} = this session $${(cost - subs).toFixed(2)} + sub-agents $${subs.toFixed(2)}`;
+  const display = costDisplay(row);
+  const short = costDisplay(row, true);
+  const ownCost = usageCostLabel(usage);
+  const subs = row && row.costSubs != null ? Number(row.costSubs) : null;
+  // Split only a COMPLETE roll-up. A partial total is one lower bound; breaking it into components
+  // would imply that the known own/sub amounts account for all token-bearing models.
+  if (display.kind === "priced" && subs != null && Number.isFinite(subs)) {
+    const own = display.known - subs;
+    footerCost.textContent = `~$${own.toFixed(2)} + ~$${subs.toFixed(2)} sub`;
+    footerCost.title = `total ${display.label} = this session ~$${own.toFixed(2)} + sub-agents ~$${subs.toFixed(2)}`;
   } else {
-    footerCost.textContent = cost != null ? `~$${cost.toFixed(2)}` : usage.cost || "—";
+    // The index row is the whole family total. A direct sub-agent view has no row, so its own
+    // usage-level signal is the fallback — including the fully-unpriced state.
+    footerCost.textContent = display.label || ownCost || "—";
     footerCost.title = "";
   }
-  footerCost.dataset.short = cost != null ? shortCost(cost) : "—";
+  footerCost.dataset.short = short.label || ownCost || "—";
   const rt = usage.runtime || {};
   const left = rt.context_left != null ? `${rt.context_left}% left` : "";
   footerContext.textContent = left;
@@ -882,7 +880,7 @@ function renderSessionInfo(turns, agents) {
   // within 40px of here — status is the topbar `#statusChip` (with its dot and "inferred"
   // detail) and the sidebar row chip, turns is `#navigatorTurnCount` on the Turns head,
   // children is `#navigatorAgentCount` on the Agents head. Info's copy was duplication.
-  byId("navigatorSession").innerHTML = `<div class="session-info">${group("Usage", [["model", usage.model], ["input", usage.input || usage.input_tokens], ["output", usage.output || usage.output_tokens], ["cache read", usage.cache_read], ...(usage.compacted ? [["compacted", usage.compacted]] : []), ["est. cost", usage.cost || (row.cost != null ? `~$${Number(row.cost).toFixed(2)}` : "—")]])}${group("Runtime", [["cwd", meta.cwd || row._group?.secondary], ...runtimeRows(usage.runtime).filter(r => r.state !== "absent" || RUNTIME_ALWAYS.includes(r.key)).map(r => [r.label, runtimeText(r, agentName(row.agent))])])}</div>`;
+  byId("navigatorSession").innerHTML = `<div class="session-info">${group("Usage", [["model", usage.model], ["input", usage.input || usage.input_tokens], ["output", usage.output || usage.output_tokens], ["cache read", usage.cache_read], ...(usage.compacted ? [["compacted", usage.compacted]] : []), ["est. cost", usageCostLabel(usage) || "—"]])}${group("Runtime", [["cwd", meta.cwd || row._group?.secondary], ...runtimeRows(usage.runtime).filter(r => r.state !== "absent" || RUNTIME_ALWAYS.includes(r.key)).map(r => [r.label, runtimeText(r, agentName(row.agent))])])}</div>`;
 }
 
 // #170: the info content MOVED out of this column into the footer popover, so the delegation

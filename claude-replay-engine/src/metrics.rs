@@ -189,6 +189,11 @@ pub fn total_cost_with(
 ) -> (Option<UsdCost>, bool) {
     let (mut total, mut partial): (Option<PriceEstimate>, bool) = (None, false);
     for (name, counts) in per_model {
+        // Adapters may open a model bucket before its first nonzero usage delta. It is not usage
+        // and must not turn the absent cost state into a misleading priced zero.
+        if *counts == TokenCounts::default() {
+            continue;
+        }
         let context = ModelContext::new(name);
         match counts.price_with(prices, &context) {
             Some(price) if price.is_currency("USD") => match total.as_ref() {
@@ -200,9 +205,7 @@ pub fn total_cost_with(
                 },
                 None => total = Some(price),
             },
-            // Only tokens make a gap: a model that produced none costs nothing either way.
-            Some(_) | None if *counts != TokenCounts::default() => partial = true,
-            Some(_) | None => {}
+            Some(_) | None => partial = true,
         }
     }
     (total.and_then(|price| price.amount_in("USD")), partial)
@@ -654,6 +657,14 @@ impl PricingUnit {
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PricingEvidence {
+    id: String,
+    source: String,
+    note: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PricingEntry {
     ids: Vec<String>,
     source: String,
@@ -662,6 +673,8 @@ struct PricingEntry {
     cache_write_micros: u64,
     cache_read_micros: u64,
     output_micros: u64,
+    #[serde(default)]
+    evidence: Vec<PricingEvidence>,
 }
 
 impl PricingEntry {
@@ -678,55 +691,89 @@ impl PricingEntry {
     }
 }
 
+fn parse_pricing_catalog(json: &str) -> Result<BTreeMap<String, ModelPrice>, String> {
+    let catalog: PricingCatalog = serde_json::from_str(json)
+        .map_err(|error| format!("pricing catalog must parse: {error}"))?;
+    if catalog.schema_version != 3 {
+        return Err(format!(
+            "unsupported pricing schema {}",
+            catalog.schema_version
+        ));
+    }
+    if catalog.cache_write_basis != "5m" {
+        return Err("aggregate cache writes must use the documented 5m rate".into());
+    }
+    if catalog.sources.is_empty() {
+        return Err("pricing catalog needs sources".into());
+    }
+    for (name, source) in &catalog.sources {
+        if !source.url.starts_with("https://") {
+            return Err(format!("pricing source {name} needs an HTTPS URL"));
+        }
+        if parse_ts(&source.queried_at).is_none() {
+            return Err(format!("pricing source {name} needs an RFC3339 queried_at"));
+        }
+    }
+
+    let mut prices = BTreeMap::new();
+    for entry in catalog.models {
+        if entry.ids.is_empty() {
+            return Err("pricing entry must name a model".into());
+        }
+        if !catalog.sources.contains_key(&entry.source) {
+            return Err(format!(
+                "pricing entry references unknown source {}",
+                entry.source
+            ));
+        }
+        let unit = catalog
+            .units
+            .get(&entry.unit)
+            .ok_or_else(|| format!("pricing entry references unknown unit {}", entry.unit))?
+            .rate_unit()
+            .map_err(|error| format!("pricing unit {} is invalid: {error}", entry.unit))?;
+        let mut evidenced = std::collections::BTreeSet::new();
+        for evidence in &entry.evidence {
+            if !entry.ids.contains(&evidence.id) {
+                return Err(format!(
+                    "pricing evidence id {} is not listed in its entry",
+                    evidence.id
+                ));
+            }
+            if !catalog.sources.contains_key(&evidence.source) {
+                return Err(format!(
+                    "pricing evidence for {} references unknown source {}",
+                    evidence.id, evidence.source
+                ));
+            }
+            if evidence.note.trim().is_empty() {
+                return Err(format!("pricing evidence for {} needs a note", evidence.id));
+            }
+            if !evidenced.insert(evidence.id.clone()) {
+                return Err(format!("duplicate pricing evidence for {}", evidence.id));
+            }
+        }
+        let price = entry.price(unit);
+        for id in entry.ids {
+            let normalized = normalize_model_name(&id);
+            if id != normalized {
+                return Err(format!("pricing id {id} must already be normalized"));
+            }
+            if prices.insert(id.clone(), price.clone()).is_some() {
+                return Err(format!("duplicate pricing id {id}"));
+            }
+        }
+    }
+    Ok(prices)
+}
+
 /// Parse and validate the repository-owned default catalog once. Keeping the data in JSON makes
 /// adding a model a table edit; code owns only exact arithmetic, validation, and lookup semantics.
 fn builtin_prices() -> &'static BTreeMap<String, ModelPrice> {
     static PRICES: OnceLock<BTreeMap<String, ModelPrice>> = OnceLock::new();
     PRICES.get_or_init(|| {
-        let catalog: PricingCatalog = serde_json::from_str(include_str!("../pricing.json"))
-            .expect("embedded pricing.json must parse");
-        assert_eq!(catalog.schema_version, 2, "unsupported pricing schema");
-        assert_eq!(
-            catalog.cache_write_basis, "5m",
-            "aggregate cache writes must use the documented 5m rate"
-        );
-        assert!(!catalog.sources.is_empty(), "pricing catalog needs sources");
-        for (name, source) in &catalog.sources {
-            assert!(
-                source.url.starts_with("https://"),
-                "pricing source {name} needs an HTTPS URL"
-            );
-            assert!(
-                parse_ts(&source.queried_at).is_some(),
-                "pricing source {name} needs an RFC3339 queried_at"
-            );
-        }
-
-        let mut prices = BTreeMap::new();
-        for entry in catalog.models {
-            assert!(!entry.ids.is_empty(), "pricing entry must name a model");
-            assert!(
-                catalog.sources.contains_key(&entry.source),
-                "pricing entry references unknown source {}",
-                entry.source
-            );
-            let unit = catalog
-                .units
-                .get(&entry.unit)
-                .unwrap_or_else(|| panic!("pricing entry references unknown unit {}", entry.unit))
-                .rate_unit()
-                .expect("embedded pricing unit must be valid");
-            let price = entry.price(unit);
-            for id in entry.ids {
-                let normalized = normalize_model_name(&id);
-                assert_eq!(id, normalized, "pricing ids must already be normalized");
-                assert!(
-                    prices.insert(id.clone(), price.clone()).is_none(),
-                    "duplicate pricing id {id}"
-                );
-            }
-        }
-        prices
+        parse_pricing_catalog(include_str!("../pricing.json"))
+            .expect("embedded pricing.json must be valid")
     })
 }
 
@@ -1126,6 +1173,85 @@ mod price_tests {
         table.resolve(&ModelContext::new(model))
     }
 
+    fn mutated_gpt_alias_evidence(mutate: impl FnOnce(&mut serde_json::Value)) -> String {
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("../pricing.json")).unwrap();
+        let row = document["models"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| {
+                row["ids"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|id| id == "gpt-5-6")
+            })
+            .unwrap();
+        mutate(&mut row["evidence"]);
+        serde_json::to_string(&document).unwrap()
+    }
+
+    #[test]
+    fn catalog_records_exact_alias_evidence() {
+        let catalog: PricingCatalog =
+            serde_json::from_str(include_str!("../pricing.json")).unwrap();
+        let evidence_for = |id: &str| {
+            catalog
+                .models
+                .iter()
+                .flat_map(|entry| &entry.evidence)
+                .find(|evidence| evidence.id == id)
+                .map(|evidence| evidence.source.as_str())
+        };
+        assert_eq!(evidence_for("gpt-5-6"), Some("openai_gpt_5_6_sol_alias"));
+        assert_eq!(
+            evidence_for("us-anthropic-claude-opus-4-20250514-v1:0"),
+            Some("aws_bedrock_opus_4_snapshot")
+        );
+    }
+
+    #[test]
+    fn evidence_for_an_unlisted_alias_is_rejected() {
+        let json = mutated_gpt_alias_evidence(|evidence| {
+            evidence[0]["id"] = serde_json::json!("gpt-5-6-codex");
+        });
+        assert!(parse_pricing_catalog(&json)
+            .unwrap_err()
+            .contains("is not listed in its entry"));
+    }
+
+    #[test]
+    fn evidence_with_an_unknown_source_is_rejected() {
+        let json = mutated_gpt_alias_evidence(|evidence| {
+            evidence[0]["source"] = serde_json::json!("missing-source");
+        });
+        assert!(parse_pricing_catalog(&json)
+            .unwrap_err()
+            .contains("references unknown source"));
+    }
+
+    #[test]
+    fn evidence_without_a_rationale_is_rejected() {
+        let json = mutated_gpt_alias_evidence(|evidence| {
+            evidence[0]["note"] = serde_json::json!("  ");
+        });
+        assert!(parse_pricing_catalog(&json)
+            .unwrap_err()
+            .contains("needs a note"));
+    }
+
+    #[test]
+    fn duplicate_evidence_for_one_alias_is_rejected() {
+        let json = mutated_gpt_alias_evidence(|evidence| {
+            let duplicate = evidence[0].clone();
+            evidence.as_array_mut().unwrap().push(duplicate);
+        });
+        assert!(parse_pricing_catalog(&json)
+            .unwrap_err()
+            .contains("duplicate pricing evidence"));
+    }
+
     /// Pins all four billing tiers where vendor/model families differ. Both vendors' tables were
     /// queried 2026-09-09; `pricing.json` records the exact query timestamp and source URLs.
     #[test]
@@ -1198,6 +1324,15 @@ mod price_tests {
         ] {
             assert_eq!(resolve(&PriceTable::new(), model), None, "{model}");
         }
+    }
+
+    #[test]
+    fn zero_token_model_buckets_have_no_cost_state() {
+        let per_model = BTreeMap::from([
+            ("gpt-5-6".to_string(), TokenCounts::default()),
+            ("unknown-model".to_string(), TokenCounts::default()),
+        ]);
+        assert_eq!(total_cost(&per_model), (None, false));
     }
 
     /// The four independent columns must all reach the formula; otherwise Claude's exceptional

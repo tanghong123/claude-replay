@@ -36,11 +36,12 @@ pub(crate) const COST_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The ledger's own JSON-shape version — bumped when the entry's fields change, and equally
 /// when the same fold starts producing a DIFFERENT `cost` for the same bytes. v2 priced
-/// credit-billed Qoder sessions from `usage.credits` (design/qoder-credits-usd.md). v3 invalidates
+/// credit-billed Qoder sessions from `usage.credits` (design/qoder-credits-usd.md). v3 invalidated
 /// token-priced entries after the model catalog moved from approximate family rates to exact
-/// four-tier rates. Without these bumps, the len/mtime fast path would serve stale costs forever
-/// for transcripts already scanned — the v8 lesson spelled out in [`ledger_version`], one layer up.
-const LEDGER_SHAPE: u32 = 3;
+/// four-tier rates. v4 stops treating a zero-token model bucket as a priced `$0.00` result.
+/// Without these bumps, the len/mtime fast path would serve stale costs forever for transcripts
+/// already scanned — the v8 lesson spelled out in [`ledger_version`], one layer up.
+const LEDGER_SHAPE: u32 = 4;
 
 /// The persisted entry's full version: the shape crossed with the engine's
 /// `FOLD_VERSION`, so a FOLD-BEHAVIOR bump invalidates priced state exactly like it
@@ -54,6 +55,54 @@ fn ledger_version() -> u64 {
         | u64::from(claude_replay_core::engine::meta_stream::FOLD_VERSION)
 }
 
+/// One folded transcript's pricing result. `known_usd` is absent only when every token-bearing
+/// model was unpriced; `partial` distinguishes that explicit state from a transcript with no usage.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct CostSummary {
+    pub(crate) known_usd: Option<f64>,
+    pub(crate) partial: bool,
+}
+
+impl CostSummary {
+    fn from_parts(known_usd: Option<f64>, partial: bool) -> Option<Self> {
+        (known_usd.is_some() || partial).then_some(Self { known_usd, partial })
+    }
+
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.known_usd = match (self.known_usd, other.known_usd) {
+            (Some(a), Some(b)) => Some(a + b),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        self.partial |= other.partial;
+    }
+}
+
+/// A ledger refresh either has no authoritative replacement yet or replaces the row's state.
+/// `Replace(None)` is deliberate: a completed fold found no usage and must clear an older cost.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum CostUpdate {
+    Keep,
+    Replace(Option<CostSummary>),
+}
+
+impl CostUpdate {
+    fn cached(entry: Option<&Entry>, file_len: u64) -> Self {
+        match entry {
+            None => Self::Keep,
+            Some(entry) => match entry.summary() {
+                Some(summary) => Self::Replace(Some(summary)),
+                // A no-summary cursor short of the current file is only scan progress. It cannot
+                // prove no usage until the cursor reaches EOF, so a later zero-budget cycle must
+                // keep the row just like the cycle that created this partial entry did.
+                None if entry.len < file_len => Self::Keep,
+                None => Self::Replace(None),
+            },
+        }
+    }
+}
+
 /// One transcript's priced state: what the fold said last time, and where it stopped.
 #[derive(Clone)]
 struct Entry {
@@ -65,6 +114,12 @@ struct Entry {
     /// Some models in the mix were unpriced — the cost is a `≥` lower bound.
     partial: bool,
     cursor: Option<MetricsCursor>,
+}
+
+impl Entry {
+    fn summary(&self) -> Option<CostSummary> {
+        CostSummary::from_parts(self.cost, self.partial)
+    }
 }
 
 pub struct CostLedger {
@@ -86,39 +141,37 @@ impl CostLedger {
         }
     }
 
-    /// The equivalent-API cost of the transcript at `path`, `(cost, partial)`, folded
-    /// incrementally. `budget` is the cycle's remaining fresh-byte allowance: a fold that
-    /// would read more than is left is deferred (the cached value — possibly stale,
-    /// possibly `None` — is returned, and a later cycle picks it up). One fold may
-    /// overshoot the remainder rather than starve forever behind one huge file.
-    pub(crate) fn cost(
-        &mut self,
-        agent: Agent,
-        path: &Path,
-        budget: &mut u64,
-    ) -> Option<(f64, bool)> {
+    /// The equivalent-API cost of the transcript at `path`, folded incrementally. A returned
+    /// summary may have no known dollar subtotal when every token-bearing model was unpriced.
+    /// `Replace(None)` is the distinct, authoritative usage-free state; `Keep` means no fresh or
+    /// cached answer is available yet. `budget` is the cycle's remaining fresh-byte allowance: a
+    /// fold that would read more than is left is deferred, and a later cycle picks it up. One fold
+    /// may overshoot the remainder rather than starve forever behind one huge file.
+    pub(crate) fn cost(&mut self, agent: Agent, path: &Path, budget: &mut u64) -> CostUpdate {
         let stem = stem_of(path);
         if !self.entries.contains_key(&stem) && self.probed.insert(stem.clone()) {
             if let Some(e) = load_entry(&self.dir.join(format!("{stem}.json"))) {
                 self.entries.insert(stem.clone(), e);
             }
         }
-        let meta = std::fs::metadata(path).ok()?;
+        let Ok(meta) = std::fs::metadata(path) else {
+            return CostUpdate::Keep;
+        };
         let (len, mtime) = (meta.len(), epoch(meta.modified().ok()));
         if let Some(e) = self.entries.get(&stem) {
             if e.len == len && e.mtime == mtime {
-                return e.cost.map(|c| (c, e.partial));
+                return CostUpdate::Replace(e.summary());
             }
         }
         let cached = self.entries.get(&stem);
         if *budget == 0 {
             // Nothing left this cycle — answer from the cache and continue next time.
-            return cached.and_then(|e| e.cost.map(|c| (c, e.partial)));
+            return CostUpdate::cached(cached, len);
         }
 
         let cursor = cached.and_then(|e| e.cursor.clone());
         let Ok(mut fold) = MetricsFold::open(adapter(agent), path, cursor.as_ref()) else {
-            return cached.and_then(|e| e.cost.map(|c| (c, e.partial)));
+            return CostUpdate::cached(cached, len);
         };
         // Fold under the cycle's remaining allowance, then STOP at a line boundary and bank
         // the cursor. `MetricsFold` is driven one event at a time and its cursor is valid
@@ -151,9 +204,18 @@ impl CostLedger {
             cursor: fold.cursor().ok(),
         };
         save_entry(&self.dir.join(format!("{stem}.json")), &entry);
-        let out = entry.cost.map(|c| (c, entry.partial));
+        let out = entry.summary();
+        let complete = read >= len;
         self.entries.insert(stem, entry);
-        out
+        if out.is_none() && !complete {
+            // The cursor advanced, but this prefix has not established a replacement state.
+            // In particular, a tiny first chunk may contain only model/context records while a
+            // token event lies later in the file. Clearing the row here would turn a byte budget
+            // boundary into a transient semantic answer; only EOF can prove "no usage".
+            CostUpdate::Keep
+        } else {
+            CostUpdate::Replace(out)
+        }
     }
 }
 
@@ -238,6 +300,21 @@ mod tests {
         )
     }
 
+    fn summary(update: CostUpdate) -> Option<CostSummary> {
+        match update {
+            CostUpdate::Keep => None,
+            CostUpdate::Replace(summary) => summary,
+        }
+    }
+
+    fn priced(update: CostUpdate) -> (f64, bool) {
+        let summary = summary(update).expect("pricing state");
+        (
+            summary.known_usd.expect("known dollar subtotal"),
+            summary.partial,
+        )
+    }
+
     /// The monitor prices both stores through their own adapter. This pins the rail-facing
     /// ledger seam, not just the adapters' full-session folds: two credits are $0.02 at the
     /// shared subscription-plan conversion rate.
@@ -253,9 +330,7 @@ mod tests {
             let transcript = d.join(name);
             std::fs::write(&transcript, credits(2.0)).unwrap();
             let mut budget = COST_BUDGET_BYTES;
-            let (cost, partial) = ledger
-                .cost(agent, &transcript, &mut budget)
-                .expect("credits are priced");
+            let (cost, partial) = priced(ledger.cost(agent, &transcript, &mut budget));
             assert!((cost - 0.02).abs() < 1e-12, "{agent:?}: {cost}");
             assert!(!partial);
         }
@@ -280,14 +355,20 @@ mod tests {
 
         let mut ledger = CostLedger::new(&d.join("cache"));
         let mut budget = COST_BUDGET_BYTES;
-        let (c1, partial) = ledger.cost(Agent::CODEX, &t, &mut budget).expect("priced");
+        let (c1, partial) = priced(ledger.cost(Agent::CODEX, &t, &mut budget));
         assert!((c1 - 4.0).abs() < 1e-9, "1M input on gpt-5.6: {c1}");
         assert!(!partial);
         assert!(budget < COST_BUDGET_BYTES, "fresh bytes were charged");
 
         // Quiet file: the fast path answers, spending no budget.
         let mut b2 = COST_BUDGET_BYTES;
-        assert_eq!(ledger.cost(Agent::CODEX, &t, &mut b2), Some((c1, false)));
+        assert_eq!(
+            ledger.cost(Agent::CODEX, &t, &mut b2),
+            CostUpdate::Replace(Some(CostSummary {
+                known_usd: Some(c1),
+                partial: false,
+            }))
+        );
         assert_eq!(
             b2, COST_BUDGET_BYTES,
             "a quiet file costs a stat, not bytes"
@@ -305,9 +386,7 @@ mod tests {
         drop(f);
         let mut restarted = CostLedger::new(&d.join("cache"));
         let mut b3 = COST_BUDGET_BYTES;
-        let (c2, _) = restarted
-            .cost(Agent::CODEX, &t, &mut b3)
-            .expect("still priced");
+        let (c2, _) = priced(restarted.cost(Agent::CODEX, &t, &mut b3));
         assert!((c2 - 8.0).abs() < 1e-9, "2M cumulative gpt-5.6 input: {c2}");
         // The resumed fold read only the appended line, not the whole file.
         let spent = COST_BUDGET_BYTES - b3;
@@ -344,9 +423,10 @@ mod tests {
 
         // What one unbounded cycle would say — the value the chunked folds must converge to.
         let mut whole = COST_BUDGET_BYTES;
-        let want = CostLedger::new(&d.join("cache-whole"))
-            .cost(Agent::CODEX, &t, &mut whole)
-            .expect("priced in one go");
+        let want =
+            summary(CostLedger::new(&d.join("cache-whole")).cost(Agent::CODEX, &t, &mut whole))
+                .expect("priced in one go");
+        let want_cost = want.known_usd.expect("known whole-file price");
 
         // Now the same file under a budget a fraction of its size. Every cycle must ADVANCE
         // (the fast path only answers once the whole file is folded), and the answer must land
@@ -357,15 +437,16 @@ mod tests {
         let mut last = 0.0;
         loop {
             let mut budget = chunk;
-            let got = ledger.cost(Agent::CODEX, &t, &mut budget).expect("a price");
-            assert!(got.0 >= last, "cost went backwards: {last} → {}", got.0);
+            let got = summary(ledger.cost(Agent::CODEX, &t, &mut budget)).expect("a price");
+            let got_cost = got.known_usd.expect("known chunked price");
+            assert!(got_cost >= last, "cost went backwards: {last} → {got_cost}");
             assert!(
-                got.0 <= want.0 + 1e-9,
+                got_cost <= want_cost + 1e-9,
                 "overshot the whole-file price — a resumed range was counted twice: {got:?} vs {want:?}"
             );
-            last = got.0;
+            last = got_cost;
             cycles += 1;
-            if (got.0 - want.0).abs() < 1e-9 {
+            if (got_cost - want_cost).abs() < 1e-9 {
                 break;
             }
             assert!(cycles < 50, "never converged: {got:?} vs {want:?}");
@@ -378,12 +459,15 @@ mod tests {
         // Folded through: the entry now records the file's own length, so the no-op fast path
         // answers without touching the disk again.
         let mut budget = 0; // …and does so even with NO allowance at all.
-        assert_eq!(ledger.cost(Agent::CODEX, &t, &mut budget), Some(want));
+        assert_eq!(
+            ledger.cost(Agent::CODEX, &t, &mut budget),
+            CostUpdate::Replace(Some(want))
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// An exhausted budget defers the fold and answers from the cache — `None` before any
-    /// fold ever ran, the stale value after one did.
+    /// An exhausted budget defers the fold and answers from the cache — `Keep` before any
+    /// fold ever ran, the stale replacement after one did.
     #[test]
     fn an_exhausted_budget_defers_and_serves_the_cache() {
         let d = scratch("budget");
@@ -401,13 +485,13 @@ mod tests {
         let mut none = 0u64;
         assert_eq!(
             ledger.cost(Agent::CODEX, &t, &mut none),
-            None,
+            CostUpdate::Keep,
             "no budget, never folded: honestly unknown"
         );
         let mut full = COST_BUDGET_BYTES;
         let priced = ledger.cost(Agent::CODEX, &t, &mut full);
-        assert!(priced.is_some());
-        // Grown file + zero budget: the STALE price, not a stall and not None.
+        assert!(matches!(priced, CostUpdate::Replace(Some(_))));
+        // Grown file + zero budget: the STALE price, not a stall and not Keep.
         let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
         write!(
             f,
@@ -425,13 +509,86 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// A pricing-policy change needs the same cold re-fold as a JSON-shape change. This entry has
-    /// the current fold version and matching file facts, but v2's approximate-family price. If v3
-    /// were accidentally weakened back to v2, the quiet-file fast path would return 9999 forever.
+    /// A pricing-policy change needs the same cold re-fold as a JSON-shape change. v3 treated a
+    /// known model bucket with no tokens as a priced zero; v4 must not let that quiet-file cache
+    /// survive forever merely because its file facts and fold version still match.
     #[test]
-    fn a_stale_pricing_shape_entry_refolds_cold() {
+    fn a_stale_zero_cost_shape_entry_refolds_to_no_usage() {
         let d = scratch("priceshape");
         let t = d.join("rollout-2026-08-12T01-00-00-priceshape-test.jsonl");
+        std::fs::write(&t, turn_context("gpt-5.6")).unwrap();
+        let meta = std::fs::metadata(&t).unwrap();
+        let costs = d.join("cache").join("costs");
+        std::fs::create_dir_all(&costs).unwrap();
+        std::fs::write(
+            costs.join("rollout-2026-08-12T01-00-00-priceshape-test.json"),
+            serde_json::json!({
+                "v": (3u64 << 16)
+                    | u64::from(claude_replay_core::engine::meta_stream::FOLD_VERSION),
+                "len": meta.len(),
+                "mtime": epoch(meta.modified().ok()),
+                "cost": 0.0,
+                "partial": false,
+                "cursor": Value::Null,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut ledger = CostLedger::new(&d.join("cache"));
+        let mut budget = COST_BUDGET_BYTES;
+        assert_eq!(
+            ledger.cost(Agent::CODEX, &t, &mut budget),
+            CostUpdate::Replace(None),
+            "the stale v3 priced-zero state must become authoritative no usage"
+        );
+        assert!(budget < COST_BUDGET_BYTES, "a real re-fold spent bytes");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A budget boundary before the first token record has not proved that the transcript has no
+    /// usage. It advances and persists the cursor, but leaves the row untouched until a later cycle
+    /// reaches either a real cost state or EOF.
+    #[test]
+    fn an_incomplete_usage_free_prefix_keeps_the_row_state() {
+        let d = scratch("prefix-without-usage");
+        let t = d.join("rollout-2026-08-12T01-00-00-prefix-without-usage.jsonl");
+        std::fs::write(
+            &t,
+            format!(
+                "not-json\n{}{}",
+                turn_context("gpt-5.6"),
+                token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0)
+            ),
+        )
+        .unwrap();
+
+        let mut ledger = CostLedger::new(&d.join("cache"));
+        let mut tiny = 1;
+        assert_eq!(
+            ledger.cost(Agent::CODEX, &t, &mut tiny),
+            CostUpdate::Keep,
+            "a prefix without usage is not an authoritative empty result"
+        );
+        let mut none = 0;
+        assert_eq!(
+            ledger.cost(Agent::CODEX, &t, &mut none),
+            CostUpdate::Keep,
+            "the persisted partial cursor must stay non-authoritative when the next cycle has no budget"
+        );
+
+        let mut full = COST_BUDGET_BYTES;
+        let (cost, partial) = priced(ledger.cost(Agent::CODEX, &t, &mut full));
+        assert!((cost - 4.0).abs() < 1e-9);
+        assert!(!partial);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A source rewrite invalidates the cursor and replaces the old cost even when the new file
+    /// has no usage. Returning `Keep` here would leave a stale dollar amount in the index forever.
+    #[test]
+    fn a_rewrite_to_no_usage_clears_the_cached_cost() {
+        let d = scratch("cleared-cost");
+        let t = d.join("rollout-2026-08-12T01-00-00-cleared-cost.jsonl");
         std::fs::write(
             &t,
             format!(
@@ -441,28 +598,63 @@ mod tests {
             ),
         )
         .unwrap();
-        let meta = std::fs::metadata(&t).unwrap();
-        let costs = d.join("cache").join("costs");
-        std::fs::create_dir_all(&costs).unwrap();
-        std::fs::write(
-            costs.join("rollout-2026-08-12T01-00-00-priceshape-test.json"),
-            serde_json::json!({
-                "v": (2u64 << 16)
-                    | u64::from(claude_replay_core::engine::meta_stream::FOLD_VERSION),
-                "len": meta.len(),
-                "mtime": epoch(meta.modified().ok()),
-                "cost": 9999.0,
-                "partial": false,
-                "cursor": Value::Null,
-            })
-            .to_string(),
-        )
-        .unwrap();
+
         let mut ledger = CostLedger::new(&d.join("cache"));
         let mut budget = COST_BUDGET_BYTES;
-        let (cost, _) = ledger.cost(Agent::CODEX, &t, &mut budget).expect("priced");
-        assert!((cost - 4.0).abs() < 1e-9, "stale v2 cost survived: {cost}");
-        assert!(budget < COST_BUDGET_BYTES, "a real re-fold spent bytes");
+        assert!(matches!(
+            ledger.cost(Agent::CODEX, &t, &mut budget),
+            CostUpdate::Replace(Some(_))
+        ));
+
+        std::fs::write(&t, turn_context("gpt-5.6")).unwrap();
+        let mut budget = COST_BUDGET_BYTES;
+        assert_eq!(
+            ledger.cost(Agent::CODEX, &t, &mut budget),
+            CostUpdate::Replace(None)
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A fully unpriced transcript is a KNOWN result, not the same as an unscanned or usage-free
+    /// file. The state survives the persisted-ledger fast path so the UI can keep saying
+    /// `unpriced` after a restart without re-reading the transcript.
+    #[test]
+    fn fully_unpriced_state_survives_a_restart() {
+        let d = scratch("fully-unpriced");
+        let t = d.join("rollout-2026-08-12T01-00-00-unpriced.jsonl");
+        std::fs::write(
+            &t,
+            format!(
+                "{}{}",
+                turn_context("gpt-5.6-codex"),
+                token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0)
+            ),
+        )
+        .unwrap();
+
+        let mut ledger = CostLedger::new(&d.join("cache"));
+        let mut budget = COST_BUDGET_BYTES;
+        let summary = summary(ledger.cost(Agent::CODEX, &t, &mut budget))
+            .expect("the unpriced state is explicit");
+        assert_eq!(summary.known_usd, None);
+        assert!(summary.partial);
+
+        let mut restarted = CostLedger::new(&d.join("cache"));
+        let mut no_budget = 0;
+        assert_eq!(
+            restarted.cost(Agent::CODEX, &t, &mut no_budget),
+            CostUpdate::Replace(Some(summary)),
+            "the persisted fast path must retain fully-unpriced state"
+        );
+
+        let empty = d.join("rollout-2026-08-12T01-00-00-no-usage.jsonl");
+        std::fs::write(&empty, turn_context("gpt-5.6-codex")).unwrap();
+        let mut budget = COST_BUDGET_BYTES;
+        assert_eq!(
+            restarted.cost(Agent::CODEX, &empty, &mut budget),
+            CostUpdate::Replace(None),
+            "naming a model without token usage is an authoritative no-cost state"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -506,7 +698,7 @@ mod tests {
         .unwrap();
         let mut ledger = CostLedger::new(&d.join("cache"));
         let mut budget = COST_BUDGET_BYTES;
-        let (c, _) = ledger.cost(Agent::CODEX, &t, &mut budget).expect("priced");
+        let (c, _) = priced(ledger.cost(Agent::CODEX, &t, &mut budget));
         assert!(
             (c - 4.0).abs() < 1e-9,
             "the stale entry was discarded and the file re-folded: {c}"

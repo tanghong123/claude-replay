@@ -1795,6 +1795,13 @@ fn usage_json(m: &crate::metrics::Metrics, with_duration: bool) -> Value {
         "cache_read": human_tokens(m.cache_read_tokens),
         "cost": m.cost_usd.map(|c| m.cost_label(c)), "model": m.model_label(),
     });
+    // A null cost alone is ambiguous: it means either no token usage or wholly unpriced usage.
+    // Keep the exception key absent for the common complete/no-usage cases, but carry it when the
+    // metrics fold omitted at least one token-bearing model so direct sub-agent views retain the
+    // same four-state cost semantics as the machine-wide index.
+    if m.cost_partial {
+        u["cost_partial"] = json!(true);
+    }
     // #108. The KEY is omitted (not set to null) when the session never compacted, so a
     // non-compacting session's wire record is unchanged — the property that keeps this
     // feature invisible to every transcript it doesn't apply to.
@@ -2207,6 +2214,19 @@ mod tests {
         assert!(usage_json(&m, false).get("credits").is_none());
         m.extra.insert("credits_micro".into(), 12_664_262);
         assert_eq!(usage_json(&m, false)["credits"], json!("~12.66"));
+    }
+
+    #[test]
+    fn usage_json_distinguishes_unpriced_usage_from_no_usage() {
+        let mut m = crate::metrics::Metrics::default();
+        assert!(
+            usage_json(&m, false).get("cost_partial").is_none(),
+            "no usage must not acquire a cost state"
+        );
+        m.cost_partial = true;
+        let usage = usage_json(&m, false);
+        assert_eq!(usage["cost"], Value::Null);
+        assert_eq!(usage["cost_partial"], json!(true));
     }
 
     #[test]

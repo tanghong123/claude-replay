@@ -267,6 +267,10 @@ mod tests {
                 claude_replay_html::shared_source("session-visibility").unwrap(),
             ),
             (
+                "shared/cost-display.js",
+                claude_replay_html::shared_source("cost-display").unwrap(),
+            ),
+            (
                 "shared/state-labels.js",
                 claude_replay_html::shared_source("state-labels").unwrap(),
             ),

@@ -20,6 +20,10 @@ pub const SHARED: &[(&str, &str)] = &[
         include_str!("../html/shared/session-visibility.js"),
     ),
     (
+        "cost-display",
+        include_str!("../html/shared/cost-display.js"),
+    ),
+    (
         "state-labels",
         include_str!("../html/shared/state-labels.js"),
     ),

@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "cache_write_basis": "5m",
   "sources": {
     "anthropic": {
@@ -9,6 +9,14 @@
     "openai": {
       "url": "https://developers.openai.com/api/docs/pricing",
       "queried_at": "2026-09-09T05:56:36Z"
+    },
+    "openai_gpt_5_6_sol_alias": {
+      "url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+      "queried_at": "2026-09-10T01:45:00Z"
+    },
+    "aws_bedrock_opus_4_snapshot": {
+      "url": "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/docs/pattern-2.md",
+      "queried_at": "2026-09-10T01:45:00Z"
     }
   },
   "units": {
@@ -23,7 +31,7 @@
     { "ids": ["claude-fable-5"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 10000000, "cache_write_micros": 12500000, "cache_read_micros": 1000000, "output_micros": 50000000 },
     { "ids": ["claude-mythos-5"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 10000000, "cache_write_micros": 12500000, "cache_read_micros": 1000000, "output_micros": 50000000 },
     { "ids": ["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 5000000, "cache_write_micros": 6250000, "cache_read_micros": 500000, "output_micros": 25000000 },
-    { "ids": ["claude-opus-4-1", "claude-opus-4", "claude-3-opus", "us-anthropic-claude-opus-4-20250514-v1:0"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 15000000, "cache_write_micros": 18750000, "cache_read_micros": 1500000, "output_micros": 75000000 },
+    { "ids": ["claude-opus-4-1", "claude-opus-4", "claude-3-opus", "us-anthropic-claude-opus-4-20250514-v1:0"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 15000000, "cache_write_micros": 18750000, "cache_read_micros": 1500000, "output_micros": 75000000, "evidence": [{ "id": "us-anthropic-claude-opus-4-20250514-v1:0", "source": "aws_bedrock_opus_4_snapshot", "note": "AWS's sample uses this exact US Bedrock model ID; no other region or snapshot is implied." }] },
     { "ids": ["claude-sonnet-5"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 2000000, "cache_write_micros": 2500000, "cache_read_micros": 200000, "output_micros": 10000000 },
     { "ids": ["claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4", "claude-3-7-sonnet", "claude-3-5-sonnet", "claude-3-sonnet"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 3000000, "cache_write_micros": 3750000, "cache_read_micros": 300000, "output_micros": 15000000 },
     { "ids": ["claude-haiku-4-5"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 1000000, "cache_write_micros": 1250000, "cache_read_micros": 100000, "output_micros": 5000000 },
@@ -31,7 +39,7 @@
     { "ids": ["claude-3-haiku"], "source": "anthropic", "unit": "usd_per_million_tokens", "input_micros": 250000, "cache_write_micros": 300000, "cache_read_micros": 30000, "output_micros": 1250000 },
 
     { "ids": ["gpt-6-astra"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 10000000, "cache_write_micros": 10000000, "cache_read_micros": 1000000, "output_micros": 50000000 },
-    { "ids": ["gpt-5-6-sol", "gpt-5-6", "gpt-daybreak-blue-latest"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 4000000, "cache_write_micros": 4000000, "cache_read_micros": 400000, "output_micros": 20000000 },
+    { "ids": ["gpt-5-6-sol", "gpt-5-6", "gpt-daybreak-blue-latest"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 4000000, "cache_write_micros": 4000000, "cache_read_micros": 400000, "output_micros": 20000000, "evidence": [{ "id": "gpt-5-6", "source": "openai_gpt_5_6_sol_alias", "note": "OpenAI documents gpt-5.6 as an alias of gpt-5.6-sol at these rates." }] },
     { "ids": ["gpt-5-6-terra"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 2000000, "cache_write_micros": 2000000, "cache_read_micros": 200000, "output_micros": 12000000 },
     { "ids": ["gpt-5-6-luna"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 200000, "cache_write_micros": 200000, "cache_read_micros": 20000, "output_micros": 1200000 },
     { "ids": ["gpt-5-6-cyber", "gpt-5-5-cyber", "gpt-daybreak-red-latest"], "source": "openai", "unit": "usd_per_million_tokens", "input_micros": 12500000, "cache_write_micros": 12500000, "cache_read_micros": 1250000, "output_micros": 75000000 },

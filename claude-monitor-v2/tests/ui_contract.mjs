@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
 import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
+import { costDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-html/src/html/shared/runtime.js";
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { recordTextSize, LIVE_SEARCH_LIMIT, recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, countOcc, wholeAt, directMask, CLASS_BIT } from "../../claude-monitor/src/codex-ui/shared/search.js";
@@ -98,6 +99,17 @@ assert.equal(attachmentCapability({ att_name: "sample.tgz", att_path: "/tmp/samp
   assert.equal(revealQuery({ path: "/w/my repo/a.rs", sig: "s+1" }), "/__reveal?path=%2Fw%2Fmy%20repo%2Fa.rs&sig=s%2B1", "the path and stamp travel verbatim, encoded once");
 }
 assert.equal(attachmentCapability({ att_name: "sample.tgz", att_path: "/tmp/sample.tgz" }).action, "copy");
+
+// Cost is four states, not a nullable number: no usage, complete estimate, mixed lower bound,
+// and wholly unpriced. Both monitor shells consume this one formatter.
+assert.deepEqual(costDisplay({}), { kind: "none", known: null, label: null });
+assert.deepEqual(costDisplay({ cost: 12 }), { kind: "priced", known: 12, label: "~$12.00" });
+assert.deepEqual(costDisplay({ cost: 12, costPartial: true }), { kind: "partial", known: 12, label: "≥$12.00" });
+assert.deepEqual(costDisplay({ costPartial: true }), { kind: "unpriced", known: null, label: "unpriced" });
+assert.equal(costDisplay({ cost: 1234, costPartial: true }, true).label, "≥$1.2k");
+assert.match(appSource, /const usageCostLabel = usage => usage && \(usage\.cost \|\| \(usage\.cost_partial \? "unpriced" : null\)\)/, "direct transcript usage must distinguish wholly unpriced from no usage");
+assert.match(appSource, /\["est\. cost", usageCostLabel\(usage\) \|\| "—"\]/, "the Usage panel must show this transcript's cost, not its family roll-up");
+assert.match(appSource, /footerCost\.textContent = display\.label \|\| ownCost \|\| "—"/, "a direct sub-agent footer must fall back to its own four-state usage cost");
 
 for (const moduleName of ["app.js", "control-store.js", "preview.js"]) {
   const module = readFileSync(new URL(`../../claude-monitor/src/codex-ui/${moduleName}`, import.meta.url), "utf8");
@@ -417,6 +429,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(appSource, /const labels = \{ busy:/, "the shell keeps no label table of its own");
   const railSrc = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
   assert.match(railSrc, /shared\.stateTip\(/, "the rail's tooltip is the shared one");
+  assert.match(railSrc, /shared\.costDisplay\(/, "the rail renders pricing completeness through the shared formatter");
   assert.doesNotMatch(railSrc, /finished — no growth, no process/, "the rail keeps no tooltip wording of its own");
   const spliceSrc = readFileSync(new URL("../src/shell.html", import.meta.url), "utf8");
   assert.match(spliceSrc, /__shared\.stateTip\(/, "the splice's tooltip is the shared one");
@@ -906,7 +919,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // head. The rule this pinned still holds, more strongly: the pane repeats nothing.
   assert.doesNotMatch(appSource, /group\("Session",/, "the Session group is gone — every row of it was already ambient within 40px");
   assert.match(appSource, /paintOutlineFooter\(row, usage\);/, "cost and context left are painted into the footer strip, where they stay visible");
-  assert.match(appSource, /function shortCost\(value\) \{/, "…and abbreviate for the 40px rail, so folding the column does not stop the reader watching cost");
+  assert.match(appSource, /costDisplay\(row, true\)/, "…and the shared formatter abbreviates complete or partial cost for the 40px rail");
+  assert.match(appSource, /display\.kind === "priced"/, "only a complete total is split into own and sub-agent components");
   assert.match(appSource, /\["cache read", usage\.cache_read\], \.\.\.\(usage\.compacted \? \[\["compacted", usage\.compacted\]\] : \[\]\)/, "cached-read tokens and the compaction summary, when there is one");
   assert.match(appSource, /if \(record\.kind === "compaction"\) epochs\.push\(\{ at: i, tick: compactionTick\(record\.head \|\| \{\}\) \}\)/, "a compaction becomes an epoch tick from the record's facts");
   assert.match(appSource, /<button class="outline-epoch" type="button" data-turn-record="\$\{r\.at\}"/, "…that jumps to the compaction record");

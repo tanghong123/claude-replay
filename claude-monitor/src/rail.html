@@ -297,8 +297,8 @@
   // ── render ───────────────────────────────────────────────────────────────
   function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
   function gMeta(g){
-    var cost=(g.metaLine.indexOf("$")===0)?g.metaLine.split(" · ")[0]+" · ":"";
-    return cost+g.total;  // the TRUE total, unaffected by a per-group row cap
+    var cost=shared.costDisplay(g).label;
+    return (cost?cost+" · ":"")+g.total;  // the TRUE total, unaffected by a per-group row cap
   }
   function gStatusTip(g){
     var fin=g.total-g.growing-g.idle;
@@ -325,35 +325,36 @@
     return da.toDateString()===new Date().toDateString() ? hm(da)+"–"+hm(db) : md(da);
   }
   function subLine(r,g){
+    var display=shared.costDisplay(r);
     if(g&&g.kind!=="agent"){
       // #129: project sessions — span, subagent count, dollars (in that order);
       // turns/tools stay for desktop-agent rows only.
       var pp=[];
       var span=fmtSpan(r.startTs,r.activityTs);
       if(span)pp.push(span);
-      // §14: cost comes from the ledger, not the visit — an unopened session is priced too.
-      // A sub-agent roll-up is shown SPLIT: the own share is what the viewer's usage panel
-      // reports, so one opaque total would read as a mismatch against it.
-      if(r.costSubs){
-        var own=r.cost-r.costSubs;
-        pp.push("$"+own.toFixed(2)+" +"+(r.visited&&r.subs?r.subs+" sub ":"sub ")+"$"+r.costSubs.toFixed(2));
+      // §14: split only a COMPLETE roll-up. A lower bound stays one number; splitting known
+      // components would make an unpriced main or child disappear from the presentation.
+      if(display.kind==="priced"&&r.costSubs!=null){
+        var own=display.known-r.costSubs;
+        pp.push("~$"+own.toFixed(2)+" +"+(r.visited&&r.subs?r.subs+" sub ":"sub ")+"~$"+r.costSubs.toFixed(2));
       }else{
         if(r.visited&&r.subs)pp.push(r.subs+" sub");
-        if(r.cost!=null)pp.push("$"+r.cost.toFixed(2));
+        if(display.label)pp.push(display.label);
       }
       return pp.length?pp.join(" · "):"tbd";
     }
-    if(!r.visited)return r.cost!=null?"$"+r.cost.toFixed(2):"tbd";
+    if(!r.visited)return display.label||"tbd";
     var parts=[r.turns+" turns",r.tools+" tools"];
     if(r.subs)parts.push(r.subs+" sub");
-    if(r.cost!=null)parts.push("$"+r.cost.toFixed(2));
+    if(display.label)parts.push(display.label);
     return parts.join(" · ");
   }
-  // The hover breakdown for a split cost — the sum the card no longer prints.
+  // The hover breakdown is valid only when both the total and sub-agent subtotal are complete.
   function costTip(r){
-    if(!r.costSubs)return "";
-    return "total $"+r.cost.toFixed(2)+" = this session $"+(r.cost-r.costSubs).toFixed(2)
-      +" + sub-agents $"+r.costSubs.toFixed(2);
+    var display=shared.costDisplay(r);
+    if(display.kind!=="priced"||r.costSubs==null)return "";
+    return "total "+display.label+" = this session ~$"+(display.known-r.costSubs).toFixed(2)
+      +" + sub-agents ~$"+r.costSubs.toFixed(2);
   }
   // #148 (design/compose-to-terminal.md §5.1): the R8-safe half of "reach this session" —
   // hand the user the command that ATTACHES to it and let them run it themselves. The
@@ -442,7 +443,7 @@
     +(state.copied&&state.copied.id===r.id?(state.copied.ok?"copied":"⌘C it"):"&gt;_ "+esc(r.term))+'</span>':"")
       +(canCompose(r)?'<button class="rowsend'+(canInject(r)?" inject"+(r.consented?" armed":""):"")+'" data-compose="'+esc(r.id)+'" data-name="'+esc(r.name)+'" data-mode="'+(canInject(r)?"tmux":"resume")+'"'+(canInject(r)&&r.consented?' data-consented="1"':"")+' title="'+(canInject(r)?"Send a prompt into this live tmux pane"+(r.consented?" (consent granted)":" (asks consent first)"):"Send a prompt — resumes this finished session")+'">✎</button>':"")
       +forks+rowx
-      +'</div><div class="r2"><span class="counters'+(r.visited?"":" unvisited")+'"'+(r.costSubs?' title="'+esc(costTip(r))+'"':"")+'>'+esc(subLine(r,g))+'</span>'
+      +'</div><div class="r2"><span class="counters'+(r.visited?"":" unvisited")+'"'+(costTip(r)?' title="'+esc(costTip(r))+'"':"")+'>'+esc(subLine(r,g))+'</span>'
       +'<span class="age">'+esc(fam?famActivity(fam,r):r.activity)+'</span></div></div>';
   }
   // The family's age is its most recent member's, so a family with a live fork never reads stale.

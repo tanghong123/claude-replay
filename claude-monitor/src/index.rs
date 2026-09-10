@@ -15,7 +15,7 @@ use claude_replay_core::liveness::{inflight_tool_in_tail, latest_tree_activity};
 use claude_replay_core::{adapters, discover, metrics, Agent};
 use claude_replay_present::cache::{admit, MetaReader, Presentation};
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -191,11 +191,16 @@ struct State {
     /// through `MetricsCursor`s persisted at the monitor's own root. Lazily built on the
     /// first scan because it needs `cache_root`.
     ledger: Option<crate::cost::CostLedger>,
-    /// Sub-agent spend banked onto each ROOT row's sid (§14): a sub-agent rollout is not a
-    /// row (it is excluded from `store_transcripts`), but its cost is real — measured 95%
-    /// of one project's total — so the scan prices every sub-agent transcript and chases
-    /// `parent_thread_id` up to the main session that spawned it.
-    sub_costs: HashMap<String, f64>,
+    /// Each sub-agent transcript's last authoritative result, with the root row it currently
+    /// resolves to. A cycle can exhaust its byte budget before every child advances, so this cache
+    /// preserves `Keep` entries individually; rebuilding only a root subtotal would make deferred
+    /// children disappear for one poll and then jump back.
+    sub_cost_entries: HashMap<PathBuf, (String, crate::cost::CostSummary)>,
+    /// Sub-agent spend banked onto each ROOT row's sid (§14): derived from `sub_cost_entries` after
+    /// every scan. A sub-agent rollout is not a row (it is excluded from `store_transcripts`), but
+    /// its cost is real — measured 95% of one project's total. The summary retains partial state so
+    /// an unpriced child cannot make the parent's subtotal look exact.
+    sub_costs: HashMap<String, crate::cost::CostSummary>,
     /// The agent-state pass (#194): hysteresis staging + the events/current dump.
     state_tracker: crate::state::StateTracker,
     /// Per-session attributed link from the last scan (#133): the live pid (if any), the
@@ -262,9 +267,57 @@ struct Row {
     /// Title re-derives when the transcript mtime moves past this (§4.1 under lazy: the
     /// mtime IS the refresh trigger).
     title_mtime: Option<SystemTime>,
-    /// The ledger's answer for this session's OWN transcript, `(cost, partial)` (§14).
-    /// Kept on the row so a cycle whose budget defers the fold still shows the last price.
-    cost: Option<(f64, bool)>,
+    /// The ledger's answer for this session's OWN transcript (§14). Kept on the row so a cycle
+    /// whose budget defers the fold still shows the last known subtotal or explicit unpriced state.
+    cost: Option<crate::cost::CostSummary>,
+}
+
+fn merge_cost(
+    left: Option<crate::cost::CostSummary>,
+    right: Option<crate::cost::CostSummary>,
+) -> Option<crate::cost::CostSummary> {
+    match (left, right) {
+        (Some(mut left), Some(right)) => {
+            left.merge(right);
+            Some(left)
+        }
+        (Some(summary), None) | (None, Some(summary)) => Some(summary),
+        (None, None) => None,
+    }
+}
+
+fn apply_sub_cost_update(
+    entries: &mut HashMap<PathBuf, (String, crate::cost::CostSummary)>,
+    path: &Path,
+    root: String,
+    update: crate::cost::CostUpdate,
+) {
+    match update {
+        crate::cost::CostUpdate::Keep => {
+            if let Some((old_root, _)) = entries.get_mut(path) {
+                *old_root = root;
+            }
+        }
+        crate::cost::CostUpdate::Replace(Some(summary)) => {
+            entries.insert(path.to_path_buf(), (root, summary));
+        }
+        crate::cost::CostUpdate::Replace(None) => {
+            entries.remove(path);
+        }
+    }
+}
+
+fn aggregate_sub_costs(
+    entries: &HashMap<PathBuf, (String, crate::cost::CostSummary)>,
+) -> HashMap<String, crate::cost::CostSummary> {
+    let mut totals = HashMap::new();
+    for (root, summary) in entries.values() {
+        totals
+            .entry(root.clone())
+            .and_modify(|total: &mut crate::cost::CostSummary| total.merge(*summary))
+            .or_insert(*summary);
+    }
+    totals
 }
 
 #[derive(Clone)]
@@ -623,8 +676,10 @@ impl Index {
             .ledger
             .get_or_insert_with(|| crate::cost::CostLedger::new(&self.cache_root));
         for row in st.rows.values_mut() {
-            if let Some(c) = ledger.cost(row.agent, &row.path, &mut budget) {
-                row.cost = Some(c);
+            if let crate::cost::CostUpdate::Replace(cost) =
+                ledger.cost(row.agent, &row.path, &mut budget)
+            {
+                row.cost = cost;
             }
         }
         // Sub-agent roll-up (§14): price every sub-agent rollout and bank it on the MAIN
@@ -638,7 +693,7 @@ impl Index {
                 root_of.insert(u, sid.clone());
             }
         }
-        st.sub_costs.clear();
+        let mut seen_sub_costs = HashSet::new();
         for a in adapters() {
             if !self.only.is_empty() && !self.only.contains(&a.agent()) {
                 continue;
@@ -662,11 +717,16 @@ impl Index {
                     }
                 }
                 let Some(root) = root else { continue };
-                if let Some((c, _)) = ledger.cost(a.agent(), path, &mut budget) {
-                    *st.sub_costs.entry(root).or_default() += c;
-                }
+                seen_sub_costs.insert(path.clone());
+                let update = ledger.cost(a.agent(), path, &mut budget);
+                apply_sub_cost_update(&mut st.sub_cost_entries, path, root, update);
             }
         }
+        // Presence and lineage come from this scan. Deleted or now-dangling child transcripts must
+        // disappear, while an extant child's `Keep` result retains its last authoritative summary.
+        st.sub_cost_entries
+            .retain(|path, _| seen_sub_costs.contains(path));
+        st.sub_costs = aggregate_sub_costs(&st.sub_cost_entries);
 
         self.prove_by_growth(st);
 
@@ -760,7 +820,7 @@ impl Index {
             label: String,
             secondary: String,
             rows: Vec<Value>,
-            cost: f64,
+            cost: Option<crate::cost::CostSummary>,
             latest: u64,
             growing: usize,
             idle: usize,
@@ -1023,17 +1083,25 @@ impl Index {
                 j["child"] = json!(c.child_running);
             }
             // Cost from the LEDGER (§14), not the visit-gated meta stream: the row's own
-            // transcript plus every sub-agent rollout banked on it. `costPartial` says some
-            // model in the mix was unpriced — the number is a `≥` lower bound.
-            let own = row.cost.map(|(c, _)| c).unwrap_or(0.0);
-            let sub = st.sub_costs.get(sid).copied().unwrap_or(0.0);
-            if row.cost.is_some() || sub > 0.0 {
-                j["cost"] = json!(own + sub);
-                if sub > 0.0 {
-                    j["costSubs"] = json!(sub);
+            // transcript plus every sub-agent rollout banked on it. `costPartial` survives every
+            // aggregation level: with a known subtotal it means `≥`; without one it means the
+            // whole token-bearing mix is explicitly `unpriced`.
+            let sub = st.sub_costs.get(sid).copied();
+            let total_cost = merge_cost(row.cost, sub);
+            if let Some(total) = total_cost {
+                if let Some(known) = total.known_usd {
+                    j["cost"] = json!(known);
                 }
-                if row.cost.is_some_and(|(_, partial)| partial) {
+                if total.partial {
                     j["costPartial"] = json!(true);
+                }
+                if let Some(sub) = sub {
+                    if let Some(known) = sub.known_usd {
+                        j["costSubs"] = json!(known);
+                    }
+                    if sub.partial {
+                        j["costSubsPartial"] = json!(true);
+                    }
                 }
             }
 
@@ -1044,7 +1112,7 @@ impl Index {
                 secondary,
                 ..Default::default()
             });
-            g.cost += own + sub;
+            g.cost = merge_cost(g.cost, total_cost);
             g.latest = g.latest.max(mtime_secs);
             g.growing += usize::from(state == "growing");
             g.idle += usize::from(state == "idle");
@@ -1118,11 +1186,15 @@ impl Index {
         let out: Vec<Value> = gs
             .into_iter()
             .map(|g| {
-                let meta = if g.cost > 0.0 {
-                    format!("${:.2} · {}", g.cost, g.rows.len())
-                } else {
-                    g.rows.len().to_string()
-                };
+                let cost_label = g.cost.map(|summary| match summary.known_usd {
+                    Some(known) if summary.partial => format!("≥${known:.2}"),
+                    Some(known) => format!("~${known:.2}"),
+                    None => "unpriced".to_string(),
+                });
+                let meta = cost_label.as_ref().map_or_else(
+                    || g.rows.len().to_string(),
+                    |c| format!("{c} · {}", g.rows.len()),
+                );
                 let total = g.rows.len();
                 hidden_count += g
                     .rows
@@ -1130,7 +1202,7 @@ impl Index {
                     .filter(|r| r["hidden"].as_bool().unwrap_or(false))
                     .count();
                 let group_hidden = st.ignored.contains(&g.key);
-                json!({
+                let mut out = json!({
                     "kind": g.kind,
                     "label": g.label,
                     "secondary": g.secondary,
@@ -1142,7 +1214,16 @@ impl Index {
                     "ignoreKey": g.key,
                     "hidden": group_hidden,
                     "rows": g.rows,
-                })
+                });
+                if let Some(summary) = g.cost {
+                    if let Some(known) = summary.known_usd {
+                        out["cost"] = json!(known);
+                    }
+                    if summary.partial {
+                        out["costPartial"] = json!(true);
+                    }
+                }
+                out
             })
             .collect();
         json!({ "groups": out, "ignoredCount": hidden_count })
@@ -1904,6 +1985,79 @@ pub fn xdg_cache_root() -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cost_merge_keeps_known_subtotals_and_unpriced_state() {
+        let priced = crate::cost::CostSummary {
+            known_usd: Some(12.0),
+            partial: false,
+        };
+        let unpriced = crate::cost::CostSummary {
+            known_usd: None,
+            partial: true,
+        };
+        assert_eq!(merge_cost(None, None), None);
+        assert_eq!(merge_cost(Some(priced), None), Some(priced));
+        assert_eq!(
+            merge_cost(Some(priced), Some(unpriced)),
+            Some(crate::cost::CostSummary {
+                known_usd: Some(12.0),
+                partial: true,
+            })
+        );
+    }
+
+    #[test]
+    fn sub_cost_entries_survive_keep_and_only_authoritative_none_removes_them() {
+        let priced = crate::cost::CostSummary {
+            known_usd: Some(4.0),
+            partial: false,
+        };
+        let unpriced = crate::cost::CostSummary {
+            known_usd: None,
+            partial: true,
+        };
+        let (p1, p2) = (PathBuf::from("child-1"), PathBuf::from("child-2"));
+        let mut entries = HashMap::new();
+        apply_sub_cost_update(
+            &mut entries,
+            &p1,
+            "root-a".into(),
+            crate::cost::CostUpdate::Replace(Some(priced)),
+        );
+        apply_sub_cost_update(
+            &mut entries,
+            &p2,
+            "root-a".into(),
+            crate::cost::CostUpdate::Replace(Some(unpriced)),
+        );
+        assert_eq!(
+            aggregate_sub_costs(&entries).get("root-a"),
+            Some(&crate::cost::CostSummary {
+                known_usd: Some(4.0),
+                partial: true,
+            })
+        );
+
+        apply_sub_cost_update(
+            &mut entries,
+            &p1,
+            "root-b".into(),
+            crate::cost::CostUpdate::Keep,
+        );
+        let moved = aggregate_sub_costs(&entries);
+        assert_eq!(moved.get("root-b"), Some(&priced));
+        assert_eq!(moved.get("root-a"), Some(&unpriced));
+
+        apply_sub_cost_update(
+            &mut entries,
+            &p2,
+            "root-a".into(),
+            crate::cost::CostUpdate::Replace(None),
+        );
+        assert!(!entries.contains_key(&p2));
+        assert_eq!(aggregate_sub_costs(&entries).get("root-b"), Some(&priced));
+    }
+
     /// The rename migration rule (owner, 2026-08-22): an existing `claude-monitor` dir
     /// keeps being used — even when `agent-monitor` also exists (old data predates the
     /// rename; the warn covers the ambiguity) — and only a fresh install gets the new name.
@@ -2556,10 +2710,13 @@ mod tests {
         };
         let usage_1m = "{\"timestamp\":\"2026-08-12T01:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1000000,\"cached_input_tokens\":0,\"output_tokens\":0}}}}\n";
         let named = "{\"timestamp\":\"2026-08-12T01:00:02Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.6\"}}\n";
+        let unpriced = "{\"timestamp\":\"2026-08-12T01:00:02Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.6-codex\"}}\n";
         let main_id = "eeeeeeee-0000-0000-0000-00000000000e";
         let sub1 = "eeeeeeee-1111-0000-0000-00000000000e";
         let sub2 = "eeeeeeee-2222-0000-0000-00000000000e";
+        let sub3 = "eeeeeeee-3333-0000-0000-00000000000e";
         let arch_id = "ffffffff-0000-0000-0000-00000000000f";
+        let unpriced_id = "99999999-0000-0000-0000-000000000009";
         // Main: usage FIRST, model named after — $4 only if the blank bucket is attributed,
         // $0 under the old per-model re-derivation.
         std::fs::write(
@@ -2577,9 +2734,23 @@ mod tests {
             format!("{}{named}{usage_1m}", meta_sub(sub2, sub1)),
         )
         .unwrap();
+        // A wholly unpriced child contributes no invented dollars but makes the root and group
+        // lower bounds. Dropping this flag would make the known $12 look complete.
+        std::fs::write(
+            archive.join(format!("rollout-2026-08-12T01-00-30-{sub3}.jsonl")),
+            format!("{}{unpriced}{usage_1m}", meta_sub(sub3, main_id)),
+        )
+        .unwrap();
         std::fs::write(
             archive.join(format!("rollout-2026-08-12T01-01-00-{arch_id}.jsonl")),
             format!("{}{named}{usage_1m}", meta_main(arch_id)),
+        )
+        .unwrap();
+        std::fs::write(
+            archive.join(format!("rollout-2026-08-12T01-02-00-{unpriced_id}.jsonl")),
+            format!(
+                "{{\"timestamp\":\"2026-08-12T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{unpriced_id}\",\"cwd\":\"/tmp/unpriced-repo\"}}}}\n{unpriced}{usage_1m}"
+            ),
         )
         .unwrap();
         std::thread::sleep(Duration::from_millis(2100));
@@ -2601,12 +2772,29 @@ mod tests {
         );
         assert!(
             (main["costSubs"].as_f64().unwrap() - 8.0).abs() < 1e-9,
-            "the sub-agent share is named: {main}"
+            "the known sub-agent share is named: {main}"
+        );
+        assert_eq!(
+            main["costPartial"], true,
+            "an unpriced child makes the root total a lower bound: {main}"
+        );
+        assert_eq!(
+            main["costSubsPartial"], true,
+            "the sub-agent subtotal carries its own partial state: {main}"
         );
         let archived = row(arch_id);
         assert!(
             (archived["cost"].as_f64().unwrap() - 4.0).abs() < 1e-9,
             "an archived session is a row, and priced: {archived}"
+        );
+        let wholly_unpriced = row(unpriced_id);
+        assert!(
+            wholly_unpriced.get("cost").is_none(),
+            "no guessed dollar figure is emitted: {wholly_unpriced}"
+        );
+        assert_eq!(
+            wholly_unpriced["costPartial"], true,
+            "a wholly unpriced row is explicit: {wholly_unpriced}"
         );
         let codex_group = v["groups"]
             .as_array()
@@ -2615,9 +2803,19 @@ mod tests {
             .find(|g| g["label"] == "codex-repo")
             .expect("codex group");
         assert_eq!(
-            codex_group["metaLine"], "$16.00 · 2",
-            "the group sums own + rolled-up spend"
+            codex_group["metaLine"], "≥$16.00 · 2",
+            "the group keeps the known subtotal and marks the unpriced child"
         );
+        assert_eq!(codex_group["costPartial"], true);
+        let unpriced_group = v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["label"] == "unpriced-repo")
+            .expect("unpriced group");
+        assert_eq!(unpriced_group["metaLine"], "unpriced · 1");
+        assert!(unpriced_group.get("cost").is_none());
+        assert_eq!(unpriced_group["costPartial"], true);
 
         let _ = std::fs::remove_dir_all(&base);
     }
