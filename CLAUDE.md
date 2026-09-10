@@ -104,7 +104,16 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   `the_classic_rail_*` on 2837–2838 against v1; `the_v2_shell_*`, the compose affordance on
   2841–2842). `tests/scenarios.rs` holds scenarios written ONCE and run against BOTH pages —
   the classic page (the html server's `export.js`) is the reference, the app shell is held to
-  the same assertions (ports 2851+). A case on EITHER surface whose failure is a QUEUED bug carries
+  the same assertions (ports 2851+). `tests/rendering_audit.rs` is the #174 rendering-control
+  audit (ports 2951+), and it is a different instrument from a scenario: it serves the DERIVED
+  corpus (`html_export::audit::audit_jsonl`, every `BlockKind` variant and every body part),
+  snapshots EVERY longhand computed property of EVERY element under a record root, toggles one
+  control, and diffs — so a control's reach is MEASURED rather than read off the stylesheet, and
+  a rendering nobody remembered is inside the quantifier by construction. Its claims are written
+  as predicates ("`−` changes `font-size` on every element inside a `[data-code]` container and
+  on no element outside one"), never as selector lists, and each is verified by mutation in both
+  directions. Run it alone with `cargo test -p claude-replay-browser-tests --test rendering_audit
+  -- --ignored`. A case on EITHER surface whose failure is a QUEUED bug carries
   `known_red_<task>` in its name: the gate skips it, the fix removes the marker, and the case
   is never weakened (the classic page is the reference, not an oracle — #71 is a classic-page
   bug the harness found). Scroll/viewport changes to `export.js` or `codex-ui/` extend the
