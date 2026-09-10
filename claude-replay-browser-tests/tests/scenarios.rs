@@ -6529,3 +6529,309 @@ fn app_shell_a_growth_in_a_nested_record_holds_the_reader() {
     let page = open(Surface::AppShell, &fx, 2931);
     scenario_a_growth_in_a_nested_record_holds_the_reader(&page.tab, Surface::AppShell, &fx);
 }
+
+// ── scenario: a growth in the HEAD of a record the reader can SEE holds the head (#178) ─────
+
+/// #178, the STRADDLE GUARD. `captureDomAnchor` refines the anchor twice — the mounted item, then
+/// the first `[data-block-index]` row inside it — and `firstVisible` returns the first row in
+/// DOCUMENT ORDER whose bottom is past the viewport top, which is always the OUTERMOST one: a
+/// parent qualifies whenever a child does. #177 taught the refinement to DESCEND past a mere
+/// wrapper far above the reader; the descend is guarded by `row.top < viewportTop`, and THAT is
+/// what this case covers.
+///
+/// The guard protects a case that already worked: when the pick's own top is INSIDE the viewport
+/// the reader can SEE it, so it is the better anchor and must stay the anchor. Park the reader ON
+/// a record — its own top a little below the viewport top, its open nested children below it —
+/// grow the record's HEAD (the content above those children), and the head must not move.
+/// Descending unconditionally would re-anchor to a child BELOW the head, and the same growth
+/// would then scroll the head the reader is reading off the top of the screen.
+///
+/// Two things this case had to be built around, both read off the code rather than guessed:
+///
+/// · WHERE THE READER CAN PARK IS BOUNDED. `firstVisible` takes the first element whose BOTTOM is
+///   past the viewport top — the STRADDLER. So a record is only the pick while its own top is
+///   within ONE INTER-RECORD GAP of the edge; park further down and the record ABOVE it is the
+///   pick, a growth in this one moves nothing the engine holds, and the case would pass while
+///   measuring nothing. That gap is ~10px on the classic page (`.uturn { margin: 0 0 10px }`) and
+///   the whole `.process-surface` headbar on the app shell, so the target is SEARCHED for, from
+///   50px down, and the precondition asserts the pick really did land inside this record.
+///
+/// · NO LIVE DELTA GROWS A HEAD, on either page. The classic page pushes a thinking's `blocks`
+///   part BEFORE its `think` text (`html_export/mod.rs`), so the only thing above the first nested
+///   record is the one-line `.fold-h`; the app shell puts a record's output above its children,
+///   but that output is uncapped markdown (the `[data-cap-more]` expanders exist only on
+///   `pre`/`num`/`diff` parts, which a thinking never carries), and an absorbed tool appends a
+///   child BELOW. So the head is grown the way a late reflow grows one — a header gaining a line,
+///   a font arriving, an image decoding, all named in the engine's own comments — by writing its
+///   height. That fires the identical `ResizeObserver -> measureNow -> measureMounted(this.anchor)
+///   -> restoreDomAnchor` path a live delta's growth takes, against the anchor KEPT from the last
+///   settle — which is the point: an anchor captured after the growth describes the moved view and
+///   corrects nothing.
+fn scenario_a_growth_in_a_visible_records_head_holds_it(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    const GROW: f64 = 420.0;
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // The fixture's OWN activity record — the one absorbing three tools — found BY CONTENT and
+    // opened, exactly as the #177 scenario finds it: `long_session` emits activity records that
+    // absorb one tool each, so a guessed scroll distance marks the wrong one, and a marker
+    // stamped on the DOM does not survive the app shell's re-render.
+    let target_js = match surface {
+        Surface::Classic => "(function(){ var all = document.querySelectorAll('#stream .fold[data-kind=\"act\"]');              for (var i = 0; i < all.length; i++) { var f = all[i];                if (f.querySelectorAll('.fold-b .blk').length >= 3) {                  if (f.dataset.open === '0') { var h = f.querySelector(':scope > .fold-h'); if (h) h.click(); }                  return f.id || 'none'; } } return 'none'; })()",
+        Surface::AppShell => "(function(){ var all = document.querySelectorAll('.renderer[data-renderer-kind=\"activity\"]');              for (var i = 0; i < all.length; i++) { var r = all[i];                if (r.querySelectorAll('.renderer-children > .renderer-turn').length >= 3) {                  var h = r.querySelector(':scope > button.renderer-head');                  if (r.classList.contains('closed') && h) h.click();                  return r.dataset.recordId || 'none'; } } return 'none'; })()",
+    };
+    let mut found = eval(tab, target_js);
+    for _ in 0..14 {
+        if found.as_str().map(|v| v != "none").unwrap_or(false) {
+            break;
+        }
+        scroll_by(tab, surface, -900);
+        settle();
+        found = eval(tab, target_js);
+    }
+    // The eval that FINDS the record also OPENS it, and on the app shell an open re-renders the
+    // unit from state and re-anchors it; reading the DOM in the same breath caught it mid-flight.
+    settle();
+    let target_id = found.as_str().unwrap_or("none").to_string();
+    assert_ne!(
+        target_id, "none",
+        "{surface:?}: scrolled back to the fixture's own activity record — the one with three \
+         nested children, not `long_session`'s single-tool ones"
+    );
+    // Every probe below re-finds the record BY ID. The app shell rebuilds a unit from state on a
+    // fold toggle, so an element captured before one names a node that has left the document.
+    let rec_js = match surface {
+        Surface::Classic => format!("document.getElementById('{target_id}')"),
+        Surface::AppShell => format!(
+            "(function(){{ var n = document.querySelector('[data-record-id=\"{target_id}\"]'); return n ? n.closest('[data-block-index]') : null; }})()"
+        ),
+    };
+    // Each page's own long-standing structure, NOT `[data-block-index]`: selecting on the very
+    // attribute the engine anchors by would land a failure on a missing attribute rather than on
+    // the behaviour (#173's lesson).
+    let (head_sel, kids_sel, kid_head_sel) = match surface {
+        Surface::Classic => (
+            ":scope > .fold-h",
+            ":scope .fold-b .blk",
+            ":scope > .fold-h",
+        ),
+        Surface::AppShell => (
+            ":scope > .renderer > .renderer-head",
+            ":scope > .renderer > .renderer-body > .renderer-children > .renderer-turn",
+            ":scope > .renderer > button.renderer-head",
+        ),
+    };
+    // The engine's own viewport: the document's client box on the classic page
+    // (`documentFrame().viewportTop()` is 0), the `.transcript` scroller's rect on the app shell.
+    let (vt_js, vh_js, mount_js) = match surface {
+        Surface::Classic => (
+            "0",
+            "document.scrollingElement.clientHeight",
+            "document.getElementById('vwin')",
+        ),
+        Surface::AppShell => (
+            "document.querySelector('.transcript').getBoundingClientRect().top",
+            "document.querySelector('.transcript').clientHeight",
+            "document.querySelector('.virtual-window')",
+        ),
+    };
+    // ONE probe for everything the case decides on, so the preconditions and the measurement are
+    // read off the same layout. `itemHoldsRecord` / `rowInsideRecord` replicate the engine's two
+    // PICKS — the mounted item, then the first laid-out `[data-block-index]` row inside it — and
+    // deliberately NOT the descend loop: replicating the thing under test would make the
+    // precondition tautological with the assertion.
+    let geom_js = format!(
+        "(function(){{ var vt = {vt_js}; var R = {rec_js}; var mount = {mount_js}; \
+         if (!R || !mount) return {{ err: 'record or mount gone' }}; \
+         var head = R.querySelector('{head_sel}'); if (!head) return {{ err: 'no head' }}; \
+         var kids = R.querySelectorAll('{kids_sel}'); var item = null; \
+         for (var i = 0; i < mount.children.length; i++) {{ var c = mount.children[i]; \
+             if (c.getBoundingClientRect().bottom > vt + 1) {{ item = c; break; }} }} \
+         var row = null; \
+         if (item) {{ var rows = item.querySelectorAll('[data-block-index]'); \
+             for (var j = 0; j < rows.length; j++) {{ var rr = rows[j].getBoundingClientRect(); \
+                 if (rr.height > 0 && rr.bottom > vt + 1) {{ row = rows[j]; break; }} }} }} \
+         var hr = head.getBoundingClientRect(); var rb = R.getBoundingClientRect(); \
+         var k0 = kids.length ? kids[0].getBoundingClientRect() : null; var laid = 0; \
+         for (var m = 0; m < kids.length; m++) if (kids[m].getBoundingClientRect().height > 0) laid++; \
+         return {{ headTop: Math.round(hr.top - vt), headH: Math.round(hr.height), \
+                   headBottom: Math.round(hr.bottom - vt), recTop: Math.round(rb.top - vt), \
+                   kids: kids.length, laid: laid, kidTop: k0 ? Math.round(k0.top - vt) : null, \
+                   kidH: k0 ? Math.round(k0.height) : null, \
+                   itemHoldsRecord: !!item && item.contains(R), \
+                   rowInsideRecord: !!row && (row === R || R.contains(row)), \
+                   rowIsRecord: !!row && row === R, \
+                   rowTop: row ? Math.round(row.getBoundingClientRect().top - vt) : null, \
+                   vh: Math.round({vh_js}) }}; }})()"
+    );
+    let seen = harness::probe(tab, &geom_js);
+    assert!(
+        seen["kids"].as_i64().unwrap_or(0) >= 3 && seen["laid"].as_i64().unwrap_or(0) >= 3,
+        "{surface:?}: three nested records mounted AND laid out inside the record — a hidden one \
+         has no geometry and would make every measurement below vacuous, saw: {seen}"
+    );
+    // Open every nested child, so there is a real, tall, OPEN child below the head — the shape the
+    // guard exists for. The growth is in the HEAD, never in a child: a growth inside the child
+    // that is itself the anchor does not move that child's own top, and the engine holds it
+    // correctly with or without the guard (#176's sixth silent pass, which nearly cancelled a
+    // real bug).
+    eval(
+        tab,
+        &format!(
+            "(function(){{ var R = {rec_js}; var k = R.querySelectorAll('{kids_sel}'); \
+             for (var i = 0; i < k.length; i++) {{ var h = k[i].querySelector('{kid_head_sel}'); if (h) h.click(); }} \
+             return 'opened'; }})()"
+        ),
+    );
+    settle();
+    settle();
+    // PARK ON THE RECORD, searching for a target rather than assuming one. The reader's own
+    // scroll, never `scrollIntoView`: a programmatic scroll carries no intent, so the page reads
+    // it as displacement and heals a following view straight back to the tail.
+    let mut parked = harness::probe(tab, &geom_js);
+    let mut achieved = -1.0f64;
+    for target in [50.0f64, 34.0, 22.0, 14.0, 9.0, 6.0, 4.0] {
+        // TRAVEL FIRST, JUDGE SECOND. The finder leaves the record MOUNTED, not parked — the
+        // window mounts an overscan band around the viewport (1500px on the classic page), so the
+        // head can start a screen and a half away, and one clamped step per target would spend the
+        // top of the ladder merely travelling and judge only the small targets. So each target
+        // gets its own bounded approach, and P5 is read once the head is actually AT it.
+        for _ in 0..8 {
+            let t = parked["headTop"].as_f64().unwrap_or(0.0);
+            if (t - target).abs() <= 3.0 {
+                break;
+            }
+            // dy = t - target, because scrolling by dy changes an element's top by -dy. The sign
+            // is the opposite of the instinct: a NEGATIVE dy scrolls UP and RAISES the top.
+            // Backwards, it walks the reader to the tail, re-acquires the pin and freezes the
+            // measurement at a constant — two byte-identical results were the tell last time.
+            scroll_by(tab, surface, ((t - target) as i64).clamp(-900, 900));
+            settle();
+            parked = harness::probe(tab, &geom_js);
+        }
+        let top = parked["headTop"].as_f64().unwrap_or(-1.0);
+        if top > 2.0
+            && parked["itemHoldsRecord"].as_bool() == Some(true)
+            && parked["rowInsideRecord"].as_bool() == Some(true)
+        {
+            achieved = top;
+            break;
+        }
+    }
+    assert!(
+        achieved > 2.0,
+        "{surface:?}: the reader is parked ON the record — its own top INSIDE the viewport, and \
+         the row the engine anchors to inside it too. `firstVisible` takes the first element whose \
+         BOTTOM is past the viewport top, so a record is only that pick within one inter-record \
+         gap of the edge; parked further down, the STRADDLING record above it is the pick and a \
+         growth in this one moves nothing the engine holds. Last seen: {parked}"
+    );
+    assert!(
+        achieved < parked["vh"].as_f64().unwrap_or(0.0) / 2.0,
+        "{surface:?}: the head sits in the upper half of the viewport, where the reader is reading \
+         and where a displacement would carry it off-screen: {parked}"
+    );
+    assert!(
+        parked["kidTop"].as_f64().unwrap_or(0.0)
+            > parked["headBottom"].as_f64().unwrap_or(f64::MAX)
+            && parked["kidH"].as_f64().unwrap_or(0.0) > 0.0,
+        "{surface:?}: the nested child is laid out BELOW the head — with nothing under the head \
+         there is no lower row for an unguarded descend to reach, and the case proves nothing: \
+         {parked}"
+    );
+    // Following returns a NULL anchor by design and converges to the end on every growth, which
+    // would hold the head for a reason that has nothing to do with the anchor under test.
+    assert!(
+        !at_tail(tab, surface),
+        "{surface:?}: parked away from the tail, so the ANCHOR is what holds the reader and not \
+         the follow converge"
+    );
+    // The engine KEEPS the anchor it captured at the last settle — a growth heard by the observer
+    // has already moved the view, and an anchor captured then corrects nothing. These settles are
+    // what make the held anchor describe THIS parked view; `userIntentMs` is 300ms on the classic
+    // page and 320 on the app shell, so 1.4s also clears the reader-owns-position window that
+    // would otherwise leave the correction merely OWED.
+    settle();
+    settle();
+    let before = harness::probe(tab, &geom_js);
+    // GROW THE HEAD — the content above the nested children — as a late reflow does.
+    let grew = harness::probe(
+        tab,
+        &format!(
+            "(function(){{ var R = {rec_js}; if (!R) return {{ err: 'record gone' }}; \
+             var head = R.querySelector('{head_sel}'); if (!head) return {{ err: 'no head' }}; \
+             var h = Math.round(head.getBoundingClientRect().height); \
+             head.style.minHeight = (h + {GROW}) + 'px'; return {{ was: h }}; }})()"
+        ),
+    );
+    assert!(
+        grew.get("err").is_none(),
+        "{surface:?}: the record has a head to grow: {grew}"
+    );
+    settle();
+    settle();
+    let after = harness::probe(tab, &geom_js);
+    assert!(
+        before.get("err").is_none() && after.get("err").is_none(),
+        "{surface:?}: the record survives the growth; before {before}, after {after}"
+    );
+    // The growth REALLY HAPPENED. Without this the case would pass green on a page that quietly
+    // dropped the height — the app shell rebuilds a unit from state, and a rebuild here would take
+    // it with it and leave every measurement below comparing a view with itself.
+    assert!(
+        after["headH"].as_f64().unwrap_or(0.0) - before["headH"].as_f64().unwrap_or(0.0)
+            >= GROW * 0.9,
+        "{surface:?}: the head ACTUALLY grew by ~{GROW}px ({} -> {}) — with no growth there is \
+         nothing for the anchor to absorb and the case proves nothing; before {before}, after \
+         {after}",
+        before["headH"],
+        after["headH"]
+    );
+    let (t0, t1) = (
+        before["headTop"].as_f64().unwrap_or(f64::NAN),
+        after["headTop"].as_f64().unwrap_or(f64::NAN),
+    );
+    assert!(
+        (t1 - t0).abs() <= 4.0,
+        "{surface:?}: the reader stays on the head they were reading when the record's OWN head \
+         grows ({t0} -> {t1}). The reader can SEE this record's top, so it is the anchor and the \
+         growth below it happens in place; an anchor that descends past it to a nested child holds \
+         the CHILD instead and drives the head ~{GROW}px off the top of the screen. Before \
+         {before}, after {after}"
+    );
+    // …and the growth really did PROPAGATE below the head. Holding the head is only the right
+    // answer if the nested child moved down by it; a head that grew into nothing — clipped,
+    // absorbed by a fixed-height ancestor — would leave both tops still and read exactly like a
+    // pass.
+    assert!(
+        after["kidTop"].as_f64().unwrap_or(0.0) - before["kidTop"].as_f64().unwrap_or(0.0)
+            >= GROW * 0.9,
+        "{surface:?}: the head's growth moved the nested child DOWN by it ({} -> {}) — a growth \
+         the layout swallowed would hold both tops still and read as a pass; before {before}, \
+         after {after}",
+        before["kidTop"],
+        after["kidTop"]
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_growth_in_a_visible_records_head_holds_it() {
+    let _serial = serial();
+    let fx = fixture_nested_records("scenario-visible-head-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_growth_in_a_visible_records_head_holds_it(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_growth_in_a_visible_records_head_holds_it() {
+    let _serial = serial();
+    let fx = fixture_nested_records("scenario-visible-head-app");
+    let page = open(Surface::AppShell, &fx, 2932);
+    scenario_a_growth_in_a_visible_records_head_holds_it(&page.tab, Surface::AppShell, &fx);
+}

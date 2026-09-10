@@ -1036,7 +1036,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(appSource, /context compacted/, "…and no prose");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(css, /\.outline-epoch\{[^}]*font-size:11\.5px;line-height:1\.4;/, "the rows' own type (the reference's final .outline-label size)");
-  assert.match(css, /\.session-navigator>\.outline-caption\{position:sticky;top:0;z-index:3;background:var\(--bg\)\}/, "the Outline caption takes the page background (#87)");
+  assert.match(css, /\.session-navigator>\.outline-caption\{position:sticky;top:0;z-index:20;background:var\(--bg\)\}/, "the Outline caption takes the page background (#87)");
   const modRs = readFileSync(new URL("../../claude-replay-html/src/html_export/mod.rs", import.meta.url), "utf8");
   assert.match(modRs, /head\.insert\("compact_trigger"\.into\(\), json!\(trigger\.as_str\(\)\)\);/, "the wire carries the trigger");
   console.log("#86/#87 compaction tick cases passed");
@@ -1051,7 +1051,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const vpSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   // The rule is the shared module's since #107; this page measures the rects and reads it.
   assert.match(src, /const rowIn = element => firstVisible\(\[\.\.\.element\.querySelectorAll\("\[data-block-index\]"\)\]\.map\(rects\), viewportTop, Infinity, 1, true\);/, "the anchor descends to the first visible row of the unit");
-  assert.match(src, /while \(row && row\.top < viewportTop\) \{\n\s+const inner = rowIn\(row\.element\);\n\s+if \(!inner\) break;\n\s+row = inner;\n\s+\}/, "…and keeps descending WHILE THE PICK STRADDLES THE EDGE, so a reader inside a nested record is anchored by that record and not by its wrapper (#177) — the guard is the load-bearing half: a pick the reader can SEE is never re-anchored below the head they are reading");
+  assert.match(src, /for \(let scope = child; scope\.top < viewportTop; scope = row\) \{\n\s+const inner = rowIn\(scope\.element\);\n\s+if \(!inner\) break;\n\s+row = inner;\n\s+\}/, "ONE predicate from the ITEM down: refine only while the thing being held STRADDLES the edge. Descending reaches the nested record the reader is inside rather than its wrapper (#177); STOPPING keeps a record whose own top is visible as the anchor, instead of handing it to a child below the head being read (#178, measured at 420px on the classic page)");
   assert.equal(firstVisible([{ index: 0, top: 900, bottom: 1000, height: 100 }], 0, 500, 1, false), null, "a unit below the viewport is no anchor — the scroll offset places the window");
   assert.match(src, /const row = item\.querySelector\(`\[data-block-index="\$\{anchor\.block\}"\]`\);/, "…and the restore puts that row back");
   assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\)\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");
@@ -1729,4 +1729,97 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /if \(ratio && Math\.abs\(ratio - 1\) > 0\.01 && this\.scaleHeights\) this\.scaleHeights\(ratio\);\s*\n\s*else this\.clearHeights\(\);/, "…and scales the remembered heights; anything else still relearns them");
   assert.match(vpSrc, /this\.state\.heights\.set\(key, Math\.max\(ESTIMATE, height \* ratio\)\)/, "…never under the floor an estimate must be (rule 5)");
   console.log("#132 steps 3-4 cases passed");
+}
+
+// #174 P1 — THE TWO TOTALITY CHECKS, one per surface. Both quantify over a kind vocabulary
+// DERIVED from the engine's `BlockKind` (read out of its Rust source right here), never typed
+// into this file: an audit whose coverage depends on someone remembering to add a rendering
+// inherits the very omission it is auditing for. `BlockKind` has 16 variants and `html()` maps
+// `ToolResult` and `Tool` both to "tool", so the record stream carries exactly 15 kind strings.
+//
+// The two checks differ because the two pages FAIL differently, which is what makes them worth
+// having: the app shell dispatches on the kind, so a kind it does not know lands in the
+// "fallback" renderer and draws raw JSON; the classic page's dispatch is total by construction
+// ("Everything else is a fold"), but its enumeration did not disappear — it MOVED INTO CSS,
+// where a missing entry renders and looks wrong. A check that reads one layer finds one bug.
+{
+  const modelRs = readFileSync(new URL("../../claude-replay-engine/src/model.rs", import.meta.url), "utf8");
+  const enumAt = modelRs.indexOf("pub enum BlockKind {");
+  assert.ok(enumAt > 0, "the engine must still declare BlockKind — the whole derivation hangs on it");
+  const enumBody = modelRs.slice(enumAt, modelRs.indexOf("\n}", enumAt));
+  const variants = enumBody.split("\n").slice(1).map(line => line.trim()).filter(line => /^[A-Z][A-Za-z]*,$/.test(line)).map(line => line.slice(0, -1));
+  assert.ok(variants.length >= 16, `the BlockKind parse found ${variants.length} variants — the derivation went vacuous`);
+
+  const htmlAt = modelRs.indexOf("pub fn html(self)");
+  const htmlBody = modelRs.slice(htmlAt, modelRs.indexOf("\n    }", htmlAt));
+  const arms = [...htmlBody.matchAll(/([A-Z][A-Za-z]*) => "([a-z]+)"/g)];
+  assert.deepEqual(arms.map(arm => arm[1]), variants, "BlockKind::html must answer for every variant, in order");
+  const kinds = [...new Set(arms.map(arm => arm[2]))];
+  assert.equal(kinds.length, 15, `the wire vocabulary is fifteen kinds: ${kinds.join(" ")}`);
+
+  // ── the app shell: no emitted kind may reach the "fallback" renderer ────────────────────
+  // Its dispatch is ten explicit branches and a hand-written Set, and a Set lookup cannot fail
+  // loudly — so nothing but this check stands between a new BlockKind and a record drawn as
+  // raw JSON.
+  const NO_SUCH_KIND = "__audit_no_such_kind";
+  for (const kind of kinds) {
+    const view = viewRecord({ t: "block", kind, id: `audit-${kind}`, head: {}, body: [] });
+    assert.notEqual(view.renderer, "fallback", `the app shell has no renderer for a "${kind}" record — viewRecord drops it in fallback, which draws its JSON`);
+    // …and the kinds that legitimately carry no `renderer` are the prose views, not an
+    // accident: without this, `renderer !== "fallback"` passes vacuously for them.
+    assert.ok(view.renderer || view.t === "user" || view.t === "assistant", `a "${kind}" record with no renderer must be one of the two prose views, not an unnamed shape`);
+  }
+  // The negative control — without it the loop above says nothing about the check itself.
+  assert.equal(viewRecord({ t: "block", kind: NO_SUCH_KIND, id: "audit-none", head: {}, body: [] }).renderer, "fallback", "an unknown kind must still fall back — that is what makes the check falsifiable");
+
+  // The shell's own hand-written kind set may not name a kind the emitter cannot produce: the
+  // same drift pointing the other way, a dead entry nobody can reach. (`processKinds`, a Set of
+  // eighteen strings that was unreachable in both directions, was deleted for #174.)
+  const viewModel = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
+  const toolKinds = [...(viewModel.match(/const toolKinds = new Set\(\[([^\]]*)\]\)/) || [, ""])[1].matchAll(/"([a-z_]+)"/g)].map(match => match[1]);
+  assert.ok(toolKinds.length >= 1, "the toolKinds parse matched nothing — the derivation went vacuous");
+  for (const kind of toolKinds) assert.ok(kinds.includes(kind), `view-model.js routes "${kind}" as a tool, but BlockKind::html never emits it`);
+
+  // ── the classic page: every kind is a special case or a data-kind the CSS selects on ─────
+  const exportJs = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  const exportCss = readFileSync(new URL("../../claude-replay-html/src/html/export.css", import.meta.url), "utf8");
+  const foldGuard = exportJs.match(/function isFoldRec\(b\) \{\s*return !\(([^)]*)\);/);
+  assert.ok(foldGuard, "isFoldRec is the classic page's statement of which kinds are NOT folds");
+  const special = [...foldGuard[1].matchAll(/b\.kind === "([a-z]+)"/g)].map(match => match[1]);
+  assert.equal(special.length, 4, `the four always-open cards: ${special.join(" ")}`);
+  // renderBlock's own guards are a second copy of that list; they may not drift apart.
+  const guards = [...exportJs.slice(exportJs.indexOf("function renderBlock(b) {")).matchAll(/if \(b\.kind === "([a-z]+)"\)/g)].map(match => match[1]);
+  assert.deepEqual([...guards].sort(), [...special].sort(), "renderBlock's special cases and isFoldRec's exclusions are the same set");
+  // Attribute-PRESENCE selectors (`.fold[data-kind]`) style every fold and say nothing about a
+  // kind, so only a selector carrying the VALUE counts as the page having an opinion.
+  const styled = new Set([...exportCss.matchAll(/\[data-kind="([a-z]+)"\]/g)].map(match => match[1]));
+  // A floor against a regex that silently matches nothing (which would make the loop below
+  // vacuously true) — deliberately not a count of the enumeration, which is what the loop is for.
+  assert.ok(styled.size >= 1, "the export.css data-kind parse matched nothing — the derivation went vacuous");
+  for (const kind of kinds) {
+    assert.ok(special.includes(kind) || styled.has(kind), `the classic page draws a "${kind}" record as a generic fold that export.css never selects on — it renders, and it looks wrong`);
+  }
+  assert.ok(!special.includes(NO_SUCH_KIND) && !styled.has(NO_SUCH_KIND), "the negative control must be neither special-cased nor styled");
+  for (const kind of styled) assert.ok(kinds.includes(kind), `export.css styles [data-kind="${kind}"], which BlockKind::html never emits — a dead rule`);
+
+  // ── the PART axis, the same property one level down ──────────────────────────────────────
+  // The record stream's other closed set: what a record's body carries. There is ONE part
+  // vocabulary — the emitter writes it, and both pages read it — so the honest check is a
+  // three-way equality, each side scanned anchored on its own dispatch key. (Anchoring is the
+  // point: an unanchored grep once "found" `cap`/`items`/`rows`, which are FIELDS of a part,
+  // and `search`/`truncate`/`wrap`, which are CSS classes, and invented a discrepancy.)
+  // Asymmetry worth knowing when this ever fails: `partsHtml` ends in a loud `renderer-fallback`
+  // "unknown part" box, while `renderPart` has no terminal arm at all — a part only one side
+  // knows is drawn wrong on the shell and SILENTLY DROPPED on the classic page.
+  const emitterRs = readFileSync(new URL("../../claude-replay-html/src/html_export/mod.rs", import.meta.url), "utf8");
+  const emitted = [...new Set([...emitterRs.matchAll(/"p"\s*:\s*"([a-z]+)"/g)].map(match => match[1]))].sort();
+  assert.ok(emitted.length >= 1, "the emitter's part-key scan matched nothing — the derivation went vacuous");
+  const renderPart = exportJs.slice(exportJs.indexOf("function renderPart(p, into) {"));
+  const classicParts = [...new Set([...renderPart.slice(0, renderPart.indexOf("\n  }")).matchAll(/p\.p === "([a-z]+)"/g)].map(match => match[1]))].sort();
+  const partsHtml = viewModel.slice(viewModel.indexOf("export function partsHtml("));
+  const shellParts = [...new Set([...partsHtml.slice(0, partsHtml.indexOf("\n}")).matchAll(/part\.p === "([a-z]+)"/g)].map(match => match[1]))].sort();
+  assert.deepEqual(classicParts, emitted, "the classic page must render every body part the emitter writes, and no phantom");
+  assert.deepEqual(shellParts, emitted, "…and so must the app shell — one part vocabulary, not two");
+
+  console.log(`#174 P1 totality: ${kinds.length} emitted kinds x ${emitted.length} body parts, one vocabulary, both surfaces total`);
 }

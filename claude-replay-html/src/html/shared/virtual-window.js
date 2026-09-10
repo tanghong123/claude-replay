@@ -318,18 +318,28 @@ class VirtualWindow {
     if (!child) return null;
     const anchor = { key: child.element.dataset.unitKey, top: child.top - viewportTop, block: null, blockTop: 0 };
     const rowIn = element => firstVisible([...element.querySelectorAll("[data-block-index]")].map(rects), viewportTop, Infinity, 1, true);
-    // A parent qualifies whenever a child does and document order offers it first, so this pick is
-    // the OUTERMOST row — on the app shell, the wrapper around the record the reader is actually
-    // inside (#177), whose own top is far above them and does not move when the record grows. Its
-    // top anchors fine while the reader can SEE it, so descend only where they cannot: while the
-    // pick straddles the viewport edge, replace it with the first qualifying row INSIDE it. A pick
-    // that starts in view never descends — re-anchoring it below the head being read would send
-    // that head off-screen on the next growth. Residual: a straddling parent whose own body fills
-    // the edge and whose first child begins well below it anchors lower than the reader is
-    // reading; that case is uncorrected today too, and needs a tall body ahead of the children.
-    let row = rowIn(child.element);
-    while (row && row.top < viewportTop) {
-      const inner = rowIn(row.element);
+    // ONE predicate, applied from the item down: refine only while the thing you are holding
+    // STRADDLES the viewport edge. Whatever straddles is the only thing whose top the reader
+    // cannot see, so it is the only thing whose top is a lie about where they are reading.
+    //
+    // Descending matters because a parent qualifies whenever a child does and document order
+    // offers the parent first, so an unrefined pick is always the OUTERMOST row — on the app
+    // shell the wrapper around the record the reader is inside (#177), whose top sits far above
+    // them and does not move when the record grows.
+    //
+    // Stopping matters just as much, and #178 measured why. When the picked item's own top is
+    // VISIBLE, that top is already the better anchor: every row inside it sits at a fixed offset
+    // below a top the reader can see. Refining anyway hands the anchor to a child BELOW the head
+    // they are reading, and the next growth in that head drives it off the top of the screen —
+    // 420px on the classic page, where the mounted item IS the record and `matBlock` indexes only
+    // its nested `.blk` children, so the head is not an anchor candidate at all.
+    //
+    // Residual: a straddling parent whose own body fills the edge and whose first indexed child
+    // begins well below it anchors lower than the reader is reading. Uncorrected before this too,
+    // and it needs a tall body AHEAD of the children.
+    let row = null;
+    for (let scope = child; scope.top < viewportTop; scope = row) {
+      const inner = rowIn(scope.element);
       if (!inner) break;
       row = inner;
     }

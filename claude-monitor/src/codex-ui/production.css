@@ -30,8 +30,8 @@
    ~40px the card head used to cost. Everything else is behind the glyph beside them. */
 .outline-footer {
   flex: 0 0 auto; position: relative; display: flex; align-items: center; gap: 8px;
-  min-height: 30px; padding: 4px 6px 2px 10px; margin-top: 2px;
-  border-top: 1px solid var(--line); color: var(--faint); font: 10.5px/1 var(--mono);
+  min-height: 30px; padding: 4px 6px 2px 18px; margin-top: 2px;
+  color: var(--faint); font: 10.5px/1 var(--sans);
 }
 .outline-footer-cost { color: var(--sub); font-variant-numeric: tabular-nums; }
 .outline-footer-context { color: var(--faint); font-variant-numeric: tabular-nums; }
@@ -42,14 +42,14 @@
 .outline-footer-info:hover, .outline-footer-info[aria-expanded="true"] { background: var(--hover); color: var(--ink); }
 /* Opens UPWARD — it hangs off the bottom of the column, and there is nothing below it. */
 .info-popover {
-  position: absolute; right: 6px; bottom: calc(100% + 8px); z-index: 70;
+  position: absolute; left: 18px; right: auto; bottom: calc(100% + 8px); z-index: 70;
   width: min(300px, calc(100vw - 32px)); max-height: min(60vh, 520px); overflow-y: auto;
   padding: 6px; border: 1px solid var(--line); border-radius: 12px;
   background: color-mix(in srgb, var(--bg) 98%, transparent);
   box-shadow: 0 14px 38px rgba(34, 43, 73, .14);
   opacity: 0; visibility: hidden; transform: translateY(4px); pointer-events: none;
   transition: opacity .12s ease, transform .12s ease, visibility .12s;
-  font: inherit; color: var(--sub);
+  font: 10.5px/1.45 var(--sans); color: var(--sub);
 }
 /* The bridge, so the pointer can cross the gap from the glyph without the panel closing. */
 .info-popover:before { content: ""; position: absolute; left: 0; right: 0; bottom: -9px; height: 9px; }
@@ -210,7 +210,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    alone. Opening or folding a pane changes nothing about the others. */
 .workspace:not(.navigator-off) .session-navigator{display:flex;flex-direction:column;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--sub) 45%,transparent) transparent}
 .workspace:not(.navigator-off) .session-navigator>*{flex:0 0 auto}
-.workspace:not(.navigator-off) .session-navigator>.outline-caption{position:sticky;top:0;z-index:3;background:var(--bg)}
+/* The caption's stacking context has to OUTRANK the card stack, not tie with it: app.js gives
+   each visible card a rising inline z-index (1, 2, 3 …), and the pane selector (#159) lives
+   INSIDE this caption, so its own `z-index:70` is sealed in here and can never climb past this
+   number. At 3 the third card — Agents — TIED the caption and, being later in tree order, painted
+   over the open menu (#182). 20 clears any pane count the column can hold and stays under
+   everything that legitimately crosses this column: the reading popover (48), the fixed preview
+   panel (50/55 at <=1180px), the task popover (60), the session copy menu and the info popover
+   (70). Raising `.panes-menu` itself does nothing — it is sealed inside this context. */
+.workspace:not(.navigator-off) .session-navigator>.outline-caption{position:sticky;top:0;z-index:20;background:var(--bg)}
 .workspace:not(.navigator-off) .session-navigator>.outline-card>.outline-card-head{position:relative;z-index:2;background:var(--outline-surface,var(--panel));will-change:transform}
 .workspace:not(.navigator-off) .session-navigator>.outline-card.open>.outline-card-body>.navigator-list{max-height:min(48vh,560px);overflow-y:auto;scrollbar-width:thin;scrollbar-gutter:stable;scrollbar-color:color-mix(in srgb,var(--sub) 45%,transparent) transparent}
 .navigator-list::-webkit-scrollbar{width:8px}
@@ -321,7 +329,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .session-navigator .outline-card>.outline-card-body>.navigator-list{padding:4px 3px 5px}
 .session-navigator .outline-card.shut>.outline-card-head{border-radius:10px}
 .session-navigator.drawers-animating .outline-card>.outline-card-body{transition:height .2s ease}
-.session-navigator>.outline-caption{z-index:60}
+/* (#88 wrote `.session-navigator>.outline-caption{z-index:60}` here. It never applied: (0,2,0)
+   against the (0,4,0) rule above, which is the same specificity trap this file documents for
+   `.outline-caption button`. The caption's z-index lives in that rule now — one place.) */
 /* #96: the sidebar head carries the brand and five controls, and at the sidebar's own width
    they did not fit — `.side-head{overflow:hidden}` swallowed the last three, among them the
    collapse control the owner went looking for (measured: content 410px in a 300px head, the
@@ -502,6 +512,17 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .session-info-label:hover,.session-info-label:focus-visible{color:var(--ink);outline:0}
 .session-info-chevron{flex:none;width:9px;font-size:9px;color:var(--faint)}
 .session-info-group.folded+.session-info-group{margin-top:6px;padding-top:6px}
+/* The info rows read the way the OTHER outline panes read. reference.css (generated) gives them
+   `font:9.5px var(--mono)` — the demo's monospaced treatment for a card production no longer has:
+   #170 moved this body into the footer popover, so its context is production-only chrome and the
+   override belongs HERE, beside the #158 label reset, not in the demo. The scale is quoted, not
+   invented: `.work-copy strong` (Tasks) and `.outline-agent-copy strong` (Agents) are
+   `font-size:10.5px;font-weight:550` in the column's sans, and 1.45 is reference.css's own
+   line-height for a wrapping value in this row type (`.session-info-row.limit strong`) — `cwd`
+   wraps. The LABEL keeps reference.css's 8.5px/680/.09em small caps; only its family changes,
+   and it inherits that. */
+.session-info-row{font:10.5px/1.45 var(--sans)}
+.session-info-row strong{font-weight:550}
 
 /* #128 step 1: a unit's SIZE is its own box, on this page too. The shared engine
    (html/shared/virtual-window.js) reads a unit as its border box plus its margins and places the

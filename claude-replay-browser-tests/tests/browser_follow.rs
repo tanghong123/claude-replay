@@ -4628,7 +4628,23 @@ fn the_app_shell_outline_panes_are_drawers() {
     );
     // Every drawer open, so the whole chain is there to be pushed.
     harness::eval(&tab, "['turns', 'tasks', 'agents', 'session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (!c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); }); 'ok'");
-    std::thread::sleep(std::time::Duration::from_millis(700));
+    // Wait on the app's OWN signal, not a guess. `drawers-animating` gates the
+    // `transition:height .2s` on the card bodies (production.css:331) and app.js clears it 260ms
+    // after the last toggle, so its absence means every drawer has reached its final height. The
+    // fixed 700ms this replaces was enough on an idle machine and not enough on a busy one: a
+    // still-animating body measures 0, which reads exactly like a drawer that never opened, and
+    // the case failed three runs in a row under load then passed on the next with no code change
+    // (#183). Waiting for the heights to be NON-ZERO would make the assertion below tautological;
+    // waiting for the animation to END keeps it honest, because a drawer that really stayed shut
+    // settles at 0 and still fails.
+    harness::until(
+        &tab,
+        "!document.querySelector('.session-navigator').classList.contains('drawers-animating')",
+        "the drawer open/close animation to finish",
+        std::time::Duration::from_secs(10),
+        "document.querySelector('.session-navigator').className",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(120));
     let state = r#"(function(){ var nav = document.querySelector('.session-navigator'); var cards = [...nav.querySelectorAll(':scope > .outline-card')]; var rect = function (e) { return e.getBoundingClientRect(); }; return { scroll: Math.round(nav.scrollTop), extent: Math.round(nav.scrollHeight - nav.clientHeight), keys: cards.map(function (c) { return c.dataset.navCard; }), bodies: cards.map(function (c) { return Math.round(rect(c.querySelector(':scope > .outline-card-body')).height); }), heads: cards.map(function (c) { return Math.round(rect(c.querySelector(':scope > .outline-card-head')).top); }), gaps: cards.slice(1).map(function (c, i) { return Math.round(rect(c).top - rect(cards[i]).bottom); }) }; })()"#;
     let open = harness::probe(&tab, state);
     let bodies = |v: &serde_json::Value| -> Vec<f64> {
@@ -4775,7 +4791,23 @@ fn the_app_shell_outline_toggle_completes_the_slide() {
         "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
     );
     harness::eval(&tab, "['turns', 'tasks', 'agents', 'session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (!c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); }); 'ok'");
-    std::thread::sleep(std::time::Duration::from_millis(700));
+    // Wait on the app's OWN signal, not a guess. `drawers-animating` gates the
+    // `transition:height .2s` on the card bodies (production.css:331) and app.js clears it 260ms
+    // after the last toggle, so its absence means every drawer has reached its final height. The
+    // fixed 700ms this replaces was enough on an idle machine and not enough on a busy one: a
+    // still-animating body measures 0, which reads exactly like a drawer that never opened, and
+    // the case failed three runs in a row under load then passed on the next with no code change
+    // (#183). Waiting for the heights to be NON-ZERO would make the assertion below tautological;
+    // waiting for the animation to END keeps it honest, because a drawer that really stayed shut
+    // settles at 0 and still fails.
+    harness::until(
+        &tab,
+        "!document.querySelector('.session-navigator').classList.contains('drawers-animating')",
+        "the drawer open/close animation to finish",
+        std::time::Duration::from_secs(10),
+        "document.querySelector('.session-navigator').className",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(120));
     let heights = r#"(function(){ var cards = [...document.querySelectorAll('.session-navigator > .outline-card')]; return cards.map(function (c) { return c.dataset.navCard + ':' + Math.round(c.querySelector(':scope > .outline-card-body').getBoundingClientRect().height); }); })()"#;
     let rest = harness::probe(&tab, heights);
     let read = |v: &serde_json::Value, key: &str| -> f64 {

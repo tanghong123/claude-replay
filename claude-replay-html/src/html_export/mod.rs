@@ -30,6 +30,7 @@ use std::path::Path;
 // The offline bundles (`dump_html`/`dump_all_html`) live in `bundle`; the `--html` live
 // server in `serve`. All three public entries are re-exported so `html_export::{dump_html,
 // dump_all_html, serve}` stays the crate's surface.
+pub mod audit; // the derived rendering-audit corpus (#174 P1)
 mod bundle;
 mod record_store;
 mod serve;

@@ -79,8 +79,22 @@ export function agentRecordTargets(agents = [], records = []) {
   return targets;
 }
 
+// The tool renderers, by record kind. This is the ONE hand-written kind list left in this
+// file, and the #174 contract check holds it against `BlockKind::html()` in both directions:
+// every emitted kind must reach a renderer, and no member here may name a kind the emitter
+// cannot produce.
+//
+// A second Set, `processKinds`, sat under it and was deleted for #174: eighteen strings, every
+// one of them either matched by an explicit branch above or by `toolKinds`, or — `system`,
+// `context`, `record`, `file`, `task` — a kind `BlockKind::html()` cannot emit at all. It had
+// drifted with a traceable cause: `context` and `task` are RENDERER names, not kinds
+// (`compaction` → the "context" renderer), so it was assembled from the wrong side of the
+// mapping. Nothing else read it, and no record reaching `viewRecord` is built anywhere but
+// from the server stream — every `kind:` literal in this UI belongs to another domain
+// (navigator rows, consent outcomes, task chips, `head.interaction`). `"fallback"` below stays
+// reachable for a kind nobody has taught the shell, which is what gives the contract check
+// its teeth.
 const toolKinds = new Set(["bash", "read", "write", "edit", "skill", "tool"]);
-const processKinds = new Set(["think", "act", "bash", "read", "write", "edit", "skill", "tool", "agent", "task", "queue", "command", "compaction", "attachment", "system", "context", "record", "file"]);
 
 // The tasks pane's order (#56): three groups — completed, running, pending — and anything the
 // status vocabulary does not know last, each group by id: numeric ids as numbers (2 before 10),
@@ -224,7 +238,6 @@ export function viewRecord(record) {
   if (record.kind === "command") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record, command: { name: String(head.badge || head.name || "command").replace(/^\//, ""), preview: head.preview || "", lines: toolHead(head).lines != null ? `${toolHead(head).lines} lines` : "" } };
   if (record.kind === "task") return rendererRecord(record, "task", head.name || "Task");
   if (toolKinds.has(record.kind)) return rendererRecord(record, record.kind, head.name || record.tool || record.kind);
-  if (processKinds.has(record.kind)) return rendererRecord(record, record.kind, head.name || record.kind);
   return rendererRecord(record, "fallback", `Unknown · ${record.kind || "record"}`);
 }
 
