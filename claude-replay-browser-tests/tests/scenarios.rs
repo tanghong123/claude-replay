@@ -4690,6 +4690,129 @@ fn app_shell_a_long_jump_lands_on_content() {
     scenario_a_long_jump_lands_on_content(&page.tab, Surface::AppShell, -40000);
 }
 
+/// #192. The viewport trace: off by default, on by `?trace=viewport`, and what it records is what
+/// the engine did — every reconcile, scroll verdict and anchor decision, with the geometry it saw.
+///
+/// The owner asked for this after #190 took five screenshots, a live session and a probe harness
+/// to reproduce: the page kept no record of what the engine had done. Now it can say.
+fn scenario_the_trace_records_what_the_engine_did(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    // Off by default: no buffer, nothing recorded — the flag costs one boolean.
+    assert_eq!(
+        eval(tab, "typeof window.__viewportTrace"),
+        "undefined",
+        "{surface:?}: without the flag the page records nothing"
+    );
+    // On, by the URL, for this load.
+    eval(
+        tab,
+        "location.href = location.href + (location.search ? '&' : '?') + 'trace=viewport'; 'ok'",
+    );
+    let mounted = match surface {
+        Surface::Classic => "document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3",
+        Surface::AppShell => "document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3",
+    };
+    harness::until(
+        tab,
+        mounted,
+        "the page to mount with the trace on",
+        Duration::from_secs(30),
+        "location.search",
+    );
+    settle();
+    let opened = eval(
+        tab,
+        "window.__viewportTrace ? window.__viewportTrace.length : -1",
+    )
+    .as_i64()
+    .unwrap_or(-1);
+    assert!(
+        opened > 0,
+        "{surface:?}: with `?trace=viewport` the load itself is recorded (#192): {opened} entries"
+    );
+    // An entry carries the geometry a bug report needs: where the window was, where the reader
+    // was, what the pads held, how long since the reader last touched anything.
+    let fields = eval(
+        tab,
+        "(function(){ var e = window.__viewportTrace.find(function (x) { return x.event === 'reconciled'; }); return e ? Object.keys(e).sort().join(',') : 'none'; })()",
+    );
+    let fields = fields.as_str().unwrap_or("none").to_string();
+    for want in [
+        "seq",
+        "t",
+        "event",
+        "following",
+        "lo",
+        "hi",
+        "count",
+        "top",
+        "height",
+        "pads",
+        "sinceInput",
+        "anchor",
+        "fresh",
+        "estimate",
+    ] {
+        assert!(
+            fields.split(',').any(|f| f == want),
+            "{surface:?}: a reconcile entry carries `{want}`: {fields}"
+        );
+    }
+    // The reader's own scroll is recorded as one: its verdict, and the window update it drove.
+    scroll_by(tab, surface, -1200);
+    settle();
+    let events = eval(
+        tab,
+        "(function(){ return Array.from(new Set(window.__viewportTrace.map(function (x) { return x.event; }))).sort().join(','); })()",
+    );
+    let events = events.as_str().unwrap_or("").to_string();
+    for want in ["scroll", "update", "reconciled"] {
+        assert!(
+            events.split(',').any(|e| e == want),
+            "{surface:?}: a scroll leaves `{want}` in the trace: {events}"
+        );
+    }
+    let verdict = eval(
+        tab,
+        "(function(){ var e = window.__viewportTrace.filter(function (x) { return x.event === 'scroll'; }).pop(); return e ? e.user + '/' + e.verdict : 'none'; })()",
+    );
+    assert!(
+        verdict.as_str().unwrap_or("none").starts_with("true/"),
+        "{surface:?}: the wheel is classified as the reader's own, and the trace says so: {verdict}"
+    );
+    // Sequence numbers are monotonic and the buffer is a ring.
+    let shape = eval(
+        tab,
+        "(function(){ var t = window.__viewportTrace; var mono = t.every(function (x, i) { return i === 0 || x.seq > t[i-1].seq; }); return mono + '/' + (t.length <= 500); })()",
+    );
+    assert_eq!(
+        shape.as_str().unwrap_or(""),
+        "true/true",
+        "{surface:?}: sequence numbers climb and the ring holds at most 500 entries: {shape}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_the_trace_records_what_the_engine_did() {
+    let _serial = serial();
+    let fx = fixture("scenario-trace-classic", 30);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_the_trace_records_what_the_engine_did(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_trace_records_what_the_engine_did() {
+    let _serial = serial();
+    let fx = fixture("scenario-trace-app", 30);
+    let page = open(Surface::AppShell, &fx, 2947);
+    scenario_the_trace_records_what_the_engine_did(&page.tab, Surface::AppShell, &fx);
+}
+
 /// A fixture whose tail holds a Bash call whose command runs far past the head's one line.
 fn fixture_long_command(name: &str) -> Fixture {
     let base = base(name);

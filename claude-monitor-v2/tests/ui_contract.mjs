@@ -15,7 +15,7 @@ import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/s
 import { isInteraction, interactionCard, interactionHtml } from "../../claude-replay-html/src/html/shared/interaction.js";
 import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE } from "../../claude-replay-html/src/html/shared/search.js";
 import { chainWalk } from "../../claude-replay-html/src/html/shared/filter.js";
-import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll } from "../../claude-replay-html/src/html/shared/virtual-window.js";
+import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, traceWanted } from "../../claude-replay-html/src/html/shared/virtual-window.js";
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
 import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
@@ -1085,7 +1085,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(firstVisible([{ index: 0, top: 900, bottom: 1000, height: 100 }], 0, 500, 1, false), null, "a unit below the viewport is no anchor — the scroll offset places the window");
   assert.match(src, /const row = item\.querySelector\(`\[data-block-index="\$\{anchor\.block\}"\]`\);/, "…and the restore puts that row back");
   assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\), immediate = false\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");
-  assert.match(src, /if \(!immediate && this\.readerOwnsPosition\(\)\) \{ this\.owed = anchor; this\.scheduleSettle\(\); return; \}/, "#132's 'never write under a moving reader' holds for every path EXCEPT the reader's own scroll (#180) — there the engine has just mounted items above them whose remembered height was a floor estimate, and withholding the correction displaces them by exactly it");
+  assert.match(src, /if \(!immediate && this\.readerOwnsPosition\(\)\) \{ this\.trace\("restore:deferred", \{ anchor: anchor\.key, delta: Math\.round\(delta\) \}\); this\.owed = anchor; this\.scheduleSettle\(\); return; \}/, "#132's 'never write under a moving reader' holds for every path EXCEPT the reader's own scroll (#180) — there the engine has just mounted items above them whose remembered height was a floor estimate, and withholding the correction displaces them by exactly it");
   assert.match(src, /this\.updateWindow\(null, true\);/, "…and onScroll is the ONLY caller that opts in: the drag end, the jump paths and every apply path keep the deferral");
   assert.match(src, /this\.updatePads\(\);\n    this\.afterMount\(fresh\);\n    this\.measureMounted\(anchor, immediate\);\n    this\.updatePads\(\);/, "PAD, then measure (#179): both `afterMount` (the classic page's clamp pass) and `measureMounted` force layout, and until the pads are written the page is short by whatever the new window dropped off its top — a browser clamps `scrollTop` to it and a reader on the tail is pulled up by the whole difference (262px on the shell, 228 on the classic page)");
   assert.match(src, /return this\.anchor \|\| this\.captureDomAnchor\(\);/, "the kept anchor, else a fresh one");
@@ -1799,7 +1799,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // element is visible, which is exactly where a jump from far away leaves the reader — named an
   // item that far late.
   assert.match(src, /rangeForScroll\(this\.prefix, this\.count, this\.frame\.scrollTop\(\) - this\.contentTop\(\), this\.frame\.clientHeight\(\), this\.overscan\)/, "…and so is the range a scroll offset asks for");
-  assert.match(src, /const want = itemTop \+ within - sat;\s*\n\s*if \(!correction\(this\.frame\.scrollTop\(\), want, 1\)\) return;[\s\S]{0,2400}?this\.frame\.scrollTo\(want\);/, "the write-back is absolute — scrollTo a position derived from the anchor, not scrollBy an accumulating difference");
+  assert.match(src, /const want = itemTop \+ within - sat;\s*\n\s*const delta = correction\(this\.frame\.scrollTop\(\), want, 1\);\s*\n\s*if \(!delta\) return;[\s\S]{0,2400}?this\.frame\.scrollTo\(want\);/, "the write-back is absolute — scrollTo a position derived from the anchor, not scrollBy an accumulating difference");
   assert.match(src, /\/\/ Not mounted: nothing to hold it by\./, "…and an anchor the window has left behind stays put — the sums there are estimates");
   assert.doesNotMatch(src, /this\.frame\.scrollBy\(/, "…and nothing in the engine nudges the offset by an increment any more");
   console.log("#132 anchor-is-the-position cases passed");
@@ -1811,7 +1811,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const src = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   const vpSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(src, /readerOwnsPosition\(\) \{\s*\n\s*return this\.dragging \|\| performance\.now\(\) - this\.lastUserInput < this\.userIntentMs;/, "a held thumb and a travelling fling own the position");
-  assert.match(src, /if \(!immediate && this\.readerOwnsPosition\(\)\) \{ this\.owed = anchor; this\.scheduleSettle\(\); return; \}/, "…so the correction is owed, not written under them — on every path but the reader's own scroll, which #180 excepts because there the correction undoes the engine's OWN mount displacement rather than replaying a stale position");
+  assert.match(src, /if \(!immediate && this\.readerOwnsPosition\(\)\) \{ this\.trace\("restore:deferred", \{ anchor: anchor\.key, delta: Math\.round\(delta\) \}\); this\.owed = anchor; this\.scheduleSettle\(\); return; \}/, "…so the correction is owed, not written under them — on every path but the reader's own scroll, which #180 excepts because there the correction undoes the engine's OWN mount displacement rather than replaying a stale position");
   assert.match(src, /if \(this\.readerOwnsPosition\(\)\) \{ this\.scheduleSettle\(\); return; \}/, "…and the settle re-arms while they are still moving");
   assert.match(src, /this\.owed = null;\s*\n\s*this\.updateWindow\(\);/, "a drag ends in the model's own reset — the offset names a record, not the anchor from before the drag");
   assert.match(src, /const ratio = this\.lastWidth && width \? this\.lastWidth \/ width : 0;/, "a width change has a ratio…");
@@ -1977,4 +1977,28 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewportSrc, /this\.guessFor\(index\)\.learn\(height\)/, "…and teaches it from the same place it records the height");
 
   console.log("#184 learned-height cases passed");
+}
+
+// ── #192: the viewport trace ────────────────────────────────────────────────────────────────
+{
+  // The switch is pure: the URL for one load, storage to keep it across reloads, nothing else.
+  assert.equal(traceWanted("", null), false, "off by default");
+  assert.equal(traceWanted("?session=x", "0"), false, "a stored 0 is off");
+  assert.equal(traceWanted("?trace=viewport", null), true, "on by the URL");
+  assert.equal(traceWanted("?ui=app&session=x&trace=viewport", null), true, "…anywhere in the query");
+  assert.equal(traceWanted("?trace=viewports", null), false, "…and only that word");
+  assert.equal(traceWanted("", "1"), true, "on by storage, across reloads");
+  const src = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  assert.match(src, /this\.tracing = options\.trace != null \? !!options\.trace : traceWanted\(/, "the engine decides once, at construction; `options.trace` overrides for a harness");
+  assert.match(src, /trace\(event, fields\) \{\n    if \(!this\.tracing\) return;/, "off, the trace costs one boolean per seam and computes nothing");
+  assert.match(src, /window\.__viewportTrace\.push\(entry\);\n      if \(window\.__viewportTrace\.length > 500\) window\.__viewportTrace\.shift\(\);/, "a ring of 500 entries on window, for `copy(window.__viewportTrace)`");
+  assert.match(src, /console\.debug\("\[viewport\]", JSON\.stringify\(entry\)\)/, "…and one console line per entry under a fixed prefix, for a filter");
+  assert.match(src, /this\.trace\(delta \? "model:wrote" : "model:held"/, "the model anchor (#191) reports whether it wrote");
+  for (const seam of ["reconciled", "update", "restore:wrote", "restore:deferred", "restore:unmounted", "settle", "reshaped", "scroll", "converge", "converge:deferred", "remeasure", "measured"]) {
+    assert.match(src, new RegExp("this\\.trace\\(\"" + seam.replace(/[:]/g, "\\$&") + "\""), "the `" + seam + "` decision is traced");
+  }
+  for (const field of ["seq", "following", "dragging", "lo", "hi", "count", "top", "height", "pads", "sinceInput", "owed"]) {
+    assert.match(src, new RegExp("\\n      " + field + ": "), "every entry carries `" + field + "`");
+  }
+  console.log("#192 viewport-trace cases passed");
 }

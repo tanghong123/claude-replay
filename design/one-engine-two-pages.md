@@ -1000,3 +1000,35 @@ first mounted unit is earlier than the tail's and past the start. Red on the old
 (every probe in a pad), green with the fix. A scroll offset cannot express "moved up": the mount's
 measure moves the whole page's height, and a −6,000 jump legitimately lands at a LARGER offset than
 the tail's — the mounted range is the coordinate that survives the shift.
+
+## The engine keeps a record of what it did (2026-09-12, #192)
+
+Asked for by the owner after `#190`: "build the diagnostic feature so that it would be easier for
+me to report bugs in the future." Reproducing that bug took five screenshots, a live session and a
+probe harness, because the page kept no record of what the engine had done; `#191` was found by a
+probe that had to be written from scratch. The engine should be able to say it.
+
+**What it is.** `trace(event, fields)` on `VirtualWindow`, called at every seam where the engine
+decides something: `reconciled` (range, dirtyFrom, refresh, anchor, fresh mounts, the estimate),
+`update` (anchor or model anchor, forced index, range), `restore:wrote` / `restore:deferred` /
+`restore:unmounted` (the DOM anchor's verdict and delta), `model:wrote` / `model:held` (`#191`),
+`settle` (and whether a debt was dropped), `reshaped`, `scroll` (user or not, the verdict, the gap,
+the event-clock lag), `converge` / `converge:deferred` (pass, commanded), `remeasure` (ratio) and
+`measured`. Every entry carries the same base: sequence number, `performance.now()`, following and
+dragging, the mounted range and count, scrollTop and scrollHeight, both pad heights, the ms since the
+reader's last input, and whether a correction is owed.
+
+**Where it goes.** A ring of 500 entries at `window.__viewportTrace` — `copy(window.__viewportTrace)`
+pastes it into a bug — and one `console.debug` line per entry under `[viewport]`, so a console filter
+shows the engine's story and nothing else.
+
+**How it is switched.** `?trace=viewport` in the URL for one load, or `localStorage.viewportTrace =
+"1"` to keep it across reloads; `traceWanted(search, stored)` is pure and the contract tests it. The
+engine decides once, at construction, and off it costs one boolean per seam: the entry is never
+built. One implementation, both pages, through the shared module — the classic page inlines it and
+the shell imports it, so `window.__viewportTrace` reads the same on either.
+
+**The case** opens each surface, checks nothing is recorded, re-opens with the flag, and asserts the
+load was recorded with the fields a report needs, that a wheel leaves a user-classified `scroll`
+verdict and the `update` it drove, and that sequence numbers climb inside a ring that holds. Red on
+the engine without the trace (no buffer at all), green with it.

@@ -153,6 +153,14 @@ class HeightGuess {
   }
 }
 
+/** Is the viewport trace on (#192)? Decided from the page's own URL and storage — `?trace=viewport`
+ *  for one load, `localStorage.viewportTrace = "1"` to keep it across reloads — and pure, so the
+ *  contract can ask it without a browser. Off, the engine records nothing and pays one boolean. */
+function traceWanted(search, stored) {
+  if (/(^|[?&])trace=viewport(&|$)/.test(search || "")) return true;
+  return stored === "1";
+}
+
 /** The scroll correction that puts an anchored element back where it was: the page measures
  *  `currentTop` and remembers `wantTop`, both relative to the viewport. Below `epsilon` the
  *  correction is noise and scrolling by it would fight the reader. */
@@ -277,6 +285,14 @@ class VirtualWindow {
     // A correction the reader's own motion postponed (#132 step 3), and the timer that pays it.
     this.owed = null;
     this.settleTimer = 0;
+    // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
+    // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
+    // on the console under one prefix. On by the page's URL or storage; `options.trace` overrides.
+    let stored = null;
+    try { stored = typeof localStorage === "undefined" ? null : localStorage.getItem("viewportTrace"); } catch (e) { stored = null; }
+    this.tracing = options.trace != null ? !!options.trace : traceWanted(typeof location === "undefined" ? "" : location.search, stored);
+    this.traceSeq = 0;
+    if (this.tracing && typeof window !== "undefined") window.__viewportTrace = window.__viewportTrace || [];
 
     // A height that changes on its own — a row growing, a font arriving, an estimate replaced —
     // is measured INSIDE the observer delivery (#132): after layout and before the frame paints,
@@ -431,7 +447,7 @@ class VirtualWindow {
     // the paths that lose the anchor are the ones that just cleared the heights (a width
     // change), so the sums there are estimates and the "restore" lands the reader somewhere
     // else entirely. Staying put is right.
-    if (!item) return;
+    if (!item) { this.trace("restore:unmounted", { anchor: anchor.key }); return; }
     let within = 0, sat = anchor.top;
     if (anchor.block != null) {
       const row = item.querySelector(`[data-block-index="${anchor.block}"]`);
@@ -448,7 +464,8 @@ class VirtualWindow {
     // same quantity the sums stand for, read where it is known exactly.
     const itemTop = item.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop();
     const want = itemTop + within - sat;
-    if (!correction(this.frame.scrollTop(), want, 1)) return;
+    const delta = correction(this.frame.scrollTop(), want, 1);
+    if (!delta) return;
     // The reader is moving: do not write under them (#132 step 3). What they get instead is a
     // fresh anchor once they stop (#138) — never this position, replayed late.
     //
@@ -467,7 +484,8 @@ class VirtualWindow {
     // nothing. It only undoes the engine's OWN mount displacement, and over already-measured
     // ground the correction is zero and returns above, so this fires only where it is the lesser
     // harm.
-    if (!immediate && this.readerOwnsPosition()) { this.owed = anchor; this.scheduleSettle(); return; }
+    if (!immediate && this.readerOwnsPosition()) { this.trace("restore:deferred", { anchor: anchor.key, delta: Math.round(delta) }); this.owed = anchor; this.scheduleSettle(); return; }
+    this.trace("restore:wrote", { anchor: anchor.key, delta: Math.round(delta), want: Math.round(want) });
     this.frame.scrollTo(want);
   }
 
@@ -501,9 +519,38 @@ class VirtualWindow {
    *  range was chosen from the sums before the measure, and the viewport may now run past it. */
   restoreModelAnchor(held, immediate = false) {
     const want = this.documentTopOf(held.index) + held.offset;
-    if (correction(this.frame.scrollTop(), want, 1)) this.frame.scrollTo(want);
+    const delta = correction(this.frame.scrollTop(), want, 1);
+    this.trace(delta ? "model:wrote" : "model:held", { index: held.index, offset: Math.round(held.offset), delta: Math.round(delta), want: Math.round(want) });
+    if (delta) this.frame.scrollTo(want);
     const range = this.rangeForScroll();
     if (range.lo !== this.lo || range.hi !== this.hi) this.reconcile(range.lo, range.hi, Infinity, false, this.captureDomAnchor(), immediate);
+  }
+
+  /** One entry in the viewport trace (#192): what the engine decided, and the geometry it decided
+   *  it against. Nothing here is computed unless the trace is on. */
+  trace(event, fields) {
+    if (!this.tracing) return;
+    const now = performance.now();
+    const entry = Object.assign({
+      seq: ++this.traceSeq,
+      t: Math.round(now),
+      event,
+      following: this.following,
+      dragging: this.dragging,
+      lo: this.lo,
+      hi: this.hi,
+      count: this.count,
+      top: Math.round(this.frame.scrollTop()),
+      height: Math.round(this.frame.scrollHeight()),
+      pads: [Math.round(parseFloat(this.topPad.style.height) || 0), Math.round(parseFloat(this.bottomPad.style.height) || 0)],
+      sinceInput: Math.round(now - this.lastUserInput),
+      owed: !!this.owed,
+    }, fields || {});
+    if (typeof window !== "undefined" && window.__viewportTrace) {
+      window.__viewportTrace.push(entry);
+      if (window.__viewportTrace.length > 500) window.__viewportTrace.shift();
+    }
+    if (typeof console !== "undefined" && console.debug) console.debug("[viewport]", JSON.stringify(entry));
   }
 
   /** The anchor a SPONTANEOUS change is measured against (#98). A change the engine makes
@@ -566,6 +613,7 @@ class VirtualWindow {
     this.settleTimer = setTimeout(() => {
       if (this.following) { this.owed = null; return; }
       if (this.readerOwnsPosition()) { this.scheduleSettle(); return; }
+      this.trace("settle", { dropped: !!this.owed });
       this.owed = null;
       this.syncAnchor();
     }, this.userIntentMs);
@@ -605,6 +653,7 @@ class VirtualWindow {
     if (!changed) return false;
     this.rebuildPrefix();
     this.updatePads();
+    this.trace("measured", { anchor: anchor ? anchor.key : null, immediate, estimate: this.count ? Math.round(this.estimateAt(0)) : null });
     if (!this.following) this.restoreDomAnchor(anchor, immediate);
     this.syncAnchor();
     return true;
@@ -727,6 +776,7 @@ class VirtualWindow {
     for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
     this.afterRender();
     this.syncAnchor();
+    this.trace("reconciled", { dirtyFrom: dirtyFrom === Infinity ? null : dirtyFrom, refresh, anchor: anchor ? anchor.key : null, immediate, fresh: fresh.length, estimate: this.count ? Math.round(this.estimateAt(0)) : null });
     return true;
   }
 
@@ -738,6 +788,7 @@ class VirtualWindow {
     const held = anchor || forceIndex != null || this.following || this.dragging ? null : this.modelAnchor();
     const anchorIndex = forceIndex == null && anchor ? this.indexOfIdentity(anchor.key) : -1;
     const range = forceIndex != null ? this.rangeAround(forceIndex) : anchorIndex >= 0 ? this.rangeAround(anchorIndex) : this.rangeForScroll();
+    this.trace("update", { anchor: anchor ? anchor.key : null, held: held ? held.index : null, force: forceIndex, immediate, range: [range.lo, range.hi] });
     this.reconcile(range.lo, range.hi, Infinity, false, anchor, immediate);
     if (held) this.restoreModelAnchor(held, immediate);
     this.syncAnchor(); // an unchanged window returns early above; the anchor is re-read either way
@@ -788,6 +839,7 @@ class VirtualWindow {
     // `lastInputStamp` is left alone; it is the EVENT clock `onScroll` classifies against, and a
     // scroll that follows this click is still the reader's own.
     this.lastUserInput = -1e9;
+    this.trace("reshaped", { wasFollowing: this.following });
     if (!this.following) return;
     this.following = false;
     this.followChanged();
@@ -824,6 +876,7 @@ class VirtualWindow {
     const at = event && event.timeStamp ? event.timeStamp : performance.now();
     const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
     const verdict = classifyScroll(this.following, user, this.gapToBottom(), this.slacks.acquire, this.slacks.hold, this.slacks.heal);
+    this.trace("scroll", { user, verdict, gap: Math.round(this.gapToBottom()), lag: Math.round(at - this.lastInputStamp) });
     if (verdict === "follow" || verdict === "unfollow") {
       this.following = verdict === "follow";
       this.followChanged();
@@ -876,9 +929,11 @@ class VirtualWindow {
       // pill, a keyboard End, a session opening at its tail. That click stamps input like any
       // other, so without it the one converge the reader ASKED for would be the one deferred.
       if (!commanded && this.readerOwnsPosition()) {
+        this.trace("converge:deferred", { pass, commanded: !!commanded });
         this.bottomTimer = setTimeout(() => settle(pass), this.userIntentMs);
         return;
       }
+      this.trace("converge", { pass, commanded: !!commanded, gap: Math.round(this.gapToBottom()) });
       const range = this.rangeAround(this.count - 1);
       this.reconcile(range.lo, range.hi, Infinity, false, null);
       this.frame.scrollTo(this.frame.scrollHeight());
@@ -899,6 +954,7 @@ class VirtualWindow {
     const anchor = this.following ? null : this.captureDomAnchor();
     const width = this.mount.getBoundingClientRect().width;
     const ratio = this.lastWidth && width ? this.lastWidth / width : 0;
+    this.trace("remeasure", { ratio: Math.round(ratio * 1000) / 1000, anchor: anchor ? anchor.key : null });
     this.lastWidth = width || this.lastWidth;
     if (ratio && Math.abs(ratio - 1) > 0.01 && this.scaleHeights) this.scaleHeights(ratio);
     else this.clearHeights();
@@ -971,4 +1027,4 @@ function elementFrame(scroller) {
   };
 }
 
-export { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, itemHeight, VirtualWindow, elementFrame, documentFrame };
+export { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, itemHeight, VirtualWindow, elementFrame, documentFrame, traceWanted };
