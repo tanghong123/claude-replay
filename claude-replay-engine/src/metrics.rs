@@ -607,22 +607,33 @@ impl PriceTable {
         }
     }
 
-    /// Record one raw context's complete rates, returning the replaced value when present.
+    /// Record one context's complete rates under the normalizer's key, returning the replaced
+    /// value when present.
+    ///
+    /// Keyed through the SAME normalizer the catalog lookup uses, so an override and the catalog
+    /// agree on what counts as one model. Keying overrides on the raw name instead made a legal
+    /// spelling a silent no-op: `normalize_model_name` folds `.` to `-`, every id in
+    /// `pricing.json` is dashed, and providers record the dotted form — so an override copied
+    /// from the catalog missed the model it named, fell through to the catalog, and produced a
+    /// plausible built-in price with no error.
+    ///
+    /// A non-`None` return therefore means the new entry REPLACED one the table considers the
+    /// same model. Callers that accept overrides from a human should treat that as a duplicate
+    /// worth reporting rather than silently keeping the last one — it is the table's own notion
+    /// of identity, so it cannot drift from a caller's separate guess at one.
     pub fn set(&mut self, context: &ModelContext, price: ModelPrice) -> Option<ModelPrice> {
-        self.rates
-            .insert(context.name().to_ascii_lowercase(), price)
+        self.rates.insert(self.normalizer.normalize(context), price)
     }
 
-    /// Resolve a raw context through complete-name overrides (ASCII case-insensitive), then the
-    /// configured normalizer and embedded catalog. No family fallback is performed.
+    /// Resolve a context through complete-name overrides, then the embedded catalog — both keyed
+    /// by the configured normalizer, so any spelling the catalog accepts an override accepts too.
+    /// No family fallback is performed.
     pub fn resolve(&self, context: &ModelContext) -> Option<ModelPrice> {
+        let normalized = self.normalizer.normalize(context);
         self.rates
-            .get(&context.name().to_ascii_lowercase())
+            .get(&normalized)
             .cloned()
-            .or_else(|| {
-                let normalized = self.normalizer.normalize(context);
-                builtin_prices().get(&normalized).cloned()
-            })
+            .or_else(|| builtin_prices().get(&normalized).cloned())
     }
 }
 
@@ -1361,6 +1372,39 @@ mod price_tests {
             resolve(&table, "gpt-5-mini"),
             Some(p("0.25", "0.25", "0.025", "2"))
         );
+    }
+
+    /// An override written in the catalog's own spelling must reach a model recorded with the
+    /// other separator.
+    ///
+    /// `normalize_model_name` folds `.` to `-`, so the catalog treats `gpt-5.6-sol` and
+    /// `gpt-5-6-sol` as one model. The override lookup used to fold case only, so the two
+    /// spellings were different keys there — and every one of the 55 ids in `pricing.json` is
+    /// dashed, while providers record the dotted form. A user copying the id they can actually
+    /// see wrote an override that matched nothing, fell through to the catalog, and produced a
+    /// plausible built-in price with no error and no warning.
+    #[test]
+    fn an_override_reaches_a_model_recorded_with_the_other_separator() {
+        let custom = p("999", "999", "999", "999");
+        let mut table = PriceTable::new();
+
+        // The spelling `pricing.json` holds — the only one a user can copy from the catalog.
+        table.set(&ModelContext::new("gpt-5-6-sol"), custom.clone());
+
+        // The spelling the provider actually records.
+        assert_eq!(resolve(&table, "gpt-5.6-sol"), Some(custom.clone()));
+        // And the spelling as written still resolves to itself.
+        assert_eq!(resolve(&table, "gpt-5-6-sol"), Some(custom));
+    }
+
+    /// The reverse spelling, so neither direction is the special case.
+    #[test]
+    fn an_override_written_with_a_dot_reaches_the_dashed_catalog_spelling() {
+        let custom = p("777", "777", "777", "777");
+        let mut table = PriceTable::new();
+        table.set(&ModelContext::new("gpt-5.6-sol"), custom.clone());
+        assert_eq!(resolve(&table, "gpt-5-6-sol"), Some(custom.clone()));
+        assert_eq!(resolve(&table, "gpt-5.6-sol"), Some(custom));
     }
 
     #[test]
