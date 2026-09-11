@@ -2467,17 +2467,18 @@
     if (!h) return;
     var y1 = h.getBoundingClientRect().top;
     if (Math.abs(y1 - y0) > 1) window.scrollBy(0, y1 - y0);
-    var top = h.getBoundingClientRect().top;
-    if (top < 96) {
-      // The ease is the PAGE moving the reader, over a few frames, while the fold body's own
-      // animation keeps the observer measuring. `readerReshaped` above released the click's intent
-      // so the growth's correction lands at once (#190) — and a correction written mid-ease cancels
-      // the smooth scroll (measured: the header stopped at 80px, 8px into a 24px ease). Stamp the
-      // ease as intent, exactly as the drag auto-scroll does: for its 300ms the position is the
-      // page's, the observer's corrections are deferred, and the anchor is re-read where it ends.
-      vw.markIntent();
-      window.scrollBy({ top: top - 104, behavior: "smooth" });
-    }
+    var r = h.getBoundingClientRect();
+    // A head the reader clicked on its sliver below the sticky bars — top under 96, bottom past
+    // it — is brought to 104px with an INSTANT nudge of at most a head's height. Two things are
+    // deliberate. It is instant: a smooth scroll and the anchor correction the growth needs run in
+    // the same frames and cancel each other (with the click's intent released, #190, the
+    // correction cut the ease short; stamping the ease as intent instead deferred the corrections
+    // the rendering audit measures against, six classic cases red on CI). And it is only for a
+    // head that was on screen: a head above the viewport or wholly under the bars was toggled by
+    // something other than a click on it — the keyboard stepper scrolls its target into view
+    // first, the audit's opener clicks by query — and moving the page to it is not what that
+    // asked for. The old smooth ease fired for those too and was only ever cancelled by luck.
+    if (r.top < 96 && r.bottom > 96) window.scrollBy(0, r.top - 104);
   }
   function allFolds(open) {
     // Record-level (#50): applies to every fold in the session, materialized or not,

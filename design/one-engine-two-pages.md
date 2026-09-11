@@ -938,13 +938,19 @@ the old engine — its click re-render keeps a valid DOM anchor and the correcti
 shell the evidence is the owner's session on a released binary (strands) against a monitor built
 with the fix (holds, 3s, "Show 2 more").
 
-**The one interaction the fix introduced.** The classic page eases a fold head that sits under
-the sticky bars to 104px with a SMOOTH scroll, and a correction that now lands mid-ease cancels it
-(measured: a header at 80px stopped 8px into a 24px ease; before the fix it reached 96). So
-`toggleFold` stamps the ease as intent, as the drag auto-scroll already does — for its 300ms the
-position is the page's, the observer's corrections are deferred, and the anchor is re-read where the
-ease ends. The vocabulary was already there: `markIntent` is "the page is moving the reader on their
-behalf", and `readerReshaped` is "the reader changed the page, not their position".
+**The one interaction the fix introduced, and what it took to answer it.** The classic page eases
+a fold head that sits under the sticky bars to 104px, and a correction that now lands mid-ease
+cancels a SMOOTH scroll (measured: a header at 80px stopped 8px into a 24px ease; before the fix it
+reached 96). v1.254.0 answered by stamping the ease as intent (`markIntent`, as the drag auto-scroll
+does) — and CI showed that to be wrong within the hour: the stamp also fires for SYNTHETIC clicks,
+so the rendering audit's opener, which clicks four hundred heads by query with most of them off
+screen, had its ease scrolls read as the reader's own and the page moved out from under six classic
+cases. The answer that held is two decisions in `toggleFold`: the ease is an INSTANT nudge (a scroll
+event like any other, behind which the engine re-reads its anchor), and it fires only for a head
+whose sliver below the bars was on screen to be clicked — top under 96, bottom past it. A head above
+the viewport or wholly under the bars was toggled by something other than a click on it, and moving
+the page to it was never what that asked for; the old smooth ease fired for those too and was only
+ever cancelled by luck. A head clicked at 80px now lands at 103.
 
 **The precaution audit found the sibling (`#191`).** A long WHEEL jump from the tail into
 unmeasured ground — −40,000px, and on the classic page even −6,000 — leaves the reader in a pad on
@@ -954,3 +960,43 @@ no old child is visible after a jump that size, the anchor is null, and when the
 That is the same "blank, then scroll a bit and content appears" the owner described, by a different
 door, and it is queued as its own task with the fix shape (hold the MODEL position when there is no
 DOM anchor).
+
+## A jump into a pad holds the record the sums named (2026-09-11, #191)
+
+Found by the `#190` precaution audit, not reported — but it is the other half of the owner's
+sentence, "scroll a bit, it shows content". A wheel jump from the tail into ground the engine has
+never measured — −40,000px, and on the classic page even −6,000 — left every probe in a PAD, at
+rest, on both surfaces: the mounted window sat 1,944px below the viewport on the classic page and
+6,709px on the shell, and nothing moved until the reader scrolled again.
+
+**The hole is a null anchor.** `updateWindow` captures the DOM anchor BEFORE the mount, and after a
+jump that size no old item is on screen, so there is nothing to capture. The mount then does what a
+mount does: `measureMounted` learns forty real heights, the `HeightGuess` mean moves (`#184`), every
+unmeasured record above re-estimates, and the top pad grows by thousands of pixels — under a
+`scrollTop` that `restoreDomAnchor(null)` cannot correct. `#180` made the scroll path's correction
+IMMEDIATE; this is the path where there was no correction at all. And once in the pad the reader
+stays: `syncAnchor` finds no visible item either, so no later measure has anything to hold.
+
+**The rule this adds:** *when no item can hold the reader, the sums do.* Before the mount,
+`modelAnchor()` reads the record the scroll offset names and how far into it; after the mount,
+`restoreModelAnchor` writes `documentTopOf(index) + offset` and settles the window around the
+corrected offset once (the range was chosen from the sums before the measure, and the viewport may
+now run past it). It writes regardless of intent, and that is `#180`'s argument, not a new one: the
+position is computed from where the reader IS, so it replays nothing (`#138`) and undoes only the
+engine's own shift. `restoreDomAnchor`'s note about "placing from the sums was tried and reverted"
+is a different case — a MOUNTED anchor whose heights a width change had just cleared; here there is
+no anchor and the sums are the only position there is.
+
+**One thing the first cut got wrong, caught by the suite.** The offset inside the named record is
+SIGNED. Clamping it at zero read well — "how far into the record" — and pulled a reader who had
+jumped to the very top down onto record 0, 250px past the page header: two turn-bar cases went red
+on both surfaces, because the bar lit up where the first turn should have been naming itself. Above
+the first record the offset is how far above; past the last it is the bottom padding; the restore
+reproduces the offset the reader had, whatever its sign.
+
+**The case** (both surfaces, −6,000 and −40,000 from the tail): no probe at 20/50/80% lands in a
+pad, the viewport shows content at rest, nothing moves the reader once they have stopped, and the
+first mounted unit is earlier than the tail's and past the start. Red on the old engine on all four
+(every probe in a pad), green with the fix. A scroll offset cannot express "moved up": the mount's
+measure moves the whole page's height, and a −6,000 jump legitimately lands at a LARGER offset than
+the tail's — the mounted range is the coordinate that survives the shift.

@@ -4575,6 +4575,121 @@ fn app_shell_a_clicked_control_at_the_tail_does_not_strand_the_reader() {
     );
 }
 
+/// #191. A long jump into unmeasured ground lands the reader on content, not in a pad.
+///
+/// Found by the #190 precaution audit. A wheel jump from the tail — −40,000px, and on the classic
+/// page even −6,000 — left every probe in a PAD at rest, on both surfaces, until the reader scrolled
+/// again: the mounted window sat 1,944px below the viewport on the classic page and 6,709px on the
+/// shell. `updateWindow` captures its anchor before the mount; after a jump that size no old item is
+/// visible, the anchor is null, and when the measure moves the `HeightGuess` mean the top pad grows
+/// by thousands of pixels under a `scrollTop` nobody corrects. The engine now holds the MODEL
+/// position — the record the sums named, and how far into it — through the mount (#191).
+///
+/// The probes are pad-aware (#190): "stranded" is a probe in `.vpad` / `.virtual-pad`; the gaps
+/// between turns and the page's chrome are not blank space.
+fn scenario_a_long_jump_lands_on_content(tab: &headless_chrome::Tab, surface: Surface, dy: i64) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    settle();
+    let state = match surface {
+        Surface::Classic => {
+            r#"(function(){ var s = document.scrollingElement; var at = function (f) { var e = document.elementFromPoint(Math.round(innerWidth/2), Math.round(innerHeight*f)); if (!e) return 'NOTHING'; var b = e.closest('#stream .blk'); if (b) return 'rec:' + (b.dataset.turn || b.id); return 'BLANK:' + (e.id || String(e.className).split(' ')[0] || e.tagName); }; var units = [...document.querySelectorAll('[data-unit-index]')]; var w = units.length ? units[0].parentElement.getBoundingClientRect() : null; return { top: Math.round(s.scrollTop), h: Math.round(s.scrollHeight), at20: at(0.2), at50: at(0.5), at80: at(0.8), units: units.length, lo: units.length ? units[0].dataset.unitIndex : null, winTop: w ? Math.round(w.top) : null, winBottom: w ? Math.round(w.bottom) : null }; })()"#
+        }
+        Surface::AppShell => {
+            r#"(function(){ var s = document.querySelector('.transcript'); var r = s.getBoundingClientRect(); var at = function (f) { var e = document.elementFromPoint(Math.round(r.left + r.width/2), Math.round(r.top + r.height*f)); if (!e) return 'NOTHING'; var t = e.closest('[data-record-id]') || e.closest('[data-turn]'); if (t) return 'rec:' + (t.dataset.recordId || t.dataset.turn); return 'BLANK:' + (e.id || String(e.className).split(' ')[0] || e.tagName); }; var win = document.querySelector('.virtual-window'); var units = [...win.children]; var w = win.getBoundingClientRect(); return { top: Math.round(s.scrollTop), h: Math.round(s.scrollHeight), at20: at(0.2), at50: at(0.5), at80: at(0.8), units: units.length, lo: units.length ? units[0].dataset.unitIndex : null, winTop: Math.round(w.top - r.top), winBottom: Math.round(w.bottom - r.top) }; })()"#
+        }
+    };
+    let tail = probe(tab, state);
+    scroll_by(tab, surface, dy);
+    settle();
+    settle();
+    let landed = probe(tab, state);
+    settle();
+    settle();
+    let rested = probe(tab, state);
+    println!("JUMP {surface:?} {dy}px\n  tail   {tail}\n  landed {landed}\n  rested {rested}");
+    let count = |v: &serde_json::Value, pred: &dyn Fn(&str) -> bool| {
+        ["at20", "at50", "at80"]
+            .iter()
+            .filter(|k| v[*k].as_str().map(pred).unwrap_or(false))
+            .count()
+    };
+    let in_pad = |s: &str| s.starts_with("BLANK:vpad") || s.starts_with("BLANK:virtual-pad");
+    let on_content = |s: &str| s.starts_with("rec:");
+    assert_eq!(
+        count(&landed, &in_pad),
+        0,
+        "{surface:?}: a {dy}px jump left the reader in a PAD — the mount's measure moved the \
+         estimates under a scroll offset nothing corrected (#191): {landed}"
+    );
+    assert_eq!(
+        count(&rested, &in_pad),
+        0,
+        "{surface:?}: …and they are still in a pad at rest: {rested}"
+    );
+    assert!(
+        count(&rested, &on_content) >= 2,
+        "{surface:?}: the viewport shows content at rest after a {dy}px jump: {rested}"
+    );
+    assert_eq!(
+        rested["top"], landed["top"],
+        "{surface:?}: nothing moves the reader once they have come to rest: {landed} → {rested}"
+    );
+    // Up the session and not off it: the first mounted unit is earlier than it was at the tail
+    // and still past the start. (Scroll offsets cannot say this — the mount's measure moves the
+    // whole page's height, and a −6000 jump legitimately lands at a LARGER offset than the tail's.)
+    let lo = |v: &serde_json::Value| {
+        v["lo"]
+            .as_str()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(-1)
+    };
+    assert!(
+        lo(&rested) > 0 && lo(&rested) < lo(&tail),
+        "{surface:?}: the jump moved the reader up the session and not off it: mounted from {} \
+         (the tail mounted from {})",
+        lo(&rested),
+        lo(&tail)
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_short_jump_lands_on_content() {
+    let _serial = serial();
+    let fx = fixture_process_tail("scenario-jump-short-classic", 400, 22);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_long_jump_lands_on_content(&page.tab, Surface::Classic, -6000);
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_long_jump_lands_on_content() {
+    let _serial = serial();
+    let fx = fixture_process_tail("scenario-jump-long-classic", 400, 22);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_long_jump_lands_on_content(&page.tab, Surface::Classic, -40000);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_short_jump_lands_on_content() {
+    let _serial = serial();
+    let fx = fixture_process_tail("scenario-jump-short-app", 400, 22);
+    let page = open(Surface::AppShell, &fx, 2949);
+    scenario_a_long_jump_lands_on_content(&page.tab, Surface::AppShell, -6000);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_long_jump_lands_on_content() {
+    let _serial = serial();
+    let fx = fixture_process_tail("scenario-jump-long-app", 400, 22);
+    let page = open(Surface::AppShell, &fx, 2950);
+    scenario_a_long_jump_lands_on_content(&page.tab, Surface::AppShell, -40000);
+}
+
 /// A fixture whose tail holds a Bash call whose command runs far past the head's one line.
 fn fixture_long_command(name: &str) -> Fixture {
     let base = base(name);

@@ -471,6 +471,41 @@ class VirtualWindow {
     this.frame.scrollTo(want);
   }
 
+  /** The position the SUMS name, for a reader no mounted item can hold (#191): the item whose span
+   *  the scroll offset falls in, and how far into it. Read BEFORE a mount changes the sums, so it
+   *  describes the layout the reader actually scrolled through. */
+  modelAnchor() {
+    const y = this.frame.scrollTop() - this.contentTop();
+    const index = Math.max(0, Math.min(this.indexAt(y), this.count - 1));
+    // The offset is SIGNED: above the first record (the page header, a jump to the very top) it is
+    // how far above, and clamping it to zero would pull the reader down onto record 0 — measured
+    // as the turn bar lighting up at the top of the page. Past the last record it is the bottom
+    // padding. Either way the restore reproduces the offset the reader had.
+    return { index, offset: y - (this.prefix[index] || 0) };
+  }
+
+  /** Put the reader back on the record the sums named (#191).
+   *
+   *  A jump into a pad — a long wheel fling, a thumb released over unmeasured ground — leaves no
+   *  item on screen, so `captureDomAnchor` has nothing and the mount goes uncorrected: its measure
+   *  moves the `HeightGuess` mean, every unmeasured record above re-estimates, the top pad grows by
+   *  thousands of pixels, and `scrollTop` stays where it was — inside the pad the shift just made.
+   *  Measured from the tail: −40,000px left the mounted window 1,944px BELOW the viewport on the
+   *  classic page and 6,709px on the shell (−6,000 was enough on the classic page), at rest, every
+   *  probe in a pad, until the reader scrolled again. `#180` made the scroll path's correction
+   *  immediate; this is the case where there was no correction at all.
+   *
+   *  The model position is computed from where the reader IS, so writing it replays nothing
+   *  (`#138`) and undoes only the engine's own shift — the argument `#180` made — which is why it
+   *  lands regardless of intent. Then the window is settled around the corrected offset, once: the
+   *  range was chosen from the sums before the measure, and the viewport may now run past it. */
+  restoreModelAnchor(held, immediate = false) {
+    const want = this.documentTopOf(held.index) + held.offset;
+    if (correction(this.frame.scrollTop(), want, 1)) this.frame.scrollTo(want);
+    const range = this.rangeForScroll();
+    if (range.lo !== this.lo || range.hi !== this.hi) this.reconcile(range.lo, range.hi, Infinity, false, this.captureDomAnchor(), immediate);
+  }
+
   /** The anchor a SPONTANEOUS change is measured against (#98). A change the engine makes
    *  itself captures the anchor before it touches the DOM; a change that arrives on its own —
    *  a row resizing under the observer — has already moved the view by the time it is heard,
@@ -698,9 +733,13 @@ class VirtualWindow {
   updateWindow(forceIndex = null, immediate = false) {
     if (!this.count) return;
     const anchor = this.following || this.dragging ? null : this.captureDomAnchor();
+    // Nothing on screen to hold — the reader is in a pad (#191). The position the sums name is
+    // the only one there is, read now, before the mount changes them.
+    const held = anchor || forceIndex != null || this.following || this.dragging ? null : this.modelAnchor();
     const anchorIndex = forceIndex == null && anchor ? this.indexOfIdentity(anchor.key) : -1;
     const range = forceIndex != null ? this.rangeAround(forceIndex) : anchorIndex >= 0 ? this.rangeAround(anchorIndex) : this.rangeForScroll();
     this.reconcile(range.lo, range.hi, Infinity, false, anchor, immediate);
+    if (held) this.restoreModelAnchor(held, immediate);
     this.syncAnchor(); // an unchanged window returns early above; the anchor is re-read either way
   }
 
