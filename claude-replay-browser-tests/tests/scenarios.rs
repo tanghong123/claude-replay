@@ -4365,6 +4365,163 @@ fn fixture_long_command(name: &str) -> Fixture {
     }
 }
 
+/// The same long command, but with a long tail AFTER it — so the block can be scrolled out of the
+/// window and back, which is what #189 is about.
+fn fixture_long_command_midway(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(14, Shape::default());
+    let command = "cargo test -p claude-replay-browser-tests --test scenarios -- --ignored --skip known_red app_shell --nocapture 2>&1 | grep -E 'the needle in a very long pipeline that keeps going and going past any reasonable head width' | sed -e 's/one thing/another thing entirely/' | sort -u | head -20";
+    jsonl += &format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"mid-1\",\"name\":\"Bash\",\"input\":{{\"command\":\"{command}\"}}}}]}},\"timestamp\":\"2026-08-21T10:15:01Z\"}}\n"
+    );
+    jsonl += &tool_result_text("mid-1", "one line of output", "2026-08-21T10:15:02Z");
+    jsonl += &long_session(22, Shape::default());
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture {
+        base,
+        path,
+        turns: 37,
+    }
+}
+
+/// #189. A fold the READER opened keeps the head state the reader left it in, across a
+/// re-materialization. The classic page lost it: `renderBlock` emits the header target in the
+/// EXPANDED pre-wrap form for any block whose record says `b.open`, `toggleFold` has already
+/// called `setRecordOpen` so `b.open` is true for a fold the reader opened, and nothing
+/// re-applies the reader's own head step — there is no `userFulls` beside `userFolds`. So the
+/// tidy one-line target became the whole wrapped command on the next scroll past and back.
+///
+/// The app shell keeps `state.fullTargets` keyed by record id and survives its own re-render, so
+/// this is the reference page being the one out of step — which #71 established can happen.
+///
+/// Non-vacuous by construction: the case TAGS the element before scrolling and requires the tag
+/// to be gone afterwards. Without that, a run where the block never left the window would assert
+/// that nothing changed and pass for the wrong reason.
+fn scenario_a_fold_keeps_its_head_state_across_a_rematerialization(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // The fold sits MID-DOCUMENT on purpose — that is what lets it leave the window later — so
+    // the case has to go and find it first.
+    let find = match surface {
+        Surface::Classic => "!![...document.querySelectorAll('#stream .fold > .fold-h > .tool-target')].find(function (t) { return t.textContent.indexOf('the needle in a very long pipeline') >= 0; })",
+        Surface::AppShell => "!![...document.querySelectorAll('.virtual-window .renderer > .renderer-head > .renderer-target')].find(function (t) { return t.textContent.indexOf('the needle in a very long pipeline') >= 0; })",
+    };
+    let mut found = false;
+    for _ in 0..24 {
+        if eval(tab, find).as_bool() == Some(true) {
+            found = true;
+            break;
+        }
+        scroll_by(tab, surface, -1600);
+        settle();
+    }
+    assert!(
+        found,
+        "{surface:?}: scrolling up reached the long-command fold within the fixture"
+    );
+    settle();
+    // Open it ONE step (the output, target still one clipped line). The click and the READ are
+    // two separate probes on purpose: the app shell's head handler ends in `actions.rerender()`,
+    // which replaces every node in the window, so a reference taken before the click is detached
+    // afterwards and reports the OLD element's state — measured, as `open: "false"` on a
+    // renderer that had in fact opened.
+    let id = eval(
+        tab,
+        match surface {
+            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(function (x) { var t = x.querySelector(':scope > .fold-h > .tool-target'); return t && t.textContent.indexOf('the needle in a very long pipeline') >= 0; }); if (!f) return ''; if (f.dataset.open !== '1') f.querySelector(':scope > .fold-h').click(); return f.id; })()",
+            Surface::AppShell => "(function(){ var r = [...document.querySelectorAll('.virtual-window .renderer[data-record-id]')].find(function (x) { var t = x.querySelector(':scope > .renderer-head > .renderer-target'); return t && t.textContent.indexOf('the needle in a very long pipeline') >= 0; }); if (!r) return ''; var id = r.dataset.recordId; if (r.classList.contains('closed')) r.querySelector(':scope > button.renderer-head').click(); return id; })()",
+        },
+    )
+    .as_str()
+    .unwrap_or_default()
+    .to_string();
+    assert!(
+        !id.is_empty(),
+        "{surface:?}: the fixture's long-command fold is addressable by a record id"
+    );
+    settle();
+    // …then tag the FRESH element and read the state it settled into.
+    let opened = probe(
+        tab,
+        &match surface {
+            Surface::Classic => format!("(function(){{ var f = document.getElementById('{id}'); if (!f) return null; f.dataset.auditTag = '1'; var t = f.querySelector(':scope > .fold-h > .tool-target'); return {{ id: f.id, ws: t ? getComputedStyle(t).whiteSpace : 'no-target', open: f.dataset.open }}; }})()"),
+            Surface::AppShell => format!("(function(){{ var r = document.querySelector('.virtual-window .renderer[data-record-id=\"{id}\"]'); if (!r) return null; r.dataset.auditTag = '1'; var t = r.querySelector(':scope > .renderer-head > .renderer-target'); return {{ id: r.dataset.recordId, ws: t ? getComputedStyle(t).whiteSpace : 'no-target', open: String(!r.classList.contains('closed')) }}; }})()"),
+        },
+    );
+    settle();
+
+    // Go away — down to the tail — then come back, so the window unmounts the block and builds
+    // it afresh when the reader returns.
+    jump_to_end(tab, surface);
+    settle();
+    settle();
+    for _ in 0..24 {
+        if eval(tab, find).as_bool() == Some(true) {
+            break;
+        }
+        scroll_by(tab, surface, -1600);
+        settle();
+    }
+    settle();
+
+    let after = probe(
+        tab,
+        &match surface {
+            Surface::Classic => format!("(function(){{ var f = document.getElementById('{id}'); if (!f) return {{ missing: true }}; var t = f.querySelector(':scope > .fold-h > .tool-target'); return {{ rebuilt: f.dataset.auditTag !== '1', ws: t ? getComputedStyle(t).whiteSpace : 'no-target', open: f.dataset.open, full: f.dataset.full === undefined ? 'unset' : f.dataset.full }}; }})()"),
+            Surface::AppShell => format!("(function(){{ var r = document.querySelector('.virtual-window .renderer[data-record-id=\"{id}\"]'); if (!r) return {{ missing: true }}; var t = r.querySelector(':scope > .renderer-head > .renderer-target'); return {{ rebuilt: r.dataset.auditTag !== '1', ws: t ? getComputedStyle(t).whiteSpace : 'no-target', open: String(!r.classList.contains('closed')), full: r.dataset.target || 'unset' }}; }})()"),
+        },
+    );
+    assert!(
+        after["missing"].as_bool() != Some(true),
+        "{surface:?}: the fold came back into the window: {after}"
+    );
+    assert_eq!(
+        after["rebuilt"], true,
+        "{surface:?}: …and it was REBUILT rather than kept — otherwise this case asserts that \
+         nothing changed and passes for the wrong reason: {after}"
+    );
+    assert_eq!(
+        after["ws"], "nowrap",
+        "{surface:?}: a fold the reader opened to step 2 must come back at step 2. The classic \
+         page came back at step 3 — `renderBlock` emits the expanded pre-wrap target for any \
+         block whose record says `b.open`, and `toggleFold` had already made that true, so the \
+         reader's one-line target became the whole wrapped command on the next scroll past \
+         (#189): {after}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_fold_keeps_its_head_state_across_a_rematerialization() {
+    let _serial = serial();
+    let fx = fixture_long_command_midway("scenario-headstate-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_fold_keeps_its_head_state_across_a_rematerialization(
+        &page.tab,
+        Surface::Classic,
+        &fx,
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_fold_keeps_its_head_state_across_a_rematerialization() {
+    let _serial = serial();
+    let fx = fixture_long_command_midway("scenario-headstate-app");
+    let page = open(Surface::AppShell, &fx, 2946);
+    scenario_a_fold_keeps_its_head_state_across_a_rematerialization(
+        &page.tab,
+        Surface::AppShell,
+        &fx,
+    );
+}
+
 /// The head's click cycle (#129, the owner's report and their spec): a long command is one
 /// clipped line, and clicking used to reveal only the output. Now, from folded: the output,
 /// then the whole command, then the command folds back, then the output.

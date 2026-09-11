@@ -388,6 +388,14 @@
   // Every record entering the stream re-applies the user's overrides, keyed by
   // block id (stable across re-emission; stale ids simply never match again).
   var userFolds = {};
+  // …and the HEAD STEP the reader left the fold at (#189). The head's click cycle (#129) has two
+  // open states — the output, and the output with the whole command — and only the open/closed
+  // half of it used to survive a rebuild. `renderBlock` emits the expanded target for any block
+  // whose record says `b.open`, and `toggleFold` calls `setRecordOpen`, so a fold the READER
+  // opened became indistinguishable from an authored-open one: scroll past it and back and its
+  // tidy one-line target had become the whole wrapped command. Same shape as `userFolds`, same
+  // key, and for the same reason — the DOM window is disposable, the reader's intent is not.
+  var userFulls = {};
   // Small "⋯ N more lines" expansions survive rematerialization (#67): a block just
   // over the display cap keeps its expansion (recorded by record-id + the button's
   // ordinal within the block — stable, since re-renders are deterministic from the
@@ -729,17 +737,11 @@
     }
     body.forEach(function (p) { renderPart(p, fb); });
     f.appendChild(fb);
-    // §8.2 an authored-open fold emits its header target in the expanded (pre-wrap)
-    // form immediately; setFold keeps it in sync on every later toggle.
-    if (b.open) {
-      var tgt = h.querySelector(":scope > .tool-target, :scope > .tool-path");
-      if (tgt) {
-        tgt.style.whiteSpace = "pre-wrap";
-        tgt.style.overflow = "visible";
-        tgt.style.textOverflow = "clip";
-        tgt.style.overflowWrap = "anywhere";
-      }
-    }
+    // §8.2 / #189 the header target's form, through the ONE function that owns it — which also
+    // stamps `dataset.full`, so a rebuilt element and the next click agree about which step of
+    // the cycle it is on. The reader's own choice wins when they have made one; otherwise an
+    // authored-open fold shows its whole command, as it always has.
+    setTargetFull(f, b.id && userFulls[b.id] !== undefined ? userFulls[b.id] === 1 : !!b.open);
     return f;
   }
 
@@ -2455,6 +2457,9 @@
     var h = f.querySelector(":scope > .fold-h");
     var y0 = h ? h.getBoundingClientRect().top : 0;
     setFold(f, open, full);
+    // …and the step the head landed on (#189), read back from the element `setFold` just
+    // stamped rather than recomputed here, so there is one answer and not two.
+    if (f.id) userFulls[f.id] = f.dataset.full === "1" ? 1 : 0;
     var b = f.querySelector(":scope > .fold-b");
     if (open && b) { b.classList.remove("anim"); void b.offsetWidth; b.classList.add("anim"); }
     if (!h) return;
