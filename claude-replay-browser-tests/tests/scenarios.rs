@@ -4426,6 +4426,18 @@ fn scenario_a_clicked_control_at_the_tail_does_not_strand_the_reader(
     jump_to_end(tab, surface);
     await_tail(tab, surface, "a fresh open to land at the tail");
     settle();
+    // A reader who has BEEN in the session: the height guesses are live. #184's per-type mean
+    // stays on its floor until eight samples have been measured, and on the floor the click's
+    // re-measure moves no estimate, so no pad moves and nothing is ever owed — a fresh open
+    // pinned straight at the tail is green on the old engine for that reason alone (#193).
+    // Six screens up and back mounts the dozens of units the owner's session had measured.
+    for _ in 0..6 {
+        scroll_by(tab, surface, -2500);
+        settle();
+    }
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the return to the tail");
+    settle();
     settle();
     let follow = match surface {
         Surface::Classic => "(function(){ var s = document.scrollingElement; return { following: document.body.classList.contains('following'), gap: Math.round(s.scrollHeight - innerHeight - s.scrollTop) }; })()",

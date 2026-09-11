@@ -932,11 +932,17 @@ predicate is now: no probe lands in a pad (`.vpad`, `.virtual-pad`), and the TEX
 the viewport is the same text at the same height, within 2px — exact on both pages where "the record
 at the middle" is not (a whole turn is one `data-turn` on the shell; a tail row is 32px on classic).
 
-**Honest limit.** The classic mock is RED on the old engine (the text at 30% changes; at50 moves
-seven rows) and green with the fix. The app-shell mock holds the same predicate but does NOT fail on
-the old engine — its click re-render keeps a valid DOM anchor and the correction lands — so for the
-shell the evidence is the owner's session on a released binary (strands) against a monitor built
-with the fix (holds, 3s, "Show 2 more").
+**Why the app-shell mock could not fail at first, and what made it (#193).** The classic mock was
+RED on the old engine from the start; the app-shell mock held the same predicate green on the old
+engine too, and for a day the shell's only evidence was the owner's session. The trace (#192) showed
+the difference in three lines: on the old engine the click's re-measure produced `measured` with the
+pads UNCHANGED — no `restore:*` at all — because `#184`'s per-type mean stays on its floor until eight
+samples have been measured, and a fresh open pinned straight at the tail has measured three. On the
+floor the expanded surface moves no estimate, no pad moves, nothing is ever owed. The owner's session
+had measured hundreds. Six screens up and back before the click — the reader who has BEEN in the
+session — and the same trace reads `measured` pads +7,398, `restore:deferred` delta −7,398 twice at
+5ms since input, `settle … dropped=true` at 328ms, the surface 7,589px below the viewport: the bug,
+in the mock, on both surfaces. A case about an estimate shift has to warm the estimator first.
 
 **The one interaction the fix introduced, and what it took to answer it.** The classic page eases
 a fold head that sits under the sticky bars to 104px, and a correction that now lands mid-ease
