@@ -155,7 +155,9 @@ class HeightGuess {
 
 /** Is the viewport trace on (#192)? Decided from the page's own URL and storage — `?trace=viewport`
  *  for one load, `localStorage.viewportTrace = "1"` to keep it across reloads — and pure, so the
- *  contract can ask it without a browser. Off, the engine records nothing and pays one boolean. */
+ *  contract can ask it without a browser. Off, the engine records nothing: `trace()` returns on one
+ *  boolean before an entry exists, though every seam still evaluates the fields it passes (an object
+ *  literal and a few rounded reads) — negligible, not zero. */
 function traceWanted(search, stored) {
   if (/(^|[?&])trace=viewport(&|$)/.test(search || "")) return true;
   return stored === "1";

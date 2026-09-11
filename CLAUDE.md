@@ -139,8 +139,10 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   scrollTop and scrollHeight, both pad heights, the anchor, the estimate, and the ms since the
   reader's last input. It lands in a 500-entry ring at `window.__viewportTrace`
   (`copy(window.__viewportTrace)` in the console pastes it into a bug) and as one `console.debug`
-  line per entry under the `[viewport]` prefix (filter the console on it). Off, it costs one
-  boolean per seam. `scenario_the_trace_records_what_the_engine_did` holds it on both surfaces.
+  line per entry under the `[viewport]` prefix (filter the console on it). Off, no entry is
+  built — `trace()` returns on one boolean — though each seam still evaluates the fields it
+  passes (an object literal and a few rounded reads; negligible beside the reconcile that called
+  it, not zero). `scenario_the_trace_records_what_the_engine_did` holds it on both surfaces.
   A killed run used to leave its browsers behind — a SIGKILL runs no `Drop` and macOS has no
   PDEATHSIG — and sixty such processes once exhausted the machine and took the session's
   background jobs with them. `chrome()` now names each profile `cr-browser-chrome-<launching

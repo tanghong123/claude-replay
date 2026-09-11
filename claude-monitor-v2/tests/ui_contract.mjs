@@ -1990,7 +1990,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(traceWanted("", "1"), true, "on by storage, across reloads");
   const src = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   assert.match(src, /this\.tracing = options\.trace != null \? !!options\.trace : traceWanted\(/, "the engine decides once, at construction; `options.trace` overrides for a harness");
-  assert.match(src, /trace\(event, fields\) \{\n    if \(!this\.tracing\) return;/, "off, the trace costs one boolean per seam and computes nothing");
+  assert.match(src, /trace\(event, fields\) \{\n    if \(!this\.tracing\) return;/, "off, trace() returns on one boolean before an entry is built");
   assert.match(src, /window\.__viewportTrace\.push\(entry\);\n      if \(window\.__viewportTrace\.length > 500\) window\.__viewportTrace\.shift\(\);/, "a ring of 500 entries on window, for `copy(window.__viewportTrace)`");
   assert.match(src, /console\.debug\("\[viewport\]", JSON\.stringify\(entry\)\)/, "…and one console line per entry under a fixed prefix, for a filter");
   assert.match(src, /this\.trace\(delta \? "model:wrote" : "model:held"/, "the model anchor (#191) reports whether it wrote");

@@ -1030,8 +1030,12 @@ shows the engine's story and nothing else.
 
 **How it is switched.** `?trace=viewport` in the URL for one load, or `localStorage.viewportTrace =
 "1"` to keep it across reloads; `traceWanted(search, stored)` is pure and the contract tests it. The
-engine decides once, at construction, and off it costs one boolean per seam: the entry is never
-built. One implementation, both pages, through the shared module — the classic page inlines it and
+engine decides once, at construction, and off no entry is built: `trace()` returns on one boolean.
+A seam still pays for its own argument — JavaScript evaluates the fields object before `trace()`
+sees the flag — so an object literal and a few rounded reads happen per seam regardless. That is
+negligible beside the reconcile that called it and not worth a thunk at thirteen call sites, but
+"computes nothing", which this paragraph said until 2026-09-12, was too strong. One implementation,
+both pages, through the shared module — the classic page inlines it and
 the shell imports it, so `window.__viewportTrace` reads the same on either.
 
 **The case** opens each surface, checks nothing is recorded, re-opens with the flag, and asserts the
