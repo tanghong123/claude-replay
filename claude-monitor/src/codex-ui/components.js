@@ -194,17 +194,17 @@ export function renderUnit(unit, state) {
     // reader opens it — the classic page's command fold — with the outputs inside.
     const cmd = unit.view.command;
     const expanded = state.promptExpanded.has(unit.key);
-    html = `<div class="turn user command" data-kind="user" data-record-kind="command" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt command-card"><button class="command-head" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}" title="${expanded ? "Fold this command" : "Show this command's arguments and output"}"><span class="command-badge">/${escapeText(cmd.name)}</span><span class="command-preview">${escapeText(cmd.preview)}</span>${cmd.lines ? `<span class="command-chip">${escapeText(cmd.lines)}</span>` : ""}<span class="command-chevron" aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>${expanded ? `<div class="prompt-copy-shell expanded">${resultBodyHtml(body, APP_RESULT)}</div>` : ""}${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
+    html = `<div class="turn user command" data-kind="user" data-record-kind="command" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt command-card"><button class="command-head" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}" title="${expanded ? "Fold this command" : "Show this command's arguments and output"}"><span class="command-badge">/${escapeText(cmd.name)}</span><span class="command-preview">${escapeText(cmd.preview)}</span>${cmd.lines ? `<span class="command-chip">${escapeText(cmd.lines)}</span>` : ""}<span class="command-chevron" aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>${expanded ? `<div class="prompt-copy-shell expanded">${resultBodyHtml(body, APP_RESULT)}</div>` : ""}${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
   }
   else if (unit.type === "user") {
     const long = promptShouldCollapse(unit.view.html);
     const expanded = state.promptExpanded.has(unit.key);
-    html = `<div class="turn user" data-kind="user" data-record-kind="user" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt ${long ? "prompt-collapsible" : ""}"><div class="prompt-copy-shell ${long && !expanded ? "collapsed" : "expanded"}"><div class="body markdown">${body}</div>${long ? `<button class="prompt-expand" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}">${expanded ? "Show fewer" : "Show the whole prompt"}<span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>` : ""}</div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
+    html = `<div class="turn user" data-kind="user" data-record-kind="user" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt ${long ? "prompt-collapsible" : ""}"><div class="prompt-copy-shell ${long && !expanded ? "collapsed" : "expanded"}"><div class="body markdown">${body}</div>${long ? `<button class="prompt-expand" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}">${expanded ? "Show fewer" : "Show the whole prompt"}<span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>` : ""}</div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
   }
   else if (unit.type === "assistant") {
     const final = unit.view.phase === "final";
     const plan = unit.view.presentation === "proposed_plan";
-    html = `<div class="turn assistant ${final ? "final-answer" : "assistant-unknown"} ${plan ? "proposed-plan" : ""}" data-kind="assistant" data-record-kind="assistant" data-phase="${escapeText(unit.view.phase)}" data-block-index="${unit.from}">${plan ? `<div class="proposed-plan-head"><span class="proposed-plan-icon">${svg("turns")}</span><div><span>Proposed plan</span><small>Review before implementation</small></div></div>` : final ? "" : '<span class="assistant-phase-label">Assistant message</span>'}<div class="body markdown">${body}</div>${spot}${rawToggle}</div>`;
+    html = `<div class="turn assistant ${final ? "final-answer" : "assistant-unknown"} ${plan ? "proposed-plan" : ""}" data-kind="assistant" data-record-kind="assistant" data-phase="${escapeText(unit.view.phase)}" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}">${plan ? `<div class="proposed-plan-head"><span class="proposed-plan-icon">${svg("turns")}</span><div><span>Proposed plan</span><small>Review before implementation</small></div></div>` : final ? "" : '<span class="assistant-phase-label">Assistant message</span>'}<div class="body markdown">${body}</div>${spot}${rawToggle}</div>`;
   } else html = renderProcess(unit, state);
   const root = element(html);
   // The record id is the renderer's stable deep-link contract (`b<N>` today). Virtualized
@@ -328,6 +328,10 @@ export function bindComponentEvents(root, state, actions) {
       if (hidden) hidden.classList.add("shown");
       rememberCap(state.capOpen, capMore.dataset.capRecord, capMore.dataset.capOrd, Number(capMore.dataset.capLines) || 0);
       capMore.remove();
+      // #185: this branch reveals in place and never reaches `rerender`, so the growth arrives at
+      // the engine through the observer instead — and parked at the tail the follow rule converges
+      // on it and scrolls away the very lines the click revealed. The pin is the reader's to keep.
+      actions.reshaped?.();
       actions.remember?.();
       return;
     }

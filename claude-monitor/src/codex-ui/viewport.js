@@ -2,7 +2,7 @@ import { renderUnit } from "./components.js";
 // The window's arithmetic — the sums, the search, the ranges, the pads, the anchor correction,
 // the follow rule — is the shared module's (#107, html/shared/virtual-window.js): one set of
 // scroll rules for both pages. What reads layout and what writes the DOM stays here.
-import { VirtualWindow, elementFrame } from "./shared/virtual-window.js";
+import { HeightGuess, VirtualWindow, elementFrame } from "./shared/virtual-window.js";
 
 export function revealNavigationContext(units, index, state, recordIndex, reveal = "record") {
   const unit = units[index];
@@ -36,13 +36,15 @@ export function revealNavigationContext(units, index, state, recordIndex, reveal
 // explicit follow mode changed only by user input.
 import { applyViewChoices, parseViewMemory, serializeViewMemory, viewChoices, viewMemoryKey } from "./view-memory.js";
 
-// Rule 5 (#107 step 3): estimate UNDER, never over. An unmeasured unit's height is a guess, and
-// the guess is wrong in one of two directions. Guess LOW and learning the real height only ever
-// grows the page BELOW the reader, which nobody feels; guess HIGH and learning it SHRINKS the
-// page, and a shrink above the viewport is a jump unless the anchor catches it. This shell
-// guessed 132px for everything — above most prompts and every one-line assistant note — which is
-// the wrong side. The guesses below are floors: a prompt is at least one line in its card, an
-// assistant note the same, a process at least its head row. The classic page's own floor is 30.
+// Rule 5 (#107 step 3), as #184 amends it: estimate CLOSE, and let the floor stand only while
+// there is nothing to learn from. The numbers below are still floors — a prompt is at least one
+// line in its card, an assistant note the same, a process at least its head row — but a floor is
+// now the SEED of a running mean (`HeightGuess`, shared), not the answer. The original rule said
+// estimate UNDER because learning a real height then only grows the page BELOW the reader; what
+// it missed is that a floor MAXIMISES the gap between guess and truth, and that gap is exactly
+// what displaces a reader when a run mounted above them is measured (#180 measured 2355px and
+// 2854px of drift here for a 900px request). The shell before #107 guessed 132px for everything,
+// which was the wrong side of the old rule and the wrong distance from this one.
 const ESTIMATES = { user: 44, assistant: 40, process: 34 };
 const ESTIMATE = 34;
 const REMEMBER_MS = 250;
@@ -78,6 +80,14 @@ export class Viewport extends VirtualWindow {
       userIntentMs: USER_INTENT_MS,
       rememberMs: REMEMBER_MS,
     });
+    // #184: the floors above seed one running mean per unit type. Nothing in the engine's own
+    // constructor asks for a height — `count` reads `this.units`, which is not set either — so
+    // the first `estimateAt` cannot arrive before this line.
+    this.guesses = {
+      user: new HeightGuess(ESTIMATES.user),
+      assistant: new HeightGuess(ESTIMATES.assistant),
+      process: new HeightGuess(ESTIMATES.process),
+    };
     this.scroller = scroller;
     this.inner = inner;
     this.state = state;
@@ -103,15 +113,23 @@ export class Viewport extends VirtualWindow {
     if (value) this.state.newRecords = 0;
   }
   identityAt(index) { return this.units[index]?.key; }
-  estimateAt(index) { return ESTIMATES[this.units[index]?.type] || ESTIMATE; }
+  /** One guess per unit TYPE (#184): a prompt card, an assistant note and a process group are
+   *  three populations with three different shapes, and one mean over all of them would be wrong
+   *  about each. The floor each starts from is the seed. */
+  guessFor(index) { return this.guesses[this.units[index]?.type] || this.guesses.process; }
+  estimateAt(index) { return this.guessFor(index).value(); }
   heightFor(index) { const unit = this.units[index]; return unit ? this.state.heights.get(unit.key) : 0; }
-  setHeight(index, height) { this.state.heights.set(this.units[index].key, height); }
-  clearHeights() { this.state.heights.clear(); }
+  setHeight(index, height) { this.state.heights.set(this.units[index].key, height); this.guessFor(index).learn(height); }
+  clearHeights() { this.state.heights.clear(); for (const guess of Object.values(this.guesses)) guess.reset(); }
   /** #132 step 4: the same heights, re-guessed for a new measure. A text block's height moves
    *  roughly with the inverse of its width, and rule 5 still holds — an estimate is a FLOOR, so
    *  a widen that scales a height down may not take it under this shell's own floor. */
   scaleHeights(ratio) {
     for (const [key, height] of this.state.heights) this.state.heights.set(key, Math.max(ESTIMATE, height * ratio));
+    // What has been LEARNED is re-guessed by the same ratio (#184). Leaving it alone would leave
+    // every unmeasured unit carrying a height from the old measure, which is the same staleness
+    // #132 step 4 fixed for the measured ones.
+    for (const guess of Object.values(this.guesses)) guess.scale(ratio);
   }
   renderItem(index) { return renderUnit(this.units[index], this.state); }
   afterRender() { this.actions.afterRender?.(); }

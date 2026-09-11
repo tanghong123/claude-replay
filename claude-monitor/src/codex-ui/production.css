@@ -229,19 +229,23 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .outline-card>.outline-card-action{position:absolute;right:30px;top:7px;width:24px;height:24px;border-radius:6px;display:grid;place-items:center;background:transparent;color:var(--faint);cursor:pointer;z-index:1}
 .outline-card>.outline-card-action:hover,.outline-card>.outline-card-action:focus-visible{color:var(--ink);background:var(--hover);outline:0}
 .outline-card>.outline-card-action svg{width:14px;height:14px}
+/* #186: a second action in the same head sits one slot further in. The head's controls are
+   absolutely positioned from the right edge, so they need telling apart rather than stacking. */
+.outline-card>.outline-card-action[data-slot="2"]{right:56px}
+/* The live-only filter reads as ON: the pane is holding rows back, and that must be visible at
+   a glance or an unexpectedly short list looks like missing data. */
+.outline-card>.outline-card-action[aria-pressed="true"]{color:var(--accent,var(--ink));background:var(--hover)}
 /* #60: the task details popover, beside the row that opened it. */
 .task-popover{position:fixed;z-index:60;width:min(440px,calc(100vw - 24px));max-height:min(70vh,560px);overflow:auto;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 48px -18px rgba(20,25,35,.35),0 2px 8px rgba(20,25,35,.08);padding:12px 14px 12px;font-size:13px;line-height:1.5}
-.task-popover-head{display:grid;grid-template-columns:12px minmax(0,1fr) auto auto;gap:8px;align-items:center;margin-bottom:8px}
+/* #187: TWO columns, because the head has two children — the subject and the close button. It
+   declared four (`12px minmax(0,1fr) auto auto`) from when the head carried a glyph and an id
+   too, so the subject landed in the FIXED 12px track and, with `overflow-wrap:anywhere` below,
+   set itself one character per line down the left edge with the X beside the fourth letter. The
+   head was rewritten onto the shared task card (#125) and the grid was never brought with it. */
+.task-popover-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;margin-bottom:8px}
 .task-popover-head strong{font-size:14px;overflow-wrap:anywhere}
-.task-popover-id{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
 .task-popover-close{width:24px;height:24px;border-radius:6px;background:transparent;color:var(--sub);cursor:pointer;font-size:16px;line-height:1}
 .task-popover-close:hover,.task-popover-close:focus-visible{background:var(--hover);color:var(--ink);outline:0}
-.task-popover-facts{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;margin:0 0 10px;padding:8px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
-.task-popover-facts dt{color:var(--faint);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);align-self:baseline}
-.task-popover-facts dd{margin:0;min-width:0;overflow-wrap:anywhere}
-.task-popover-facts code{font-size:11.5px}
-.task-popover-body p{margin:0 0 8px}
-.task-popover-body p:last-child{margin-bottom:0}
 .task-popover-none{color:var(--faint);font-style:italic}
 .task-popover-actions{margin-top:10px;display:flex;justify-content:flex-end}
 .task-popover-jump{padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);cursor:pointer;font-size:12.5px}
@@ -458,6 +462,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .task-card-chips{display:flex;flex-wrap:wrap;gap:5px}
 .task-chip{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border:1px solid var(--line);border-radius:999px;background:var(--panel);font-size:11.5px;color:var(--sub)}
 .task-card-dates{font:11.5px/1.6 var(--mono);color:var(--faint)}
+/* #188: when a task carries no title it carries no sections either, and the card says WHY —
+   a quiet note against a rule, not a labelled section, because the labels name the queue's own
+   fields and a synthetic one would read as a field the task has. */
+.task-card-gap{max-width:64ch;padding-left:9px;border-left:2px solid var(--line);font-size:12px;line-height:1.55;color:var(--faint)}
 .task-card-section{display:flex;flex-direction:column;gap:4px}
 .task-card-label{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
 .task-card-body{max-width:72ch;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--sub)}

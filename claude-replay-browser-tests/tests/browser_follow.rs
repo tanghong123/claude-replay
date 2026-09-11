@@ -2765,6 +2765,8 @@ fn the_app_shell_orders_tasks_by_group_then_id() {
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
     // The tasks card is closed by default; open it.
     harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    // #186: this case is about the whole board, which is what the live-only filter hides.
+    harness::show_every_pane_row(&tab);
     harness::until(
         &tab,
         "document.querySelectorAll('#navigatorWork .work-task').length === 6",
@@ -2912,6 +2914,8 @@ fn the_app_shell_tasks_pane_scrolls_itself() {
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
     harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    // #186: this case is about the whole board, which is what the live-only filter hides.
+    harness::show_every_pane_row(&tab);
     harness::until(
         &tab,
         "document.querySelectorAll('#navigatorWork .work-task').length === 40",
@@ -2984,6 +2988,8 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
     harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    // #186: this case is about the whole board, which is what the live-only filter hides.
+    harness::show_every_pane_row(&tab);
     harness::until(
         &tab,
         "document.querySelectorAll('#navigatorWork .work-task').length === 33",
@@ -3061,6 +3067,8 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     tab2.wait_until_navigated().unwrap();
     harness::until(&tab2, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the second shell to mount", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
     harness::eval(&tab2, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    // #186: this case is about the whole board, which is what the live-only filter hides.
+    harness::show_every_pane_row(&tab2);
     harness::until(
         &tab2,
         "document.querySelectorAll('#navigatorWork .work-task').length === 33",
@@ -3125,6 +3133,8 @@ fn the_app_shell_opens_a_task_details_popover() {
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
     harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    // #186: this case is about the whole board, which is what the live-only filter hides.
+    harness::show_every_pane_row(&tab);
     harness::until(
         &tab,
         "document.querySelectorAll('#navigatorWork .work-task').length === 3",
@@ -3189,8 +3199,26 @@ fn the_app_shell_opens_a_task_details_popover() {
         shown["focusInside"], true,
         "focus moved into the dialog: {shown}"
     );
+    // #187: the title has to be a LINE, not a column of letters. A rect is not visibility (the
+    // lesson from #98) and this is that lesson one level further on — a heading squeezed to
+    // 12px still opens, still measures a rect, and still contains exactly the right text. It
+    // set itself one character per line for as long as `.task-popover-head` declared four grid
+    // columns for a head with two children, so the subject sat in the FIXED 12px track.
+    let title = harness::probe(&tab, "(function(){ var e = document.querySelector('#taskPopover .task-popover-head strong'); var r = e.getBoundingClientRect(); var cs = getComputedStyle(e); var size = parseFloat(cs.fontSize); var line = parseFloat(cs.lineHeight) || size * 1.5; return { w: Math.round(r.width), h: Math.round(r.height), size: size, lines: Math.round(r.height / line), chars: e.textContent.length }; })()");
+    let width = title["w"].as_f64().unwrap_or(0.0);
+    let size = title["size"].as_f64().unwrap_or(14.0);
+    assert!(
+        width > size * 4.0,
+        "the popover's title is {width}px wide at {size}px type — narrower than four characters,          so it is setting itself down the page rather than across it (#187): {title}"
+    );
+    assert_eq!(
+        title["lines"], 1,
+        "…and a twelve-character subject fits on one line: {title}"
+    );
+
     harness::eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 'ok'");
     harness::until(&tab, "document.getElementById('taskPopover').hidden && document.activeElement === document.querySelectorAll('#navigatorWork .work-task-head')[1]", "Escape to close it and return focus to the row", std::time::Duration::from_secs(5), "String(document.getElementById('taskPopover').hidden) + ' ' + (document.activeElement && document.activeElement.className)");
+
     drop(monitor);
 }
 
@@ -3317,6 +3345,11 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
         std::time::Duration::from_secs(30),
         "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
     );
+    // #186: this case is about panes COMPETING for room, and its fixture carries 12 completed
+    // tasks precisely to make the tasks pane tall enough to create that pressure. The live-only
+    // filter removes those rows and with them the pressure, so the case has to ask for the whole
+    // board — the same line the other board cases carry.
+    harness::show_every_pane_row(&tab);
     let state = r#"(function(){ var nav = document.querySelector('.session-navigator'), nr = nav.getBoundingClientRect(); var cap = nav.querySelector('.outline-caption'); return { open: [...document.querySelectorAll('.outline-card')].map(function (c) { return c.dataset.navCard + ':' + (c.classList.contains('open') ? 'open' : 'folded'); }), bodies: [...document.querySelectorAll('.outline-card')].map(function (c) { var body = c.querySelector('.outline-card-body'); return c.dataset.navCard + ':' + (body.offsetParent === null ? 0 : Math.round(body.getBoundingClientRect().height)); }), heads: [...document.querySelectorAll('.outline-card > .outline-card-head')].map(function (h) { var r = h.getBoundingClientRect(); return { key: h.dataset.navCardToggle, top: Math.round(r.top), bottom: Math.round(r.bottom), visible: r.top >= nr.top - 1 && r.bottom <= nr.bottom + 1 }; }), caption: cap ? { top: Math.round(cap.getBoundingClientRect().top), bottom: Math.round(cap.getBoundingClientRect().bottom) } : null, navTop: Math.round(nr.top + parseFloat(getComputedStyle(nav).paddingTop || '0')), navBottom: Math.round(nr.bottom), navScroll: nav.scrollTop, overflow: nav.scrollHeight - nav.clientHeight, windowY: window.scrollY }; })()"#;
     // #87: the "Outline" caption row, collapse control included, sits on the page background.
     let caption_bg = harness::eval(&tab, "getComputedStyle(document.querySelector('.session-navigator > .outline-caption')).backgroundColor");
@@ -5752,4 +5785,131 @@ fn the_app_shell_outline_caption_and_its_menu_lay_out() {
             .unwrap_or(true),
         "Info is not listed as a pane: {seen}"
     );
+}
+
+/// #186: the tasks and agents panes open on what is LIVE, and say what they are holding back.
+///
+/// The owner's report was that a pane listing everything "renders it useless" on a long session.
+/// So the default is live-only — running and pending tasks, running sub-agents — with one control
+/// per pane for the rest. Two things this case insists on beyond the filtering itself: the head's
+/// counts keep naming BOTH halves, so what is hidden is never a secret; and the choice survives a
+/// reload, because a filter a reader has to set again every time is a filter they stop using.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_panes_open_on_what_is_live() {
+    let _serial = serial();
+    let base = base("appshell-live-only");
+    let stores = Stores::new(&base);
+    let sid = "eeeeeeee-0000-4000-8000-000000000186".to_string();
+    // One sub-agent that FINISHED and one still out. What closes a spawn is the completion
+    // NOTIFICATION, not the tool result — measured while building this: a spawn plus its
+    // `agent-result` leaves the agent `running`, because the result names the child without
+    // saying it is done. And a spawn with NO result is not a child at all: `collect_child_refs`
+    // keeps only a `SubAgent` with a non-empty `agent_id`, and the id is what the result carries.
+    let mut transcript = harness::long_session(20, harness::Shape::default());
+    transcript += &harness::agent_spawn("call_done", "Explore", 21);
+    transcript += &harness::agent_result("call_done", "aDone-186", "Explore", 22);
+    transcript += &harness::agent_finished("aDone-186", "look around", 23);
+    transcript += &harness::agent_spawn("call_live", "general-purpose", 24);
+    transcript += &harness::agent_result("call_live", "aLive-186", "general-purpose", 25);
+    transcript += &harness::long_session(6, harness::Shape::default());
+    stores.claude_session(&sid, &transcript);
+    for child in ["aDone-186", "aLive-186"] {
+        stores.claude_child(
+            &sid,
+            child,
+            &harness::long_session(4, harness::Shape::default()),
+        );
+    }
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, done", "completed"),
+            ("3", "three, running", "in_progress"),
+            ("4", "four, pending", "pending"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V2, 2885, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    let open = |tab: &headless_chrome::Tab| {
+        tab.navigate_to(&format!("http://127.0.0.1:2885/?ui=app&session={sid}"))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+        // Both panes have to EXIST and be open before anything can be counted in them.
+        harness::eval(tab, "for (const key of ['tasks', 'agents']) { var c = document.querySelector('[data-nav-card=\"' + key + '\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"' + key + '\"]').click(); } 'ok'");
+        harness::until(
+            tab,
+            "!!document.getElementById('tasksLiveOnly') && !!document.getElementById('agentsLiveOnly')",
+            "both live-only controls to be built",
+            std::time::Duration::from_secs(10),
+            "document.querySelector('.session-navigator').innerText.slice(0, 200)",
+        );
+    };
+    let state = "(function(){ var q = function (s) { return [...document.querySelectorAll(s)].map(function (e) { return e.textContent.trim(); }); }; return { tasks: q('#navigatorWork .work-task strong'), groups: q('#navigatorWork .work-group span:first-child'), agents: q('#navigatorAgents .outline-agent-copy strong'), taskCount: document.getElementById('navigatorWorkCount').textContent.replace(/\\s+/g, ' ').trim(), agentCount: document.getElementById('navigatorAgentCount').textContent.replace(/\\s+/g, ' ').trim(), tasksOn: document.getElementById('tasksLiveOnly').getAttribute('aria-pressed'), agentsOn: document.getElementById('agentsLiveOnly').getAttribute('aria-pressed'), agentsEmpty: (document.querySelector('#navigatorAgents .activity-empty') || {}).textContent || '' }; })()";
+
+    open(&tab);
+    let live = harness::probe(&tab, state);
+    assert_eq!(live["tasksOn"], "true", "live-only is the default: {live}");
+    assert_eq!(live["agentsOn"], "true", "…in both panes: {live}");
+    let tasks: Vec<String> = live["tasks"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|t| t.as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        tasks,
+        vec!["three, running".to_string(), "four, pending".to_string()],
+        "the two completed tasks are held back, the running and the pending one are not — a \
+         PENDING task is live work, it just has not started: {live}"
+    );
+    let agents: Vec<String> = live["agents"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|t| t.as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(agents.len(), 1, "only the sub-agent still out: {live}");
+    // The head must keep naming both halves, or a short list is indistinguishable from no data.
+    assert!(
+        live["taskCount"].as_str().unwrap_or("").contains('2'),
+        "the head still counts what is hidden: {live}"
+    );
+
+    // …and the rest is one click away.
+    harness::eval(&tab, "document.getElementById('tasksLiveOnly').click(); document.getElementById('agentsLiveOnly').click(); 'ok'");
+    let all = harness::probe(&tab, state);
+    assert_eq!(all["tasksOn"], "false", "the control flips: {all}");
+    assert_eq!(
+        all["tasks"].as_array().map(|a| a.len()),
+        Some(4),
+        "every task is back: {all}"
+    );
+    assert_eq!(
+        all["agents"].as_array().map(|a| a.len()),
+        Some(2),
+        "…and both sub-agents: {all}"
+    );
+
+    // A filter a reader has to set again on every reload is a filter they stop using.
+    open(&tab);
+    let after = harness::probe(&tab, state);
+    assert_eq!(
+        after["tasksOn"], "false",
+        "the choice survived the reload: {after}"
+    );
+    assert_eq!(
+        after["tasks"].as_array().map(|a| a.len()),
+        Some(4),
+        "…and so did what it shows: {after}"
+    );
+    drop(monitor);
 }

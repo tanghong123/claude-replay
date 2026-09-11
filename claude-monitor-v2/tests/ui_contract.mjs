@@ -15,8 +15,8 @@ import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/s
 import { isInteraction, interactionCard, interactionHtml } from "../../claude-replay-html/src/html/shared/interaction.js";
 import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE } from "../../claude-replay-html/src/html/shared/search.js";
 import { chainWalk } from "../../claude-replay-html/src/html/shared/filter.js";
-import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, correction, firstVisible, classifyScroll } from "../../claude-replay-html/src/html/shared/virtual-window.js";
-import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml } from "../../claude-replay-html/src/html/shared/task-card.js";
+import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll } from "../../claude-replay-html/src/html/shared/virtual-window.js";
+import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
 import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
@@ -833,7 +833,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const same = [{ id: "x", status: "pending" }, { id: "x", status: "pending" }];
   assert.deepEqual(taskOrder(same).map(r => r.index), [0, 1], "ties keep the stream's order");
   assert.deepEqual(taskGroups([]), [], "no tasks, no groups");
-  assert.match(appSource, /taskGroups\(tasks\)\.map\(group => `<div class="work-group" data-task-group="\$\{group\.key\}">/, "the pane renders the groups with a boundary");
+  assert.match(appSource, /const taskShown = taskGroups\(tasks\)\.filter\(group => !liveTasksOnly \|\| group\.key !== "completed"\);/, "#186: the pane filters the GROUPS, never the list — each row carries its index into `meta.tasks` and `data-task-open` hands that index straight back to `openTaskPopover`, so a filtered array would open the wrong task's details");
+  assert.match(appSource, /taskShown\.map\(group => `<div class="work-group" data-task-group="\$\{group\.key\}">/, "the pane renders the groups with a boundary");
+  const stateSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  assert.match(stateSource, /liveOnly: new Set\(json\("am-prod-live-only", \["tasks", "agents"\]\)\),/, "…live-only is ON for both panes by default (#186), and remembered per viewer like the other outline choices");
+  assert.match(stateSource, /localStorage\.setItem\("am-prod-live-only", JSON\.stringify\(\[\.\.\.uiState\.liveOnly\]\)\);/, "…and `persist` actually writes it — a filter a reader must set again every reload is one they stop using");
   console.log("#56 task order cases passed");
 }
 
@@ -1080,10 +1084,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /for \(let scope = child; scope\.top < viewportTop; scope = row\) \{\n\s+const inner = rowIn\(scope\.element\);\n\s+if \(!inner\) break;\n\s+row = inner;\n\s+\}/, "ONE predicate from the ITEM down: refine only while the thing being held STRADDLES the edge. Descending reaches the nested record the reader is inside rather than its wrapper (#177); STOPPING keeps a record whose own top is visible as the anchor, instead of handing it to a child below the head being read (#178, measured at 420px on the classic page)");
   assert.equal(firstVisible([{ index: 0, top: 900, bottom: 1000, height: 100 }], 0, 500, 1, false), null, "a unit below the viewport is no anchor — the scroll offset places the window");
   assert.match(src, /const row = item\.querySelector\(`\[data-block-index="\$\{anchor\.block\}"\]`\);/, "…and the restore puts that row back");
-  assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\)\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");
+  assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\), immediate = false\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");
+  assert.match(src, /if \(!immediate && this\.readerOwnsPosition\(\)\) \{ this\.owed = anchor; this\.scheduleSettle\(\); return; \}/, "#132's 'never write under a moving reader' holds for every path EXCEPT the reader's own scroll (#180) — there the engine has just mounted items above them whose remembered height was a floor estimate, and withholding the correction displaces them by exactly it");
+  assert.match(src, /this\.updateWindow\(null, true\);/, "…and onScroll is the ONLY caller that opts in: the drag end, the jump paths and every apply path keep the deferral");
+  assert.match(src, /this\.updatePads\(\);\n    this\.afterMount\(fresh\);\n    this\.measureMounted\(anchor, immediate\);\n    this\.updatePads\(\);/, "PAD, then measure (#179): both `afterMount` (the classic page's clamp pass) and `measureMounted` force layout, and until the pads are written the page is short by whatever the new window dropped off its top — a browser clamps `scrollTop` to it and a reader on the tail is pulled up by the whole difference (262px on the shell, 228 on the classic page)");
   assert.match(src, /return this\.anchor \|\| this\.captureDomAnchor\(\);/, "the kept anchor, else a fresh one");
   assert.match(src, /this\.anchor = null;\n(?:.*\n)*?    if \(user && this\.owed\) \{ this\.owed = null; clearTimeout\(this\.settleTimer\); \}/, "a scroll invalidates the kept anchor — and a correction owed from before the reader moved (#138)");
-  assert.match(src, /this\.reconcile\(range\.lo, range\.hi, Infinity, false, anchor\);\n    this\.syncAnchor\(\);/, "…and the deferred window update re-reads it once per batch");
+  assert.match(src, /this\.reconcile\(range\.lo, range\.hi, Infinity, false, anchor, immediate\);\n    this\.syncAnchor\(\);/, "…and the deferred window update re-reads it once per batch");
   assert.match(vpSrc, /export class Viewport extends VirtualWindow \{/, "the app shell's viewport IS the shared engine (#107)");
   assert.match(vpSrc, /frame: elementFrame\(scroller\),/, "…driving it through the element frame");
   assert.match(src, /frame\.on\("pointerdown", event => \{ if \(frame\.isScrollbarTarget\(event\)\) this\.beginDrag\(\); \}/, "a pointer that lands on the scroller itself is on its scrollbar — no coordinate test, overlay scrollbars sit inside the client box");
@@ -1221,7 +1228,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(vp, /if \(this\.pendingView\) \{ applyViewChoices\(this\.state, this\.pendingView\); this\.pendingView = null; \}/, "restored with the first batch, after the store's reset");
   assert.match(vp, /const view = viewChoices\(this\.state\);/, "…and saved with the position");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
-  assert.match(app, /rerender: \(\) => \{ viewport\.render\(\); viewport\.scheduleRemember\(\); \}/, "every choice schedules a save");
+  assert.match(app, /rerender: \(\) => \{ viewport\.readerReshaped\(\); viewport\.render\(\); viewport\.scheduleRemember\(\); \}/, "every choice schedules a save — and drops the tail pin first (#185), because everything reaching `rerender` is the reader reshaping the page themselves");
+  assert.match(app, /reshaped: \(\) => viewport\.readerReshaped\(\),/, "…and the branches that grow the page IN PLACE, without a re-render, have their own way to say so — the cap expander reveals rows and never reaches `rerender`, which is the path #185 was actually reported from");
   assert.match(app, /addEventListener\("pagehide", \(\) => viewport\.remember\(\)\);/, "…and leaving saves at once");
   console.log("#114 view state cases passed");
 }
@@ -1576,10 +1584,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(module, /const at = event && event\.timeStamp \? event\.timeStamp : performance\.now\(\);/, "…and so does the engine");
   assert.match(module, /const user = this\.dragging \|\| at - this\.lastInputStamp < this\.userIntentMs;/, "…with a held thumb still answering for itself, since a drag fires no input event of its own");
   assert.doesNotMatch(classic, /\.offsetTop - /, "no page measures top-to-next-top any more (#140 step 2)");
-  // Step 3: the estimate is a FLOOR per unit type — under the real height, never over, so
-  // learning a height only grows the page below the reader (rule 5).
+  // Step 3: the estimate is a floor per unit type — and since #184 the floor is the SEED of a
+  // running mean rather than the answer, because a constant floor is the guess furthest from the
+  // truth and that distance is what displaces a reader when a run above them is measured (#180).
   assert.match(vp, /const ESTIMATES = \{ user: 44, assistant: 40, process: 34 \};/);
-  assert.match(vp, /estimateAt\(index\) \{ return ESTIMATES\[this\.units\[index\]\?\.type\] \|\| ESTIMATE; \}/, "the estimate is this shell's answer to the engine's question");
+  assert.match(vp, /user: new HeightGuess\(ESTIMATES\.user\),/, "each floor seeds a guess of its own — one population per unit type");
+  assert.match(vp, /estimateAt\(index\) \{ return this\.guessFor\(index\)\.value\(\); \}/, "the estimate is this shell's answer to the engine's question");
   // #132 step 4, reaching the classic page with #140 step 4: a width change RE-GUESSES the
   // remembered heights instead of keeping them (which is what left that page believing in a
   // bottom 693px from the real one after the monitor's rail opened) and instead of clearing them
@@ -1588,7 +1598,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // taken against — the engine's is zero until the first remeasure, and on this page the FIRST
   // width change is the one that matters.
   assert.match(classic, /window\.addEventListener\("resize", function \(\) \{ vw\.remeasure\(\); \}, \{ passive: true \}\);/, "the classic page re-measures on a resize");
-  assert.match(classic, /if \(recHeights\[i\] === EST_H\) continue;\s*\n\s*recHeights\[i\] = Math\.max\(EST_H, recHeights\[i\] \* ratio\);/, "…scaling what was measured, floored, and leaving the floors alone");
+  assert.match(classic, /if \(!recHeights\[i\]\) continue;\s*\n\s*recHeights\[i\] = Math\.max\(EST_H, recHeights\[i\] \* ratio\);\s*\n\s*\}\s*\n\s*estimator\.scale\(ratio\);/, "…scaling what was MEASURED, floored, and re-guessing the learned mean once for everything that was not (#184; the test was `=== EST_H` while this page seeded the floor into the array)");
   assert.match(classic, /vw\.lastWidth = vwin\.getBoundingClientRect\(\)\.width \|\| 0;/, "…against a width seeded from the mount");
   // Step 4: the classic page — the REFERENCE — is the engine's second consumer, not a second
   // copy of it. The ten pins that stood here until #140 step 4 named this page's own sums, its
@@ -1637,7 +1647,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(taskRowMeta({ id: "1", subject: "bare" }), "", "nothing to say leaves the row one line");
   assert.deepEqual(taskSections(done).map(s => s.label), ["description", "acceptance", "outcome", "worklog"]);
   assert.deepEqual(taskSections(done).at(-1).log, [{ ts: "09-04 22:49", by: "claude", msg: "found the seam" }]);
-  const classes = { card: "c", head: "h", glyph: "g", id: "i", title: "t", chips: "cs", chip: "ch", dates: "d", section: "s", label: "l", body: "b", item: "it", outcome: "o", log: "lg", logTime: "lt", logMsg: "lm", logBy: "lb" };
+  const classes = { card: "c", head: "h", glyph: "g", id: "i", title: "t", chips: "cs", chip: "ch", dates: "d", gap: "gp", section: "s", label: "l", body: "b", item: "it", outcome: "o", log: "lg", logTime: "lt", logMsg: "lm", logBy: "lb" };
   const html = taskCardHtml(done, classes);
   assert.match(html, /<span class="g" data-state="completed">✓<\/span><span class="i">#125<\/span>/);
   assert.match(html, /<div class="d">created 09-04 18:23 · claimed 09-04 22:14 · completed 09-04 22:53<\/div>/);
@@ -1652,6 +1662,57 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(js125, /row\.appendChild\(el\("span", "task-glyph", shared\.taskGlyph\(t\.status, t\.deferred\)\)\);/);
   assert.match(js125, /var meta = shared\.taskRowMeta\(card\(t\)\);/);
   console.log("#125 task card cases passed");
+}
+
+// #188: a task with no recorded title says WHY it has no details, on BOTH pages, in one wording.
+// The stub is the engine's own decision (`engine/tasks.rs`, TaskOp::Update): an update for a task
+// this transcript never saw created materializes id + status and NOTHING else, because per-queue
+// integer ids collide and a title fetched by id would be confidently wrong. Rendering that gap is
+// not the same as saying it — the card showed an id, a status chip and nothing else, which is how
+// it was reported.
+{
+  const classes = { card: "c", head: "h", glyph: "g", id: "i", title: "t", chips: "cs", chip: "ch", dates: "d", gap: "gp", section: "s", label: "l", body: "b", item: "it", outcome: "o", log: "lg", logTime: "lt", logMsg: "lm", logBy: "lb" };
+  const stub = taskCardHtml({ id: "q119", status: "Completed" }, classes);
+  assert.match(stub, /<div class="gp">Created outside this transcript/, "a titleless card explains itself");
+  assert.equal(stub.includes(TASK_NO_DETAILS), true, "…in the shared wording, once");
+  assert.equal(stub.match(/class="l"/g), null, "…and INVENTS NO SECTION: the labels name the queue's own fields");
+  assert.match(stub, /<span class="i">#q119<\/span>/, "the id it does have is still the queue's, prefix and all");
+  // The other direction, which is the half that rots silently: a task that HAS a title must not
+  // acquire the note just because it carries no description.
+  assert.equal(taskCardHtml({ id: "1", subject: "bare", status: "pending" }, classes).includes('class="gp"'), false, "a titled task with no description is terse, not unrecorded");
+  assert.equal(taskCardHtml({ id: "1", subject: "   ", status: "pending" }, classes).includes('class="gp"'), true, "whitespace is not a title");
+  // Both class maps must NAME the part — a missing key renders `class="undefined"` in silence.
+  const app188 = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  const js188 = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(app188, /dates: "task-card-dates", gap: "task-card-gap",/, "the app shell names the gap");
+  assert.match(js188, /dates: "tcard-dates", gap: "tcard-gap",/, "…and so does the classic page");
+  assert.match(productionCss, /\.task-card-gap\{/, "…and each page styles it");
+  const exportCss = readFileSync(new URL("../../claude-replay-html/src/html/export.css", import.meta.url), "utf8");
+  assert.match(exportCss, /\.tcard-gap \{/);
+  // The ROW's fallback title is the same wording on both pages. The app shell's read
+  // `Task ${index + 1}` — the row's POSITION — beside a tail carrying the real id.
+  assert.match(app188, /escapeText\(task\.subject \|\| task\.title \|\| TASK_NO_TITLE\)/, "the app shell row takes the shared phrase");
+  assert.match(js188, /var subj = t\.subject \|\| shared\.TASK_NO_TITLE;/, "…and the classic row, which had the words first");
+  assert.equal(TASK_NO_TITLE, "(no title recorded in this session)", "the wording is the classic page's, which shipped it");
+  console.log("#188 unrecorded-task cases passed");
+}
+
+// #174: EVERY MOUNTED RECORD CARRIES ITS ID. The classic page has done this since `matBlock`
+// (`e.id = b.id`), for prose turns as much as for tool folds; the app shell stamped
+// `data-record-id` only on a `.renderer`, so a user turn, an assistant turn and a slash-command
+// card were addressable by block index and by nothing else. That asymmetry is not cosmetic: a
+// record the DOM cannot NAME is a record no audit can quantify over, and it is exactly how the
+// rendering audit came to be measuring the app shell's tool renderings and none of its prose.
+{
+  const components174 = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  const stamped = [...components174.matchAll(/<div class="turn [^"]*"[^>]*?data-record-id="\$\{escapeText\(unit\.view\?\.id \|\| ""\)\}"/g)];
+  assert.equal(stamped.length, 3, "the three prose turn wrappers — user, slash command, assistant — each stamp the record id the classic page has always carried");
+  assert.match(components174, /data-record-id="\$\{escapeText\(key\)\}"/, "…and a tool rendering still stamps its own, on the `.renderer` inside the turn");
+  // The painter that means "a tool head" must stay scoped to one, or widening the attribute
+  // silently widens what it paints.
+  const app174 = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app174, /querySelectorAll\("\.renderer\[data-record-id\]"\)/, "the filter-hit painter selects a RENDERER, not every record root");
+  console.log("#174 record-id stamping cases passed");
 }
 
 // #89: the info pane's three subsections fold on their label, and the choice is the READER's —
@@ -1736,7 +1797,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // element is visible, which is exactly where a jump from far away leaves the reader — named an
   // item that far late.
   assert.match(src, /rangeForScroll\(this\.prefix, this\.count, this\.frame\.scrollTop\(\) - this\.contentTop\(\), this\.frame\.clientHeight\(\), this\.overscan\)/, "…and so is the range a scroll offset asks for");
-  assert.match(src, /const want = itemTop \+ within - sat;\s*\n\s*if \(!correction\(this\.frame\.scrollTop\(\), want, 1\)\) return;[\s\S]{0,420}?this\.frame\.scrollTo\(want\);/, "the write-back is absolute — scrollTo a position derived from the anchor, not scrollBy an accumulating difference");
+  assert.match(src, /const want = itemTop \+ within - sat;\s*\n\s*if \(!correction\(this\.frame\.scrollTop\(\), want, 1\)\) return;[\s\S]{0,2400}?this\.frame\.scrollTo\(want\);/, "the write-back is absolute — scrollTo a position derived from the anchor, not scrollBy an accumulating difference");
   assert.match(src, /\/\/ Not mounted: nothing to hold it by\./, "…and an anchor the window has left behind stays put — the sums there are estimates");
   assert.doesNotMatch(src, /this\.frame\.scrollBy\(/, "…and nothing in the engine nudges the offset by an increment any more");
   console.log("#132 anchor-is-the-position cases passed");
@@ -1748,7 +1809,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const src = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   const vpSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(src, /readerOwnsPosition\(\) \{\s*\n\s*return this\.dragging \|\| performance\.now\(\) - this\.lastUserInput < this\.userIntentMs;/, "a held thumb and a travelling fling own the position");
-  assert.match(src, /if \(this\.readerOwnsPosition\(\)\) \{ this\.owed = anchor; this\.scheduleSettle\(\); return; \}/, "…so the correction is owed, not written under them");
+  assert.match(src, /if \(!immediate && this\.readerOwnsPosition\(\)\) \{ this\.owed = anchor; this\.scheduleSettle\(\); return; \}/, "…so the correction is owed, not written under them — on every path but the reader's own scroll, which #180 excepts because there the correction undoes the engine's OWN mount displacement rather than replaying a stale position");
   assert.match(src, /if \(this\.readerOwnsPosition\(\)\) \{ this\.scheduleSettle\(\); return; \}/, "…and the settle re-arms while they are still moving");
   assert.match(src, /this\.owed = null;\s*\n\s*this\.updateWindow\(\);/, "a drag ends in the model's own reset — the offset names a record, not the anchor from before the drag");
   assert.match(src, /const ratio = this\.lastWidth && width \? this\.lastWidth \/ width : 0;/, "a width change has a ratio…");
@@ -1848,4 +1909,70 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(shellParts, emitted, "…and so must the app shell — one part vocabulary, not two");
 
   console.log(`#174 P1 totality: ${kinds.length} emitted kinds x ${emitted.length} body parts, one vocabulary, both surfaces total`);
+}
+
+// ── #184: the estimate is learned, not a constant floor ─────────────────────────────────────
+// The arithmetic is pure, so it is checked here rather than in a browser. What a browser case
+// cannot show and this can: the two guards, which are the whole difference between a mean that
+// helps and one that is worse than the floor it replaced.
+{
+  const floor = 30;
+
+  // Nothing learned: the floor. And still the floor at one sample short of the threshold — one
+  // record must never be allowed to set the page's idea of a height.
+  const cold = new HeightGuess(floor, 8);
+  assert.equal(cold.value(), floor, "with no samples the guess IS the floor");
+  for (let i = 0; i < 7; i++) cold.learn(200);
+  assert.equal(cold.value(), floor, "seven samples is not enough — the floor stands until minSamples");
+  cold.learn(200);
+  assert.equal(cold.value(), 200, "…and at minSamples the mean takes over");
+
+  // A height at or under the floor is not a sample: it is the floor itself, or an element the
+  // layout has not reached. Counting those would drag every page back toward 30.
+  const unlaid = new HeightGuess(floor, 2);
+  unlaid.learn(0);
+  unlaid.learn(floor);
+  assert.equal(unlaid.count, 0, "a zero or floor-sized measurement teaches nothing");
+
+  // The outlier guard: one enormous record is CLAMPED, not dropped. Dropping it biases the mean
+  // low, which is the very rule this replaces.
+  const spike = new HeightGuess(floor, 4, 4);
+  for (let i = 0; i < 4; i++) spike.learn(100);
+  spike.learn(100000);
+  assert.equal(spike.count, 5, "the outlier still counts as a sample — dropping it biases the mean low");
+  assert.equal(spike.value(), (400 + 400) / 5, "…but contributes at most `outlier` x the running mean");
+
+  // The mean is right about a RUN even where it is wrong about each record, which is the property
+  // that matters: what a mounted window costs the sums is a sum.
+  const mixed = new HeightGuess(floor, 4);
+  for (let i = 0; i < 4; i++) { mixed.learn(78); mixed.learn(184); }
+  assert.equal(Math.round(mixed.value() * 2), 78 + 184, "a prompt guessed high and its answer low leave the pair exact");
+
+  // A width change re-guesses what was learned, as #132 step 4 does for measured heights.
+  const narrowed = new HeightGuess(floor, 2);
+  narrowed.learn(100);
+  narrowed.learn(300);
+  narrowed.scale(2);
+  assert.equal(narrowed.value(), 400, "a width change scales the learned mean");
+  narrowed.reset();
+  assert.equal(narrowed.value(), floor, "…and a reset drops back to the floor");
+
+  // The floor is a real lower bound: a page whose records are all tiny must not guess UNDER it.
+  const tiny = new HeightGuess(floor, 2);
+  tiny.learn(31);
+  tiny.learn(32);
+  assert.ok(tiny.value() >= floor, "the mean never goes under the floor");
+
+  // Both pages have to actually use it, or the arithmetic above is decoration.
+  const engineSrc = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  const exportSrc = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  const viewportSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  assert.match(engineSrc, /return this\.heightFor\(index\) \|\| this\.estimateAt\(index\);/, "an unmeasured item still falls through to the estimate");
+  assert.match(exportSrc, /estimateAt\(\) \{ return estimator\.value\(\); \}/, "the classic page asks the learned guess, not EST_H");
+  assert.match(exportSrc, /recHeights\.push\(0\);/, "…which needs a FALSY seed in recHeights, or heightOf never reaches the estimate");
+  assert.match(exportSrc, /setHeight\(index, height\) \{ recHeights\[index\] = height; estimator\.learn\(height\); this\.rebuildPrefix\(\); \}/, "…and every measured height teaches it");
+  assert.match(viewportSrc, /estimateAt\(index\) \{ return this\.guessFor\(index\)\.value\(\); \}/, "the app shell asks a guess per unit type");
+  assert.match(viewportSrc, /this\.guessFor\(index\)\.learn\(height\)/, "…and teaches it from the same place it records the height");
+
+  console.log("#184 learned-height cases passed");
 }

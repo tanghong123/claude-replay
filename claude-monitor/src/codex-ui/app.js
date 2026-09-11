@@ -4,7 +4,7 @@ import { bindComponentEvents, fleetHtml } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
 import { costDisplay } from "./shared/cost-display.js";
 import { chainWalk } from "./shared/filter.js";
-import { taskCardHtml, taskRowMeta } from "./shared/task-card.js";
+import { taskCardHtml, taskRowMeta, TASK_NO_TITLE } from "./shared/task-card.js";
 import { ControlStore } from "./control-store.js";
 import { Preview } from "./preview.js";
 import { RecordStore } from "./record-store.js";
@@ -169,7 +169,13 @@ byId("transcript").prepend(turnStickyBar);
 let turnStickyAt = null;
 turnStickyBar.onclick = () => { if (turnStickyAt != null) viewport.jumpToRecord(turnStickyAt, "turn"); };
 bindComponentEvents(transcript, recordState, {
-  rerender: () => { viewport.render(); viewport.scheduleRemember(); },
+  // #185: `bindComponentEvents` is a CLICK handler, so everything that reaches `rerender` is the
+  // reader reshaping the page themselves — a fold, a cap, a prompt expanded, a raw toggle. Parked
+  // at the tail that growth would otherwise be read as the tail moving away and converged on,
+  // scrolling away the thing the click asked to see. The pin is dropped instead.
+  rerender: () => { viewport.readerReshaped(); viewport.render(); viewport.scheduleRemember(); },
+  // …and for the branches that grow the page IN PLACE without a re-render (the cap expander).
+  reshaped: () => viewport.readerReshaped(),
   codeSize: (key, delta) => setCodeOverride(key, { size: clampSize(effectiveCode(key).size + delta * SIZE_STEP) }),
   codeWrap: key => setCodeOverride(key, { wrap: !effectiveCode(key).wrap }),
   remember: () => viewport.scheduleRemember(),
@@ -785,22 +791,56 @@ function renderNavigator() {
     // The row opens the task's details (#60); the jump to where its status was recorded is an
     // action inside the popover, so a click never moves the transcript by surprise.
     const status = taskStatus(task.status), statusClass = status === "in_progress" ? "running" : status;
+    // #188: a task with no recorded title takes the classic page's words for it, not an invented
+    // ordinal. This read `Task ${index + 1}` — the row's POSITION — beside a tail showing the real
+    // id, so a stub read "Task 1 … #q119": two numbers for one task, one of them made up.
     // A second line when there is something to say — who holds it, what blocks it, what gates
     // it, whether it is parked (#125, the queue board's two-line card). Silence keeps it to one.
     const meta = taskRowMeta({ ...task, blockedBy: task.blocked_by || task.blockedBy || [] });
-    return `<div class="work-task"><button class="work-task-head" type="button" data-task-open="${index}" title="Task details" aria-haspopup="dialog"><span class="task-state ${escapeText(statusClass)}"></span><span class="work-copy"><strong>${escapeText(task.subject || task.title || `Task ${index + 1}`)}</strong>${meta ? `<small class="work-task-meta">${escapeText(meta)}</small>` : ""}</span><span class="work-tail">#${escapeText(task.id || index + 1)}</span></button></div>`;
+    return `<div class="work-task"><button class="work-task-head" type="button" data-task-open="${index}" title="Task details" aria-haspopup="dialog"><span class="task-state ${escapeText(statusClass)}"></span><span class="work-copy"><strong>${escapeText(task.subject || task.title || TASK_NO_TITLE)}</strong>${meta ? `<small class="work-task-meta">${escapeText(meta)}</small>` : ""}</span><span class="work-tail">#${escapeText(task.id || index + 1)}</span></button></div>`;
   };
-  byId("navigatorWork").innerHTML = taskGroups(tasks).map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("") || '<div class="activity-empty">No session tasks</div>';
+  // #186: live only, by default. A session with a hundred finished tasks shows a wall nobody
+  // reads — "renders it useless" — so the pane opens on what is still moving and the reader asks
+  // for the rest. The row objects carry their own stream index, so filtering the LIST is safe:
+  // `taskGroups` re-derives the groups from whatever it is given.
+  const liveTasksOnly = uiState.liveOnly.has("tasks");
+  // Filter the GROUPS, never the list. Each row carries `index`, the position in `meta.tasks`,
+  // and `data-task-open` hands that index straight to `openTaskPopover`, which reads the FULL
+  // list back — so filtering the array first would silently open the wrong task's details.
+  const taskShown = taskGroups(tasks).filter(group => !liveTasksOnly || group.key !== "completed");
+  const hiddenTasks = tasks.length - taskShown.reduce((n, group) => n + group.rows.length, 0);
+  // An empty pane must never look like missing data: say that the filter is what emptied it, and
+  // how much it is holding, because the reader cannot see what is not there.
+  const noTasks = liveTasksOnly && hiddenTasks
+    ? `<div class="activity-empty">Nothing live — ${hiddenTasks} finished ${hiddenTasks === 1 ? "task" : "tasks"} hidden</div>`
+    : '<div class="activity-empty">No session tasks</div>';
+  byId("navigatorWork").innerHTML = taskShown.map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("") || noTasks;
   const agents = directAgents(), activeAgents = agents.filter(agent => agent.running).length;
   byId("navigatorAgentCount").innerHTML = outlineSummary(activeAgents, agents.length - activeAgents, agents.length);
   // A sub-agent row (#61): the click opens the sub-agent's OWN transcript — the whole view
   // switches, the header shows the child with its way back to the parent — and the spawn point
   // in the parent stays reachable as a small secondary control when the record stream kept it.
-  byId("navigatorAgents").innerHTML = agents.map(agent => {
+  const liveAgentsOnly = uiState.liveOnly.has("agents");
+  const shownAgents = liveAgentsOnly ? agents.filter(agent => agent.running) : agents;
+  const hiddenAgents = agents.length - shownAgents.length;
+  const noAgents = liveAgentsOnly && hiddenAgents
+    ? `<div class="activity-empty">None running — ${hiddenAgents} finished ${hiddenAgents === 1 ? "agent" : "agents"} hidden</div>`
+    : '<div class="activity-empty">No direct children</div>';
+  byId("navigatorAgents").innerHTML = shownAgents.map(agent => {
     const target = recordState.agentTargets.get(String(agent.id));
     const spawn = target == null ? "" : `<button class="outline-agent-spawn" type="button" data-agent-record="${target}" title="Jump to where the parent launched this agent" aria-label="Jump to where the parent launched ${escapeText(agent.title || agent.id)}"><span aria-hidden="true">↳</span></button>`;
     return `<div class="outline-agent-row"><button class="outline-agent" type="button" data-child-outline="${escapeText(agent.id)}" title="Open the sub-agent's transcript"><span class="agent-state ${agent.running ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(agent.title || agent.description || agent.id)}</strong><small>${escapeText(agent.type || agent.agent_type || "agent")}</small></span><span class="outline-agent-tail"></span></button>${spawn}</div>`;
-  }).join("") || '<div class="activity-empty">No direct children</div>';
+  }).join("") || noAgents;
+  for (const [key, on, hidden] of [["tasks", liveTasksOnly, hiddenTasks], ["agents", liveAgentsOnly, hiddenAgents]]) {
+    const button = byId(`${key}LiveOnly`);
+    if (!button) continue;
+    button.setAttribute("aria-pressed", String(on));
+    const what = key === "tasks" ? "finished tasks" : "finished agents";
+    button.title = on
+      ? `Showing only what is live${hidden ? ` — ${hidden} ${what} hidden` : ""}  ·  click to show everything`
+      : `Showing everything  ·  click to show only what is live`;
+    button.setAttribute("aria-label", button.title);
+  }
   renderSessionInfo(turns.length, agents.length);
   document.querySelectorAll("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   stackOutlineHeads();
@@ -923,7 +963,7 @@ function searchTextOf(record) {
   return entry;
 }
 /** This shell's names for the shared task card (html/shared/task-card.js). */
-const APP_TASK = { card: "task-card", head: "task-card-head", glyph: "task-card-glyph", id: "task-card-id", title: "task-card-title", chips: "task-card-chips", chip: "task-chip", dates: "task-card-dates", section: "task-card-section", label: "task-card-label", body: "task-card-body", item: "task-card-item", outcome: "task-card-out", log: "task-card-log", logTime: "task-card-log-time", logMsg: "task-card-log-msg", logBy: "task-card-log-by" };
+const APP_TASK = { card: "task-card", head: "task-card-head", glyph: "task-card-glyph", id: "task-card-id", title: "task-card-title", chips: "task-card-chips", chip: "task-chip", dates: "task-card-dates", gap: "task-card-gap", section: "task-card-section", label: "task-card-label", body: "task-card-body", item: "task-card-item", outcome: "task-card-out", log: "task-card-log", logTime: "task-card-log-time", logMsg: "task-card-log-msg", logBy: "task-card-log-by" };
 const ALL_SCOPES = ["u", "a", "t", "o", "b", "r", "e"];
 /** The active scope as a set for the shared grammar; null when every class is on (no scope). */
 function activeScopeSet() {
@@ -1120,7 +1160,10 @@ function applyFilters() {
   // height; the window stays dense.
   for (const element of viewport.window.querySelectorAll(".filter-hidden, .filter-hit")) element.classList.remove("filter-hidden", "filter-hit");
   if (!hits) return;
-  for (const renderer of viewport.window.querySelectorAll("[data-record-id]")) {
+  // `.renderer[data-record-id]`, not every record root: a prose turn carries its id too now
+  // (#174 — the classic page has stamped every mounted record since `matBlock`, and a record the
+  // DOM cannot name is a record no audit can address), and this paints a TOOL head.
+  for (const renderer of viewport.window.querySelectorAll(".renderer[data-record-id]")) {
     if (recordState.filterDirect?.has(renderer.dataset.recordId)) renderer.querySelector(":scope > .renderer-head")?.classList.add("filter-hit");
   }
 }
@@ -1703,7 +1746,6 @@ function openTaskPopover(index, opener) {
   if (!task) return;
   const key = String(task.id ?? index);
   const d = taskDetails(task, recordState.taskTargets.get(key) ?? null);
-  const list = (items, empty) => items.length ? items.map(i => `<code>#${escapeText(i)}</code>`).join(" ") : `<span class="task-popover-none">${empty}</span>`;
   const jump = d.target == null
     ? `<button type="button" class="task-popover-jump" disabled title="This record stream did not keep where the task's status was set">Go to the turn — not kept in this stream</button>`
     : `<button type="button" class="task-popover-jump" data-task-record="${d.target}">Go to the turn where this task's status was recorded</button>`;
@@ -1739,7 +1781,34 @@ tasksCenter.id = "tasksCenter";
 tasksCenter.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none"/><path d="M8 0.8v2.4M8 12.8v2.4M0.8 8h2.4M12.8 8h2.4"/></svg>';
 tasksCenter.title = `Center the pane on the running tasks — or on the boundary between done and pending  ( ${hintFor("tasks-center")} )`;
 tasksCenter.setAttribute("aria-label", tasksCenter.title);
+tasksCenter.dataset.slot = "2"; // #186 put the live-only filter in the outer slot, in both panes
 document.querySelector('[data-nav-card="tasks"] .outline-card-head').insertAdjacentElement("afterend", tasksCenter);
+
+// #186: show only what is LIVE — running tasks and pending ones, running sub-agents — with the
+// finished work one click away. On by default: the owner's report was that a pane listing
+// everything "renders it useless". Runtime chrome on the card's head, like the centring control
+// above, so the generated shell stays exact.
+for (const [key, what] of [["tasks", "tasks"], ["agents", "agents"]]) {
+  const head = document.querySelector(`[data-nav-card="${key}"] .outline-card-head`);
+  if (!head) continue;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "outline-card-action";
+  button.id = `${key}LiveOnly`;
+  button.dataset.liveOnly = key;
+  // The same dot the rows wear for their own state, so the control looks like what it selects.
+  button.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="3.2" fill="currentColor" stroke="none"/><path d="M8 1.4a6.6 6.6 0 0 1 0 13.2"/><path d="M8 1.4a6.6 6.6 0 0 0 0 13.2" stroke-dasharray="2 2.4"/></svg>';
+  button.title = `Show only live ${what}`;
+  button.setAttribute("aria-label", button.title);
+  button.setAttribute("aria-pressed", String(uiState.liveOnly.has(key)));
+  button.onclick = () => {
+    if (uiState.liveOnly.has(key)) uiState.liveOnly.delete(key);
+    else uiState.liveOnly.add(key);
+    persist();
+    renderNavigator();
+  };
+  head.insertAdjacentElement("afterend", button);
+}
 function paneScroller(el) {
   for (let node = el.parentElement; node; node = node.parentElement) {
     const o = getComputedStyle(node).overflowY;

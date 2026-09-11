@@ -666,3 +666,226 @@ rather than weakened, and the engine pins above them now hold each once for both
 place is what only this page can say: that it extends the engine, that it keeps none of the
 machinery (`doesNotMatch` on the scroll listener, the body observer and the rule calls), and the
 three parameters that carry its genuine differences.
+
+## The anchor's two rules, amended (2026-09-10, #178 and #180)
+
+Two changes to `captureDomAnchor`/`restoreDomAnchor` landed within a day of each other, and both
+narrow a rule rather than adding one. They are recorded here because in each case the existing
+scenarios passed either way, so the suite is not where a later reader will find the reason.
+
+### #178 — one predicate, applied from the mounted item down
+
+`#177` made the anchor DESCEND from the first qualifying `[data-block-index]` into the innermost
+one, because a parent qualifies whenever a child does and document order offers the parent first —
+so an unrefined pick is always the OUTERMOST row, which on the app shell is the `.process-surface`
+wrapper rather than the record the reader is inside.
+
+Writing the case for that guard (`#178`) found a second defect, and the fix for both is the same
+predicate applied one level higher: **refine only while the thing being held STRADDLES the viewport
+edge.**
+
+```js
+let row = null;
+for (let scope = child; scope.top < viewportTop; scope = row) {
+  const inner = rowIn(scope.element);
+  if (!inner) break;
+  row = inner;
+}
+```
+
+Whatever straddles is the only thing whose top the reader cannot see, so it is the only thing whose
+top lies about where they are reading. When the item's own top IS visible the anchor now refines
+nothing — that top is already the better anchor, since every row inside sits at a fixed offset below
+it. On the classic page the mounted item IS the record and `matBlock` indexes only its nested `.blk`
+DESCENDANTS, so before this the anchor jumped to the child below a visible head and a growth in that
+head drove it **420px off the top of the screen** (measured 9 → -411). `#176` introduced that; before
+it, no `.blk` carried the attribute and the item's own top held the head correctly.
+
+**Reach, stated honestly:** because `firstVisible` picks the STRADDLER, "the item's top is visible"
+can only happen within one inter-item gap of the edge — about 10px on the classic page, about 52px
+on the app shell (the `.process-surface` margin plus its headbar). Worth doing for the correctness
+of the rule; not something a reader hits often.
+
+### #180 — "never write under a moving reader", except to undo our own displacement
+
+`#132` step 3 and `#134` added the guard that defers a correction while `readerOwnsPosition()` is
+true, and `#138` made the settle DROP the deferred debt instead of paying it. That was right for the
+case it was written against: the debt held a position captured BEFORE the reader moved, so paying it
+late dragged them back.
+
+It is wrong for one path. On a SCROLL, `rangeAround` mounts a run of items ABOVE the reader whose
+remembered height was a floor estimate — 30px classic, 34/40/44 on the shell — against a real height
+five to twenty times that. `measureMounted` replaces every estimate with the truth, the pads absorb
+only what is outside the window, and the difference lands above the reader with `scrollTop`
+unchanged. Not writing does not leave the reader alone: **it displaces them by exactly the correction
+being withheld,** and `#138`'s settle then drops it, so the displacement is permanent. `this.owed` is
+assigned in that one line and nowhere read back.
+
+Measured, walking up a 120-turn transcript in 900px steps: the record under the reader moved **2355px
+and 2854px** on the app shell and **3263px** on the classic page for a 900px request — an overshoot of
+up to 2363px per step — with `scrollHeight` growing by the same amount each time. Steps over ground
+the tail jump had already measured drifted 0, which is the first-time-only asymmetry the owner
+reported.
+
+So `restoreDomAnchor` takes an `immediate` flag, threaded through `measureMounted` → `reconcile` →
+`updateWindow`, and **`onScroll` is the only caller that opts in.** This does not reopen `#138`: that
+correction was stale, computed before the reader moved; this one is computed AT the position they are
+at now and replays nothing. Over already-measured ground the correction is zero and returns before the
+guard, so it fires only where it is the lesser harm.
+
+Every other caller keeps the deferral — the drag end (the thumb owns the position, and the anchor is
+null there anyway), the jump paths (they run their own landing loops and stamp `lastUserInput`
+precisely so the anchor does not fight them), and every apply path.
+
+**What the suite cannot tell you, and a hand-check should.** Headless Chrome has no momentum
+scrolling, so the case proves the correction LANDS but not how a trackpad fling feels once it does.
+The secondary mitigation is `#184`: the floor estimate is what makes the correction large, and rule 5
+("estimate UNDER, never over") is free only for learning BELOW the reader — above them it MAXIMISES
+the delta.
+
+## The pads are the page's height, and a page that shrinks moves the reader (2026-09-10, #179)
+
+Reported: *"jump to the bottom, then scroll up a little bit, then scroll down, and it would let me
+keep scrolling (not stop at the bottom), but the screen simply refreshes the last few messages."*
+
+It is a **two-cycle**. Measured on a 120-turn session, app shell, 200px steps:
+
+| step | scrollTop | gap to bottom | mounted | top record |
+|---|---|---|---|---|
+| at tail | 12972 | 0 | 15 | `user:t119` |
+| up 200 | 12772 | 200 | 17 | `assistant:b118` |
+| down 200 | **12710** | **262** | 18 | `user:t118` |
+| down 200 | 12910 | 62 | 17 | `assistant:b118` |
+| down 200 | **12710** | **262** | 18 | `user:t118` |
+
+— and so on for ever, between exactly two positions, which is what "the screen simply refreshes the
+last few messages" is. The classic page does the same thing at 228/28, its own turn height.
+
+**No script wrote that position.** Shadowing the scroller's own `scrollTop` setter and recording the
+stack of every write shows a write on the 62px step (`restoreDomAnchor`, 16px, correct) and **none at
+all** on the 262px step: two scroll events 28ms apart, 12972 then 12710, with nothing in between.
+`overflow-anchor` is `none`, so it is not native scroll anchoring either. The browser moved the reader
+because the page it was scrolling had got **shorter**: 12710 is the bottom of a 13358px page, and the
+page is 13620px before and after. 13620 − 13358 = 262 = one turn = 78 (a prompt) + 184 (its answer).
+
+The shrink is inside `reconcile`, and it is an ORDERING bug. `reconcile` mutates the mounted set, then
+`afterMount` (the classic page's clamp pass — one batched READ over the fresh elements) and
+`measureMounted` (every mounted child's box, both pages) **force layout while the pads still describe
+the window being replaced.** For the length of that measure the content is short by exactly what the
+new window dropped off its top, a browser clamps `scrollTop` to a page that has just shrunk, and a
+reader sitting ON the tail is pulled up by the whole difference. The pads land a moment later and the
+page is its old height again — with the reader 262px above the bottom.
+
+Then it compounds: the clamp's own scroll event arrives inside the intent window, so `onScroll`
+reads it as **the reader's**, and 262px is past the 80px hold slack, so the page unfollows on a
+movement the reader never made. The next wheel re-acquires the tail, and the cycle closes.
+
+The fix is one line moved: **pad, then measure.** `updatePads()` goes above `afterMount`, and the
+trailing call stays because `measureMounted` can still rebuild the sums under it.
+
+This is not the order `#140` step 4 rejected. That one wrote the pads for the NEW window while the OLD
+elements were still mounted, which is short whenever the window grows. These pads describe exactly
+what is mounted at that instant. And its stated worry — that a measure makes the pads wrong — cannot
+happen: the pads are `prefix[lo]` and `prefix[count] − prefix[hi]`, sums over the items OUTSIDE the
+window, and a measure only ever corrects the ones inside it.
+
+**The rule it adds:** *the scrollable content must never be shorter, at any instant, than it was a
+moment ago.* Not "eventually right" — a browser reads the height synchronously, the moment anything
+forces layout, and it acts on it. The residual this leaves is a `renderItem` that reads layout mid-
+loop; neither page's does today.
+
+## Rule 5 amended: estimate CLOSE, not merely UNDER (2026-09-10, #184)
+
+Rule 5 has said, since `#107` step 3, *estimate UNDER, never over*. Its reason was sound as far as
+it went: guess HIGH and learning the real height SHRINKS the page, and a shrink above the viewport
+is a jump unless the anchor catches it. What it never said is what guessing LOW costs, and the
+answer turns out to be most of `#180`.
+
+A constant floor — 30px on the classic page, 34/40/44 on the shell — is not a neutral choice. It is
+the choice that **maximises** the distance between the guess and the truth, and that distance is
+exactly what lands above a reader when a run is mounted and measured. Measured on a 120-turn
+transcript, walking up from the tail in nine 900px steps against the floor:
+
+| | asked | turns passed | the page's own height moved |
+|---|---|---|---|
+| app shell | 8100px | 31 | **5539px (68%)** |
+| classic page | 8100px | 35 | **5643px (70%)** |
+
+Two-thirds of every pixel the reader climbed was the page growing under the correction that had to
+hold them still. `#180` made that correction land; it did nothing about its size.
+
+`#179` then removed the other half of the old fear. The pads now carry the page's height before
+anything forces layout, so a page that shrinks under a reader no longer clamps them — the anchor is
+the only thing that has to catch it, and it catches in both directions equally.
+
+So the rule becomes **estimate CLOSE, and let the floor stand only while there is nothing to learn
+from.** `HeightGuess` (shared) is a running mean over the heights this page has actually measured,
+seeded by the old floor. Both pages feed it from the one place they record a height and ask it from
+the one place they answer `estimateAt`.
+
+**Why a mean, when it is wrong about every individual record.** What a mounted run costs the sums is
+a SUM. A mean that guesses a 78px prompt high and its 184px answer low leaves the pair they form
+exact, which is the only quantity the reader can feel. That is also why the classic page keeps ONE
+mean for the whole page where the shell keeps one per unit type: the shell's three types are three
+populations that do not interleave, and the classic page's records do.
+
+**The two guards, which are the whole difference between a mean that helps and one that is worse
+than the floor.** Nothing is used until eight records have been seen, so one short record cannot set
+the page's idea of a height. And a sample is CLAMPED to four times the running mean rather than
+rejected: one enormous record must not drag the mean, but dropping it altogether biases the mean
+low, which is the old bug wearing a hat.
+
+**What it does not fix, stated plainly.** A mean shrinks the error on a page whose records are alike
+and does much less for one whose records are not. `#180`'s case now runs on `fixture_varied_prose`
+— answers of 1, 40, 5 and 18 lines, cycling — precisely because over uniform prose the guess became
+good enough that the case could no longer produce the error it exists to survive: `scrollHeight` did
+not move once across the whole walk, and the case failed its own not-vacuous guard. That guard is
+now `|Δh| > 1` rather than `Δh > 1`, because with a learned mean a record SHORTER than the mean
+shrinks the page, and a one-signed test would call a step over fresh ground vacuous.
+
+## Growth the reader ASKED for is not the tail moving away (2026-09-10, #185)
+
+Reported on v1.248.0, minutes after `#179` shipped:
+
+> "I scroll to the end, then click show more on a block, the block unfolds downward correctly
+> (anything above it is not moved), so now the page is no longer at the bottom. However, apparently
+> the engine did not think so and immediately snaps the page to the bottom."
+
+The first half of that sentence is the anchor working perfectly, and the second half is the follow
+rule working perfectly, on a page where they disagree. Parked at the tail the page is still
+`following`. The expansion makes it taller BELOW the reader, so it is no longer at its tail, and
+`convergeBottom` puts it back — scrolling away the very lines the click revealed.
+
+**The rule this adds:** *who caused the growth decides whether the pin survives it.* Growth that
+arrives on its own is the tail moving away from a follower, and the pin is what they asked for.
+Growth the reader produced by clicking is them choosing something to read, and the pin is then in
+their way. `readerReshaped()` drops it, and the pill lights up to offer it back.
+
+This does not weaken `#165`, which defers a converge while a GESTURE is in flight and KEEPS the pin.
+There the tail really did move; here nothing arrived. Same guard, opposite answer, because the
+question is different.
+
+**Unconditional, and that was a decision.** A height test was proposed and withdrawn by the owner
+within the hour — converge when the opened block is short, unfollow when it is tall — because the
+same click would then do two different things depending on the block, which nobody can predict from
+outside. "It is just one scroll away to re-pin the tail, and feels natural."
+
+**What the investigation actually cost, and the lesson in it.** The first fix covered fold heads
+only, and the case still failed on the app shell. There are TWO paths by which a reader grows the
+page, and they do not meet:
+
+| control | how the growth reaches the engine |
+|---|---|
+| a fold head | `rerender` → `render()` → `reconcile` — the engine is told |
+| **"⋯ N more lines"** | revealed in place; the engine hears it only through the ResizeObserver |
+
+The cap expander — the control the report was actually about — never reaches `rerender` on either
+page. So a fix written at the re-render seam covers the control nobody complained about and misses
+the one they did. Both seams need arming, and a scenario that clicks a fold head cannot tell you so.
+
+**A second thing the case had to learn the hard way.** A fold head is the wrong instrument for this
+measurement twice over: its click is a four-step cycle, so clicking a head the page had already
+opened CLOSES it (measured: the classic page shrank 76px and the case reported itself vacuous), and
+a capped output can sit several folds deep inside a parent whose body is `display: none`, so opening
+the innermost fold leaves the expander with no box at all. The case now opens the whole ancestor
+chain, outermost first, re-querying between clicks because a re-render replaces the nodes under it.

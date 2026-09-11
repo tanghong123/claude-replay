@@ -294,6 +294,57 @@ pub fn agent_result(call_id: &str, agent_id: &str, subagent_type: &str, s: u32) 
     )
 }
 
+/// Turn OFF the outline panes' live-only filter (#186), which is on by default.
+///
+/// A case about the whole BOARD — the order across groups, the boundary between done and
+/// pending, a pane with enough rows to scroll, a completed task's card — is a case about rows
+/// the filter exists to hide. Saying so at the top of such a case is the honest way round; the
+/// alternative is a default nobody sees in the suite, which is how a default stops being tested.
+/// A no-op where the control is absent (the classic page has no such pane) or already off.
+pub fn show_every_pane_row(tab: &headless_chrome::Tab) {
+    eval(
+        tab,
+        "(function(){ for (const id of ['tasksLiveOnly', 'agentsLiveOnly']) { const b = document.getElementById(id); if (b && b.getAttribute('aria-pressed') === 'true') b.click(); } return 'ok'; })()",
+    );
+}
+
+/// The notification that CLOSES a spawn (#26): Claude records an async agent's completion as a
+/// `queue-operation`/`enqueue` whose content carries `<task-id>`, `<status>` and a `<summary>`
+/// beginning `Agent "`. Nothing else marks a sub-agent terminal — measured while building #186's
+/// case: a spawn plus its `agent-result` leaves the agent `running`, because the result names the
+/// child but does not say it finished.
+pub fn agent_finished(agent_id: &str, description: &str, s: u32) -> String {
+    format!(
+        "{{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"{}\",\"content\":\"<task-notification><task-id>{agent_id}</task-id><status>completed</status><summary>Agent \\\"{description}\\\" finished</summary></task-notification>\"}}\n",
+        stamp(s)
+    )
+}
+
+/// A `taskq` STATE record riding a Bash result's stdout — the queue's own audit line
+/// (`##taskq/v1 {…}`, `engine/taskq.rs`), which is how a repo queue's history reaches every
+/// transcript that drove it.
+///
+/// An op that only MOVES a task this transcript never created is what materializes the #125
+/// STUB: `TaskOp::Update` finds no such task and pushes one carrying an id and a status, its
+/// subject deliberately EMPTY because per-queue integer ids collide and a title fetched by id
+/// would be confidently wrong. The id gains taskq's repo-tier `q` prefix on the way in, so a
+/// record for task `119` reaches the panel as `#q119`.
+///
+/// The command half is deliberately NOT a taskq invocation: only a `create` reads the command
+/// line (for the description taskq's record omits), and a state op is decoded from the result
+/// alone — which is what makes this fixture one call and one result.
+pub fn taskq_state(call_id: &str, task: &str, op: &str, from: &str, to: &str, s: u32) -> String {
+    let ts = stamp(s);
+    // Escaped as it must reach the file: the record is a JSON object inside a tool result's
+    // `content`, which is itself a JSON string — so every quote is `\"` and the line break
+    // before the sentinel is the two characters `\n`. A raw string keeps both literal.
+    let record = format!(
+        r#"##taskq/v1 {{\"rid\":\"r-{task}\",\"ts\":\"{ts}\",\"repo\":\"claude-replay\",\"op\":\"{op}\",\"kind\":\"state\",\"task\":\"{task}\",\"subject\":\"\",\"by\":\"claude-code/hong@aries-black\",\"changes\":{{\"status\":{{\"from\":\"{from}\",\"to\":\"{to}\"}}}}}}"#
+    );
+    let text = format!(r#"Completed task #{task}\n{record}"#);
+    tool_open_at(call_id, &ts) + &tool_result_text(call_id, &text, &ts)
+}
+
 /// An ISO timestamp `secs_ago` seconds before now — for records that must read as live.
 pub fn now_minus(secs_ago: u64) -> String {
     let t = std::time::SystemTime::now() - Duration::from_secs(secs_ago);
