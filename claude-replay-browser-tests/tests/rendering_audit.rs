@@ -1109,14 +1109,62 @@ fn scenario_a_press_that_changes_nothing_does_not_move_the_reader(
     open_everything(tab, surface);
     settle();
     settle();
-    // Walk the code size down to its FLOOR, which is where a press stops changing anything.
-    // Bounded, and the premise is CHECKED below rather than assumed: if the floor were never
-    // reached, the press would change something and the case would say so.
-    for _ in 0..14 {
-        press(tab, "-");
+    // BOTH ENDS of the size range, and — where the page offers one — a Reset that resets nothing.
+    // #173 named three no-op presses and fixing one of them is not the claim: "`-` held down at
+    // the floor, `Reset` on an already-default panel, a second click on the same switch".
+    for (key, edge) in [("-", "floor"), ("+", "ceiling")] {
+        // Walk to the edge, which is where a press stops changing anything. Bounded, and the
+        // premise is CHECKED below rather than assumed: short of the edge, the press would change
+        // something and the case would say so.
+        for _ in 0..16 {
+            press(tab, key);
+        }
+        settle();
+        no_op_press(
+            tab,
+            surface,
+            &format!("`{key}` at the size {edge}"),
+            &|tab| press(tab, key),
+        );
     }
+    // The app shell's Reset, pressed on a panel that is already at its defaults — the second of
+    // #173's three. The classic page has no such control on purpose ("a step that lands back ON
+    // the baseline RELEASES the block rather than pinning it"), so there is nothing to press.
+    if surface == Surface::AppShell {
+        let reset = "(function(){ var r = document.querySelector('[data-reading-reset]'); if (!r) { var b = document.getElementById('readingBtn'); if (b) b.click(); r = document.querySelector('[data-reading-reset]'); } if (!r) return 'no control'; r.click(); return 'pressed'; })()";
+        assert_eq!(
+            eval(tab, reset).as_str().unwrap_or(""),
+            "pressed",
+            "{surface:?}: the shell offers a Reset to press"
+        );
+        settle();
+        settle();
+        no_op_press(tab, surface, "Reset on an already-default panel", &|tab| {
+            eval(tab, reset);
+            settle();
+        });
+    }
+}
+
+/// One no-op press, measured: park the reader mid-document, arm, press, and require BOTH that
+/// the effect set is empty and that the reader did not move. Taking the premise from the same
+/// instrument is what makes this an audit rather than a regression test — a press that turns out
+/// to change something fails saying so instead of quietly testing a different claim.
+///
+/// The reader is parked MID-DOCUMENT on purpose. At the tail the page converges to the bottom on
+/// its own, so a position that was rewritten and a position that was kept look identical — the
+/// lesson #185's fixture had to learn from the other direction.
+fn no_op_press(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    what: &str,
+    press_it: &dyn Fn(&headless_chrome::Tab),
+) {
+    // Re-park from the TAIL each time rather than scrolling further up from wherever the last
+    // press left the reader: two of these in a row walked to scrollTop 0, where a rewritten
+    // position cannot be told from a kept one because there is nowhere to move to.
+    jump_to_end(tab, surface);
     settle();
-    // Park mid-document, then let the page settle so nothing is still in flight.
     harness::scroll_by(tab, surface, -2500);
     settle();
     settle();
@@ -1124,18 +1172,17 @@ fn scenario_a_press_that_changes_nothing_does_not_move_the_reader(
     let before = harness::scroll_top(tab, surface);
     assert!(
         before > 50.0,
-        "{surface:?}: the reader is parked away from the top, where a rewritten position is \
-         visible at all: scrollTop {before}"
+        "{surface:?}: the reader is parked away from the top for {what}, where a rewritten \
+         position is visible at all: scrollTop {before}"
     );
-    press(tab, "-");
+    press_it(tab);
     let report = report(tab);
     let after = harness::scroll_top(tab, surface);
-    // The premise, measured: this press really did change nothing.
     assert_eq!(
         report["changedTotal"].as_i64(),
         Some(0),
-        "{surface:?}: the press at the floor changed nothing — if it did, this case is testing a \
-         different claim than the one it states: {report}"
+        "{surface:?}: {what} changed nothing — if it did, this case is testing a different claim \
+         than the one it states: {report}"
     );
     assert_eq!(
         report["goneInView"].as_i64(),
@@ -1147,7 +1194,7 @@ fn scenario_a_press_that_changes_nothing_does_not_move_the_reader(
     assert_eq!(
         after,
         before,
-        "{surface:?}: a press that changed NOTHING moved the reader {} px. #173: `applyReading` \
+        "{surface:?}: {what} changed NOTHING and moved the reader {} px. #173: `applyReading` \
          ended in an unconditional `viewport.remeasure()`, so the height cache was cleared and \
          the position re-derived from estimates even when the page rendered identically.",
         (after - before).abs()
