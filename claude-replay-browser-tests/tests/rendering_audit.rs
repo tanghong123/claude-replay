@@ -244,7 +244,7 @@ const AUDIT_JS: &str = r##"(function () {
       before.forEach(function (a, key) {
         var id = key.slice(0, key.indexOf("/"));
         var k = before.kind[id] || "?";
-        var g = kinds[k] || (kinds[k] = { n: 0, changed: 0, records: {}, sample: [] });
+        var g = kinds[k] || (kinds[k] = { n: 0, changed: 0, records: {}, props: {}, sample: [] });
         g.n++;
         var b = after.get(key);
         if (!b) return;
@@ -253,6 +253,7 @@ const AUDIT_JS: &str = r##"(function () {
         if (!moved.length) return;
         g.changed++;
         g.records[id] = true;
+        moved.forEach(function (pr) { g.props[pr] = (g.props[pr] || 0) + 1; });
         if (g.sample.length < 6) g.sample.push(key + " <" + b.tag.toLowerCase() + "." + (b.cls || "") + "> [" + moved.slice(0, 5).join(",") + "]");
       });
       for (var k in kinds) kinds[k].records = Object.keys(kinds[k].records);
@@ -382,6 +383,16 @@ fn open_everything(tab: &headless_chrome::Tab, surface: Surface) {
             break;
         }
     }
+    // The opener's own residue, cleared. Opening a classic fold adds `.anim` for a 0.16s entry
+    // animation; the class then sits there until the block is rebuilt, at which point the
+    // animation longhands move — under whatever control happened to cause the rebuild. That is
+    // the OPENER's effect, not the control's, and leaving it in would either be misread as reach
+    // (it was, once) or have to be blessed as a benign property, which is worse.
+    eval(
+        tab,
+        "(function(){ document.querySelectorAll('.anim').forEach(function (e) { e.classList.remove('anim'); }); return 'ok'; })()",
+    );
+    settle();
 }
 
 /// Arm the instrument over everything currently mounted — and prove the page is QUIET first.
@@ -1259,4 +1270,109 @@ fn app_shell_the_claims_hold_at_every_width_and_theme() {
     let fx = fixture_audit("audit-conditions-app");
     let page = open(Surface::AppShell, &fx, 2966);
     scenario_the_claims_hold_at_every_width_and_theme(&page.tab, Surface::AppShell);
+}
+
+/// ── STAGE B, the fourth control: a preference that governs a KIND of record ─────────────────
+///
+/// CLAIM. The raw-text preference (#109) changes the rendering of `user` records and of no record
+/// of any other kind.
+///
+/// A third partition over the same snapshot, and the reason for adding it: the first three claims
+/// were about a kind of CONTENT (is it code, is it verbatim text) or about a place in the tree
+/// (this record and what it contains). This one is about a kind of RECORD, and the kind comes from
+/// each page's own stamp — `data-kind` on the classic page, `data-record-kind` on the app shell —
+/// so no vocabulary of mine enters it.
+///
+/// This case could not be written at all until two things were fixed, both of which it found:
+/// the app shell did not stamp a record id on its prose turns, so its `user` records were outside
+/// every quantifier here; and the classic page lost a fold's head step on any rebuild (#189), so
+/// a preference about user turns moved `.tool-target` on ten other kinds.
+///
+/// The driver is per-surface because the control is: both pages carry the same PREFERENCE
+/// (`READING_KEY`, folded into one in #109) but each offers it in its own chrome. What must not
+/// differ is the claim.
+fn scenario_raw_text_governs_exactly_the_user_turns(tab: &headless_chrome::Tab, surface: Surface) {
+    jump_to_end(tab, surface);
+    settle();
+    open_everything(tab, surface);
+    settle();
+    arm(tab, surface);
+    let pressed = eval(
+        tab,
+        match surface {
+            Surface::Classic => "(function(){ var b = document.getElementById('btn-raw'); if (!b) return 'no control'; b.click(); return 'pressed'; })()",
+            Surface::AppShell => "(function(){ var t = document.querySelector('[data-reading-toggle=\"rawUser\"]'); if (!t) { var r = document.getElementById('readingBtn'); if (r) r.click(); t = document.querySelector('[data-reading-toggle=\"rawUser\"]'); } if (!t) return 'no control'; t.click(); return 'pressed'; })()",
+        },
+    );
+    assert_eq!(
+        pressed.as_str().unwrap_or(""),
+        "pressed",
+        "{surface:?}: the page offers the raw-text preference: {pressed}"
+    );
+    settle();
+    settle();
+    let kinds = probe(tab, "window.__audit.reportKinds()");
+    let by_kind = kinds.as_object().cloned().unwrap_or_default();
+    assert!(
+        by_kind.len() > 5,
+        "{surface:?}: several kinds are under measurement, or the claim is vacuous: {kinds}"
+    );
+    assert!(
+        by_kind
+            .get("user")
+            .and_then(|k| k["changed"].as_i64())
+            .unwrap_or(0)
+            > 0,
+        "{surface:?}: the preference reached the USER turns at all — the half a control wired to a \
+         selector list fails (#161, #173): {kinds}"
+    );
+    // Records of other kinds may move ONLY in the affordance/geometry category — the same two
+    // reasons named at `geometry_or_affordance`, for the same reason. Measured on the app shell:
+    // a slash-command card carries its own per-turn raw toggle (`components.js` emits one for
+    // every user and assistant turn), and the page-wide preference LIGHTS IT UP. That is a
+    // control showing its own state, exactly like the classic page's `.ms-wrap` button under
+    // `w`, and its record kind is `command` because the DOM's kind vocabulary and the rendering
+    // are not the same thing: a slash-command card is a USER turn that renders as a command.
+    let strayed: Vec<String> = by_kind
+        .iter()
+        .filter(|(kind, _)| kind.as_str() != "user")
+        .filter_map(|(kind, k)| {
+            let odd: Vec<&String> = k["props"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(prop, _)| prop)
+                .filter(|prop| !geometry_or_affordance(prop))
+                .collect();
+            (!odd.is_empty()).then(|| {
+                format!(
+                    "{kind} moved {odd:?} on {} of {} elements, e.g. {:?}",
+                    k["changed"], k["n"], k["sample"]
+                )
+            })
+        })
+        .collect();
+    assert!(
+        strayed.is_empty(),
+        "{surface:?}: the raw-text preference is about USER turns, and it changed the RENDERING \
+         of records of other kinds: {strayed:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn classic_page_raw_text_governs_exactly_the_user_turns() {
+    let _serial = serial();
+    let fx = fixture_audit("audit-raw-classic");
+    let page = open(Surface::Classic, &fx, 2967);
+    scenario_raw_text_governs_exactly_the_user_turns(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_raw_text_governs_exactly_the_user_turns() {
+    let _serial = serial();
+    let fx = fixture_audit("audit-raw-app");
+    let page = open(Surface::AppShell, &fx, 2968);
+    scenario_raw_text_governs_exactly_the_user_turns(&page.tab, Surface::AppShell);
 }
