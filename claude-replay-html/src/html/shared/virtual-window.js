@@ -727,8 +727,28 @@ class VirtualWindow {
    *  whole distinction. So every path where the growth is not the reader's keeps the converge it
    *  has today, which is why this could not be "delete the converge from `render`".
    *
-   *  A no-op when not following, so a call site may arm it without asking. */
+   *  Safe to arm from any control without asking: unpinned, the only thing it does is release the
+   *  click's intent (#190, below) — and every caller IS a click, on both pages. */
   readerReshaped() {
+    // A reshape is not a scroll, so the intent that clicked it must not own the position (#190).
+    // `noteIntent` binds pointerdown, so the click that opened this fold or expander started
+    // the `userIntentMs` window — and inside that window `restoreDomAnchor` DEFERS its
+    // correction as owed (#132 step 3) and `scheduleSettle` DROPS it (#138). Right for a scroll:
+    // paying an old position after the reader moved drags them back. Wrong here: no scroll
+    // event fired, the reader has not moved, and the correction being withheld is this engine's
+    // own re-measure — the case #180 already named on the scroll path, "not writing does not
+    // leave the reader alone, it displaces them by exactly the correction being withheld".
+    // Measured on the owner's 1210-turn session: the re-render re-ranged and the top pad moved
+    // by 14,243px, scrollTop by 828, and the reader was left in pad thirteen thousand pixels
+    // below the content — blank — until later measures landed them twenty turns away. Even
+    // "Show 2 more" did it. Ten synthetic probes had all held, because a synthetic `click()`
+    // fires no pointerdown and never started the window.
+    //
+    // Clearing the stamp here, and only here, is exactly the #185 rule taken one step: who
+    // caused the growth decides whether the pin survives it — and whether the correction waits.
+    // `lastInputStamp` is left alone; it is the EVENT clock `onScroll` classifies against, and a
+    // scroll that follows this click is still the reader's own.
+    this.lastUserInput = -1e9;
     if (!this.following) return;
     this.following = false;
     this.followChanged();

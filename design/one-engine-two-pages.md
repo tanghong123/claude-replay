@@ -889,3 +889,68 @@ opened CLOSES it (measured: the classic page shrank 76px and the case reported i
 a capped output can sit several folds deep inside a parent whose body is `display: none`, so opening
 the innermost fold leaves the expander with no box at all. The case now opens the whole ancestor
 chain, outermost first, re-querying between clicks because a re-render replaces the nodes under it.
+
+## A reshape is not a scroll (2026-09-11, #190)
+
+Reported on v1.252.0, at turn 1204 of a 1210-turn session, pinned at the tail:
+
+> "click on 'show 8 more'; the turn header shows 'Turn 1202' and the rest of the view blank; after
+> a few seconds the turn header shows 'Turn 1181' and the rest of the view blank; even the 'Turn
+> 1181' line disappears, and the page is still blank; 'Turn 1182' reappears with the page filled
+> with contents. From 2) to 5), I did nothing to the screen."
+
+Measured on that session, on that monitor: the click's re-render re-ranged the window and moved
+the top pad by 14,243px, `scrollTop` moved 828, and the last mounted record's bottom sat 13,195px
+ABOVE the viewport — the reader was in the bottom pad. Even "Show 2 more" did it.
+
+**The cause is a rule meant for scrolling, applied to a click.** `noteIntent` binds `pointerdown`,
+so every click starts the `userIntentMs` window in which `readerOwnsPosition()` is true. Inside it
+`restoreDomAnchor` DEFERS its correction as owed (`#132` step 3) and `scheduleSettle` DROPS it
+(`#138`) — right for a scroll, where paying an old position after the reader moved drags them
+back. But a click on a control moves nothing: no scroll event fires, the reader has not moved, and
+what is withheld is the engine's own re-measure. `#180` had already named this on the scroll path —
+"not writing does not leave the reader alone, it displaces them by exactly the correction being
+withheld" — and at a 1200-turn scale that correction is fourteen thousand pixels.
+
+**The rule this adds:** *the click that reshaped the page does not own the position the reshape has
+to correct.* `readerReshaped()` — the seam `#185` put at every control that grows the page — now
+also clears `lastUserInput`, so the correction lands at once. It is the `#185` rule taken one step:
+who caused the growth decides whether the pin survives it, and whether the correction waits. The
+EVENT clock (`lastInputStamp`) is left alone: a scroll that follows the click is still the reader's
+own, and `onScroll` classifies against that stamp, not this one.
+
+**Why no case had caught it, and what the case needed.** Ten fixture shapes, four real sessions and
+the owner's own monitor had all held, because a synthetic `element.click()` fires `click` and nothing
+else — no `pointerdown`, no intent window, and the correction always landed. The scenario now
+dispatches the `pointerdown` a finger makes, and that one line is the whole difference between a
+green case and the bug. Two more traps in writing it: on the classic page every third record at a
+process tail is an absorbed `tool_result` with no box, so "the last closed fold" was a HIDDEN one
+whose header top of 0 fires `toggleFold`'s ease-to-104 smooth scroll — the case now clicks a fold
+whose header is visible and clear of the sticky bars; and "blank" read off `elementFromPoint` is
+wrong wherever chrome is — the sticky turn bar at 5% and the "new" badge at 95% are not pads. The
+predicate is now: no probe lands in a pad (`.vpad`, `.virtual-pad`), and the TEXT at 30/50/70% of
+the viewport is the same text at the same height, within 2px — exact on both pages where "the record
+at the middle" is not (a whole turn is one `data-turn` on the shell; a tail row is 32px on classic).
+
+**Honest limit.** The classic mock is RED on the old engine (the text at 30% changes; at50 moves
+seven rows) and green with the fix. The app-shell mock holds the same predicate but does NOT fail on
+the old engine — its click re-render keeps a valid DOM anchor and the correction lands — so for the
+shell the evidence is the owner's session on a released binary (strands) against a monitor built
+with the fix (holds, 3s, "Show 2 more").
+
+**The one interaction the fix introduced.** The classic page eases a fold head that sits under
+the sticky bars to 104px with a SMOOTH scroll, and a correction that now lands mid-ease cancels it
+(measured: a header at 80px stopped 8px into a 24px ease; before the fix it reached 96). So
+`toggleFold` stamps the ease as intent, as the drag auto-scroll already does — for its 300ms the
+position is the page's, the observer's corrections are deferred, and the anchor is re-read where the
+ease ends. The vocabulary was already there: `markIntent` is "the page is moving the reader on their
+behalf", and `readerReshaped` is "the reader changed the page, not their position".
+
+**The precaution audit found the sibling (`#191`).** A long WHEEL jump from the tail into
+unmeasured ground — −40,000px, and on the classic page even −6,000 — leaves the reader in a pad on
+BOTH surfaces, at rest, until they scroll again: `updateWindow` captures its anchor before the mount,
+no old child is visible after a jump that size, the anchor is null, and when the measure moves the
+`HeightGuess` mean the top pad grows by thousands of pixels under a `scrollTop` nobody corrects.
+That is the same "blank, then scroll a bit and content appears" the owner described, by a different
+door, and it is queued as its own task with the fix shape (hold the MODEL position when there is no
+DOM anchor).

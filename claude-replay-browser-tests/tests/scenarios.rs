@@ -4347,6 +4347,234 @@ fn app_shell_a_task_with_no_title_says_why() {
     scenario_a_task_with_no_title_says_why(&page.tab, Surface::AppShell, &fx);
 }
 
+/// A LONG session whose tail turn is a process surface with many events (#190). Three shapes
+/// were tried before this one produced a "Show N more" at all: thinking + tool pairs collapse
+/// into one `act`, bare consecutive tool calls fold into one activity record, and only assistant
+/// COMMENTARY carrying a tool_use keeps each event its own view (view-model.js groups them and
+/// flushes on an assistant record only when `phase !== "commentary"`). The classic page has no
+/// process surface; its equivalent for this case is a fold head in the same tail turn.
+fn fixture_process_tail(name: &str, turns: usize, events: usize) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = String::new();
+    for i in 0..turns {
+        t += &user_at(
+            &format!("question {i}: a prompt with enough words to be real"),
+            &now_minus(90000 - i as u64 * 40),
+        );
+        let lines = [1usize, 40, 5, 18][i % 4];
+        t += &assistant_at(
+            &format!(
+                "answer {i}: {}",
+                "a paragraph of prose to make a line of real height. ".repeat(lines)
+            ),
+            &now_minus(89990 - i as u64 * 40),
+        );
+        if i % 3 == 0 {
+            let id = format!("p{i}");
+            t += &tool_open_at(&id, &now_minus(89985 - i as u64 * 40));
+            t += &tool_result_lines(
+                &id,
+                [4usize, 90, 12, 40][i % 4],
+                &now_minus(89980 - i as u64 * 40),
+            );
+        }
+    }
+    t += &user_at("question last: work through all of it", &now_minus(600));
+    for k in 0..events {
+        let id = format!("tail-{k}");
+        let ts = now_minus(590 - k as u64 * 3);
+        t += &format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"Step {k}: checking the next thing before moving on.\"}},{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"echo step {k}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
+        );
+        t += &tool_result_lines(&id, 30 + (k % 7) * 20, &now_minus(589 - k as u64 * 3));
+    }
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: turns as u32 + 1,
+    }
+}
+
+/// #190. A control the reader CLICKS at the tail must not strand them in blank space.
+///
+/// The owner's report: pinned at turn 1204, click "Show 8 more" on the process surface, and the
+/// view goes blank — the sticky header walks 1202, 1181, nothing, 1182 over several seconds with
+/// no further input. Measured on their own monitor: the top pad shrank by 14,243px as the
+/// re-render re-measured records and moved the estimate, scrollTop moved +828, and the last
+/// mounted record's bottom sat 13,195px ABOVE the viewport. Even "Show 2 more" does it.
+///
+/// THE CAUSE IS A RULE MEANT FOR SCROLLING, applied to a click. `noteIntent` binds pointerdown, so
+/// a click starts the `userIntentMs` window in which `readerOwnsPosition()` is true; the
+/// correction `restoreDomAnchor` would write is deferred as `owed` (#132 step 3) and
+/// `scheduleSettle` DROPS it (#138: never replay an old position after the reader moves). Right
+/// for a scroll. But a click on a control moves nothing — no scroll event fires — and what is
+/// withheld is the engine's own re-measure, which #180 already named on the scroll path: "Not
+/// writing does not leave the reader alone — it displaces them by exactly the correction being
+/// withheld." At a 1200-turn scale that correction is fourteen thousand pixels.
+///
+/// WHY NO CASE CAUGHT IT: a synthetic `element.click()` fires `click` and nothing else, so no
+/// probe ever registered intent and the correction always landed at once. Ten fixture shapes,
+/// four real sessions and the owner's own monitor all held for exactly that reason. This case
+/// dispatches the `pointerdown` a finger does.
+fn scenario_a_clicked_control_at_the_tail_does_not_strand_the_reader(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    settle();
+    let follow = match surface {
+        Surface::Classic => "(function(){ var s = document.scrollingElement; return { following: document.body.classList.contains('following'), gap: Math.round(s.scrollHeight - innerHeight - s.scrollTop) }; })()",
+        Surface::AppShell => "(function(){ var j = document.getElementById('jumpToBottom'); var s = document.querySelector('.transcript'); return { following: j ? j.getAttribute('aria-hidden') === 'true' : null, gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+    };
+    for _ in 0..10 {
+        let f = probe(tab, follow);
+        if f["following"].as_bool() == Some(true) && f["gap"].as_f64().unwrap_or(99.0) < 3.0 {
+            break;
+        }
+        jump_to_end(tab, surface);
+        settle();
+    }
+    let pinned = probe(tab, follow);
+    assert_eq!(
+        pinned["following"].as_bool(),
+        Some(true),
+        "{surface:?}: the reader is PINNED before the click — the report begins at the tail: {pinned}"
+    );
+    // What the reader can see: the record at the middle of the viewport, and whether anything is
+    // there at all. `elementFromPoint` at three heights — a rect is not visibility (#98).
+    let state = match surface {
+        Surface::Classic => "(function(){ var s = document.scrollingElement; var at = function (f) { var e = document.elementFromPoint(Math.round(innerWidth/2), Math.round(innerHeight*f)); if (!e) return 'NOTHING'; var b = e.closest('#stream .blk'); if (b) return 'rec:' + (b.dataset.turn || b.id); return 'BLANK:' + (e.id || e.className || e.tagName); }; var kids = [...document.querySelectorAll('#stream .blk')]; var handles = [0.3, 0.5, 0.7].map(function (f) { var e = document.elementFromPoint(Math.round(innerWidth/2), Math.round(innerHeight*f)); var t = e ? (e.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80) : ''; return { f: f, text: t, top: e ? Math.round(e.getBoundingClientRect().top) : null }; }); return { top: Math.round(s.scrollTop), h: Math.round(s.scrollHeight), at05: at(0.05), at50: at(0.5), at95: at(0.95), mounted: kids.length, handles: handles }; })()",
+        Surface::AppShell => "(function(){ var s = document.querySelector('.transcript'); var r = s.getBoundingClientRect(); var at = function (f) { var e = document.elementFromPoint(Math.round(r.left + r.width/2), Math.round(r.top + r.height*f)); if (!e) return 'NOTHING'; var t = e.closest('[data-turn]') || e.closest('[data-record-id]'); if (t) return 'rec:' + (t.dataset.turn || t.dataset.recordId); return 'BLANK:' + (e.id || String(e.className).split(' ')[0] || e.tagName); }; var kids = [...document.querySelector('.virtual-window').children]; var last = kids[kids.length-1]; var handles = [0.3, 0.5, 0.7].map(function (f) { var e = document.elementFromPoint(Math.round(r.left + r.width/2), Math.round(r.top + r.height*f)); var t = e ? (e.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80) : ''; return { f: f, text: t, top: e ? Math.round(e.getBoundingClientRect().top) : null }; }); return { top: Math.round(s.scrollTop), h: Math.round(s.scrollHeight), at05: at(0.05), at50: at(0.5), at95: at(0.95), mounted: kids.length, lastBottom: last ? Math.round(last.getBoundingClientRect().bottom - r.top) : -1, handles: handles }; })()",
+    };
+    let before = probe(tab, state);
+    // LIVE, as the owner's session was: records arriving make the pull loop re-range the window
+    // after the click, and it is THAT correction — mounting records above the reader whose
+    // estimate was wrong (#180) — that the intent window swallows. On a static mock the shell's
+    // range never moves and nothing is ever owed; measured, and the case was green for the
+    // wrong reason.
+    let mut script: Vec<String> = Vec::new();
+    for k in 0..12u64 {
+        let id = format!("live-{k}");
+        script.push(format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"Live step {k}: still working through it.\"}},{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"echo live {k}\"}}}}]}},\"timestamp\":\"{}\"}}\n",
+            now_minus(120 - k * 2)
+        ));
+        script.push(tool_result_lines(
+            &id,
+            40 + (k as usize % 5) * 25,
+            &now_minus(119 - k * 2),
+        ));
+    }
+    let growth = LiveGrowth::start(fx.path.clone(), script, Duration::from_millis(300));
+    // The click A FINGER MAKES: a pointerdown, then the click. The pointerdown is the whole case.
+    let clicked = eval(
+        tab,
+        match surface {
+            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-open=\"0\"]')].filter(function (x) { var hh = x.querySelector(':scope > .fold-h'); if (!hh) return false; var r = hh.getBoundingClientRect(); return r.height > 0 && r.top >= 96 && r.bottom <= innerHeight; }).pop(); if (!f) return 'none'; var h = f.querySelector(':scope > .fold-h'); if (!h) return 'none'; h.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', buttons: 1 })); h.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse' })); h.click(); return 'fold ' + f.id; })()",
+            Surface::AppShell => "(function(){ var b = [...document.querySelectorAll('.virtual-window [data-process-more]')].map(function (x) { var m = /Show (\\d+) more/.exec(x.textContent || ''); return { el: x, n: m ? Number(m[1]) : 0 }; }).sort(function (p, q) { return q.n - p.n; })[0]; if (!b || !b.el) return 'none'; var l = b.el.textContent.trim().slice(0, 18); b.el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', buttons: 1 })); b.el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse' })); b.el.click(); return l; })()",
+        },
+    );
+    assert_ne!(
+        clicked.as_str().unwrap_or("none"),
+        "none",
+        "{surface:?}: the fixture offers a control to click at the tail"
+    );
+    // Give the settle its whole window and then some: the drop happens when the intent timer
+    // fires, `userIntentMs` after the click, and the owner's walk took several seconds.
+    std::thread::sleep(Duration::from_millis(1500));
+    let after = probe(tab, state);
+    println!("STRAND {surface:?} clicked {clicked}\n  before {before}\n  after  {after}");
+    // Stranded means a probe lands in a PAD — the space the engine holds for records it has not
+    // mounted, which is what the owner saw as blank. The sticky bar, the "new" badge and the
+    // page's end padding are chrome, and a probe that lands on them says nothing either way.
+    let in_pad = |v: &serde_json::Value| {
+        ["at05", "at50", "at95"]
+            .iter()
+            .filter(|k| {
+                v[*k]
+                    .as_str()
+                    .map(|s| s.starts_with("BLANK:vpad") || s.starts_with("BLANK:virtual-pad"))
+                    .unwrap_or(false)
+            })
+            .count()
+    };
+    assert_eq!(
+        in_pad(&after),
+        0,
+        "{surface:?}: the reader is stranded in BLANK space (a pad) after clicking `{}` — the \
+         re-render's correction was deferred as reader intent and then dropped, so the content \
+         moved and scrollTop did not (#190).\n  before: {before}\n  after:  {after}",
+        clicked.as_str().unwrap_or("")
+    );
+    // …and what was under the reader's eye is still there, at the same height: the text at 30,
+    // 50 and 70% of the viewport before the click is the text there after it, within 2px. On
+    // the classic page the rows at the tail are 32px tall, on the app shell a whole turn is one
+    // `data-turn`; text is the one measure that is exact on both.
+    for (b, a) in before["handles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(after["handles"].as_array().unwrap())
+    {
+        if b["text"].as_str().unwrap_or("").is_empty() {
+            continue;
+        }
+        assert_eq!(
+            a["text"],
+            b["text"],
+            "{surface:?}: the text at {} of the viewport changed after clicking `{}` — the reader \
+             was displaced (#190).\n  before: {before}\n  after:  {after}",
+            b["f"],
+            clicked.as_str().unwrap_or("")
+        );
+        let drift = (a["top"].as_f64().unwrap_or(1e9) - b["top"].as_f64().unwrap_or(0.0)).abs();
+        assert!(
+            drift <= 2.0,
+            "{surface:?}: the text at {} of the viewport moved {drift}px after clicking `{}` \
+             (#190).\n  before: {before}\n  after:  {after}",
+            b["f"],
+            clicked.as_str().unwrap_or("")
+        );
+    }
+    assert_eq!(
+        after["at50"], before["at50"],
+        "{surface:?}: …and the record at the middle of the viewport is the one they were reading: \
+         before {before}, after {after}"
+    );
+    drop(growth);
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_clicked_control_at_the_tail_does_not_strand_the_reader() {
+    let _serial = serial();
+    let fx = fixture_process_tail("scenario-strand-classic", 1200, 22);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_clicked_control_at_the_tail_does_not_strand_the_reader(
+        &page.tab,
+        Surface::Classic,
+        &fx,
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_clicked_control_at_the_tail_does_not_strand_the_reader() {
+    let _serial = serial();
+    let fx = fixture_process_tail("scenario-strand-app", 1200, 22);
+    let page = open(Surface::AppShell, &fx, 2948);
+    scenario_a_clicked_control_at_the_tail_does_not_strand_the_reader(
+        &page.tab,
+        Surface::AppShell,
+        &fx,
+    );
+}
+
 /// A fixture whose tail holds a Bash call whose command runs far past the head's one line.
 fn fixture_long_command(name: &str) -> Fixture {
     let base = base(name);

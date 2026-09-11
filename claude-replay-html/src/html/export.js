@@ -2468,7 +2468,16 @@
     var y1 = h.getBoundingClientRect().top;
     if (Math.abs(y1 - y0) > 1) window.scrollBy(0, y1 - y0);
     var top = h.getBoundingClientRect().top;
-    if (top < 96) window.scrollBy({ top: top - 104, behavior: "smooth" });
+    if (top < 96) {
+      // The ease is the PAGE moving the reader, over a few frames, while the fold body's own
+      // animation keeps the observer measuring. `readerReshaped` above released the click's intent
+      // so the growth's correction lands at once (#190) — and a correction written mid-ease cancels
+      // the smooth scroll (measured: the header stopped at 80px, 8px into a 24px ease). Stamp the
+      // ease as intent, exactly as the drag auto-scroll does: for its 300ms the position is the
+      // page's, the observer's corrections are deferred, and the anchor is re-read where it ends.
+      vw.markIntent();
+      window.scrollBy({ top: top - 104, behavior: "smooth" });
+    }
   }
   function allFolds(open) {
     // Record-level (#50): applies to every fold in the session, materialized or not,
