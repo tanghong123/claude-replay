@@ -1141,3 +1141,22 @@ carry its height profile into a short synthetic one.
 (`dirtyFrom` every second with nothing but the last record changed); with rule 1 that costs a
 measure and nothing else, and it is its own task. The classic page's one-mean sensitivity — 8,715
 records at a 30px floor make every fraction of a pixel a page — is a design question for `#195`.
+
+**The third report, replayed after the release (2026-09-12).** "Every time I attempt to unfold and
+read, then scroll, the page jumps to somewhere else." On hermetic copies of the knack session, static
+and with its real tail appended live, on both surfaces: open a closed fold that is in view with a
+pointer gesture, read for a second, wheel six times down and six times up by 400px, close it, four
+more each way — at three positions (two screens above the tail, mid-session, three quarters in).
+Forty-four wheel phases: the record under the reader moved by what was asked within 1px every time,
+was never unmounted, and the turn under the reader never went the wrong way; the click itself moved
+the fold head by at most 1px. What a reader can still see is the scrollbar: with about fifty
+measured records of 2,756 carrying the mean, one measurement moves the estimate by about a pixel
+and the thumb by up to 7.6k px at rest — the restore holds the content, and the deltas are in the
+trace — so the estimate's stability is `#195`/`#196`'s question, not a residue of this one.
+
+The same probe reproduced the navigator report the earlier probes had missed. At the tail the app
+shell names the turn of the first unit that STARTS in the viewport, so a short last turn leaves the
+pane on the turn before it (the live copy: pane 183, last turn 184), and a unit that spans the whole
+viewport leaves it on nothing (the static copy: no row current, bar off). The classic page's spy has
+both rules the app shell lacks — the last header above the line names the turn, and at the bottom the
+last turn wins (#89). That is `#199`, its own change.
