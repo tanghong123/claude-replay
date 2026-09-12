@@ -281,7 +281,7 @@ export class Viewport extends VirtualWindow {
     }
     this.actions.followChanged?.();
     this.window.querySelector(`[data-block-index="${recordIndex}"]`)?.classList.add("source-flash");
-    this.syncAnchor();
+    this.syncPosition();
     this.scheduleRemember();
     return true;
   }

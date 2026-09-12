@@ -133,12 +133,17 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   `chrome --headless=new --enable-logging=stderr --v=0 <url>` prints `CONSOLE … Uncaught …`.
   **The viewport trace (#192)** is how a scroll/blank-space report carries its own geometry:
   open either page with `?trace=viewport` (or set `localStorage.viewportTrace = "1"` to keep it
-  across reloads) and the shared engine records every decision it makes — each reconcile, window
-  update, scroll verdict, anchor restore (wrote / deferred / unmounted), model-anchor hold, estimate
-  application (pending / applied — the sums take a new estimate only at rest, #194), settle,
-  converge pass, reshape and re-measure — with the geometry it saw: the mounted range and count,
-  scrollTop and scrollHeight, both pad heights, the anchor, the applied and live estimate, and the ms
-  since the reader's last input. It lands in a 500-entry ring at `window.__viewportTrace`
+  across reloads) and the shared engine records every decision it makes — one entry per
+  TRANSACTION under its cause (`update`, `reconcile`, `converge`, `measure`, `displaced`, `grown`,
+  `estimates`, `remeasure`, `render`: the position it started from, whether and how it placed, the
+  range it mounted and how it chose it; #196) and the seams inside them: each `reconciled` mount,
+  every `place` (the source it wrote from, the offset, the correction and the reader's drift) or
+  `place:unmounted`, the scroll verdict (`scroll`, and `scroll:own` for the engine's own write coming
+  back as an event), estimate application (`estimates:pending` / `estimates:applied` — the sums take
+  a new estimate only at rest, #194), a tail placement waiting for rest (`tail:deferred`) and the
+  `rest` that runs what waited, `reshaped` and `measured` — with the geometry it saw: the mounted
+  range and count, scrollTop and scrollHeight, both pad heights, the stored position and what is
+  pending, the applied and live estimate, and the ms since the reader's last input. It lands in a 500-entry ring at `window.__viewportTrace`
   (`copy(window.__viewportTrace)` in the console pastes it into a bug) and as one `console.debug`
   line per entry under the `[viewport]` prefix (filter the console on it). Off, no entry is
   built — `trace()` returns on one boolean — though each seam still evaluates the fields it

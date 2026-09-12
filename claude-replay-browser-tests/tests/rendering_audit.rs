@@ -122,7 +122,7 @@ fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
     let sid = fx.path.file_stem().unwrap().to_string_lossy().to_string();
     let (query, ready, diag) = match surface {
         Surface::Classic => (format!("?ui=classic&session={sid}"), "document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3", "document.querySelectorAll('#stream [data-turn]').length"),
-        Surface::AppShell => (format!("?ui=app&session={sid}"), "document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3", "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : 'no window'"),
+        Surface::AppShell => (format!("?ui=app&session={sid}{}", if std::env::var("AUDIT_TRACE").is_ok() { "&trace=viewport" } else { "" }), "document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3", "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : 'no window'"),
     };
     monitor.open(&tab, &query);
     harness::until(
@@ -1271,7 +1271,13 @@ fn scenario_the_claims_hold_at_every_width_and_theme(tab: &headless_chrome::Tab,
         settle();
 
         arm(tab, surface);
+        if std::env::var("AUDIT_TRACE").is_ok() {
+            println!("TRACE-BEFORE {condition} {}", eval(tab, "(function(){ var t = window.__viewportTrace || []; return JSON.stringify({ n: t.length, last: t[t.length-1] }); })()"));
+        }
         press(tab, "-");
+        if std::env::var("AUDIT_TRACE").is_ok() {
+            println!("TRACE-AFTER {condition} {}", eval(tab, "(function(){ var t = window.__viewportTrace || []; return JSON.stringify(t.slice(-40)); })()"));
+        }
         let size = report(tab);
         assert_governs(
             &size,

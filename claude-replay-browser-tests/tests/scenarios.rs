@@ -822,10 +822,16 @@ fn app_shell_corrects_a_growth_above_before_paint() {
 
 // ── scenario: the reader's own motion is never fought (#132 step 3) ─────────────────────────
 
-/// While the reader is moving the view — a wheel still travelling as a fling, a thumb held —
-/// the page must not write `scrollTop` underneath them: the fling stutters or dies, the thumb
-/// jumps under the pointer. A correction owed during that window is paid at its end instead, so
-/// nothing is lost. The probe counts the writes the page makes to its own scroller.
+/// While the reader is moving the view — a wheel still travelling as a fling — growth arriving
+/// must not move what they are looking at. Until #196 this case asserted the POLICY that held it:
+/// no write to `scrollTop` while the intent window is open, the correction owed and paid at rest.
+/// #196 stage 2 replaced the policy with the invariant it stood for (framework I7): a change that
+/// has moved the DOM is placed back at once, and the write undoes exactly the engine's own
+/// displacement — so a write under the wheel is a no-op for the reader, and withholding it is the
+/// displacement (#180). What the reader can measure is what is asserted: the record under them
+/// and its screen offset are the same after the storm as before, to the pixel. The writes are
+/// still counted and printed — on the classic page the growth displaces the reader by a few
+/// pixels and one write puts them back; the old engine deferred that write and then dropped it.
 fn scenario_the_readers_motion_is_never_fought(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -843,6 +849,11 @@ fn scenario_the_readers_motion_is_never_fought(
         Surface::AppShell => "(function(){ window.__writes = 0; var el = document.querySelector('.transcript'); var d = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop'); Object.defineProperty(el, 'scrollTop', { get: function () { return d.get.call(el); }, set: function (v) { window.__writes++; d.set.call(el, v); } }); return 'ok'; })()",
     };
     eval(tab, install);
+    let (key_before, top_before) = harness::view_anchor(tab, surface);
+    assert!(
+        !key_before.is_empty(),
+        "{surface:?}: the reader is on a record before the storm"
+    );
     // The reader is mid-fling: a wheel, and then growth arriving inside the intent window.
     let wheel = match surface {
         Surface::Classic => "window",
@@ -863,18 +874,29 @@ fn scenario_the_readers_motion_is_never_fought(
     }
     let during = eval(tab, "window.__writes").as_i64().unwrap_or(-1);
     growth.finish(Duration::from_secs(10));
+    println!("{surface:?}: the page wrote the scroll offset {during} time(s) during the storm");
+    // The reader's view did not move: the same record, at the same screen offset, through growth
+    // that arrived while the intent window was open the whole time. Nothing was owed and nothing
+    // was dropped (#138): a placement that reads where they are replays nothing.
+    let (key_during, top_during) = harness::view_anchor(tab, surface);
     assert_eq!(
-        during, 0,
-        "while the reader's own motion is in flight the page wrote the scroll offset {during} time(s) — a fling fights every one of them"
+        key_during, key_before,
+        "{surface:?}: the record under the reader is the one they had before the growth"
     );
-    // …and the correction was not dropped: once the motion stops the reader is holding the same
-    // record, which is what the owed correction pays for.
-    settle();
-    settle();
-    let (key, _) = harness::view_anchor(tab, surface);
     assert!(
-        !key.is_empty(),
-        "after the motion stopped the reader is on a record"
+        (top_during - top_before).abs() <= 1.0,
+        "{surface:?}: …at the same screen offset: {top_before} -> {top_during} (writes: {during})"
+    );
+    settle();
+    settle();
+    let (key, top) = harness::view_anchor(tab, surface);
+    assert_eq!(
+        key, key_before,
+        "{surface:?}: once the motion stops the reader is still holding that record"
+    );
+    assert!(
+        (top - top_before).abs() <= 1.0,
+        "{surface:?}: …where it was: {top_before} -> {top} (writes during: {during})"
     );
 }
 
@@ -6602,15 +6624,24 @@ fn scenario_a_converge_yields_to_the_reader(
         Surface::Classic => "window",
         Surface::AppShell => scroller,
     };
-    for _ in 0..25 {
-        eval(
-            tab,
-            &format!(
-                "(function(){{ var s = {scroller}; {target}.dispatchEvent(new WheelEvent('wheel', {{deltaY: -7, bubbles: true}})); s.scrollTo({{ top: Math.max(0, s.scrollTop - 7), behavior: 'instant' }}); return 'ok'; }})()"
-            ),
-        );
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    // Driven from INSIDE the page: a harness round trip per notch put a nominal 200ms cadence past
+    // the classic page's 300ms window under load (measured: two of three runs alone, the reader
+    // "ended 0px from the tail"), and a notch later than the window is, by the rule this case
+    // holds, a hand that has paused — the converge it then lets through is the policy, not the
+    // bug. In-page timing keeps the cadence the case describes.
+    eval(
+        tab,
+        &format!(
+            "(function(){{ var s = {scroller}; var t = {target}; window.__crawl = {{ n: 0, done: false }}; var id = setInterval(function(){{ t.dispatchEvent(new WheelEvent('wheel', {{deltaY: -7, bubbles: true}})); s.scrollTo({{ top: Math.max(0, s.scrollTop - 7), behavior: 'instant' }}); if (++window.__crawl.n >= 25) {{ clearInterval(id); window.__crawl.done = true; }} }}, 200); return 'started'; }})()"
+        ),
+    );
+    harness::until(
+        tab,
+        "!!(window.__crawl && window.__crawl.done)",
+        "the slow crawl to finish its 25 notches",
+        Duration::from_secs(20),
+        "window.__crawl ? window.__crawl.n : -1",
+    );
     growth.finish(Duration::from_secs(30));
     let gap = eval(
         tab,
@@ -8915,7 +8946,7 @@ fn scenario_growth_above_the_reader_during_a_fling_holds(
 
 #[test]
 #[ignore = "needs a local Chrome"]
-fn classic_page_known_red_196_holds_through_growth_above_the_reader_during_a_fling() {
+fn classic_page_holds_through_growth_above_the_reader_during_a_fling() {
     let _serial = serial();
     let fx = fixture("scenario-fling-classic", 40);
     let page = open(Surface::Classic, &fx, 0);
@@ -8924,7 +8955,7 @@ fn classic_page_known_red_196_holds_through_growth_above_the_reader_during_a_fli
 
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn app_shell_known_red_196_holds_through_growth_above_the_reader_during_a_fling() {
+fn app_shell_holds_through_growth_above_the_reader_during_a_fling() {
     let _serial = serial();
     let fx = fixture("scenario-fling-app", 40);
     let page = open(Surface::AppShell, &fx, 2975);

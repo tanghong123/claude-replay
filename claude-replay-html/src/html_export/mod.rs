@@ -3427,17 +3427,19 @@ mod tests {
         // Following: the tail moved away and is converged back on. Reading: what they are
         // looking at moved, and the anchor puts it back.
         assert!(engine.contains(
-            "if (this.following) { if (this.gapToBottom() > 1) this.convergeBottom(); }\n    else this.place(this.readerAnchor());"
+            "if (this.following && this.gapToBottom() <= 1) return;\n    this.transact(\"displaced\", { spontaneous: true });"
         ));
         // The position is KEPT — a change heard after the fact is measured against where the
-        // reader was, not against the view it has already moved — marked stale the instant a
-        // scroll begins, then re-read once the window has caught up (#196 stage 1).
-        assert!(engine.contains("if (this.position) this.position.stale = true;\n    // …and a correction owed from BEFORE they moved is void (#138)"));
+        // reader was, not against the view it has already moved (#196 stage 2: a spontaneous
+        // transaction takes `P` as stored, and the placement adds the reader's scroll since it
+        // was read; the engine's own mutations re-read it first, and every transaction re-reads
+        // it where it left the reader).
+        assert!(engine.contains("if (options.spontaneous) return this.position;"));
         assert!(engine.contains(
-            "return this.position && !this.position.stale ? this.position : this.captureDomAnchor();"
+            "if (!this.position || this.position.at !== this.frame.scrollTop()) this.position = this.captureDomAnchor() || this.modelAnchor();"
         ));
         assert!(engine.contains(
-            "this.position = this.following || this.dragging ? null : this.captureDomAnchor();"
+            "this.position = this.following || this.dragging || !this.count ? null : this.captureDomAnchor() || this.modelAnchor();"
         ));
         // …and this page hands over the two elements whose size changes carry it: the mounted
         // run, and the whole document for a growth in the chrome AROUND it.

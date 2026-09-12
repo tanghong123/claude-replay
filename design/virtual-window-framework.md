@@ -129,13 +129,17 @@ Three things are the reader's, and only the reader's:
 
 The anchor form is exact (it is read from a rect); the model form is exact only through measured
 heights. `P` is captured from the DOM (`captureDomAnchor`, or `modelAnchor` when that returns
-null) and written back through `place()` (§2, I2). **Today `P` is not stored: it is captured and
-restored around each mutation, and between mutations the browser's `scrollTop` is the position.**
-That is the structural fact every bug below traces to. §4 makes `P` the stored state — authoritative
-between transactions, and re-read from the DOM at the start of any transaction that follows a
-reader's scroll (a scroll marks it stale; nothing else does). Reading it per scroll EVENT would be a
-rect per mounted child per event, the cost #98 avoided by reading once per scroll batch; leaving it
-un-read until a transaction needs it is what keeps it both cheap and never stale when it is used.
+null) and written back through `place()` (§2, I2). **Before #196 `P` was not stored: it was captured
+and restored around each mutation, and between mutations the browser's `scrollTop` was the
+position.** That was the structural fact every bug below traced to. Since stage 2 (§4.8) `P` is the
+stored state, and it carries the offset it was read at (`at`): between transactions only the reader
+moves the offset, so `P` plus the drift since it was read IS where they are, exactly, without a DOM
+read — which is what a change that has already moved the DOM needs. A transaction the engine is
+about to make re-reads `P` from the DOM when the offset moved since (the view it reads is still the
+reader's own); one that reports a change that already moved the DOM never does (the view it would
+read has already moved). Reading it per scroll EVENT would be a rect per mounted child per event,
+the cost #98 avoided by reading once per scroll batch; leaving it un-read until a transaction needs
+it is what keeps it both cheap and never stale when it is used.
 
 ### 1.8 The tail
 
@@ -153,9 +157,11 @@ un-read until a transaction needs it is what keeps it both cheap and never stale
 
 ## 2. The invariants
 
-Numbered, each with the bug that motivated it, how today's engine holds it, and how the framework
-holds it. "Construction" means the code cannot express a violation; "policy" means a timer or a
-guard decides; "tests" means only the browser suite would notice.
+Numbered, each with the bug that motivated it, how the engine held it before #196 ("today" in the
+table), and how the framework holds it. "Construction" means the code cannot express a violation;
+"policy" means a timer or a guard decides; "tests" means only the browser suite would notice. Stage
+2 (§4.8, 2026-09-12) moved I1, I4, I7, I8, I11 and I12 to construction and I2's engine half (one
+write site); the pages' own writes are stage 4's.
 
 | # | invariant | motivated by | today | framework |
 |---|---|---|---|---|
@@ -259,17 +265,24 @@ Each item names the code it replaces and the invariant it converts from policy t
 
 ### 4.1 `P` becomes stored state, and `place()` the only write
 
-- A `Position` value `{source: "anchor"|"model"|"tail", key, top, block, blockTop, index, offset,
-  stale}` held in `this.position`. Assigned in exactly four places: the start of a transaction when
-  `stale` is set (`P := captureDomAnchor() ?? modelAnchor()` — the only DOM read of it), `endDrag`
-  (the same, at once), `jumpTo` (the target and the landing), and the follow transitions (`P := tail`
-  on follow, `P := capture` on unfollow). `onScroll` sets `stale` and nothing else: a reader's scroll
-  does not compute anything, it says the last reading is no longer theirs.
-- `place()`: computes `want` from `P` — the anchor's rect when its record is mounted (exact), the
-  model sums when not (`documentTopOf(index) + offset`), `scrollHeight` for the tail — and writes
-  it through the one `frame.scrollTo` call, traced as `place` with `{source, key/index, want,
-  delta}`. Replaces `restoreDomAnchor`, `restoreModelAnchor`, the jump landing loop's write and
-  `convergeBottom`'s write. **I2 by construction.**
+- A `Position` value `{source: "anchor"|"model"|"tail", key, index, top, block, blockTop, offset,
+  at, fallback}` held in `this.position` — `at` the offset it was read at, `fallback` the model form
+  read alongside an anchor from the same sums (I12). Assigned at the START of a transaction the
+  engine is about to make when the offset moved since it was read (`P := captureDomAnchor() ??
+  modelAnchor()`), at the END of every transaction (the same position, where the transaction left the
+  reader), by `endDrag` (nulled; the next update re-reads it where the thumb left it) and by the
+  follow transitions. `onScroll` does nothing to it at all: a reader's scroll does not compute
+  anything, and it does not erase anything either — the scroll is theirs, and `P` plus what they
+  scrolled since it was read is where they are (stage 2 changed this from "marks it stale": see
+  §4.8, the fling case).
+- `place(P, drift)`: computes `want` from `P` — the anchor's rect when its record is mounted
+  (exact), the model sums when not (`documentTopOf(index) + offset`), `scrollHeight` for the tail —
+  plus the reader's `drift` since `P` was read, and writes it through the one `frame.scrollTo` call,
+  traced as `place` with `{source, key/index, want, delta, drift}`. The drift is the transaction's
+  to compute, once, at its start: nothing the reader does can land inside a synchronous transaction,
+  so an offset change after its start is a clamp or the engine's own write, never theirs. Replaces
+  `restoreDomAnchor`, `restoreModelAnchor` and `convergeBottom`'s write (stage 1–2); the jump
+  landing loop's write is stage 4's. **I2 by construction in the engine.**
 - The pages' own writes become engine calls: `jumpTo(index, landing)` (the shell's landing loop
   and the classic page's `goTo`/`landOn`), `pageBy(fraction)` (the page keys), `reveal(element)`
   (a search hit, a head brought into view — today `scrollIntoView` on the shell and a `scrollBy`
@@ -299,13 +312,15 @@ Each item names the code it replaces and the invariant it converts from policy t
 
 ### 4.2 One reader state, one timer
 
-`this.reader = { state: "resting"|"moving"|"dragging", lastInput, lastInputStamp, timer }`.
-`moving` is entered by any input event (the `noteIntent` list) and by `beginDrag` → `dragging`;
-`resting` is entered by ONE timer, `userIntentMs` after the last input (re-armed by each input,
-not by polling), and by `endDrag`. On the transition to `resting`: run the pending transactions
-(§4.3) and re-read `P` from the DOM (today's `settle`, without the drop). `readerOwnsPosition()`
-becomes `reader.state !== "resting"`. The three timers become this one; `convergeBottom`'s
-deferral (#165) and `scheduleEstimates` are both "wait for resting".
+The state is DERIVED from the clocks, never stored beside them: `readerOwnsPosition()` is
+"dragging, or an input in the last `userIntentMs`" (as it always was), and the one timer
+(`armRest`/`rest`) exists only to run what waited once that stops being true — re-armed by
+`rest()` itself while it is still true, and by `endDrag`. Two things wait: a placement on the tail
+(`pendingTail`, #165) and the sums taking a moved estimate (`estimatesPending`, #194). At rest the
+estimates transaction runs first (it moves the sums, with `P` held across the shift), then the
+converge. The three timers (`settleTimer`, `estimatesTimer`, `bottomTimer`) became this one;
+`owed` and the settle's drop are gone with them (§4.8). A page that stamps `lastUserInput` itself
+(the shell's keys, until stage 4) is covered: the timer re-checks the clock when it fires.
 
 **Why a timer remains (I8):** wheel and trackpad gestures end without an event. A fling is a
 sequence of scroll events with no input behind them; the only way to know the reader has stopped
@@ -315,19 +330,29 @@ WHEN a model-only transaction runs — never whether a position is written.
 ### 4.3 Transactions
 
 ```
-transact(cause, mutate, { deferrable })
-  if deferrable && reader.state !== "resting": queue it; return      // I8
-  if position.stale: position = captureDomAnchor() ?? modelAnchor()   // I1: re-read BEFORE the sums move
-  P0 = position
-  mutate()                     // heights, estimates, skips, records, DOM
+transact(cause, { mutate, range, measure, position, spontaneous, tail, commanded })
+  startTop = scrollTop
+  P0 = positionFor(…)          // the tail while following (unless the reader's own scroll batch);
+                               // nothing while dragging (I14) or for a jump; a page's own capture;
+                               // the stored P as is for a spontaneous change; else re-read when the
+                               // offset moved since P was read (I1)
+  drift = P0.at != null ? startTop - P0.at : 0                        // the reader's scroll since
+  mutate()                     // heights, estimates, skips, records
   rebuildPrefix()              // I3
-  range = P0.source === "tail" ? rangeAround(count-1) : rangeAround(P0)   // I11
-  reconcile(range)             // pads first (I6), then mount, then measure
-  if reader.state === "dragging": trace; return                       // I14: the thumb owns the offset
-  if P0.source === "tail" && reader.state !== "resting": queue place(); return   // #165: a convergence waits
-  place()                      // I2, I7
+  if mutate: updatePads()      // the pads follow the sums BEFORE a mount decides it has nothing to do
+  mount(range(P0)) | measure() // pads first (I6), then the DOM, then the measure
+  placed = P0.tail ? (commanded || resting ? place(tail) : defer("tail"))   // #165
+                   : place(P0, drift)                                        // I2, I7
+  if placed && viewport shows unmounted territory: mount(rangeForScroll()); place again   // #191
+  syncPosition()               // P re-read where the transaction left the reader
   trace(cause, …)
 ```
+
+Deferral is per KIND, not per transaction: the DOM and the sums always change now; only a tail
+placement and an estimate application wait for rest (I8), on the one timer (§4.2). The
+"deferrable reconcile when a delta mounts above a moving reader" branch and the lo-hold patch it
+stood for are gone: with the placement synchronous, a mount above a moving reader is placed back in
+the same task (the fling case measures exactly that), and there is nothing to hold off.
 
 Every path that changes the sums goes through it: the observers' measure (not deferrable — the
 DOM already moved; the write is deferrable only when `P` is the tail, above), reconcile (not deferrable when it mounts on the reader's own scroll path;
@@ -336,8 +361,9 @@ transaction simply waits), estimate application (deferrable), `recordsChanged` (
 the tail must render — but its estimate application inside is), `remeasure` (not deferrable),
 `jumpTo` and `follow` (never deferred: they are the reader's).
 
-**I1, I4, I7, I11 by construction.** The "no anchor and not following" gap in today's
-`scheduleEstimates` cannot exist: `P` always has a source.
+**I1, I4, I7, I11 by construction.** The "no anchor and not following" gap in the old
+`scheduleEstimates` cannot exist: `P` always has a source — `syncPosition` stores the model form
+when nothing mounted is on screen.
 
 **Why a write under a gesture is safe to rely on.** The engine has written `scrollTop` under the
 wheel on every scroll batch since #180 (`updateWindow(null, true)`), and trackpad momentum is
@@ -371,6 +397,68 @@ reader's scroll past the hold slack unfollows first (I13).
 Each entry is one transaction: `{cause, P0, deferred, mutated: [index, from, to, kind], lo, hi,
 pads, want, delta}` — the shape #197's action-and-state history records and replays.
 
+### 4.8 Stage 2 as landed (2026-09-12)
+
+What landed: `transact()` with the shape above; one reader timer; `place(P, drift)` as the engine's
+one write with no policy of its own; the model form captured with every anchor and used when the
+anchor's identity is gone or names another record by index (I12); the engine's own scroll events
+recognised by the offset they wrote (`scroll:own`); the observer-driven converge (one pass per
+transaction, the seven timed passes gone); `owed`, `scheduleSettle`, `settleTimer`,
+`estimatesTimer`, `bottomTimer` and the #194 lo-hold deleted; `readerReshaped` no longer clears the
+input stamp. The trace became the transaction log (§4.6; CLAUDE.md has the vocabulary).
+
+Three rules the design did not state, each found by a real-session probe on the day and each
+worth stating because the suite was green through all of them:
+
+1. **A reader's scroll moves `P`; it does not erase it.** The design said `onScroll` marks `P`
+   stale and the next transaction re-reads it. For a change that has ALREADY moved the DOM — the
+   fling case: a growth above the reader mid-fling — the observer fires in the same rendering
+   update as the scroll event, and a re-read then describes the displaced view and corrects
+   nothing: 503px of motion for 780px of wheel, unchanged by removing every deferral. `P` carries
+   the offset it was read at, and the reader's scroll since is added to the placement (§1.7).
+2. **The drift is computed once, at the transaction's start.** Measured from the current offset
+   inside a transaction it counted the engine's own write as the reader's (a second mount in the
+   same transaction placed the reader 4,589px past the anchor it had just put back) and a
+   browser clamp too (the page shrank above a reader near its end when the sums took a smaller
+   estimate: 1,882px of clamp, placed twice).
+3. **The pads follow the sums before a mount decides it has nothing to do**, and a second mount
+   in one transaction happens only when the viewport actually shows unmounted territory. An
+   estimate transaction whose range came out unchanged wrote no pads, so the DOM and the sums
+   disagreed and the coverage test read the new sums against the old page: a window 400 records
+   above the reader on the classic page, and the owner's #194 walk cycling backward again on the
+   shell. And the offset-based range disagrees with the one around `P` at its edges by
+   construction; re-mounting on that alone mounted two windows per transaction, each measuring the
+   shell's edge unit 11px differently (the demo's `.turn:first-child{padding-top:8px}` applies to
+   the first MOUNTED turn, so a unit's height depends on whether it is the window's edge — a
+   trait the sums do not know about, left for a follow-up).
+4. **A converge follows a change.** The observer's initial notification for every freshly observed
+   element is a measure that changes nothing; a tail placed on it anyway snapped a following reader
+   who had nudged up inside the hold slack straight back (#127's case, and the classic page's
+   "leave the tail first" cases). An observer-driven measure that measured nothing new places
+   nothing, as the old converge ran only on `changed`. And the tail's target is the furthest the
+   offset can go, not `scrollHeight`: written as `scrollHeight` the browser clamps it and every
+   placement reads as a full-viewport correction that was never made (twelve in a row on a quiet
+   page, in the trace).
+5. **A write under the wheel is not what fights the reader.** `scenario_the_readers_motion_is_never_fought`
+   asserted the old policy (no write while the intent window is open); on the classic page the
+   growth displaces the reader by a few pixels and stage 2 puts them back with one write, which the
+   old engine deferred and then dropped. The case now asserts what the reader can measure — the
+   same record at the same screen offset through the storm, to the pixel — and prints the count.
+6. **The rest timer fires exactly at the end of the intent window.** The old engine re-checked
+   ownership `userIntentMs` after each deferral, at whatever phase that fell; the one timer arms
+   for the remainder of the window after the last input. `scenario_a_converge_yields_to_the_reader`
+   drives a 7px notch every 200ms from the harness, and a CDP round trip under load pushed that
+   past the classic page's 300ms window (two of three runs alone: the converge landed, as the rule
+   says it may once a hand pauses); the old engine caught the same lapse only when its check fell
+   inside it. The case now drives the crawl from inside the page, at the cadence it describes.
+
+Measured, before → after, on the owner's sessions (hermetic copies, both pages):
+`scenario_growth_above_the_reader_during_a_fling_holds` 503px / 484px lost → 0 (the `known_red_196`
+marker came off); the unfold probe near a live tail on the classic page, worst wheel 51px → 1px
+(the same 51px on the stage-0 and stage-1 engines — the deferred-then-dropped correction, entries
+312–321 of its trace); the walk and the runaway probes unchanged (no backward turn, no motion after
+the hands come off); the full browser suite green on both pages.
+
 ### 4.7 Out of scope
 
 - Sparse vs dense mount under a filter (settled per page: `skipAt`/`renderAll`).
@@ -384,8 +472,10 @@ pads, want, delta}` — the shape #197's action-and-state history records and re
 
 ## 5. Held by what
 
-- **The node contract** pins the shapes: one `frame.scrollTo` call site; `apply()` reachable only
-  from `transact`; the four assignments to `position`; the reconcile order.
+- **The node contract** pins the shapes: one `frame.scrollTo` call site; the spontaneous
+  transaction taking `P` as stored and the mount transaction re-reading it when the offset moved;
+  the drift computed at the transaction's start; the pads written after a mutation before the mount;
+  no `owed`, no settle, no lo-hold; the reconcile order; the trace vocabulary.
 - **The scenarios on both surfaces** hold I9–I14 as behaviour: the pixel-hold cases, the growth
   cases, the walk, the growing tail, the deep jump, the held thumb, the end rule.
 - **The real-session probes** (#194's `tmp_walk`, `tmp_runaway`, `tmp_unfold`, kept for #197)

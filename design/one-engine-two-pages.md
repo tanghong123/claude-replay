@@ -1024,14 +1024,20 @@ probe harness, because the page kept no record of what the engine had done; `#19
 probe that had to be written from scratch. The engine should be able to say it.
 
 **What it is.** `trace(event, fields)` on `VirtualWindow`, called at every seam where the engine
-decides something: `reconciled` (range, dirtyFrom, refresh, anchor, fresh mounts, the estimate),
-`update` (anchor or model anchor, forced index, range), `restore:wrote` / `restore:deferred` /
-`restore:unmounted` (the DOM anchor's verdict and delta), `model:wrote` / `model:held` (`#191`),
-`settle` (and whether a debt was dropped), `reshaped`, `scroll` (user or not, the verdict, the gap,
-the event-clock lag), `converge` / `converge:deferred` (pass, commanded), `remeasure` (ratio) and
-`measured`. Every entry carries the same base: sequence number, `performance.now()`, following and
-dragging, the mounted range and count, scrollTop and scrollHeight, both pad heights, the ms since the
-reader's last input, and whether a correction is owed.
+decides something. As first shipped: `reconciled` (range, dirtyFrom, refresh, anchor, fresh mounts,
+the estimate), `update` (anchor or model anchor, forced index, range), `restore:wrote` /
+`restore:deferred` / `restore:unmounted` (the DOM anchor's verdict and delta), `model:wrote` /
+`model:held` (`#191`), `settle` (and whether a debt was dropped), `reshaped`, `scroll` (user or not,
+the verdict, the gap, the event-clock lag), `converge` / `converge:deferred` (pass, commanded),
+`remeasure` (ratio) and `measured`. Since `#196` stage 2 the engine is a set of transactions and the
+trace is their log: one entry per transaction under its cause (`update`, `reconcile`, `converge`,
+`measure`, `displaced`, `grown`, `estimates`, `remeasure`, `render` — the position it started from,
+whether and how it placed, the range and how it was chosen) and, inside them, `reconciled`, `place`
+(source, offset, correction, the reader's drift) / `place:unmounted`, `scroll` / `scroll:own`,
+`estimates:pending` / `estimates:applied`, `tail:deferred` / `rest`, `reshaped`, `measured`. Every
+entry carries the same base: sequence number, `performance.now()`, following and dragging, the
+mounted range and count, scrollTop and scrollHeight, both pad heights, the ms since the reader's
+last input, the stored position and what is pending. `CLAUDE.md` keeps the current vocabulary.
 
 **Where it goes.** A ring of 500 entries at `window.__viewportTrace` — `copy(window.__viewportTrace)`
 pastes it into a bug — and one `console.debug` line per entry under `[viewport]`, so a console filter
@@ -1217,3 +1223,58 @@ walk fixture's "varied answers" had never existed, and three app-shell cases had
 multi-line user turn the same way. The builders now assert on it, and the fixtures pass `\\n`. And
 Space pages only on the app shell under a synthetic key — the classic page scrolls natively on
 Space — so the classic deep-jump case had never paged.
+
+## The engine is a set of transactions, and the reader's scroll moves the position instead of erasing it (2026-09-12, #196 stage 2)
+
+`design/virtual-window-framework.md` (#195) argued that every scroll bug since #98 traced to one
+structural fact: the reader's position was not stored, it was captured and restored around each
+mutation, and between mutations the browser's `scrollTop` was the position. Stage 1 stored it and
+made `place()` the engine's one write, changing no behaviour (the suite identical, the fling case
+red by the same 503px/484px). Stage 2 is the behaviour: every change to the model or the DOM is one
+transaction — position read before the sums move, mutation, sums, pads, mount, placement, position
+re-read where it left the reader — with one reader timer that decides only when a tail placement or
+an estimate application runs, and no correction ever owed, deferred or dropped.
+
+**What the design had wrong, measured.** The fling case did not flip green when the deferral came
+out. The trace showed why: the design said a reader's scroll marks the position stale and the next
+transaction re-reads it; but a growth heard by an observer arrives in the same rendering update as
+the scroll event, and a position re-read then describes the already-displaced view. The reader's
+scroll cannot erase the position — it moves it, by an amount the engine knows to the pixel without a
+DOM read, because between transactions nothing else moves the offset. So the position carries the
+offset it was read at, a spontaneous change is placed against it plus the reader's drift since, and
+only a transaction the engine is about to make re-reads it (its view is still the reader's). With
+that, the fling case held on both pages.
+
+**What the probes caught next, each with the suite green.** Three regressions in a row, none of
+which any of the 229 cases sees, all of which the owner's sessions do:
+
+1. *The unfold probe, app shell: 1,850px, records unmounted under the reader, turns going the wrong
+   way.* A second mount in the same transaction measured the reader's drift from the offset the
+   engine had just written, counted its own write as theirs and placed the reader 4,589px past the
+   anchor it had just put back. The drift is computed once, at the transaction's start — nothing
+   the reader does can land inside a synchronous transaction.
+2. *The walk probe: the owner's #194 cycle back on the shell (772 → 769, twice), and the classic
+   jump landing 21 turns early.* The estimate transaction at rest changed the sums, found its range
+   unchanged, wrote no pads, and the coverage check read the new sums against the old page —
+   mounting a window 400 records above the reader. The pads follow the sums before a mount decides
+   it has nothing to do. The same stale pads were the shell's residual 11px per wheel: the
+   offset-based range and the one around the position disagree at their edges by construction, and
+   re-mounting on that alone mounted two windows per transaction, each measuring the edge unit
+   differently. A second mount happens only when the viewport actually shows unmounted territory.
+3. *The unfold probe, classic page near a live tail: 1,881px on one wheel.* The sums took a smaller
+   estimate above a reader near the end, the page shrank, the browser clamped the offset inside the
+   transaction, and the placement read the clamp as the reader's drift — the same fix as 1, stated
+   the other way: an offset change after a transaction's start is a clamp or the engine's own write,
+   never the reader's.
+
+**Before → after, on the owner's sessions.** The fling case 503px/484px lost → 0. The unfold probe
+near the live tail on the classic page, worst wheel 51px → 1px — the same 51px on the stage-0 and
+stage-1 engines, and its trace names the mechanism the framework was written against: a live delta
+re-measured records above the reader inside the intent window, the correction was deferred as
+owed, and the settle dropped it (entries 312–321). The walk and the runaway probes unchanged. The
+suite green on both pages; the byte gate re-baselined on the inlined engine alone.
+
+The lesson for the method is the one `validate-on-real-sessions` already states, sharpened: the
+suite held through all three regressions because each needs a live estimate shift, a rest timer
+and a window edge to line up, which the hermetic fixtures never make happen. The probes are the
+acceptance; the suite is the floor.

@@ -1940,7 +1940,7 @@
       old.replaceWith(item);
       this.afterMount([item]);
       this.observer.observe(item, { box: "border-box" });
-      this.measureMounted(null);
+      this.measureMounted();
       this.updatePads();
     }
   })({

@@ -285,6 +285,9 @@ function itemHeight(element) {
   return element.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
 }
 
+/** `P` when the reader follows: the end, whatever the end is (framework §1.7). */
+const TAIL = Object.freeze({ source: "tail" });
+
 class VirtualWindow {
   constructor(options) {
     const { frame, mount, overscan, slacks, userIntentMs, rememberMs, clampIndex, skipAt, renderAll } = options;
@@ -323,21 +326,35 @@ class VirtualWindow {
     // reader moving, and unpin a fresh page (#89).
     this.lastUserInput = -1e9;
     this.lastInputStamp = -1e9;
-    // `P`, the reader's position (framework §1.7), stored: today the anchor kept between window
-    // updates (#98), re-read from the DOM on every settle and MARKED STALE by the reader's own
-    // scroll — a stale reading is re-captured by whoever needs it next, never replayed. #196
-    // stage 1: the value is stored and placed by one write; stage 2 makes every mutation a
-    // transaction that re-reads it first.
+    // `P`, the reader's position (framework §1.7), stored: an anchor — a mounted record, the row
+    // in it, where on screen that row sat — or the model form when nothing mounted is on screen,
+    // each carrying the scroll offset it was read at (`at`). Between transactions the only thing
+    // that moves the offset is the reader, so `P` plus the offset's drift since it was read IS
+    // where they are, exactly, without reading the DOM — which is what a change that has already
+    // moved the DOM needs (`transact`, below). Re-read from the DOM at the end of every transaction
+    // and at the start of one the engine is about to make when the offset has moved since. Null
+    // while following (the tail is the position) and while a thumb is held (#98).
     this.position = null;
     this.dragging = false;
-    this.bottomTimer = 0;
     this.rememberTimer = 0;
-    // A correction the reader's own motion postponed (#132 step 3), and the timer that pays it.
-    this.owed = null;
-    this.settleTimer = 0;
-    // A mean that moved while the reader owned the position, waiting for them to rest (#194).
+    // The one timer (framework §4.2): the reader is resting once `userIntentMs` has passed since
+    // their last input, and that is the only thing it decides. Two things wait for it, because
+    // both would move the view under a hand that is moving it: a placement on the tail (#165) and
+    // the sums taking a moved estimate (#194). Never a correction — a change that has moved the
+    // DOM is placed at once, whatever the reader is doing (framework I7; #180, #196).
+    this.restTimer = 0;
+    this.pendingTail = false;
     this.estimatesPending = false;
-    this.estimatesTimer = 0;
+    // One transaction at a time (framework §4.3): a page callback that reaches the engine while
+    // one is running — `afterRender`, `followChanged` — queues its own and runs it after.
+    this.transacting = false;
+    this.queued = [];
+    // The offset the engine's last placement wrote, read back after the write so a clamped write
+    // records what the browser kept. Its scroll event is the engine's own, not the reader's, and
+    // `onScroll` recognises it by this value (framework §4.1). Kept until an event that does not
+    // match or the reader's next input, never waited for: Chrome for Testing 151 fires none for an
+    // assignment to `scrollTop`, stable 152 fires two.
+    this.wrote = null;
     // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
     // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
     // on the console under one prefix. On by the page's URL or storage; `options.trace` overrides.
@@ -361,7 +378,7 @@ class VirtualWindow {
     // every displacement, and any size change while following that leaves the bottom is healed
     // on the spot. Converging moves scroll, not size — no feedback loop.
     this.contentObserver = new ResizeObserver(() => {
-      if (this.following && this.count && this.gapToBottom() > 1) this.convergeBottom();
+      if (this.following && this.count && this.gapToBottom() > 1) this.transact("grown", { spontaneous: true });
     });
     // The MOUNTED window, not the content that also holds the pads: measuring writes the pads,
     // and a pad write inside a delivery would re-fire an observer that watched them — the loop
@@ -454,7 +471,10 @@ class VirtualWindow {
     };
     const child = firstVisible([...this.mount.children].map(rects), viewportTop, viewportBottom, 1, false);
     if (!child) return null;
-    const anchor = { source: "anchor", key: child.element.dataset.unitKey, top: child.top - viewportTop, block: null, blockTop: 0 };
+    // Alongside the anchor, the model form of the same position (#191), read from the same sums,
+    // now — before any rewrite moves them. It is the fallback if the anchor's identity is gone or
+    // names another record by the time it is placed (framework I12; #165).
+    const anchor = { source: "anchor", key: child.element.dataset.unitKey, index: Number(child.element.dataset.unitIndex), top: child.top - viewportTop, block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: this.modelAnchor() };
     const rowIn = element => firstVisible([...element.querySelectorAll("[data-block-index]")].map(rects), viewportTop, Infinity, 1, true);
     // ONE predicate, applied from the item down: refine only while the thing you are holding
     // STRADDLES the viewport edge. Whatever straddles is the only thing whose top the reader
@@ -495,10 +515,20 @@ class VirtualWindow {
    *  that lose the anchor are the ones that just cleared the heights (a width change), so the sums
    *  there are estimates and the "restore" lands the reader somewhere else entirely. */
   offsetOf(position) {
-    if (position.source === "tail") return this.frame.scrollHeight();
+    // The tail is the furthest the offset can go, not `scrollHeight`: written as `scrollHeight`
+    // the browser clamps it and every placement reads as a full-viewport correction that was
+    // never made (the trace showed twelve in a row at the bottom of a quiet page).
+    if (position.source === "tail") return Math.max(0, this.frame.scrollHeight() - this.frame.clientHeight());
     if (position.source === "model") return this.documentTopOf(position.index) + position.offset;
     const item = [...this.mount.children].find(child => child.dataset.unitKey === position.key);
-    if (!item) return null;
+    if (!item || (position.index != null && Number(item.dataset.unitIndex) !== position.index)) {
+      // The identity is gone, or names another record: ids are positional (#165), so after a
+      // queued prompt's pickup the same id is the record one slot up. The model form captured with
+      // the anchor, before the rewrite, is the position (framework I12). Merely unmounted — the
+      // same record still at its index, outside the window — stays put, as above.
+      const moved = position.index != null && this.indexOfIdentity(position.key) !== position.index;
+      return moved && position.fallback ? this.offsetOf(position.fallback) : null;
+    }
     let within = 0, sat = position.top;
     if (position.block != null) {
       const row = item.querySelector(`[data-block-index="${position.block}"]`);
@@ -520,41 +550,31 @@ class VirtualWindow {
    *  increment carries whatever the last one missed and needs the anchor already laid out under
    *  the offset it is correcting, so a path that skips it leaves the error behind.
    *
-   *  What is written, and when, is today's policy per source (#196 stage 1; stage 2 moves the
-   *  deferral into the transaction that asked for the placement):
-   *
-   *  - anchor: only while the reader does not own the position (#132 step 3) — do not write under
-   *    them; what they get instead is a fresh anchor once they stop (#138), never this position
-   *    replayed late. `immediate` is the one case where that rule INVERTS, and #180 measured why.
-   *    On the SCROLL path the engine has just mounted items ABOVE the reader whose remembered
-   *    height was a floor estimate (30px classic, 34 on the shell) against a real height five to
-   *    twenty times that. The pads absorbed the estimate, the mount adds the real height, and the
-   *    content under the reader moves down by the whole difference. Not writing does not leave
-   *    the reader alone — it displaces them by exactly the correction being withheld. Measured on
-   *    the app shell, walking up in 900px steps: +1954px of drift per step once the walk reaches
-   *    unmeasured ground, more than twice the distance asked for, with scrollHeight growing by the
-   *    same amount. This does not reopen #138: that dropped the debt because the correction
-   *    restored a position captured BEFORE the reader moved — stale by the time it was paid. The
-   *    scroll-path correction is computed AT the position they are at now; it replays nothing,
-   *    only undoes the engine's OWN mount displacement, and over already-measured ground it is
-   *    zero and returns above.
-   *  - model: whatever the reader's state (#191). Computed from where the reader IS, so writing
-   *    it replays nothing (#138) and undoes only the engine's own shift — the argument #180 made.
-   *  - tail: always; the converge decides for itself whether to run (#165).
+   *  `P` was read at offset `at`; the reader may have scrolled since, and that scroll is theirs to
+   *  keep (framework I1): what is written is where `P` sits now plus that `drift`, so over a DOM
+   *  that has not moved the write is a no-op and over one that has it undoes exactly the engine's
+   *  own displacement. The drift is the TRANSACTION's to compute, once, from the offset it started
+   *  at: nothing the reader does can land inside a synchronous transaction, so an offset change
+   *  after its start is never theirs — it is a clamp (the page shrank above a reader near its end
+   *  while the sums took a smaller estimate; measured: 1,882px read as the reader's and placed
+   *  twice) or the engine's own write. No policy lives here — whether to write at all is the transaction's decision
+   *  (`transact`, framework §4.3), and for an anchor or a model position the answer is always yes:
+   *  not writing does not leave the reader alone, it displaces them by exactly the correction
+   *  withheld (#180 measured +1954px per 900px step on the scroll path; #196 measured 503px of
+   *  motion for 780px of wheel with a 300px growth above a fling, and 51px lost per wheel under a
+   *  live tail on the owner's session, both with the correction deferred and then dropped).
    *
    *  Returns whether the reader is where `P` says — placed, or already there. */
-  place(position, immediate = false) {
+  place(position, drift = 0) {
     if (!position) return false;
-    const want = this.offsetOf(position);
-    if (want == null) { this.trace("restore:unmounted", { anchor: position.key }); return false; }
+    const base = this.offsetOf(position);
+    if (base == null) { this.trace("place:unmounted", { anchor: position.key }); return false; }
+    const want = base + drift;
     const delta = correction(this.frame.scrollTop(), want, 1);
-    if (position.source === "model") this.trace(delta ? "model:wrote" : "model:held", { index: position.index, offset: Math.round(position.offset), delta: Math.round(delta), want: Math.round(want) });
-    if (position.source !== "tail" && !delta) return true;
-    if (position.source === "anchor") {
-      if (!immediate && this.readerOwnsPosition()) { this.trace("restore:deferred", { anchor: position.key, delta: Math.round(delta) }); this.owed = position; this.scheduleSettle(); return false; }
-      this.trace("restore:wrote", { anchor: position.key, delta: Math.round(delta), want: Math.round(want) });
-    }
+    if (!delta) return true;
     this.frame.scrollTo(want);
+    this.wrote = this.frame.scrollTop();
+    this.trace("place", { source: position.source, anchor: position.key || null, index: position.index == null ? null : position.index, want: Math.round(want), delta: Math.round(delta), drift: Math.round(drift) });
     return true;
   }
 
@@ -568,28 +588,7 @@ class VirtualWindow {
     // how far above, and clamping it to zero would pull the reader down onto record 0 — measured
     // as the turn bar lighting up at the top of the page. Past the last record it is the bottom
     // padding. Either way the restore reproduces the offset the reader had.
-    return { source: "model", index, offset: y - (this.prefix[index] || 0) };
-  }
-
-  /** Put the reader back on the record the sums named (#191).
-   *
-   *  A jump into a pad — a long wheel fling, a thumb released over unmeasured ground — leaves no
-   *  item on screen, so `captureDomAnchor` has nothing and the mount goes uncorrected: its measure
-   *  moves the `HeightGuess` mean, every unmeasured record above re-estimates, the top pad grows by
-   *  thousands of pixels, and `scrollTop` stays where it was — inside the pad the shift just made.
-   *  Measured from the tail: −40,000px left the mounted window 1,944px BELOW the viewport on the
-   *  classic page and 6,709px on the shell (−6,000 was enough on the classic page), at rest, every
-   *  probe in a pad, until the reader scrolled again. `#180` made the scroll path's correction
-   *  immediate; this is the case where there was no correction at all.
-   *
-   *  The model position is computed from where the reader IS, so writing it replays nothing
-   *  (`#138`) and undoes only the engine's own shift — the argument `#180` made — which is why it
-   *  lands regardless of intent. Then the window is settled around the corrected offset, once: the
-   *  range was chosen from the sums before the measure, and the viewport may now run past it. */
-  restoreModelAnchor(held, immediate = false) {
-    this.place(held);
-    const range = this.rangeForScroll();
-    if (range.lo !== this.lo || range.hi !== this.hi) this.reconcile(range.lo, range.hi, Infinity, false, this.captureDomAnchor(), immediate);
+    return { source: "model", index, offset: y - (this.prefix[index] || 0), at: this.frame.scrollTop() };
   }
 
   /** One entry in the viewport trace (#192): what the engine decided, and the geometry it decided
@@ -610,7 +609,8 @@ class VirtualWindow {
       height: Math.round(this.frame.scrollHeight()),
       pads: [Math.round(parseFloat(this.topPad.style.height) || 0), Math.round(parseFloat(this.bottomPad.style.height) || 0)],
       sinceInput: Math.round(now - this.lastUserInput),
-      owed: !!this.owed,
+      position: this.position ? `${this.position.source}:${this.position.key != null ? this.position.key : this.position.index}` : null,
+      pending: (this.pendingTail ? "tail " : "") + (this.estimatesPending ? "estimates" : "") || null,
     }, fields || {});
     if (typeof window !== "undefined" && window.__viewportTrace) {
       window.__viewportTrace.push(entry);
@@ -619,24 +619,40 @@ class VirtualWindow {
     if (typeof console !== "undefined" && console.debug) console.debug("[viewport]", JSON.stringify(entry));
   }
 
-  /** The anchor a SPONTANEOUS change is measured against (#98). A change the engine makes
-   *  itself captures the anchor before it touches the DOM; a change that arrives on its own —
-   *  a row resizing under the observer — has already moved the view by the time it is heard,
-   *  and an anchor captured then describes the moved view and corrects nothing. So it is kept:
-   *  refreshed on every settle, cleared the instant a scroll begins. */
-  readerAnchor() {
-    if (this.following || this.dragging) return null;
-    return this.position && !this.position.stale ? this.position : this.captureDomAnchor();
+  /** `P` for a transaction about to run (framework §4.3). The tail while following; nothing while
+   *  a thumb is held (framework I14) or the caller placed the reader itself (a jump); the anchor a
+   *  page captured before its own mutation, when it hands one over. Otherwise the stored `P` —
+   *  re-read from the DOM first if the offset has moved since it was read, because the engine is
+   *  about to move the DOM and the view it reads now is still the reader's own.
+   *
+   *  A SPONTANEOUS change is the one case that must NOT re-read (#98): a row that grew under the
+   *  observer has already moved the view by the time it is heard, and a position captured then
+   *  describes the moved view and corrects nothing. That case takes the stored `P` as it is, and
+   *  `place` adds the reader's scroll since it was read. This is what turns a growth above a fling
+   *  into a no-op for the reader (#196): every scroll event used to clear the kept anchor, so the
+   *  growth's observer found nothing to hold and re-read the displaced view. */
+  positionFor(options) {
+    if (options.place === false || options.position === null || !this.count) return null;
+    if (this.following) return options.tail === false ? null : TAIL;
+    if (this.dragging) return null;
+    if (options.position) return options.position;
+    if (options.spontaneous) return this.position;
+    if (!this.position || this.position.at !== this.frame.scrollTop()) this.position = this.captureDomAnchor() || this.modelAnchor();
+    return this.position;
   }
 
-  syncAnchor() {
-    this.position = this.following || this.dragging ? null : this.captureDomAnchor();
+  /** Re-read `P` where the transaction left the reader: the same position, at the new offset. */
+  syncPosition() {
+    this.position = this.following || this.dragging || !this.count ? null : this.captureDomAnchor() || this.modelAnchor();
   }
 
-  /** Is the position the READER's right now? While a thumb is held, and for `userIntentMs`
-   *  after a wheel or a touch — which is a fling still travelling. Writing `scrollTop` under
-   *  either fights whoever owns the motion: the drag jumps under the pointer, the fling
-   *  stutters or dies. The correction is not dropped, it is OWED (#132 step 3). */
+  /** Is the reader moving the view right now? While a thumb is held, and for `userIntentMs` after
+   *  a wheel or a touch — which is a fling still travelling. Two things wait for them to rest: a
+   *  placement on the tail (#165) and the sums taking a moved estimate (#194). A correction does
+   *  not — the engine has written under the wheel on every scroll batch since #180, and trackpad
+   *  momentum is delivered as wheel events, so the walk and the growing-tail scenarios (#194) are
+   *  the evidence that a placement mid-fling neither stutters nor dies. What #132 step 3's deferral
+   *  protected was a STALE position, and `P` carries its own offset now (see `place`). */
   readerOwnsPosition() {
     return this.dragging || performance.now() - this.lastUserInput < this.userIntentMs;
   }
@@ -663,50 +679,74 @@ class VirtualWindow {
     const first = this.lastContentTop === null;
     this.lastContentTop = top;
     if (first || !this.count) return;
-    if (this.following) { if (this.gapToBottom() > 1) this.convergeBottom(); }
-    else this.place(this.readerAnchor());
+    if (this.following && this.gapToBottom() <= 1) return;
+    this.transact("displaced", { spontaneous: true });
   }
 
-  /** What happens once the reader comes to rest (#138). NOT "pay the correction that was owed":
-   *  the position that correction was protecting is from BEFORE they moved, and writing it back
-   *  afterwards moves the page under someone who has stopped — a small jump every time they stop
-   *  scrolling, which is exactly how it was reported. Where the reader is NOW is the reference,
-   *  so the debt is dropped and the anchor is re-read from the view at rest. A displacement that
-   *  happened mid-motion is not worth a visible jump to undo; it is indistinguishable from the
-   *  reader's own movement anyway. Re-armed while they are still moving. */
-  scheduleSettle() {
-    clearTimeout(this.settleTimer);
-    this.settleTimer = setTimeout(() => {
-      if (this.following) { this.owed = null; return; }
-      if (this.readerOwnsPosition()) { this.scheduleSettle(); return; }
-      this.trace("settle", { dropped: !!this.owed });
-      this.owed = null;
-      this.syncAnchor();
-    }, this.userIntentMs);
+  /** Something is waiting for the reader to rest (framework §4.2, I8): arm the one timer for the
+   *  rest of the intent window. Wheel and trackpad gestures end without an event — a fling is a
+   *  sequence of scroll events with no input behind them — so time since the last input is the
+   *  only signal there is, stated once, here. */
+  defer(what) {
+    if (what === "tail") this.pendingTail = true;
+    else this.estimatesPending = true;
+    this.armRest();
+  }
+
+  armRest() {
+    clearTimeout(this.restTimer);
+    const wait = Math.max(0, this.userIntentMs - (performance.now() - this.lastUserInput)) + 1;
+    this.restTimer = setTimeout(() => this.rest(), wait);
+  }
+
+  /** The reader has come to rest: what waited runs, in order — the sums take the moved estimate
+   *  first (#194, with `P` held across the shift and the window settled around it), then the tail
+   *  is converged on if they are still following (#165). Nothing here is a correction from before
+   *  they moved (#138): each is a transaction that reads where they are NOW. */
+  rest() {
+    if (this.dragging) return; // `endDrag` re-arms
+    if (this.readerOwnsPosition()) { this.armRest(); return; }
+    if (!this.pendingTail && !this.estimatesPending) return;
+    this.trace("rest", { tail: this.pendingTail, estimates: this.estimatesPending });
+    if (this.estimatesPending) {
+      this.estimatesPending = false;
+      this.transact("estimates", { mutate: () => this.applyLate(), range: p0 => this.rangeFor(p0) });
+    }
+    if (this.pendingTail) {
+      this.pendingTail = false;
+      this.convergeBottom();
+    }
+  }
+
+  applyLate() {
+    if (!this.applyEstimates()) return;
+    this.trace("estimates:applied", { estimate: this.count ? Math.round(this.estimateAt(0)) : null, late: true });
   }
 
   beginDrag() {
     if (this.dragging) return;
     this.dragging = true;
     this.position = null;
+    this.wrote = null;
     this.lastUserInput = performance.now();
   }
 
   endDrag() {
     if (!this.dragging) return;
     this.dragging = false;
-    // The model's own reset (#132 step 3): the offset the drag left names a record, that record
-    // is mounted first, and the anchor is re-read there — rather than correcting toward an
-    // anchor from before the drag, which is a place the reader deliberately left.
-    this.owed = null;
+    // The model's own reset (#132 step 3, framework I14): the offset the drag left names a record,
+    // that record is mounted first, and `P` is re-read there — rather than correcting toward a
+    // position from before the drag, which is a place the reader deliberately left.
     this.updateWindow();
-    this.syncAnchor();
     this.scheduleRemember();
+    if (this.pendingTail || this.estimatesPending) this.armRest();
   }
 
-  /** Heights from `itemHeight` (rule 8) — the same function the classic page measures with.
-   *  The sums do not have to be exact for the restore: that reads the item's own rect. */
-  measureMounted(anchor = this.readerAnchor(), immediate = false) {
+  /** Heights from `itemHeight` (rule 8) — the same function the classic page measures with. A
+   *  mutation step of the transaction that runs it (the observer's own, or a mount): it moves the
+   *  sums and the pads, and the transaction places `P` after it. The sums do not have to be exact
+   *  for that: the placement reads the item's own rect. */
+  measureMounted() {
     let changed = false;
     // What changed, for the trace (#192): the first eight [index, from, to] — which record moved
     // the sums is the whole question when a reader is displaced under growth.
@@ -725,9 +765,7 @@ class VirtualWindow {
     this.settleEstimates();
     this.rebuildPrefix();
     this.updatePads();
-    this.trace("measured", { anchor: anchor ? anchor.key : null, immediate, estimate: this.count ? Math.round(this.estimateAt(0)) : null, live: this.count ? Math.round(this.liveEstimateAt(0)) : null, changes });
-    if (!this.following) this.place(anchor, immediate);
-    this.syncAnchor();
+    this.trace("measured", { estimate: this.count ? Math.round(this.estimateAt(0)) : null, live: this.count ? Math.round(this.liveEstimateAt(0)) : null, changes });
     return true;
   }
 
@@ -741,59 +779,28 @@ class VirtualWindow {
    *  estimate — so a change to the estimate is a change to every one of them at once. Above a
    *  reader who opened at the tail that is thousands of records, and the page above them moves
    *  by thousands of pixels: measured on the owner's session, a mean that moved by a fraction of
-   *  a pixel across 8,500 records shifted the page 7.8k px. At rest the anchor restore hides it
-   *  (the scrollbar jumps, the content does not). Under the wheel the restore was deferred, the
-   *  next wheel dropped it (#138), and the wheel's own update then found no mounted record under
-   *  the viewport and fell back to the model anchor — computed from the shifted sums: "right
-   *  after scrolling to 769 it jumps back to 767", six turns back in the trace.
-   *
-   *  So the live mean keeps learning, and the sums take it only when the reader is at rest:
-   *  from the measure that moved it when no hand is on the wheel, else from a timer once the
-   *  intent window has passed — with the anchor held across the shift, and the window settled
-   *  around the corrected offset. Never through `owed`/`scheduleSettle`: a user scroll dropping
-   *  the correction it is owed is deliberate (#98, #132), which is exactly why the shift itself
-   *  has to wait rather than be corrected. */
+   *  a pixel across 8,500 records shifted the page 7.8k px. At rest the placement hides it (the
+   *  scrollbar jumps, the content does not). Under the wheel the shift itself waits (framework I8)
+   *  — not the write, which is never deferred, but the change to the sums: from the measure that
+   *  moved the mean when no hand is on the wheel, else as a transaction of its own once the intent
+   *  window has passed, with `P` held across the shift and the window settled around it. */
   settleEstimates() {
     if (this.readerOwnsPosition()) {
       if (!this.estimatesPending) this.trace("estimates:pending", {});
-      this.estimatesPending = true;
-      this.scheduleEstimates();
+      this.defer("estimates");
       return false;
     }
     this.estimatesPending = false;
-    clearTimeout(this.estimatesTimer);
     const applied = this.applyEstimates();
     if (applied) this.trace("estimates:applied", { estimate: this.count ? Math.round(this.estimateAt(0)) : null, late: false });
     return applied;
   }
 
-  scheduleEstimates() {
-    clearTimeout(this.estimatesTimer);
-    this.estimatesTimer = setTimeout(() => {
-      if (!this.estimatesPending) return;
-      if (this.readerOwnsPosition()) { this.scheduleEstimates(); return; }
-      this.estimatesPending = false;
-      const anchor = this.following ? null : this.captureDomAnchor();
-      if (!this.applyEstimates()) return;
-      this.trace("estimates:applied", { estimate: this.count ? Math.round(this.estimateAt(0)) : null, late: true, anchor: anchor ? anchor.key : null });
-      this.rebuildPrefix();
-      this.updatePads();
-      if (this.following) {
-        this.convergeBottom();
-      } else {
-        if (anchor) this.place(anchor, true);
-        // The window was chosen from the old sums; the viewport may now run past it.
-        const range = this.rangeForScroll();
-        if (range.lo !== this.lo || range.hi !== this.hi) this.reconcile(range.lo, range.hi, Infinity, false, this.captureDomAnchor(), true);
-      }
-      this.syncAnchor();
-    }, this.userIntentMs);
-  }
-
-  /** The observer's own measure: synchronous, so it lands before the frame paints. */
+  /** The observer's own measure: synchronous, so it lands before the frame paints, as a
+   *  transaction on a change that has ALREADY moved the DOM — `P` is not re-read (see
+   *  `positionFor`), and the placement lands whatever the reader is doing (framework I7). */
   measureNow() {
-    const changed = this.measureMounted();
-    if (changed && this.following) this.convergeBottom();
+    this.transact("measure", { spontaneous: true, measure: true });
   }
 
   /** Where item `index` starts, in the scroller's own coordinate, from the MODEL: the content's
@@ -827,24 +834,21 @@ class VirtualWindow {
    *  nothing to do — the app shell has nothing — needs no change. */
   afterMount(_fresh) {}
 
+  /** A page's own mount (framework §3.3): a records change with the anchor the page captured
+   *  before it mutated its list, or a jump with none. One transaction. */
+  reconcile(lo, hi, dirtyFrom = Infinity, refresh = false, anchor) {
+    return this.transact("reconcile", { range: { lo, hi }, dirtyFrom, refresh, position: anchor });
+  }
+
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
-   *  whose content changed; `refresh` rebuilds everything mounted. */
-  reconcile(lo, hi, dirtyFrom = Infinity, refresh = false, anchor = this.following ? null : this.captureDomAnchor(), immediate = false) {
+   *  whose content changed; `refresh` rebuilds everything mounted. The mutation step of a mount
+   *  transaction: it never places — `transact` does, after it. */
+  mountRange(lo, hi, dirtyFrom = Infinity, refresh = false, p0 = null) {
     // The page can ask for the whole thing (#140 step 4): a small filtered set rendered in FULL
     // has every height real, so the sums are exact and a jump cannot land in a pad.
     if (this.renderAll()) { lo = 0; hi = this.count; }
     ({ lo, hi } = clampRange(lo, hi, this.count));
-    // A path that is not the reader's own does not mount ABOVE them while they own the position
-    // (#194). A mount above moves everything under the reader by the difference between the
-    // record's estimate and its height; the correction is computed in this same task, but the
-    // engine does not write under a hand on the wheel, and what it does not write is displacement.
-    // Measured: a delta fifteen milliseconds after a wheel chose its window around the anchor,
-    // one record above the reader's own window, mounted it (98px estimated, 120px real), deferred
-    // the 22px, and the next wheel dropped it. The reader's own scroll path is the one that mounts
-    // above them — and it corrects at once (#180). Held only with an anchor: a jump has none, and
-    // its mount is the destination, not a shift.
-    if (anchor && !immediate && !this.following && this.readerOwnsPosition() && this.hi > this.lo && lo < this.lo) lo = Math.min(this.lo, hi);
-    if (!refresh && dirtyFrom === Infinity && lo === this.lo && hi === this.hi) return false;
+    if (!refresh && dirtyFrom === Infinity && lo === this.lo && hi === this.hi) return null;
 
     this.observer.disconnect();
     for (const child of [...this.mount.children]) {
@@ -911,28 +915,131 @@ class VirtualWindow {
     // `measureMounted` can still rebuild the sums under them.
     this.updatePads();
     this.afterMount(fresh);
-    this.measureMounted(anchor, immediate);
+    this.measureMounted();
     this.updatePads();
-    this.place(anchor, immediate);
     for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
     this.afterRender();
-    this.syncAnchor();
-    this.trace("reconciled", { dirtyFrom: dirtyFrom === Infinity ? null : dirtyFrom, refresh, anchor: anchor ? anchor.key : null, immediate, fresh: fresh.length, estimate: this.count ? Math.round(this.estimateAt(0)) : null });
+    this.trace("reconciled", { dirtyFrom: dirtyFrom === Infinity ? null : dirtyFrom, refresh, anchor: p0 && p0.key ? p0.key : null, fresh: fresh.length, estimate: this.count ? Math.round(this.estimateAt(0)) : null });
+    return { lo, hi, fresh: fresh.length };
+  }
+
+  /** Does the mounted window cover what the viewport shows? The offset's first and last records,
+   *  against `[lo, hi)`; the end of the page counts as covered when the last record is mounted. */
+  viewportMounted() {
+    const y = this.frame.scrollTop() - this.contentTop();
+    const first = this.indexAt(Math.max(0, y));
+    const last = Math.min(this.indexAt(y + this.frame.clientHeight()), this.count - 1);
+    return first >= this.lo && last < this.hi;
+  }
+
+  /** The window `P` asks for (framework I11): around the record it names — the anchor's, by
+   *  identity, the model form's by index, the last while following — and around the raw offset
+   *  only when there is no `P` at all. */
+  rangeFor(p0) {
+    if (!p0) return this.rangeForScroll();
+    if (p0.source === "tail") return this.rangeAround(this.count - 1);
+    if (p0.source === "model") return this.rangeAround(Math.min(p0.index, this.count - 1));
+    const at = this.indexOfIdentity(p0.key);
+    if (this.tracing) this.lastRangeChoice = { at, index: p0.index == null ? null : p0.index, fallback: p0.fallback ? p0.fallback.index : null };
+    if (at >= 0 && (p0.index == null || at === p0.index)) return this.rangeAround(at);
+    return p0.fallback ? this.rangeAround(Math.min(p0.fallback.index, this.count - 1)) : this.rangeForScroll();
+  }
+
+  /** One change to the model or the DOM, as one unit (framework §4.3):
+   *
+   *      P0 = positionFor(…)          the reader's position, read BEFORE the sums move (I1)
+   *      mutate()                     heights, estimates, records, skips
+   *      rebuildPrefix()              the sums are a pure function of them (I3)
+   *      mount(range around P0)       pads first (I6), then the DOM, then the measure
+   *      place(P0)                    the one write (I2), at once (I7) — or, for the tail under
+   *                                   a gesture, once the reader rests (#165)
+   *      syncPosition()               `P` re-read where it left the reader
+   *
+   *  `options`: `mutate` — the model change; `range` — a range, or a function of `P0`, for a
+   *  mount, else no mount; `measure` — measure what is mounted (the observer's own); `dirtyFrom`
+   *  / `refresh` — what the mount rebuilds; `position` — a `P0` the caller read itself (a page's
+   *  own capture, `null` for a jump); `spontaneous` — the DOM already moved, take `P` as stored;
+   *  `tail: false` — while following, leave the tail alone (the reader's own scroll batch);
+   *  `commanded` — the reader asked for the tail, so it does not wait. A mount that leaves the
+   *  viewport past the window — the placement moved the offset by the sums' shift (#191) — mounts
+   *  once more around the offset, and places again. */
+  transact(cause, options = {}) {
+    if (this.transacting) { this.queued.push([cause, options]); return false; }
+    this.transacting = true;
+    let summary = null;
+    try {
+      const startTop = this.frame.scrollTop();
+      const p0 = this.positionFor(options);
+      // The reader's scroll since `P` was read — everything the offset moved between the last
+      // transaction and this one's start (see `place`). Zero after a re-read, and for a page's own
+      // capture; the reader's motion for a spontaneous change.
+      const drift = p0 && p0.at != null ? startTop - p0.at : 0;
+      if (options.mutate) options.mutate();
+      this.rebuildPrefix();
+      // The pads follow the sums at once (framework I6): a mutation that moved them — an estimate
+      // applied, heights scaled — has moved where every record IS, and a mount that finds its
+      // range unchanged writes nothing. Left stale, the DOM and the sums disagree, the placement
+      // sees nothing to correct, and the coverage test below reads the new sums against the old
+      // page (measured: the estimate transaction after a jump mounted a window 400 records above
+      // the reader on the classic page).
+      if (options.mutate) this.updatePads();
+      let mounted = null;
+      let quiet = false;
+      if (options.range) {
+        const range = typeof options.range === "function" ? options.range(p0) : options.range;
+        mounted = this.mountRange(range.lo, range.hi, options.dirtyFrom, options.refresh, p0);
+      } else if (options.measure) {
+        // An observer that heard nothing new — the notification every freshly observed element
+        // sends — changes nothing, and a tail that is placed anyway snaps back a following reader
+        // who has nudged up inside the hold slack (#127): the converge follows a CHANGE, as it did
+        // when it ran on `changed` alone.
+        quiet = !this.measureMounted();
+      }
+      let placed = quiet && p0 && p0.source === "tail" ? "quiet" : this.placeAfter(p0, options, drift);
+      if (options.range && p0 && p0.source !== "tail" && placed === "placed" && !this.viewportMounted()) {
+        // The window was chosen from the sums before the mutation; the placement moved the offset
+        // by their shift, and the viewport now shows territory the window does not cover (#191).
+        // Only then: the offset-based range and the one around `P` disagree by construction at
+        // their edges, and re-mounting on that alone mounted two windows per transaction, each
+        // measuring the edge unit differently (11px on the app shell, per transaction).
+        const again = this.rangeForScroll();
+        mounted = this.mountRange(again.lo, again.hi, Infinity, false, p0) || mounted;
+        placed = this.placeAfter(p0, options, drift);
+      }
+      this.syncPosition();
+      summary = Object.assign({ p0: p0 ? p0.source : null, anchor: p0 && p0.key ? p0.key : null, placed }, mounted ? { range: [mounted.lo, mounted.hi], fresh: mounted.fresh } : {}, options.fields || {});
+      // Trace only: is the viewport inside the window it left, and how the window was chosen.
+      if (this.tracing) { summary.covered = this.viewportMounted(); summary.choice = this.lastRangeChoice || null; this.lastRangeChoice = null; }
+    } finally {
+      this.transacting = false;
+    }
+    this.trace(cause, summary);
+    if (this.queued.length) { const [next, opts] = this.queued.shift(); this.transact(next, opts); }
     return true;
   }
 
-  updateWindow(forceIndex = null, immediate = false) {
+  /** The placement a transaction ends with. An anchor or a model position is written now; the
+   *  tail waits for rest unless the reader asked for it (#165: the pin does not outrank a hand on
+   *  the wheel — a tail rewrite once a second slammed a reader crawling up inside the hold slack
+   *  back to the end, seven times). */
+  placeAfter(p0, options, drift) {
+    if (!p0) return null;
+    if (p0.source === "tail") {
+      if (!options.commanded && this.readerOwnsPosition()) { this.defer("tail"); this.trace("tail:deferred", {}); return "deferred"; }
+      this.pendingTail = false;
+      return this.place(p0) ? "tail" : "none";
+    }
+    return this.place(p0, drift) ? "placed" : "unmounted";
+  }
+
+  /** The window for where the reader is: the scroll batch's own update (#180 — the correction it
+   *  needs is this engine's own mount replacing floor estimates above them, and it lands now), the
+   *  end of a drag, a page after its own scroll write. A `forceIndex` is a jump's window. While
+   *  following, the reader's scroll batch leaves the tail alone: their scroll is theirs, and
+   *  `classifyScroll` has already decided whether it dropped the pin. */
+  updateWindow(forceIndex = null) {
     if (!this.count) return;
-    const anchor = this.following || this.dragging ? null : this.captureDomAnchor();
-    // Nothing on screen to hold — the reader is in a pad (#191). The position the sums name is
-    // the only one there is, read now, before the mount changes them.
-    const held = anchor || forceIndex != null || this.following || this.dragging ? null : this.modelAnchor();
-    const anchorIndex = forceIndex == null && anchor ? this.indexOfIdentity(anchor.key) : -1;
-    const range = forceIndex != null ? this.rangeAround(forceIndex) : anchorIndex >= 0 ? this.rangeAround(anchorIndex) : this.rangeForScroll();
-    this.trace("update", { anchor: anchor ? anchor.key : null, held: held ? held.index : null, force: forceIndex, immediate, range: [range.lo, range.hi] });
-    this.reconcile(range.lo, range.hi, Infinity, false, anchor, immediate);
-    if (held) this.restoreModelAnchor(held, immediate);
-    this.syncAnchor(); // an unchanged window returns early above; the anchor is re-read either way
+    this.transact("update", { range: p0 => forceIndex != null ? this.rangeAround(forceIndex) : this.rangeFor(p0), tail: false, fields: { force: forceIndex } });
   }
 
   /** The reader changed what is ON the page — opened a fold, expanded a cap, asked for the whole
@@ -961,44 +1068,29 @@ class VirtualWindow {
    *  Safe to arm from any control without asking: unpinned, the only thing it does is release the
    *  click's intent (#190, below) — and every caller IS a click, on both pages. */
   readerReshaped() {
-    // A reshape is not a scroll, so the intent that clicked it must not own the position (#190).
-    // `noteIntent` binds pointerdown, so the click that opened this fold or expander started
-    // the `userIntentMs` window — and inside that window the anchor placement DEFERS its
-    // correction as owed (#132 step 3) and `scheduleSettle` DROPS it (#138). Right for a scroll:
-    // paying an old position after the reader moved drags them back. Wrong here: no scroll
-    // event fired, the reader has not moved, and the correction being withheld is this engine's
-    // own re-measure — the case #180 already named on the scroll path, "not writing does not
-    // leave the reader alone, it displaces them by exactly the correction being withheld".
-    // Measured on the owner's 1210-turn session: the re-render re-ranged and the top pad moved
-    // by 14,243px, scrollTop by 828, and the reader was left in pad thirteen thousand pixels
-    // below the content — blank — until later measures landed them twenty turns away. Even
-    // "Show 2 more" did it. Ten synthetic probes had all held, because a synthetic `click()`
-    // fires no pointerdown and never started the window.
-    //
-    // Clearing the stamp here, and only here, is exactly the #185 rule taken one step: who
-    // caused the growth decides whether the pin survives it — and whether the correction waits.
-    // `lastInputStamp` is left alone; it is the EVENT clock `onScroll` classifies against, and a
-    // scroll that follows this click is still the reader's own.
-    this.lastUserInput = -1e9;
+    // A reshape is not a scroll, and the click that caused it started the intent window (#190).
+    // That used to matter: inside the window the correction was deferred as owed and then dropped,
+    // and the reader was left in a pad thirteen thousand pixels below the content on the owner's
+    // 1210-turn session — even "Show 2 more" did it. Nothing waits for the window now except the
+    // tail and the estimates, and the pin is dropped right here, so there is no stamp to release.
     this.trace("reshaped", { wasFollowing: this.following });
     if (!this.following) return;
     this.following = false;
     this.followChanged();
-    // The converge already queued by an earlier growth checks `following` on each pass and stops
-    // itself; the anchor is re-read because from here the reader's own position is the reference.
-    this.syncAnchor();
+    // A tail placement waiting for rest is void; `P` is re-read because from here the reader's own
+    // position is the reference.
+    this.pendingTail = false;
+    this.syncPosition();
   }
 
   /** Rebuild what is mounted — a fold opened, a filter changed — holding the reader's place. */
   render(forceIndex = null) {
     if (!this.count) return;
     if (forceIndex != null) {
-      const range = this.rangeAround(forceIndex);
-      this.reconcile(range.lo, range.hi, 0, false, this.following ? null : this.captureDomAnchor());
+      this.transact("render", { range: this.rangeAround(forceIndex), dirtyFrom: 0 });
       return;
     }
-    this.reconcile(this.lo, this.hi, Infinity, true, this.following ? null : this.captureDomAnchor());
-    if (this.following) this.convergeBottom();
+    this.transact("render", { range: p0 => p0 && p0.source === "tail" ? this.rangeAround(this.count - 1) : { lo: this.lo, hi: this.hi }, refresh: true });
   }
 
   gapToBottom() {
@@ -1014,6 +1106,15 @@ class VirtualWindow {
    *  created before the gesture that followed it. `dragging` still answers for a held thumb,
    *  which produces no input event of its own. */
   onScroll(event) {
+    // The engine's own write (framework §4.1): `place` recorded what it wrote, and an event at that
+    // offset is neither the reader's nor displacement — nothing to classify, nothing to re-read,
+    // no window to update (the transaction that placed already mounted around `P`).
+    if (this.wrote != null && Math.abs(this.frame.scrollTop() - this.wrote) <= 1) {
+      this.trace("scroll:own", { top: Math.round(this.frame.scrollTop()) });
+      this.afterScroll();
+      return;
+    }
+    this.wrote = null;
     const at = event && event.timeStamp ? event.timeStamp : performance.now();
     const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
     const verdict = classifyScroll(this.following, user, this.gapToBottom(), this.slacks.acquire, this.slacks.hold, this.slacks.heal);
@@ -1024,64 +1125,30 @@ class VirtualWindow {
     }
     if (user) this.scheduleRemember();
     else if (verdict === "heal") this.convergeBottom();
-    // This scroll moved the reader: the kept position is stale until the deferred window update
-    // re-reads it, once per batch of scroll events rather than per event.
-    if (this.position) this.position.stale = true;
-    // …and a correction owed from BEFORE they moved is void (#138). The reader's own scroll makes
-    // their position the authoritative one; paying an old debt afterwards drags them back to
-    // where they were, and since every click registers as intent (a fold is a pointerdown), the
-    // debt was owed by the fold and paid a third of a second after they scrolled away. Folding a
-    // block and then scrolling read as a page that would not scroll — until the next record
-    // arrived and reconciled the debt to a no-op.
-    if (user && this.owed) { this.owed = null; clearTimeout(this.settleTimer); }
+    // This scroll moved the reader, and that is all it does to `P` (framework I1): the position
+    // keeps the offset it was read at, so what they scrolled since is known to the pixel without a
+    // read, and the deferred window update below re-reads it once per batch of scroll events
+    // rather than per event. Nothing is owed and nothing is dropped (#138): a correction that
+    // reads where they are now replays nothing.
     this.afterScroll();
     if (this.pendingScroll) return;
     this.pendingScroll = true;
     setTimeout(() => {
       this.pendingScroll = false;
-      // The reader's OWN scroll is the one window update whose correction must land NOW (#180):
-      // what it corrects is this engine's own mount replacing floor estimates above them. Every
-      // other caller keeps #132's deferral — the drag end (the thumb owns the position and the
-      // anchor is null there anyway), the jump paths (they run their own landing loops and stamp
-      // lastUserInput precisely so the anchor does not fight them), and every apply path.
-      this.updateWindow(null, true);
+      this.updateWindow();
     }, 0);
   }
 
-  /** Sit on the tail and stay there while the heights under it settle. */
+  /** Sit on the tail (framework §4.5): mount around the last record and place the end. What the
+   *  heights under it do AFTER this — an image arriving, a font, an estimate replaced — the
+   *  observers hear, and each is a transaction that places the tail again; the seven timed passes
+   *  this used to run are that, driven by what actually changed. `commanded` is the reader asking
+   *  for the end — the jump-to-end pill, a keyboard End, a session opening at its tail. That click
+   *  stamps input like any other, so without it the one converge the reader ASKED for would be the
+   *  one that waited (#165). */
   convergeBottom(commanded) {
-    clearTimeout(this.bottomTimer);
-    const settle = pass => {
-      if (!this.following || !this.count) return;
-      // #165: the pin does not outrank a hand on the wheel. Converging writes `scrollTop`, and
-      // writing it under a reader who is mid-gesture is the same act the anchor placement already
-      // refuses (#132 step 3) — the guard was simply never on this path. What it cost: measured
-      // on a session with queued prompts, whose pickups REWRITE the tail rather than extend it,
-      // an apply landed once a second through a five-second gesture and reset the reader to the
-      // end every time. They crawled 21px up and were slammed back, seven times, never reaching
-      // the 80px the hysteresis needs to unfollow. "It scrolls up and gets pulled down
-      // immediately", and "only after a few trials it would eventually allow me to scroll" —
-      // a trial only succeeded when no apply happened to land inside it.
-      //
-      // Deferred, never dropped: the reader is still following, so the tail is still theirs to
-      // sit on once they stop. Re-armed while they keep moving, exactly as `scheduleSettle`
-      // does for the correction it owes, and ended by the `following` check above the moment
-      // their gesture finally clears the slack. `commanded` is the exception: the jump-to-end
-      // pill, a keyboard End, a session opening at its tail. That click stamps input like any
-      // other, so without it the one converge the reader ASKED for would be the one deferred.
-      if (!commanded && this.readerOwnsPosition()) {
-        this.trace("converge:deferred", { pass, commanded: !!commanded });
-        this.bottomTimer = setTimeout(() => settle(pass), this.userIntentMs);
-        return;
-      }
-      this.trace("converge", { pass, commanded: !!commanded, gap: Math.round(this.gapToBottom()) });
-      const range = this.rangeAround(this.count - 1);
-      this.reconcile(range.lo, range.hi, Infinity, false, null);
-      this.place({ source: "tail" });
-      this.measureMounted(null);
-      if (this.gapToBottom() > 1 && pass < 7) this.bottomTimer = setTimeout(() => settle(pass + 1), 0);
-    };
-    settle(0);
+    if (!this.following || !this.count) return;
+    this.transact("converge", { range: () => this.rangeAround(this.count - 1), commanded: !!commanded, fields: { commanded: !!commanded, gap: Math.round(this.gapToBottom()) } });
   }
 
   /** The layout changed under everything: a pane opened, the font arrived, the window resized.
@@ -1092,18 +1159,15 @@ class VirtualWindow {
    *  exactly by the observer a frame later; only the invisible groups keep the guess. A change
    *  that is not a width change (a font) has no ratio to apply, and there the old rule stands. */
   remeasure() {
-    const anchor = this.following ? null : this.captureDomAnchor();
     const width = this.mount.getBoundingClientRect().width;
     const ratio = this.lastWidth && width ? this.lastWidth / width : 0;
-    this.trace("remeasure", { ratio: Math.round(ratio * 1000) / 1000, anchor: anchor ? anchor.key : null });
     this.lastWidth = width || this.lastWidth;
-    if (ratio && Math.abs(ratio - 1) > 0.01 && this.scaleHeights) this.scaleHeights(ratio);
-    else this.clearHeights();
-    this.rebuildPrefix();
-    const anchorIndex = anchor ? this.indexOfIdentity(anchor.key) : -1;
-    const range = anchorIndex >= 0 ? this.rangeAround(anchorIndex) : this.rangeForScroll();
-    this.reconcile(range.lo, range.hi, 0, false, anchor);
-    if (this.following) this.convergeBottom();
+    this.transact("remeasure", {
+      mutate: () => { if (ratio && Math.abs(ratio - 1) > 0.01 && this.scaleHeights) this.scaleHeights(ratio); else this.clearHeights(); },
+      range: p0 => this.rangeFor(p0),
+      dirtyFrom: 0,
+      fields: { ratio: Math.round(ratio * 1000) / 1000 },
+    });
   }
 
   scheduleRemember() {

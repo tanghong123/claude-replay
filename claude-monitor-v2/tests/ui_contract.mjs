@@ -1092,21 +1092,24 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /for \(let scope = child; scope\.top < viewportTop; scope = row\) \{\n\s+const inner = rowIn\(scope\.element\);\n\s+if \(!inner\) break;\n\s+row = inner;\n\s+\}/, "ONE predicate from the ITEM down: refine only while the thing being held STRADDLES the edge. Descending reaches the nested record the reader is inside rather than its wrapper (#177); STOPPING keeps a record whose own top is visible as the anchor, instead of handing it to a child below the head being read (#178, measured at 420px on the classic page)");
   assert.equal(firstVisible([{ index: 0, top: 900, bottom: 1000, height: 100 }], 0, 500, 1, false), null, "a unit below the viewport is no anchor — the scroll offset places the window");
   assert.match(src, /const row = item\.querySelector\(`\[data-block-index="\$\{position\.block\}"\]`\);/, "…and the placement puts that row back");
-  assert.match(src, /measureMounted\(anchor = this\.readerAnchor\(\), immediate = false\) \{/, "an observer-driven measure restores the KEPT anchor, not one captured after the move");
-  assert.match(src, /if \(!immediate && this\.readerOwnsPosition\(\)\) \{ this\.trace\("restore:deferred", \{ anchor: position\.key, delta: Math\.round\(delta\) \}\); this\.owed = position; this\.scheduleSettle\(\); return false; \}/, "#132's 'never write under a moving reader' holds for every path EXCEPT the reader's own scroll (#180) — there the engine has just mounted items above them whose remembered height was a floor estimate, and withholding the correction displaces them by exactly it");
-  assert.match(src, /this\.updateWindow\(null, true\);/, "…and onScroll is the ONLY caller that opts in: the drag end, the jump paths and every apply path keep the deferral");
-  assert.match(src, /this\.updatePads\(\);\n    this\.afterMount\(fresh\);\n    this\.measureMounted\(anchor, immediate\);\n    this\.updatePads\(\);/, "PAD, then measure (#179): both `afterMount` (the classic page's clamp pass) and `measureMounted` force layout, and until the pads are written the page is short by whatever the new window dropped off its top — a browser clamps `scrollTop` to it and a reader on the tail is pulled up by the whole difference (262px on the shell, 228 on the classic page)");
-  assert.match(src, /return this\.position && !this\.position\.stale \? this\.position : this\.captureDomAnchor\(\);/, "the kept position, unless the reader's scroll marked it stale, else a fresh one (#196 stage 1: `P` is stored)");
-  assert.match(src, /if \(this\.position\) this\.position\.stale = true;\n(?:.*\n)*?    if \(user && this\.owed\) \{ this\.owed = null; clearTimeout\(this\.settleTimer\); \}/, "a scroll marks the kept position stale — and a correction owed from before the reader moved is void (#138)");
-  assert.match(src, /this\.reconcile\(range\.lo, range\.hi, Infinity, false, anchor, immediate\);\n    if \(held\) this\.restoreModelAnchor\(held, immediate\);\n    this\.syncAnchor\(\);/, "…and the deferred window update re-reads it once per batch — after the model anchor (#191) has put a reader who had no DOM anchor back on the record the sums named");
-  assert.match(src, /const held = anchor \|\| forceIndex != null \|\| this\.following \|\| this\.dragging \? null : this\.modelAnchor\(\);/, "#191: the model anchor is read BEFORE the mount changes the sums, and only when no DOM anchor, jump, pin or drag owns the position");
-  assert.match(src, /restoreModelAnchor\(held, immediate = false\) \{\n    this\.place\(held\);/, "#191: the model restore is a placement of the model position…");
-  assert.match(src, /if \(position\.source === "model"\) return this\.documentTopOf\(position\.index\) \+ position\.offset;/, "…the record the offset named plus how far into it — the sums' own position, not a replay");
+  assert.match(src, /measureNow\(\) \{\n    this\.transact\("measure", \{ spontaneous: true, measure: true \}\);/, "an observer-driven measure is a transaction on a change that already moved the DOM…");
+  assert.match(src, /if \(options\.spontaneous\) return this\.position;/, "…which places the KEPT position, never one captured after the move (#98; #196 stage 2)");
+  assert.doesNotMatch(src, /restore:deferred|this\.owed|scheduleSettle|settleTimer|bottomTimer|estimatesTimer/, "#196 stage 2: no correction is owed, deferred or dropped any more — a placement lands at once, whatever the reader is doing (framework I7); the tail and the estimates wait for rest on the one timer");
+  assert.match(src, /defer\(what\) \{\n    if \(what === "tail"\) this\.pendingTail = true;\n    else this\.estimatesPending = true;\n    this\.armRest\(\);/, "…and that timer is the only thing that waits (framework §4.2)");
+  assert.match(src, /this\.updatePads\(\);\n    this\.afterMount\(fresh\);\n    this\.measureMounted\(\);\n    this\.updatePads\(\);/, "PAD, then measure (#179): both `afterMount` (the classic page's clamp pass) and `measureMounted` force layout, and until the pads are written the page is short by whatever the new window dropped off its top — a browser clamps `scrollTop` to it and a reader on the tail is pulled up by the whole difference (262px on the shell, 228 on the classic page)");
+  assert.match(src, /if \(!this\.position \|\| this\.position\.at !== this\.frame\.scrollTop\(\)\) this\.position = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "a transaction the engine is about to make re-reads `P` when the offset moved since it was read (#196 stage 2: the reader's scroll moves `P`, it does not erase it)…");
+  assert.match(src, /syncPosition\(\) \{\n    this\.position = this\.following \|\| this\.dragging \|\| !this\.count \? null : this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…and every transaction re-reads it where it left the reader — the model form when nothing mounted is on screen (#191), never nothing");
+  assert.match(src, /const startTop = this\.frame\.scrollTop\(\);\n      const p0 = this\.positionFor\(options\);\n(?:\s*\/\/.*\n)*\s*const drift = p0 && p0\.at != null \? startTop - p0\.at : 0;/, "the placement adds what the reader scrolled since `P` was read (framework I1) — computed ONCE, at the transaction's start, before any mutation…");
+  assert.match(src, /place\(position, drift = 0\) \{\n(?:.*\n){0,6}?    const want = base \+ drift;/, "…so a clamp inside the transaction or the engine's own write is never counted as theirs (measured: 1,882px of clamp placed twice)");
+  assert.match(src, /transact\("update", \{ range: p0 => forceIndex != null \? this\.rangeAround\(forceIndex\) : this\.rangeFor\(p0\), tail: false/, "the deferred window update is one transaction, ranged around `P` (framework I11), and leaves the tail alone on the reader's own scroll batch");
+  assert.match(src, /if \(position\.source === "model"\) return this\.documentTopOf\(position\.index\) \+ position\.offset;/, "#191: the model form is the record the offset named plus how far into it — the sums' own position, not a replay");
+  assert.match(src, /fallback: this\.modelAnchor\(\) \}/, "…captured alongside every anchor, before any rewrite moves the sums (framework I12)");
+  assert.match(src, /const moved = position\.index != null && this\.indexOfIdentity\(position\.key\) !== position\.index;\n      return moved && position\.fallback \? this\.offsetOf\(position\.fallback\) : null;/, "…and placed when the anchor's identity is gone or names another record (#165); merely unmounted stays put");
   assert.match(vpSrc, /export class Viewport extends VirtualWindow \{/, "the app shell's viewport IS the shared engine (#107)");
   assert.match(vpSrc, /frame: elementFrame\(scroller\),/, "…driving it through the element frame");
   assert.match(src, /frame\.on\("pointerdown", event => \{ if \(frame\.isScrollbarTarget\(event\)\) this\.beginDrag\(\); \}/, "a pointer that lands on the scroller itself is on its scrollbar — no coordinate test, overlay scrollbars sit inside the client box");
   assert.match(src, /for \(const type of \["pointerup", "pointercancel", "mouseup"\]\) addEventListener\(type, \(\) => this\.endDrag\(\)/, "…released anywhere");
-  assert.match(src, /const anchor = this\.following \|\| this\.dragging \? null : this\.captureDomAnchor\(\);\n(?:    \/\/.*\n)*    const held = anchor \|\| forceIndex != null \|\| this\.following \|\| this\.dragging \? null : this\.modelAnchor\(\);\n    const anchorIndex/, "while dragging the window is placed by the scroll offset and nothing corrects it — the model anchor (#191) is disowned by a drag too");
+  assert.match(src, /if \(this\.following\) return options\.tail === false \? null : TAIL;\n    if \(this\.dragging\) return null;/, "while dragging the window is placed by the scroll offset and nothing corrects it (framework I14) — the model form is disowned by a drag too");
   assert.match(src, /this\.observer\.observe\(child, \{ box: "border-box" \}\);/, "a unit's height is its border box — padding and border changes count");
   console.log("#98 reader anchor cases passed");
 }
@@ -1809,9 +1812,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // item that far late.
   assert.match(src, /rangeForScroll\(this\.prefix, this\.count, this\.frame\.scrollTop\(\) - this\.contentTop\(\), this\.frame\.clientHeight\(\), this\.overscan\)/, "…and so is the range a scroll offset asks for");
   assert.match(src, /return itemTop \+ within - sat;\s*\n\s*\}\s*\n/, "the offset `P` names is derived from the anchor's own rect (offsetOf)…");
-  assert.match(src, /place\(position, immediate = false\) \{\n    if \(!position\) return false;\n    const want = this\.offsetOf\(position\);\n(?:.*\n){0,12}?    this\.frame\.scrollTo\(want\);\n    return true;\n  \}/, "…and the write-back is absolute — scrollTo the position, not scrollBy an accumulating difference");
-  assert.equal((src.match(/this\.frame\.scrollTo\(/g) || []).length, 1, "#196 stage 1 (framework I2): the engine writes the offset in exactly ONE place, place()");
-  assert.match(src, /if \(want == null\) \{ this\.trace\("restore:unmounted", \{ anchor: position\.key \}\); return false; \}/, "…and an anchor the window has left behind stays put — the sums there are estimates");
+  assert.match(src, /place\(position, drift = 0\) \{\n    if \(!position\) return false;\n    const base = this\.offsetOf\(position\);\n(?:.*\n){0,12}?    this\.frame\.scrollTo\(want\);\n/, "…and the write-back is absolute — scrollTo the position, not scrollBy an accumulating difference");
+  assert.equal((src.match(/this\.frame\.scrollTo\(/g) || []).length, 1, "#196 (framework I2): the engine writes the offset in exactly ONE place, place()");
+  assert.match(src, /if \(base == null\) \{ this\.trace\("place:unmounted", \{ anchor: position\.key \}\); return false; \}/, "…and an anchor the window has left behind stays put — the sums there are estimates");
   assert.match(src, /`null` for an anchor whose record is not\n\s*\*\s*mounted: nothing to hold it by\./, "…which offsetOf says in its own words");
   assert.doesNotMatch(src, /this\.frame\.scrollBy\(/, "…and nothing in the engine nudges the offset by an increment any more");
   console.log("#132 anchor-is-the-position cases passed");
@@ -1823,11 +1826,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const src = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   const vpSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(src, /readerOwnsPosition\(\) \{\s*\n\s*return this\.dragging \|\| performance\.now\(\) - this\.lastUserInput < this\.userIntentMs;/, "a held thumb and a travelling fling own the position");
-  assert.match(src, /if \(!immediate && this\.readerOwnsPosition\(\)\) \{ this\.trace\("restore:deferred", \{ anchor: position\.key, delta: Math\.round\(delta\) \}\); this\.owed = position; this\.scheduleSettle\(\); return false; \}/, "…so the correction is owed, not written under them — on every path but the reader's own scroll, which #180 excepts because there the correction undoes the engine's OWN mount displacement rather than replaying a stale position");
-  assert.match(src, /if \(this\.readerOwnsPosition\(\)\) \{ this\.scheduleSettle\(\); return; \}/, "…and the settle re-arms while they are still moving");
-  assert.match(src, /this\.owed = null;\s*\n\s*this\.updateWindow\(\);/, "a drag ends in the model's own reset — the offset names a record, not the anchor from before the drag");
+  assert.match(src, /if \(!options\.commanded && this\.readerOwnsPosition\(\)\) \{ this\.defer\("tail"\); this\.trace\("tail:deferred", \{\}\); return "deferred"; \}/, "…so a placement on the TAIL waits for them to rest (#165) — an anchor or a model position is written at once, since #196 stage 2: the correction it carries is the engine's own displacement, computed where the reader is now, and withholding it IS the displacement (#180)");
+  assert.match(src, /rest\(\) \{\n    if \(this\.dragging\) return;[^\n]*\n    if \(this\.readerOwnsPosition\(\)\) \{ this\.armRest\(\); return; \}/, "…and the one timer re-arms while they are still moving");
+  assert.match(src, /this\.dragging = false;\n(?:\s*\/\/.*\n)*\s*this\.updateWindow\(\);/, "a drag ends in the model's own reset — the offset names a record, not the position from before the drag");
   assert.match(src, /const ratio = this\.lastWidth && width \? this\.lastWidth \/ width : 0;/, "a width change has a ratio…");
-  assert.match(src, /if \(ratio && Math\.abs\(ratio - 1\) > 0\.01 && this\.scaleHeights\) this\.scaleHeights\(ratio\);\s*\n\s*else this\.clearHeights\(\);/, "…and scales the remembered heights; anything else still relearns them");
+  assert.match(src, /if \(ratio && Math\.abs\(ratio - 1\) > 0\.01 && this\.scaleHeights\) this\.scaleHeights\(ratio\); else this\.clearHeights\(\);/, "…and scales the remembered heights; anything else still relearns them — as the mutation of one transaction (#196 stage 2)");
   assert.match(vpSrc, /this\.state\.heights\.set\(key, Math\.max\(ESTIMATE, height \* ratio\)\)/, "…never under the floor an estimate must be (rule 5)");
   console.log("#132 steps 3-4 cases passed");
 }
@@ -2047,12 +2050,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engine, /settleEstimates\(\) \{\n\s*if \(this\.readerOwnsPosition\(\)\) \{/, "…and a reader who owns the position holds the shift off");
   assert.match(engine, /this\.trace\("estimates:pending", \{\}\)/, "…recorded (#192)");
   assert.match(engine, /this\.trace\("estimates:applied", \{ estimate: [^}]*late: true/, "…and the late apply is recorded as late");
-  assert.match(engine, /if \(anchor\) this\.place\(anchor, true\);/, "the late apply holds the anchor across the shift, immediately");
-  const settleBody = engine.slice(engine.indexOf("  scheduleSettle() {"), engine.indexOf("  beginDrag() {"));
-  assert.ok(settleBody.length > 0 && settleBody.length < 2000, "the owed correction's timer is where it was");
-  assert.doesNotMatch(settleBody, /applyEstimates|settleEstimates/, "the late apply is its own timer, never the owed correction's (a user scroll dropping that one is deliberate)");
+  assert.match(engine, /this\.transact\("estimates", \{ mutate: \(\) => this\.applyLate\(\), range: p0 => this\.rangeFor\(p0\) \}\);/, "the late apply is a transaction of its own at rest: `P` read before the shift, the window settled around it, the placement after (#196 stage 2)");
+  assert.match(engine, /if \(options\.mutate\) this\.updatePads\(\);\n      let mounted = null;/, "…and the pads follow the sums before any mount decides it has nothing to do (measured: a window 400 records above the reader when they did not)");
   assert.match(engine, /applyEstimates\(\) \{ return false; \}/, "a page with no estimator applies nothing");
-  assert.match(engine, /if \(anchor && !immediate && !this\.following && this\.readerOwnsPosition\(\) && this\.hi > this\.lo && lo < this\.lo\) lo = Math\.min\(this\.lo, hi\);/, "a path that is not the reader's does not mount above them while they own the position (#194)");
+  assert.doesNotMatch(engine, /lo = Math\.min\(this\.lo, hi\)/, "#194's lo-hold is gone (#196 stage 2): a mount above a moving reader is placed back at once, in the same task, so there is nothing to hold off (framework I7 — the fling case measures it)");
   assert.match(engine, /changes\.push\(\[index, Math\.round\(this\.heightOf\(index\)\), Math\.round\(height\), this\.heightFor\(index\) \? "measured" : "estimate"\]\)/, "…and the trace names which record moved the sums, from what, to what");
   assert.match(classicSrc, /applyEstimates\(\) \{ return estimator\.apply\(\); \}/, "the classic page applies its one mean");
   assert.match(classicSrc, /for \(var s = from; s < recShares\.length; s\+\+\) estimator\.forget\(recShares\[s\]\);/, "…and a rewritten tail takes back what it taught");
@@ -2078,11 +2079,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /trace\(event, fields\) \{\n    if \(!this\.tracing\) return;/, "off, trace() returns on one boolean before an entry is built");
   assert.match(src, /window\.__viewportTrace\.push\(entry\);\n      if \(window\.__viewportTrace\.length > 500\) window\.__viewportTrace\.shift\(\);/, "a ring of 500 entries on window, for `copy(window.__viewportTrace)`");
   assert.match(src, /console\.debug\("\[viewport\]", JSON\.stringify\(entry\)\)/, "…and one console line per entry under a fixed prefix, for a filter");
-  assert.match(src, /this\.trace\(delta \? "model:wrote" : "model:held"/, "the model anchor (#191) reports whether it wrote");
-  for (const seam of ["reconciled", "update", "restore:wrote", "restore:deferred", "restore:unmounted", "settle", "reshaped", "scroll", "converge", "converge:deferred", "remeasure", "measured"]) {
+  assert.match(src, /this\.trace\("place", \{ source: position\.source, anchor: position\.key \|\| null, index: [^}]*want: Math\.round\(want\), delta: Math\.round\(delta\), drift: Math\.round\(drift\) \}\)/, "the one write reports the `P` it wrote from, the offset, the correction and the reader's drift (#196)");
+  for (const seam of ["reconciled", "place", "place:unmounted", "tail:deferred", "rest", "reshaped", "scroll", "scroll:own", "measured", "estimates:pending", "estimates:applied"]) {
     assert.match(src, new RegExp("this\\.trace\\(\"" + seam.replace(/[:]/g, "\\$&") + "\""), "the `" + seam + "` decision is traced");
   }
-  for (const field of ["seq", "following", "dragging", "lo", "hi", "count", "top", "height", "pads", "sinceInput", "owed"]) {
+  for (const cause of ["update", "converge", "measure", "displaced", "grown", "estimates", "remeasure", "render", "reconcile"]) {
+    assert.match(src, new RegExp("this\\.transact\\(\"" + cause + "\""), "the `" + cause + "` transaction is traced under its cause (framework §4.6)");
+  }
+  for (const field of ["seq", "following", "dragging", "lo", "hi", "count", "top", "height", "pads", "sinceInput", "position", "pending"]) {
     assert.match(src, new RegExp("\\n      " + field + ": "), "every entry carries `" + field + "`");
   }
   console.log("#192 viewport-trace cases passed");
