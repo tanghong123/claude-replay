@@ -144,6 +144,10 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   built — `trace()` returns on one boolean — though each seam still evaluates the fields it
   passes (an object literal and a few rounded reads; negligible beside the reconcile that called
   it, not zero). `scenario_the_trace_records_what_the_engine_did` holds it on both surfaces.
+  **The engine's design as a framework** — the model, its fourteen numbered invariants with what
+  holds each today (construction, a timer, or only a case), the seams a page implements, and the
+  #196 refactors — is `design/virtual-window-framework.md` (#195); the history that led to it is
+  `design/virtual-window.md` and `design/one-engine-two-pages.md`.
   A killed run used to leave its browsers behind — a SIGKILL runs no `Drop` and macOS has no
   PDEATHSIG — and sixty such processes once exhausted the machine and took the session's
   background jobs with them. `chrome()` now names each profile `cr-browser-chrome-<launching
