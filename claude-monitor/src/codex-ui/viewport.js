@@ -161,26 +161,29 @@ export class Viewport extends VirtualWindow {
     try { sessionStorage.setItem(viewMemoryKey(this.session), serializeViewMemory(value.following ? { following: true, view } : { following: false, key: value.key, top: value.top, view })); } catch (_) {}
   }
 
+  /** The store's update (framework §4.11): one records transaction whose mutation is this
+   *  shell's — the units swapped in, and the estimator told which measured keys are gone (the
+   *  heights are this shell's, so it says). A remembered position, once its unit has streamed in,
+   *  is the command it already was: the swap first — `jumpTo` checks the index against the count
+   *  — and no mount before it, so the estimator learns nothing a restore never taught it. */
   setUnits(units, changedUnit = 0) {
     this.empty.hidden = true;
     if (this.pendingView) { applyViewChoices(this.state, this.pendingView); this.pendingView = null; }
-    const following = this.state.following;
-    const anchor = following ? null : this.captureDomAnchor();
-    const oldKeys = new Set(units.slice(0, changedUnit).map(unit => unit.key));
-    const nextKeys = new Set(units.map(unit => unit.key));
-    for (const key of this.state.heights.keys()) if (!oldKeys.has(key) && !nextKeys.has(key)) { this.state.heights.delete(key); this.forget(key); }
-    // A rewritten unit KEEPS its last height as the provisional value until the measure in this
-    // same task replaces it (#194). Dropping it to the estimate made the sums short by the whole
-    // open turn for the length of one render; `afterMount`/`measureMounted` force layout inside
-    // that gap, the browser clamps `scrollTop` to the shorter page (#179), and the reader is pulled
-    // up by the difference — 31px on a 300px wheel with the tail growing, measured. A stale real
-    // height is a far better guess than the mean, and `heightChanged` corrects it on the measure;
-    // a unit outside the window keeps it until it is mounted, as any measured unit does.
-    this.units = units;
-    this.rebuildPrefix();
-
+    const swap = () => {
+      const nextKeys = new Set(units.map(unit => unit.key));
+      for (const key of this.state.heights.keys()) if (!nextKeys.has(key)) { this.state.heights.delete(key); this.forget(key); }
+      // A rewritten unit KEEPS its last height as the provisional value until the measure in
+      // this same task replaces it (#194). Dropping it to the estimate made the sums short by the
+      // whole open turn for the length of one render; `afterMount`/`measureMounted` force layout
+      // inside that gap, the browser clamps `scrollTop` to the shorter page (#179), and the
+      // reader is pulled up by the difference — 31px on a 300px wheel with the tail growing,
+      // measured. A stale real height is a far better guess than the mean, and `heightChanged`
+      // corrects it on the measure; a unit outside the window keeps it until it is mounted.
+      this.units = units;
+      return changedUnit;
+    };
     if (!units.length) {
-      this.clearWindow();
+      this.recordsChanged(swap);
       return;
     }
     if (this.pending) {
@@ -188,30 +191,19 @@ export class Viewport extends VirtualWindow {
       if (index >= 0) {
         const memory = this.pending;
         this.pending = null;
+        swap();
+        this.rebuildPrefix();
         // A session reopening where it was: a landing the engine holds through whatever settles
         // under it (framework §4.10). No stamp — a restore is not a gesture.
         this.jumpTo({ key: memory.key, index, top: memory.top }, { dirtyFrom: changedUnit });
         this.actions.followChanged?.();
         return;
       }
-      // Not streamed in yet — keep waiting a few batches, then give the tail up as lost.
+      // Not streamed in yet — keep waiting a few batches, then give the tail up as lost: the
+      // transaction below reads `following` at its start and begins from the tail.
       if (++this.pendingTries > 12) { this.pending = null; this.state.following = true; }
     }
-    if (following) {
-      const range = this.rangeAround(units.length - 1);
-      this.reconcile(range.lo, range.hi, changedUnit, false, null);
-      this.convergeBottom();
-    } else {
-      const anchorIndex = anchor ? units.findIndex(unit => unit.key === anchor.key) : -1;
-      const range = anchorIndex >= 0 ? this.rangeAround(anchorIndex) : this.rangeForScroll();
-      this.reconcile(range.lo, range.hi, changedUnit, false, anchor);
-    }
-  }
-
-  /** The reader asked for the end (#165): the engine's `follow` — the pin set (this shell's
-   *  setter zeroes the new-record count), the commanded converge, the memory. */
-  toBottom() {
-    this.follow();
+    this.recordsChanged(swap);
   }
 
   /** Where a jump LANDS its target: 18px under the scroller's top, unless something sticky sits
@@ -240,9 +232,9 @@ export class Viewport extends VirtualWindow {
   }
 
   showEmpty(title, detail, error = false) {
-    this.units = [];
-    this.rebuildPrefix();
-    this.clearWindow();
+    // An empty model is a records change like any other (framework §4.11): the transaction
+    // mounts nothing and the pads go to zero.
+    this.recordsChanged(() => { this.units = []; });
     this.empty.hidden = false;
     this.empty.classList.toggle("monitor-error", error);
     this.empty.replaceChildren();

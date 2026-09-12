@@ -177,7 +177,7 @@ write site); the pages' own writes are stage 4's.
 | **I8** | **A change that has NOT touched the DOM may wait for rest, as a whole.** An estimate application, a provisional height. Deferred as a transaction, never as a write: the sums do not move until the write can land with them. | #194 (the wheel dropped the correction, the sums had already moved) | **policy** — the estimates timer | policy, one timer (§4.2) — the browser gives no end-of-gesture event for a wheel or a trackpad; time is the only signal |
 | **I9** | **Growth below `P` never moves a non-following reader.** | #98, #103 | **tests** (`scenario_unpinned_holds_to_the_pixel`, the growth scenarios) — true because I1/I3 hold on those paths | construction from I1 + I3 + I7: `P` is above the growth and the write is derived from `P` |
 | **I10** | **A jump lands on content.** `P := (target, landing)`; the window is chosen around the target; `place()` puts it there. | #66, #191 | **construction** (`rangeAround`, the landing loop) — but a fling INTO a pad had no anchor at all until #191's model form | construction — the model form of `P` is the fallback source, always |
-| **I11** | **The record under `P` is mounted after every transaction.** The window is chosen around `P`, never around the raw offset, whenever `P` has an anchor source. | #194 (the walk unmounted the record under the reader), #66 | **policy** — `updateWindow` ranges around the anchor; a delta's reconcile mounted above mid-gesture until the lo-hold patch | construction — `range = rangeAround(P)` in `transact()`; the lo-hold patch goes |
+| **I11** | **The record under `P` is mounted after every transaction.** The window is chosen around `P`, never around the raw offset, whenever `P` has an anchor source. | #194 (the walk unmounted the record under the reader), #66 | **policy** — `updateWindow` ranges around the anchor; a delta's reconcile mounted above mid-gesture until the lo-hold patch | construction — `range = rangeFor(P)` in `transact()`: `rangeAround` for an anchor or model `P`, `rangeAtEnd` for the tail (stage 5); the lo-hold patch goes |
 | **I12** | **A rewrite that drops `P`'s identity falls back to the model form captured before the rewrite.** The same id naming a different record is detected by index, not trusted. | #165 | **partly** — `indexOfIdentity` scans; a dropped key logs `restore:unmounted` and stays put | construction — `transact()` captures both forms before a rewrite; the anchor is validated by index+key |
 | **I13** | **Follow is dropped only by the reader.** | #103, #165, #185 | **construction** (`classifyScroll` on the reader's scroll; `readerReshaped`) | same |
 | **I14** | **Under a drag nothing is written; at release `P` is re-read from where the thumb left it.** | #98, #132 step 3 | construction (`beginDrag`/`endDrag`) | same |
@@ -702,7 +702,9 @@ recordsChanged(mutate)                      // mutate: the page's model change; 
   })
 ```
 
-- **Following:** `P0 = tail`, the window around the last record, and `placeAfter`'s own rule —
+- **Following:** `P0 = tail`, the end's window (`rangeAtEnd`: the last screenful and `overscan`
+  above it — the landing shape around the last record is a screenful short, see the as-landed
+  notes), and `placeAfter`'s own rule —
   placed now unless the reader owns the position, then deferred to rest (#165). That is exactly
   `convergeBottom`'s transaction, so the shell's two transactions per delta become one, and the
   classic page's `settleAfterApply` no longer converges a second time after the mount (its
@@ -760,9 +762,10 @@ checked rather than claimed:**
    named acceptance below.
 
 **What it enforces.** I11 by construction: after stage 5 every window is `rangeFor(P0)` (records,
-update, remeasure), the current window (rerender), or a command's landing (`rangeAround(index)`
-inside `command`) — and the contract greps every page source for `reconcile(`, `rangeAround(`,
-`rangeForScroll(`, `mountRange(` and `clearWindow(` and finds none. I1 for records changes: the
+update, remeasure — `rangeAround` for an anchor or model `P0`, `rangeAtEnd` for the tail), the
+current window (rerender), or a command's landing (`rangeAround(index)` inside `command`) — and
+the contract greps every page source for `reconcile(`, `rangeAround(`, `rangeForScroll(`,
+`mountRange(` and `clearWindow(` and finds none. I1 for records changes: the
 model moves inside the transaction on both pages, so `P0` is always read from the sums the reader
 was last placed by.
 
@@ -787,6 +790,123 @@ behaviour change, so it is measured first with the runaway probe against the cla
 and queued on its own. (2) `indexOfIdentity` stays an O(n) scan (one per transaction; sub-
 millisecond at 14,242 records) — a key → index map is an optimization, not a move.
 
+**As landed (2026-09-13).** Six files; the engine, the two pages, the app shell, the contract and
+CLAUDE.md's cause list. What the probes said, against stage 4:
+
+- *The walk.* The app shell's thirty-step series is identical to stage 4's. The classic page's is
+  identical to stage 4's clean run through step 30 (772 from step 22) in the run whose frames were
+  counted; three other runs stalled at step 21 with the BROWSER no longer dispatching scroll events
+  while the offset kept moving — the harness's own counter on `window` froze at the same number as
+  the engine's trace — which the spy (a `requestAnimationFrame`) and the engine (a scroll listener)
+  can only be silent about. Present at stage 4 in one of two runs; filed as #204 with the counters.
+- *The unfold.* Worst hold 1px on all four cases, nothing unmounted, no wrong-way turn — as stage 4.
+- *The runaway.* The static cases: zero changes hands-off, following kept. The live cases end the
+  "down" phase following in this run and not following in stage 4's; the trace shows the same rule
+  each time — a `scroll` verdict `follow` at gap 0, the reader's own wheel reaching the end while
+  the tail moved — and the state has alternated run to run since stage 2 (#194's final run:
+  following; stages 3 and 4: not). Following, the hands-off phase then follows the growing tail.
+- *Two corrections found at implementation.* (1) `positionFor` asks `following` BEFORE the count:
+  a records change that fills an empty page while following — the shell's first batch — starts
+  from the tail, as `setUnits` mounted the tail window; the count in that guard is the one before
+  the mutation. The classic page is unaffected (its `following` starts false, its first apply's
+  window is the top one, then the restore lands). (2) The shell's `showEmpty` called the engine's
+  `clearWindow`, which the move removed; the contract's page-names-no-window pin caught it in the
+  first draft, and it is a records change to an empty model now. And the review's thirteenth-try
+  note (item 2 above) was read against the code: the shell's `following` getter reads
+  `state.following`, so today's reconcile already saw the flip inside its transaction (`P0` the
+  tail, after a window chosen around the anchor and a re-mount); the flip stays before the call,
+  and the window is the tail's directly.
+- *The contract.* A stage-5 block: no page source names `reconcile(`, `rangeAround(`,
+  `rangeForScroll(`, `mountRange(`, `clearWindow(`, `applyWindow`, `replaceMounted` or `setWindow`;
+  the records transaction's shape; `dirtyFrom` as a function of the mutation; the tail before the
+  count; `refresh` and `forceIndex` gone; both classic transports inside the transaction and the
+  epilogue's converge gone; the undecided landing; the shell's swap and its restore order. Five
+  older pins moved with the text they named (the shell's reconcile, the update transaction, the
+  cause list, the dragging line, the forget loop) and one went with the helper it pinned (`idxAt`).
+- *The gate.* Every HTML output changed by the inlined engine and page script (+87/−110 lines in
+  each of seven files); each added line was found in the new sources and each removed line in the
+  old, then re-baselined.
+- *The suite.* The first full run read 233/235; both failures were stage 5's, both were read from
+  the trace, and both were the code's. (1) The search walk's materializing jump moved a match the
+  reader could already see: `matRecord` now returns a mounted record where it is and jumps only for
+  one that is not. For one it jumped, the step FORCES the reveal (`goTo(m, true, !!had)`): a record
+  placed with its top on the landing line puts its mark a little below it, where the "already on
+  screen" test would have left it, and the materialize-then-reveal flow this replaced never faced
+  that question (its mark was off screen until the reveal moved it). The mark ends on the landing
+  line, as it did. (2) `live_viewport_follows_pinned_and_holds_unpinned` — the owner's pin of
+  `scrollY` across live applies — moved 23px: the new record measured 32px against a 173px estimate,
+  the mean moved, the reader was at rest, so the estimate was applied inside the mount, the top pad
+  shrank by 23px and the placement held the anchor row to the pixel by moving the offset — I7 doing
+  its job on records above the reader that had never been measured. It had passed at stage 4 because
+  the classic page mounted TWO windows per apply while following — the offset-based one from
+  `applyWindow`, then `convergeBottom`'s around the last record — and the first measured the
+  screenful above the tail that the second left estimated. The first reading was "one window per
+  apply is the rule, so the case pins the wrong number", and the case was re-pinned on the record
+  under the reader; review sent it back to the window itself. The window `rangeFor(tail)` chose was
+  `rangeAround(count − 1)` — a LANDING's shape, the target at the top of the viewport and a
+  screenful of budget below it — which at the last record spends nothing below and comes out a
+  screenful short of the slack every other position gets; the tail's reader looks UP from the end.
+  The tail's window is now `rangeAtEnd()`: `rangeForScroll` at the largest offset, the last
+  screenful plus `overscan` above it (I11 for the tail; `convergeBottom`, `follow()` and
+  `rerender()` take it too, and the contract holds that no engine path mounts the tail through
+  `rangeAround`). With it the owner's case passes as written, twice, and stays as written. #140 step
+  4 had tried a tail window of its own and withdrawn it on one app-shell case
+  (`one-engine-two-pages.md`, "three wider fixes"); that engine re-read `P` after the mutation and
+  mounted twice per delta, and the full run below is what says whether that case moves on this one.
+  The second full run, on this tree, read 234/235: the one failure was the rendering audit's
+  app-shell width-and-theme case, where the tail window's one more record put a formerly-first
+  turn's re-padding in front of the audit — #201, a unit's height depending on the window's edge,
+  fixed in the commit that follows this one (on both pages; its run reads 237 names on this tree:
+  236 green, the one red the fresh-ground case's own vacuity guard (below), green on both surfaces
+  alone after).
+
+### 4.12 Stage 6: the invariant check mode (design, 2026-09-13)
+
+Stages 1–5 moved the invariants to construction where the code could carry them. What remains is
+the class of rule the code can *state* but not *prevent* — the reader ends up where `P` says, the
+record under `P` is mounted, the viewport shows only mounted records, a share is one per record —
+because each depends on what the browser did with a write. Stage 6 makes the engine CHECK them,
+after every transaction, and say so when one fails. Not a test mode: the checks are cheap enough to
+run always, so a bug report from a real session carries its violations (the diagnostics of #197
+build on this), and the suite and the probes assert none.
+
+**The checks.** Each runs at the end of `transact` (after `syncPosition`, before the trace entry)
+unless placed elsewhere; each is O(1) or O(window); the one layout read is a rect the transaction
+has already laid out.
+
+| rule | checked as | when | cost |
+|---|---|---|---|
+| I7 / I9, *the reader is where `P` says* | for an anchor `P0` the transaction placed (`placed`): the anchor item's rect top (its row's, for a block anchor) minus the viewport top equals `P0.top` (`blockTop`) minus the drift, within 1px — unless the browser clamped the write (`place` records `want` and what it read back; a clamp is traced, not a violation) | a placed anchor | one rect |
+| I11, *the record under `P` is mounted* | `P.index ∈ [lo, hi)` for an anchor or model `P`; `count − 1 < hi` for the tail — with a count | every transaction | O(1) |
+| I10, *a landing shows content* | after a transaction whose placement landed (`placed` or `tail`), `viewportMounted()` — the offset's first and last records lie inside the window (a tail placement covers by construction since `rangeAtEnd`: the window IS the end offset's) | placed or tail | O(1) reads of the sums |
+| I3, *the sums are the heights* | `prefix[hi] − prefix[lo]` equals the sum of `heightOf` over the mounted window; `prefix.length === count + 1`; both pads finite and non-negative | after a mount | O(window) |
+| I5, *one share per record* | per kind, the guess's sample count equals the number of shares of that kind (kept as a counter beside the map) | after learn / forget | O(1) |
+| I4, *estimates move only inside a transaction* | `applyEstimates` asserts `transacting` | in `applyLate` | O(1) |
+| I13, *follow changes only by the reader* | `following` at the end of a transaction equals `following` at its start (a command decides AFTER its transaction; a page callback that flipped it inside is the violation) | every transaction | O(1) |
+| I14, *nothing is written under a drag* | `place` while `dragging` | in `place` | O(1) |
+| I1, *`P` is synced* | after `syncPosition`, a stored `P` carries `at === scrollTop` (or the destination of a smooth write in flight) | every transaction | O(1) |
+| shape | `0 ≤ lo ≤ hi ≤ count`; the mounted children's `unitIndex` values are exactly `[lo, hi)` minus the skips, in order | after a mount | O(window) |
+
+**Reporting.** A failed check is one `violation` trace entry — `rule`, what was expected and what
+was read, and the transaction's cause — pushed to `window.__viewportViolations` (a ring of 50,
+always, trace on or off) and written once per rule per page to the console as a warning. Nothing
+throws and nothing is corrected: the engine's job on a violation is to make it visible, not to hide
+it under a second write. The check body runs inside its own `try`: a fault in a check (a rect on
+an element a page removed, a shape the check did not expect) is reported as a violation of rule
+`check` and never leaves the transaction — the apply that ran it is not the thing to break.
+
+**What holds it.** `scenario_the_engine_holds_its_invariants`, on both surfaces: a workout — a
+jump into the middle, six wheels down and six up, a fold opened and closed, a page down and up,
+growth above the reader and at the tail, a jump to the end, three wheels up — with the trace on,
+asserting an empty `__viewportViolations` and printing it otherwise. The three real-session probes
+print the count in their diagnostics line (the walk, the unfold, the runaway on the owner's
+sessions with zero violations is the acceptance a synthetic case cannot give). The node contract
+pins the checks' presence and their placement.
+
+**Acceptance.** The new scenario green on both surfaces; zero violations in the probes; the full
+suite; the byte gate re-baselined; the contract; CI. A violation the suite surfaces is a finding,
+not a reason to weaken the check: it is fixed at its cause or filed with the entry as evidence.
+
 ### 4.7 Out of scope
 
 - Sparse vs dense mount under a filter (settled per page: `skipAt`/`renderAll`).
@@ -803,7 +923,10 @@ millisecond at 14,242 records) — a key → index map is an optimization, not a
 - **The node contract** pins the shapes: one `frame.scrollTo` call site; the spontaneous
   transaction taking `P` as stored and the mount transaction re-reading it when the offset moved;
   the drift computed at the transaction's start; the pads written after a mutation before the mount;
-  no `owed`, no settle, no lo-hold; the reconcile order; the trace vocabulary.
+  no `owed`, no settle, no lo-hold; the reconcile order; the trace vocabulary; since stage 5, that
+  no page source names a range or a mount (`reconcile(`, `rangeAround(`, `rangeForScroll(`,
+  `mountRange(`, `clearWindow(`) and that both classic transports run their batch inside the
+  records transaction (§4.11).
 - **The scenarios on both surfaces** hold I9–I14 as behaviour: the pixel-hold cases, the growth
   cases, the walk, the growing tail, the deep jump, the held thumb, the end rule.
 - **The real-session probes** (#194's `tmp_walk`, `tmp_runaway`, `tmp_unfold`, kept for #197)

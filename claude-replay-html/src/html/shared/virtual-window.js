@@ -51,14 +51,11 @@ function rangeForScroll(sums, count, scrollTop, clientHeight, overscan) {
  *  — the shape a jump wants, where the target sits at the top and the reader looks down.
  *
  *  At the LAST item there is nothing below to spend the downward budget on, so the window is
- *  `overscan` alone — which is also the window the tail converge asks for, and it leaves the
- *  classic page opening at its tail with about a screenful less mounted than its own anchored
- *  walk used to give it. Handing the unspent budget to the upward walk was tried for #140 step 4
- *  and REVERTED: it widens every anchored update near the end, which on a page opened at its end
- *  is most of them, and three app-shell cases that had every right to stay put moved. The
- *  estimate error it was chasing had a nearer cause (the classic page never re-measured on a
- *  width change) and fixing that made this unnecessary. Left here so it is not tried a third
- *  time. */
+ *  `overscan` alone above it. Handing the unspent budget to the upward walk was tried for #140
+ *  step 4 and REVERTED: it widens every anchored update near the end, which on a page opened at
+ *  its end is most of them, and three app-shell cases that had every right to stay put moved.
+ *  Left here so it is not tried a third time. The TAIL is not a landing and does not take this
+ *  shape: its reader looks UP from the end, and its window is `rangeAtEnd` (#196 stage 5). */
 function rangeAround(index, count, heightAt, clientHeight, overscan) {
   let lo = index, hi = index + 1, above = overscan, below = clientHeight + overscan;
   while (lo > 0 && above > 0) { lo--; above -= heightAt(lo); }
@@ -461,6 +458,23 @@ class VirtualWindow {
     return rangeAround(index, this.count, i => this.heightOf(i), this.frame.clientHeight(), this.overscan);
   }
 
+  /** The window the END wants (framework I11 for the tail): the last screenful and `overscan`
+   *  above it — `rangeForScroll` at the largest offset there is. Not `rangeAround(count − 1)`:
+   *  that is a landing's shape, the target at the TOP of the viewport and the reader looking
+   *  down, and at the last record its downward budget has nothing to spend on, so the tail came
+   *  out a screenful short of the slack every other position gets. The shortfall was invisible
+   *  while a following apply mounted two windows — the offset's, then the last record's — because
+   *  the first measured the screenful the second left estimated; one window per transaction
+   *  (#196 stage 5) made it an offset move whenever an estimate re-applied at rest above a reader
+   *  who had just unpinned. (#140 step 4 tried a tail window of its own and withdrew it on one
+   *  app-shell case; the engine it was tried on had no transactions and re-read `P` after the
+   *  mutation.) */
+  rangeAtEnd() {
+    const height = this.frame.clientHeight();
+    const total = this.prefix[this.count] || 0;
+    return rangeForScroll(this.prefix, this.count, Math.max(0, total - height), height, this.overscan);
+  }
+
   /** Which index carries this identity, or -1 — the scan a rewrite makes necessary. */
   indexOfIdentity(key) {
     for (let i = 0; i < this.count; i++) if (this.identityAt(i) === key) return i;
@@ -654,9 +668,11 @@ class VirtualWindow {
    *  into a no-op for the reader (#196): every scroll event used to clear the kept anchor, so the
    *  growth's observer found nothing to hold and re-read the displaced view. */
   positionFor(options) {
-    if (options.place === false || options.position === null || !this.count) return null;
+    if (options.place === false || options.position === null) return null;
+    // The tail needs nothing mounted, and a records change that fills an EMPTY page while
+    // following starts from it (§4.11): the count here is the one before the mutation.
     if (this.following) return options.tail === false ? null : TAIL;
-    if (this.dragging) return null;
+    if (!this.count || this.dragging) return null;
     if (options.position) return options.position;
     if (options.spontaneous) return this.position;
     // While a smooth write is travelling the offset is moving because of the engine, not the
@@ -961,14 +977,6 @@ class VirtualWindow {
     this.bottomPad.style.height = `${pads.bottom}px`;
   }
 
-  clearWindow() {
-    this.observer.disconnect();
-    this.mount.replaceChildren();
-    this.lo = this.hi = 0;
-    this.topPad.style.height = "0px";
-    this.bottomPad.style.height = "0px";
-  }
-
   /** The elements just mounted, ATTACHED, before anything has measured them (#140 step 4). A page
    *  that must write to a fresh element before its height counts does it here — the classic page
    *  clamps a long user turn there. Clamping after the measure would remember the UNCLAMPED
@@ -978,21 +986,32 @@ class VirtualWindow {
    *  nothing to do — the app shell has nothing — needs no change. */
   afterMount(_fresh) {}
 
-  /** A page's own mount (framework §3.3): a records change with the anchor the page captured
-   *  before it mutated its list, or a jump with none. One transaction. */
-  reconcile(lo, hi, dirtyFrom = Infinity, refresh = false, anchor) {
-    return this.transact("reconcile", { range: { lo, hi }, dirtyFrom, refresh, position: anchor });
+  /** The page's records changed (framework §4.11). `mutate` is the page's own model change — a
+   *  batch of records applied, a units list swapped, what its estimator bookkeeping forgets —
+   *  and returns the first index whose content was REWRITTEN (nothing, or `Infinity`, when the
+   *  change only appended). One transaction: `P0` is read before the sums move (I1); the window
+   *  is the one `P0` asks for (I11) — the last record's while following, so the tail is placed
+   *  here by `placeAfter`'s own rule and no second converge follows; a count of zero empties the
+   *  window. A page never names a range, and never changes its records from inside an engine
+   *  callback: the transaction would be queued and the page would read a model that has not
+   *  changed yet. */
+  recordsChanged(mutate) {
+    return this.transact("records", {
+      mutate: () => { const from = mutate ? mutate() : undefined; return from == null ? Infinity : from; },
+      dirtyFrom: from => from,
+      range: p0 => this.count ? this.rangeFor(p0) : { lo: 0, hi: 0 },
+    });
   }
 
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
-   *  whose content changed; `refresh` rebuilds everything mounted. The mutation step of a mount
+   *  whose content changed (0 rebuilds everything mounted). The mutation step of a mount
    *  transaction: it never places — `transact` does, after it. */
-  mountRange(lo, hi, dirtyFrom = Infinity, refresh = false, p0 = null) {
+  mountRange(lo, hi, dirtyFrom = Infinity, p0 = null) {
     // The page can ask for the whole thing (#140 step 4): a small filtered set rendered in FULL
     // has every height real, so the sums are exact and a jump cannot land in a pad.
     if (this.renderAll()) { lo = 0; hi = this.count; }
     ({ lo, hi } = clampRange(lo, hi, this.count));
-    if (!refresh && dirtyFrom === Infinity && lo === this.lo && hi === this.hi) return null;
+    if (dirtyFrom === Infinity && lo === this.lo && hi === this.hi) return null;
 
     this.observer.disconnect();
     for (const child of [...this.mount.children]) {
@@ -1011,7 +1030,7 @@ class VirtualWindow {
         cursor = cursor.nextElementSibling;
         stale.remove();
       }
-      const reusable = cursor && Number(cursor.dataset.unitIndex) === index && cursor.dataset.unitKey === this.identityAt(index) && index < dirtyFrom && !refresh;
+      const reusable = cursor && Number(cursor.dataset.unitIndex) === index && cursor.dataset.unitKey === this.identityAt(index) && index < dirtyFrom;
       if (reusable) {
         cursor = cursor.nextElementSibling;
         continue;
@@ -1063,7 +1082,7 @@ class VirtualWindow {
     this.updatePads();
     for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
     this.afterRender();
-    this.trace("reconciled", { dirtyFrom: dirtyFrom === Infinity ? null : dirtyFrom, refresh, anchor: p0 && p0.key ? p0.key : null, fresh: fresh.length, estimate: this.count ? Math.round(this.estimateAt(0)) : null });
+    this.trace("reconciled", { dirtyFrom: dirtyFrom === Infinity ? null : dirtyFrom, anchor: p0 && p0.key ? p0.key : null, fresh: fresh.length, estimate: this.count ? Math.round(this.estimateAt(0)) : null });
     return { lo, hi, fresh: fresh.length };
   }
 
@@ -1077,11 +1096,11 @@ class VirtualWindow {
   }
 
   /** The window `P` asks for (framework I11): around the record it names — the anchor's, by
-   *  identity, the model form's by index, the last while following — and around the raw offset
-   *  only when there is no `P` at all. */
+   *  identity, the model form's by index, the end's screenful while following — and around the
+   *  raw offset only when there is no `P` at all. */
   rangeFor(p0) {
     if (!p0) return this.rangeForScroll();
-    if (p0.source === "tail") return this.rangeAround(this.count - 1);
+    if (p0.source === "tail") return this.rangeAtEnd();
     if (p0.source === "model") return this.rangeAround(Math.min(p0.index, this.count - 1));
     const at = this.indexOfIdentity(p0.key);
     if (this.tracing) this.lastRangeChoice = { at, index: p0.index == null ? null : p0.index, fallback: p0.fallback ? p0.fallback.index : null };
@@ -1101,8 +1120,9 @@ class VirtualWindow {
    *
    *  `options`: `mutate` — the model change; `range` — a range, or a function of `P0`, for a
    *  mount, else no mount; `measure` — measure what is mounted (the observer's own); `dirtyFrom`
-   *  / `refresh` — what the mount rebuilds; `position` — a `P0` the caller read itself (a page's
-   *  own capture, `null` for a jump); `spontaneous` — the DOM already moved, take `P` as stored;
+   *  — the first index the mount rebuilds, or a function of what `mutate` returned; `position` —
+   *  a `P0` the caller set (a command's landing); `spontaneous` — the DOM already moved, take `P`
+   *  as stored;
    *  `tail: false` — while following, leave the tail alone (the reader's own scroll batch);
    *  `commanded` — the reader asked for the tail, so it does not wait. A mount that leaves the
    *  viewport past the window — the placement moved the offset by the sums' shift (#191) — mounts
@@ -1123,7 +1143,9 @@ class VirtualWindow {
       // destination: growth above a target mid-flight re-targets the animation rather than
       // cancelling it with an instant write.
       const smooth = !!options.smooth || this.inFlight();
-      if (options.mutate) options.mutate();
+      const changed = options.mutate ? options.mutate() : undefined;
+      // What the mount rebuilds from: given, or a function of what the mutation returned (§4.11).
+      const dirtyFrom = typeof options.dirtyFrom === "function" ? options.dirtyFrom(changed) : options.dirtyFrom;
       this.rebuildPrefix();
       // The pads follow the sums at once (framework I6): a mutation that moved them — an estimate
       // applied, heights scaled — has moved where every record IS, and a mount that finds its
@@ -1136,7 +1158,7 @@ class VirtualWindow {
       let quiet = false;
       if (options.range) {
         const range = typeof options.range === "function" ? options.range(p0) : options.range;
-        mounted = this.mountRange(range.lo, range.hi, options.dirtyFrom, options.refresh, p0);
+        mounted = this.mountRange(range.lo, range.hi, dirtyFrom, p0);
       } else if (options.measure) {
         // An observer that heard nothing new — the notification every freshly observed element
         // sends — changes nothing, and a tail that is placed anyway snaps back a following reader
@@ -1152,7 +1174,7 @@ class VirtualWindow {
         // their edges, and re-mounting on that alone mounted two windows per transaction, each
         // measuring the edge unit differently (11px on the app shell, per transaction).
         const again = this.rangeForScroll();
-        mounted = this.mountRange(again.lo, again.hi, Infinity, false, p0) || mounted;
+        mounted = this.mountRange(again.lo, again.hi, Infinity, p0) || mounted;
         placed = this.placeAfter(p0, options, drift, smooth);
       }
       // A position the reader asked for (§4.10) is `P` from here on; `syncPosition` keeps it.
@@ -1188,12 +1210,12 @@ class VirtualWindow {
 
   /** The window for where the reader is: the scroll batch's own update (#180 — the correction it
    *  needs is this engine's own mount replacing floor estimates above them, and it lands now), the
-   *  end of a drag, a page after its own scroll write. A `forceIndex` is a jump's window. While
-   *  following, the reader's scroll batch leaves the tail alone: their scroll is theirs, and
-   *  `classifyScroll` has already decided whether it dropped the pin. */
-  updateWindow(forceIndex = null) {
+   *  end of a drag, an own write that arrived past the window. While following, the reader's
+   *  scroll batch leaves the tail alone: their scroll is theirs, and `classifyScroll` has already
+   *  decided whether it dropped the pin. */
+  updateWindow() {
     if (!this.count) return;
-    this.transact("update", { range: p0 => forceIndex != null ? this.rangeAround(forceIndex) : this.rangeFor(p0), tail: false, fields: { force: forceIndex } });
+    this.transact("update", { range: p0 => this.rangeFor(p0), tail: false });
   }
 
   /** The reader changed what is ON the page — opened a fold, expanded a cap, asked for the whole
@@ -1241,14 +1263,11 @@ class VirtualWindow {
     this.syncPosition();
   }
 
-  /** Rebuild what is mounted — a fold opened, a filter changed — holding the reader's place. */
-  render(forceIndex = null) {
+  /** Rebuild what is mounted — a fold opened, a filter changed, the raw view — holding the
+   *  reader's place: the same window (the tail's while following), every element built again. */
+  rerender() {
     if (!this.count) return;
-    if (forceIndex != null) {
-      this.transact("render", { range: this.rangeAround(forceIndex), dirtyFrom: 0 });
-      return;
-    }
-    this.transact("render", { range: p0 => p0 && p0.source === "tail" ? this.rangeAround(this.count - 1) : { lo: this.lo, hi: this.hi }, refresh: true });
+    this.transact("render", { range: p0 => p0 && p0.source === "tail" ? this.rangeAtEnd() : { lo: this.lo, hi: this.hi }, dirtyFrom: 0 });
   }
 
   gapToBottom() {
@@ -1325,12 +1344,14 @@ class VirtualWindow {
       smooth: !!options.smooth,
       range: p0 => this.rangeFor(p0),
       dirtyFrom: options.dirtyFrom,
-      refresh: !!options.refresh,
       fields: Object.assign({ intent: !!options.intent, smooth: !!options.smooth }, options.fields || {}),
       // Once it has run — now, or after the transaction a page callback issued this from inside.
       // Decided once, at the destination (the offset a smooth write is still travelling to), and
       // announced only if it changed, so a jump to the end does not flip the pill twice.
       after: () => {
+        // A landing a further command refines in the same task (the search walk's, §4.11) does
+        // not decide: the pin is what it was, and the refining command decides once.
+        if (options.decide === false) { if (this.following !== wasFollowing) this.following = wasFollowing; this.scheduleRemember(); return; }
         const top = this.inFlight() ? this.wrote.to : this.frame.scrollTop();
         const gap = this.frame.scrollHeight() - this.frame.clientHeight() - top;
         const following = wasFollowing ? gap <= this.slacks.hold : gap <= this.slacks.acquire;
@@ -1355,7 +1376,7 @@ class VirtualWindow {
 
   /** Land item `target.index` (or the item carrying `target.key`) — its row `target.block` when
    *  given — `target.top` px below the viewport's top. `options`: `intent`, `dirtyFrom`,
-   *  `refresh`, `smooth`. */
+   *  `smooth`, and `decide: false` for a landing another command refines in the same task. */
   jumpTo(target, options = {}) {
     const index = target.index != null ? target.index : this.indexOfIdentity(target.key);
     if (index < 0 || index >= this.count) return false;
@@ -1434,7 +1455,7 @@ class VirtualWindow {
     return true;
   }
 
-  /** Sit on the tail (framework §4.5): mount around the last record and place the end. What the
+  /** Sit on the tail (framework §4.5): mount the end's window and place the end. What the
    *  heights under it do AFTER this — an image arriving, a font, an estimate replaced — the
    *  observers hear, and each is a transaction that places the tail again; the seven timed passes
    *  this used to run are that, driven by what actually changed. `commanded` is the reader asking
@@ -1443,7 +1464,7 @@ class VirtualWindow {
    *  one that waited (#165). */
   convergeBottom(commanded) {
     if (!this.following || !this.count) return;
-    this.transact("converge", { range: () => this.rangeAround(this.count - 1), commanded: !!commanded, fields: { commanded: !!commanded, gap: Math.round(this.gapToBottom()) } });
+    this.transact("converge", { range: () => this.rangeAtEnd(), commanded: !!commanded, fields: { commanded: !!commanded, gap: Math.round(this.gapToBottom()) } });
   }
 
   /** The layout changed under everything: a pane opened, the font arrived, the window resized.

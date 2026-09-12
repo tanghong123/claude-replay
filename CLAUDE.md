@@ -134,7 +134,7 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   **The viewport trace (#192)** is how a scroll/blank-space report carries its own geometry:
   open either page with `?trace=viewport` (or set `localStorage.viewportTrace = "1"` to keep it
   across reloads) and the shared engine records every decision it makes — one entry per
-  TRANSACTION under its cause (`update`, `reconcile`, `converge`, `measure`, `displaced`, `grown`,
+  TRANSACTION under its cause (`update`, `records`, `converge`, `measure`, `displaced`, `grown`,
   `estimates`, `remeasure`, `render`, and the moves the reader asked for — `jump`, `move`, `reveal`,
   `hold`, each carrying whether the page stamped intent and whether it was smooth: the position it
   started from, whether and how it placed, the range it mounted and how it chose it; #196) and the

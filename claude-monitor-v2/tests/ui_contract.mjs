@@ -47,7 +47,7 @@ assert.equal(referenceShell, extractedShell, "reference shell must remain an exa
 assert.match(productionCss, /\.monitor-empty\[hidden\]\{display:none!important\}/, "a loaded session must not retain the loading placeholder in layout");
 assert.match(viewportSource, /USER_INTENT_MS/, "follow state must distinguish user scroll intent");
 assert.match(viewportSource, /captureDomAnchor/, "window changes must preserve a real DOM anchor");
-assert.match(viewportSource, /reconcile\(/, "scrolling must incrementally reconcile the bounded window");
+assert.match(viewportSource, /recordsChanged\(/, "a records change is the engine's one transaction (#196 stage 5)");
 assert.doesNotMatch(viewportSource, /behavior:\s*smooth/, "tail following must converge without cancellable smooth scrolling");
 assert.match(productionCss, /markdown-table-scroll>table\{display:table!important;width:100%!important/, "production markdown tables must fill their scroll viewport");
 assert.match(productionCss, /\.prompt-attachments\{/, "production-only prompt attachments must have a dedicated layout");
@@ -1101,7 +1101,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /syncPosition\(\) \{\n    if \(this\.following \|\| this\.dragging \|\| !this\.count\) \{ this\.position = null; return; \}\n(?:.*\n){0,3}?    this\.position = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…and every transaction re-reads it where it left the reader (a landing the reader asked for excepted, #196 stage 4)");
   assert.match(src, /const startTop = this\.frame\.scrollTop\(\);\n      const p0 = this\.positionFor\(options\);\n(?:\s*\/\/.*\n)*\s*const drift = p0 && p0\.at != null && !this\.inFlight\(\) \? startTop - p0\.at : 0;/, "the placement adds what the reader scrolled since `P` was read, computed once at the transaction's start (and not while a smooth write travels, #196 stage 4)");
   assert.match(src, /place\(position, drift = 0, smooth = false\) \{\n(?:.*\n){0,6}?    const want = base \+ drift;/, "…so a clamp inside the transaction or the engine's own write is never counted as theirs (measured: 1,882px of clamp placed twice)");
-  assert.match(src, /transact\("update", \{ range: p0 => forceIndex != null \? this\.rangeAround\(forceIndex\) : this\.rangeFor\(p0\), tail: false/, "the deferred window update is one transaction, ranged around `P` (framework I11), and leaves the tail alone on the reader's own scroll batch");
+  assert.match(src, /transact\("update", \{ range: p0 => this\.rangeFor\(p0\), tail: false/, "the deferred window update is one transaction, ranged around `P` (framework I11), and leaves the tail alone on the reader's own scroll batch");
   assert.match(src, /if \(position\.source === "model"\) return this\.documentTopOf\(position\.index\) \+ position\.offset;/, "#191: the model form is the record the offset named plus how far into it — the sums' own position, not a replay");
   assert.match(src, /fallback: this\.modelAnchor\(\) \}/, "…captured alongside every anchor, before any rewrite moves the sums (framework I12)");
   assert.match(src, /const moved = position\.index != null && this\.indexOfIdentity\(position\.key\) !== position\.index;\n      return moved && position\.fallback \? this\.offsetOf\(position\.fallback\) : null;/, "…and placed when the anchor's identity is gone or names another record (#165); merely unmounted stays put");
@@ -1109,7 +1109,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(vpSrc, /frame: elementFrame\(scroller\),/, "…driving it through the element frame");
   assert.match(src, /frame\.on\("pointerdown", event => \{ if \(frame\.isScrollbarTarget\(event\)\) this\.beginDrag\(\); \}/, "a pointer that lands on the scroller itself is on its scrollbar — no coordinate test, overlay scrollbars sit inside the client box");
   assert.match(src, /for \(const type of \["pointerup", "pointercancel", "mouseup"\]\) addEventListener\(type, \(\) => this\.endDrag\(\)/, "…released anywhere");
-  assert.match(src, /if \(this\.following\) return options\.tail === false \? null : TAIL;\n    if \(this\.dragging\) return null;/, "while dragging the window is placed by the scroll offset and nothing corrects it (framework I14) — the model form is disowned by a drag too");
+  assert.match(src, /if \(this\.following\) return options\.tail === false \? null : TAIL;\n    if \(!this\.count \|\| this\.dragging\) return null;/, "while dragging the window is placed by the scroll offset and nothing corrects it (framework I14) — the model form is disowned by a drag too");
   assert.match(src, /this\.observer\.observe\(child, \{ box: "border-box" \}\);/, "a unit's height is its border box — padding and border changes count");
   console.log("#98 reader anchor cases passed");
 }
@@ -1148,7 +1148,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(comp, /state\.rawTurns\.set\(key, rawToggle\.getAttribute\("aria-pressed"\) !== "true"\);/, "a per-turn override flips away from what the turn shows");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /data-reading-toggle="rawUser"/, "the global switch sits with the reading controls");
-  assert.match(app, /if \(rawChanged && recordState\.records\.length\) viewport\.render\(\);/, "…and re-renders the mounted turns");
+  assert.match(app, /if \(rawChanged && recordState\.records\.length\) viewport\.rerender\(\);/, "…and re-renders the mounted turns");
   console.log("#109 raw text cases passed");
 }
 
@@ -1159,7 +1159,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // Only what is NEWLY on the chain opens (#126): a live session must not re-open a fold the
   // reader closed a moment ago, and a record that arrives under a filter must still be added.
   assert.match(app, /for \(const id of hits\) if \(!before\?\.has\(id\)\) \{ recordState\.folds\.set\(id, false\); opened = true; \}/, "every record newly on a chain opens");
-  assert.match(app, /if \(recordState\.filterOpened\) viewport\.render\(\);/, "…and a fold opened for an ARRIVING record reaches the DOM, which only a render does");
+  assert.match(app, /if \(recordState\.filterOpened\) viewport\.rerender\(\);/, "…and a fold opened for an ARRIVING record reaches the DOM, which only a render does");
   assert.match(app, /function refreshFilterHits\(\) \{/, "…and records arriving under a filter join it");
   assert.match(app, /renderNavigator\(\); refreshFilterHits\(\); updateSearch\(false\);/, "…on the arrival path");
   assert.match(app, /recordState\.filterSnapshot = \{ folds: new Map\(recordState\.folds\)/, "the fold state is snapshotted for the clear");
@@ -1242,7 +1242,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(vp, /if \(this\.pendingView\) \{ applyViewChoices\(this\.state, this\.pendingView\); this\.pendingView = null; \}/, "restored with the first batch, after the store's reset");
   assert.match(vp, /const view = viewChoices\(this\.state\);/, "…and saved with the position");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
-  assert.match(app, /rerender: \(\) => \{ viewport\.readerReshaped\(\); viewport\.render\(\); viewport\.scheduleRemember\(\); \}/, "every choice schedules a save — and drops the tail pin first (#185), because everything reaching `rerender` is the reader reshaping the page themselves");
+  assert.match(app, /rerender: \(\) => \{ viewport\.readerReshaped\(\); viewport\.rerender\(\); viewport\.scheduleRemember\(\); \}/, "every choice schedules a save — and drops the tail pin first (#185), because everything reaching `rerender` is the reader reshaping the page themselves");
   assert.match(app, /reshaped: \(\) => viewport\.readerReshaped\(\),/, "…and the branches that grow the page IN PLACE, without a re-render, have their own way to say so — the cap expander reveals rows and never reaches `rerender`, which is the path #185 was actually reported from");
   assert.match(app, /addEventListener\("pagehide", \(\) => viewport\.remember\(\)\);/, "…and leaving saves at once");
   console.log("#114 view state cases passed");
@@ -1632,7 +1632,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(cls, /renderAll: function \(\) \{ return !!filter && filterFull; \},/, "a small filtered set is rendered whole, so a one-hit jump cannot land in a pad (#94)");
   assert.match(cls, /this\._prefix = shared\.prefixSums\(this\.count, this\.heightOf\.bind\(this\)\);/, "the sums stay LAZY here: a live apply pushes one record at a time");
   assert.match(cls, /function P\(\) \{ return vw\.prefix; \}/, "…and every reader of them goes through the engine");
-  assert.match(cls, /function idxAt\(y\) \{ return vw\.indexAt\(y\); \}/);
   assert.doesNotMatch(cls, /addEventListener\("scroll"/, "the scroll listener is the engine's now — the same pin the app shell carries");
   assert.doesNotMatch(cls, /\.observe\(document\.body\)/, "…and so are both height observers");
   assert.doesNotMatch(cls, /shared\.classifyScroll\(|shared\.correction\(|shared\.firstVisible\(|shared\.padHeights\(/, "…and the rules they ask are asked from one place");
@@ -2063,7 +2062,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engine, /if \(!floors \|\| !Object\.keys\(floors\)\.length\) throw new Error\(/, "a page must say what a record costs at least — the floors are required");
   assert.match(classicSrc, /floors: \{ record: EST_H \},/, "the classic page has one kind");
   assert.doesNotMatch(shellSrc, /for \(let i = changedUnit; i < units\.length; i\+\+\) \{? ?this\.state\.heights\.delete/, "a rewritten unit KEEPS its last height until the measure in the same task replaces it — dropping it made the sums short and the browser clamped scrollTop (#179, #194)");
-  assert.match(shellSrc, /if \(!oldKeys\.has\(key\) && !nextKeys\.has\(key\)\) \{ this\.state\.heights\.delete\(key\); this\.forget\(key\); \}/, "…while a unit that is gone takes back what it taught");
+  assert.match(shellSrc, /if \(!nextKeys\.has\(key\)\) \{ this\.state\.heights\.delete\(key\); this\.forget\(key\); \}/, "…while a unit that is gone takes back what it taught");
   assert.match(engine, /this\.shares = new Map\(\);/, "the shares live on the engine instance, never in persisted state");
 
   console.log("#194 estimator cases passed");
@@ -2087,7 +2086,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   for (const seam of ["reconciled", "place", "place:unmounted", "tail:deferred", "rest", "reshaped", "scroll", "scroll:own", "arrived", "measured", "estimates:pending", "estimates:applied"]) {
     assert.match(src, new RegExp("this\\.trace\\(\"" + seam.replace(/[:]/g, "\\$&") + "\""), "the `" + seam + "` decision is traced");
   }
-  for (const cause of ["update", "converge", "measure", "displaced", "grown", "estimates", "remeasure", "render", "reconcile", "jump", "move", "reveal", "hold"]) {
+  for (const cause of ["update", "converge", "measure", "displaced", "grown", "estimates", "remeasure", "render", "records", "jump", "move", "reveal", "hold"]) {
     assert.match(src, new RegExp("this\\.(transact|command)\\(\"" + cause + "\""), "the `" + cause + "` transaction is traced under its cause (framework §4.6; a commanded move reaches `transact` through `command`, stage 4)");
   }
   for (const field of ["seq", "following", "dragging", "lo", "hi", "count", "top", "height", "pads", "sinceInput", "position", "pending"]) {
@@ -2139,7 +2138,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // The pages call, exactly where the old code stamped.
   assert.match(shell, /this\.jumpTo\(\{ index, block: recordIndex, top: this\.landing \}, \{ dirtyFrom: index, intent: true \}\);/, "the shell's jump lands the record row at the landing, stamped as before");
   assert.match(shell, /this\.jumpTo\(\{ key: memory\.key, index, top: memory\.top \}, \{ dirtyFrom: changedUnit \}\);/, "…its memory restore is a landing with no stamp");
-  assert.match(shell, /toBottom\(\) \{\n\s*this\.follow\(\);/, "…and the pill is the engine's follow");
+  assert.doesNotMatch(shell, /toBottom\(/, "…and the pill is the engine's follow, with no wrapper left on the shell");
+  assert.match(app, /byId\("jumpToBottom"\)\.onclick = \(\) => viewport\.follow\(\);/, "…called from the pill itself");
   assert.match(app, /viewport\.pageBy\(direction, \{ intent: true \}\);/, "paging is the engine's, stamped as before");
   assert.match(app, /viewport\.reveal\(heads\[next\], \{ top: 160, smooth: true, intent: true \}\);/, "a stepped head is revealed smoothly — the classic page's rule, stamped as before");
   assert.match(app, /viewport\.reveal\(nested, \{ top: 18 \}\);/, "a nested hash landing is a reveal");
@@ -2155,4 +2155,50 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(classic, /vw\.reveal\(h, \{ top: 160, smooth: true \}\);/, "stepHead is a smooth reveal");
   assert.equal((classic.match(/vw\.follow\(\);/g) || []).length, 3, "the badge, the restore's tail and a live open take the pin through the engine");
   console.log("#196 stage 4 cases passed");
+}
+
+// ── #196 stage 5: one records-change transaction, and no page names a window ────────────────
+// A records change is `recordsChanged(mutate)`: the page's own model change runs INSIDE the
+// transaction (P0 read before the sums move), the window is the one P0 asks for, the tail is
+// placed by the same transaction while following, and a count of zero empties the window. A
+// re-render is `rerender()`. No page source names a range, mounts, or clears (framework §4.11).
+{
+  const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  const classic = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  const shell = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  const pages = classic + shell + app;
+  assert.doesNotMatch(pages, /\b(reconcile|rangeAround|rangeForScroll|mountRange|clearWindow|applyWindow|replaceMounted|setWindow)\(/, "no page names a window: the range is the engine's, from P0 (framework I11)");
+  assert.match(engine, /recordsChanged\(mutate\) \{\n\s*return this\.transact\("records", \{\n\s*mutate: \(\) => \{ const from = mutate \? mutate\(\) : undefined; return from == null \? Infinity : from; \},\n\s*dirtyFrom: from => from,\n\s*range: p0 => this\.count \? this\.rangeFor\(p0\) : \{ lo: 0, hi: 0 \},/, "the records transaction: the page's mutation, its return as dirtyFrom, the window from P0, an empty count empties the window");
+  assert.match(engine, /const changed = options\.mutate \? options\.mutate\(\) : undefined;\n(?:.*\n){0,2}?\s*const dirtyFrom = typeof options\.dirtyFrom === "function" \? options\.dirtyFrom\(changed\) : options\.dirtyFrom;/, "…and `dirtyFrom` may be a function of what the mutation returned");
+  assert.match(engine, /if \(options\.place === false \|\| options\.position === null\) return null;\n(?:.*\n){0,3}?\s*if \(this\.following\) return options\.tail === false \? null : TAIL;\n\s*if \(!this\.count \|\| this\.dragging\) return null;/, "the tail is P0 before the count is asked: a records change that fills an empty page while following starts from the tail");
+  assert.doesNotMatch(engine, /options\.refresh|refresh: |, refresh[,)]|forceIndex|reconcile\(lo, hi|\bclearWindow\(/, "the `refresh` option, `forceIndex`, the page-facing reconcile and clearWindow are gone");
+  assert.match(engine, /mountRange\(lo, hi, dirtyFrom = Infinity, p0 = null\) \{/, "mountRange takes the dirty index and P0 only");
+  assert.match(engine, /rerender\(\) \{\n\s*if \(!this\.count\) return;\n\s*this\.transact\("render", \{ range: p0 => p0 && p0\.source === "tail" \? this\.rangeAtEnd\(\) : \{ lo: this\.lo, hi: this\.hi \}, dirtyFrom: 0 \}\);/, "rerender keeps the window and rebuilds everything mounted");
+  assert.match(engine, /if \(options\.decide === false\) \{ if \(this\.following !== wasFollowing\) this\.following = wasFollowing; this\.scheduleRemember\(\); return; \}/, "a landing another command refines does not decide the pin");
+  // The tail's window is the END's screenful plus overscan above it (I11 for the tail), never a
+  // landing's shape around the last record: no engine path mounts the tail through rangeAround.
+  assert.match(engine, /rangeAtEnd\(\) \{\n\s*const height = this\.frame\.clientHeight\(\);\n\s*const total = this\.prefix\[this\.count\] \|\| 0;\n\s*return rangeForScroll\(this\.prefix, this\.count, Math\.max\(0, total - height\), height, this\.overscan\);/, "rangeAtEnd is the offset window at the largest offset");
+  assert.match(engine, /if \(p0\.source === "tail"\) return this\.rangeAtEnd\(\);/, "rangeFor gives the tail the end's window");
+  assert.match(engine, /this\.transact\("converge", \{ range: \(\) => this\.rangeAtEnd\(\), commanded: !!commanded,/, "the converge mounts the end's window");
+  assert.doesNotMatch(engine, /rangeAround\(this\.count - 1\)/, "no engine path mounts the tail as a landing around the last record");
+  // The classic search walk: a record it had to bring in lands its match on the landing line
+  // (the reveal is forced); one the reader could already see keeps a visible match where it is.
+  assert.match(classic, /had = mountedRecord\(hr\.rec\);\n\s*el = had \|\| matRecord\(hr\.rec\);/, "the walk remembers whether the hit record was mounted before the step");
+  assert.match(classic, /goTo\(m, true, !!had\);\n\s*\} else if \(el\) \{\n\s*goTo\(el, true, !!had\);/, "a materialized hit's match is revealed to the landing line; a mounted one keeps a visible match where it is");
+  // The classic page: both transports run their batch inside the transaction and return the
+  // first rewritten index; the epilogue no longer converges a second time.
+  assert.match(classic, /vw\.recordsChanged\(function \(\) \{\n\s*while \(consumed < recs\.length\) \{/, "the whole-text consume is the transaction's mutation");
+  assert.match(classic, /vw\.recordsChanged\(function \(\) \{\n\s*for \(var i = 0; i < plan\.steps\.length; i\+\+\) \{/, "…and so is the pull client's apply");
+  assert.equal((classic.match(/return postRender\(\);/g) || []).length, 2, "each returns postRender's dirty index");
+  assert.match(classic, /var from = dirtyFrom;\n\s*dirtyFrom = Infinity;\n\s*return from;/, "postRender hands the rewritten index to the engine");
+  assert.doesNotMatch(classic, /function toBottom|toBottom\(\)|vw\.convergeBottom\(/, "the post-apply converge is the records transaction's own tail placement");
+  assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: GOTO_Y \}, \{ decide: false \}\);/, "the search walk materializes a record as an undecided landing");
+  assert.match(classic, /function refreshWindow\(\) \{ vw\.rerender\(\); \}/, "the classic re-render is the engine's");
+  // The shell: the swap is the mutation; the restore stays a command with the swap before it.
+  assert.match(shell, /const swap = \(\) => \{\n(?:.*\n){0,12}?\s*this\.units = units;\n\s*return changedUnit;\n\s*\};/, "the units swap returns the first rebuilt unit");
+  assert.match(shell, /swap\(\);\n\s*this\.rebuildPrefix\(\);\n(?:.*\n){0,3}?\s*this\.jumpTo\(\{ key: memory\.key, index, top: memory\.top \}, \{ dirtyFrom: changedUnit \}\);/, "a restore swaps first and jumps, with no mount before it");
+  assert.equal((shell.match(/this\.recordsChanged\(swap\);/g) || []).length, 2, "an empty list and a plain delta are the one transaction");
+  assert.doesNotMatch(shell + app, /\.render\(\)/, "the shell re-renders through rerender()");
+  console.log("#196 stage 5 cases passed");
 }

@@ -266,7 +266,6 @@
   // UNCLAMPED (`clampIndex: false`): with a filter on, an offset past the last visible record
   // must read as past the end, which is what places the bottom pad.
   function P() { return vw.prefix; }
-  function idxAt(y) { return vw.indexAt(y); }
   function streamTop() {
     return stream.getBoundingClientRect().top + window.scrollY;
   }
@@ -360,11 +359,6 @@
   // the two agree and one function means they stay agreed. Since #140 step 4 the page does not
   // call it at all: the engine measures what it has just mounted, and every path that used to
   // ask for a measure by hand goes through a reconcile that already did one.
-  //
-  // Materialize exactly [lo, hi). Every remaining caller is a JUMP — search nav, a deep link,
-  // a restore — which is why the anchor is explicitly null: the reader is being MOVED, and
-  // holding where they were is the one thing that must not happen.
-  function setWindow(lo, hi) { vw.reconcile(lo, hi, Infinity, false, null); }
   // Recompute the window for the current position. INDEX-anchored when a mounted element is
   // visible (#66) — immune to prefix-estimate drift, which otherwise makes a post-jump update
   // compute a window that EXCLUDES the very block just navigated to.
@@ -374,7 +368,7 @@
   // move, not only on scroll (#170/#171). Guarded to a no-op unless it changed.
   function updateView() { vw.updateWindow(); paintBadge(); }
   // Re-render the materialized window in place (fold/filter state changed).
-  function refreshWindow() { vw.render(); }
+  function refreshWindow() { vw.rerender(); }
   // Register a record's ids (its own + nested items') for deep links and search nav.
   function indexIds(b, top) {
     if (b.id) idIndex[b.id] = top;
@@ -448,10 +442,10 @@
     // 0, not the floor: `heightOf` is `heightFor(i) || estimateAt(i)`, so a falsy entry is what
     // sends an unmeasured record to the guess. Seeding the floor here would freeze it (#184).
     recHeights.push(0);
-    // O(1): the sums are LAZY, so this only marks them. It has to happen per record and not
-    // once per batch, because an observer delivery can reconcile in between — and a reconcile
-    // reads the sums to place the pads, where a prefix shorter than the record list reads
-    // `undefined` for the total and writes a pad height of NaN.
+    // O(1): the sums are LAZY, so this only marks them. Per record rather than once per batch
+    // out of caution — the batch runs inside the records transaction now (framework §4.11), so
+    // nothing can read the sums between two pushes; the mark is what keeps a prefix shorter than
+    // the record list from ever reading `undefined` for the total and writing a pad of NaN.
     vw.rebuildPrefix();
     recText.push(null);
     recSearchParts.push(null);
@@ -1414,21 +1408,21 @@
     pushRecord(obj);
   }
 
-  // After a batch of new records: rebuild the filter menu (from the records), refresh
-  // the filter's hit map, and re-window (new tail records materialize if in range).
+  // After a batch of records, INSIDE the records transaction (framework §4.11): rebuild the
+  // filter menu (from the records) and the filter's hit map — `skipAt` reads it, so it has to
+  // precede the mount — and hand the engine the first REWRITTEN index. Everything from it on
+  // was rewritten rather than appended — a queued prompt picked up, a provisional turn extended
+  // — and the engine reuses a mounted element whose index AND identity both still match;
+  // without the mark, a record that grew under its own id would keep the DOM it had when it
+  // was shorter.
   function postRender() {
     refreshMessageRow();
     renderArtifactMenu();
     buildToolMenu();
     if (filter) computeFilterHits();
-    vw.rebuildPrefix();
-    // Everything from `dirtyFrom` on was REWRITTEN rather than appended — a queued prompt
-    // picked up, a provisional turn extended — and the engine reuses a mounted element whose
-    // index AND identity both still match. Without the mark, a record that grew under its own
-    // id would keep the DOM it had when it was shorter.
     var from = dirtyFrom;
     dirtyFrom = Infinity;
-    vw.applyWindow(from);
+    return from;
   }
 
   // Whole-text, record-counter based: the inline snapshot and the single-file `-f`
@@ -1436,13 +1430,17 @@
   // dedup by the `consumed` counter.
   function consume(text) {
     var recs = text.split("\n").filter(function (l) { return l.trim(); });
-    while (consumed < recs.length) {
-      var obj;
-      try { obj = JSON.parse(recs[consumed]); } catch (e) { break; }
-      consumed++;
-      applyRecord(obj);
-    }
-    postRender();
+    // The batch is the transaction's own mutation (framework §4.11): the engine reads the
+    // reader's position before a record moves the sums, and mounts once after the last one.
+    vw.recordsChanged(function () {
+      while (consumed < recs.length) {
+        var obj;
+        try { obj = JSON.parse(recs[consumed]); } catch (e) { break; }
+        consumed++;
+        applyRecord(obj);
+      }
+      return postRender();
+    });
   }
 
   // Drop records from stream index `from` onward (a rewritten tail), plus their
@@ -1496,13 +1494,15 @@
     // The plan, in order: a resync truncates to 0; a commit truncates at committed_from and
     // appends the permanent blocks; the provisional zone truncates to the committed prefix +
     // provisional_from and appends the suffix. `resetFrom` is a no-op past the end.
-    for (var i = 0; i < plan.steps.length; i++) {
-      var step = plan.steps[i];
-      if (step.op === "truncate") { resetFrom(step.to); continue; }
-      for (var j = 0; j < step.records.length; j++) putBlock(step.records[j]);
-    }
+    vw.recordsChanged(function () {
+      for (var i = 0; i < plan.steps.length; i++) {
+        var step = plan.steps[i];
+        if (step.op === "truncate") { resetFrom(step.to); continue; }
+        for (var j = 0; j < step.records.length; j++) putBlock(step.records[j]);
+      }
+      return postRender();
+    });
     pc = plan.cursor;
-    postRender();
     return true;
   }
 
@@ -1911,34 +1911,6 @@
     // how much had been read — on `pagehide` and `visibilitychange` instead (#170). So the
     // engine's own debounce has nothing to pay.
     remember() {}
-    /** `updateWindow`, plus "everything from here on has been rewritten". The pull client's
-     *  tail rewrite re-emits records at the SAME indices, and reconcile reuses a mounted
-     *  element whose index and identity both still match — so without the mark, a provisional
-     *  turn that grew under its own id keeps the DOM it had when it was shorter. */
-    applyWindow(dirty) {
-      if (!this.count) return;
-      var anchor = this.following ? null : this.captureDomAnchor();
-      var at = anchor ? this.indexOfIdentity(anchor.key) : -1;
-      var range = at >= 0 ? this.rangeAround(at) : this.rangeForScroll();
-      this.reconcile(range.lo, range.hi, dirty, false, anchor);
-    }
-    /** Re-render ONE mounted element in place. `goToId` opens a fold chain on a record that may
-     *  already be mounted, and rebuilding the whole window to show it would move the reader
-     *  before the jump has decided where they are going. */
-    replaceMounted(index) {
-      var old = null;
-      for (var c = this.mount.firstElementChild; c; c = c.nextElementSibling) {
-        if (Number(c.dataset.unitIndex) === index) { old = c; break; }
-      }
-      if (!old) return;
-      var item = this.renderItem(index);
-      item.dataset.unitIndex = index;
-      old.replaceWith(item);
-      this.afterMount([item]);
-      this.observer.observe(item, { box: "border-box" });
-      this.measureMounted();
-      this.updatePads();
-    }
   })({
     frame: shared.documentFrame(),
     // `content` is the whole document, not `#stream`: what displaces a reader on THIS page
@@ -1975,14 +1947,11 @@
   function atBottom() { return vw.gapToBottom() <= BOTTOM_SLACK; }
   function atEnd() { return vw.gapToBottom() <= PIN_SLACK; }
   function setFollowing(v) { vw.following = v; }
-  // Sit on the tail and stay there while the heights under it settle. `commanded` is the pill,
-  // a restore, the opening view: a click stamps input like any other, so without it the one
-  // converge the reader actually asked for would be the one deferred (#165).
-  function toBottom() { vw.convergeBottom(); }
-  // Shared apply epilogue: settle the viewport, then refresh the spy at the FINAL position — a
-  // rewrite that nets zero new records still rebuilt the sidebar, and without this the
-  // active-turn highlight silently vanished. The window itself was already reconciled by
-  // `postRender`, with the rewritten range marked and the reader's anchor held across it.
+  // Shared apply epilogue: refresh the spy at the FINAL position — a rewrite that nets zero new
+  // records still rebuilt the sidebar, and without this the active-turn highlight silently
+  // vanished. The window was mounted by the records transaction, with the rewritten range
+  // marked, the reader's position held across it and — while following — the tail placed
+  // (framework §4.11); the converge this used to add here was that placement a second time.
   function settleAfterApply(added) {
     if (pendingRestore) { // the first apply: land where we left off, not where we are
       applyPendingRestore();
@@ -1990,7 +1959,6 @@
       return;
     }
     if (following) {
-      toBottom();
       clearNew();
     } else if (added > 0) {
       showNew(added);
@@ -3150,10 +3118,20 @@
     }
     paintQCount();
   }
-  // Materialize record `ti`'s region and return its element (shared by hit nav).
+  // Materialize record `ti` and return its element (shared by hit nav). Mounted already — a
+  // match the reader can see, or one a step away — it is returned where it is, and the reader is
+  // not moved (the step decides that from the mark's own rect). Not mounted, the record is the
+  // landing (framework §4.11): mounted around and placed at GOTO_Y with no follow decision — the
+  // reveal of the mark inside it, which the step then FORCES (`had` below), decides once, as the
+  // mount-without-placing this replaced never decided. Both writes land in this task; nothing
+  // paints between them, and the mark ends on the landing line as it did before.
   function matRecord(ti) {
-    var y = P()[ti];
-    setWindow(idxAt(y - MARGIN_PX), idxAt(y + window.innerHeight + MARGIN_PX) + 1);
+    var target = mountedRecord(ti);
+    if (target) return target;
+    vw.jumpTo({ index: ti, top: GOTO_Y }, { decide: false });
+    return mountedRecord(ti);
+  }
+  function mountedRecord(ti) {
     var target = null;
     matEls().some(function (e) {
       if (+e.dataset.idx === ti) { target = e; return true; }
@@ -3272,10 +3250,13 @@
     // Resolve the landing. A record's visit count needs its DOM (marks are counted
     // after materialization), so a forward boundary-cross resolves here — at most one
     // extra iteration, because every hit record yields at least one landing.
-    var hr, el, marks, visits;
+    var hr, el, marks, visits, had;
     for (;;) {
       hr = hitRecs[navPos];
-      el = matRecord(hr.rec);
+      // Only a record mounted BEFORE this step can hold a match the reader already sees; one the
+      // walk brings in sits with its top on the landing line, and its match is placed there too.
+      had = mountedRecord(hr.rec);
+      el = had || matRecord(hr.rec);
       marks = el ? el.querySelectorAll("mark.hl") : [];
       // Visits: each rendered mark once (capped at the counted occurrences when the
       // DOM over-renders — a fold's collapsed and expanded faces can both match), or
@@ -3300,7 +3281,10 @@
       // a little from a hit at the top of the screen brings earlier matches into view, and
       // stepping back through those used to yank each one up to the same fixed offset —
       // discarding the position the reader chose to read from. A match already on screen
-      // is simply highlighted where it is; one off screen is brought in as before.
+      // is simply highlighted where it is; one off screen is brought in as before — and a
+      // record `matRecord` had to jump in (`had` unset) is never "on screen" in that sense: its
+      // match lands on the landing line, where the materialize-then-reveal flow this replaced
+      // put it (§4.11).
       // …and HOLD it while the page settles (#140 step 4). `revealMark` above expanded a cap to
       // get here, and the engine measures that growth under its own observer a frame later; the
       // anchor it holds the reader by is the RECORD, because this page has no per-row markers
@@ -3310,9 +3294,9 @@
       // is precisely the report #94's `holdLanding` was written for. Since #196 stage 4 the
       // engine holds any revealed target where it landed until the reader moves (framework
       // §4.10), so this path is held exactly as `goToId` is.
-      goTo(m, true, true);
+      goTo(m, true, !!had);
     } else if (el) {
-      goTo(el, true, true); // mark-less hit record: land on it, never skip it
+      goTo(el, true, !!had); // mark-less hit record: land on it, never skip it
     }
     // Settle the pin SYNCHRONOUSLY, position deciding — the async classifiers race:
     // the jump's own materialization changes heights, and the engine's height observers

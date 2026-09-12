@@ -1347,3 +1347,37 @@ loop or the timer. The engine owns smooth motion: a smooth placement's `wrote` i
 animation's events walk, arrival collapses it, a placement mid-flight re-targets the animation, and
 a wheel mid-flight is the reader interrupting it. The shell's head step is smooth now, as the
 reference page's is. Numbers and the two new cases: §4.10's "as landed".
+
+
+## A records change is one transaction, and no page names a window (2026-09-13, #196 stage 5)
+
+Framework §4.11, landed. The last thing a page did by itself was choose a WINDOW: after its
+records changed, each page read the reader's position its own way, picked a range from the sums
+its own way, and handed it to the engine's `reconcile` — the classic page's `applyWindow` (with no
+placement while following, and none for a reader with nothing mounted on screen), the shell's
+`setUnits` (a reconcile and then a `convergeBottom` — two transactions per delta), and a third
+implementation for the search walk (`setWindow`, a mount with no placement). All of it is
+`recordsChanged(mutate)` now: the page's model change — the classic page's whole apply batch,
+`consume`'s loop and the pull client's plan, followed by the refreshes `postRender` runs; the
+shell's units swap and its forgetting — runs INSIDE the transaction, so `P0` is read before a
+record moves the sums (I1); the window is the one `P0` asks for (I11); the tail is placed by the
+same transaction while following, so the shell's second transaction and the classic page's
+post-apply `toBottom()` are gone; and a count of zero empties the window (the classic page never
+cleared on a reset to zero). `rerender()` is `render()` without the `refresh` flag and the unused
+`forceIndex` (`dirtyFrom: 0` was the same thing). The search walk materializes a record as a
+landing that does not decide the pin (`decide: false`), so the reveal that follows decides once,
+as the old mount-without-placing never decided. The page-facing `reconcile`, `clearWindow`,
+`applyWindow`, `replaceMounted` and `setWindow` are out of the contract, and the contract greps
+every page source for a range call and finds none. A move: the walk, unfold and runaway probes
+read as stage 4's (§4.11's "as landed" has the numbers, and the one thing they found that is not
+the engine's — a browser that stops dispatching scroll events mid-walk, #204).
+
+Two things the move exposed, both fixed at their cause (§4.11, "the suite"). The tail's window was
+`rangeAround(count − 1)`, a landing's shape that at the last record spends its screenful of budget
+on nothing and comes out a screenful short; the second of the "three wider fixes" above was right
+about the shape and wrong about the moment — with two mounts per delta the shortfall was paid by
+the first mount. One mount per transaction made it the classic page's live case moving 23px, and
+the tail's window is now `rangeAtEnd()`, the offset window at the largest offset. And the search
+walk's materialized hit landed its record on the landing line and left the mark a little below it;
+the walk now forces the reveal for a record it had to bring in, so the mark lands where the old
+materialize-then-reveal flow put it.

@@ -173,7 +173,7 @@ bindComponentEvents(transcript, recordState, {
   // reader reshaping the page themselves — a fold, a cap, a prompt expanded, a raw toggle. Parked
   // at the tail that growth would otherwise be read as the tail moving away and converged on,
   // scrolling away the thing the click asked to see. The pin is dropped instead.
-  rerender: () => { viewport.readerReshaped(); viewport.render(); viewport.scheduleRemember(); },
+  rerender: () => { viewport.readerReshaped(); viewport.rerender(); viewport.scheduleRemember(); },
   // …and for the branches that grow the page IN PLACE without a re-render (the cap expander).
   reshaped: () => viewport.readerReshaped(),
   codeSize: (key, delta) => setCodeOverride(key, { size: clampSize(effectiveCode(key).size + delta * SIZE_STEP) }),
@@ -1216,7 +1216,7 @@ function refreshFilterHits() {
   computeFilterHits();
   // A fold the filter just opened is only in the DOM once the window is rebuilt; `render` holds
   // the reader's place while it does that, so an arrival never moves them.
-  if (recordState.filterOpened) viewport.render();
+  if (recordState.filterOpened) viewport.rerender();
   if (!recordState.search) paintMatchCount("");
   applyFilters();
 }
@@ -1226,7 +1226,7 @@ function applyToolFilter() {
   if (wanted.size) {
     if (!recordState.filterSnapshot) recordState.filterSnapshot = { folds: new Map(recordState.folds), processFolds: new Map(recordState.processFolds), processExpanded: new Set(recordState.processExpanded) };
     const indices = computeFilterHits();
-    viewport.render();
+    viewport.rerender();
     viewport.remeasure();
     // Land on the nearest hit so the filter visibly did something — and that hit becomes where
     // ↑/↓ step from, since a filter is a search by kind here (#133).
@@ -1240,7 +1240,7 @@ function applyToolFilter() {
     recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.filterMatches = null;
     recordState.match = -1; recordState.landed = null;
     if (snapshot) { recordState.folds = snapshot.folds; recordState.processFolds = snapshot.processFolds; recordState.processExpanded = snapshot.processExpanded; }
-    viewport.render();
+    viewport.rerender();
     viewport.remeasure();
   }
   if (!recordState.search) paintMatchCount("");
@@ -1348,7 +1348,7 @@ function setCodeOverride(key, patch) {
   // them and holds the reader's anchor — the same call a fold uses, and for the same reason.
   // Not `remeasure`, which throws away the height of every unit in the session: what changed
   // here is one block, and one block is what the mount pass re-measures.
-  viewport.render();
+  viewport.rerender();
 }
 /** The per-pane code bars show what THEIR OWN block reads at (#115, #173); fresh panes are
  *  painted here, and so is every pane when the baseline underneath them moves. */
@@ -1376,7 +1376,7 @@ function applyReading() {
   const rawChanged = recordState.rawUser !== !!prefs.rawUser;
   recordState.rawUser = !!prefs.rawUser;
   if (rawChanged) recordState.rawTurns.clear(); // a global change clears per-turn overrides, as the classic page does
-  if (rawChanged && recordState.records.length) viewport.render();
+  if (rawChanged && recordState.records.length) viewport.rerender();
   for (const [name, value] of Object.entries(readingVars(prefs))) app.style.setProperty(name, value);
   app.classList.toggle("wrap-code", !!prefs.wrap); app.classList.toggle("wide", !!prefs.wide);
   for (const toggle of readingSection.querySelectorAll("[data-reading-toggle]")) toggle.setAttribute("aria-checked", String(!!prefs[toggle.dataset.readingToggle]));
@@ -1833,7 +1833,7 @@ function centerTasks() {
   return true;
 }
 tasksCenter.onclick = event => { event.stopPropagation(); centerTasks(); };
-byId("sessionFoldAll").onclick = () => { const close = recordState.units.some(unit => unit.type === "process" && !recordState.processFolds.get(unit.key)); for (const unit of recordState.units) if (unit.type === "process") recordState.processFolds.set(unit.key, close); viewport.render(); };
+byId("sessionFoldAll").onclick = () => { const close = recordState.units.some(unit => unit.type === "process" && !recordState.processFolds.get(unit.key)); for (const unit of recordState.units) if (unit.type === "process") recordState.processFolds.set(unit.key, close); viewport.rerender(); };
 byId("collapseBtn").onclick = () => { for (const agent of groupedSessions()) { indexState.collapsed.add(`a:${agent.id}`); for (const project of agent.projects) indexState.collapsed.add(`p:${project.id}`); } persist(); renderTree(); };
 // Expand-all (#77, parity item 12): the counterpart of collapse-all — every agent and project
 // group open again, remembered like the folds are. Runtime chrome beside its counterpart.
