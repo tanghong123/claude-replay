@@ -125,6 +125,7 @@ Three things are the reader's, and only the reader's:
 | **anchor** | `{key, top, block, blockTop}` — a mounted record's identity, its offset from the viewport top, and the first visible ROW inside it when the record straddles the top edge (#98, #177, #178) | the ordinary case: something mounted is on screen |
 | **model** | `{index, offset}` — the record whose span the scroll offset falls in, and how far into it, signed (#191) | nothing mounted is on screen — the reader is in a pad after a fling or a released thumb |
 | **tail** | — | following: the position is the end, whatever the end is |
+| **offset** | `{y}` — a raw scroll offset the reader asked for | a page key (`pageBy`), a restore by offset when the remembered record is gone, the drag-select band's nudge; it lives only until the next transaction re-reads an anchor |
 
 The anchor form is exact (it is read from a rect); the model form is exact only through measured
 heights. `P` is captured from the DOM (`captureDomAnchor`, or `modelAnchor` when that returns
@@ -279,6 +280,18 @@ Each item names the code it replaces and the invariant it converts from policy t
 - `readerReshaped` no longer has to clear the input stamp (#190): a DOM change is placed whatever the
   reader's state, so a click's intent window cannot withhold the correction. It still drops follow
   (#185).
+- **The engine's own writes fire scroll events**, and they must not read as the reader's: a
+  placement's scroll event lands inside the intent window, so `classifyScroll` would take it for
+  the reader (a placement that changes the gap could flip follow) and it would mark `P` stale on
+  every transaction. `place()` records the offset it wrote; `onScroll` treats an event whose
+  offset is within a pixel of that record as the engine's own — no staleness, no classification,
+  no window update — and clears it. A smooth placement (the classic page's local `goTo` and
+  `stepHead` keep their ease: it is reference behaviour) records its TARGET instead and owns
+  every event until the offset arrives within a pixel of it or the reader's next input, whichever
+  comes first; the frame's `scrollTo` takes the behaviour flag, so it is still the one write path.
+- `transact()` is guarded against re-entry: an observer delivery or a page callback from
+  `renderItem`/`afterMount` that reaches it while one is running is queued and run after, never
+  nested.
 - `owed`, `scheduleSettle`, `settleTimer`: deleted. There is no debt because nothing is dropped:
   a deferred transaction re-projects the CURRENT `P`, which the reader's own scrolls keep fresh.
   This is the #138 fix stated positively — the position that was "replayed late" was a stale
@@ -333,7 +346,10 @@ that a placement during a fling neither stutters nor dies. What #132 step 3's de
 a STALE position — a capture from before the reader moved — not the act of writing; with `P`
 re-read at the start of every transaction there is no stale position to replay. #196's step 0 is
 the one case that pins this before anything else moves: growth above the reader during a momentum
-fling, both surfaces, holding to the pixel.
+fling, both surfaces, holding to the pixel. Written and measured on 2026-09-12
+(`scenario_growth_above_the_reader_during_a_fling_holds`, `known_red_196`): a 300px growth above
+the reader at the fourth of twelve decaying wheels moved them 503px for 780px of wheel on the app
+shell and 484px on the classic page — the growth, never placed back.
 
 ### 4.4 The estimator moves into the engine
 

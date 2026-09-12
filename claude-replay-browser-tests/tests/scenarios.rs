@@ -8830,3 +8830,103 @@ fn app_shell_a_turn_taller_than_the_viewport_names_itself() {
     let page = open(Surface::AppShell, &fx, 2974);
     scenario_a_turn_taller_than_the_viewport_names_itself(&page.tab, Surface::AppShell, &fx);
 }
+
+// ── scenario: growth above the reader during a momentum fling (#196, stage 0) ───────────────
+
+/// The premise of the framework's I7: a change that has already moved the DOM is placed
+/// synchronously, gesture or no gesture — not writing IS the displacement. Today the observer's
+/// restore is DEFERRED while the reader owns the position (#132 step 3) and the next scroll drops
+/// the debt (#138), so a row that grows above a reader mid-fling moves them by the growth and
+/// nothing puts it back. The fling is a decaying wheel sequence driven from inside the page (one
+/// timer, not a CDP round trip per step, so the steps land inside the intent window the way a
+/// trackpad's do); a mounted element entirely above the viewport grows by 300px at the fourth
+/// step. The reader must end up exactly where their own wheels put them. This case proves the
+/// POSITION holds through a write mid-fling; whether momentum FEELS right under that write is
+/// the owner's trackpad to judge, not this harness. Red on both surfaces on the engine before
+/// #196 (measured: 503px of motion for 780px of wheel on the app shell, 484 on the classic page —
+/// the 300px growth, never placed back); `known_red_196` until stage 2 of that task lands.
+fn scenario_growth_above_the_reader_during_a_fling_holds(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    for _ in 0..3 {
+        scroll_by(tab, surface, -700);
+    }
+    settle();
+    settle();
+    let s = surface.scroller();
+    let (items, top, target) = match surface {
+        Surface::Classic => (
+            "document.querySelectorAll('#stream [data-idx]')",
+            "0".to_string(),
+            "window".to_string(),
+        ),
+        Surface::AppShell => (
+            "document.querySelector('.virtual-window').children",
+            format!("{s}.getBoundingClientRect().top"),
+            s.to_string(),
+        ),
+    };
+    // Arm: the first visible element is the anchor, the last element entirely above it grows.
+    let armed = probe(
+        tab,
+        &format!("(function(){{ var top = {top}; var els = [...{items}]; var anchor = null, above = null; for (var e of els) {{ var r = e.getBoundingClientRect(); if (r.bottom < top - 10) above = e; else if (!anchor && r.bottom > top) anchor = e; }} if (!anchor || !above) return {{ ok: false, els: els.length }}; window.__flingAbove = above; window.__flingAnchor = anchor; return {{ ok: true, base: anchor.getBoundingClientRect().top - top, key: anchor.dataset.unitKey || anchor.id }}; }})()"),
+    );
+    assert_eq!(
+        armed["ok"], true,
+        "{surface:?}: a mounted element above the viewport and an anchor to hold: {armed}"
+    );
+    let base = armed["base"].as_f64().unwrap();
+    // The fling: twelve decaying wheels, 24ms apart, 780px in all; the growth lands at step 4.
+    let deltas = [120, 110, 100, 90, 80, 70, 60, 50, 40, 30, 20, 10];
+    let asked: i64 = deltas.iter().sum();
+    eval(
+        tab,
+        &format!("(function(){{ var s = {s}; var t = {target}; var deltas = {deltas:?}; var i = 0; window.__fling = {{ done: false, steps: [] }}; function step() {{ if (i >= deltas.length) {{ window.__fling.done = true; return; }} var d = deltas[i]; if (i === 3) {{ window.__flingAbove.style.paddingBottom = '300px'; window.__fling.grewAt = s.scrollTop; }} t.dispatchEvent(new WheelEvent('wheel', {{ deltaY: d, bubbles: true }})); s.scrollTo({{ top: s.scrollTop + d, behavior: 'instant' }}); window.__fling.steps.push(Math.round(s.scrollTop)); i++; setTimeout(step, 24); }} step(); return 'started'; }})()"),
+    );
+    until(
+        tab,
+        "window.__fling && window.__fling.done",
+        "the fling to run its twelve steps",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__fling)",
+    );
+    settle();
+    settle();
+    let after = probe(
+        tab,
+        &format!("(function(){{ var a = window.__flingAnchor; return {{ mounted: !!(a && a.isConnected), top: a ? a.getBoundingClientRect().top - ({top}) : null, grown: window.__flingAbove.style.paddingBottom }}; }})()"),
+    );
+    assert_eq!(
+        after["mounted"], true,
+        "{surface:?}: the record the reader was on is still mounted: {after}"
+    );
+    let moved = base - after["top"].as_f64().unwrap();
+    assert!(
+        (moved - asked as f64).abs() <= 2.0,
+        "{surface:?}: a 300px growth above the reader mid-fling moved them by {moved:.0}px for {asked}px of wheel — the growth was not placed back (base {base:.0}, now {}, steps {})",
+        after["top"],
+        eval(tab, "JSON.stringify(window.__fling.steps)").as_str().unwrap_or("?")
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_known_red_196_holds_through_growth_above_the_reader_during_a_fling() {
+    let _serial = serial();
+    let fx = fixture("scenario-fling-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_growth_above_the_reader_during_a_fling_holds(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_known_red_196_holds_through_growth_above_the_reader_during_a_fling() {
+    let _serial = serial();
+    let fx = fixture("scenario-fling-app", 40);
+    let page = open(Surface::AppShell, &fx, 2975);
+    scenario_growth_above_the_reader_during_a_fling_holds(&page.tab, Surface::AppShell, &fx);
+}
