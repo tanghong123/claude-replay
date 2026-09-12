@@ -222,7 +222,7 @@ export class Viewport extends VirtualWindow {
         this.state.following = false;
         const range = this.rangeAround(index);
         this.reconcile(range.lo, range.hi, changedUnit, false, null);
-        this.restoreDomAnchor({ key: memory.key, top: memory.top });
+        this.place({ source: "anchor", key: memory.key, top: memory.top });
         this.updateWindow(index);
         this.actions.followChanged?.();
         return;

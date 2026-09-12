@@ -3427,15 +3427,17 @@ mod tests {
         // Following: the tail moved away and is converged back on. Reading: what they are
         // looking at moved, and the anchor puts it back.
         assert!(engine.contains(
-            "if (this.following) { if (this.gapToBottom() > 1) this.convergeBottom(); }\n    else this.restoreDomAnchor(this.readerAnchor());"
+            "if (this.following) { if (this.gapToBottom() > 1) this.convergeBottom(); }\n    else this.place(this.readerAnchor());"
         ));
-        // The anchor is KEPT — a change heard after the fact is measured against where the
-        // reader was, not against the view it has already moved — and cleared the instant a
-        // scroll begins, then re-read once the window has caught up.
-        assert!(engine.contains("this.anchor = null;\n    // …and a correction owed from BEFORE they moved is void (#138)"));
-        assert!(engine.contains("return this.anchor || this.captureDomAnchor();"));
+        // The position is KEPT — a change heard after the fact is measured against where the
+        // reader was, not against the view it has already moved — marked stale the instant a
+        // scroll begins, then re-read once the window has caught up (#196 stage 1).
+        assert!(engine.contains("if (this.position) this.position.stale = true;\n    // …and a correction owed from BEFORE they moved is void (#138)"));
         assert!(engine.contains(
-            "this.anchor = this.following || this.dragging ? null : this.captureDomAnchor();"
+            "return this.position && !this.position.stale ? this.position : this.captureDomAnchor();"
+        ));
+        assert!(engine.contains(
+            "this.position = this.following || this.dragging ? null : this.captureDomAnchor();"
         ));
         // …and this page hands over the two elements whose size changes carry it: the mounted
         // run, and the whole document for a growth in the chrome AROUND it.

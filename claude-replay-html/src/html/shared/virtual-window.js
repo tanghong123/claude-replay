@@ -323,7 +323,12 @@ class VirtualWindow {
     // reader moving, and unpin a fresh page (#89).
     this.lastUserInput = -1e9;
     this.lastInputStamp = -1e9;
-    this.anchor = null;
+    // `P`, the reader's position (framework §1.7), stored: today the anchor kept between window
+    // updates (#98), re-read from the DOM on every settle and MARKED STALE by the reader's own
+    // scroll — a stale reading is re-captured by whoever needs it next, never replayed. #196
+    // stage 1: the value is stored and placed by one write; stage 2 makes every mutation a
+    // transaction that re-reads it first.
+    this.position = null;
     this.dragging = false;
     this.bottomTimer = 0;
     this.rememberTimer = 0;
@@ -449,7 +454,7 @@ class VirtualWindow {
     };
     const child = firstVisible([...this.mount.children].map(rects), viewportTop, viewportBottom, 1, false);
     if (!child) return null;
-    const anchor = { key: child.element.dataset.unitKey, top: child.top - viewportTop, block: null, blockTop: 0 };
+    const anchor = { source: "anchor", key: child.element.dataset.unitKey, top: child.top - viewportTop, block: null, blockTop: 0 };
     const rowIn = element => firstVisible([...element.querySelectorAll("[data-block-index]")].map(rects), viewportTop, Infinity, 1, true);
     // ONE predicate, applied from the item down: refine only while the thing you are holding
     // STRADDLES the viewport edge. Whatever straddles is the only thing whose top the reader
@@ -480,61 +485,77 @@ class VirtualWindow {
     return anchor;
   }
 
-  /** Put the reader back: the anchor IS the position (#132) — an item, a row inside it, and
-   *  where on screen that row sat — and the scroll offset is DERIVED from it and WRITTEN, not
-   *  nudged. `scrollTo(where it goes)` rather than `scrollBy(how far it has drifted)`: an
-   *  increment carries whatever the last one missed and needs the anchor already laid out under
-   *  the offset it is correcting, so a path that skips it leaves the error behind. Where the
-   *  item goes is read from its own rect — the same quantity the sums stand for, known exactly
-   *  where it is mounted, and not summed through heights a rewrite has just turned back into
-   *  estimates. */
-  restoreDomAnchor(anchor, immediate = false) {
-    if (!anchor) return;
-    const item = [...this.mount.children].find(child => child.dataset.unitKey === anchor.key);
-    // Not mounted: nothing to hold it by. Placing it from the sums was tried and reverted —
-    // the paths that lose the anchor are the ones that just cleared the heights (a width
-    // change), so the sums there are estimates and the "restore" lands the reader somewhere
-    // else entirely. Staying put is right.
-    if (!item) { this.trace("restore:unmounted", { anchor: anchor.key }); return; }
-    let within = 0, sat = anchor.top;
-    if (anchor.block != null) {
-      const row = item.querySelector(`[data-block-index="${anchor.block}"]`);
+  /** The scroll offset `P` names (framework §1.7). The anchor IS the position (#132) — an item, a
+   *  row inside it, and where on screen that row sat — and the offset is DERIVED from it, from the
+   *  item's own rect: the same quantity the sums stand for, known exactly where it is mounted, and
+   *  not summed through heights a rewrite has just turned back into estimates (measured: twenty
+   *  records off). The model form is the sums' own position, for a reader no mounted item can hold
+   *  (#191). The tail is the end, whatever the end is. `null` for an anchor whose record is not
+   *  mounted: nothing to hold it by. Placing it from the sums was tried and reverted — the paths
+   *  that lose the anchor are the ones that just cleared the heights (a width change), so the sums
+   *  there are estimates and the "restore" lands the reader somewhere else entirely. */
+  offsetOf(position) {
+    if (position.source === "tail") return this.frame.scrollHeight();
+    if (position.source === "model") return this.documentTopOf(position.index) + position.offset;
+    const item = [...this.mount.children].find(child => child.dataset.unitKey === position.key);
+    if (!item) return null;
+    let within = 0, sat = position.top;
+    if (position.block != null) {
+      const row = item.querySelector(`[data-block-index="${position.block}"]`);
       if (row && row.getBoundingClientRect().height > 0) {
         // The row's place inside its item is relative geometry — the pads do not move it.
         within = row.getBoundingClientRect().top - item.getBoundingClientRect().top;
-        sat = anchor.blockTop;
+        sat = position.blockTop;
       }
     }
     // Where the item IS, in the scroller's coordinate. Measured, not summed: the sums are the
     // model's, and above a mounted item they are exact only when every height in between has
-    // been measured — during a tail rewrite they are estimates again, and a position summed
-    // through them lands on a different record (measured: twenty records off). The rect is the
-    // same quantity the sums stand for, read where it is known exactly.
+    // been measured — during a tail rewrite they are estimates again.
     const itemTop = item.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop();
-    const want = itemTop + within - sat;
+    return itemTop + within - sat;
+  }
+
+  /** The ONE write (framework I2): `P` in, `scrollTop` out, through the frame's `scrollTo`. Written,
+   *  not nudged — `scrollTo(where it goes)` rather than `scrollBy(how far it has drifted)`: an
+   *  increment carries whatever the last one missed and needs the anchor already laid out under
+   *  the offset it is correcting, so a path that skips it leaves the error behind.
+   *
+   *  What is written, and when, is today's policy per source (#196 stage 1; stage 2 moves the
+   *  deferral into the transaction that asked for the placement):
+   *
+   *  - anchor: only while the reader does not own the position (#132 step 3) — do not write under
+   *    them; what they get instead is a fresh anchor once they stop (#138), never this position
+   *    replayed late. `immediate` is the one case where that rule INVERTS, and #180 measured why.
+   *    On the SCROLL path the engine has just mounted items ABOVE the reader whose remembered
+   *    height was a floor estimate (30px classic, 34 on the shell) against a real height five to
+   *    twenty times that. The pads absorbed the estimate, the mount adds the real height, and the
+   *    content under the reader moves down by the whole difference. Not writing does not leave
+   *    the reader alone — it displaces them by exactly the correction being withheld. Measured on
+   *    the app shell, walking up in 900px steps: +1954px of drift per step once the walk reaches
+   *    unmeasured ground, more than twice the distance asked for, with scrollHeight growing by the
+   *    same amount. This does not reopen #138: that dropped the debt because the correction
+   *    restored a position captured BEFORE the reader moved — stale by the time it was paid. The
+   *    scroll-path correction is computed AT the position they are at now; it replays nothing,
+   *    only undoes the engine's OWN mount displacement, and over already-measured ground it is
+   *    zero and returns above.
+   *  - model: whatever the reader's state (#191). Computed from where the reader IS, so writing
+   *    it replays nothing (#138) and undoes only the engine's own shift — the argument #180 made.
+   *  - tail: always; the converge decides for itself whether to run (#165).
+   *
+   *  Returns whether the reader is where `P` says — placed, or already there. */
+  place(position, immediate = false) {
+    if (!position) return false;
+    const want = this.offsetOf(position);
+    if (want == null) { this.trace("restore:unmounted", { anchor: position.key }); return false; }
     const delta = correction(this.frame.scrollTop(), want, 1);
-    if (!delta) return;
-    // The reader is moving: do not write under them (#132 step 3). What they get instead is a
-    // fresh anchor once they stop (#138) — never this position, replayed late.
-    //
-    // `immediate` is the one case where that rule INVERTS, and #180 measured why. On the SCROLL
-    // path the engine has just mounted items ABOVE the reader whose remembered height was a floor
-    // estimate (30px classic, 34 on the shell) against a real height five to twenty times that.
-    // The pads absorbed the estimate, the mount adds the real height, and the content under the
-    // reader moves down by the whole difference. Not writing does not leave the reader alone — it
-    // displaces them by exactly the correction being withheld. Measured on the app shell, walking
-    // up in 900px steps: +1954px of drift per step once the walk reaches unmeasured ground, more
-    // than twice the distance asked for, with scrollHeight growing by the same amount.
-    //
-    // This does not reopen #138. That dropped the debt because the correction restored a position
-    // captured BEFORE the reader moved — stale by the time it was paid, which is what dragged them
-    // back. The scroll-path correction is computed AT the position they are at now; it replays
-    // nothing. It only undoes the engine's OWN mount displacement, and over already-measured
-    // ground the correction is zero and returns above, so this fires only where it is the lesser
-    // harm.
-    if (!immediate && this.readerOwnsPosition()) { this.trace("restore:deferred", { anchor: anchor.key, delta: Math.round(delta) }); this.owed = anchor; this.scheduleSettle(); return; }
-    this.trace("restore:wrote", { anchor: anchor.key, delta: Math.round(delta), want: Math.round(want) });
+    if (position.source === "model") this.trace(delta ? "model:wrote" : "model:held", { index: position.index, offset: Math.round(position.offset), delta: Math.round(delta), want: Math.round(want) });
+    if (position.source !== "tail" && !delta) return true;
+    if (position.source === "anchor") {
+      if (!immediate && this.readerOwnsPosition()) { this.trace("restore:deferred", { anchor: position.key, delta: Math.round(delta) }); this.owed = position; this.scheduleSettle(); return false; }
+      this.trace("restore:wrote", { anchor: position.key, delta: Math.round(delta), want: Math.round(want) });
+    }
     this.frame.scrollTo(want);
+    return true;
   }
 
   /** The position the SUMS name, for a reader no mounted item can hold (#191): the item whose span
@@ -547,7 +568,7 @@ class VirtualWindow {
     // how far above, and clamping it to zero would pull the reader down onto record 0 — measured
     // as the turn bar lighting up at the top of the page. Past the last record it is the bottom
     // padding. Either way the restore reproduces the offset the reader had.
-    return { index, offset: y - (this.prefix[index] || 0) };
+    return { source: "model", index, offset: y - (this.prefix[index] || 0) };
   }
 
   /** Put the reader back on the record the sums named (#191).
@@ -566,10 +587,7 @@ class VirtualWindow {
    *  lands regardless of intent. Then the window is settled around the corrected offset, once: the
    *  range was chosen from the sums before the measure, and the viewport may now run past it. */
   restoreModelAnchor(held, immediate = false) {
-    const want = this.documentTopOf(held.index) + held.offset;
-    const delta = correction(this.frame.scrollTop(), want, 1);
-    this.trace(delta ? "model:wrote" : "model:held", { index: held.index, offset: Math.round(held.offset), delta: Math.round(delta), want: Math.round(want) });
-    if (delta) this.frame.scrollTo(want);
+    this.place(held);
     const range = this.rangeForScroll();
     if (range.lo !== this.lo || range.hi !== this.hi) this.reconcile(range.lo, range.hi, Infinity, false, this.captureDomAnchor(), immediate);
   }
@@ -608,11 +626,11 @@ class VirtualWindow {
    *  refreshed on every settle, cleared the instant a scroll begins. */
   readerAnchor() {
     if (this.following || this.dragging) return null;
-    return this.anchor || this.captureDomAnchor();
+    return this.position && !this.position.stale ? this.position : this.captureDomAnchor();
   }
 
   syncAnchor() {
-    this.anchor = this.following || this.dragging ? null : this.captureDomAnchor();
+    this.position = this.following || this.dragging ? null : this.captureDomAnchor();
   }
 
   /** Is the position the READER's right now? While a thumb is held, and for `userIntentMs`
@@ -646,7 +664,7 @@ class VirtualWindow {
     this.lastContentTop = top;
     if (first || !this.count) return;
     if (this.following) { if (this.gapToBottom() > 1) this.convergeBottom(); }
-    else this.restoreDomAnchor(this.readerAnchor());
+    else this.place(this.readerAnchor());
   }
 
   /** What happens once the reader comes to rest (#138). NOT "pay the correction that was owed":
@@ -670,7 +688,7 @@ class VirtualWindow {
   beginDrag() {
     if (this.dragging) return;
     this.dragging = true;
-    this.anchor = null;
+    this.position = null;
     this.lastUserInput = performance.now();
   }
 
@@ -708,7 +726,7 @@ class VirtualWindow {
     this.rebuildPrefix();
     this.updatePads();
     this.trace("measured", { anchor: anchor ? anchor.key : null, immediate, estimate: this.count ? Math.round(this.estimateAt(0)) : null, live: this.count ? Math.round(this.liveEstimateAt(0)) : null, changes });
-    if (!this.following) this.restoreDomAnchor(anchor, immediate);
+    if (!this.following) this.place(anchor, immediate);
     this.syncAnchor();
     return true;
   }
@@ -763,7 +781,7 @@ class VirtualWindow {
       if (this.following) {
         this.convergeBottom();
       } else {
-        if (anchor) this.restoreDomAnchor(anchor, true);
+        if (anchor) this.place(anchor, true);
         // The window was chosen from the old sums; the viewport may now run past it.
         const range = this.rangeForScroll();
         if (range.lo !== this.lo || range.hi !== this.hi) this.reconcile(range.lo, range.hi, Infinity, false, this.captureDomAnchor(), true);
@@ -895,7 +913,7 @@ class VirtualWindow {
     this.afterMount(fresh);
     this.measureMounted(anchor, immediate);
     this.updatePads();
-    this.restoreDomAnchor(anchor, immediate);
+    this.place(anchor, immediate);
     for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
     this.afterRender();
     this.syncAnchor();
@@ -945,7 +963,7 @@ class VirtualWindow {
   readerReshaped() {
     // A reshape is not a scroll, so the intent that clicked it must not own the position (#190).
     // `noteIntent` binds pointerdown, so the click that opened this fold or expander started
-    // the `userIntentMs` window — and inside that window `restoreDomAnchor` DEFERS its
+    // the `userIntentMs` window — and inside that window the anchor placement DEFERS its
     // correction as owed (#132 step 3) and `scheduleSettle` DROPS it (#138). Right for a scroll:
     // paying an old position after the reader moved drags them back. Wrong here: no scroll
     // event fired, the reader has not moved, and the correction being withheld is this engine's
@@ -1006,9 +1024,9 @@ class VirtualWindow {
     }
     if (user) this.scheduleRemember();
     else if (verdict === "heal") this.convergeBottom();
-    // This scroll moved the reader: the kept anchor is stale until the deferred window update
+    // This scroll moved the reader: the kept position is stale until the deferred window update
     // re-reads it, once per batch of scroll events rather than per event.
-    this.anchor = null;
+    if (this.position) this.position.stale = true;
     // …and a correction owed from BEFORE they moved is void (#138). The reader's own scroll makes
     // their position the authoritative one; paying an old debt afterwards drags them back to
     // where they were, and since every click registers as intent (a fold is a pointerdown), the
@@ -1036,7 +1054,7 @@ class VirtualWindow {
     const settle = pass => {
       if (!this.following || !this.count) return;
       // #165: the pin does not outrank a hand on the wheel. Converging writes `scrollTop`, and
-      // writing it under a reader who is mid-gesture is the same act `restoreDomAnchor` already
+      // writing it under a reader who is mid-gesture is the same act the anchor placement already
       // refuses (#132 step 3) — the guard was simply never on this path. What it cost: measured
       // on a session with queued prompts, whose pickups REWRITE the tail rather than extend it,
       // an apply landed once a second through a five-second gesture and reset the reader to the
@@ -1059,7 +1077,7 @@ class VirtualWindow {
       this.trace("converge", { pass, commanded: !!commanded, gap: Math.round(this.gapToBottom()) });
       const range = this.rangeAround(this.count - 1);
       this.reconcile(range.lo, range.hi, Infinity, false, null);
-      this.frame.scrollTo(this.frame.scrollHeight());
+      this.place({ source: "tail" });
       this.measureMounted(null);
       if (this.gapToBottom() > 1 && pass < 7) this.bottomTimer = setTimeout(() => settle(pass + 1), 0);
     };
