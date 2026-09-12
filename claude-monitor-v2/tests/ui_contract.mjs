@@ -1591,7 +1591,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // truth and that distance is what displaces a reader when a run above them is measured (#180).
   assert.match(vp, /const ESTIMATES = \{ user: 44, assistant: 40, process: 34 \};/);
   assert.match(vp, /user: new HeightGuess\(ESTIMATES\.user\),/, "each floor seeds a guess of its own — one population per unit type");
-  assert.match(vp, /estimateAt\(index\) \{ return this\.guessFor\(index\)\.value\(\); \}/, "the estimate is this shell's answer to the engine's question");
+  assert.match(vp, /estimateAt\(index\) \{ return this\.guessFor\(index\)\.estimate\(\); \}/, "the estimate is this shell's answer to the engine's question — the APPLIED one (#194)");
   // #132 step 4, reaching the classic page with #140 step 4: a width change RE-GUESSES the
   // remembered heights instead of keeping them (which is what left that page believing in a
   // bottom 693px from the real one after the monitor's rail opened) and instead of clearing them
@@ -1970,13 +1970,86 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const exportSrc = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
   const viewportSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(engineSrc, /return this\.heightFor\(index\) \|\| this\.estimateAt\(index\);/, "an unmeasured item still falls through to the estimate");
-  assert.match(exportSrc, /estimateAt\(\) \{ return estimator\.value\(\); \}/, "the classic page asks the learned guess, not EST_H");
+  assert.match(exportSrc, /estimateAt\(\) \{ return estimator\.estimate\(\); \}/, "the classic page asks the learned guess, not EST_H — the APPLIED one (#194)");
   assert.match(exportSrc, /recHeights\.push\(0\);/, "…which needs a FALSY seed in recHeights, or heightOf never reaches the estimate");
-  assert.match(exportSrc, /setHeight\(index, height\) \{ recHeights\[index\] = height; estimator\.learn\(height\); this\.rebuildPrefix\(\); \}/, "…and every measured height teaches it");
-  assert.match(viewportSrc, /estimateAt\(index\) \{ return this\.guessFor\(index\)\.value\(\); \}/, "the app shell asks a guess per unit type");
-  assert.match(viewportSrc, /this\.guessFor\(index\)\.learn\(height\)/, "…and teaches it from the same place it records the height");
+  assert.match(exportSrc, /setHeight\(index, height\) \{ recShares\[index\] = estimator\.learn\(height, recShares\[index\] \|\| 0\); recHeights\[index\] = height; this\.rebuildPrefix\(\); \}/, "…and every measured height teaches it, replacing what that record taught before (#194)");
+  assert.match(viewportSrc, /estimateAt\(index\) \{ return this\.guessFor\(index\)\.estimate\(\); \}/, "the app shell asks a guess per unit type — the APPLIED one (#194)");
+  assert.match(viewportSrc, /this\.guesses\[type\]\.learn\(height, previous\)/, "…and teaches it from the same place it records the height, replacing the unit's own share (#194)");
 
   console.log("#184 learned-height cases passed");
+}
+
+// ── #194: a record teaches the mean ONCE, and the sums take a new estimate only at rest ──────
+// Measured on a copy of the owner's live session with the #192 trace: the open turn's tail was
+// re-rendered on every delta and each measure taught the mean again — 337→362 in ten deltas with
+// the record count flat — so every never-measured record above the reader re-estimated by the
+// difference, the pad above shifted by thousands of pixels, and under the wheel the correction
+// was deferred and then dropped. Two rules, both pure enough to check here.
+{
+  const floor = 30;
+
+  // A record measured AGAIN replaces its own share: the mean is a mean over DISTINCT records.
+  const again = new HeightGuess(floor, 2);
+  again.learn(100);
+  let share = again.learn(1000);
+  const { count, sum } = again;
+  for (let i = 0; i < 10; i++) share = again.learn(1000, share);
+  assert.equal(again.count, count, "re-learning the same record ten times adds no sample");
+  assert.equal(again.sum, sum, "…and moves the sum by nothing");
+  share = again.learn(1600, share);
+  assert.equal(again.count, count, "a record that grew still counts once");
+  assert.equal(again.value(), (100 + 1600) / 2, "…and the mean is the mean of the records as they are NOW");
+  share = again.learn(10, share);
+  assert.equal(share, 0, "collapsed to the floor there is no share");
+  assert.equal(again.count, count - 1, "…and the record no longer counts");
+
+  // A record that is gone (a rewrite dropped it) leaves the mean to the others.
+  const gone = new HeightGuess(floor, 1);
+  const first = gone.learn(100);
+  gone.learn(300);
+  gone.forget(first);
+  assert.equal(gone.count, 1, "a forgotten record is no longer a sample");
+  assert.equal(gone.value(), 300, "…and the mean is the others'");
+
+  // The sums read the APPLIED estimate: the live mean learns as records are measured, but what
+  // the pads are built from moves only when `apply` is called — which the engine does at rest.
+  const held = new HeightGuess(floor, 2);
+  assert.equal(held.estimate(), floor, "before anything is learned the estimate is the floor");
+  held.learn(200);
+  held.learn(400);
+  assert.equal(held.value(), 300, "the live mean has learned");
+  assert.equal(held.estimate(), floor, "…and the sums still read the floor until the reader is at rest");
+  assert.equal(held.apply(), true, "applying reports that something moved");
+  assert.equal(held.estimate(), 300, "…and the sums read the mean from then on");
+  assert.equal(held.apply(), false, "…with nothing to report while it holds");
+  held.scale(2);
+  assert.equal(held.estimate(), 600, "a width change re-guesses the applied estimate with the mean");
+  held.reset();
+  assert.equal(held.estimate(), floor, "…and a reset drops it back to the floor");
+
+  // The engine gates the shift, and both pages wire the hooks — or the arithmetic above is decoration.
+  const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  const classicSrc = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  const shellSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  assert.match(engine, /if \(!changed\) return false;\n\s*\/\/[^\n]*\n\s*this\.settleEstimates\(\);\n\s*this\.rebuildPrefix\(\);/, "a measure that moved the mean settles the estimates BEFORE the sums are rebuilt");
+  assert.match(engine, /settleEstimates\(\) \{\n\s*if \(this\.readerOwnsPosition\(\)\) \{/, "…and a reader who owns the position holds the shift off");
+  assert.match(engine, /this\.trace\("estimates:pending", \{\}\)/, "…recorded (#192)");
+  assert.match(engine, /this\.trace\("estimates:applied", \{ estimate: [^}]*late: true/, "…and the late apply is recorded as late");
+  assert.match(engine, /if \(anchor\) this\.restoreDomAnchor\(anchor, true\);/, "the late apply holds the anchor across the shift, immediately");
+  const settleBody = engine.slice(engine.indexOf("  scheduleSettle() {"), engine.indexOf("  beginDrag() {"));
+  assert.ok(settleBody.length > 0 && settleBody.length < 2000, "the owed correction's timer is where it was");
+  assert.doesNotMatch(settleBody, /applyEstimates|settleEstimates/, "the late apply is its own timer, never the owed correction's (a user scroll dropping that one is deliberate)");
+  assert.match(engine, /applyEstimates\(\) \{ return false; \}/, "a page with no estimator applies nothing");
+  assert.match(engine, /if \(anchor && !immediate && !this\.following && this\.readerOwnsPosition\(\) && this\.hi > this\.lo && lo < this\.lo\) lo = Math\.min\(this\.lo, hi\);/, "a path that is not the reader's does not mount above them while they own the position (#194)");
+  assert.match(engine, /changes\.push\(\[index, Math\.round\(this\.heightOf\(index\)\), Math\.round\(height\), this\.heightFor\(index\) \? "measured" : "estimate"\]\)/, "…and the trace names which record moved the sums, from what, to what");
+  assert.match(classicSrc, /applyEstimates\(\) \{ return estimator\.apply\(\); \}/, "the classic page applies its one mean");
+  assert.match(classicSrc, /for \(var s = from; s < recShares\.length; s\+\+\) estimator\.forget\(recShares\[s\]\);/, "…and a rewritten tail takes back what it taught");
+  assert.match(shellSrc, /applyEstimates\(\) \{\n\s*let moved = false;\n\s*for \(const guess of Object\.values\(this\.guesses\)\) if \(guess\.apply\(\)\) moved = true;/, "the shell applies all three means");
+  assert.doesNotMatch(shellSrc, /for \(let i = changedUnit; i < units\.length; i\+\+\) \{? ?this\.state\.heights\.delete/, "a rewritten unit KEEPS its last height until the measure in the same task replaces it — dropping it made the sums short and the browser clamped scrollTop (#179, #194)");
+  assert.match(shellSrc, /if \(!oldKeys\.has\(key\) && !nextKeys\.has\(key\)\) \{ this\.state\.heights\.delete\(key\); this\.forgetShare\(key\); \}/, "…while a unit that is gone takes back what it taught");
+  assert.match(shellSrc, /this\.shares = new Map\(\);/, "the shell's shares live on the instance, not in the persisted state");
+
+  console.log("#194 estimator cases passed");
 }
 
 // ── #192: the viewport trace ────────────────────────────────────────────────────────────────

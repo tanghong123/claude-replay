@@ -224,6 +224,7 @@
   // Fold/filter/search state lives on the records so it survives dematerialization.
   var records = [];      // block records, stream order — the source of truth
   var recHeights = [];   // measured px height per record (0 = never measured; the guess stands in)
+  var recShares = [];    // what each record taught the estimator, so a re-measure replaces it (#194)
   var recText = [];      // lazy lowercase text per record, for search (null = unbuilt)
   var recSearchParts = []; // lazy {start,end,mask} ownership spans into recText
   var recHit = [];       // with a filter active: does this record (or a nested one) match?
@@ -448,6 +449,7 @@
     // 0, not the floor: `heightOf` is `heightFor(i) || estimateAt(i)`, so a falsy entry is what
     // sends an unmeasured record to the guess. Seeding the floor here would freeze it (#184).
     recHeights.push(0);
+    recShares.push(0);
     // O(1): the sums are LAZY, so this only marks them. It has to happen per record and not
     // once per batch, because an observer delivery can reconcile in between — and a reconcile
     // reads the sums to place the pads, where a prefix shorter than the record list reads
@@ -1452,6 +1454,8 @@
     dropHitsFrom(from);
     records.length = from;
     recSize.length = records.length;
+    for (var s = from; s < recShares.length; s++) estimator.forget(recShares[s]);
+    recShares.length = from;
     recHeights.length = from;
     recText.length = from;
     recSearchParts.length = from;
@@ -1842,13 +1846,19 @@
     // carries an id, but keying them all `"undefined"` would make each reusable as any other,
     // and one character of prefix costs nothing to rule that out by shape.
     identityAt(index) { var b = records[index]; return b && b.id ? b.id : "@" + index; }
-    // UNDER, never over (rule 5): learning a real height then only ever grows the page BELOW
-    // the reader, which nobody feels. Guess high and it SHRINKS, and a shrink above the
-    // viewport is a jump unless the anchor catches it.
-    estimateAt() { return estimator.value(); }
+    // UNDER, never over (rule 5): guess high and the page SHRINKS when the truth arrives, and a
+    // shrink above the viewport is a jump unless the anchor catches it. The old second half of
+    // this comment — "learning a real height then only ever grows the page BELOW the reader,
+    // which nobody feels" — was false for a reader who opened at the tail: every record above
+    // them is unmeasured, so a learned height re-estimates all of them at once, and the page
+    // moves ABOVE the reader by thousands of pixels (#194). That is why the sums read the
+    // APPLIED estimate, taken only while the reader is at rest.
+    estimateAt() { return estimator.estimate(); }
+    liveEstimateAt() { return estimator.value(); }
+    applyEstimates() { return estimator.apply(); }
     heightFor(index) { return recHeights[index]; }
-    setHeight(index, height) { recHeights[index] = height; estimator.learn(height); this.rebuildPrefix(); }
-    clearHeights() { recHeights.length = 0; estimator.reset(); this.rebuildPrefix(); }
+    setHeight(index, height) { recShares[index] = estimator.learn(height, recShares[index] || 0); recHeights[index] = height; this.rebuildPrefix(); }
+    clearHeights() { recHeights.length = 0; recShares.length = 0; estimator.reset(); this.rebuildPrefix(); }
     /** #132 step 4, and #140 step 4 brings it to this page: a block of text is about as tall as
      *  its measure is narrow, so a width change RE-GUESSES the remembered heights rather than
      *  throwing them away. Throwing them away drops every record the reader cannot see back to
@@ -1865,6 +1875,7 @@
         recHeights[i] = Math.max(EST_H, recHeights[i] * ratio);
       }
       estimator.scale(ratio);
+      for (var j = 0; j < recShares.length; j++) recShares[j] *= ratio;
       this.rebuildPrefix();
     }
     renderItem(index) {

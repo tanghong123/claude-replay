@@ -123,15 +123,51 @@ class HeightGuess {
     this.outlier = outlier;
     this.count = 0;
     this.sum = 0;
+    // What the sums READ (#194): the mean as of the last `apply`, never the live one. A mean that
+    // moves under a reader mid-gesture re-estimates every never-measured record above them at
+    // once — measured on the owner's session: a fraction of a pixel across 8,500 records was a
+    // 7.8k px shift of the page above them — so the engine takes it only while they are at rest,
+    // holding the anchor as it does.
+    this.applied = floor;
   }
 
-  /** One measured height. At or under the floor teaches nothing: it is the floor itself, or an
-   *  element the layout has not reached. */
-  learn(height) {
-    if (!(height > this.floor)) return;
+  /** One record's measured height, replacing what the SAME record taught before: `previous` is
+   *  the share this returned for it last time, 0 for a record seen for the first time, and the
+   *  return is the new share (0 when the height taught nothing). A record measured again adds no
+   *  weight — the mean is over DISTINCT records, however often the open turn's tail is
+   *  re-rendered or a growing record is measured at every size (#194: stacked samples of four
+   *  tail records walked the shell's mean 337→362 in ten deltas with the record count flat). At
+   *  or under the floor teaches nothing: it is the floor itself, or an element the layout has
+   *  not reached. */
+  learn(height, previous = 0) {
+    this.forget(previous);
+    if (!(height > this.floor)) return 0;
     const mean = this.count ? this.sum / this.count : 0;
-    this.sum += this.count >= this.minSamples ? Math.min(height, this.outlier * mean) : height;
+    const share = this.count >= this.minSamples ? Math.min(height, this.outlier * mean) : height;
+    this.sum += share;
     this.count += 1;
+    return share;
+  }
+
+  /** A record that is gone — a rewrite dropped it, the page cleared it — takes its share back. */
+  forget(share) {
+    if (!share) return;
+    this.sum -= share;
+    this.count -= 1;
+  }
+
+  /** What the sums read: the mean as of the last `apply` (#194). */
+  estimate() {
+    return this.applied;
+  }
+
+  /** Take the live mean into what the sums read; true when it moved. The engine calls this only
+   *  while the reader is at rest, and holds the anchor across the shift it makes (#194). */
+  apply() {
+    const next = this.value();
+    if (next === this.applied) return false;
+    this.applied = next;
+    return true;
   }
 
   /** The floor until there is enough to say otherwise, then the running mean — never under the
@@ -144,12 +180,14 @@ class HeightGuess {
    *  measured heights: a block of text is about as tall as its measure is narrow. */
   scale(ratio) {
     this.sum *= ratio;
+    this.applied = Math.max(this.floor, this.applied * ratio);
   }
 
   /** Nothing learned here applies any more — a new session, a font that changed the metrics. */
   reset() {
     this.count = 0;
     this.sum = 0;
+    this.applied = this.floor;
   }
 }
 
@@ -216,6 +254,11 @@ function classifyScroll(following, userIntent, gap, acquire, hold, heal) {
  *   count        — how many items there are (a getter on the page).
  *   identityAt   — a string stable across a rewrite that re-emits the same positions.
  *   estimateAt   — an item's height before it has been measured. UNDER, never over (rule 5).
+ *                  The APPLIED estimate (`HeightGuess.estimate()`), which moves only through
+ *                  `applyEstimates` (#194).
+ *   applyEstimates — take the live mean into what the sums read; true when anything moved. The
+ *                  engine calls it only while the reader is at rest (#194). Default: false.
+ *   liveEstimateAt — the live mean, for the trace only. Default: `estimateAt`.
  *   heightFor / setHeight / clearHeights — where measured heights live.
  *   clampIndex   (default true) whether an offset past the end reads as the last item.
  *   skipAt       (default none) an item the page is hiding: no height, and never mounted.
@@ -287,6 +330,9 @@ class VirtualWindow {
     // A correction the reader's own motion postponed (#132 step 3), and the timer that pays it.
     this.owed = null;
     this.settleTimer = 0;
+    // A mean that moved while the reader owned the position, waiting for them to rest (#194).
+    this.estimatesPending = false;
+    this.estimatesTimer = 0;
     // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
     // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
     // on the console under one prefix. On by the page's URL or storage; `options.trace` overrides.
@@ -644,21 +690,86 @@ class VirtualWindow {
    *  The sums do not have to be exact for the restore: that reads the item's own rect. */
   measureMounted(anchor = this.readerAnchor(), immediate = false) {
     let changed = false;
+    // What changed, for the trace (#192): the first eight [index, from, to] — which record moved
+    // the sums is the whole question when a reader is displaced under growth.
+    const changes = this.tracing ? [] : null;
     for (const child of this.mount.children) {
       const index = Number(child.dataset.unitIndex);
       const height = itemHeight(child);
       if (index >= 0 && index < this.count && heightChanged(this.heightOf(index), height, 1, 0.5)) {
+        if (changes && changes.length < 8) changes.push([index, Math.round(this.heightOf(index)), Math.round(height), this.heightFor(index) ? "measured" : "estimate"]);
         this.setHeight(index, height);
         changed = true;
       }
     }
     if (!changed) return false;
+    // The mean may have moved. It reaches the sums only while the reader is at rest (#194).
+    this.settleEstimates();
     this.rebuildPrefix();
     this.updatePads();
-    this.trace("measured", { anchor: anchor ? anchor.key : null, immediate, estimate: this.count ? Math.round(this.estimateAt(0)) : null });
+    this.trace("measured", { anchor: anchor ? anchor.key : null, immediate, estimate: this.count ? Math.round(this.estimateAt(0)) : null, live: this.count ? Math.round(this.liveEstimateAt(0)) : null, changes });
     if (!this.following) this.restoreDomAnchor(anchor, immediate);
     this.syncAnchor();
     return true;
+  }
+
+  /** Default hooks (#194): a page with no estimator of its own applies nothing. */
+  applyEstimates() { return false; }
+  liveEstimateAt(index) { return this.estimateAt(index); }
+
+  /** Take a moved mean into the sums now, or hold it until the reader rests (#194).
+   *
+   *  The sums are built from every record's height, and for a never-measured record that is the
+   *  estimate — so a change to the estimate is a change to every one of them at once. Above a
+   *  reader who opened at the tail that is thousands of records, and the page above them moves
+   *  by thousands of pixels: measured on the owner's session, a mean that moved by a fraction of
+   *  a pixel across 8,500 records shifted the page 7.8k px. At rest the anchor restore hides it
+   *  (the scrollbar jumps, the content does not). Under the wheel the restore was deferred, the
+   *  next wheel dropped it (#138), and the wheel's own update then found no mounted record under
+   *  the viewport and fell back to the model anchor — computed from the shifted sums: "right
+   *  after scrolling to 769 it jumps back to 767", six turns back in the trace.
+   *
+   *  So the live mean keeps learning, and the sums take it only when the reader is at rest:
+   *  from the measure that moved it when no hand is on the wheel, else from a timer once the
+   *  intent window has passed — with the anchor held across the shift, and the window settled
+   *  around the corrected offset. Never through `owed`/`scheduleSettle`: a user scroll dropping
+   *  the correction it is owed is deliberate (#98, #132), which is exactly why the shift itself
+   *  has to wait rather than be corrected. */
+  settleEstimates() {
+    if (this.readerOwnsPosition()) {
+      if (!this.estimatesPending) this.trace("estimates:pending", {});
+      this.estimatesPending = true;
+      this.scheduleEstimates();
+      return false;
+    }
+    this.estimatesPending = false;
+    clearTimeout(this.estimatesTimer);
+    const applied = this.applyEstimates();
+    if (applied) this.trace("estimates:applied", { estimate: this.count ? Math.round(this.estimateAt(0)) : null, late: false });
+    return applied;
+  }
+
+  scheduleEstimates() {
+    clearTimeout(this.estimatesTimer);
+    this.estimatesTimer = setTimeout(() => {
+      if (!this.estimatesPending) return;
+      if (this.readerOwnsPosition()) { this.scheduleEstimates(); return; }
+      this.estimatesPending = false;
+      const anchor = this.following ? null : this.captureDomAnchor();
+      if (!this.applyEstimates()) return;
+      this.trace("estimates:applied", { estimate: this.count ? Math.round(this.estimateAt(0)) : null, late: true, anchor: anchor ? anchor.key : null });
+      this.rebuildPrefix();
+      this.updatePads();
+      if (this.following) {
+        this.convergeBottom();
+      } else {
+        if (anchor) this.restoreDomAnchor(anchor, true);
+        // The window was chosen from the old sums; the viewport may now run past it.
+        const range = this.rangeForScroll();
+        if (range.lo !== this.lo || range.hi !== this.hi) this.reconcile(range.lo, range.hi, Infinity, false, this.captureDomAnchor(), true);
+      }
+      this.syncAnchor();
+    }, this.userIntentMs);
   }
 
   /** The observer's own measure: synchronous, so it lands before the frame paints. */
@@ -705,6 +816,16 @@ class VirtualWindow {
     // has every height real, so the sums are exact and a jump cannot land in a pad.
     if (this.renderAll()) { lo = 0; hi = this.count; }
     ({ lo, hi } = clampRange(lo, hi, this.count));
+    // A path that is not the reader's own does not mount ABOVE them while they own the position
+    // (#194). A mount above moves everything under the reader by the difference between the
+    // record's estimate and its height; the correction is computed in this same task, but the
+    // engine does not write under a hand on the wheel, and what it does not write is displacement.
+    // Measured: a delta fifteen milliseconds after a wheel chose its window around the anchor,
+    // one record above the reader's own window, mounted it (98px estimated, 120px real), deferred
+    // the 22px, and the next wheel dropped it. The reader's own scroll path is the one that mounts
+    // above them — and it corrects at once (#180). Held only with an anchor: a jump has none, and
+    // its mount is the destination, not a shift.
+    if (anchor && !immediate && !this.following && this.readerOwnsPosition() && this.hi > this.lo && lo < this.lo) lo = Math.min(this.lo, hi);
     if (!refresh && dirtyFrom === Infinity && lo === this.lo && hi === this.hi) return false;
 
     this.observer.disconnect();

@@ -134,10 +134,11 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   **The viewport trace (#192)** is how a scroll/blank-space report carries its own geometry:
   open either page with `?trace=viewport` (or set `localStorage.viewportTrace = "1"` to keep it
   across reloads) and the shared engine records every decision it makes — each reconcile, window
-  update, scroll verdict, anchor restore (wrote / deferred / unmounted), model-anchor hold, settle,
+  update, scroll verdict, anchor restore (wrote / deferred / unmounted), model-anchor hold, estimate
+  application (pending / applied — the sums take a new estimate only at rest, #194), settle,
   converge pass, reshape and re-measure — with the geometry it saw: the mounted range and count,
-  scrollTop and scrollHeight, both pad heights, the anchor, the estimate, and the ms since the
-  reader's last input. It lands in a 500-entry ring at `window.__viewportTrace`
+  scrollTop and scrollHeight, both pad heights, the anchor, the applied and live estimate, and the ms
+  since the reader's last input. It lands in a 500-entry ring at `window.__viewportTrace`
   (`copy(window.__viewportTrace)` in the console pastes it into a bug) and as one `console.debug`
   line per entry under the `[viewport]` prefix (filter the console on it). Off, no entry is
   built — `trace()` returns on one boolean — though each seam still evaluates the fields it

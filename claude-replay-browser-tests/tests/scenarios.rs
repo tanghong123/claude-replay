@@ -8169,3 +8169,407 @@ fn app_shell_a_fold_opened_at_the_tail_does_not_snap_back() {
     let page = open(Surface::AppShell, &fx, 2942);
     scenario_a_fold_opened_at_the_tail_does_not_snap_back(&page.tab, Surface::AppShell, &fx);
 }
+
+/// A long session whose last turn is still open, opened at its tail: hundreds of records above
+/// the reader that the page has never measured — the shape of a working session (#194).
+fn fixture_long_open_turn(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let path = stores.claude_session(SID, &harness::long_open_turn_session(300, 20));
+    Fixture {
+        base,
+        path,
+        turns: 301,
+    }
+}
+
+/// More of the open turn where every step is TALL — a long answer, a big tool result — which is
+/// the shape of a working agent's tail, and the shape that moves a running mean the most: on the
+/// classic page the ordinary growth records are about as tall as its mean, and re-learning them
+/// moved it by too little for the mock to fail (the #193 lesson, again).
+fn tall_open_turn_growth(from_step: u32, steps: u32) -> Vec<String> {
+    let mut script = Vec::new();
+    for k in from_step..from_step + steps {
+        script.push(thinking_at(
+            &format!(
+                "late step {k} deliberation: {}",
+                "still weighing it. ".repeat(10)
+            ),
+            &now_minus(40),
+        ));
+        script.push(tool_open_at(&format!("late{k}"), &now_minus(35)));
+        script.push(tool_result_lines(&format!("late{k}"), 40, &now_minus(30)));
+        script.push(assistant_at(
+            &format!(
+                "late step {k} note: {}",
+                "and on it goes, at some length, because the result had a great deal in it. "
+                    .repeat(30)
+            ),
+            &now_minus(25),
+        ));
+    }
+    script
+}
+
+/// #194: a reader parked above a growing tail is moved by their own wheel and by nothing else.
+///
+/// Measured on a copy of the owner's live session with the #192 trace: with no input at all the
+/// engine re-measured the open turn's tail on every delta, each measure taught the running mean
+/// AGAIN (337→362 in ten deltas with the record count flat at 615), every never-measured record
+/// above re-estimated by the difference, the top pad grew ~1.7k px a second and `scrollTop` was
+/// rewritten to match. At rest the anchor restore hides that; under the wheel the restore is
+/// deferred and the next user scroll drops it, so the content is simply somewhere else — "every
+/// time I attempt to unfold and read, then scroll, the page jumps to somewhere else". Two rules,
+/// then: a record measured again replaces its own share of the mean rather than adding one, and
+/// the sums take a new estimate only while the reader is at rest, holding the anchor as they do.
+fn scenario_a_reader_above_a_growing_tail_moves_only_by_their_wheel(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    let s = surface.scroller();
+    let root = match surface {
+        Surface::Classic => "(document.getElementById('vwin')||document.querySelector('#stream .vwin')||document.getElementById('stream'))",
+        Surface::AppShell => "document.querySelector('.virtual-window')",
+    };
+    let vt = match surface {
+        Surface::Classic => "0".to_string(),
+        Surface::AppShell => format!("{s}.getBoundingClientRect().top"),
+    };
+    // The reference is held by the record's IDENTITY, never by the node (the engine reuses nodes).
+    let pick = format!(
+        r#"(function(){{var vt={vt};var k=[...{root}.children];var p=k.find(function(e){{var r=e.getBoundingClientRect();return r.height>0&&r.bottom>vt+1;}});if(!p)return{{ok:false}};var id=p.id||(p.dataset?p.dataset.unitKey:'');var s={s};return{{ok:!!id,id:id,tag:p.tagName+'.'+p.className,top:Math.round(p.getBoundingClientRect().top),st:Math.round(s.scrollTop),h:Math.round(s.scrollHeight)}};}})()"#
+    );
+    let reread = |id: &str| {
+        format!(
+            r#"(function(){{var e=document.getElementById("{id}")||document.querySelector('[data-unit-key="{id}"]');var s={s};if(!e)return{{ok:false,h:Math.round(s.scrollHeight)}};return{{ok:true,top:Math.round(e.getBoundingClientRect().top),st:Math.round(s.scrollTop),h:Math.round(s.scrollHeight)}};}})()"#
+        )
+    };
+
+    // `CR_VIEWPORT_TRACE=1` re-opens the page with the #192 trace on and, on a failing wheel,
+    // prints every engine decision between that wheel and the measurement — the diagnosis is in
+    // the run, not in a rerun.
+    let traced = std::env::var_os("CR_VIEWPORT_TRACE").is_some();
+    if traced {
+        eval(tab, "(function(){ try { localStorage.viewportTrace = '1'; } catch (e) {} location.reload(); return 'ok'; })()");
+        std::thread::sleep(Duration::from_millis(500));
+        let mounted = match surface {
+            Surface::Classic => "!!window.__viewportTrace && document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3",
+            Surface::AppShell => "!!window.__viewportTrace && !!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3",
+        };
+        harness::until(
+            tab,
+            mounted,
+            "the page to mount with the trace on",
+            Duration::from_secs(60),
+            "location.href",
+        );
+        settle();
+    }
+    let seq_now = |tab: &headless_chrome::Tab| -> i64 {
+        eval(tab, "(function(){ var t = window.__viewportTrace; return t && t.length ? t[t.length-1].seq : 0; })()").as_i64().unwrap_or(0)
+    };
+    let dump_since = |tab: &headless_chrome::Tab, seq: i64| {
+        let text = eval(tab, &format!("(function(){{ var t = window.__viewportTrace || []; return t.filter(function(e){{ return e.seq > {seq}; }}).map(function(e){{ return JSON.stringify(e); }}).join('\\n'); }})()"));
+        eprintln!(
+            "--- trace since seq {seq} ---\n{}\n---",
+            text.as_str().unwrap_or("")
+        );
+    };
+
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // Leave follow first, and prove it: parked at the tail the page is still following, and the
+    // #103 hysteresis heals a small scroll straight back.
+    // Two short steps, not a long climb: the tail has to stay INSIDE the mounted window's
+    // overscan, or the page never re-measures it and the case measures nothing (the classic
+    // page's margin is 1500px — climbed 2700px, its tail was unmounted and the mock stayed green).
+    let tail_top = harness::scroll_top(tab, surface);
+    for _ in 0..2 {
+        scroll_by(tab, surface, -600);
+        settle();
+    }
+    let left = harness::scroll_top(tab, surface);
+    assert!(
+        tail_top - left > 900.0,
+        "{surface:?}: the reader has to LEAVE the tail before this measures anything: scrollTop {tail_top} -> {left}"
+    );
+
+    // The tail grows under them: sixteen more steps of the open turn, a line every 250ms.
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        tall_open_turn_growth(20, 16),
+        Duration::from_millis(250),
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+
+    // A slow, continuous wheel up — each step lands inside the intent window of the last, so the
+    // deltas arrive mid-gesture. Every wheel moves the record the reader was on by what was asked.
+    let step = 300.0;
+    let mut measured = 0;
+    let mut worst = 0.0_f64;
+    for n in 1..=24 {
+        let before = probe(tab, &pick);
+        if !before["ok"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let id = before["id"].as_str().unwrap_or("").to_string();
+        let seq_before = if traced { seq_now(tab) } else { 0 };
+        scroll_by(tab, surface, -(step as i64));
+        let after = probe(tab, &reread(&id));
+        if !after["ok"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        measured += 1;
+        let moved = after["top"].as_f64().unwrap_or(0.0) - before["top"].as_f64().unwrap_or(0.0);
+        let over = (moved - step).abs();
+        if over > worst {
+            worst = over;
+        }
+        if over > 12.0 && traced {
+            eprintln!("wheel {n}: before {before} after {after}");
+            dump_since(tab, seq_before);
+        }
+        assert!(
+            over <= 12.0,
+            "{surface:?}: wheel {n} asked for {step}px up and the record the reader was on moved \
+             {moved}px — over by {over}px — while the tail grew ({} lines so far). A delta's \
+             measure moved the estimate of every unmeasured record above the reader, the pad \
+             above shifted, and the correction for it was deferred under the gesture and dropped \
+             by the next wheel (#194). scrollHeight {} -> {}",
+            growth.count(),
+            before["h"],
+            after["h"]
+        );
+    }
+    assert!(
+        measured >= 12,
+        "{surface:?}: only {measured} of 24 wheels could be measured — the reference kept leaving \
+         the mounted window (worst overshoot seen {worst}px)"
+    );
+
+    // Hands off: the content under the reader stays put while the tail keeps growing.
+    let rest = probe(tab, &pick);
+    assert!(
+        rest["ok"].as_bool().unwrap_or(false),
+        "{surface:?}: a record under the reader at rest"
+    );
+    let id = rest["id"].as_str().unwrap_or("").to_string();
+    std::thread::sleep(Duration::from_millis(3000));
+    let later = probe(tab, &reread(&id));
+    assert!(
+        later["ok"].as_bool().unwrap_or(false),
+        "{surface:?}: the record under the resting reader is still mounted"
+    );
+    let drift = (later["top"].as_f64().unwrap_or(0.0) - rest["top"].as_f64().unwrap_or(0.0)).abs();
+    assert!(
+        drift <= 2.0,
+        "{surface:?}: at rest, the record under the reader moved {drift}px while the tail grew — \
+         a correction paid late, or an estimate applied without holding the anchor (#194)"
+    );
+    let appended = growth.finish(Duration::from_secs(20));
+    assert!(
+        appended >= 24,
+        "{surface:?}: only {appended} of 64 growth lines landed — the tail hardly grew under this case"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_reader_above_a_growing_tail_moves_only_by_their_wheel() {
+    let _serial = serial();
+    let fx = fixture_long_open_turn("scenario-growing-tail-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_reader_above_a_growing_tail_moves_only_by_their_wheel(
+        &page.tab,
+        Surface::Classic,
+        &fx,
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_reader_above_a_growing_tail_moves_only_by_their_wheel() {
+    let _serial = serial();
+    let fx = fixture_long_open_turn("scenario-growing-tail-app");
+    let page = open(Surface::AppShell, &fx, 2969);
+    scenario_a_reader_above_a_growing_tail_moves_only_by_their_wheel(
+        &page.tab,
+        Surface::AppShell,
+        &fx,
+    );
+}
+
+/// A long session with strongly VARIED record heights — answers from one line to sixty, tool
+/// results from one line to a hundred — the shape of a real session, where one page-wide mean
+/// moves a lot with every newly measured record (#194).
+fn fixture_varied_long(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let turns = 400u32;
+    let mut out = String::new();
+    for k in 0..turns {
+        let ago = (turns - k) as u64 * 60 + 600;
+        out += &user_at(
+            &format!(
+                "question {k}: {}",
+                "what comes next? ".repeat(1 + (k % 5) as usize)
+            ),
+            &now_minus(ago),
+        );
+        let lines = 1 + (k * 37) % 60;
+        let mut note = format!("answer {k}:");
+        for l in 0..lines {
+            note += &format!(
+                "\n\nline {l} of the answer, {}",
+                "with some words in it. ".repeat(1 + (l % 3) as usize)
+            );
+        }
+        out += &assistant_at(&note, &now_minus(ago - 10));
+        if k % 2 == 0 {
+            out += &tool_open_at(&format!("t{k}"), &now_minus(ago - 20));
+            out += &tool_result_lines(
+                &format!("t{k}"),
+                1 + (k as usize * 53) % 100,
+                &now_minus(ago - 25),
+            );
+        }
+        // A pasted screenshot every third turn: an image decodes AFTER its record is mounted and
+        // measured, so the record is measured a second time, late — the one thing on the classic
+        // page that changes a mounted height after the fact (the owner's session carries 206).
+        if k % 3 == 0 {
+            out += &harness::pasted_image_sized(
+                &format!("here is what it looks like, take {k}"),
+                &now_minus(ago - 5),
+                BAND_PNG_B64,
+            );
+        }
+    }
+    let path = stores.claude_session(SID, &out);
+    Fixture { base, path, turns }
+}
+
+/// A 640x360 PNG (two flat bands): small on the wire, a real 360px-tall image once decoded.
+const BAND_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAoAAAAFoCAIAAABIUN0GAAAEh0lEQVR42u3VMQ0AAAgEMSQjBUkvDRcMpEkV3HLVEwDgWEkAAAYMAAYMABgwABgwAGDAAGDAAIABA4ABAwAGDAAGDAAGDAAYMAAYMABgwABgwACAAQOAAQMABgwABgwABgwAGDAAGDAAYMAAYMAAgAEDgAEDAAYMAAYMAAYMABgwABgwAGDAAGDAAIABA4ABAwAGDAAGDAAGDAAYMAAYMABgwABgwACAAQOAAQMABgwABgwABgwAGDAAGDAAYMAAYMAAgAEDgAEDAAYMAAYMAAYMABgwABgwAGDAAGDAAIABA4ABAwAGDAAGDAAGDAAYMAAYMABgwABgwACAAQOAAQMABgwABgwABgwAGDAAGDAAYMAAYMAAgAEDgAEDAAYMAAYMAAasAgAYMAAYMABgwABgwACAAQOAAQMABgwABgwAGDAAGDAAGDAAYMAAYMAAgAEDgAEDAAYMAAYMABgwABgwABgwAGDAAGDAAIABA4ABAwAGDAAGDAAYMAAYMAAYMABgwABgwACAAQOAAQMABgwABgwAGDAAGDAAGDAAYMAAYMAAgAEDgAEDAAYMAAYMABgwABgwABgwAGDAAGDAAIABA4ABAwAGDAAGDAAYMAAYMAAYMABgwABgwACAAQOAAQMABgwABgwAGDAAGDAAGDAAYMAAYMAAgAEDgAEDAAYMAAYMABgwABgwABgwAGDAAGDAAIABA4ABAwAGDAAGDAAYMAAYMAAYsAoAYMAAYMAAgAEDgAEDAAYMAAYMABgwABgwAGDAAGDAAGDAAIABA8CjAWcaADhmwABgwABgwACAAQOAAQMABgwABgwAGDAAGDAAYMAAYMAAYMAAgAEDgAEDAAYMAAYMABgwABgwAGDAAGDAAGDAAIABA4ABAwAGDAAGDAAYMAAYMABgwABgwABgwACAAQOAAQMABgwABgwAGDAAGDAAYMAAYMAAYMAAgAEDgAEDAAYMAAYMABgwABgwAGDAAGDAAGDAAIABA4ABAwAGDAAGDAAYMAAYMABgwABgwABgwACAAQOAAQMABgwABgwAGDAAGDAAYMAAYMAAYMAAgAEDgAEDAAYMAAYMABgwABgwAGDAAGDAAGDAAIABA4ABAwAGDAAGDAAYMAAYMABgwABgwABgwBIAgAEDgAEDAAYMAAYMABgwABgwAGDAAGDAAIABA4ABA4ABAwAGDAAGDAAYMAAYMABgwABgwACAAQOAAQOAAQMABgwABgwAGDAAGDAAYMAAYMAAgAEDgAEDgAEDAAYMAAYMABgwABgwAGDAAGDAAIABA4ABA4ABAwAGDAAGDAAYMAAYMABgwABgwACAAQOAAQOAAQMABgwABgwAGDAAGDAAYMAAYMAAgAEDgAEDgAEDAAYMAAYMABgwABgwAGDAAGDAAIABA4ABA4ABAwAGDAAGDAAYMAAYMABgwABgwACAAQOAAQOAAQMABgwABgwAGDAAGDAAYMAAYMAAgAEDgAEDgAGrAAAGDAAGDAAYMAAYMABgwABgwACAAQOAAQMABgwABgwABgwAGDAAPLLwrFxKgP0KGwAAAABJRU5ErkJggg==";
+
+/// #194, the owner's classic-page repro: "scroll back to turn 766, then scroll forward gradually,
+/// it will go down to turn 767, 768, 769, and right after scrolling to 769 [it] jumps back to
+/// turn 767 … and it will forever cycle through 767 to 769 if I just smoothly scroll". Replayed
+/// on a copy of that session with the trace on: every freshly measured record moved the page-wide
+/// mean, every never-measured record above re-estimated by the difference — the page swung by
+/// ±10k px per 400px wheel — and at one pause the record under the reader fell out of the window,
+/// so the model anchor wrote a position from the shifted sums: six turns back. A gradual forward
+/// walk keeps its place: every wheel moves the record under the reader by what was asked, that
+/// record stays mounted, and the turn under the reader never goes backward.
+fn scenario_a_gradual_walk_forward_keeps_its_place(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    let s = surface.scroller();
+    let root = match surface {
+        Surface::Classic => "(document.getElementById('vwin')||document.querySelector('#stream .vwin')||document.getElementById('stream'))",
+        Surface::AppShell => "document.querySelector('.virtual-window')",
+    };
+    let vt = match surface {
+        Surface::Classic => "0".to_string(),
+        Surface::AppShell => format!("{s}.getBoundingClientRect().top"),
+    };
+    let pick = format!(
+        r#"(function(){{var vt={vt};var k=[...{root}.children];var p=k.find(function(e){{var r=e.getBoundingClientRect();return r.height>0&&r.bottom>vt+1;}});if(!p)return{{ok:false}};var id=p.id||(p.dataset?p.dataset.unitKey:'');var s={s};return{{ok:!!id,id:id,tag:p.tagName+'.'+p.className,top:Math.round(p.getBoundingClientRect().top),st:Math.round(s.scrollTop),h:Math.round(s.scrollHeight)}};}})()"#
+    );
+    let reread = |id: &str| {
+        format!(
+            r#"(function(){{var e=document.getElementById("{id}")||document.querySelector('[data-unit-key="{id}"]');var s={s};if(!e)return{{ok:false,h:Math.round(s.scrollHeight)}};return{{ok:true,top:Math.round(e.getBoundingClientRect().top),st:Math.round(s.scrollTop),h:Math.round(s.scrollHeight)}};}})()"#
+        )
+    };
+
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // Into unmeasured ground, half way up: hundreds of records above that carry the estimate.
+    let target = fx.turns / 2;
+    assert!(
+        harness::jump_to_turn(tab, surface, target),
+        "{surface:?}: the pane offers turn {target}"
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    let start = harness::sticky_turn(tab, surface)
+        .map(|t| t.0)
+        .unwrap_or(-1);
+    assert!(
+        (start - target as i64).abs() <= 1,
+        "{surface:?}: the jump landed on turn {start}, asked for {target}"
+    );
+
+    // A gradual forward walk: a 400px wheel, then a pause long enough for the page to settle.
+    let step = 400.0;
+    let mut last_turn = start;
+    let mut worst = 0.0_f64;
+    for n in 1..=30 {
+        let before = probe(tab, &pick);
+        assert!(
+            before["ok"].as_bool().unwrap_or(false),
+            "{surface:?}: step {n}: a record under the reader before the wheel"
+        );
+        let id = before["id"].as_str().unwrap_or("").to_string();
+        scroll_by(tab, surface, step as i64);
+        std::thread::sleep(Duration::from_millis(450));
+        let after = probe(tab, &reread(&id));
+        assert!(
+            after["ok"].as_bool().unwrap_or(false),
+            "{surface:?}: step {n}: the record the reader was on ({id}) is no longer mounted after \
+             one 400px wheel — the sums moved under the walk and the window was rebuilt somewhere \
+             else (#194). scrollHeight {} -> {}",
+            before["h"],
+            after["h"]
+        );
+        let moved = after["top"].as_f64().unwrap_or(0.0) - before["top"].as_f64().unwrap_or(0.0);
+        let over = (moved + step).abs();
+        if over > worst {
+            worst = over;
+        }
+        assert!(
+            over <= 12.0,
+            "{surface:?}: step {n} asked for {step}px down and the record under the reader moved \
+             {moved}px — over by {over}px (#194). scrollHeight {} -> {}",
+            before["h"],
+            after["h"]
+        );
+        let turn = harness::sticky_turn(tab, surface)
+            .map(|t| t.0)
+            .unwrap_or(-1);
+        assert!(
+            turn < 0 || turn >= last_turn,
+            "{surface:?}: step {n}: the turn under the reader went BACKWARD, {last_turn} -> {turn}, \
+             on a forward walk: the re-estimated sums put the reader in a pad and the model anchor \
+             wrote a position from them (#194)"
+        );
+        if turn >= 0 {
+            last_turn = turn;
+        }
+    }
+    assert!(
+        last_turn > start,
+        "{surface:?}: thirty wheels of {step}px did not advance the turn under the reader ({start} -> {last_turn}; worst overshoot {worst}px)"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_gradual_walk_forward_keeps_its_place() {
+    let _serial = serial();
+    let fx = fixture_varied_long("scenario-gradual-walk-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_gradual_walk_forward_keeps_its_place(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_gradual_walk_forward_keeps_its_place() {
+    let _serial = serial();
+    let fx = fixture_varied_long("scenario-gradual-walk-app");
+    let page = open(Surface::AppShell, &fx, 2971);
+    scenario_a_gradual_walk_forward_keeps_its_place(&page.tab, Surface::AppShell, &fx);
+}

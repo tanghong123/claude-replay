@@ -843,6 +843,15 @@ not move once across the whole walk, and the case failed its own not-vacuous gua
 now `|Δh| > 1` rather than `Δh > 1`, because with a learned mean a record SHORTER than the mean
 shrinks the page, and a one-signed test would call a step over fresh ground vacuous.
 
+**Amended by #194 (2026-09-12).** "Learning only ever grows the page BELOW the reader, which nobody
+feels" was this section's premise, and it is false for the common reader — the one who opened the
+session at its tail. Every record above them is unmeasured and carries the mean, so a learned height
+re-estimates all of them at once: the page moves ABOVE the reader, by the number of such records
+times the change. Measured on the owner's session: 8,500 records above, a fraction of a pixel of mean
+movement, a 7.8k px shift. And a re-measure taught the mean AGAIN — a live tail re-rendered on every
+delta walked it 337→362 in ten deltas. Rule 5's "close, not merely under" stands; what changes is WHEN
+the sums may take a new estimate (at rest, anchor held) and HOW a record teaches (once). See below.
+
 ## Growth the reader ASKED for is not the tail moving away (2026-09-10, #185)
 
 Reported on v1.248.0, minutes after `#179` shipped:
@@ -1042,3 +1051,93 @@ the shell imports it, so `window.__viewportTrace` reads the same on either.
 load was recorded with the fields a report needs, that a wheel leaves a user-classified `scroll`
 verdict and the `update` it drove, and that sequence numbers climb inside a ring that holds. Red on
 the engine without the trace (no buffer at all), green with it.
+
+## A record teaches the mean once, and the sums take a new estimate only at rest (2026-09-12, #194)
+
+**Reported**, on 1.256.0, in one hour: "simply scroll to the bottom, scroll back up, and then scroll
+down, and it never stops"; "every time I attempt to unfold and read, then scroll, the page jumps to
+somewhere else"; on the classic page, "scroll back to turn 766, then scroll forward gradually, it will
+go down to turn 767, 768, 769, and right after scrolling to 769 [it] jumps back to 767 … and it will
+forever cycle through 767 to 769 if I just smoothly scroll". Three symptoms, one mechanism — and the
+mechanism is upstream of `#190` and `#191`, which were real fixes of its downstream effects.
+
+**What the trace showed** (`#192`, on hermetic copies of the owner's two sessions, both surfaces,
+scratchpad probes `tmp_runaway.rs` / `tmp_walk.rs`):
+
+- *The live session, hands off for sixteen seconds.* Every second a delta re-rendered the open turn's
+  tail (`dirtyFrom=611, fresh=4`, the count flat at 615); every re-render was measured again and
+  taught the mean again: the shell's estimate climbed 337→362; the top pad grew ~1.7k px a cycle;
+  `restore:wrote` rewrote `scrollTop` by the same each time. The classic page rewrote it eight times
+  in eight seconds. The static copies: no drift at all.
+- *The gradual walk on the classic page.* `count=8715`, the reader at record 8526 — 8,500 records
+  above them, none measured. The mean moved by a fraction of a pixel per newly measured record and
+  the top pad by ±8k px per 400px wheel. At one wheel the observer's late measure (an image decoding
+  after its record was mounted) shifted the pad 7.8k px with the restore deferred (`restore:deferred
+  delta -7776`, the reader owned the position); the wheel's own update then found no mounted record
+  under the viewport (`anchor: null`), fell back to the model anchor computed from the shifted sums
+  (`held: 8462`, `model:wrote`), and mounted a window ninety records up: turn 763.
+- The app shell did not jump on that walk. Its three per-type means over larger units move less per
+  measure than the classic page's one mean over 8,715 records with a floor of 30 — but it drifts the
+  same way under a live tail. One engine, one cause, two sensitivities.
+
+**Two causes.** (1) `HeightGuess.learn(height)` was called on EVERY measurement, so a record measured
+again — the open turn's tail on every delta, a growing record at every size, a record measured at
+mount and again when its image decoded — added a NEW sample: a mean over measurements, not over
+records. (2) The sums read the LIVE mean, so any movement of it re-estimated every never-measured
+record at once, and above a reader who opened at the tail that is thousands of them. At rest the DOM
+anchor restore hid the shift (the scrollbar jumped, the content did not). Under the wheel the restore
+was deferred and the next wheel dropped it (`#138`, deliberately), or the model anchor read the
+shifted sums — either way the reader was somewhere else.
+
+**Two rules, in the shared module and both pages.**
+
+1. *A record teaches the mean once.* `learn(height, previous)` withdraws the share the same record
+   contributed last time (the page keeps it beside the height: the shell's `shares` map on the
+   Viewport instance, the classic page's `recShares[]`) and returns the new one; `forget(share)` for a
+   record a rewrite dropped. The mean is over DISTINCT records as they are NOW: re-rendering the tail
+   ten times adds no weight, a record that grew moves its own share and nothing else.
+2. *The sums take a new estimate only at rest.* The live mean keeps learning; what the sums read is
+   `HeightGuess.estimate()`, the value as of the last `apply()`. The engine applies from the measure
+   that moved the mean when the reader does not own the position, else from its own timer once the
+   intent window has passed — capturing the DOM anchor first, rebuilding the sums, restoring the
+   anchor immediately, and settling the window around the corrected offset (`estimates:pending` /
+   `estimates:applied` in the trace, `measured` now carries `live` beside `estimate`). Never through
+   `owed`/`scheduleSettle`: a user scroll dropping the correction it is owed is deliberate (`#98`,
+   `#132`), which is exactly why the shift itself has to wait rather than be corrected.
+
+**Two more things the case found once those two were in**, each caught by the trace at the failing
+wheel (`CR_VIEWPORT_TRACE=1` re-opens the page with the trace on and prints every decision between a
+failing wheel and its measurement):
+
+- *The shell dropped every unit's height from the rewrite point on each delta*, so for the length
+  of one render the sums were short by the whole open turn; `afterMount`/`measureMounted` force
+  layout inside that gap, the browser clamps `scrollTop` to the shorter page (`#179`), and the reader
+  is pulled up by the difference — 31px on a 300px wheel. A rewritten unit now keeps its last
+  height as the provisional value until the measure in the same task replaces it.
+- *A delta's reconcile mounted one record ABOVE the reader mid-gesture.* Fifteen milliseconds after
+  a wheel, the growth path chose its window around the anchor — one record above the reader's own
+  window — mounted it (98px estimated, 120px real), computed the 22px correction, deferred it
+  because the reader owned the position, and the next wheel dropped it (`#138`). The reader's own
+  scroll path is the one that mounts above them, and it corrects at once (`#180`); so a path that is
+  not the reader's does not mount above them while they own the position (`reconcile` holds `lo`
+  under a gesture when it has an anchor). Ten traced runs green on the classic page after this;
+  it had failed one in five before.
+
+**What is held, and by what.** Rule 1 by construction (the node contract: re-learning one record ten
+times leaves count and sum unchanged; a grown record still counts once; a forgotten record leaves the
+mean to the others; `estimate()` holds until `apply()`). Rule 2 by policy — a timer — which is the
+honest description, and the reason `#195`/`#196` exist: the owner's directive after this bug was to
+make the virtual window a framework whose invariants hold by construction, and to keep an hour of
+reader actions and engine states so a report is a reproduction (`#197`). The browser cases:
+`a_reader_above_a_growing_tail_moves_only_by_their_wheel` on both surfaces, red on the old engine on
+both (300px asked, −821px moved on the shell, −1,922px on the classic page); the classic mock went red
+only once its tail stayed inside the mounted window (a 2,700px climb had unmounted it — the `#193`
+lesson again) and its growth records were TALL. `a_gradual_walk_forward_keeps_its_place`, written for
+the owner's walk, stayed green on the hermetic fixture even with pasted images every third turn: the
+walk that reproduced on the real session is held by the real-session probe until `#197`'s sandbox can
+carry its height profile into a short synthetic one.
+
+**Not here.** The delta emitter re-renders the open turn's four tail records on every delta
+(`dirtyFrom` every second with nothing but the last record changed); with rule 1 that costs a
+measure and nothing else, and it is its own task. The classic page's one-mean sensitivity — 8,715
+records at a 30px floor make every fraction of a pixel a page — is a design question for `#195`.

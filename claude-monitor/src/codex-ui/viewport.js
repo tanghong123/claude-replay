@@ -88,6 +88,10 @@ export class Viewport extends VirtualWindow {
       assistant: new HeightGuess(ESTIMATES.assistant),
       process: new HeightGuess(ESTIMATES.process),
     };
+    // What each unit taught its guess — `{ type, share }` by unit key — so a unit measured again
+    // replaces its share rather than adding one (#194). On the instance, never in `state`: a
+    // persisted share against a fresh guess would withdraw what was never learned.
+    this.shares = new Map();
     this.scroller = scroller;
     this.inner = inner;
     this.state = state;
@@ -117,15 +121,39 @@ export class Viewport extends VirtualWindow {
    *  three populations with three different shapes, and one mean over all of them would be wrong
    *  about each. The floor each starts from is the seed. */
   guessFor(index) { return this.guesses[this.units[index]?.type] || this.guesses.process; }
-  estimateAt(index) { return this.guessFor(index).value(); }
+  estimateAt(index) { return this.guessFor(index).estimate(); }
+  liveEstimateAt(index) { return this.guessFor(index).value(); }
   heightFor(index) { const unit = this.units[index]; return unit ? this.state.heights.get(unit.key) : 0; }
-  setHeight(index, height) { this.state.heights.set(this.units[index].key, height); this.guessFor(index).learn(height); }
-  clearHeights() { this.state.heights.clear(); for (const guess of Object.values(this.guesses)) guess.reset(); }
+  setHeight(index, height) {
+    const unit = this.units[index];
+    this.state.heights.set(unit.key, height);
+    const type = this.guesses[unit.type] ? unit.type : "process";
+    const prior = this.shares.get(unit.key);
+    let previous = 0;
+    if (prior && prior.type !== type) this.guesses[prior.type].forget(prior.share);
+    else if (prior) previous = prior.share;
+    this.shares.set(unit.key, { type, share: this.guesses[type].learn(height, previous) });
+  }
+  /** A unit that is gone, or about to be re-rendered, takes back what it taught (#194). */
+  forgetShare(key) {
+    const prior = this.shares.get(key);
+    if (!prior) return;
+    this.guesses[prior.type].forget(prior.share);
+    this.shares.delete(key);
+  }
+  /** The live means reach the sums here, and only here — the engine calls it at rest (#194). */
+  applyEstimates() {
+    let moved = false;
+    for (const guess of Object.values(this.guesses)) if (guess.apply()) moved = true;
+    return moved;
+  }
+  clearHeights() { this.state.heights.clear(); this.shares.clear(); for (const guess of Object.values(this.guesses)) guess.reset(); }
   /** #132 step 4: the same heights, re-guessed for a new measure. A text block's height moves
    *  roughly with the inverse of its width, and rule 5 still holds — an estimate is a FLOOR, so
    *  a widen that scales a height down may not take it under this shell's own floor. */
   scaleHeights(ratio) {
     for (const [key, height] of this.state.heights) this.state.heights.set(key, Math.max(ESTIMATE, height * ratio));
+    for (const [key, prior] of this.shares) this.shares.set(key, { type: prior.type, share: prior.share * ratio });
     // What has been LEARNED is re-guessed by the same ratio (#184). Leaving it alone would leave
     // every unmeasured unit carrying a height from the old measure, which is the same staleness
     // #132 step 4 fixed for the measured ones.
@@ -171,8 +199,14 @@ export class Viewport extends VirtualWindow {
     const anchor = following ? null : this.captureDomAnchor();
     const oldKeys = new Set(units.slice(0, changedUnit).map(unit => unit.key));
     const nextKeys = new Set(units.map(unit => unit.key));
-    for (const key of this.state.heights.keys()) if (!oldKeys.has(key) && !nextKeys.has(key)) this.state.heights.delete(key);
-    for (let i = changedUnit; i < units.length; i++) this.state.heights.delete(units[i].key);
+    for (const key of this.state.heights.keys()) if (!oldKeys.has(key) && !nextKeys.has(key)) { this.state.heights.delete(key); this.forgetShare(key); }
+    // A rewritten unit KEEPS its last height as the provisional value until the measure in this
+    // same task replaces it (#194). Dropping it to the estimate made the sums short by the whole
+    // open turn for the length of one render; `afterMount`/`measureMounted` force layout inside
+    // that gap, the browser clamps `scrollTop` to the shorter page (#179), and the reader is pulled
+    // up by the difference — 31px on a 300px wheel with the tail growing, measured. A stale real
+    // height is a far better guess than the mean, and `heightChanged` corrects it on the measure;
+    // a unit outside the window keeps it until it is mounted, as any measured unit does.
     this.units = units;
     this.rebuildPrefix();
 
