@@ -252,12 +252,12 @@ the trace. The page never touches `scrollTop`, the pads, or the sums.
 
 | call | today | framework |
 |---|---|---|
-| records changed | `applyWindow(dirty)` (classic), `setUnits(units, changedUnit)` (shell) — two implementations of the same thing | `recordsChanged(changedFrom)` (stage 5) — one transaction: capture `P` (both forms), forget the shares of dropped identities, keep provisional heights for rewritten ones, rebuild, range around `P`, reconcile, place |
+| records changed | `applyWindow(dirty)` (classic), `setUnits(units, changedUnit)` (shell) — two implementations of the same thing | `recordsChanged(mutate)` (stage 5, §4.11) — one transaction: `P0` read, the page's mutation, the window `P0` asks for, one placement |
 | jump | `jumpToRecord(index, reveal)` (shell), `goTo`/`landOn` (classic) | `jumpTo(index, landing)` (stage 4) — `P := (index, landing)`; transaction |
 | to the tail | `toBottom()` / `convergeBottom(commanded)` | `follow()` (stage 4) — `P := tail`; transaction |
 | the reader reshaped the page | `readerReshaped()` | same (drops follow, clears intent — a click is not a scroll, #190) |
 | the layout changed | `remeasure()` | same, as a transaction |
-| re-render in place | `render()`, `replaceMounted(i)` | `rerender(from)` (stage 5) — a transaction with `dirtyFrom` |
+| re-render in place | `render()`, `replaceMounted(i)` | `rerender()` (stage 5, §4.11) — the same transaction, `dirtyFrom: 0` |
 
 ---
 
@@ -270,8 +270,8 @@ suite): **0** the design and the contract's vocabulary; **1** `P` stored and `pl
 write (§4.1, §4.8); **2** transactions, the one timer, the trace as the transaction log (§4.2, §4.3,
 §4.5, §4.6, §4.8); **3** the estimator into the engine (§4.4, §4.9); **4** the pages' own scroll
 writes become engine calls — jump, page, reveal, follow, the landing loops, and smooth motion the
-engine owns (§4.10); **5** `recordsChanged(changedFrom)` / `rerender(from)`: one transaction where
-`applyWindow`, `setUnits`, `replaceMounted` and `render` are today (§3.3); **6** the invariant check
+engine owns (§4.10); **5** `recordsChanged(mutate)` / `rerender()`: one transaction where
+`applyWindow`, `setUnits`, `replaceMounted` and `render` are today, and no page names a window (§3.3, §4.11); **6** the invariant check
 mode (`violation` trace entries) and its no-violation scenario on both surfaces.
 
 ### 4.1 `P` becomes stored state, and `place()` the only write
@@ -516,7 +516,7 @@ its own pane — and the contract says so):
 | classic `landOn(id, dy)` write + 3× re-land loop | a session restore to a record at an offset | instant, stamped today | `jumpTo({index: ti, top: dy}, {intent: true})` (as today); the loop goes |
 | classic `applyPendingRestore` fallback (`scrollTo(0, st.y)`) | a restore to a raw offset | instant, stamped today | `scrollTo(st.y, {intent: true})` (as today) |
 | classic drag-select tick (`markIntent(); scrollBy(0, −speed)`) | the reader dragging a selection into the band | instant, gesture, per 16ms | `scrollBy(−speed, {intent: true})` |
-| classic `toggleFold` hold (`scrollBy(0, y1−y0)`) | keep the clicked head where it was through the fold's height change | instant, correction | `holdThrough(head, () => setFold(…))`: a `hold` transaction with `P := anchor(head's item)`, no intent |
+| classic `toggleFold` hold (`scrollBy(0, y1−y0)`) | keep the clicked head where it was through the fold's height change | instant, correction | `holdThrough(() => setFold(…))`: a `hold` transaction on the reader's own `P` (the head's position whenever the head is on screen; a head above the viewport held nothing — see the landed notes), no intent |
 | classic `toggleFold` nudge (`r.top<96 && r.bottom>96 → scrollBy(r.top−104)`) | bring a head clicked on its sliver under the bars into view | instant, no intent (the audit reaches it by synthetic click) | `reveal(head, {top: 104})`, the page keeps the condition |
 | classic `goTo(target, instant)` | land a turn / a stepped target at `GOTO_Y` | smooth unless `instant` | `reveal(target, {top: GOTO_Y, smooth: !instant})` |
 | classic `goToId` unmounted fallback + 3× re-land loop + `holdLanding` (2s timer loop) | a jump to a record by id | instant, gesture | `jumpTo({index: ti, top: GOTO_Y}, {dirtyFrom: ti, intent: true})`, then `reveal(el, {top: GOTO_Y})` for a nested id; both loops and `holdLanding` go |
@@ -667,6 +667,125 @@ fixes the suite itself found: `follow()` had to set the pin on an empty page (fo
 timed out at the tail), and the fold hold had to be on the reader, not the head (the #176 nested
 case moved 299px). The node contract's stage-4 block pins the calls, the one write site, the range
 form of `wrote`, the held landing and its release, the intent rule and the follow decision.
+
+### 4.11 Stage 5: one records-change transaction, and no page names a window (design, 2026-09-13)
+
+Stage 4 left every *scroll* write in the engine. What a page still does by itself is choose a
+**window**: after its records change, each page reads the reader's position its own way, picks a
+range from the sums its own way, and hands the range to the engine's `reconcile`. Two
+implementations of the same step, and a third for the search walk. Stage 5 is a move: the same
+outcomes, one transaction, and the page-facing range calls gone from the contract.
+
+**Inventory.** Every way a page changes what is on the page today, and what each becomes.
+
+| today | who calls it | what it does | becomes |
+|---|---|---|---|
+| `applyWindow(dirty)` (classic, from `postRender`) | the two transports, after a batch of `pushRecord`/`resetFrom` already applied OUTSIDE the engine | anchor := `captureDomAnchor()` unless following; window around the anchor's identity, else around the offset; `reconcile(lo, hi, dirty, false, anchor)`. No placement while following — the run observer's `grown` converges a delivery later — and none for a reader with no mounted item on screen | `recordsChanged(mutate)` — `mutate` IS the batch (the transport's apply loop and `postRender`'s refreshes), and returns the first rewritten index |
+| `setUnits(units, changedUnit)` (shell) | the store's update | forget vanished keys; swap `units`; empty → `clearWindow()`; a remembered position → `jumpTo` (stage 4); following → `reconcile(around last, changedUnit, null)` **then** `convergeBottom()` — two transactions per delta; else `reconcile(around anchor, changedUnit, anchor)` | `recordsChanged(mutate)` with the swap and the forgetting as `mutate`; the memory restore stays the shell's, and stays the command it already is |
+| `render()` (both — a fold, the raw view, a filter-opened fold) | `refreshWindow` / the `rerender` action | `transact("render", { range: the current window (the tail's while following), refresh: true })` | `rerender()` — the same transaction with `dirtyFrom: 0`. `refresh` and `dirtyFrom: 0` were one thing (`reusable` needs `index < dirtyFrom && !refresh`); the flag goes |
+| `render(forceIndex)` | nobody since stage 4 | | removed |
+| `replaceMounted(index)` (classic) | nobody since stage 4 (`goToId` jumps with `dirtyFrom`) | | removed |
+| `setWindow(lo, hi)` → `reconcile(lo, hi, ∞, false, null)` (classic `matRecord`, the search-hit walk) | hit navigation, to read a record's marks before landing on one | a window the PAGE computed from the sums, mounted with no placement, then `goTo(mark)` | `jumpTo({ index, top: GOTO_Y })` — the record is the landing, mounted around and placed; `reveal(mark)` then refines within it. The end state is the mark at `GOTO_Y`, as now; the intermediate landing is inside the same task and never paints |
+| `reconcile(lo, hi, dirtyFrom, refresh, anchor)` | the four above | | engine-internal, and only `recordsChanged` reaches it |
+| `clearWindow()` | the shell, on an empty list | | inside `recordsChanged` (count 0 → cleared, `P := null`). The classic page never cleared on a reset to zero — `applyWindow` returned early on an empty count and the stale elements stayed until the next apply — and now does |
+| `updateWindow(forceIndex)` | `forceIndex` by nobody since stage 4 | | parameter removed |
+| `toBottom()` → `convergeBottom()` (classic, from `settleAfterApply` while following) | every apply, after `postRender` | the converge after the mount — the classic page's copy of the shell's `convergeBottom()` after `reconcile`: a second transaction per delta whose placement the first could have made | folded into `recordsChanged` (the tail is placed in the mount's own transaction); the function goes |
+
+**The transaction.**
+
+```
+recordsChanged(mutate)                      // mutate: the page's model change; returns changedFrom
+  transact("records", {
+    mutate,                                  // runs AFTER P0 is read (I1) — the sums move inside
+    dirtyFrom: changedFrom => changedFrom,   // a function of what `mutate` returned
+    range: p0 => this.rangeFor(p0),          // the window P0 asks for (I11); count 0 → clearWindow
+  })
+```
+
+- **Following:** `P0 = tail`, the window around the last record, and `placeAfter`'s own rule —
+  placed now unless the reader owns the position, then deferred to rest (#165). That is exactly
+  `convergeBottom`'s transaction, so the shell's two transactions per delta become one, and the
+  classic page's `settleAfterApply` no longer converges a second time after the mount (its
+  `toBottom()`, the same second transaction under another name).
+- **Not following:** `P0` is the stored `P` when the offset has not moved since it was read — the
+  common case, every transaction ends by re-reading it — else the DOM anchor or the model form,
+  read NOW, before `mutate`. Where that differs from today: the classic page held nothing for a
+  reader with no mounted item on screen, and the shell fell from a DOM anchor to the offset. Both
+  now hold the model form, read from the sums before they moved and placed from the sums after —
+  a no-op when nothing above the reader changed, a hold when it did.
+- **The mutation is inside, on both pages.** The shell's is the units swap plus its estimator
+  bookkeeping (`forget(key)` for each measured key absent from the new list — the heights are the
+  page's, so the page says which are gone). The classic page's is the batch its transports run
+  today before `postRender` — `consume`'s loop of `pushRecord`/`resetFrom`, the pull client's
+  apply — followed by `postRender`'s own refreshes (the message row, the menus, the filter's hit
+  map, which `skipAt` reads and so must precede the mount), returning the dirty index. Each
+  transport becomes `vw.recordsChanged(function () { …apply…; return postRender(); })`.
+  `resetFrom`'s `forgetFrom(from)` stays where it is (ids are read before the truncation); the
+  per-push `rebuildPrefix()` marks stay (O(1)) — their comment's "an observer delivery can
+  reconcile in between" cannot happen inside a synchronous transaction, and is corrected.
+- **Never nested.** A records change inside a transaction — a transport running from an engine
+  callback — is a page error, not a case: `transact` would queue the mutation and the page would
+  read a model that has not changed yet. Neither page does it (both transports run from fetch and
+  poll callbacks); stage 6's check mode traces it as a `violation`.
+- **`rerender()`**: `render()` as it is, minus `refresh` and `forceIndex`. The cause stays `render`.
+
+**Reviewed before the code (advisor, 2026-09-13), four places where "same outcome" had to be
+checked rather than claimed:**
+
+1. *Nothing inside the batch transacts.* Every `vw.` call on the classic page mapped to its
+   enclosing function: the apply loops and `postRender`'s callees reach only `rebuildPrefix`,
+   `forgetFrom`, `indexAt` (reads and marks). `clearNew` → `follow()`, `applyPendingRestore` →
+   `scrollTo`/`follow` and the old `toBottom` all run from `settleAfterApply`, AFTER the
+   transaction, and stay there. So no transaction is queued behind the records one.
+2. *The shell's restore is explicit.* With a pending key present, the units swap (and the
+   forgetting) runs BEFORE `jumpTo` and no `recordsChanged` mount precedes it: `jumpTo`
+   validates `index < count` through the shell's own getter, and a mount around `P0` first would
+   teach the estimator a window's worth of heights the restore cases never learned. The
+   thirteenth try keeps its order too: today `following` is read into a local BEFORE
+   `pendingTries` gives the tail up, so that delta still takes the anchor path and the first tail
+   placement is one delta later; `recordsChanged` reads `this.following` at transact time, so
+   the flip to following happens after the call on that try.
+3. *The search walk's landing does not decide.* `matRecord` today mounts without touching the
+   follow state; the reveal that follows decides once. A materializing `jumpTo` whose `after`
+   hook decided would hand the reveal a changed `wasFollowing` (hysteresis: a jump past `hold`
+   unfollows, the reveal inside `hold` but past `acquire` then stays unfollowed, and
+   `followChanged` fires twice). So `command` takes `decide: false` — the `after` hook restores
+   `following = wasFollowing` and does not call `followChanged` — and `matRecord` passes it;
+   `goToId`'s jump-then-reveal keeps deciding, as stage 4 landed it.
+4. *The fallback's read moves earlier on the classic page.* `captureDomAnchor`'s model fallback is
+   read before the mutation now (I12) where the classic page read it after; the one case where
+   the fallback is what places the reader is the queued-prompt pickup (#165), so
+   `scenario_queued_prompt_shows_its_text` and
+   `scenario_reading_inside_a_long_open_turn_holds_through_rewrites` on the classic page join the
+   named acceptance below.
+
+**What it enforces.** I11 by construction: after stage 5 every window is `rangeFor(P0)` (records,
+update, remeasure), the current window (rerender), or a command's landing (`rangeAround(index)`
+inside `command`) — and the contract greps every page source for `reconcile(`, `rangeAround(`,
+`rangeForScroll(`, `mountRange(` and `clearWindow(` and finds none. I1 for records changes: the
+model moves inside the transaction on both pages, so `P0` is always read from the sums the reader
+was last placed by.
+
+**Removed from the contract** (page-facing): `reconcile`, `clearWindow`, `applyWindow`,
+`replaceMounted`, `setWindow`, `render(forceIndex)`, `updateWindow(forceIndex)`, the `refresh`
+option. **The trace:** cause `reconcile` becomes `records`; `reconciled` loses `refresh`; the
+`converge` entries the shell logged on every delta while following disappear into the `records`
+entry (the classic page's per-delta `grown` likewise). CLAUDE.md's trace paragraph and the
+contract's cause list follow.
+
+**Acceptance.** A move: the walk series on both pages, the unfold probe and the runaway probe
+identical to stage 4's; the growth scenarios on both surfaces (#179 `…the_reader_in_the_same_turn_holds`,
+#194 `…stops_growing_once_it_knows_what_a_record_costs`, `…inside_an_open_turn_holds_to_the_pixel`)
+and the #165 rewrite cases above on the classic page; the full suite; the byte gate re-baselined
+line by line; the contract by exit code; CI green.
+
+**Not in stage 5, and why.** (1) The classic page drops a rewritten record to the estimate until
+the same task's measure (its heights are by index and `resetFrom` truncates them); the shell keeps
+the last height as the provisional value (#194). The clamp #194 fixed on the shell is possible in
+principle on the classic page during a live rewrite under a gesture; unifying the semantics is a
+behaviour change, so it is measured first with the runaway probe against the classic live page
+and queued on its own. (2) `indexOfIdentity` stays an O(n) scan (one per transaction; sub-
+millisecond at 14,242 records) — a key → index map is an optimization, not a move.
 
 ### 4.7 Out of scope
 
