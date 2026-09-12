@@ -2182,6 +2182,44 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engine, /if \(p0\.source === "tail"\) return this\.rangeAtEnd\(\);/, "rangeFor gives the tail the end's window");
   assert.match(engine, /this\.transact\("converge", \{ range: \(\) => this\.rangeAtEnd\(\), commanded: !!commanded,/, "the converge mounts the end's window");
   assert.doesNotMatch(engine, /rangeAround\(this\.count - 1\)/, "no engine path mounts the tail as a landing around the last record");
+  // #201: what the cascade reads of a unit's neighbours comes from the model — the shell stamps
+  // prev/next types on every unit root and re-stamps kept elements on a units swap — and every
+  // sibling-keyed rule has its attribute twin in production.css, so a unit at the window's edge
+  // measures what it measures with its neighbour mounted. The twins sit at equal or higher
+  // specificity than the sibling rules, so where the DOM's neighbour and the model's disagree the
+  // MODEL wins — right only because every path that changes the model re-stamps the kept
+  // elements (the swap here, `postRender` on the classic page, and `rerender` rebuilds all). A
+  // new mutation path must re-stamp too; these pins are where that shows.
+  assert.match(shell, /renderItem\(index\) \{ return this\.stampNeighbours\(renderUnit\(this\.units\[index\], this\.state\), index\); \}/, "a rendered unit is stamped with its neighbours' types");
+  assert.match(shell, /stampNeighbours\(root, index\) \{\n\s*const prev = this\.units\[index - 1\], next = this\.units\[index \+ 1\];\n\s*if \(prev\) root\.dataset\.prevType = prev\.type; else delete root\.dataset\.prevType;\n\s*if \(next\) root\.dataset\.nextType = next\.type; else delete root\.dataset\.nextType;/, "the stamps are the neighbours' unit types, cleared at the ends");
+  assert.match(shell, /this\.units = units;\n(\s*\/\/.*\n)*\s*for \(const child of this\.window\.children\) this\.stampNeighbours\(child, Number\(child\.dataset\.unitIndex\)\);/, "a units swap re-stamps every kept element");
+  assert.match(productionCss, /\.virtual-window>\*:has\(\+ \.process-surface\),\.virtual-window>\[data-next-type="process"\]\{margin-bottom:8px\}/, "the bottom margin before a process surface is keyed on the model too");
+  assert.match(productionCss, /\.virtual-window>\.turn\.assistant\[data-prev-type="process"\]\{padding-top:4px\}/, "the tuck under a process surface is keyed on the model too");
+  // Every rule in either stylesheet that keys a unit ROOT's box on a sibling has a twin here: the
+  // reference sheet's sibling rules on `.turn` roots are the border (already zero) and the tuck.
+  const referenceCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/reference.css", import.meta.url), "utf8");
+  const siblingRules = (referenceCss.match(/[^{}]*[+~][^{}]*\.turn[^{}]*\{[^}]*\}/g) || []).filter(rule => /padding|margin|height|border-(top|bottom)[^:]*:\s*[1-9]/.test(rule) && !/\.turn-dock|\.transcript-inner/.test(rule));
+  assert.deepEqual(siblingRules, [".process-surface + .turn.assistant{padding-top:4px}"], `every sibling-keyed box rule on a turn root has a model-keyed twin: ${JSON.stringify(siblingRules)}`);
+  // #201 on the classic page: the successor's root classes are stamped from the model, re-stamped
+  // after every apply, and each `:has(+ …)` rule in export.css has its `[data-next~=…]` twin.
+  assert.match(classic, /function rootWords\(b\) \{\n\s*if \(b\.kind === "user"\) return "uturn";\n\s*if \(b\.kind === "attachment"\) return "amark";\n\s*if \(b\.kind === "queue"\) return "qmarker";\n\s*if \(b\.kind === "assistant"\) return "ablock";\n\s*return b\.kind === "command" \? "fold uturn" : "fold";/, "the stamp is the successor's root classes as renderBlock gives them");
+  assert.match(classic, /function stampNext\(e, i\) \{\n\s*var j = i \+ 1;\n\s*while \(j < records\.length && isHiddenRec\(j\)\) j\+\+;/, "the stamp names the next VISIBLE record, as :has(+ …) sees it");
+  assert.match(classic, /e\.dataset\.kind = b\.kind;\n\s*stampNext\(e, i\);/, "every materialized record is stamped");
+  assert.match(classic, /if \(filter\) computeFilterHits\(\);\n(\s*\/\/.*\n)*\s*matEls\(\)\.forEach\(function \(e\) \{ stampNext\(e, \+e\.dataset\.idx\); \}\);/, "every apply re-stamps the kept elements");
+  const exportCssStamps = readFileSync(new URL("../../claude-replay-html/src/html/export.css", import.meta.url), "utf8");
+  for (const [has, twin] of [
+    ["#vwin > .blk:has(+ .uturn:not(.fold)) { margin-bottom: 16px; }", '#vwin > .blk[data-next~="uturn"]:not([data-next~="fold"]) { margin-bottom: 16px; }'],
+    ["#vwin > .blk:has(+ .amark), #vwin > .blk:has(+ .qmarker) { margin-bottom: 10px; }", '#vwin > .blk[data-next~="amark"], #vwin > .blk[data-next~="qmarker"] { margin-bottom: 10px; }'],
+    ["#vwin > .ablock:has(+ .fold) { margin-bottom: 2px; }", '#vwin > .ablock[data-next~="fold"] { margin-bottom: 2px; }'],
+  ]) {
+    assert.ok(exportCssStamps.includes(has) && exportCssStamps.includes(twin), `the sibling rule and its model-keyed twin are both present: ${has}`);
+  }
+  const classicSiblingRules = (exportCssStamps.match(/^[^{}\n/*]*:has\(\+[^{}\n]*\{[^}\n]*\}/gm) || []).map(rule => rule.trim());
+  assert.deepEqual(classicSiblingRules, [
+    "#vwin > .blk:has(+ .uturn:not(.fold)) { margin-bottom: 16px; }",
+    "#vwin > .blk:has(+ .amark), #vwin > .blk:has(+ .qmarker) { margin-bottom: 10px; }",
+    "#vwin > .ablock:has(+ .fold) { margin-bottom: 2px; }",
+  ], `every successor-keyed rule in export.css has a twin above: ${JSON.stringify(classicSiblingRules)}`);
   // The classic search walk: a record it had to bring in lands its match on the landing line
   // (the reveal is forced); one the reader could already see keeps a visible match where it is.
   assert.match(classic, /had = mountedRecord\(hr\.rec\);\n\s*el = had \|\| matRecord\(hr\.rec\);/, "the walk remembers whether the hit record was mounted before the step");
@@ -2196,7 +2234,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: GOTO_Y \}, \{ decide: false \}\);/, "the search walk materializes a record as an undecided landing");
   assert.match(classic, /function refreshWindow\(\) \{ vw\.rerender\(\); \}/, "the classic re-render is the engine's");
   // The shell: the swap is the mutation; the restore stays a command with the swap before it.
-  assert.match(shell, /const swap = \(\) => \{\n(?:.*\n){0,12}?\s*this\.units = units;\n\s*return changedUnit;\n\s*\};/, "the units swap returns the first rebuilt unit");
+  assert.match(shell, /const swap = \(\) => \{\n(?:.*\n){0,12}?\s*this\.units = units;\n(?:\s*\/\/.*\n)*\s*for \(const child of this\.window\.children\) this\.stampNeighbours\(child, Number\(child\.dataset\.unitIndex\)\);\n\s*return changedUnit;\n\s*\};/, "the units swap re-stamps the kept elements' neighbours (#201) and returns the first rebuilt unit");
   assert.match(shell, /swap\(\);\n\s*this\.rebuildPrefix\(\);\n(?:.*\n){0,3}?\s*this\.jumpTo\(\{ key: memory\.key, index, top: memory\.top \}, \{ dirtyFrom: changedUnit \}\);/, "a restore swaps first and jumps, with no mount before it");
   assert.equal((shell.match(/this\.recordsChanged\(swap\);/g) || []).length, 2, "an empty list and a plain delta are the one transaction");
   assert.doesNotMatch(shell + app, /\.render\(\)/, "the shell re-renders through rerender()");

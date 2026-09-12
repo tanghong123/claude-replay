@@ -272,11 +272,32 @@
   function matEls() {
     return Array.prototype.slice.call(vwin.children);
   }
+  // #201: what the cascade reads of a record's NEIGHBOUR comes from the model. `export.css` hands
+  // a record the air belonging to what FOLLOWS it (`#vwin > .blk:has(+ .uturn:not(.fold))` and
+  // two more); at the window's bottom edge what follows is not mounted, and the same record
+  // measured 16px less there than with its successor mounted — a trait the engine's sums (one
+  // height per record, margins included) cannot know. The successor's root classes, as
+  // `renderBlock` gives them, are stamped for the `[data-next~=…]` twins of those rules — the
+  // next VISIBLE record under a filter, which is what `:has(+ …)` sees too.
+  function rootWords(b) {
+    if (b.kind === "user") return "uturn";
+    if (b.kind === "attachment") return "amark";
+    if (b.kind === "queue") return "qmarker";
+    if (b.kind === "assistant") return "ablock";
+    return b.kind === "command" ? "fold uturn" : "fold";
+  }
+  function stampNext(e, i) {
+    var j = i + 1;
+    while (j < records.length && isHiddenRec(j)) j++;
+    if (j < records.length) e.dataset.next = rootWords(records[j]);
+    else delete e.dataset.next;
+  }
   function matBlock(i) {
     var b = records[i];
     var e = renderBlock(b);
     e.dataset.idx = i;
     e.dataset.kind = b.kind;
+    stampNext(e, i);
     // #176: index the NESTED records inside this one. The engine's anchor has two levels — the
     // mounted item, then the first `[data-block-index]` INSIDE it (shared/virtual-window.js
     // `captureDomAnchor`) — and it holds the reader by that inner element's screen position. A
@@ -1420,6 +1441,9 @@
     renderArtifactMenu();
     buildToolMenu();
     if (filter) computeFilterHits();
+    // A kept element's successor may have changed under it (the record that was last has one
+    // now): the stamps follow the model (#201).
+    matEls().forEach(function (e) { stampNext(e, +e.dataset.idx); });
     var from = dirtyFrom;
     dirtyFrom = Infinity;
     return from;

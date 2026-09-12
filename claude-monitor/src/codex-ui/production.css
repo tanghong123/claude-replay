@@ -545,7 +545,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    observer cannot see, and a top that moves under the reader on the click that asked for more. */
 .virtual-window{display:flex;flex-direction:column}
 .virtual-window>*{flex:0 0 auto;margin-top:0}
-.virtual-window>*:has(+ .process-surface){margin-bottom:8px}
+.virtual-window>*:has(+ .process-surface),.virtual-window>[data-next-type="process"]{margin-bottom:8px}
+/* #201. A unit's height is a property of the unit, never of where the window's edge happens to
+   sit: every rule the demo or this file keys on a mounted SIBLING is carried again here, keyed on
+   the neighbour stamps the shell writes from its model (`data-prev-type` / `data-next-type`,
+   `Viewport.stampNeighbours`). The demo's `.process-surface + .turn.assistant{padding-top:4px}`
+   tucks an answer under the process that produced it; at the window's top edge that process was
+   not mounted and the same turn measured 15px, 4px again once it was — 11px per wheel in the
+   unfold probe, a formerly-first turn re-padding under the rendering audit. */
+.virtual-window>.turn.assistant[data-prev-type="process"]{padding-top:4px}
 
 /* ── the shared code renderer, dressed for this shell ──────────────────────────────────────
    Three faults with one cause: the app shell renders the SHARED row markup

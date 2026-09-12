@@ -660,6 +660,15 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 #vwin > .blk:has(+ .uturn:not(.fold)) { margin-bottom: 16px; }
 #vwin > .blk:has(+ .amark), #vwin > .blk:has(+ .qmarker) { margin-bottom: 10px; }
 #vwin > .ablock:has(+ .fold) { margin-bottom: 2px; }
+/* #201. Each of the three again, keyed on what the MODEL says follows (`data-next`, the successor's
+   root classes as `renderBlock` gives them, stamped by `matBlock` and re-stamped after every apply):
+   at the window's bottom edge the successor is not mounted, `:has(+ …)` sees nothing, and the same
+   record measured 16px less there than with it mounted — the engine's sums hold one height per
+   record, margins included, and cannot know a trait of the window's edge. Same values, same
+   specificity: where both apply they agree, and at the edge only these do. */
+#vwin > .blk[data-next~="uturn"]:not([data-next~="fold"]) { margin-bottom: 16px; }
+#vwin > .blk[data-next~="amark"], #vwin > .blk[data-next~="qmarker"] { margin-bottom: 10px; }
+#vwin > .ablock[data-next~="fold"] { margin-bottom: 2px; }
 .fold { border-radius: 8px; margin: 0 0 2px; }
 .fold[data-open="1"]:not(.uturn) { background: var(--openbg); border: 1px solid var(--border); margin: 0 0 8px; }
 /* §8.1 One shared 20px line box, top-aligned so a wrapping target keeps the

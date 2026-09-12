@@ -7808,6 +7808,15 @@ fn app_shell_a_growth_in_a_visible_records_head_holds_it() {
 /// distance you scrolled, and by no more. The case walks up in steps and checks EVERY step, and it
 /// separately requires that at least one step actually reached unmeasured ground — otherwise it
 /// would pass over the region `convergeBottom` already measured and prove nothing.
+///
+/// "Reached unmeasured ground" is read two ways, either sufficing: the page's height moved on the
+/// step (an estimate replaced by a truth that differed), or the window's lowest mounted index fell
+/// below anything mounted since the open (records met for the first time). The height alone
+/// stopped being enough with #201: until then the classic page's last mounted record lost a 16px
+/// margin at the window's bottom edge, which moved `scrollHeight` on every step and fed this guard
+/// whether or not the estimates had anything to learn; without that flip, a mounted run whose
+/// heights average out against the learned mean replaces its estimates with a net change under a
+/// pixel, and the guard called a walk over 8,000px of never-mounted records vacuous.
 fn scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -7859,6 +7868,14 @@ fn scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
         "{surface:?}: the reader's own scroll has to LEAVE the tail before this measures anything          — a following view heals a small scroll straight back and every step would read the heal          instead of the defect. scrollTop {tail_top} -> {left}"
     );
 
+    // The lowest mounted index — the classic page stamps `data-idx`, the app shell
+    // `data-unit-index` — read after the leave, so only the asserted steps can count as fresh.
+    let lo_js = format!(
+        "(function(){{var k=[...{root}.children].map(function(e){{return +(e.dataset.idx!=null?e.dataset.idx:e.dataset.unitIndex);}}).filter(function(n){{return !isNaN(n);}});return k.length?Math.min.apply(null,k):-1;}})()"
+    );
+    let lo_of = |tab: &headless_chrome::Tab| harness::eval(tab, &lo_js).as_i64().unwrap_or(-1);
+    let mut min_lo = lo_of(tab);
+    let mut lows = vec![min_lo];
     let step = 900.0;
     let mut reached_fresh = false;
     let mut worst = 0.0_f64;
@@ -7870,6 +7887,12 @@ fn scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
         let id = before["id"].as_str().unwrap_or("").to_string();
         scroll_by(tab, surface, -(step as i64));
         settle();
+        let lo_now = lo_of(tab);
+        lows.push(lo_now);
+        if lo_now >= 0 && lo_now < min_lo {
+            reached_fresh = true;
+            min_lo = lo_now;
+        }
         let after = harness::probe(tab, &reread(&id));
         // Scrolled clean past the reference (it left the mounted window): nothing to compare.
         if !after["ok"].as_bool().unwrap_or(false) {
@@ -7906,9 +7929,10 @@ fn scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
     // jump leaves roughly 1500px above it measured, and the first steps never leave that.
     assert!(
         reached_fresh,
-        "{surface:?}: the walk never reached UNMEASURED ground — scrollHeight never moved, so \
-         every step was over heights the engine already knew and the case proved nothing. Worst \
-         overshoot seen was {worst}px."
+        "{surface:?}: the walk never reached UNMEASURED ground — scrollHeight never moved and \
+         the window's lowest mounted index never fell below anything mounted since the open \
+         ({lows:?}), so every step was over heights the engine already knew and the case proved \
+         nothing. Worst overshoot seen was {worst}px."
     );
 }
 
@@ -9293,4 +9317,128 @@ fn app_shell_a_smooth_step_yields_to_the_readers_wheel() {
     let fx = fixture("scenario-smoothstep-app", 40);
     let page = open(Surface::AppShell, &fx, 2977);
     scenario_a_smooth_step_yields_to_the_readers_wheel(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a mounted unit's height does not depend on the window's edge (#201) ─────────────
+/// The engine's sums treat a unit's height as a property of the unit. The app shell's demo
+/// stylesheet pads the transcript's first turn less (`.turn:first-child{padding-top:8px}` against
+/// the turn's own padding), and the first MOUNTED turn of `.virtual-window` is that first child —
+/// so a turn at the window's top edge measured about 10px shorter than the same turn once a unit
+/// was mounted above it. #196 stage 2 met it twice (11px flips per wheel in the unfold probe
+/// while two windows were mounted per transaction; the rendering audit watching a formerly-first
+/// turn re-pad and its absolutely positioned buttons move when a remeasure mounted one more
+/// record above it), and stage 5's tail window — the end's screenful, one more record than the
+/// landing shape mounted — put it in front of the audit's width-and-theme case. The rule the
+/// case found was not the first-child one the task named but the demo's
+/// `.process-surface + .turn.assistant{padding-top:4px}` (15px at the edge, 4px with the process
+/// mounted), and production's own `*:has(+ .process-surface){margin-bottom:8px}` is the same
+/// thing at the bottom edge. The claim, on both pages: every mounted unit measures the same
+/// height — as `itemHeight` measures it, margins included — before and after its neighbours are
+/// mounted. Eight window edges up, then eight down, so the edge unit is of every kind.
+fn scenario_a_unit_height_does_not_depend_on_the_window_edge(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    // Every mounted unit: its key, index, height as the engine measures it (the rect plus both
+    // margins — `itemHeight`) and, for the failure message, its class, padding-top and margins.
+    let mounted = match surface {
+        Surface::Classic => "(function(){ return [...document.querySelectorAll('#stream [data-idx]')].map(function(e){ var r = e.getBoundingClientRect(), s = getComputedStyle(e); return { key: e.dataset.idx, index: +e.dataset.idx, height: r.height + (parseFloat(s.marginTop) || 0) + (parseFloat(s.marginBottom) || 0), cls: e.className, pad: s.paddingTop + '/' + s.marginBottom }; }); })()",
+        Surface::AppShell => "(function(){ return [...document.querySelectorAll('.virtual-window > [data-unit-key]')].map(function(e){ var r = e.getBoundingClientRect(), s = getComputedStyle(e); return { key: e.dataset.unitKey, index: +e.dataset.unitIndex, height: r.height + (parseFloat(s.marginTop) || 0) + (parseFloat(s.marginBottom) || 0), cls: e.className, pad: s.paddingTop + '/' + s.marginBottom }; }); })()",
+    };
+    let snapshot = |tab: &headless_chrome::Tab| -> Vec<serde_json::Value> {
+        harness::probe(tab, mounted)
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the tail before the walk up");
+    settle();
+    settle();
+    let start = snapshot(tab);
+    assert!(
+        start.first().and_then(|u| u["index"].as_i64()).unwrap_or(0) > 0,
+        "{surface:?}: the window's top edge sits above record 0, so a unit CAN be mounted above \
+         it: {start:?}"
+    );
+    let mut violations = Vec::new();
+    let mut edges = 0;
+    let mut before = start;
+    // Up, mounting above (the top edge), then down, mounting below (the bottom edge). A unit
+    // still mounted after a step must measure what it measured before it.
+    for (direction, dy) in [("up", -250), ("down", 250)] {
+        let mut moved = 0;
+        for step in 0..40 {
+            scroll_by(tab, surface, dy);
+            settle();
+            let after = snapshot(tab);
+            let edge = |units: &Vec<serde_json::Value>| -> (i64, i64) {
+                (
+                    units
+                        .first()
+                        .and_then(|u| u["index"].as_i64())
+                        .unwrap_or(-1),
+                    units.last().and_then(|u| u["index"].as_i64()).unwrap_or(-1),
+                )
+            };
+            let (lo0, hi0) = edge(&before);
+            let (lo1, hi1) = edge(&after);
+            if lo1 != lo0 || hi1 != hi0 {
+                moved += 1;
+            }
+            for unit in &before {
+                let key = unit["key"].as_str().unwrap_or("");
+                if let Some(now) = after.iter().find(|u| u["key"].as_str() == Some(key)) {
+                    let h0 = unit["height"].as_f64().unwrap_or(0.0);
+                    let h1 = now["height"].as_f64().unwrap_or(0.0);
+                    if (h1 - h0).abs() > 0.5 {
+                        violations.push(format!(
+                            "{direction} step {step}: unit {key} (index {}, {}) measured {h0}px \
+                             with the window at [{lo0}, {hi0}], {h1}px with it at [{lo1}, {hi1}] \
+                             (padding-top/margin-bottom {} -> {})",
+                            unit["index"], unit["cls"], unit["pad"], now["pad"]
+                        ));
+                    }
+                }
+            }
+            before = after;
+            if moved >= 8
+                || (direction == "up" && lo1 <= 0)
+                || (direction == "down" && harness::at_tail(tab, surface))
+            {
+                break;
+            }
+        }
+        edges += moved;
+    }
+    assert!(
+        edges >= 6,
+        "{surface:?}: the walks moved the window's edges only {edges} times, so this measured \
+         almost nothing"
+    );
+    assert!(
+        violations.is_empty(),
+        "{surface:?}: a mounted unit's height depends on where the window's edge sits — the \
+         sums assume it is a property of the unit (#201):\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_unit_height_does_not_depend_on_the_window_edge() {
+    let _serial = serial();
+    let fx = fixture("scenario-edge-unit-classic", 60);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_unit_height_does_not_depend_on_the_window_edge(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_unit_height_does_not_depend_on_the_window_edge() {
+    let _serial = serial();
+    let fx = fixture("scenario-edge-unit-app", 60);
+    let page = open(Surface::AppShell, &fx, 2980);
+    scenario_a_unit_height_does_not_depend_on_the_window_edge(&page.tab, Surface::AppShell, &fx);
 }

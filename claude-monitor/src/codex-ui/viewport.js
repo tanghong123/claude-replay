@@ -128,7 +128,21 @@ export class Viewport extends VirtualWindow {
   scaleHeights(ratio) {
     for (const [key, height] of this.state.heights) this.state.heights.set(key, Math.max(ESTIMATE, height * ratio));
   }
-  renderItem(index) { return renderUnit(this.units[index], this.state); }
+  renderItem(index) { return this.stampNeighbours(renderUnit(this.units[index], this.state), index); }
+
+  /** What the cascade may read of a unit's NEIGHBOURS comes from the model, not from what happens
+   *  to be mounted (#201). A rule keyed on a mounted sibling — the demo's
+   *  `.process-surface + .turn.assistant{padding-top:4px}`, production's own
+   *  `*:has(+ .process-surface){margin-bottom:8px}` — made a unit at the window's edge measure
+   *  11px differently from the same unit with its neighbour mounted, and the engine's sums assume a
+   *  height is a property of the unit. `production.css` carries each such rule again, keyed on
+   *  these stamps, so the edge unit is padded as it will be once its neighbour arrives. */
+  stampNeighbours(root, index) {
+    const prev = this.units[index - 1], next = this.units[index + 1];
+    if (prev) root.dataset.prevType = prev.type; else delete root.dataset.prevType;
+    if (next) root.dataset.nextType = next.type; else delete root.dataset.nextType;
+    return root;
+  }
   afterRender() { this.actions.afterRender?.(); }
   afterScroll() { this.actions.afterScroll?.(); }
   followChanged() { this.actions.followChanged?.(); }
@@ -180,6 +194,9 @@ export class Viewport extends VirtualWindow {
       // measured. A stale real height is a far better guess than the mean, and `heightChanged`
       // corrects it on the measure; a unit outside the window keeps it until it is mounted.
       this.units = units;
+      // A kept element's neighbours may have changed under it (the unit that was last has a
+      // successor now; a rewrite renamed the one after it): the stamps follow the model.
+      for (const child of this.window.children) this.stampNeighbours(child, Number(child.dataset.unitIndex));
       return changedUnit;
     };
     if (!units.length) {

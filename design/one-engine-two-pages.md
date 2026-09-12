@@ -1381,3 +1381,48 @@ the tail's window is now `rangeAtEnd()`, the offset window at the largest offset
 walk's materialized hit landed its record on the landing line and left the mark a little below it;
 the walk now forces the reveal for a record it had to bring in, so the mark lands where the old
 materialize-then-reveal flow put it.
+
+## A unit's height is the unit's, not the window edge's (2026-09-13, #201)
+
+The tail window above put one more record in front of the rendering audit's app-shell
+width-and-theme case, and the case went red on a formerly-first turn re-padding: a mounted unit's
+height depended on where the window's edge sat. The task had named the demo's
+`.turn:first-child{padding-top:8px}`; the scenario written for it found that rule overridden for
+every production turn kind (a later rule of equal specificity wins) and the two that bite instead:
+the demo's `.process-surface + .turn.assistant{padding-top:4px}` — an answer tucked under the
+process that produced it, 15px at the window's top edge where that process is not mounted and 4px
+once it is — and production's own `*:has(+ .process-surface){margin-bottom:8px}`, the same thing
+at the bottom edge, which `itemHeight` counts because it measures margins.
+
+The fix is where the model is: the shell stamps every unit root with its neighbours' unit types
+(`data-prev-type` / `data-next-type`, `Viewport.stampNeighbours`, re-stamped on every units swap so
+a kept element whose neighbour changed follows the model), and `production.css` carries each
+sibling-keyed rule again keyed on the stamps. The demo is untouched, the look is the same, and an
+edge unit is padded as it will be once its neighbour arrives. The node contract pins the stamps,
+the two twins, and that the reference sheet has no other sibling-keyed box rule on a turn root.
+`scenario_a_unit_height_does_not_depend_on_the_window_edge` measures every mounted unit as the
+engine does, margins included, across eight window edges up and eight down, on both pages: red on
+the app shell before the fix (three assistant turns, 133.09px → 122.09px), green after.
+
+The same measurement then found the reference page doing the same thing at its bottom edge:
+`export.css` hands a record the air belonging to what FOLLOWS it — `#vwin > .blk:has(+ .uturn:not(.fold))`
+16px, `:has(+ .amark)` / `:has(+ .qmarker)` 10px, `.ablock:has(+ .fold)` 2px — and the last mounted
+record, whose successor is not mounted, measured 16px less than the same record with it mounted
+(unit 145, 108.39px → 92.39px). The same fix: `matBlock` stamps `data-next` with the successor's
+root classes as `renderBlock` gives them (the next VISIBLE record under a filter, which is what
+`:has` sees too), `postRender` re-stamps every kept element after an apply, and each of the three
+rules has a `[data-next~=…]` twin of equal specificity. The classic page is the reference, not an
+oracle (#71): the scenario written for the shell's defect is what found this one.
+
+What makes the twins safe is one property, and a future mutation path breaks it: each twin sits
+after its sibling rule at equal specificity (classic) or above the demo's (production), so where the
+DOM's neighbour and the model's neighbour disagree, the MODEL wins — which is right only because
+every path that changes the model re-stamps the kept elements (`swap` on the shell, `postRender` on
+the classic page, and `rerender` rebuilds everything). A third mutation path must re-stamp too.
+
+One case had been living on the defect: `scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked`
+proved it had reached unmeasured ground by `scrollHeight` moving, and on the classic page the
+16px edge flip moved it on every step. With the flip gone, a mounted run whose heights average
+out against the learned mean changes the page by under a pixel, and the guard read a walk over
+8,000px of never-mounted records as vacuous. The guard now also reads the window's lowest mounted
+index falling below anything mounted since the open; the assertions did not change.

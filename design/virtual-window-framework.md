@@ -441,9 +441,15 @@ worth stating because the suite was green through all of them:
    above the reader on the classic page, and the owner's #194 walk cycling backward again on the
    shell. And the offset-based range disagrees with the one around `P` at its edges by
    construction; re-mounting on that alone mounted two windows per transaction, each measuring the
-   shell's edge unit 11px differently (the demo's `.turn:first-child{padding-top:8px}` applies to
-   the first MOUNTED turn, so a unit's height depends on whether it is the window's edge — a
-   trait the sums do not know about, left for a follow-up).
+   shell's edge unit 11px differently. That was #201, fixed with stage 5: not the first-child rule
+   this note first blamed (overridden for every production turn kind by a later rule of equal
+   specificity) but two rules keyed on a mounted SIBLING — the demo's
+   `.process-surface + .turn.assistant{padding-top:4px}` (15px at the window's top edge, 4px once
+   the process above was mounted) and production's own `*:has(+ .process-surface){margin-bottom:8px}`
+   at the bottom edge. The shell now stamps each unit root with its neighbours' types from the
+   model and production carries each such rule again keyed on the stamps, so a unit's height is
+   the unit's; `scenario_a_unit_height_does_not_depend_on_the_window_edge` holds it on both
+   pages, margins included, eight edges up and eight down.
 4. **A converge follows a change.** The observer's initial notification for every freshly observed
    element is a measure that changes nothing; a tail placed on it anyway snapped a following reader
    who had nudged up inside the hold slack straight back (#127's case, and the classic page's
