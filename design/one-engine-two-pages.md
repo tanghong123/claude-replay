@@ -1278,3 +1278,43 @@ The lesson for the method is the one `validate-on-real-sessions` already states,
 suite held through all three regressions because each needs a live estimate shift, a rest timer
 and a window edge to line up, which the hermetic fixtures never make happen. The probes are the
 acceptance; the suite is the floor.
+
+## The estimator is the engine's, and a page only says what kind a record is (2026-09-12, #196 stage 3)
+
+The third stage of the #196 refactor, and like the first a move with no behaviour change: the
+framework's §4.4, landed as §4.9. Until it, the shared `HeightGuess` was constructed by each page
+— three per unit type on the app shell, one on the classic page — and each page kept its own share
+bookkeeping around it (`this.shares` keyed by unit, `recShares[]` keyed by index), its own
+`applyEstimates`, and its own rule for a unit whose type had no guess. Two implementations of
+I5 ("a record contributes at most one share to the mean"), which is one more than a rule held by
+construction can have.
+
+Now the page passes `floors` (`{ user: 44, assistant: 40, process: 34 }` with `defaultKind:
+"process"` on the shell; `{ record: 30 }` on the classic page) and overrides `kindOf(i)`; the engine
+builds one mean per kind in its constructor, learns in `measureMounted` — `learn(i, h)` right before
+the page's `setHeight`, so the classic page's `replaceMounted`, which reaches `measureMounted`
+directly, learns too — keeps one share per IDENTITY, and applies the means only from the estimates
+transaction. The page's `setHeight` is persistence and nothing else; `clearHeights` / `scaleHeights`
+handle only the heights the page stores (each floored at the page's own value), with the engine's
+`resetGuesses` / `scaleGuesses` beside them in the remeasure transaction. A vanished identity is
+forgotten through the engine: the shell's `setUnits` calls `forget(key)`, the classic `resetFrom`
+calls `forgetFrom(from)` BEFORE it truncates the arrays, while the dropped ids can still be read.
+The `HeightGuess` docblock, which still described the pre-#194 estimator ("a record measured
+repeatedly … counts more than once"), now describes the class under it.
+
+Measured on the owner's 21k-line session, stage 2's engine against stage 3's, one Chrome at a time
+(the walk: 30 wheels of 400px forward from turn 766; the unfold: open a fold, wheel 6×400 down and
+up, close it, 4×400 down and up, three folds per variant):
+
+| probe | stage 2 | stage 3 |
+|---|---|---|
+| walk, classic — turn series / backward jumps | 766…772, none | identical series, none |
+| walk, app shell — turn series / backward jumps | 766…777, none | identical series, none |
+| walk, both — per-wheel movement of the reference record | 400 ±1px | 400 ±1px (the same steps differ by the same 1px of rect rounding) |
+| unfold, classic static and live — worst over-movement | ≤1px | ≤1px, 0 unmounted, 0 wrong-way |
+| unfold, app shell static and live — worst over-movement | ≤1px | ≤1px, 0 unmounted, 0 wrong-way |
+| runaway, both static variants — hands-off drift / wheels to reach the tail | 0 changes / 0 | 0 changes / 0 |
+| runaway, both live variants (growth lands during the run, so the samples are not comparable one to one) | reaches the tail, following restored | reaches the tail (3 and 2 wheels), following restored, the spy on the last turn |
+
+The suite: 231 cases (the two fling cases now in the sorted list the chunks are cut from), run in
+twelve chunks at most two Chromes at a time under memory pressure.

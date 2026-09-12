@@ -830,8 +830,8 @@ fn app_shell_corrects_a_growth_above_before_paint() {
 /// displacement — so a write under the wheel is a no-op for the reader, and withholding it is the
 /// displacement (#180). What the reader can measure is what is asserted: the record under them
 /// and its screen offset are the same after the storm as before, to the pixel. The writes are
-/// still counted and printed — on the classic page the growth displaces the reader by a few
-/// pixels and one write puts them back; the old engine deferred that write and then dropped it.
+/// still counted and printed, never asserted: measured on the committed stage-2 engine, both pages
+/// wrote none during the storm (the growth lands below the reader and displaces nothing).
 fn scenario_the_readers_motion_is_never_fought(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -4458,11 +4458,13 @@ fn fixture_process_tail(name: &str, turns: usize, events: usize) -> Fixture {
 /// re-render re-measured records and moved the estimate, scrollTop moved +828, and the last
 /// mounted record's bottom sat 13,195px ABOVE the viewport. Even "Show 2 more" does it.
 ///
-/// THE CAUSE IS A RULE MEANT FOR SCROLLING, applied to a click. `noteIntent` binds pointerdown, so
+/// THE CAUSE WAS A RULE MEANT FOR SCROLLING, applied to a click. `noteIntent` binds pointerdown, so
 /// a click starts the `userIntentMs` window in which `readerOwnsPosition()` is true; the
-/// correction `restoreDomAnchor` would write is deferred as `owed` (#132 step 3) and
-/// `scheduleSettle` DROPS it (#138: never replay an old position after the reader moves). Right
-/// for a scroll. But a click on a control moves nothing — no scroll event fires — and what is
+/// correction `restoreDomAnchor` would have written was deferred as `owed` (#132 step 3) and
+/// `scheduleSettle` DROPPED it (#138: never replay an old position after the reader moves) — all
+/// three deleted by #196 stage 2, which places a change that has moved the DOM at once and lets
+/// the intent window govern only the tail. It looked right for a scroll. But a click on a control
+/// moves nothing — no scroll event fires — and what is
 /// withheld is the engine's own re-measure, which #180 already named on the scroll path: "Not
 /// writing does not leave the reader alone — it displaces them by exactly the correction being
 /// withheld." At a 1200-turn scale that correction is fourteen thousand pixels.
@@ -7087,7 +7089,8 @@ fn fixture_nested_records(name: &str) -> Fixture {
     }
     transcript += &assistant_at("answer 18: all three done", &now_minus(100));
     // MORE TURNS AFTER IT. The nested record must sit MID-document: parked at the tail the page
-    // is still FOLLOWING, `readerAnchor()` returns null by design, and the engine simply
+    // is still FOLLOWING, its position is the tail rather than an anchor by design (`positionFor`),
+    // and the engine simply
     // converges to the end — so the anchor path this case exists to test never runs, and the
     // reference sits still for the wrong reason (measured: scrollY 4495 of docH 5252).
     for i in 19..27 {
@@ -7402,10 +7405,10 @@ fn app_shell_a_growth_in_a_nested_record_holds_the_reader() {
 ///   `pre`/`num`/`diff` parts, which a thinking never carries), and an absorbed tool appends a
 ///   child BELOW. So the head is grown the way a late reflow grows one — a header gaining a line,
 ///   a font arriving, an image decoding, all named in the engine's own comments — by writing its
-///   height. That fires the identical `ResizeObserver -> measureNow -> measureMounted(this.anchor)
-///   -> restoreDomAnchor` path a live delta's growth takes, against the anchor KEPT from the last
-///   settle — which is the point: an anchor captured after the growth describes the moved view and
-///   corrects nothing.
+///   height. That fires the identical `ResizeObserver -> measureNow -> transact("measure") ->
+///   place(P)` path a live delta's growth takes, against the position KEPT from the last
+///   transaction (`syncPosition`) — which is the point: a position captured after the growth
+///   describes the moved view and corrects nothing.
 fn scenario_a_growth_in_a_visible_records_head_holds_it(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -7682,7 +7685,7 @@ fn app_shell_a_growth_in_a_visible_records_head_holds_it() {
 /// with the truth. That difference lands ABOVE the reader, and `scrollTop` does not move with it,
 /// so the content under them slides down by the whole amount.
 ///
-/// The engine computes exactly that correction in `restoreDomAnchor` and, before #180, threw it
+/// The engine computed exactly that correction in `restoreDomAnchor` (`place` since #196) and, before #180, threw it
 /// away: `readerOwnsPosition()` is true for the whole gesture (a wheel event stamps `lastUserInput`
 /// milliseconds earlier), so the write was deferred into `this.owed` — which nothing ever reads
 /// back. Measured on the app shell before the fix: +2355px and +2854px of movement for a 900px

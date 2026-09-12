@@ -224,7 +224,6 @@
   // Fold/filter/search state lives on the records so it survives dematerialization.
   var records = [];      // block records, stream order — the source of truth
   var recHeights = [];   // measured px height per record (0 = never measured; the guess stands in)
-  var recShares = [];    // what each record taught the estimator, so a re-measure replaces it (#194)
   var recText = [];      // lazy lowercase text per record, for search (null = unbuilt)
   var recSearchParts = []; // lazy {start,end,mask} ownership spans into recText
   var recHit = [];       // with a filter active: does this record (or a nested one) match?
@@ -233,11 +232,11 @@
   // #184: EST_H is the SEED, not the answer. A constant floor is the guess that is furthest from
   // the truth for a page of real records (prose, diffs, whole tool groups run 5-20x it), and that
   // distance is what displaces a reader when a run above them is mounted and measured — #180
-  // measured 3263px of drift on this page for a 900px request. `HeightGuess` is the shared
-  // running mean; it stays at the floor until it has seen enough to do better. One mean for the
-  // whole page rather than one per kind: what a mounted run costs is a SUM, and a mean that
-  // guesses a prompt high and its answer low leaves that sum exact.
-  var estimator = new shared.HeightGuess(EST_H);
+  // measured 3263px of drift on this page for a 900px request. The engine's running mean
+  // (`HeightGuess`, one per kind it is given; #196 stage 3 moved the learning into the engine)
+  // stays at the floor until it has seen enough to do better. One kind for the whole page rather
+  // than one per record type: what a mounted run costs is a SUM, and a mean that guesses a prompt
+  // high and its answer low leaves that sum exact.
   var MARGIN_PX = 1500;
   // The first index whose CONTENT was rewritten by the apply in flight (#140 step 4). The
   // engine reuses a mounted element whose index and identity both still match, so a
@@ -449,7 +448,6 @@
     // 0, not the floor: `heightOf` is `heightFor(i) || estimateAt(i)`, so a falsy entry is what
     // sends an unmeasured record to the guess. Seeding the floor here would freeze it (#184).
     recHeights.push(0);
-    recShares.push(0);
     // O(1): the sums are LAZY, so this only marks them. It has to happen per record and not
     // once per batch, because an observer delivery can reconcile in between — and a reconcile
     // reads the sums to place the pads, where a prefix shorter than the record list reads
@@ -1452,10 +1450,11 @@
   function resetFrom(from) {
     if (records.length <= from) return;
     dropHitsFrom(from);
+    // What the dropped records taught the estimator comes back first, while their ids can still
+    // be read (#194; the engine keeps the shares by identity since #196 stage 3).
+    vw.forgetFrom(from);
     records.length = from;
     recSize.length = records.length;
-    for (var s = from; s < recShares.length; s++) estimator.forget(recShares[s]);
-    recShares.length = from;
     recHeights.length = from;
     recText.length = from;
     recSearchParts.length = from;
@@ -1846,19 +1845,16 @@
     // carries an id, but keying them all `"undefined"` would make each reusable as any other,
     // and one character of prefix costs nothing to rule that out by shape.
     identityAt(index) { var b = records[index]; return b && b.id ? b.id : "@" + index; }
-    // UNDER, never over (rule 5): guess high and the page SHRINKS when the truth arrives, and a
-    // shrink above the viewport is a jump unless the anchor catches it. The old second half of
-    // this comment — "learning a real height then only ever grows the page BELOW the reader,
-    // which nobody feels" — was false for a reader who opened at the tail: every record above
-    // them is unmeasured, so a learned height re-estimates all of them at once, and the page
-    // moves ABOVE the reader by thousands of pixels (#194). That is why the sums read the
-    // APPLIED estimate, taken only while the reader is at rest.
-    estimateAt() { return estimator.estimate(); }
-    liveEstimateAt() { return estimator.value(); }
-    applyEstimates() { return estimator.apply(); }
+    // Where the measured heights live — persistence only, since #196 stage 3: the engine owns the
+    // estimator (one kind on this page, `record`, floored at EST_H — the old second half of rule
+    // 5's comment, "learning a real height only ever grows the page BELOW the reader, which nobody
+    // feels", was false for a reader who opened at the tail: every record above them is
+    // unmeasured, so a learned height re-estimates all of them at once, which is why the sums read
+    // the APPLIED estimate, taken only at rest, #194) and learns from every measure before it hands
+    // the height over. A falsy entry is what sends a record to the estimate.
     heightFor(index) { return recHeights[index]; }
-    setHeight(index, height) { recShares[index] = estimator.learn(height, recShares[index] || 0); recHeights[index] = height; this.rebuildPrefix(); }
-    clearHeights() { recHeights.length = 0; recShares.length = 0; estimator.reset(); this.rebuildPrefix(); }
+    setHeight(index, height) { recHeights[index] = height; this.rebuildPrefix(); }
+    clearHeights() { recHeights.length = 0; this.rebuildPrefix(); }
     /** #132 step 4, and #140 step 4 brings it to this page: a block of text is about as tall as
      *  its measure is narrow, so a width change RE-GUESSES the remembered heights rather than
      *  throwing them away. Throwing them away drops every record the reader cannot see back to
@@ -1869,13 +1865,11 @@
     scaleHeights(ratio) {
       for (var i = 0; i < recHeights.length; i++) {
         // A record that has never been measured has no height to scale — it carries the guess,
-        // and the guess is re-scaled once, below (#184). Before that this page seeded the floor
-        // into the array, and the test here was `=== EST_H`.
+        // and the engine re-scales the guess once (`scaleGuesses`, #184). Before that this page
+        // seeded the floor into the array, and the test here was `=== EST_H`.
         if (!recHeights[i]) continue;
         recHeights[i] = Math.max(EST_H, recHeights[i] * ratio);
       }
-      estimator.scale(ratio);
-      for (var j = 0; j < recShares.length; j++) recShares[j] *= ratio;
       this.rebuildPrefix();
     }
     renderItem(index) {
@@ -1957,6 +1951,8 @@
     userIntentMs: USER_MS,
     rememberMs: 250,
     clampIndex: false,
+    // One kind of record on this page, floored at EST_H (#184); the engine keeps the mean.
+    floors: { record: EST_H },
     skipAt: isHiddenRec,
     renderAll: function () { return !!filter && filterFull; },
   });

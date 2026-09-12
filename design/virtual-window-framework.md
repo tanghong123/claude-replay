@@ -72,11 +72,13 @@ height IS the estimate, so a change to the estimate is a change to every never-m
 once — thousands of records above a reader who opened at the tail, thousands of pixels of page
 above them (measured: a fraction of a pixel across 8,500 records was 7.8k px).
 
-Today the pages own the share bookkeeping (`recShares[]`, `this.shares`) and the engine asks
-`applyEstimates()`. (The `HeightGuess` docblock, engine lines 113–118, still describes the pre-#194
-estimator — "a record measured repeatedly … counts more than once" — and contradicts the class
-below it; a comment-only fix for #196, with the byte-gate re-baseline an inlined comment costs.) §4 moves the estimator INTO the engine; the page supplies `kindOf(i)` and a
-floor per kind, and the engine owns learn/forget/apply. One implementation, not two.
+Since #196 stage 3 (2026-09-12) the engine owns it: the page supplies `kindOf(i)` and a floor per
+kind (`floors`, with `defaultKind` for a kind it has no floor for), and the engine keeps one
+`HeightGuess` per kind and one share per identity — `learn(i, h)` around the page's `setHeight`,
+`forget(key)` / `forgetFrom(i)` for identities that vanish, `applyEstimates()` from the estimates
+transaction only, `scaleGuesses(ratio)` / `resetGuesses()` beside the page's own `scaleHeights` /
+`clearHeights`. One implementation, not two; the pages' `recShares[]` and `this.shares` are gone,
+and the `HeightGuess` docblock now describes the class below it (§4.9).
 
 ### 1.4 The sums
 
@@ -224,8 +226,8 @@ What a page implements (the contract), and what the engine owns outright.
 |---|---|
 | `count` | getter; the stream's length now |
 | `identityAt(i)` | a string stable across a rewrite that re-emits the same positions; never empty (the classic page prefixes `@i` as a defensive fallback) |
-| `kindOf(i)` *(new, §4.4)* | the estimator kind for record `i` (the app shell: `user`/`assistant`/`process`; the classic page: one kind); with a floor per kind passed at construction |
-| `heightFor(i)` / `setHeight(i, h)` / `clearHeights()` / `scaleHeights(ratio)` | where measured heights live (the page owns persistence — the app shell keeps them per session, the classic page in an array); `scaleHeights` keeps rule 5's floor |
+| `kindOf(i)` (§4.4, stage 3) | the estimator kind for record `i` (the app shell: `user`/`assistant`/`process`; the classic page: one kind, `record`); with a floor per kind passed at construction (`floors`, `defaultKind`) |
+| `heightFor(i)` / `setHeight(i, h)` / `clearHeights()` / `scaleHeights(ratio)` | where measured heights live — persistence only (the app shell keeps them per session, the classic page in an array): the engine learns from every measure before it hands the height over; `scaleHeights` keeps rule 5's floor |
 | `skipAt(i)` | default none; a skipped record has no height and is never mounted |
 | `renderAll()` | default never; mount everything (the classic page's small filtered set) |
 | `renderItem(i)` | index → a detached element stamped with its identity (`data-unit-key`) and, for the anchor's row form, `[data-block-index]` rows |
@@ -236,8 +238,8 @@ What a page implements (the contract), and what the engine owns outright.
 | `mount` | `{top, window, bottom, content}` — the pads, the run, and what to watch for chrome growth |
 | parameters | `overscan`, `slacks {acquire, hold, heal}`, `userIntentMs`, `rememberMs`, `clampIndex`, `landing` |
 
-Removed from the contract by §4: `estimateAt`, `liveEstimateAt`, `applyEstimates` (the engine
-owns the estimator), and the pages' share bookkeeping.
+Removed from the contract by stage 3: `estimateAt`, `liveEstimateAt`, `applyEstimates` (the
+engine owns the estimator), and the pages' share bookkeeping.
 
 ### 3.2 The engine owns
 
@@ -383,6 +385,8 @@ shell and 484px on the classic page — the growth, never placed back.
 `setHeight` in the engine learns/forgets; the page's `setHeight` only persists. `recordsChanged`
 forgets the shares of identities that vanished. **I5 in one place.** `apply()` is called only from
 the estimate transaction. The classic page's `recShares[]` and the app shell's `this.shares` go.
+Landed as stage 3 (§4.9); until stage 4's `recordsChanged`, the shell's `setUnits` calls
+`forget(key)` and the classic `resetFrom` calls `forgetFrom(from)` before it truncates.
 
 ### 4.5 The tail converge is observer-driven
 
@@ -440,10 +444,11 @@ worth stating because the suite was green through all of them:
    placement reads as a full-viewport correction that was never made (twelve in a row on a quiet
    page, in the trace).
 5. **A write under the wheel is not what fights the reader.** `scenario_the_readers_motion_is_never_fought`
-   asserted the old policy (no write while the intent window is open); on the classic page the
-   growth displaces the reader by a few pixels and stage 2 puts them back with one write, which the
-   old engine deferred and then dropped. The case now asserts what the reader can measure — the
-   same record at the same screen offset through the storm, to the pixel — and prints the count.
+   asserted the old policy (no write while the intent window is open). The case now asserts what
+   the reader can measure — the same record at the same screen offset through the storm, to the
+   pixel — and prints the count rather than asserting it; measured on the committed engine, both
+   pages wrote none during the storm (one intermediate build wrote once on the classic page, and
+   the case is written so that a write which undoes displacement passes).
 6. **The rest timer fires exactly at the end of the intent window.** The old engine re-checked
    ownership `userIntentMs` after each deferral, at whatever phase that fell; the one timer arms
    for the remainder of the window after the last input. `scenario_a_converge_yields_to_the_reader`
@@ -458,6 +463,31 @@ marker came off); the unfold probe near a live tail on the classic page, worst w
 (the same 51px on the stage-0 and stage-1 engines — the deferred-then-dropped correction, entries
 312–321 of its trace); the walk and the runaway probes unchanged (no backward turn, no motion after
 the hands come off); the full browser suite green on both pages.
+
+### 4.9 Stage 3 as landed (2026-09-12)
+
+A move with no behaviour change, held to the same acceptance as stage 1: the probes must read the
+same numbers before and after. What moved, and what had to survive it:
+
+- **The engine constructs the estimator** from `floors` (required: a page must say what a record
+  costs at least) and `defaultKind` (the first floor unless named). `kindOf(i)` is the one seam a
+  page overrides; the app shell's fallback — a unit of a type with no floor learns as a `process` —
+  is `kindFor(i)` in the engine now, and the classic page's single kind is `record`.
+- **Learning is in `measureMounted`**, `learn(i, h)` immediately before the page's `setHeight` —
+  so the classic page's `replaceMounted`, which reaches `measureMounted` directly, still learns.
+  The page's `setHeight` is persistence and nothing else.
+- **`clearHeights` / `scaleHeights` split**: the page clears or scales the heights it stores
+  (each floors them at its own value, which stays page-side), the engine resets or scales the means
+  and the shares beside it, in the remeasure transaction's mutation step.
+- **Vanished identities**: the shell's `setUnits` calls the engine's `forget(key)` (was its own
+  `forgetShare`); the classic `resetFrom` calls `forgetFrom(from)` BEFORE truncating, while the
+  dropped records' ids can still be read — the same shares it forgot by index before, now by
+  identity.
+- **The `HeightGuess` docblock** describes the class below it (the mean over distinct records) and
+  says where the shares live.
+- **The contract** pins the engine's `learn`/`forget`/`forgetFrom`/`applyEstimates` shapes, the
+  `floors` requirement, both pages' persistence-only `setHeight`, and that neither page names
+  `HeightGuess(`, `this.guesses`, `this.shares`, `recShares` or `estimator.` any more.
 
 ### 4.7 Out of scope
 

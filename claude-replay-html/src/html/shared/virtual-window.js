@@ -112,10 +112,11 @@ function heightChanged(known, measured, minHeight, threshold) {
  *  must not drag the mean, but dropping it altogether biases the mean low, which is the old bug
  *  wearing a hat.
  *
- *  It learns from MEASUREMENTS, not from items, so a record measured repeatedly as it streams in
- *  counts more than once, at the heights it passed through. That skews the mean DOWN — toward the
- *  floor, the side rule 5 always preferred — and only while a record is growing under the reader's
- *  eye. Keeping a per-item sample would cost an array the page already has no use for. */
+ *  It is a mean over DISTINCT records (#194): `learn(height, previous)` first takes back the share
+ *  the same record taught last time, so a record measured at every size as it streams in counts
+ *  once, at its latest height, and `forget(share)` withdraws a record that is gone. The class
+ *  holds only the arithmetic; which share belongs to which record is the engine's (`shares`, by
+ *  identity — framework §4.4), so both pages learn the same way. */
 class HeightGuess {
   constructor(floor, minSamples = 8, outlier = 4) {
     this.floor = floor;
@@ -253,13 +254,13 @@ function classifyScroll(following, userIntent, gap, acquire, hold, heal) {
  *   mount        — { top, window, bottom }: the two pads and the element items mount into.
  *   count        — how many items there are (a getter on the page).
  *   identityAt   — a string stable across a rewrite that re-emits the same positions.
- *   estimateAt   — an item's height before it has been measured. UNDER, never over (rule 5).
- *                  The APPLIED estimate (`HeightGuess.estimate()`), which moves only through
- *                  `applyEstimates` (#194).
- *   applyEstimates — take the live mean into what the sums read; true when anything moved. The
- *                  engine calls it only while the reader is at rest (#194). Default: false.
- *   liveEstimateAt — the live mean, for the trace only. Default: `estimateAt`.
- *   heightFor / setHeight / clearHeights — where measured heights live.
+ *   kindOf       (default: one kind) the estimator kind of an item, one of the `floors` keys.
+ *   floors       — { kind: px }: the floor each kind's running mean starts from (rule 5 as #184
+ *                  amends it). The estimator itself — learn, forget, apply — is the engine's
+ *                  (framework §4.4); `defaultKind` (default: the first floor) takes unknown kinds.
+ *   heightFor / setHeight / clearHeights / scaleHeights — where measured heights live. Persistence
+ *                  only: the engine learns from every measure before it hands the height over, and
+ *                  `scaleHeights` keeps the page's own floor (#132 step 4).
  *   clampIndex   (default true) whether an offset past the end reads as the last item.
  *   skipAt       (default none) an item the page is hiding: no height, and never mounted.
  *   renderAll    (default never) mount every item, whatever the offset says.
@@ -290,7 +291,7 @@ const TAIL = Object.freeze({ source: "tail" });
 
 class VirtualWindow {
   constructor(options) {
-    const { frame, mount, overscan, slacks, userIntentMs, rememberMs, clampIndex, skipAt, renderAll } = options;
+    const { frame, mount, overscan, slacks, userIntentMs, rememberMs, clampIndex, skipAt, renderAll, floors, defaultKind } = options;
     this.frame = frame;
     this.mount = mount.window;
     this.topPad = mount.top;
@@ -311,6 +312,13 @@ class VirtualWindow {
     this.clampIndex = clampIndex !== false;
     this.skipAt = skipAt || (() => false);
     this.renderAll = renderAll || (() => false);
+    // The estimator (framework §4.4): one `HeightGuess` per kind the page names in `floors`, seeded
+    // by that kind's floor, and the share each identity taught it. Built here, before anything can
+    // ask for a height; `defaultKind` is where a record of an unknown kind goes.
+    if (!floors || !Object.keys(floors).length) throw new Error("VirtualWindow: `floors` (kind → px) is required");
+    this.guesses = new Map(Object.entries(floors).map(([kind, floor]) => [kind, new HeightGuess(floor)]));
+    this.defaultKind = defaultKind != null && this.guesses.has(defaultKind) ? defaultKind : Object.keys(floors)[0];
+    this.shares = new Map();
     this.rememberMs = rememberMs;
     this.prefix = [0];
     this.lo = 0;
@@ -666,6 +674,8 @@ class VirtualWindow {
   markIntent(stamp) {
     this.lastUserInput = performance.now();
     this.lastInputStamp = stamp || performance.now();
+    // The reader touched something: whatever the engine last wrote, the next scroll event is theirs.
+    this.wrote = null;
   }
 
   /** Something around the mounted window changed size. Only a change in where the content BEGINS
@@ -756,6 +766,7 @@ class VirtualWindow {
       const height = itemHeight(child);
       if (index >= 0 && index < this.count && heightChanged(this.heightOf(index), height, 1, 0.5)) {
         if (changes && changes.length < 8) changes.push([index, Math.round(this.heightOf(index)), Math.round(height), this.heightFor(index) ? "measured" : "estimate"]);
+        this.learn(index, height);
         this.setHeight(index, height);
         changed = true;
       }
@@ -769,9 +780,74 @@ class VirtualWindow {
     return true;
   }
 
-  /** Default hooks (#194): a page with no estimator of its own applies nothing. */
-  applyEstimates() { return false; }
-  liveEstimateAt(index) { return this.estimateAt(index); }
+  /* ── the estimator (framework §1.3, §4.4) ──
+   * One running mean per KIND of record, seeded by the page's floor for that kind, and one share
+   * per identity so a record measured again replaces what it taught rather than adding to it
+   * (I5). The page says what kind a record is and what a kind's floor is; everything the mean
+   * does — learn, forget, apply, scale, reset — happens here, once, for both pages (#196 stage 3;
+   * before it each page kept its own share bookkeeping around the shared `HeightGuess`). */
+
+  /** The estimator kind of record `index`. A page with more than one kind overrides it (the app
+   *  shell: a prompt card, an assistant note and a process group are three populations with three
+   *  shapes, and one mean over all of them would be wrong about each); an unknown kind falls back
+   *  to the default. */
+  kindOf() { return this.defaultKind; }
+  kindFor(index) {
+    const kind = this.kindOf(index);
+    return this.guesses.has(kind) ? kind : this.defaultKind;
+  }
+  guessFor(index) { return this.guesses.get(this.kindFor(index)); }
+  /** An item's height before it has been measured: the APPLIED estimate, which moves only through
+   *  `applyEstimates` (#194). UNDER, never over (rule 5): guess high and the page SHRINKS when the
+   *  truth arrives, and a shrink above the viewport is a jump unless the position catches it. */
+  estimateAt(index) { return this.guessFor(index).estimate(); }
+  /** The live mean, for the trace only. */
+  liveEstimateAt(index) { return this.guessFor(index).value(); }
+  /** Take the live means into what the sums read; true when any moved. Called only from
+   *  `settleEstimates` — from the measure when the reader is at rest, else as the estimates
+   *  transaction once they rest (#194). */
+  applyEstimates() {
+    let moved = false;
+    for (const guess of this.guesses.values()) if (guess.apply()) moved = true;
+    return moved;
+  }
+  /** One measured height teaches the record's kind, replacing the share the SAME record taught
+   *  before (a record measured at every size as it streams in counts once, at its latest height);
+   *  a record whose kind changed takes its old share back from the old kind first. */
+  learn(index, height) {
+    const key = this.identityAt(index);
+    const kind = this.kindFor(index);
+    const prior = this.shares.get(key);
+    let previous = 0;
+    if (prior && prior.kind !== kind) this.guesses.get(prior.kind).forget(prior.share);
+    else if (prior) previous = prior.share;
+    this.shares.set(key, { kind, share: this.guesses.get(kind).learn(height, previous) });
+  }
+  /** A record that is gone takes back what it taught (#194). */
+  forget(key) {
+    const prior = this.shares.get(key);
+    if (!prior) return;
+    this.guesses.get(prior.kind).forget(prior.share);
+    this.shares.delete(key);
+  }
+  /** The records from `index` on are about to be dropped or rewritten (a rewritten tail, #165):
+   *  called BEFORE the page truncates them, while their identities can still be read. */
+  forgetFrom(index) {
+    for (let i = index; i < this.count; i++) this.forget(this.identityAt(i));
+  }
+  /** Nothing learned applies any more: a layout change with no ratio to apply (`remeasure`). */
+  resetGuesses() {
+    this.shares.clear();
+    for (const guess of this.guesses.values()) guess.reset();
+  }
+  /** A width change re-guesses what has been LEARNED by the ratio the measured heights are scaled
+   *  by (#132 step 4, #184): left alone, every unmeasured record would carry a height from the old
+   *  measure, the staleness the scaling fixes for the measured ones. The shares scale with the
+   *  means so a later re-measure withdraws the right amount. */
+  scaleGuesses(ratio) {
+    for (const guess of this.guesses.values()) guess.scale(ratio);
+    for (const [key, prior] of this.shares) this.shares.set(key, { kind: prior.kind, share: prior.share * ratio });
+  }
 
   /** Take a moved mean into the sums now, or hold it until the reader rests (#194).
    *
@@ -1163,7 +1239,9 @@ class VirtualWindow {
     const ratio = this.lastWidth && width ? this.lastWidth / width : 0;
     this.lastWidth = width || this.lastWidth;
     this.transact("remeasure", {
-      mutate: () => { if (ratio && Math.abs(ratio - 1) > 0.01 && this.scaleHeights) this.scaleHeights(ratio); else this.clearHeights(); },
+      mutate: () => {
+        if (ratio && Math.abs(ratio - 1) > 0.01) { this.scaleHeights(ratio); this.scaleGuesses(ratio); } else { this.clearHeights(); this.resetGuesses(); }
+      },
       range: p0 => this.rangeFor(p0),
       dirtyFrom: 0,
       fields: { ratio: Math.round(ratio * 1000) / 1000 },

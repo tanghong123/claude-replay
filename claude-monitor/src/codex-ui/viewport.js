@@ -2,7 +2,7 @@ import { renderUnit } from "./components.js";
 // The window's arithmetic — the sums, the search, the ranges, the pads, the anchor correction,
 // the follow rule — is the shared module's (#107, html/shared/virtual-window.js): one set of
 // scroll rules for both pages. What reads layout and what writes the DOM stays here.
-import { HeightGuess, VirtualWindow, elementFrame } from "./shared/virtual-window.js";
+import { VirtualWindow, elementFrame } from "./shared/virtual-window.js";
 
 export function revealNavigationContext(units, index, state, recordIndex, reveal = "record") {
   const unit = units[index];
@@ -39,7 +39,8 @@ import { applyViewChoices, parseViewMemory, serializeViewMemory, viewChoices, vi
 // Rule 5 (#107 step 3), as #184 amends it: estimate CLOSE, and let the floor stand only while
 // there is nothing to learn from. The numbers below are still floors — a prompt is at least one
 // line in its card, an assistant note the same, a process at least its head row — but a floor is
-// now the SEED of a running mean (`HeightGuess`, shared), not the answer. The original rule said
+// now the SEED of a running mean (`HeightGuess`, one per kind, kept by the engine since #196
+// stage 3), not the answer. The original rule said
 // estimate UNDER because learning a real height then only grows the page BELOW the reader; what
 // it missed is that a floor MAXIMISES the gap between guess and truth, and that gap is exactly
 // what displaces a reader when a run mounted above them is measured (#180 measured 2355px and
@@ -79,19 +80,13 @@ export class Viewport extends VirtualWindow {
       slacks: { acquire: ACQUIRE_SLACK, hold: HOLD_SLACK, heal: HOLD_SLACK },
       userIntentMs: USER_INTENT_MS,
       rememberMs: REMEMBER_MS,
+      // #184: the floors seed one running mean per unit type; a unit of a type with no floor
+      // learns as a process. The means, and what each unit taught them, are the engine's (#196
+      // stage 3) — on its instance, never in `state`: a persisted share against a fresh mean would
+      // withdraw what was never learned.
+      floors: ESTIMATES,
+      defaultKind: "process",
     });
-    // #184: the floors above seed one running mean per unit type. Nothing in the engine's own
-    // constructor asks for a height — `count` reads `this.units`, which is not set either — so
-    // the first `estimateAt` cannot arrive before this line.
-    this.guesses = {
-      user: new HeightGuess(ESTIMATES.user),
-      assistant: new HeightGuess(ESTIMATES.assistant),
-      process: new HeightGuess(ESTIMATES.process),
-    };
-    // What each unit taught its guess — `{ type, share }` by unit key — so a unit measured again
-    // replaces its share rather than adding one (#194). On the instance, never in `state`: a
-    // persisted share against a fresh guess would withdraw what was never learned.
-    this.shares = new Map();
     this.scroller = scroller;
     this.inner = inner;
     this.state = state;
@@ -117,47 +112,21 @@ export class Viewport extends VirtualWindow {
     if (value) this.state.newRecords = 0;
   }
   identityAt(index) { return this.units[index]?.key; }
-  /** One guess per unit TYPE (#184): a prompt card, an assistant note and a process group are
+  /** One mean per unit TYPE (#184): a prompt card, an assistant note and a process group are
    *  three populations with three different shapes, and one mean over all of them would be wrong
-   *  about each. The floor each starts from is the seed. */
-  guessFor(index) { return this.guesses[this.units[index]?.type] || this.guesses.process; }
-  estimateAt(index) { return this.guessFor(index).estimate(); }
-  liveEstimateAt(index) { return this.guessFor(index).value(); }
+   *  about each. The shell names the kind; the engine keeps the means (#196 stage 3). */
+  kindOf(index) { return this.units[index]?.type; }
+  // Where the measured heights live — per session, in `state` — and nothing else: the engine
+  // learns from every measure before it hands the height over.
   heightFor(index) { const unit = this.units[index]; return unit ? this.state.heights.get(unit.key) : 0; }
-  setHeight(index, height) {
-    const unit = this.units[index];
-    this.state.heights.set(unit.key, height);
-    const type = this.guesses[unit.type] ? unit.type : "process";
-    const prior = this.shares.get(unit.key);
-    let previous = 0;
-    if (prior && prior.type !== type) this.guesses[prior.type].forget(prior.share);
-    else if (prior) previous = prior.share;
-    this.shares.set(unit.key, { type, share: this.guesses[type].learn(height, previous) });
-  }
-  /** A unit that is gone, or about to be re-rendered, takes back what it taught (#194). */
-  forgetShare(key) {
-    const prior = this.shares.get(key);
-    if (!prior) return;
-    this.guesses[prior.type].forget(prior.share);
-    this.shares.delete(key);
-  }
-  /** The live means reach the sums here, and only here — the engine calls it at rest (#194). */
-  applyEstimates() {
-    let moved = false;
-    for (const guess of Object.values(this.guesses)) if (guess.apply()) moved = true;
-    return moved;
-  }
-  clearHeights() { this.state.heights.clear(); this.shares.clear(); for (const guess of Object.values(this.guesses)) guess.reset(); }
+  setHeight(index, height) { this.state.heights.set(this.units[index].key, height); }
+  clearHeights() { this.state.heights.clear(); }
   /** #132 step 4: the same heights, re-guessed for a new measure. A text block's height moves
    *  roughly with the inverse of its width, and rule 5 still holds — an estimate is a FLOOR, so
-   *  a widen that scales a height down may not take it under this shell's own floor. */
+   *  a widen that scales a height down may not take it under this shell's own floor. The engine
+   *  re-guesses what it has LEARNED by the same ratio (`scaleGuesses`, #184). */
   scaleHeights(ratio) {
     for (const [key, height] of this.state.heights) this.state.heights.set(key, Math.max(ESTIMATE, height * ratio));
-    for (const [key, prior] of this.shares) this.shares.set(key, { type: prior.type, share: prior.share * ratio });
-    // What has been LEARNED is re-guessed by the same ratio (#184). Leaving it alone would leave
-    // every unmeasured unit carrying a height from the old measure, which is the same staleness
-    // #132 step 4 fixed for the measured ones.
-    for (const guess of Object.values(this.guesses)) guess.scale(ratio);
   }
   renderItem(index) { return renderUnit(this.units[index], this.state); }
   afterRender() { this.actions.afterRender?.(); }
@@ -199,7 +168,7 @@ export class Viewport extends VirtualWindow {
     const anchor = following ? null : this.captureDomAnchor();
     const oldKeys = new Set(units.slice(0, changedUnit).map(unit => unit.key));
     const nextKeys = new Set(units.map(unit => unit.key));
-    for (const key of this.state.heights.keys()) if (!oldKeys.has(key) && !nextKeys.has(key)) { this.state.heights.delete(key); this.forgetShare(key); }
+    for (const key of this.state.heights.keys()) if (!oldKeys.has(key) && !nextKeys.has(key)) { this.state.heights.delete(key); this.forget(key); }
     // A rewritten unit KEEPS its last height as the provisional value until the measure in this
     // same task replaces it (#194). Dropping it to the estimate made the sums short by the whole
     // open turn for the length of one render; `afterMount`/`measureMounted` force layout inside
