@@ -1160,3 +1160,56 @@ pane on the turn before it (the live copy: pane 183, last turn 184), and a unit 
 viewport leaves it on nothing (the static copy: no row current, bar off). The classic page's spy has
 both rules the app shell lacks — the last header above the line names the turn, and at the bottom the
 last turn wins (#89). That is `#199`, its own change.
+
+## The spy names the turn the reader is inside, and at the bottom the last turn wins (2026-09-12, #199)
+
+**Reported** under #194, on the app shell: "scrolling to the bottom (the active turn), the turns pane
+lost focus (should be focused on the last turn)" and "jumping to the bottom, still the last turn was
+not selected in the turns view". Twice it read as not reproduced — on copies of the owner's session
+whose last turn happened to be tall enough to reach the top line. The unfold probe's live copy ended
+on a short turn and showed it at once (pane 183, last turn 184); its static copy showed the other
+shape: no row current at all.
+
+**Cause.** The app shell's `unitAtTop()` returned the FIRST mounted unit whose top sat at or below a
+line 24px above the viewport's top edge — the first unit that STARTS in the viewport. That names the
+unit BELOW the one being read whenever the one being read spans the top edge, and nothing at all
+when no unit starts in the viewport (the bottom of an answer taller than the window). And it had no
+end rule: at the document bottom no further header can ever cross the line, so a last turn shorter
+than the window could never become current — exactly where a pinned live tail sits. The classic
+page's `spy()` has had both rules since #89: `cur` is the LAST turn whose header is above the line,
+and at the bottom the last turn wins.
+
+**The change, `codex-ui/app.js` and `viewport.js`.** One rule for the turn bar, the navigator pane and
+the keys, `currentUserUnitIndex()`: at the bottom (`viewport.following`, or the gap to the bottom
+within the engine's `hold` slack — the same 80px under which it keeps following) the last user unit;
+everywhere else the turn of the unit at the top, where `unitAtTop()` is now the last mounted unit
+whose top is at or above the line, the first child standing in when nothing has scrolled past it.
+The line sits just BELOW where a jump lands its target — `viewport.landing`, 18px or the turn bar's
+height as `scroll-padding-top`, the value `jumpToRecord` already used — as the classic page's
+`STICKY_Y` sits just below its `GOTO_Y`: otherwise a turn the reader clicked in the pane lands under
+the line and the spy keeps the previous turn. The count of user units is taken inline rather than
+through `userUnits`, because the first render runs while the module is still being evaluated and
+that `const` is declared further down (a temporal dead zone blanked the shell on the first try; the
+console said so).
+
+**What changed for the keys.** `]` and `[` step from the same reading. After real paging the next
+header can sit a little below the spy's line; `]` then lands THAT header under the bar — a short
+forward hop — where it used to skip to the one after it while the bar named the wrong turn. The
+classic page's step has a 128px dead zone for the same reason its landing is 120px: the structure
+(line just below the landing) is the parity, not the number.
+
+**Held by** two scenarios on both surfaces, red on the app shell before the change and green on the
+classic page throughout: `scenario_at_the_bottom_the_last_turn_is_current` (a short last turn: the
+pane and the bar name it after a jump and again after wheeling down; away from the bottom they name
+the turn at the top) and `scenario_a_turn_taller_than_the_viewport_names_itself` (two answers of ~900px
+against a 650px window: at the bottom nothing starts in the viewport and the last turn is named; a
+screen up, with the next header in view, the turn being read is named). The deep-jump scenario now
+measures a step by the spy (exactly ±1) with the first-header reading kept as the no-leap bound. The
+node contract pins the shapes.
+
+**Two things the case found on the way.** A raw newline inside a builder's text (`user_at`,
+`assistant_at`, `thinking_at`) splits the JSONL line and the record is silently dropped: the #194
+walk fixture's "varied answers" had never existed, and three app-shell cases had lost their
+multi-line user turn the same way. The builders now assert on it, and the fixtures pass `\\n`. And
+Space pages only on the app shell under a synthetic key — the classic page scrolls natively on
+Space — so the classic deep-jump case had never paged.

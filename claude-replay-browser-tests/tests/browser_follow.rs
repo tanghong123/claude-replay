@@ -4944,7 +4944,7 @@ fn shell_with_a_session(
     let sid = "cccccccc-0000-4000-8000-000000000160".to_string();
     let mut transcript = harness::long_session(4, harness::Shape::default());
     transcript += &harness::user_at(
-        "a raw   turn\n    with its own spacing",
+        "a raw   turn\\n    with its own spacing",
         &harness::now_minus(60),
     );
     transcript += &harness::assistant_at("noted", &harness::now_minus(50));

@@ -97,6 +97,10 @@ pub fn thinking(t: &str, s: u32) -> String {
 }
 
 pub fn user_at(t: &str, ts: &str) -> String {
+    assert!(
+        !t.contains('\n'),
+        "user_at: a raw newline splits the JSONL line and the record is dropped — pass `\\\\n`"
+    );
     format!(
         "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}]}},\"timestamp\":\"{ts}\"}}\n"
     )
@@ -165,6 +169,10 @@ pub fn artifact_publish_at(
     )
 }
 pub fn assistant_at(t: &str, ts: &str) -> String {
+    assert!(
+        !t.contains('\n'),
+        "assistant_at: a raw newline splits the JSONL line and the record is dropped — pass `\\\\n`"
+    );
     format!(
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}],\"usage\":{{\"input_tokens\":10,\"output_tokens\":20}}}},\"timestamp\":\"{ts}\"}}\n"
     )
@@ -249,6 +257,10 @@ pub fn tool_result_at(id: &str, ts: &str) -> String {
     )
 }
 pub fn thinking_at(t: &str, ts: &str) -> String {
+    assert!(
+        !t.contains('\n'),
+        "thinking_at: a raw newline splits the JSONL line and the record is dropped — pass `\\\\n`"
+    );
     format!(
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"thinking\",\"thinking\":\"{t}\"}}]}},\"timestamp\":\"{ts}\"}}\n"
     )

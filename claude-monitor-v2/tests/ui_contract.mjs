@@ -643,7 +643,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /afterScroll: \(\) => \{\s*\n\s*updateStickyHeaders\(\); updateOutlineFocus\(\);/, "the spy runs on every scroll");
   assert.match(appSource, /row\.classList\.toggle\("current", on\)/, "the current row carries the reference CSS's `current` class");
   assert.match(appSource, /row\.setAttribute\("aria-current", "true"\)/, "…and aria-current");
-  assert.match(appSource, /return currentTurnIndex\(recordState\.units, unitAtTop\(\)\);/, "the keys step from the same rule");
+  assert.match(appSource, /const next = Math\.max\(0, Math\.min\(turns\.length - 1, currentUserUnitIndex\(\) \+ delta\)\);/, "the keys step from the same rule");
+  // #199: one rule for the bar, the pane and the keys — with the classic page's two spy rules.
+  assert.match(appSource, /function updateTurnBar\(\) \{\s*\n\s*const index = currentUserUnitIndex\(\);/, "the turn bar reads the shared rule");
+  assert.match(appSource, /const index = currentUserUnitIndex\(\);\s*\n\s*const unit = index >= 0 \? userUnits\(\)\[index\] : null;\s*\n\s*const key = unit \? String\(unit\.from\) : null;/, "…and so does the navigator pane");
+  assert.match(appSource, /if \(units\.length && \(viewport\.following \|\| viewport\.gapToBottom\(\) <= viewport\.slacks\.hold\)\) \{\s*\n\s*let last = -1;\s*\n\s*for \(const unit of units\) if \(unit\.type === "user"\) last\+\+;/, "at the bottom the last turn is current (#89 on the classic page, #199 here)");
+  assert.match(appSource, /return currentTurnIndex\(units, unitAtTop\(\)\);/, "…and everywhere else the turn of the unit at the top");
+  assert.match(appSource, /if \(child\.getBoundingClientRect\(\)\.top <= line\) key = child\.dataset\.unitKey;\s*\n\s*else break;/, "the unit at the top is the LAST one whose top is above the line — a unit spanning the viewport names itself");
+  assert.match(appSource, /const line = viewport\.scroller\.getBoundingClientRect\(\)\.top \+ viewport\.landing \+ 8;/, "…and the line sits just below where a jump lands its target, so a clicked turn is the turn named");
+  assert.match(appSource, /return key \?\? viewport\.window\.firstElementChild\?\.dataset\.unitKey \?\? null;/, "…and the first child stands in when nothing has scrolled past the line");
   assert.match(appSource, /pane\.contains\(transcript\)\) return;/, "the reveal never scrolls the transcript");
   console.log("#52 outline focus cases passed");
 }
@@ -1753,11 +1761,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   assert.match(appSource, /const on = !!unit && viewport\.scroller\.scrollTop > 8;/, "off only at the very top, where the turn names itself");
   assert.match(appSource, /turnStickyText\.textContent = `Turn \$\{unit\.turn\} — \$\{unit\.label \|\| ""\}`\.trimEnd\(\);/, "…and reads 'Turn N — label', the classic page's own words");
-  assert.match(appSource, /const index = currentTurnIndex\(recordState\.units, unitAtTop\(\)\);\s*\n\s*const unit = index >= 0 \? userUnits\(\)\[index\] : null;\s*\n\s*\/\/ Off at the very top/, "fed by the same current-turn rule the outline pane uses");
+  assert.match(appSource, /const index = currentUserUnitIndex\(\);\s*\n\s*const unit = index >= 0 \? userUnits\(\)\[index\] : null;\s*\n\s*\/\/ Off at the very top/, "fed by the same current-turn rule the outline pane and the keys use (#199)");
   assert.match(appSource, /turnStickyBar\.onclick = \(\) => \{ if \(turnStickyAt != null\) viewport\.jumpToRecord\(turnStickyAt, "turn"\); \};/, "a click returns to that turn's record");
   assert.match(appSource, /updateStickyHeaders\(\); updateOutlineFocus\(\); updateTurnBar\(\);/, "…and it is refreshed on every scroll");
   assert.match(productionCss, /\.transcript\{scroll-padding-top:52px\}/, "the scroller declares the bar's height");
-  assert.match(viewportSource, /const landing = parseFloat\(getComputedStyle\(this\.scroller\)\.scrollPaddingTop\) \|\| 18;/, "…so a jump lands below the bar, not behind it");
+  assert.match(viewportSource, /get landing\(\) \{\s*\n\s*return parseFloat\(getComputedStyle\(this\.scroller\)\.scrollPaddingTop\) \|\| 18;/, "…so a jump lands below the bar, not behind it (the landing the spy line follows, #199)");
   assert.match(productionCss, /\.turn-stickybar\.on\{opacity:1;pointer-events:auto\}/, "the bar keeps its space when off, as the classic page's does");
   console.log("#123 turn bar cases passed");
 }

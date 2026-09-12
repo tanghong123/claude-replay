@@ -1856,10 +1856,22 @@ const userUnits = () => recordState.units.filter(unit => unit.type === "user");
 // The unit the reader is "at": the first mounted unit that starts at (or within a line above)
 // the viewport top. A landed turn sits 18px down, so the element ending just above it must
 // not count as current — that made `]` land on the same turn twice.
+// The unit the reader is INSIDE: the last mounted unit whose top is at or above a line a little
+// below the viewport's top edge — the classic page's spy rule (#199). It used to be the first
+// unit that STARTS in the viewport, which is the unit BELOW the one being read whenever the one
+// being read spans the top edge, and nothing at all when no unit starts in the viewport (the
+// bottom of an answer taller than the window). The first child stands in when nothing has
+// scrolled past the line yet. The line sits just BELOW where a jump lands its target (the
+// classic page's STICKY_Y over GOTO_Y): otherwise a turn the reader clicked in the pane lands
+// under the line and the spy keeps the previous turn selected.
 function unitAtTop() {
-  const top = viewport.scroller.getBoundingClientRect().top;
-  for (const child of viewport.window.children) if (child.getBoundingClientRect().top >= top - 24) return child.dataset.unitKey;
-  return null;
+  const line = viewport.scroller.getBoundingClientRect().top + viewport.landing + 8;
+  let key = null;
+  for (const child of viewport.window.children) {
+    if (child.getBoundingClientRect().top <= line) key = child.dataset.unitKey;
+    else break;
+  }
+  return key ?? viewport.window.firstElementChild?.dataset.unitKey ?? null;
 }
 /** The record index the viewport starts at — `unitAtTop` names a UNIT, and a unit's key is not
  *  a record index; reading `.from` off the key gave `undefined`, so every cold step and every
@@ -1868,8 +1880,21 @@ function recordIndexAtTop() {
   const key = unitAtTop();
   return recordState.units.find(unit => unit.key === key)?.from ?? 0;
 }
+// The turn the reader is in — ONE rule for the turn bar, the navigator pane and the keys. At
+// the bottom no further header can ever cross the line, so the last turn could otherwise never
+// become current — exactly where a pinned live tail sits (the classic page's #89 end rule); at
+// the bottom, the last turn wins (#199). `hold` is the slack under which the engine keeps
+// following, so "at the bottom" here is the same 80px it is for the tail.
+// (Counted inline rather than through `userUnits`: the first render runs while this module is
+// still being evaluated, and that `const` is declared further down — a temporal dead zone.)
 function currentUserUnitIndex() {
-  return currentTurnIndex(recordState.units, unitAtTop());
+  const units = recordState.units;
+  if (units.length && (viewport.following || viewport.gapToBottom() <= viewport.slacks.hold)) {
+    let last = -1;
+    for (const unit of units) if (unit.type === "user") last++;
+    if (last >= 0) return last;
+  }
+  return currentTurnIndex(units, unitAtTop());
 }
 // The pane follows the transcript (#52): the outline row of the turn at the viewport top is the
 // current one — marked (`current`, `aria-current`) on every scroll and render, and revealed in
@@ -1877,7 +1902,7 @@ function currentUserUnitIndex() {
 // spy never fights the reader. The click direction — a row jumps the transcript to its turn —
 // lands that turn at the top, so the spy then names the row that was clicked.
 function updateTurnBar() {
-  const index = currentTurnIndex(recordState.units, unitAtTop());
+  const index = currentUserUnitIndex();
   const unit = index >= 0 ? userUnits()[index] : null;
   // Off at the very top of the first turn — nothing has scrolled past, so the turn is on
   // screen naming itself. Anywhere else it names the turn the reader is inside, including
@@ -1896,7 +1921,7 @@ function updateTurnBar() {
 function updateOutlineFocus() {
   const rows = byId("navigatorTurns").querySelectorAll(".outline-turn-row");
   if (!rows.length) { outlineCurrent = null; return; }
-  const index = currentTurnIndex(recordState.units, unitAtTop());
+  const index = currentUserUnitIndex();
   const unit = index >= 0 ? userUnits()[index] : null;
   const key = unit ? String(unit.from) : null;
   let target = null;

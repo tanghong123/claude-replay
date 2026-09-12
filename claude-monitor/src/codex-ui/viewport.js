@@ -249,6 +249,14 @@ export class Viewport extends VirtualWindow {
     this.remember();
   }
 
+  /** Where a jump LANDS its target: 18px under the scroller's top, unless something sticky sits
+   *  there — the turn bar (#123) declares its own height as the scroller's `scroll-padding-top`,
+   *  so a jumped-to record does not arrive behind it. The spy's line sits just below this (#199),
+   *  as the classic page's does, so a turn the reader jumped to is the turn the spy names. */
+  get landing() {
+    return parseFloat(getComputedStyle(this.scroller).scrollPaddingTop) || 18;
+  }
+
   jumpToRecord(recordIndex, reveal = "record") {
     const index = this.units.findIndex(unit => recordIndex >= unit.from && recordIndex <= unit.to);
     if (index < 0) return false;
@@ -262,10 +270,7 @@ export class Viewport extends VirtualWindow {
     revealNavigationContext(this.units, index, this.state, recordIndex, reveal);
     const range = this.rangeAround(index);
     this.reconcile(range.lo, range.hi, index, false, null);
-    // Where a jump LANDS the target: 18px under the scroller's top, unless something sticky
-    // sits there — the turn bar (#123) declares its own height as the scroller's
-    // `scroll-padding-top`, so a jumped-to record does not arrive behind it.
-    const landing = parseFloat(getComputedStyle(this.scroller).scrollPaddingTop) || 18;
+    const landing = this.landing;
     for (let pass = 0; pass < 3; pass++) {
       const target = this.window.querySelector(`[data-block-index="${recordIndex}"]`);
       if (!target) break;

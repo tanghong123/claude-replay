@@ -1375,19 +1375,50 @@ fn scenario_deep_jump_then_page_and_step(
         paged >= landed && paged <= landed + 12,
         "two pages down stay near the landing: {landed} -> {paged}"
     );
+    // A step is measured by the spy — the turn the bar and the pane name — which moves by exactly
+    // one; the viewport's first header stays within a few turns (no leap). The two are not the
+    // same reading (#199): the spy names the turn the reader is INSIDE, while `turn_at_top` reads
+    // the first header that starts near the top edge, and after real paging the next header can
+    // sit just below the spy's line — `]` then lands THAT header under the bar, a short forward
+    // hop the first-header reading cannot see. (Space pages only on the app shell here; the
+    // classic page scrolls natively on Space, which a synthetic key does not drive.)
+    let named = |what: &str| -> i64 {
+        let pane = harness::pane_focus_turn(tab, surface);
+        let bar = harness::sticky_turn(tab, surface)
+            .map(|b| b.0)
+            .unwrap_or(-1);
+        assert_eq!(
+            pane, bar,
+            "{what}: the pane and the bar agree on the turn being read"
+        );
+        pane
+    };
+    let at = named("after paging");
     key(tab, "]", false);
     settle();
     let next = turn_at_top(tab, surface);
+    let stepped = named("after `]`");
     assert!(
-        next > paged && next <= paged + 3,
-        "`]` steps to the next turn: {paged} -> {next}"
+        next >= paged && next <= paged + 3,
+        "`]` stays near where it was: {paged} -> {next}"
+    );
+    assert_eq!(
+        stepped,
+        at + 1,
+        "`]` steps to the next turn: the spy named {at}, now {stepped}"
     );
     key(tab, "[", false);
     settle();
     let back = turn_at_top(tab, surface);
+    let stepped_back = named("after `[`");
     assert!(
-        back < next && back + 3 >= next,
-        "`[` steps back: {next} -> {back}"
+        back <= next && back + 3 >= next,
+        "`[` stays near where it was: {next} -> {back}"
+    );
+    assert_eq!(
+        stepped_back,
+        stepped - 1,
+        "`[` steps back one turn: the spy named {stepped}, now {stepped_back}"
     );
 }
 
@@ -8422,7 +8453,7 @@ fn fixture_varied_long(name: &str) -> Fixture {
         let mut note = format!("answer {k}:");
         for l in 0..lines {
             note += &format!(
-                "\n\nline {l} of the answer, {}",
+                "\\n\\nline {l} of the answer, {}",
                 "with some words in it. ".repeat(1 + (l % 3) as usize)
             );
         }
@@ -8575,4 +8606,227 @@ fn app_shell_a_gradual_walk_forward_keeps_its_place() {
     let fx = fixture_varied_long("scenario-gradual-walk-app");
     let page = open(Surface::AppShell, &fx, 2971);
     scenario_a_gradual_walk_forward_keeps_its_place(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: at the bottom the last turn is current (#199) ─────────────────────────────────
+
+/// A session whose last turn is one short exchange: at the bottom, several earlier turns share
+/// the viewport with it, and no header of its own can reach the line (#199).
+fn fixture_short_last_turn(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut out = long_session(29, Shape::default());
+    out += &user_at("question 29: and in one line?", &now_minus(60));
+    out += &assistant_at("answer 29: done.", &now_minus(50));
+    let path = stores.claude_session(SID, &out);
+    Fixture {
+        base,
+        path,
+        turns: 30,
+    }
+}
+
+/// A session whose last two turns each carry an answer taller than the viewport (about 900px
+/// against a 650px window — tall enough to span it, short enough that the engine's overscan still
+/// mounts the units above it): inside one, the unit under the reader STARTS above the top edge,
+/// and at the bottom nothing starts in the viewport at all (#199).
+fn fixture_two_tall_turns(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut out = long_session(28, Shape::default());
+    for k in 28..30 {
+        out += &user_at(
+            &format!("question {k}: the long one, tell me everything"),
+            &now_minus(400 - (k as u64 - 27) * 100),
+        );
+        out += &assistant_at(
+            &format!(
+                "answer {k}: {}",
+                "a paragraph of the long answer, one of many, each on its own line.\\n\\n"
+                    .repeat(25)
+            ),
+            &now_minus(390 - (k as u64 - 27) * 100),
+        );
+    }
+    let path = stores.claude_session(SID, &out);
+    Fixture {
+        base,
+        path,
+        turns: 30,
+    }
+}
+
+/// #199, the owner's app-shell report under #194: "scrolling to the bottom (the active turn), the
+/// turns pane lost focus (should be focused on the last turn)" and "jumping to the bottom, still
+/// the last turn was not selected in the turns view". At the document bottom no further header
+/// can cross the line, so the classic page's spy hands the last turn the focus (#89); the app
+/// shell named the turn of the first unit that STARTS in the viewport — an earlier turn's, when
+/// the last turn is short. Both pages: at the tail, reached by a jump and again by the wheel, the
+/// pane and the bar name the last turn; away from it they name the turn at the top again.
+fn scenario_at_the_bottom_the_last_turn_is_current(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    let last = fx.turns as i64;
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    assert_eq!(
+        harness::last_mounted_turn(tab, surface),
+        last,
+        "{surface:?}: the last turn is mounted at the tail"
+    );
+    assert_eq!(
+        harness::pane_focus_turn(tab, surface),
+        last,
+        "{surface:?}: jumped to the bottom, the pane names the last turn"
+    );
+    let bar = harness::sticky_turn(tab, surface);
+    assert_eq!(
+        bar.as_ref().map(|b| b.0),
+        Some(last),
+        "{surface:?}: …and so does the turn bar: {bar:?}"
+    );
+    // Up a few screens: the end rule lets go and the pane names the turn at the top again.
+    for _ in 0..3 {
+        scroll_by(tab, surface, -700);
+        settle();
+    }
+    assert!(
+        !at_tail(tab, surface),
+        "{surface:?}: 2,100px up leaves the tail"
+    );
+    let top = turn_at_top(tab, surface);
+    let named = harness::pane_focus_turn(tab, surface);
+    assert!(
+        (named - top).abs() <= 1 && named < last,
+        "{surface:?}: away from the bottom the pane names the turn at the top: pane {named}, viewport {top}"
+    );
+    // Back down by the wheel, the reader's own way to the bottom.
+    for _ in 0..12 {
+        scroll_by(tab, surface, 300);
+        settle();
+        if at_tail(tab, surface) {
+            break;
+        }
+    }
+    assert!(
+        at_tail(tab, surface),
+        "{surface:?}: wheeling down reaches the bottom again"
+    );
+    assert_eq!(
+        harness::pane_focus_turn(tab, surface),
+        last,
+        "{surface:?}: scrolled to the bottom, the pane names the last turn"
+    );
+    let bar = harness::sticky_turn(tab, surface);
+    assert_eq!(
+        bar.as_ref().map(|b| b.0),
+        Some(last),
+        "{surface:?}: …and so does the bar: {bar:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_at_the_bottom_the_last_turn_is_current() {
+    let _serial = serial();
+    let fx = fixture_short_last_turn("scenario-endrule-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_at_the_bottom_the_last_turn_is_current(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_at_the_bottom_the_last_turn_is_current() {
+    let _serial = serial();
+    let fx = fixture_short_last_turn("scenario-endrule-app");
+    let page = open(Surface::AppShell, &fx, 2973);
+    scenario_at_the_bottom_the_last_turn_is_current(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a turn taller than the viewport names itself (#199) ───────────────────────────
+
+/// The other half of #199: the spy must name the turn the reader is INSIDE, which is the last
+/// header above the line (the classic rule) — not the first unit that starts below it, and not
+/// nothing when no unit starts in the viewport at all. At the bottom of a tall last answer the
+/// app shell had no current row; a screen above, with the next turn's header in view, it named
+/// that next turn while the reader was still reading the one before it.
+fn scenario_a_turn_taller_than_the_viewport_names_itself(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    let last = fx.turns as i64;
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // At the bottom the viewport lies inside the last answer: no unit starts in it.
+    assert_eq!(
+        harness::pane_focus_turn(tab, surface),
+        last,
+        "{surface:?}: at the bottom of a tall last answer the pane names the last turn"
+    );
+    let bar = harness::sticky_turn(tab, surface);
+    assert_eq!(
+        bar.as_ref().map(|b| b.0),
+        Some(last),
+        "{surface:?}: …and so does the bar: {bar:?}"
+    );
+    // Up, until the last turn's header is in view BELOW the top edge — the reader's top line is
+    // then inside the penultimate turn's tall answer. Found by wheel rather than by arithmetic,
+    // so the case does not depend on a paragraph's exact height.
+    let s = surface.scroller();
+    let vt = match surface {
+        Surface::Classic => "0".to_string(),
+        Surface::AppShell => format!("{s}.getBoundingClientRect().top"),
+    };
+    let header_below = format!(
+        "(function(){{ var e = document.querySelector('[data-turn=\"{last}\"]'); if (!e) return -1; return Math.round(e.getBoundingClientRect().top - ({vt})); }})()"
+    );
+    let mut found = false;
+    for _ in 0..40 {
+        scroll_by(tab, surface, -200);
+        settle();
+        let at = eval(tab, &header_below).as_i64().unwrap_or(-1);
+        if at > 160 && at < 500 {
+            found = true;
+            break;
+        }
+    }
+    assert!(
+        found,
+        "{surface:?}: a position with the last turn's header a few lines below the top edge"
+    );
+    assert!(!at_tail(tab, surface), "{surface:?}: …and off the tail");
+    assert_eq!(
+        harness::pane_focus_turn(tab, surface),
+        last - 1,
+        "{surface:?}: inside the tall penultimate answer, with the next header in view, the pane names the turn being read"
+    );
+    let bar = harness::sticky_turn(tab, surface);
+    assert_eq!(
+        bar.as_ref().map(|b| b.0),
+        Some(last - 1),
+        "{surface:?}: …and so does the bar: {bar:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_turn_taller_than_the_viewport_names_itself() {
+    let _serial = serial();
+    let fx = fixture_two_tall_turns("scenario-spanning-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_turn_taller_than_the_viewport_names_itself(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_turn_taller_than_the_viewport_names_itself() {
+    let _serial = serial();
+    let fx = fixture_two_tall_turns("scenario-spanning-app");
+    let page = open(Surface::AppShell, &fx, 2974);
+    scenario_a_turn_taller_than_the_viewport_names_itself(&page.tab, Surface::AppShell, &fx);
 }
