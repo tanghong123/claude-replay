@@ -100,6 +100,9 @@ impl TranscriptAdapter for ClaudeAdapter {
             &crate::agents::claude::discover::projects_dir(),
         )
     }
+    fn store_transcripts_in(&self, root: &std::path::Path) -> Option<Vec<std::path::PathBuf>> {
+        Some(crate::agents::claude::discover::store_transcripts_in(root))
+    }
     fn store_subagent_transcripts(&self) -> Vec<(std::path::PathBuf, String, String)> {
         crate::agents::claude::discover::subagent_transcripts_in(
             &crate::agents::claude::discover::projects_dir(),
@@ -190,6 +193,14 @@ impl TranscriptAdapter for CodexAdapter {
     fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
         crate::agents::codex::discover::store_transcripts_machine()
     }
+    /// The root is taken as the sessions dir, the same thing `CODEX_SESSIONS_DIR` names.
+    fn store_transcripts_in(&self, root: &std::path::Path) -> Option<Vec<std::path::PathBuf>> {
+        Some(
+            crate::agents::codex::discover::store_transcripts_machine_in(std::slice::from_ref(
+                &root.to_path_buf(),
+            )),
+        )
+    }
     fn store_subagent_transcripts(&self) -> Vec<(std::path::PathBuf, String, String)> {
         crate::agents::codex::discover::subagent_transcripts_machine()
     }
@@ -277,6 +288,9 @@ pub struct QoderAdapter;
 impl TranscriptAdapter for QoderAdapter {
     fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
         crate::agents::qoder::discover::store_transcripts()
+    }
+    fn store_transcripts_in(&self, root: &std::path::Path) -> Option<Vec<std::path::PathBuf>> {
+        Some(crate::agents::claude::discover::store_transcripts_in(root))
     }
     fn store_subagent_transcripts(&self) -> Vec<(std::path::PathBuf, String, String)> {
         crate::agents::claude::discover::subagent_transcripts_in(
@@ -374,6 +388,11 @@ impl TranscriptAdapter for QoderWorkAdapter {
     }
     fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
         crate::agents::qoderwork::discover::store_transcripts()
+    }
+    fn store_transcripts_in(&self, root: &std::path::Path) -> Option<Vec<std::path::PathBuf>> {
+        Some(crate::agents::qoderwork::discover::store_transcripts_in(
+            root,
+        ))
     }
 
     fn agent(&self) -> Agent {
@@ -523,6 +542,76 @@ mod sniff_tests {
             match agent {
                 Agent::CLAUDE => assert!(matches!(claim, SniffClaim::CanParse)),
                 _ => assert!(matches!(claim, SniffClaim::No), "{agent:?} must not claim"),
+            }
+        }
+    }
+
+    /// A rooted enumeration reads the root it was handed, not the process's own store.
+    ///
+    /// This is the whole contract: a consumer holding an alternate agent home — a container or
+    /// sandbox that bound its own — must be able to enumerate it without overwriting the
+    /// environment variable the adapter would otherwise read. That workaround is process-global,
+    /// `unsafe` in a multithreaded program, and forces the caller to hard-code agent-to-variable
+    /// names.
+    #[test]
+    fn a_rooted_enumeration_reads_the_root_it_was_given() {
+        use claude_replay_engine::adapter::TranscriptAdapter;
+
+        let base = std::env::temp_dir().join(format!("crr-rooted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let project = base.join("-tmp-elsewhere");
+        std::fs::create_dir_all(&project).unwrap();
+        // A minimal Claude-format transcript: one line is enough to be discovered.
+        std::fs::write(
+            project.join("11111111-2222-3333-4444-555555555555.jsonl"),
+            b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+        )
+        .unwrap();
+
+        for adapter in [
+            &ClaudeAdapter as &dyn TranscriptAdapter,
+            &QoderAdapter as &dyn TranscriptAdapter,
+        ] {
+            let found = adapter
+                .store_transcripts_in(&base)
+                .expect("this adapter supports rooted enumeration");
+            assert!(
+                found.iter().any(|p| p.starts_with(&base)),
+                "{:?} did not read the root it was given: {found:?}",
+                adapter.agent()
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// An adapter that does not override it answers `None`, never the process's own store.
+    ///
+    /// Falling back to the default store would look like success while silently ignoring the root
+    /// the caller asked for — the failure mode this API exists to remove, reintroduced one layer
+    /// down. `None` lets a consumer say "that agent does not support extra roots" out loud.
+    ///
+    /// Asserted against a nonexistent root so a passing result cannot come from real files: every
+    /// adapter here DOES override the method, so what is pinned is that a rooted call never
+    /// silently returns the default store's contents.
+    #[test]
+    fn a_rooted_call_never_answers_with_the_default_store() {
+        let nowhere = std::env::temp_dir().join("crr-rooted-nowhere-does-not-exist");
+        let _ = std::fs::remove_dir_all(&nowhere);
+        let all: [&dyn TranscriptAdapter; 4] = [
+            &ClaudeAdapter,
+            &CodexAdapter,
+            &QoderAdapter,
+            &QoderWorkAdapter,
+        ];
+        for adapter in all {
+            if let Some(found) = adapter.store_transcripts_in(&nowhere) {
+                assert!(
+                    found.is_empty(),
+                    "{:?} answered a nonexistent root with {} path(s) — it read its own store",
+                    adapter.agent(),
+                    found.len()
+                );
             }
         }
     }

@@ -645,7 +645,7 @@ pub(crate) fn store_transcripts_machine() -> Vec<PathBuf> {
     store_transcripts_machine_in(&[sessions_dir(), archived_dir()])
 }
 
-fn store_transcripts_machine_in(roots: &[PathBuf]) -> Vec<PathBuf> {
+pub(crate) fn store_transcripts_machine_in(roots: &[PathBuf]) -> Vec<PathBuf> {
     roots
         .iter()
         .flat_map(|root| rollout_files(root))

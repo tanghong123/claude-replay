@@ -71,9 +71,15 @@ fn is_mount_slug(name: &str) -> bool {
 /// left for a later coverage pass: surfacing them would ADD rows to an already-crowded group
 /// rather than cut the noise this task targets.
 pub(crate) fn store_transcripts() -> Vec<PathBuf> {
-    let root = projects_dir();
+    store_transcripts_in(&projects_dir())
+}
+
+/// The same scan rooted at an explicit projects dir, so a caller holding an alternate store
+/// (a container or sandbox that bound its own agent home) can enumerate it without reaching
+/// through the process environment.
+pub(crate) fn store_transcripts_in(root: &std::path::Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(projects) = std::fs::read_dir(&root) else {
+    let Ok(projects) = std::fs::read_dir(root) else {
         return out;
     };
     let home = home_slug();

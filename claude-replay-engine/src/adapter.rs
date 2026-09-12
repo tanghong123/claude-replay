@@ -460,6 +460,25 @@ pub trait TranscriptAdapter: Sync {
         Vec::new()
     }
 
+    /// The same enumeration as [`store_transcripts`](Self::store_transcripts), rooted at an
+    /// explicit store directory instead of this process's own.
+    ///
+    /// For consumers that must read an agent store the process was not launched against — a
+    /// container or sandbox launcher that bound a separate agent home, and whose transcripts are
+    /// otherwise simply invisible. Without this the only way in is to overwrite the environment
+    /// variable the adapter reads, which is process-global, `unsafe` in a multithreaded program,
+    /// and forces the caller to hard-code a map from agent to variable name — closing a space
+    /// this crate deliberately leaves open ([`Agent`](crate::agent::Agent) is an interned id, not
+    /// an enum).
+    ///
+    /// `None` means this adapter has no rooted enumeration, which a caller can report as "that
+    /// agent does not support extra roots". It deliberately does NOT fall back to the default
+    /// store: answering with the process's own transcripts would look like success while quietly
+    /// ignoring the root that was asked for.
+    fn store_transcripts_in(&self, _root: &std::path::Path) -> Option<Vec<std::path::PathBuf>> {
+        None
+    }
+
     /// Every SUB-AGENT transcript in this agent's store, MACHINE-WIDE, with its lineage:
     /// `(path, own session id, parent thread id)`. The scan surface
     /// ([`store_transcripts`](Self::store_transcripts)) deliberately excludes sub-agents
