@@ -8461,7 +8461,10 @@ const BAND_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAoAAAAFoCAIAAABIUN0GAAAEh0lE
 /// ±10k px per 400px wheel — and at one pause the record under the reader fell out of the window,
 /// so the model anchor wrote a position from the shifted sums: six turns back. A gradual forward
 /// walk keeps its place: every wheel moves the record under the reader by what was asked, that
-/// record stays mounted, and the turn under the reader never goes backward.
+/// record stays mounted, and the turn under the reader never goes backward. Written after the fix
+/// and NOT red on the engine before it: this fixture's records are measured too evenly to swing
+/// the mean the way the real session did (the replay is in `design/one-engine-two-pages.md`),
+/// so it holds the walk invariant going forward rather than proving the repair.
 fn scenario_a_gradual_walk_forward_keeps_its_place(
     tab: &headless_chrome::Tab,
     surface: Surface,
