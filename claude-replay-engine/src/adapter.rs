@@ -468,7 +468,7 @@ pub trait TranscriptAdapter: Sync {
     /// otherwise simply invisible. Without this the only way in is to overwrite the environment
     /// variable the adapter reads, which is process-global, `unsafe` in a multithreaded program,
     /// and forces the caller to hard-code a map from agent to variable name — closing a space
-    /// this crate deliberately leaves open ([`Agent`](crate::agent::Agent) is an interned id, not
+    /// this crate deliberately leaves open ([`Agent`] is an interned id, not
     /// an enum).
     ///
     /// `None` means this adapter has no rooted enumeration, which a caller can report as "that
