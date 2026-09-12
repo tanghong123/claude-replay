@@ -496,8 +496,7 @@ function landOnHash() {
   landedHash = identity;
   const nested = chain.length > 1 ? viewport.window.querySelector(`[data-record-id="${CSS.escape(id)}"]`) : null;
   if (nested) {
-    const top = nested.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top - 18;
-    if (Math.abs(top) > 2) viewport.scroller.scrollTop += top;
+    viewport.reveal(nested, { top: 18 });
     nested.closest(".renderer-turn")?.classList.add("source-flash");
   }
   return true;
@@ -1078,7 +1077,7 @@ function landOnCurrentMark() {
   if (!mark) return;
   const box = mark.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
   if (box.top >= view.top && box.bottom <= view.bottom) return;
-  viewport.scroller.scrollTop += box.top - view.top - Math.min(120, view.height / 3);
+  viewport.reveal(mark, { top: Math.min(120, view.height / 3) });
 }
 function markSearch() {
   viewport.window.querySelectorAll("mark.search-mark").forEach(mark => mark.replaceWith(mark.textContent));
@@ -1490,7 +1489,7 @@ function paintJump() {
   const label = n ? `${n} new message${n === 1 ? "" : "s"} — jump to the latest` : "Jump to the latest";
   button.title = label; button.setAttribute("aria-label", label);
 }
-byId("jumpToBottom").onclick = () => viewport.toBottom(true);
+byId("jumpToBottom").onclick = () => viewport.follow();
 function updateStickyHeaders() { const top = transcript.getBoundingClientRect().top; viewport.window.querySelectorAll("[data-process-surface]").forEach(surface => { const rect = surface.getBoundingClientRect(); surface.dataset.prodSticky = String(rect.top < top && rect.bottom > top + 40); }); }
 
 byId("attentionBtn").onclick = () => { indexState.attention = !indexState.attention; byId("attentionBtn").classList.toggle("on", indexState.attention); byId("attentionBtn").setAttribute("aria-pressed", String(indexState.attention)); byId("sidebarMiniAttention").classList.toggle("on", indexState.attention); renderTree(); };
@@ -1962,8 +1961,14 @@ function stepHead(delta) {
   if (!heads.length) return;
   const at = heads.indexOf(document.activeElement);
   const next = at < 0 ? (delta > 0 ? 0 : heads.length - 1) : Math.max(0, Math.min(heads.length - 1, at + delta));
-  viewport.lastUserInput = performance.now();
-  heads[next].focus({ preventScroll: true }); heads[next].scrollIntoView({ block: "nearest" });
+  heads[next].focus({ preventScroll: true });
+  // The classic page's rule (its `stepHead`): a head clear of the top chrome and of the bottom
+  // edge stays where it is; one that is not is brought to 160px, smoothly — the engine's own
+  // animation, which the reader's wheel interrupts (framework §4.10). Parity with the reference;
+  // this shell used to scroll the head in by its nearest edge, instantly.
+  const r = heads[next].getBoundingClientRect(), v = viewport.scroller.getBoundingClientRect();
+  if (r.top < v.top + 100 || r.bottom > v.bottom - 60) viewport.reveal(heads[next], { top: 160, smooth: true, intent: true });
+  else viewport.markIntent();
 }
 function stepList(delta) {
   const rows = [...tree.querySelectorAll(".tree-row.session")];
@@ -1972,8 +1977,7 @@ function stepList(delta) {
   rows[next].focus(); selectSession(rows[next].dataset.session, true);
 }
 function pageTranscript(direction) {
-  viewport.lastUserInput = performance.now();
-  viewport.scroller.scrollBy({ top: direction * Math.round(viewport.scroller.clientHeight * 0.85), behavior: "auto" });
+  viewport.pageBy(direction, { intent: true });
 }
 const keyActions = {
   "search": () => { if (indexState.selected) byId("transcriptSearchInput").focus(); else openGlobalSearch(); },

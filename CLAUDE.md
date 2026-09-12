@@ -135,11 +135,13 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   open either page with `?trace=viewport` (or set `localStorage.viewportTrace = "1"` to keep it
   across reloads) and the shared engine records every decision it makes — one entry per
   TRANSACTION under its cause (`update`, `reconcile`, `converge`, `measure`, `displaced`, `grown`,
-  `estimates`, `remeasure`, `render`: the position it started from, whether and how it placed, the
-  range it mounted and how it chose it; #196) and the seams inside them: each `reconciled` mount,
-  every `place` (the source it wrote from, the offset, the correction and the reader's drift) or
+  `estimates`, `remeasure`, `render`, and the moves the reader asked for — `jump`, `move`, `reveal`,
+  `hold`, each carrying whether the page stamped intent and whether it was smooth: the position it
+  started from, whether and how it placed, the range it mounted and how it chose it; #196) and the
+  seams inside them: each `reconciled` mount, every `place` (the source it wrote from, the offset,
+  the correction, the reader's drift, and `smooth` for the browser's own animation) or
   `place:unmounted`, the scroll verdict (`scroll`, and `scroll:own` for the engine's own write coming
-  back as an event), estimate application (`estimates:pending` / `estimates:applied` — the sums take
+  back as an event — every event of a smooth write until `arrived`), estimate application (`estimates:pending` / `estimates:applied` — the sums take
   a new estimate only at rest, #194), a tail placement waiting for rest (`tail:deferred`) and the
   `rest` that runs what waited, `reshaped` and `measured` — with the geometry it saw: the mounted
   range and count, scrollTop and scrollHeight, both pad heights, the stored position and what is

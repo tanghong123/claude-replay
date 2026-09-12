@@ -1316,5 +1316,34 @@ up, close it, 4×400 down and up, three folds per variant):
 | runaway, both static variants — hands-off drift / wheels to reach the tail | 0 changes / 0 | 0 changes / 0 |
 | runaway, both live variants (growth lands during the run, so the samples are not comparable one to one) | reaches the tail, following restored | reaches the tail (3 and 2 wheels), following restored, the spy on the last turn |
 
+The app-live run's hands-off window is the one reading that differs from stage 2 in shape, and the
+trace says why: the reader was not following (the down wheel had landed 1,115px short of a tail that
+was still growing), and in 40 samples `scrollTop` changed five times while the height fell 4.5k px.
+Every one of the five is the same entry sequence — a `reconcile` transaction for arriving growth,
+whose measure of the fresh records moved the applied estimate (325 → 330 → 317, `late: false`, the
+reader at rest), shrank the pads under it, let the browser clamp the offset to the shorter page
+(`measured` reads the clamped `top`), and then placed the anchor `assistant:b5257` back with drift 0
+(deltas +1,219, −1,074, +1,883, −159, +2,090). The sums moving under a held anchor, which is what the
+estimates rule promises; no `place:unmounted`, no model-source placement, no write without its
+transaction. Stage 2's run of the same variant happened to land on the tail and follow.
+
 The suite: 231 cases (the two fling cases now in the sorted list the chunks are cut from), run in
 twelve chunks at most two Chromes at a time under memory pressure.
+
+## The pages' own scroll writes are engine calls (2026-09-12, #196 stage 4)
+
+Framework §4.10, landed. Seventeen writes to the transcript scroller across the two pages — jumps,
+restores, a filter landing, the drag-select tick, the fold hold and nudge, the head step, paging,
+the pill — became eight engine calls (`jumpTo`, `reveal`, `scrollTo`, `scrollBy`, `pageBy`,
+`holdThrough`, `follow`, and `command` under them), each a transaction: `P` set to the destination,
+the window around it, the one `frame.scrollTo`, then the memory and the follow decision the classic
+page always stated (keep the pin within the hold slack, acquire it at the true end). Intent is
+stamped only where the old code stamped it, never invented — the rendering audit reaches the fold
+hold and the sliver nudge by synthetic click. A landing the reader asked for is HELD: `syncPosition`
+keeps it while its anchor resolves at its index, every later measure, growth and estimate places
+the target where it landed, and the reader's own scroll or input releases it — which is what the
+shell's three-pass landing loop and the classic page's 2s `holdLanding` timer were for, without the
+loop or the timer. The engine owns smooth motion: a smooth placement's `wrote` is a range the
+animation's events walk, arrival collapses it, a placement mid-flight re-targets the animation, and
+a wheel mid-flight is the reader interrupting it. The shell's head step is smooth now, as the
+reference page's is. Numbers and the two new cases: §4.10's "as landed".

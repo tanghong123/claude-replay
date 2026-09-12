@@ -377,7 +377,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.ok(isEditable({ tagName: "TEXTAREA" }) && !isEditable({ tagName: "DIV" }));
   assert.equal(hintFor("hit-prev"), "N"); assert.equal(hintFor("page-up"), "⇧Space"); assert.equal(hintFor("nope"), "");
   assert.match(appSource, /bindKeymap\(document, /, "the shell binds the keymap once, at the document");
-  assert.match(appSource, /viewport\.lastUserInput = performance\.now\(\)/, "key-driven scrolling counts as the reader's own, so following releases instead of snapping back");
+  assert.match(appSource, /viewport\.pageBy\(direction, \{ intent: true \}\)/, "key-driven scrolling counts as the reader's own, so following releases instead of snapping back — through the engine, stamped where the old code stamped (#196 stage 4)");
   console.log("keymap cases passed");
 }
 
@@ -1097,10 +1097,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(src, /restore:deferred|this\.owed|scheduleSettle|settleTimer|bottomTimer|estimatesTimer/, "#196 stage 2: no correction is owed, deferred or dropped any more — a placement lands at once, whatever the reader is doing (framework I7); the tail and the estimates wait for rest on the one timer");
   assert.match(src, /defer\(what\) \{\n    if \(what === "tail"\) this\.pendingTail = true;\n    else this\.estimatesPending = true;\n    this\.armRest\(\);/, "…and that timer is the only thing that waits (framework §4.2)");
   assert.match(src, /this\.updatePads\(\);\n    this\.afterMount\(fresh\);\n    this\.measureMounted\(\);\n    this\.updatePads\(\);/, "PAD, then measure (#179): both `afterMount` (the classic page's clamp pass) and `measureMounted` force layout, and until the pads are written the page is short by whatever the new window dropped off its top — a browser clamps `scrollTop` to it and a reader on the tail is pulled up by the whole difference (262px on the shell, 228 on the classic page)");
-  assert.match(src, /if \(!this\.position \|\| this\.position\.at !== this\.frame\.scrollTop\(\)\) this\.position = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "a transaction the engine is about to make re-reads `P` when the offset moved since it was read (#196 stage 2: the reader's scroll moves `P`, it does not erase it)…");
-  assert.match(src, /syncPosition\(\) \{\n    this\.position = this\.following \|\| this\.dragging \|\| !this\.count \? null : this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…and every transaction re-reads it where it left the reader — the model form when nothing mounted is on screen (#191), never nothing");
-  assert.match(src, /const startTop = this\.frame\.scrollTop\(\);\n      const p0 = this\.positionFor\(options\);\n(?:\s*\/\/.*\n)*\s*const drift = p0 && p0\.at != null \? startTop - p0\.at : 0;/, "the placement adds what the reader scrolled since `P` was read (framework I1) — computed ONCE, at the transaction's start, before any mutation…");
-  assert.match(src, /place\(position, drift = 0\) \{\n(?:.*\n){0,6}?    const want = base \+ drift;/, "…so a clamp inside the transaction or the engine's own write is never counted as theirs (measured: 1,882px of clamp placed twice)");
+  assert.match(src, /if \(!this\.position \|\| \(this\.position\.at !== this\.frame\.scrollTop\(\) && !this\.inFlight\(\)\)\) this\.position = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "a transaction the engine is about to make re-reads `P` when the offset moved since it was read (#196 stage 2: the reader's scroll moves `P`, it does not erase it) — unless a smooth write of the engine's own is what is moving it (stage 4)");
+  assert.match(src, /syncPosition\(\) \{\n    if \(this\.following \|\| this\.dragging \|\| !this\.count\) \{ this\.position = null; return; \}\n(?:.*\n){0,3}?    this\.position = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…and every transaction re-reads it where it left the reader (a landing the reader asked for excepted, #196 stage 4)");
+  assert.match(src, /const startTop = this\.frame\.scrollTop\(\);\n      const p0 = this\.positionFor\(options\);\n(?:\s*\/\/.*\n)*\s*const drift = p0 && p0\.at != null && !this\.inFlight\(\) \? startTop - p0\.at : 0;/, "the placement adds what the reader scrolled since `P` was read, computed once at the transaction's start (and not while a smooth write travels, #196 stage 4)");
+  assert.match(src, /place\(position, drift = 0, smooth = false\) \{\n(?:.*\n){0,6}?    const want = base \+ drift;/, "…so a clamp inside the transaction or the engine's own write is never counted as theirs (measured: 1,882px of clamp placed twice)");
   assert.match(src, /transact\("update", \{ range: p0 => forceIndex != null \? this\.rangeAround\(forceIndex\) : this\.rangeFor\(p0\), tail: false/, "the deferred window update is one transaction, ranged around `P` (framework I11), and leaves the tail alone on the reader's own scroll batch");
   assert.match(src, /if \(position\.source === "model"\) return this\.documentTopOf\(position\.index\) \+ position\.offset;/, "#191: the model form is the record the offset named plus how far into it — the sums' own position, not a replay");
   assert.match(src, /fallback: this\.modelAnchor\(\) \}/, "…captured alongside every anchor, before any rewrite moves the sums (framework I12)");
@@ -1813,8 +1813,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // item that far late.
   assert.match(src, /rangeForScroll\(this\.prefix, this\.count, this\.frame\.scrollTop\(\) - this\.contentTop\(\), this\.frame\.clientHeight\(\), this\.overscan\)/, "…and so is the range a scroll offset asks for");
   assert.match(src, /return itemTop \+ within - sat;\s*\n\s*\}\s*\n/, "the offset `P` names is derived from the anchor's own rect (offsetOf)…");
-  assert.match(src, /place\(position, drift = 0\) \{\n    if \(!position\) return false;\n    const base = this\.offsetOf\(position\);\n(?:.*\n){0,12}?    this\.frame\.scrollTo\(want\);\n/, "…and the write-back is absolute — scrollTo the position, not scrollBy an accumulating difference");
-  assert.equal((src.match(/this\.frame\.scrollTo\(/g) || []).length, 1, "#196 (framework I2): the engine writes the offset in exactly ONE place, place()");
+  assert.match(src, /place\(position, drift = 0, smooth = false\) \{\n    if \(!position\) return false;\n    const base = this\.offsetOf\(position\);\n(?:.*\n){0,16}?      this\.frame\.scrollTo\(want\);\n/, "…and the write-back is absolute — `scrollTo(where it goes)`, never `scrollBy(how far it drifted)`");
+  assert.equal((src.match(/this\.frame\.scrollTo\(/g) || []).length, 2, "#196 (framework I2): the engine writes the offset in exactly ONE place, place() — its instant form and its smooth form (#196 stage 4)");
   assert.match(src, /if \(base == null\) \{ this\.trace\("place:unmounted", \{ anchor: position\.key \}\); return false; \}/, "…and an anchor the window has left behind stays put — the sums there are estimates");
   assert.match(src, /`null` for an anchor whose record is not\n\s*\*\s*mounted: nothing to hold it by\./, "…which offsetOf says in its own words");
   assert.doesNotMatch(src, /this\.frame\.scrollBy\(/, "…and nothing in the engine nudges the offset by an increment any more");
@@ -2083,15 +2083,76 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /trace\(event, fields\) \{\n    if \(!this\.tracing\) return;/, "off, trace() returns on one boolean before an entry is built");
   assert.match(src, /window\.__viewportTrace\.push\(entry\);\n      if \(window\.__viewportTrace\.length > 500\) window\.__viewportTrace\.shift\(\);/, "a ring of 500 entries on window, for `copy(window.__viewportTrace)`");
   assert.match(src, /console\.debug\("\[viewport\]", JSON\.stringify\(entry\)\)/, "…and one console line per entry under a fixed prefix, for a filter");
-  assert.match(src, /this\.trace\("place", \{ source: position\.source, anchor: position\.key \|\| null, index: [^}]*want: Math\.round\(want\), delta: Math\.round\(delta\), drift: Math\.round\(drift\) \}\)/, "the one write reports the `P` it wrote from, the offset, the correction and the reader's drift (#196)");
-  for (const seam of ["reconciled", "place", "place:unmounted", "tail:deferred", "rest", "reshaped", "scroll", "scroll:own", "measured", "estimates:pending", "estimates:applied"]) {
+  assert.match(src, /this\.trace\("place", \{ source: position\.source, anchor: position\.key \|\| null, index: [^}]*want: Math\.round\(want\), delta: Math\.round\(delta\), drift: Math\.round\(drift\), smooth \}\)/, "the one write reports the `P` it wrote from, the offset, the correction the reader's drift, and whether it was smooth (#196)");
+  for (const seam of ["reconciled", "place", "place:unmounted", "tail:deferred", "rest", "reshaped", "scroll", "scroll:own", "arrived", "measured", "estimates:pending", "estimates:applied"]) {
     assert.match(src, new RegExp("this\\.trace\\(\"" + seam.replace(/[:]/g, "\\$&") + "\""), "the `" + seam + "` decision is traced");
   }
-  for (const cause of ["update", "converge", "measure", "displaced", "grown", "estimates", "remeasure", "render", "reconcile"]) {
-    assert.match(src, new RegExp("this\\.transact\\(\"" + cause + "\""), "the `" + cause + "` transaction is traced under its cause (framework §4.6)");
+  for (const cause of ["update", "converge", "measure", "displaced", "grown", "estimates", "remeasure", "render", "reconcile", "jump", "move", "reveal", "hold"]) {
+    assert.match(src, new RegExp("this\\.(transact|command)\\(\"" + cause + "\""), "the `" + cause + "` transaction is traced under its cause (framework §4.6; a commanded move reaches `transact` through `command`, stage 4)");
   }
   for (const field of ["seq", "following", "dragging", "lo", "hi", "count", "top", "height", "pads", "sinceInput", "position", "pending"]) {
     assert.match(src, new RegExp("\\n      " + field + ": "), "every entry carries `" + field + "`");
   }
   console.log("#192 viewport-trace cases passed");
+}
+
+// ── #196 stage 4: the pages' own scroll writes are engine calls ────────────────────────────
+// A jump, a page, a reveal, a restore, a drag tick, the pill: each a transaction the engine runs
+// (`P` set to the destination, the window around it, the one write, the memory and the follow
+// decision after), with intent stamped only where the page says so, a landing held until the
+// reader moves, and smooth motion the engine owns (framework §4.10).
+{
+  const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  const classic = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  const shell = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  // No page writes the transcript scroller. The pane, sidebar and task-box scrolls stay the page's
+  // (#173: a control moves its own pane): `nav.scrollTop`, `pane.scrollTop`, `box.scrollTop`, and
+  // the sidebar's `scrollIntoView` on the classic page.
+  assert.doesNotMatch(classic, /window\.scroll(To|By)\(|window\.scroll\(|scrollingElement\.scrollTop\s*[+-]?=/, "the classic page never writes the document's offset itself");
+  assert.doesNotMatch(classic, /function holdLanding|holdLanding\(/, "…and the 2s landing timer is gone: the engine holds a landing until the reader moves");
+  assert.doesNotMatch(shell, /this\.scroller\.scrollTop\s*[+-]?=|this\.scroller\.scroll(To|By)\(|this\.place\(/, "the shell's viewport never writes its scroller itself, and its memory restore is a jump");
+  assert.doesNotMatch(app, /viewport\.scroller\.scroll(Top\s*[+-]?=|To\(|By\()|scrollIntoView\(/, "app.js never writes the transcript scroller, and nothing inside the transcript is scrolled into view by the browser");
+  assert.match(app, /pane\.scrollTop [+-]= /, "…while the pane's own scroll stays the page's (#173)");
+  assert.equal((engine.match(/this\.frame\.scrollTo\(/g) || []).length, 2, "the engine writes through frame.scrollTo in `place` only — the instant and the smooth form");
+  assert.doesNotMatch(engine, /scrollBy: dy =>/, "the frames have one write");
+  assert.match(engine, /scrollTo: \(y, smooth\) => \{ if \(smooth\) scroller\.scrollTo\(\{ top: y, behavior: "smooth" \}\); else scroller\.scrollTop = y; \}/, "…instant or the browser's animation, on the element frame");
+  assert.match(engine, /scrollTo: \(y, smooth\) => \{ if \(smooth\) window\.scrollTo\(\{ top: y, behavior: "smooth" \}\); else el\(\)\.scrollTop = y; \}/, "…and on the document frame");
+  // The range form of `wrote`, and its arrival.
+  assert.match(engine, /this\.wrote = \{ from, to, last: from \};/, "a smooth write is a range until it arrives");
+  assert.match(engine, /if \(Math\.abs\(top - wrote\.to\) <= 1\) \{\n\s*this\.wrote = wrote\.to;\n\s*this\.trace\("arrived"/, "…collapsing to the offset on arrival");
+  assert.match(engine, /if \(!onPath\) \{ this\.wrote = null; return false; \}/, "…and an event off the animation's path is the reader's");
+  assert.match(engine, /const drift = p0 && p0\.at != null && !this\.inFlight\(\) \? startTop - p0\.at : 0;/, "no drift while a smooth write travels");
+  assert.match(engine, /const smooth = !!options\.smooth \|\| this\.inFlight\(\);/, "…and a placement then is issued smooth again, toward the recomputed destination");
+  // The commanded hold: kept while the anchor resolves at its index, released on the reader's signal.
+  assert.match(engine, /if \(held && this\.anchorResolves\(held\)\) \{ held\.at = this\.inFlight\(\) \? this\.wrote\.to : this\.frame\.scrollTop\(\); return; \}/, "a landing the reader asked for is held through every later transaction");
+  assert.match(engine, /anchorResolves\(position\) \{\n\s*if \(position\.source !== "anchor"\) return false;/, "…never through the fallback (a held model form across measures is #191 again)");
+  assert.match(engine, /this\.wrote = null;\n\s*\/\/[^\n]*\n\s*this\.releaseHold\(\);\n\s*const at = event/, "…released by the reader's own scroll");
+  assert.match(engine, /this\.wrote = null;\n\s*this\.releaseHold\(\);\n\s*\}/, "…and by any input");
+  // Intent is the page's, never invented; the follow decision once, at the destination.
+  assert.match(engine, /command\(cause, position, options = \{\}\) \{\n\s*if \(!this\.count \|\| !position\) return false;\n\s*if \(options\.intent\) this\.markIntent\(\);/, "a commanded move stamps intent only when the page says so (v1.254.0)");
+  assert.match(engine, /const following = wasFollowing \? gap <= this\.slacks\.hold : gap <= this\.slacks\.acquire;\n\s*if \(following !== this\.following\) this\.following = following;\n\s*if \(following !== wasFollowing\) this\.followChanged\(\);/, "…keeps the pin within the hold slack, acquires it at the true end, and announces a change once");
+  assert.match(engine, /holdThrough\(mutate\) \{\n\s*return this\.transact\("hold", \{ mutate, measure: true \}\);/, "a fold hold is a transaction on the reader's own position — not on the head (a head above the viewport holds nothing, #176) and not a landing");
+  assert.match(engine, /scrollTo\(y, options = \{\}\) \{\n\s*if \(!this\.count\) return false;\n\s*return this\.command\("move", this\.modelAt\(Math\.max\(0, y\)\), options\);/, "an offset move is a model position — never held");
+  assert.match(engine, /if \(block != null\) \{ position\.block = String\(block\); position\.blockTop = top; \}/, "a landing given with a row goes in blockTop, which is what offsetOf reads for a row");
+  assert.match(engine, /const shift = element\.getBoundingClientRect\(\)\.top - holder\.getBoundingClientRect\(\)\.top;/, "…and a revealed element's own offset inside its row is translated, since offsetOf places the row");
+  // The pages call, exactly where the old code stamped.
+  assert.match(shell, /this\.jumpTo\(\{ index, block: recordIndex, top: this\.landing \}, \{ dirtyFrom: index, intent: true \}\);/, "the shell's jump lands the record row at the landing, stamped as before");
+  assert.match(shell, /this\.jumpTo\(\{ key: memory\.key, index, top: memory\.top \}, \{ dirtyFrom: changedUnit \}\);/, "…its memory restore is a landing with no stamp");
+  assert.match(shell, /toBottom\(\) \{\n\s*this\.follow\(\);/, "…and the pill is the engine's follow");
+  assert.match(app, /viewport\.pageBy\(direction, \{ intent: true \}\);/, "paging is the engine's, stamped as before");
+  assert.match(app, /viewport\.reveal\(heads\[next\], \{ top: 160, smooth: true, intent: true \}\);/, "a stepped head is revealed smoothly — the classic page's rule, stamped as before");
+  assert.match(app, /viewport\.reveal\(nested, \{ top: 18 \}\);/, "a nested hash landing is a reveal");
+  assert.match(app, /viewport\.reveal\(mark, \{ top: Math\.min\(120, view\.height \/ 3\) \}\);/, "…and so is a search mark below the fold");
+  assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: GOTO_Y \}, \{ dirtyFrom: ti, intent: true \}\);/, "goToId is one landing, stamped");
+  assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: dy \}, \{ intent: true \}\);/, "landOn is one landing, stamped as it always was");
+  assert.match(classic, /vw\.jumpTo\(\{ index: idIndex\[anchorId\], top: anchorTop \}\);/, "a filter change re-lands the anchored record with no stamp");
+  assert.match(classic, /vw\.scrollTo\(st\.y, \{ intent: true \}\);/, "a raw-offset restore is a move");
+  assert.match(classic, /vw\.scrollBy\(-speed, \{ intent: true \}\);/, "the drag-select tick is a move, stamped per tick as before");
+  assert.match(classic, /vw\.holdThrough\(apply\);/, "a fold toggle holds the reader through the engine, with no stamp");
+  assert.match(classic, /if \(r\.top < 96 && r\.bottom > 96\) vw\.reveal\(h, \{ top: 104 \}\);/, "…and the sliver nudge is a reveal with no stamp (the audit reaches it by synthetic click)");
+  assert.match(classic, /if \(moved\) vw\.reveal\(target, \{ top: GOTO_Y, smooth: !instant \}\);/, "goTo is a reveal, smooth unless instant");
+  assert.match(classic, /vw\.reveal\(h, \{ top: 160, smooth: true \}\);/, "stepHead is a smooth reveal");
+  assert.equal((classic.match(/vw\.follow\(\);/g) || []).length, 3, "the badge, the restore's tail and a live open take the pin through the engine");
+  console.log("#196 stage 4 cases passed");
 }

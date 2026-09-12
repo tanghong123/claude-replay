@@ -6695,15 +6695,128 @@ fn app_shell_a_converge_yields_to_the_reader() {
 /// The element the reader can see, grown by `px` from ABOVE — a growth that fires no scroll
 /// event and moves everything below it by its own height. The rule it exercises is rule 5's
 /// other half: what the anchor is FOR.
-fn grow_above(tab: &headless_chrome::Tab, surface: Surface, px: i64) -> bool {
-    let js = match surface {
+fn grow_above_js(surface: Surface, px: i64) -> String {
+    match surface {
         Surface::Classic => format!(
             "(function(){{ var es = [...document.querySelectorAll('#vwin > [data-idx]')]; var e = es.reverse().find(function (x) {{ return x.getBoundingClientRect().bottom <= 0; }}); if (!e) return false; e.style.paddingTop = ((parseFloat(e.style.paddingTop) || 0) + {px}) + 'px'; return true; }})()"
         ),
         Surface::AppShell => format!(
             "(function(){{ var s = document.querySelector('.transcript').getBoundingClientRect(); var es = [...document.querySelectorAll('.virtual-window > [data-unit-index]')]; var e = es.reverse().find(function (x) {{ return x.getBoundingClientRect().bottom <= s.top; }}); if (!e) return false; e.style.paddingTop = ((parseFloat(e.style.paddingTop) || 0) + {px}) + 'px'; return true; }})()"
         ),
+    }
+}
+
+fn grow_above(tab: &headless_chrome::Tab, surface: Surface, px: i64) -> bool {
+    eval(tab, &grow_above_js(surface, px))
+        .as_bool()
+        .unwrap_or(false)
+}
+
+/// Every mounted record root's top (px from the viewport's top), by identity.
+fn roots_map(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) -> std::collections::HashMap<String, f64> {
+    let js = match surface {
+        Surface::Classic => "(function(){ return [...document.querySelectorAll('#vwin > [data-idx]')].map(function (x) { return [x.id, x.getBoundingClientRect().top]; }); })()",
+        Surface::AppShell => "(function(){ var vt = document.querySelector('.transcript').getBoundingClientRect().top; return [...document.querySelectorAll('.virtual-window > [data-unit-key]')].map(function (x) { return [x.dataset.unitKey, x.getBoundingClientRect().top - vt]; }); })()",
     };
+    let mut out = std::collections::HashMap::new();
+    if let Some(rows) = harness::probe(tab, js).as_array() {
+        for row in rows {
+            if let (Some(key), Some(top)) = (row[0].as_str(), row[1].as_f64()) {
+                out.insert(key.to_string(), top);
+            }
+        }
+    }
+    out
+}
+
+/// For a failing step: the mounted record roots around the viewport's top — identity, top and
+/// bottom (px from the viewport's top) — so a growth can be placed against what it moved.
+fn roots_near_top(tab: &headless_chrome::Tab, surface: Surface) -> String {
+    let js = match surface {
+        Surface::Classic => "(function(){ return [...document.querySelectorAll('#vwin > [data-idx]')].map(function (x) { var r = x.getBoundingClientRect(); return [x.id, Math.round(r.top), Math.round(r.bottom)]; }).filter(function (t) { return t[2] > -900 && t[1] < 900; }); })()",
+        Surface::AppShell => "(function(){ var vt = document.querySelector('.transcript').getBoundingClientRect().top; return [...document.querySelectorAll('.virtual-window > [data-unit-key]')].map(function (x) { var r = x.getBoundingClientRect(); return [x.dataset.unitKey, Math.round(r.top - vt), Math.round(r.bottom - vt)]; }).filter(function (t) { return t[2] > -900 && t[1] < 900; }); })()",
+    };
+    harness::probe(tab, js).to_string()
+}
+
+/// The mounted record root at the top of the viewport — its identity and where its top sits
+/// (px below the viewport's top). What a reader can see, to compare across a change: the offset
+/// itself is no measure of the reader's position, because an estimate applied above them moves
+/// `scrollTop` by the sums' shift while the content under them stays put.
+fn root_at_top(tab: &headless_chrome::Tab, surface: Surface) -> (String, f64) {
+    let js = match surface {
+        Surface::Classic => "(function(){ var k = [...document.querySelectorAll('#vwin > [data-idx]')]; var e = k.find(function (x) { var r = x.getBoundingClientRect(); return r.height > 0 && r.bottom > 1; }); return e ? { key: e.id, top: e.getBoundingClientRect().top } : null; })()",
+        Surface::AppShell => "(function(){ var vt = document.querySelector('.transcript').getBoundingClientRect().top; var k = [...document.querySelectorAll('.virtual-window > [data-unit-key]')]; var e = k.find(function (x) { var r = x.getBoundingClientRect(); return r.height > 0 && r.bottom > vt + 1; }); return e ? { key: e.dataset.unitKey, top: e.getBoundingClientRect().top - vt } : null; })()",
+    };
+    let v = harness::probe(tab, js);
+    (
+        v["key"].as_str().unwrap_or("").to_string(),
+        v["top"].as_f64().unwrap_or(f64::NAN),
+    )
+}
+
+/// Where the record root `key` sits now (px below the viewport's top), or NaN if it is gone.
+fn top_of(tab: &headless_chrome::Tab, surface: Surface, key: &str) -> f64 {
+    let js = match surface {
+        Surface::Classic => format!(
+            "(function(){{ var e = document.getElementById({key:?}); return e ? e.getBoundingClientRect().top : null; }})()"
+        ),
+        Surface::AppShell => format!(
+            "(function(){{ var vt = document.querySelector('.transcript').getBoundingClientRect().top; var e = document.querySelector('[data-unit-key=\"' + {key:?} + '\"]'); return e ? e.getBoundingClientRect().top - vt : null; }})()"
+        ),
+    };
+    eval(tab, &js).as_f64().unwrap_or(f64::NAN)
+}
+
+/// `SCENARIO_TRACE=1`: reopen the page with the viewport trace on (#192), so a failing step can
+/// print what the engine did (`trace_tail`). Off, nothing changes.
+fn trace_on(tab: &headless_chrome::Tab, surface: Surface) {
+    if std::env::var_os("SCENARIO_TRACE").is_none() {
+        return;
+    }
+    eval(tab, "(function(){ try { localStorage.viewportTrace = '1'; } catch (e) {} location.reload(); return 'ok'; })()");
+    let ready = match surface {
+        Surface::Classic => "!!window.__viewportTrace && document.querySelectorAll('#stream .blk').length >= 3",
+        Surface::AppShell => "!!window.__viewportTrace && !!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3",
+    };
+    harness::until(
+        tab,
+        ready,
+        "the page to reopen with the trace on",
+        Duration::from_secs(60),
+        "location.href",
+    );
+    settle();
+}
+
+fn trace_tail(tab: &headless_chrome::Tab, label: &str, n: usize) {
+    if std::env::var_os("SCENARIO_TRACE").is_none() {
+        return;
+    }
+    let js = format!("(window.__viewportTrace || []).slice(-{n})");
+    eprintln!("TRACE {label}:");
+    if let Some(entries) = harness::probe(tab, &js).as_array() {
+        for e in entries {
+            eprintln!("  {e}");
+        }
+    }
+}
+
+/// The reader's wheel and a growth above them in the SAME task, so the growth's observer runs
+/// before the scroll batch's deferred window update — the ordering a hold released by the offset
+/// alone got wrong (framework §4.10).
+fn wheel_then_grow_above(tab: &headless_chrome::Tab, surface: Surface, dy: i64, px: i64) -> bool {
+    let scroller = match surface {
+        Surface::Classic => "document.scrollingElement",
+        Surface::AppShell => "document.querySelector('.transcript')",
+    };
+    let grow = grow_above_js(surface, px);
+    let js = format!(
+        "(function(){{ var s = {scroller}; s.dispatchEvent(new WheelEvent('wheel', {{deltaY: {dy}, bubbles: true}})); s.scrollTop += {dy}; return {grow}; }})()"
+    );
     eval(tab, &js).as_bool().unwrap_or(false)
 }
 
@@ -8963,4 +9076,221 @@ fn app_shell_holds_through_growth_above_the_reader_during_a_fling() {
     let fx = fixture("scenario-fling-app", 40);
     let page = open(Surface::AppShell, &fx, 2975);
     scenario_growth_above_the_reader_during_a_fling_holds(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a held landing yields to the reader's wheel (#196 stage 4) ──────────────────────
+
+/// R5, continued. Since #196 stage 4 a jump is one transaction and the engine HOLDS its landing:
+/// the target stays where it landed through everything that settles under it — the two re-land
+/// loops and the classic page's 2s `holdLanding` timer, stated once. The hold must end on the
+/// reader's own signal and never undo their wheel. Jump, grow above (the hold works), wheel down,
+/// grow above twice more: the record under the reader stays where the wheel put it, to the pixel,
+/// and the offset moves by exactly each growth — never back to the landing.
+///
+/// The first growth after the wheel lands in the SAME task as the wheel, so its observer runs
+/// before the scroll batch's deferred window update. That ordering is what a hold released by the
+/// offset alone got wrong (§4.10's first draft): the spontaneous transaction placed with the
+/// wheel's drift (a no-op) and refreshed the offset the hold was read at, the update then found
+/// nothing to re-read, and the NEXT growth re-landed the target — the reader's wheel undone.
+fn scenario_a_held_landing_yields_to_the_readers_wheel(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    trace_on(tab, surface);
+    let target = fx.turns / 2;
+    assert!(
+        harness::jump_to_turn(tab, surface, target),
+        "the pane lists turn {target}"
+    );
+    settle();
+    settle();
+    let landed = turn_at_top(tab, surface);
+    assert!(
+        (landed - target as i64).abs() <= 1,
+        "{surface:?}: the jump landed on turn {target}: top {landed}"
+    );
+    assert!(
+        grow_above(tab, surface, 300),
+        "{surface:?}: a mounted record sits above the viewport after the jump"
+    );
+    settle();
+    settle();
+    assert_eq!(
+        turn_at_top(tab, surface),
+        landed,
+        "{surface:?}: held — 300px appeared above the landing and turn {landed} is still at the top"
+    );
+    // What the reader sees is the measure throughout — never the offset, which an estimate
+    // applied above them moves while the content stays. Every mounted root's top now, by identity.
+    let before = roots_map(tab, surface);
+    if std::env::var_os("SCENARIO_TRACE").is_some() {
+        eprintln!(
+            "roots near the top after the landing: {}",
+            roots_near_top(tab, surface)
+        );
+    }
+    // The reader wheels 300px down, and 250px grows above them in the same task. (The growth
+    // lands on the last root fully above the viewport — after a 300px wheel that can be the landed
+    // record itself, whose own top then moves up by its growth while the reader's view holds; so
+    // the reference is the root under the reader AFTER the wheel, which a growth never picks.)
+    assert!(
+        wheel_then_grow_above(tab, surface, 300, 250),
+        "{surface:?}: a mounted record sits above the viewport after the wheel"
+    );
+    settle();
+    settle();
+    let (key, top1) = root_at_top(tab, surface);
+    assert!(
+        !key.is_empty(),
+        "{surface:?}: a record root at the top after the wheel"
+    );
+    let was = before.get(&key).copied().unwrap_or(f64::NAN);
+    assert!(
+        (top1 - (was - 300.0)).abs() <= 2.0,
+        "{surface:?}: the record under the reader moved by the wheel's 300px and by nothing else — the growth above compensated, the landing not restored: {was} -> {top1}"
+    );
+    // A second growth, on its own: still where the wheel left it.
+    assert!(
+        grow_above(tab, surface, 250),
+        "{surface:?}: a record above to grow, again"
+    );
+    settle();
+    settle();
+    let top2 = top_of(tab, surface, &key);
+    if std::env::var_os("SCENARIO_TRACE").is_some() {
+        eprintln!(
+            "roots near the top after the second growth: {}",
+            roots_near_top(tab, surface)
+        );
+    }
+    trace_tail(tab, "held landing, after the wheel and two growths", 60);
+    // Two pixels: a placement writes an integer offset against fractional rects, so each hold
+    // can leave a record within a pixel of where it was.
+    assert!(
+        (top2 - top1).abs() <= 2.0,
+        "{surface:?}: 250px more above, and the record under the reader sits where the wheel left it: {top1} -> {top2}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_held_landing_yields_to_the_readers_wheel() {
+    let _serial = serial();
+    let fx = fixture("scenario-heldwheel-classic", 120);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_held_landing_yields_to_the_readers_wheel(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_held_landing_yields_to_the_readers_wheel() {
+    let _serial = serial();
+    let fx = fixture("scenario-heldwheel-app", 120);
+    let page = open(Surface::AppShell, &fx, 2976);
+    scenario_a_held_landing_yields_to_the_readers_wheel(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a smooth step yields to the reader's wheel (#196 stage 4) ──────────────────────
+
+/// The engine owns smooth motion since #196 stage 4: a stepped head is revealed with the
+/// browser's own animation, the engine walks its scroll events as its own, and the reader's wheel
+/// mid-flight is the reader interrupting it — the browser cancels the animation on their input,
+/// the engine drops its record of the write and the hold on the head, and the events after it are
+/// theirs. From the tail, `j` steps to the first mounted head, far above; before the animation can
+/// arrive the reader scrolls back to where they were. They win: the offset is theirs to the pixel,
+/// the head is not re-landed, and a growth above afterwards holds the record under them, not the
+/// head. (Headless Chrome may finish the animation before the wheel lands; the case then still
+/// holds the same contract — no re-landing after the reader moves — and prints what it saw.)
+fn scenario_a_smooth_step_yields_to_the_readers_wheel(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    trace_on(tab, surface);
+    harness::jump_to_end(tab, surface);
+    settle();
+    settle();
+    let start = harness::scroll_top(tab, surface);
+    let scroller = match surface {
+        Surface::Classic => "document.scrollingElement",
+        Surface::AppShell => "document.querySelector('.transcript')",
+    };
+    // `j`: the next fold head, which from the tail is the first mounted one, well above.
+    harness::key(tab, "j", false);
+    let mid = harness::scroll_top(tab, surface);
+    // The reader's wheel: 400px up from where they were — not the tail, not the head's landing.
+    // Twice, a frame apart: a synthetic wheel never reaches the compositor, which applies one more
+    // frame of its animation after the first instant scroll (measured: 56px) before the
+    // cancellation lands; a real wheel cancels it there at once. The second scroll is the reader
+    // still moving, and the record at the top of their view is read in the same task as it.
+    let interrupt = format!(
+        "(function(){{ var s = {scroller}; s.dispatchEvent(new WheelEvent('wheel', {{deltaY: -1, bubbles: true}})); s.scrollTop = {start} - 400; var vt = {vt}; var k = [...document.querySelectorAll({roots:?})]; var e = k.find(function (x) {{ var r = x.getBoundingClientRect(); return r.height > 0 && r.bottom > vt + 1; }}); return e ? {{ key: {ident}, top: e.getBoundingClientRect().top - vt }} : null; }})()",
+        vt = match surface { Surface::Classic => "0", Surface::AppShell => "document.querySelector('.transcript').getBoundingClientRect().top" },
+        roots = match surface { Surface::Classic => "#vwin > [data-idx]", Surface::AppShell => ".virtual-window > [data-unit-key]" },
+        ident = match surface { Surface::Classic => "e.id", Surface::AppShell => "e.dataset.unitKey" },
+    );
+    harness::probe(tab, &interrupt);
+    std::thread::sleep(Duration::from_millis(50));
+    let seen = harness::probe(tab, &interrupt);
+    let key = seen["key"].as_str().unwrap_or("").to_string();
+    let top0 = seen["top"].as_f64().unwrap_or(f64::NAN);
+    assert!(
+        !key.is_empty(),
+        "{surface:?}: a record root at the top after the reader's scroll"
+    );
+    settle();
+    settle();
+    let top1 = top_of(tab, surface, &key);
+    let head = eval(
+        tab,
+        &format!(
+            "(function(){{ var h = document.activeElement; if (!h || !h.getBoundingClientRect) return null; return h.getBoundingClientRect().top - {vt}; }})()",
+            vt = match surface { Surface::Classic => "0", Surface::AppShell => "document.querySelector('.transcript').getBoundingClientRect().top" },
+        ),
+    );
+    eprintln!("{surface:?}: start {start}, mid-flight read {mid}, the reader's record at {top0} then {top1}, the stepped head at {head}");
+    trace_tail(tab, "smooth step, after the reader's wheel", 60);
+    assert!(
+        (top1 - top0).abs() <= 1.0,
+        "{surface:?}: the reader's wheel wins over the step's animation — the record under them stays where they put it: {top0} -> {top1} (mid-flight {mid})"
+    );
+    if let Some(h) = head.as_f64() {
+        assert!(
+            (h - 160.0).abs() > 2.0,
+            "{surface:?}: the stepped head was not re-landed at 160 after the reader moved: {h}"
+        );
+    }
+    assert!(
+        grow_above(tab, surface, 200),
+        "{surface:?}: a record above to grow"
+    );
+    settle();
+    settle();
+    let top2 = top_of(tab, surface, &key);
+    // Four pixels: measured 1.7px and 2.7px across runs — a placement writes an integer offset
+    // against fractional rects, once for the measure that heard the growth and once for the
+    // estimates it moved — against a failure of 200px (the growth lost) or 400px (re-landed).
+    assert!(
+        (top2 - top1).abs() <= 4.0,
+        "{surface:?}: after a growth above, the record under the reader sits where the wheel left it, not the stepped head: {top1} -> {top2}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_smooth_step_yields_to_the_readers_wheel() {
+    let _serial = serial();
+    let fx = fixture("scenario-smoothstep-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_smooth_step_yields_to_the_readers_wheel(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_smooth_step_yields_to_the_readers_wheel() {
+    let _serial = serial();
+    let fx = fixture("scenario-smoothstep-app", 40);
+    let page = open(Surface::AppShell, &fx, 2977);
+    scenario_a_smooth_step_yields_to_the_readers_wheel(&page.tab, Surface::AppShell, &fx);
 }

@@ -361,7 +361,9 @@ class VirtualWindow {
     // records what the browser kept. Its scroll event is the engine's own, not the reader's, and
     // `onScroll` recognises it by this value (framework §4.1). Kept until an event that does not
     // match or the reader's next input, never waited for: Chrome for Testing 151 fires none for an
-    // assignment to `scrollTop`, stable 152 fires two.
+    // assignment to `scrollTop`, stable 152 fires two. A SMOOTH write (§4.10) is a range
+    // `{ from, to, last }` — the path the browser's animation takes — until it arrives, when it
+    // collapses to the offset; an event off that path is the reader's.
     this.wrote = null;
     // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
     // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
@@ -573,16 +575,28 @@ class VirtualWindow {
    *  live tail on the owner's session, both with the correction deferred and then dropped).
    *
    *  Returns whether the reader is where `P` says — placed, or already there. */
-  place(position, drift = 0) {
+  place(position, drift = 0, smooth = false) {
     if (!position) return false;
     const base = this.offsetOf(position);
     if (base == null) { this.trace("place:unmounted", { anchor: position.key }); return false; }
     const want = base + drift;
-    const delta = correction(this.frame.scrollTop(), want, 1);
+    // Against where the offset IS — or, while a smooth write travels, where it is GOING: mid-flight
+    // every offset differs from the destination, and comparing against it re-issued the animation
+    // on every observer notification of the records the jump had just mounted.
+    const delta = correction(this.inFlight() ? this.wrote.to : this.frame.scrollTop(), want, 1);
     if (!delta) return true;
-    this.frame.scrollTo(want);
-    this.wrote = this.frame.scrollTop();
-    this.trace("place", { source: position.source, anchor: position.key || null, index: position.index == null ? null : position.index, want: Math.round(want), delta: Math.round(delta), drift: Math.round(drift) });
+    if (smooth) {
+      // Clamped so `to` is reachable and the range always collapses; the animation is the
+      // browser's, and `ownScroll` walks its events (§4.10).
+      const to = Math.max(0, Math.min(want, Math.max(0, this.frame.scrollHeight() - this.frame.clientHeight())));
+      const from = this.frame.scrollTop();
+      this.frame.scrollTo(to, true);
+      this.wrote = { from, to, last: from };
+    } else {
+      this.frame.scrollTo(want);
+      this.wrote = this.frame.scrollTop();
+    }
+    this.trace("place", { source: position.source, anchor: position.key || null, index: position.index == null ? null : position.index, want: Math.round(want), delta: Math.round(delta), drift: Math.round(drift), smooth });
     return true;
   }
 
@@ -645,13 +659,30 @@ class VirtualWindow {
     if (this.dragging) return null;
     if (options.position) return options.position;
     if (options.spontaneous) return this.position;
-    if (!this.position || this.position.at !== this.frame.scrollTop()) this.position = this.captureDomAnchor() || this.modelAnchor();
+    // While a smooth write is travelling the offset is moving because of the engine, not the
+    // reader: `P` is the destination and is kept (§4.10).
+    if (!this.position || (this.position.at !== this.frame.scrollTop() && !this.inFlight())) this.position = this.captureDomAnchor() || this.modelAnchor();
     return this.position;
   }
 
-  /** Re-read `P` where the transaction left the reader: the same position, at the new offset. */
+  /** Re-read `P` where the transaction left the reader: the same position, at the new offset. A
+   *  position a command set (`jumpTo`, `reveal`) is kept instead, while its anchor still resolves
+   *  at its index — never through the fallback (a held model form across measures is #191 again)
+   *  — so every later transaction places the TARGET where the reader put it, until they move
+   *  (`releaseHold`). Its offset is where the write went: the destination of a smooth write still
+   *  in flight. */
   syncPosition() {
-    this.position = this.following || this.dragging || !this.count ? null : this.captureDomAnchor() || this.modelAnchor();
+    if (this.following || this.dragging || !this.count) { this.position = null; return; }
+    const held = this.position && this.position.commanded ? this.position : null;
+    if (held && this.anchorResolves(held)) { held.at = this.inFlight() ? this.wrote.to : this.frame.scrollTop(); return; }
+    this.position = this.captureDomAnchor() || this.modelAnchor();
+  }
+
+  /** Does this anchor name a mounted item at its own index? */
+  anchorResolves(position) {
+    if (position.source !== "anchor") return false;
+    const item = [...this.mount.children].find(child => child.dataset.unitKey === position.key);
+    return !!item && (position.index == null || Number(item.dataset.unitIndex) === position.index);
   }
 
   /** Is the reader moving the view right now? While a thumb is held, and for `userIntentMs` after
@@ -674,8 +705,45 @@ class VirtualWindow {
   markIntent(stamp) {
     this.lastUserInput = performance.now();
     this.lastInputStamp = stamp || performance.now();
-    // The reader touched something: whatever the engine last wrote, the next scroll event is theirs.
+    // The reader touched something: whatever the engine last wrote, the next scroll event is theirs,
+    // and a landing they asked for is theirs to leave (§4.10).
     this.wrote = null;
+    this.releaseHold();
+  }
+
+  /** A position a command set is held — placed again by every later transaction — until the
+   *  reader moves: their own scroll, or any input. Released here, on THEIR signal, never on the
+   *  offset (a spontaneous transaction between a wheel and the deferred update would refresh
+   *  the offset the hold was read at and the next growth would undo the wheel). */
+  releaseHold() {
+    if (this.position && this.position.commanded) this.position.commanded = false;
+  }
+
+  /** Is a smooth write still travelling? */
+  inFlight() {
+    return this.wrote != null && typeof this.wrote === "object";
+  }
+
+  /** Is a scroll event at `top` the engine's own? An instant write is one offset; a smooth one is
+   *  the path from where it started to where it goes, walked monotonically — an event that leaves
+   *  the path, or moves away from `to`, is the reader's (the browser cancels the animation on
+   *  their input) and ends the range. Arriving collapses the range to the offset and does what an
+   *  instant placement's transaction already did: the window around it, and the memory. */
+  ownScroll(top) {
+    const wrote = this.wrote;
+    if (wrote == null) return false;
+    if (typeof wrote === "number") return Math.abs(top - wrote) <= 1;
+    const forward = wrote.to >= wrote.from;
+    const onPath = forward ? top >= wrote.last - 1 && top <= wrote.to + 1 : top <= wrote.last + 1 && top >= wrote.to - 1;
+    if (!onPath) { this.wrote = null; return false; }
+    wrote.last = top;
+    if (Math.abs(top - wrote.to) <= 1) {
+      this.wrote = wrote.to;
+      this.trace("arrived", { top: Math.round(top) });
+      if (!this.viewportMounted()) this.updateWindow();
+      this.scheduleRemember();
+    }
+    return true;
   }
 
   /** Something around the mounted window changed size. Only a change in where the content BEGINS
@@ -1048,8 +1116,13 @@ class VirtualWindow {
       const p0 = this.positionFor(options);
       // The reader's scroll since `P` was read — everything the offset moved between the last
       // transaction and this one's start (see `place`). Zero after a re-read, and for a page's own
-      // capture; the reader's motion for a spontaneous change.
-      const drift = p0 && p0.at != null ? startTop - p0.at : 0;
+      // capture; the reader's motion for a spontaneous change; zero while a smooth write is in
+      // flight, where the offset is moving because of the engine (§4.10).
+      const drift = p0 && p0.at != null && !this.inFlight() ? startTop - p0.at : 0;
+      // A placement while a smooth write travels is issued smooth again, toward the recomputed
+      // destination: growth above a target mid-flight re-targets the animation rather than
+      // cancelling it with an instant write.
+      const smooth = !!options.smooth || this.inFlight();
       if (options.mutate) options.mutate();
       this.rebuildPrefix();
       // The pads follow the sums at once (framework I6): a mutation that moved them — an estimate
@@ -1071,7 +1144,7 @@ class VirtualWindow {
         // when it ran on `changed` alone.
         quiet = !this.measureMounted();
       }
-      let placed = quiet && p0 && p0.source === "tail" ? "quiet" : this.placeAfter(p0, options, drift);
+      let placed = quiet && p0 && p0.source === "tail" ? "quiet" : this.placeAfter(p0, options, drift, smooth);
       if (options.range && p0 && p0.source !== "tail" && placed === "placed" && !this.viewportMounted()) {
         // The window was chosen from the sums before the mutation; the placement moved the offset
         // by their shift, and the viewport now shows territory the window does not cover (#191).
@@ -1080,8 +1153,10 @@ class VirtualWindow {
         // measuring the edge unit differently (11px on the app shell, per transaction).
         const again = this.rangeForScroll();
         mounted = this.mountRange(again.lo, again.hi, Infinity, false, p0) || mounted;
-        placed = this.placeAfter(p0, options, drift);
+        placed = this.placeAfter(p0, options, drift, smooth);
       }
+      // A position the reader asked for (§4.10) is `P` from here on; `syncPosition` keeps it.
+      if (p0 && p0.commanded) this.position = p0;
       this.syncPosition();
       summary = Object.assign({ p0: p0 ? p0.source : null, anchor: p0 && p0.key ? p0.key : null, placed }, mounted ? { range: [mounted.lo, mounted.hi], fresh: mounted.fresh } : {}, options.fields || {});
       // Trace only: is the viewport inside the window it left, and how the window was chosen.
@@ -1090,6 +1165,9 @@ class VirtualWindow {
       this.transacting = false;
     }
     this.trace(cause, summary);
+    // What the caller does once the transaction has actually run — direct or queued (`command`'s
+    // follow decision and memory; a page callback inside a transaction queues its command).
+    if (options.after) options.after(summary);
     if (this.queued.length) { const [next, opts] = this.queued.shift(); this.transact(next, opts); }
     return true;
   }
@@ -1098,14 +1176,14 @@ class VirtualWindow {
    *  tail waits for rest unless the reader asked for it (#165: the pin does not outrank a hand on
    *  the wheel — a tail rewrite once a second slammed a reader crawling up inside the hold slack
    *  back to the end, seven times). */
-  placeAfter(p0, options, drift) {
+  placeAfter(p0, options, drift, smooth = false) {
     if (!p0) return null;
     if (p0.source === "tail") {
       if (!options.commanded && this.readerOwnsPosition()) { this.defer("tail"); this.trace("tail:deferred", {}); return "deferred"; }
       this.pendingTail = false;
       return this.place(p0) ? "tail" : "none";
     }
-    return this.place(p0, drift) ? "placed" : "unmounted";
+    return this.place(p0, drift, smooth) ? "placed" : "unmounted";
   }
 
   /** The window for where the reader is: the scroll batch's own update (#180 — the correction it
@@ -1150,6 +1228,10 @@ class VirtualWindow {
     // 1210-turn session — even "Show 2 more" did it. Nothing waits for the window now except the
     // tail and the estimates, and the pin is dropped right here, so there is no stamp to release.
     this.trace("reshaped", { wasFollowing: this.following });
+    // The reader acted (a synthetic click fires no pointerdown, so nothing else would): a landing
+    // they asked for is released, or every later measure would place the stale target instead of
+    // the head they just toggled (§4.10).
+    this.releaseHold();
     if (!this.following) return;
     this.following = false;
     this.followChanged();
@@ -1185,12 +1267,14 @@ class VirtualWindow {
     // The engine's own write (framework §4.1): `place` recorded what it wrote, and an event at that
     // offset is neither the reader's nor displacement — nothing to classify, nothing to re-read,
     // no window to update (the transaction that placed already mounted around `P`).
-    if (this.wrote != null && Math.abs(this.frame.scrollTop() - this.wrote) <= 1) {
+    if (this.ownScroll(this.frame.scrollTop())) {
       this.trace("scroll:own", { top: Math.round(this.frame.scrollTop()) });
       this.afterScroll();
       return;
     }
     this.wrote = null;
+    // Theirs: a landing they asked for is theirs to leave (§4.10).
+    this.releaseHold();
     const at = event && event.timeStamp ? event.timeStamp : performance.now();
     const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
     const verdict = classifyScroll(this.following, user, this.gapToBottom(), this.slacks.acquire, this.slacks.hold, this.slacks.heal);
@@ -1213,6 +1297,141 @@ class VirtualWindow {
       this.pendingScroll = false;
       this.updateWindow();
     }, 0);
+  }
+
+  /* ── moves the reader asked for (framework §4.10) ──
+   * A jump, a page, a reveal, a restore, a drag tick, the pill. Each is a transaction, not a
+   * correction: `P` set to the destination, the window around it, the one write, and then what the
+   * scroll event the own-write guard swallows would have done — the memory, and the follow decision
+   * the classic page stated (#94, #103): keep the pin within the hold slack when it was held,
+   * acquire it only at the true end. Intent is the PAGE's to stamp (`intent: true` exactly where
+   * the old code stamped) and is never invented here: the rendering audit reaches the fold hold
+   * and the sliver nudge by synthetic click, and v1.254.0 is what an invented stamp did there. The
+   * two re-land loops and the classic page's 2s `holdLanding` timer are the hold `syncPosition`
+   * keeps: the target stays where it landed through everything that settles under it, until the
+   * reader moves. */
+
+  /** The bookkeeping every commanded move shares. */
+  command(cause, position, options = {}) {
+    if (!this.count || !position) return false;
+    if (options.intent) this.markIntent();
+    const wasFollowing = this.following;
+    // A jump is the reader choosing a place (I1); `positionFor` would answer the tail otherwise.
+    if (wasFollowing) this.following = false;
+    this.pendingTail = false;
+    this.transact(cause, {
+      position,
+      commanded: true,
+      smooth: !!options.smooth,
+      range: p0 => this.rangeFor(p0),
+      dirtyFrom: options.dirtyFrom,
+      refresh: !!options.refresh,
+      fields: Object.assign({ intent: !!options.intent, smooth: !!options.smooth }, options.fields || {}),
+      // Once it has run — now, or after the transaction a page callback issued this from inside.
+      // Decided once, at the destination (the offset a smooth write is still travelling to), and
+      // announced only if it changed, so a jump to the end does not flip the pill twice.
+      after: () => {
+        const top = this.inFlight() ? this.wrote.to : this.frame.scrollTop();
+        const gap = this.frame.scrollHeight() - this.frame.clientHeight() - top;
+        const following = wasFollowing ? gap <= this.slacks.hold : gap <= this.slacks.acquire;
+        if (following !== this.following) this.following = following;
+        if (following !== wasFollowing) this.followChanged();
+        this.scheduleRemember();
+      },
+    });
+    return true;
+  }
+
+  /** The anchor form for a landing: item `index` (or the item carrying `key`), its row `block`
+   *  when given, sitting `top` px below the viewport's top; the model form as the fallback, which
+   *  is what `streamTop() + P()[i] − top` computed on the classic page. */
+  landingAt(index, key, top, block) {
+    const position = { source: "anchor", key, index, top, block: null, blockTop: 0, at: null, commanded: true, fallback: { source: "model", index, offset: -top, at: null } };
+    // `offsetOf` reads `blockTop` when the row resolves and `top` otherwise (a row not rendered
+    // lands its item's top there instead).
+    if (block != null) { position.block = String(block); position.blockTop = top; }
+    return position;
+  }
+
+  /** Land item `target.index` (or the item carrying `target.key`) — its row `target.block` when
+   *  given — `target.top` px below the viewport's top. `options`: `intent`, `dirtyFrom`,
+   *  `refresh`, `smooth`. */
+  jumpTo(target, options = {}) {
+    const index = target.index != null ? target.index : this.indexOfIdentity(target.key);
+    if (index < 0 || index >= this.count) return false;
+    const key = target.key != null ? target.key : this.identityAt(index);
+    return this.command("jump", this.landingAt(index, key, target.top || 0, target.block), options);
+  }
+
+  /** The anchor for an element inside the run, translated so the ELEMENT's top lands at `top`:
+   *  `offsetOf` places the row (or the item), and the element sits some way below it. */
+  anchorOn(element, top) {
+    const item = element && element.closest ? element.closest("[data-unit-key]") : null;
+    if (!item || !this.mount.contains(item)) return null;
+    const index = Number(item.dataset.unitIndex);
+    const row = element.closest("[data-block-index]");
+    const holder = row && item.contains(row) ? row : item;
+    const shift = element.getBoundingClientRect().top - holder.getBoundingClientRect().top;
+    return this.landingAt(index, item.dataset.unitKey, top - shift, holder === row ? row.dataset.blockIndex : null);
+  }
+
+  /** Bring `element` to `top` px below the viewport's top. The page keeps its own "already on
+   *  screen" tests; the engine writes or does not. */
+  reveal(element, options = {}) {
+    const position = this.anchorOn(element, options.top || 0);
+    return position ? this.command("reveal", position, options) : false;
+  }
+
+  /** The model form of a raw offset: the item whose span it falls in, and how far into it. */
+  modelAt(y) {
+    const rel = y - this.contentTop();
+    const index = Math.max(0, Math.min(this.indexAt(rel), this.count - 1));
+    return { source: "model", index, offset: rel - (this.prefix[index] || 0), at: null };
+  }
+
+  /** Move to a raw offset (a restore to a remembered `y`). Never held: a model position is one
+   *  the sums shift under. */
+  scrollTo(y, options = {}) {
+    if (!this.count) return false;
+    return this.command("move", this.modelAt(Math.max(0, y)), options);
+  }
+
+  scrollBy(dy, options = {}) {
+    return this.scrollTo(this.frame.scrollTop() + dy, options);
+  }
+
+  /** PageUp / PageDown: most of a viewport. */
+  pageBy(direction, options = {}) {
+    return this.scrollBy(direction * Math.round(this.frame.clientHeight() * 0.85), options);
+  }
+
+  /** The page is about to change the DOM in place — a fold toggling (#138) — and the reader must
+   *  see nothing move: one transaction, `P` read where they are, the page's mutation, a measure,
+   *  the placement. The classic page's own rule was "keep the clicked head where it was", which is
+   *  this whenever the head is on screen (its row is the reader's row or below it, and nothing
+   *  between them changes) and held NOTHING when the head was above the viewport — a head's top
+   *  does not move when its body grows below it, so the page's `scrollBy(y1 − y0)` wrote zero and
+   *  the engine's measure held the reader's own row. Holding the head there instead moved a
+   *  reader parked under a nested record by its whole growth (299px, the #176 case). Not a
+   *  landing: nothing is held afterwards. */
+  holdThrough(mutate) {
+    return this.transact("hold", { mutate, measure: true });
+  }
+
+  /** The reader asked for the end (the pill, End, a session opening at its tail): the pin set,
+   *  the commanded converge — the one that does not wait for rest (#165) — the page told, the
+   *  memory written. */
+  follow(options = {}) {
+    if (options.intent) this.markIntent();
+    // The pin is set even before there is anything to converge on (a live page opening ahead of
+    // its first records, #196 stage 4: bailing on an empty page left every fresh classic open
+    // unpinned): the first records that arrive find it set and converge.
+    this.following = true;
+    this.pendingTail = false;
+    this.followChanged();
+    this.convergeBottom(true);
+    this.remember();
+    return true;
   }
 
   /** Sit on the tail (framework §4.5): mount around the last record and place the end. What the
@@ -1265,8 +1484,9 @@ function documentFrame() {
   const el = () => document.scrollingElement || document.documentElement;
   return {
     scrollTop: () => el().scrollTop,
-    scrollTo: y => { el().scrollTop = y; },
-    scrollBy: dy => { el().scrollTop += dy; },
+    // The frame's ONE write (framework I2, §4.10): an assignment, or the browser's own animation
+    // toward the same offset when the engine asks for a smooth move.
+    scrollTo: (y, smooth) => { if (smooth) window.scrollTo({ top: y, behavior: "smooth" }); else el().scrollTop = y; },
     clientHeight: () => el().clientHeight,
     scrollHeight: () => el().scrollHeight,
     viewportTop: () => 0,
@@ -1286,8 +1506,7 @@ function documentFrame() {
 function elementFrame(scroller) {
   return {
     scrollTop: () => scroller.scrollTop,
-    scrollTo: y => { scroller.scrollTop = y; },
-    scrollBy: dy => { scroller.scrollTop += dy; },
+    scrollTo: (y, smooth) => { if (smooth) scroller.scrollTo({ top: y, behavior: "smooth" }); else scroller.scrollTop = y; },
     clientHeight: () => scroller.clientHeight,
     scrollHeight: () => scroller.scrollHeight,
     viewportTop: () => scroller.getBoundingClientRect().top,

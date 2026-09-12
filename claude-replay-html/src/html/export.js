@@ -1766,8 +1766,10 @@
       vw.rebuildPrefix();
       refreshWindow();
       if (anchorId != null && idIndex[anchorId] != null) {
-        var ti = idIndex[anchorId];
-        window.scrollTo({ top: streamTop() + P()[ti] - anchorTop });
+        // The record the reader was on, back where it was: a landing the engine holds through the
+        // heights the filter's mounts replace (framework §4.10). A filter change is not a scroll,
+        // so no stamp.
+        vw.jumpTo({ index: idIndex[anchorId], top: anchorTop });
         updateView();
       }
     } else {
@@ -1976,7 +1978,7 @@
   // Sit on the tail and stay there while the heights under it settle. `commanded` is the pill,
   // a restore, the opening view: a click stamps input like any other, so without it the one
   // converge the reader actually asked for would be the one deferred (#165).
-  function toBottom(commanded) { vw.convergeBottom(commanded); }
+  function toBottom() { vw.convergeBottom(); }
   // Shared apply epilogue: settle the viewport, then refresh the spy at the FINAL position — a
   // rewrite that nets zero new records still rebuilt the sidebar, and without this the
   // active-turn highlight silently vanished. The window itself was already reconciled by
@@ -2025,8 +2027,7 @@
     paintBadge();
   }
   badge.addEventListener("click", function () {
-    setFollowing(true);
-    toBottom(true);
+    vw.follow();
     clearNew();
   });
 
@@ -2084,25 +2085,15 @@
   // `goToId`'s landing WITHOUT its chain-open, and to a remembered offset rather than
   // GOTO_Y. Opening a fold to reveal the target is right for navigation and wrong for a
   // restore: it changes what the page looks like, which is the one thing a restore must
-  // not do. Same convergence loop — the measure pass replaces estimated heights above the
-  // target, so the first landing is only approximate.
+  // not do. One transaction (framework §4.10): the record at `dy`, the window around it, the
+  // landing held through the measure that replaces the estimates above it — the three-pass
+  // loop this replaced saw only the heights that existed when it ran. Stamped as it always
+  // was: this is the reader's own position, not displacement.
   function landOn(id, dy) {
     var ti = idIndex[id];
     if (ti == null) return false;
-    vw.markIntent(); // this is the user's own position, not displacement
-    var y = streamTop() + P()[ti];
-    setWindow(idxAt(y - streamTop() - MARGIN_PX),
-              idxAt(y - streamTop() + window.innerHeight + MARGIN_PX) + 1);
-    window.scrollTo({ top: Math.max(0, streamTop() + P()[ti] - dy) });
+    vw.jumpTo({ index: ti, top: dy }, { intent: true });
     updateView();
-    for (var i = 0; i < 3; i++) {
-      var t = document.getElementById(id);
-      if (!t) break;
-      var d = t.getBoundingClientRect().top - dy;
-      if (Math.abs(d) <= 2) break;
-      window.scrollBy(0, d);
-      updateView();
-    }
     return true;
   }
 
@@ -2118,8 +2109,7 @@
       // tail, which is the one place they had already chosen not to be.
       var landed = st.anchor ? landOn(st.anchor, st.dy) : false;
       if (!landed && st.y != null) {
-        vw.markIntent();
-        window.scrollTo(0, st.y);
+        vw.scrollTo(st.y, { intent: true });
         updateView();
         landed = true;
       }
@@ -2136,8 +2126,7 @@
         return;
       }
     }
-    setFollowing(true); // following when we left, or nothing left to land on — the tail
-    toBottom(true);
+    vw.follow(); // following when we left, or nothing left to land on — the tail
   }
 
   // Initial render from the inlined snapshot, then drop the inline copy: the
@@ -2307,13 +2296,12 @@
       raf = setTimeout(function () {
         raf = 0;
         if (!live || !speed) return;
-        // #103: this scroll IS the user moving — mark it, or the follow classifier
-        // reads it as browser displacement and (while pinned) heals it straight
-        // back to the bottom, fighting the drag. The engine stamps `pointermove` with a
-        // button down, which covers the moving pointer — but not a pointer RESTING in the
-        // band, where this timer is the only thing still scrolling.
-        vw.markIntent();
-        window.scrollBy(0, -speed);
+        // #103: this scroll IS the user moving — stamped, or the follow classifier reads it
+        // as browser displacement and (while pinned) heals it straight back to the bottom,
+        // fighting the drag. The engine stamps `pointermove` with a button down, which covers
+        // the moving pointer — but not a pointer RESTING in the band, where this timer is the
+        // only thing still scrolling. The move itself is the engine's (framework §4.10).
+        vw.scrollBy(-speed, { intent: true });
         extendTo(lastX, bandBottom() + 2);
         tick(); // keep scrolling while the pointer rests in the band
       }, 16);
@@ -2464,16 +2452,22 @@
     // reconcile, so without this the ResizeObserver's own measure reaches `convergeBottom`.
     vw.readerReshaped();
     var h = f.querySelector(":scope > .fold-h");
-    var y0 = h ? h.getBoundingClientRect().top : 0;
-    setFold(f, open, full);
-    // …and the step the head landed on (#189), read back from the element `setFold` just
-    // stamped rather than recomputed here, so there is one answer and not two.
-    if (f.id) userFulls[f.id] = f.dataset.full === "1" ? 1 : 0;
-    var b = f.querySelector(":scope > .fold-b");
-    if (open && b) { b.classList.remove("anim"); void b.offsetWidth; b.classList.add("anim"); }
+    var apply = function () {
+      setFold(f, open, full);
+      // …and the step the head landed on (#189), read back from the element `setFold` just
+      // stamped rather than recomputed here, so there is one answer and not two.
+      if (f.id) userFulls[f.id] = f.dataset.full === "1" ? 1 : 0;
+      var b = f.querySelector(":scope > .fold-b");
+      if (open && b) { b.classList.remove("anim"); void b.offsetWidth; b.classList.add("anim"); }
+    };
+    // The reader sees nothing move through the fold's height change: the engine's `hold`
+    // transaction (framework §4.10) — `P` where they are, the change, the measure, the placement —
+    // where this page used to write `scrollBy(y1 - y0)` on the head itself (a no-op for a head
+    // above the viewport, whose top does not move when its body grows; the engine's measure held
+    // the reader then, as it does now). No stamp: the rendering audit reaches this by synthetic
+    // click (v1.254.0).
+    vw.holdThrough(apply);
     if (!h) return;
-    var y1 = h.getBoundingClientRect().top;
-    if (Math.abs(y1 - y0) > 1) window.scrollBy(0, y1 - y0);
     var r = h.getBoundingClientRect();
     // A head the reader clicked on its sliver below the sticky bars — top under 96, bottom past
     // it — is brought to 104px with an INSTANT nudge of at most a head's height. Two things are
@@ -2485,7 +2479,7 @@
     // something other than a click on it — the keyboard stepper scrolls its target into view
     // first, the audit's opener clicks by query — and moving the page to it is not what that
     // asked for. The old smooth ease fired for those too and was only ever cancelled by luck.
-    if (r.top < 96 && r.bottom > 96) window.scrollBy(0, r.top - 104);
+    if (r.top < 96 && r.bottom > 96) vw.reveal(h, { top: 104 });
   }
   function allFolds(open) {
     // Record-level (#50): applies to every fold in the session, materialized or not,
@@ -2660,10 +2654,10 @@
     }
     // Folds opened above may have moved it, so the visibility test comes after them.
     var moved = !(keepIfVisible && inComfortableView(target));
-    if (moved) {
-      var top = target.getBoundingClientRect().top + window.scrollY - GOTO_Y;
-      window.scrollTo({ top: top, behavior: instant ? "auto" : "smooth" });
-    }
+    // The engine's `reveal` (framework §4.10): the target at GOTO_Y, held there through what
+    // settles under it until the reader moves. Smooth is the engine's own animation, which the
+    // reader's wheel interrupts.
+    if (moved) vw.reveal(target, { top: GOTO_Y, smooth: !instant });
     target.classList.add("flash");
     setTimeout(function () { target.classList.remove("flash"); }, 1000);
     return moved;
@@ -2673,90 +2667,20 @@
   function goToId(id) {
     var ti = idIndex[id];
     if (ti == null) return;
-    // Every goToId is user-initiated navigation (sidebar, search, filter) — mark it
-    // as intent so the follow classifier reads the jump's scrolls as the user moving
-    // (position decides the pin), never as displacement to heal (#94).
-    vw.markIntent();
     withChain(records[ti], id, function (n) { if (isFoldRec(n)) n.open = 1; });
-    var y = streamTop() + P()[ti];
-    setWindow(idxAt(y - streamTop() - MARGIN_PX), idxAt(y - streamTop() + window.innerHeight + MARGIN_PX) + 1);
-    // The chain-open may have changed an already-materialized element — refresh it.
-    vw.replaceMounted(ti);
+    // One transaction (framework §4.10): the record at GOTO_Y with its opened chain re-rendered
+    // (`dirtyFrom`), the window around it, the landing held through the measure that replaces
+    // the estimates above it and through whatever settles after — until the reader moves. The
+    // three-pass re-land loop and the 2s `holdLanding` timer this replaced saw only the heights
+    // that existed while they ran. Stamped: every goToId is the reader's own navigation
+    // (sidebar, search, filter), and the pin is decided at the destination (#94, #103) — landing
+    // NEAR the tail must not pin.
+    vw.jumpTo({ index: ti, top: GOTO_Y }, { dirtyFrom: ti, intent: true });
     var target = document.getElementById(id);
     if (target) goTo(target, true);
-    else window.scrollTo({ top: streamTop() + P()[ti] - GOTO_Y });
-    // A landing at (nearly) the same y fires no scroll event — refresh the window
-    // and the scrollspy explicitly.
+    // A landing at (nearly) the same y fires no scroll event — refresh the scrollspy explicitly.
     updateView();
-    // Re-land exactly (#94): the post-jump measure pass replaces estimated heights
-    // ABOVE the target with real ones — under a filter the shift can be thousands of
-    // px, leaving the viewport in a pad. Correct against the target's REAL rect until
-    // it converges (the region around it is fully measured after a pass or two).
-    for (var gi = 0; gi < 3; gi++) {
-      var t2 = document.getElementById(id);
-      if (!t2) break;
-      var d = t2.getBoundingClientRect().top - GOTO_Y;
-      if (Math.abs(d) <= 2) break;
-      window.scrollBy(0, d);
-      updateView();
-    }
-    // Navigation SETS the pin state directly (#94): in a background tab the jump's
-    // scroll events can deliver long after the intent window, and the classifier
-    // would read them as displacement and yank the view back to the tail.
-    // #103: acquisition needs the true end here too — landing NEAR the tail must
-    // not pin (the same silent-pin trap as a near-bottom scroll).
-    setFollowing(following ? atBottom() : atEnd());
-    // …and keep holding it while the page settles. The loop above is synchronous, so it
-    // only sees the heights that exist NOW; anything that resizes afterwards moves the
-    // target out from under a landing that was correct when it finished.
-    holdLanding(id);
     spy();
-  }
-
-  // Hold a just-landed target at GOTO_Y while late reflow settles.
-  //
-  // The synchronous re-land converges against the heights that exist at that instant.
-  // Images decoding, fonts swapping and estimates giving way to measured heights all
-  // land AFTER it — and a turn full of images moves the page by thousands of pixels,
-  // which is how clicking a turn could leave the reader several turns away from it. (The
-  // second click then worked, because the first had measured the region.)
-  //
-  // This watches the TARGET's position rather than the page's size, because in a
-  // virtualized list size is the one thing that does NOT change: a block growing inside
-  // the window is absorbed by the spacer pads, so the document keeps its height and the
-  // engine's outer observer — which asks only where the content BEGINS — hears nothing.
-  // (The engine's per-item observer does hear it and re-measures, but a measure holds the
-  // reader's anchor, and after a jump the reader's anchor is not the target.) Only the
-  // target's own rect tells the truth.
-  //
-  // It runs for the whole settle window rather than stopping at the first still frame:
-  // an image decode lands hundreds of milliseconds after the click, long after the page
-  // has briefly looked settled, and an early exit is exactly how the correction gets
-  // skipped. A frame that finds nothing moved costs one rect read. The reader always
-  // wins — any input abandons the hold — and it expires regardless.
-  // A 16 ms timer, not requestAnimationFrame — the same choice the drag-scroll loop makes
-  // and for the same reason: rAF freezes in hidden or occluded tabs, which both drops the
-  // correction exactly when a background tab finishes decoding its images and makes the
-  // behaviour untestable headless (this repo's browser tests drive the page in a
-  // background tab, where rAF never ticks at all).
-  function holdLanding(what) {
-    var started = performance.now();
-    var HOLD_MS = 2000;
-    var tick = function () {
-      // The engine's stamp was written by this very navigation BEFORE `started`, so only a
-      // NEW gesture reads as the reader taking over.
-      if (vw.lastUserInput > started || performance.now() - started > HOLD_MS) return;
-      var t = typeof what === "string" ? document.getElementById(what) : what;
-      if (t && t.isConnected) {
-        var d = t.getBoundingClientRect().top - GOTO_Y;
-        if (Math.abs(d) > 2) {
-          window.scrollBy(0, d);
-          updateView();
-        }
-      }
-      setTimeout(tick, 16);
-    };
-    setTimeout(tick, 16);
   }
 
   // §8.5 One clipboard helper for all call sites. Exports normally open from
@@ -3383,11 +3307,12 @@
       // for #98's row-level anchor, so a record that grows INSIDE keeps its top exactly where it
       // was and pushes everything below it — the mark included — down. Measured: a step into a
       // capped tool output landed correctly and was 956px past the viewport a moment later, which
-      // is precisely the report #94's `holdLanding` was written for. `goToId` has held its
-      // landing since then; this path never did.
-      if (goTo(m, true, true)) holdLanding(m);
+      // is precisely the report #94's `holdLanding` was written for. Since #196 stage 4 the
+      // engine holds any revealed target where it landed until the reader moves (framework
+      // §4.10), so this path is held exactly as `goToId` is.
+      goTo(m, true, true);
     } else if (el) {
-      if (goTo(el, true, true)) holdLanding(el); // mark-less hit record: land on it, never skip it
+      goTo(el, true, true); // mark-less hit record: land on it, never skip it
     }
     // Settle the pin SYNCHRONOUSLY, position deciding — the async classifiers race:
     // the jump's own materialization changes heights, and the engine's height observers
@@ -3499,7 +3424,7 @@
     h.focus({ preventScroll: true });
     var r = h.getBoundingClientRect();
     if (r.top < 100 || r.bottom > window.innerHeight - 60) {
-      window.scrollTo({ top: r.top + window.scrollY - 160, behavior: "smooth" });
+      vw.reveal(h, { top: 160, smooth: true });
     }
   }
   function stepTurn(dir) {
@@ -3650,9 +3575,6 @@
     if (pollMs > 0 && "scrollRestoration" in history) history.scrollRestoration = "manual";
     // With a restore pending, stay put: the first apply lands us (#170). Jumping to the
     // tail here first would flash the bottom on every session switch.
-    if (!pendingRestore) {
-      setFollowing(true);
-      toBottom(true);
-    }
+    if (!pendingRestore) vw.follow();
   }
 })();

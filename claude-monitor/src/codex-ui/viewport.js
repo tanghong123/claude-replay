@@ -188,11 +188,9 @@ export class Viewport extends VirtualWindow {
       if (index >= 0) {
         const memory = this.pending;
         this.pending = null;
-        this.state.following = false;
-        const range = this.rangeAround(index);
-        this.reconcile(range.lo, range.hi, changedUnit, false, null);
-        this.place({ source: "anchor", key: memory.key, top: memory.top });
-        this.updateWindow(index);
+        // A session reopening where it was: a landing the engine holds through whatever settles
+        // under it (framework §4.10). No stamp — a restore is not a gesture.
+        this.jumpTo({ key: memory.key, index, top: memory.top }, { dirtyFrom: changedUnit });
         this.actions.followChanged?.();
         return;
       }
@@ -210,12 +208,10 @@ export class Viewport extends VirtualWindow {
     }
   }
 
+  /** The reader asked for the end (#165): the engine's `follow` — the pin set (this shell's
+   *  setter zeroes the new-record count), the commanded converge, the memory. */
   toBottom() {
-    this.state.following = true;
-    this.state.newRecords = 0;
-    this.actions.followChanged?.();
-    this.convergeBottom(true); // the reader ASKED for the end (#165)
-    this.remember();
+    this.follow();
   }
 
   /** Where a jump LANDS its target: 18px under the scroller's top, unless something sticky sits
@@ -229,29 +225,17 @@ export class Viewport extends VirtualWindow {
   jumpToRecord(recordIndex, reveal = "record") {
     const index = this.units.findIndex(unit => recordIndex >= unit.from && recordIndex <= unit.to);
     if (index < 0) return false;
-    this.lastUserInput = performance.now();
-    this.state.following = false;
-    const unit = this.units[index];
     // Outline navigation reveals one deliberate level of context. A turn opens its following
     // process list (including progressive items), while a task/agent/search hit additionally
     // opens the exact execution block. These are monotonic opens: an existing Expand all state
     // is never toggled back closed by navigation.
     revealNavigationContext(this.units, index, this.state, recordIndex, reveal);
-    const range = this.rangeAround(index);
-    this.reconcile(range.lo, range.hi, index, false, null);
-    const landing = this.landing;
-    for (let pass = 0; pass < 3; pass++) {
-      const target = this.window.querySelector(`[data-block-index="${recordIndex}"]`);
-      if (!target) break;
-      const top = target.getBoundingClientRect().top - this.scroller.getBoundingClientRect().top;
-      if (Math.abs(top - landing) <= 2) break;
-      this.scroller.scrollTop += top - landing;
-      this.updateWindow(index);
-    }
-    this.actions.followChanged?.();
+    // The jump is one transaction (framework §4.10): `P` is the record's row at the landing, the
+    // window is mounted around it, one write lands it, and the engine holds the row there through
+    // whatever settles under it until the reader moves — the three-pass loop this replaced saw
+    // only the heights that existed when it ran. Stamped, as every jump here always was.
+    this.jumpTo({ index, block: recordIndex, top: this.landing }, { dirtyFrom: index, intent: true });
     this.window.querySelector(`[data-block-index="${recordIndex}"]`)?.classList.add("source-flash");
-    this.syncPosition();
-    this.scheduleRemember();
     return true;
   }
 

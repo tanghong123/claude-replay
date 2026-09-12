@@ -3436,10 +3436,10 @@ mod tests {
         // it where it left the reader).
         assert!(engine.contains("if (options.spontaneous) return this.position;"));
         assert!(engine.contains(
-            "if (!this.position || this.position.at !== this.frame.scrollTop()) this.position = this.captureDomAnchor() || this.modelAnchor();"
+            "if (!this.position || (this.position.at !== this.frame.scrollTop() && !this.inFlight())) this.position = this.captureDomAnchor() || this.modelAnchor();"
         ));
         assert!(engine.contains(
-            "this.position = this.following || this.dragging || !this.count ? null : this.captureDomAnchor() || this.modelAnchor();"
+            "if (held && this.anchorResolves(held)) { held.at = this.inFlight() ? this.wrote.to : this.frame.scrollTop(); return; }"
         ));
         // …and this page hands over the two elements whose size changes carry it: the mounted
         // run, and the whole document for a growth in the chrome AROUND it.

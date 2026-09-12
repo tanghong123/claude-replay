@@ -167,7 +167,7 @@ write site); the pages' own writes are stage 4's.
 
 | # | invariant | motivated by | today | framework |
 |---|---|---|---|---|
-| **I1** | **Only the reader sets `P`.** A scroll attributed to them invalidates it (it is re-read from the DOM before the next transaction); a drag end, a jump they asked for, a follow acquired or released by their scroll assign it. Nothing else — not a measure, not an estimate, not a mount, not a rewrite. | #98, #132, #138, #194 | **policy** — `syncAnchor()` re-reads `P` after every path; `scheduleSettle` DROPS an owed correction and re-reads; a model anchor was written from shifted sums (#194) | **construction** — `P` is a field; the only assignments are in the reader's handlers (§4.1) |
+| **I1** | **Only the reader sets `P`.** A scroll attributed to them MOVES it: `P` keeps the offset it was read at, the reader's scroll since is drift, and a transaction the engine is about to make re-reads `P` from the DOM first when the offset has moved (a spontaneous one — the observer's — takes it as stored, with the drift); a drag end, a jump they asked for, a follow acquired or released by their scroll assign it. Nothing else — not a measure, not an estimate, not a mount, not a rewrite. | #98, #132, #138, #194 | **policy** — `syncAnchor()` re-reads `P` after every path; `scheduleSettle` DROPS an owed correction and re-reads; a model anchor was written from shifted sums (#194) | **construction** — `P` is a field; the only assignments are in the reader's handlers (§4.1) |
 | **I2** | **Every `scrollTop` write is `place()`, derived from `P`.** One call site in the engine, traced with the `P` it wrote from; a page that wants to move the reader asks the engine (`jumpTo`, `pageBy`, `reveal`), which sets `P` first. | #180 ("not writing displaces them by the correction withheld"), #191, #194 | **not held** — three engine sites (`restoreDomAnchor`, `restoreModelAnchor`, `convergeBottom`), and the pages write the same scroller behind the engine's back: the app shell in four places (the jump's landing loop, `viewport.js:279`; a restore, a reveal and the page keys in `app.js`, plus `scrollIntoView` on a head), the classic page in about twelve (`window.scrollTo`/`scrollBy` on its jump, landing, restore, search, spy-click and drag-select paths). A page write carries no input stamp, so `onScroll` reads it as displacement — and heals it if following. | **construction** — `frame.scrollTo` is private to `place()`; the pages' writes become engine calls that set `P` |
 | **I3** | **The sums are a pure function of (heights, applied estimates, skips).** Rebuilt, never patched. | #94, #165 | **construction** (`prefixSums`) | same |
 | **I4** | **The applied estimate changes only inside a transaction that holds `P`.** The sums never read the live mean. | #194 | **policy** — `settleEstimates` applies at rest or arms a timer; the timer captures an anchor, applies, restores; with no anchor and not following it restores nothing (known gap) | **construction** — `apply()` is reachable only from `transact()` (§4.3) |
@@ -252,18 +252,27 @@ the trace. The page never touches `scrollTop`, the pads, or the sums.
 
 | call | today | framework |
 |---|---|---|
-| records changed | `applyWindow(dirty)` (classic), `setUnits(units, changedUnit)` (shell) — two implementations of the same thing | `recordsChanged(changedFrom)` — one transaction: capture `P` (both forms), forget the shares of dropped identities, keep provisional heights for rewritten ones, rebuild, range around `P`, reconcile, place |
-| jump | `jumpToRecord(index, reveal)` (shell), `goTo`/`landOn` (classic) | `jumpTo(index, landing)` — `P := (index, landing)`; transaction |
-| to the tail | `toBottom()` / `convergeBottom(commanded)` | `follow()` — `P := tail`; transaction |
+| records changed | `applyWindow(dirty)` (classic), `setUnits(units, changedUnit)` (shell) — two implementations of the same thing | `recordsChanged(changedFrom)` (stage 5) — one transaction: capture `P` (both forms), forget the shares of dropped identities, keep provisional heights for rewritten ones, rebuild, range around `P`, reconcile, place |
+| jump | `jumpToRecord(index, reveal)` (shell), `goTo`/`landOn` (classic) | `jumpTo(index, landing)` (stage 4) — `P := (index, landing)`; transaction |
+| to the tail | `toBottom()` / `convergeBottom(commanded)` | `follow()` (stage 4) — `P := tail`; transaction |
 | the reader reshaped the page | `readerReshaped()` | same (drops follow, clears intent — a click is not a scroll, #190) |
 | the layout changed | `remeasure()` | same, as a transaction |
-| re-render in place | `render()`, `replaceMounted(i)` | `rerender(from)` — a transaction with `dirtyFrom` |
+| re-render in place | `render()`, `replaceMounted(i)` | `rerender(from)` (stage 5) — a transaction with `dirtyFrom` |
 
 ---
 
 ## 4. What changes (the #196 refactors)
 
 Each item names the code it replaces and the invariant it converts from policy to construction.
+
+The stages, as the work is cut (each a commit with its contract pins, held to the probes and the full
+suite): **0** the design and the contract's vocabulary; **1** `P` stored and `place()` the only engine
+write (§4.1, §4.8); **2** transactions, the one timer, the trace as the transaction log (§4.2, §4.3,
+§4.5, §4.6, §4.8); **3** the estimator into the engine (§4.4, §4.9); **4** the pages' own scroll
+writes become engine calls — jump, page, reveal, follow, the landing loops, and smooth motion the
+engine owns (§4.10); **5** `recordsChanged(changedFrom)` / `rerender(from)`: one transaction where
+`applyWindow`, `setUnits`, `replaceMounted` and `render` are today (§3.3); **6** the invariant check
+mode (`violation` trace entries) and its no-violation scenario on both surfaces.
 
 ### 4.1 `P` becomes stored state, and `place()` the only write
 
@@ -385,7 +394,7 @@ shell and 484px on the classic page — the growth, never placed back.
 `setHeight` in the engine learns/forgets; the page's `setHeight` only persists. `recordsChanged`
 forgets the shares of identities that vanished. **I5 in one place.** `apply()` is called only from
 the estimate transaction. The classic page's `recShares[]` and the app shell's `this.shares` go.
-Landed as stage 3 (§4.9); until stage 4's `recordsChanged`, the shell's `setUnits` calls
+Landed as stage 3 (§4.9); until stage 5's `recordsChanged`, the shell's `setUnits` calls
 `forget(key)` and the classic `resetFrom` calls `forgetFrom(from)` before it truncates.
 
 ### 4.5 The tail converge is observer-driven
@@ -488,6 +497,176 @@ same numbers before and after. What moved, and what had to survive it:
 - **The contract** pins the engine's `learn`/`forget`/`forgetFrom`/`applyEstimates` shapes, the
   `floors` requirement, both pages' persistence-only `setHeight`, and that neither page names
   `HeightGuess(`, `this.guesses`, `this.shares`, `recShares` or `estimator.` any more.
+
+### 4.10 Stage 4: the pages' own writes become engine calls (design, 2026-09-12)
+
+The first stage with policy in it. Stages 1–3 moved code; this one decides what a move the reader
+ASKED for does to `P`, to the pin and to the window, and who owns a smooth scroll. Written before
+the first edit, and the acceptance is the probes again — all three go through `jump_to_turn`, which
+is exactly the path this stage changes, so the numbers may legitimately move here for the first
+time since stage 2; a row that moves states the before, the after and the reason.
+
+**Inventory.** Every write to the transcript scroller on either page today (the code pane's, the
+outline pane's, the sidebar's and the task box's own scrolls are excluded — #173, a control moves
+its own pane — and the contract says so):
+
+| site | what it is | today | becomes |
+|---|---|---|---|
+| classic `setFilter` landing (`scrollTo(streamTop()+P()[ti]−anchorTop)`) | hold the anchored record across a filter change | instant, correction, no stamp today | `jumpTo({index: ti, top: anchorTop})` |
+| classic `landOn(id, dy)` write + 3× re-land loop | a session restore to a record at an offset | instant, stamped today | `jumpTo({index: ti, top: dy}, {intent: true})` (as today); the loop goes |
+| classic `applyPendingRestore` fallback (`scrollTo(0, st.y)`) | a restore to a raw offset | instant, stamped today | `scrollTo(st.y, {intent: true})` (as today) |
+| classic drag-select tick (`markIntent(); scrollBy(0, −speed)`) | the reader dragging a selection into the band | instant, gesture, per 16ms | `scrollBy(−speed, {intent: true})` |
+| classic `toggleFold` hold (`scrollBy(0, y1−y0)`) | keep the clicked head where it was through the fold's height change | instant, correction | `holdThrough(head, () => setFold(…))`: a `hold` transaction with `P := anchor(head's item)`, no intent |
+| classic `toggleFold` nudge (`r.top<96 && r.bottom>96 → scrollBy(r.top−104)`) | bring a head clicked on its sliver under the bars into view | instant, no intent (the audit reaches it by synthetic click) | `reveal(head, {top: 104})`, the page keeps the condition |
+| classic `goTo(target, instant)` | land a turn / a stepped target at `GOTO_Y` | smooth unless `instant` | `reveal(target, {top: GOTO_Y, smooth: !instant})` |
+| classic `goToId` unmounted fallback + 3× re-land loop + `holdLanding` (2s timer loop) | a jump to a record by id | instant, gesture | `jumpTo({index: ti, top: GOTO_Y}, {dirtyFrom: ti, intent: true})`, then `reveal(el, {top: GOTO_Y})` for a nested id; both loops and `holdLanding` go |
+| classic `stepHead` | keyboard over fold heads | smooth, no stamp today | `reveal(head, {top: 160, smooth: true})`, the page keeps its on-screen test |
+| classic `setFollowing(true); toBottom(true)` ×3 | the pill, End, a session opening at its tail | commanded converge | `follow()` |
+| shell `jumpToRecord` landing loop (`scrollTop += top − landing; updateWindow(index)` ×3) | every jump: hash, turn, search, filter, outline | instant, stamped today (`lastUserInput =`) | `jumpTo({index, block: recordIndex, top: this.landing}, {dirtyFrom: index, intent: true})`; the loop goes |
+| shell memory restore (`this.place({source:"anchor", key, top})`) | a session reopening where it was | instant, no stamp | `jumpTo({key, top})` |
+| shell `toBottom()` | the pill | commanded converge | `follow()` |
+| app `landOnHash` nested row (`scrollTop += top`) | bring the nested record 18px under the top after the jump | instant | `reveal(nested, {top: 18})` |
+| app `landOnCurrentMark` (`scrollTop += box.top − view.top − min(120, h/3)`) | a search mark below the fold after a jump | instant | `reveal(mark, {top: min(120, h/3)})`, the page keeps its visibility test |
+| app `stepHead` (`lastUserInput = now; scrollIntoView({block:"nearest"})`) | keyboard over heads | instant (nearest), stamped | `reveal(head, {top: 160, smooth: true, intent: true})` with the classic page's on-screen test — parity with the reference, which is smooth here; a scenario pinning the nearest landing is restated with the reason, never weakened |
+| app `pageTranscript` (`lastUserInput = now; scrollBy(0.85·clientHeight)`) | PageUp/PageDown | instant, stamped | `pageBy(direction, {intent: true})` |
+
+**Decision one: a move the reader asked for is a transaction, not a correction.** `place()` today
+yields a `scroll:own` event that skips classification, `scheduleRemember`, the follow decision and
+the deferred `updateWindow` — right for a correction (its transaction already mounted around `P`),
+wrong for a jump, a page, a drag tick or a filter landing, which need all four. So each of
+`jumpTo`, `scrollTo`, `scrollBy`, `pageBy`, `reveal`, `holdThrough`, `follow` is a transaction
+(`transact("jump" | "move" | "reveal" | "hold" | "converge", { position, commanded: true, … })`)
+that: stamps intent ONLY when the page says `intent: true` — a commanded transaction never invents
+one, because two of them are reached by the rendering audit's synthetic clicks (the fold hold and
+the sliver nudge), and v1.254.0 is the record of what an invented stamp on that path does (six
+audit cases red on CI); the page passes it exactly where the old code stamped (`lastUserInput =` in
+`stepHead` / `pageTranscript`, `markIntent()` in the drag tick, `goToId`, `landOn`) and nowhere
+else; drops the pin first (`positionFor` returns the tail while following, and a jump is the reader
+choosing a place — I1); sets `P` to the destination, in the anchor form with the model form as
+`fallback` (`{source:"model", index, offset: −top}`, which is what `streamTop()+P()[ti]−top`
+computed); mounts around it (`rangeFor(P)`, with the caller's `dirtyFrom`); places through the one
+`frame.scrollTo` site; then does the bookkeeping the swallowed scroll event would have done —
+`syncPosition`, `scheduleRemember`, and the follow decision the classic page already states
+(`following ? atBottom() : atEnd()`): keep the pin within the hold slack when it was held, acquire
+it only at the true end otherwise — computed ONCE at the end, with `followChanged` called only if it
+differs from where the transaction started, so a jump to the end does not flip the pill twice.
+`follow()` is the one that SETS the pin: `P := tail`, the commanded converge, `followChanged`,
+remember. The classic page's `toBottom(commanded)` and the shell's `toBottom()` become it.
+
+**The commanded position outlives its transaction.** `syncPosition` re-reads `P` from the DOM at
+the end of every transaction; after a jump that would make `P` the first visible row, which sits
+ABOVE a target landed at 120px, and every later measure would hold that row while the target
+drifted — the reason both pages ran a re-land loop (and the classic page a 2s `holdLanding` timer).
+Instead a position `jumpTo` or `reveal` set carries `commanded: true`, and `syncPosition` keeps it
+while its anchor still resolves AT ITS INDEX (never through `fallback`: a held model form across
+measures is #191 again), only refreshing `at`. Every later transaction — a measure, a growth, an
+estimate application — places the TARGET where the reader put it. The hold is released on the
+READER'S OWN SIGNAL, not on the offset: `onScroll`'s non-own path and `markIntent` clear
+`commanded`, after which `syncPosition` re-reads as usual. Not on the offset, because a spontaneous
+transaction between the reader's wheel and the deferred `update` places with the drift (a no-op)
+and would refresh `at` to the new offset — the `update` would then find `at === scrollTop`, keep
+the held `top`, and the next growth above would put the target back where it landed, undoing the
+reader's 300px. Offset moves (`scrollTo`, `scrollBy`, `pageBy`) never hold: their destination is a
+model position, and the sums shift under one. The loops' semantics without the loops or the timer;
+the scenario is a jump, a wheel, two growths above, and the reader keeps the wheel, on both
+surfaces.
+
+**Decision two: the engine owns smooth motion.** Two classic sites are smooth (`goTo` for short
+moves, `stepHead`), and the shell's `stepHead` becomes smooth for parity with the reference. A
+smooth write fires many scroll events, and `wrote` recognises one value; so for a smooth placement
+`wrote` is a range `{from, to}` and an event inside it is the engine's own (`scroll:own`); at
+`|scrollTop − to| ≤ 1` it collapses to the number and the arrival does what an instant placement's
+transaction did — a window check (`viewportMounted() || updateWindow()`) and `scheduleRemember`.
+`markIntent` clears it (stage 3), which is the right meaning: a wheel mid-flight is the reader
+interrupting the animation, the browser cancels the smooth scroll on that input, and the events
+after it are theirs; so does an own-range event moving AWAY from `to` (a cancelled animation must
+not leave drift suspended and re-reads off until the next input). While a range is in flight the transaction rules bend two ways: the drift is
+0 (the offset is moving because of the engine, not the reader) and the re-read before an engine-made
+transaction is suspended (`P` is the destination, and it is kept); a placement that runs then is
+issued smooth again toward the recomputed destination, so growth above a target mid-flight
+re-targets the animation rather than cancelling it with an instant write. `want` is clamped to
+`[0, scrollHeight − clientHeight]` before a smooth write so `to` is reachable and the range always
+collapses. `frame.scrollTo(y, smooth)` is the one seam: `el.scrollTo({top, behavior: "smooth"})`
+or the assignment; the frames' `scrollBy` goes, so the frame has one write and the "one
+`frame.scrollTo(` site" pin means what it says. The inventory also covers the write forms a grep for
+`scrollTo`/`scrollBy`/`scrollTop =` misses: `.scroll(`, `location.hash =` (the browser scrolls the
+document to the fragment) and `.focus()` without `preventScroll` on an element inside the
+transcript (focus scrolls).
+
+**`reveal(element, {top, smooth})`** anchors on the element's item — `anchorOn(el)`: the
+`[data-unit-key]` ancestor, its index, `block` = the `[data-block-index]` row containing the
+element where there is one — and is otherwise `jumpTo`. Two details of the anchor form: `offsetOf`
+reads `sat = blockTop` when `block` resolves and `top` otherwise, so a landing given with `block`
+goes in `blockTop` (else the shell lands the unit's top, not the record row); and `offsetOf` places
+the ROW, not the element, so for an element deep inside its row the landing is translated —
+`blockTop = top − (element.top − row.top)` — or a search mark would leave the record's top at 120
+and itself below the fold. The page keeps its own "already comfortably on screen" tests; the engine
+writes or does not.
+
+**`holdThrough(mutate)`** is the classic fold toggle's rule stated once: `P` where the reader is,
+the page's mutation, a measure, the placement. The first draft anchored on the clicked HEAD, which
+is the same thing whenever the head is on screen (its row is the reader's row or below it) and
+wrong when it is above the viewport: a head's top does not move when its body grows below it, so
+the page's `scrollBy(y1 − y0)` wrote zero there and the engine's measure held the reader's own row
+— holding the head instead moved a reader parked under a nested record by its whole growth (299px,
+the #176 case, caught by the suite).
+
+**What does not change.** The engine's corrections (`place` from a measure, a growth, an estimate,
+a reconcile) stay instant and stay `scroll:own`. `readerReshaped()` stays (a click is not a scroll,
+#190). The excluded pane and sidebar scrolls stay page-side. The shell's `following` setter still
+zeroes `newRecords`.
+
+**Held by.** The contract: no page writes the transcript scroller (`window.scrollTo|scrollBy` absent
+from `export.js`; `viewport.scroller.scroll*`, `this.scroller.scrollTop ±=` and `scrollIntoView(`
+absent from `app.js` / `viewport.js`; the excluded pane writes named in the pin), still exactly one
+`frame.scrollTo(` in the engine, the range form of `wrote` and its arrival, the commanded
+transactions' bookkeeping, `holdLanding` and both re-land loops gone. Scenarios on both surfaces: a
+smooth head-step interrupted by a wheel mid-flight, where the reader wins (the final offset is the
+wheel's, the target is not re-landed); the deep-jump, landing-through-growth and page-step cases
+already there. The probes: the classic must still land on 766 and the walk series must still
+match; unfold and runaway as today; fling 0.
+
+**As landed (2026-09-12).** The inventory above is the diff: every row's "becomes" column is the
+code, and the three exclusions are pinned. Two behaviours the design implied without stating:
+
+- **The sliver nudge holds.** `reveal(head, {top: 104})` is a commanded position, so a head clicked
+  on its sliver stays at 104px through what settles under it until the reader moves — the old
+  `scrollBy` wrote once and left it. And `readerReshaped()` releases a held landing before it
+  re-reads `P`: a synthetic click fires no `pointerdown`, so without it the rendering audit's fold
+  toggles would keep a stale jump target and every later measure would place that instead of the
+  head just toggled.
+- **`follow()` sets the pin on an empty page.** A live classic page opens before its first records
+  arrive and pins itself then; a `follow` that bailed on `count === 0` left every fresh classic
+  open unpinned (fourteen suite cases timed out waiting for the tail).
+- **A placement mid-flight compares against the destination.** While a smooth write travels every
+  offset differs from where it is going, and comparing against the offset re-issued the animation
+  on each observer notification of the records the jump had just mounted; `place` reads
+  `wrote.to` in flight and re-issues only when the recomputed destination differs. And a command
+  issued from inside a transaction (a page callback) is queued, so its follow decision and memory
+  run from the transaction's `after` hook, once it has actually run.
+
+Measured on the owner's session against stage 3, one Chrome at a time: the walk turn series
+identical on both pages with no backward jump and every wheel 400 ±1px (the classic run's first
+pass, taken beside a second Chrome, went silent after step 21 — no scroll events reached the page
+at all — and read clean alone: a tab casualty, not the engine); the unfold ≤1px over-movement, 0
+unmounted, 0 wrong-way on all four variants; the runaway static variants 0 hands-off changes and 0
+extra wheels, the live variants at the tail with following restored. The two new cases on both
+surfaces: a held landing yields to the reader's wheel (a jump, a wheel with a growth above in the
+same task, a second growth: the record under the reader moves by the wheel and by nothing else,
+±2px for integer offsets against fractional rects); a smooth step yields to the reader's wheel (from
+the tail, `j`, an instant scroll mid-flight twice a frame apart — a synthetic wheel never reaches
+the compositor, which applies one more frame of its animation after the first, measured 56px —
+and the record under the reader stays where they put it, the head is not re-landed, a growth above
+holds it). Both cases say what the reader can see and never assert on `scrollTop`: an estimate
+applied above the reader moves the offset while the content stays, which is what the first drafts
+measured (18,833 → 19,565 for a 300px wheel and a 250px growth).
+
+The full suite on the final build: 235 cases in twelve chunks, at most two Chromes at a time, all
+green (one connection-refused start and one 2.7px hold both clean on a rerun alone), after two
+fixes the suite itself found: `follow()` had to set the pin on an empty page (fourteen classic cases
+timed out at the tail), and the fold hold had to be on the reader, not the head (the #176 nested
+case moved 299px). The node contract's stage-4 block pins the calls, the one write site, the range
+form of `wrote`, the held landing and its release, the intent rule and the follow decision.
 
 ### 4.7 Out of scope
 
