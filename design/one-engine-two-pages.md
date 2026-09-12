@@ -1426,3 +1426,18 @@ proved it had reached unmeasured ground by `scrollHeight` moving, and on the cla
 out against the learned mean changes the page by under a pixel, and the guard read a walk over
 8,000px of never-mounted records as vacuous. The guard now also reads the window's lowest mounted
 index falling below anything mounted since the open; the assertions did not change.
+
+## The engine checks its own invariants after every transaction (2026-09-13, #196 stage 6)
+
+Stages 1–5 put the invariants into construction where the code could carry them. What remains is
+the class of rule the code can state but not prevent — the reader ends up where `P` says, the
+record under `P` is mounted, the viewport shows only mounted records, a share is one per record —
+because each depends on what the browser did with a write. The engine now checks those at the end
+of every transaction (framework §4.12) and reports a failure as a `violation` trace entry and an
+entry in `window.__viewportViolations`, always on, one console warning per rule; nothing throws
+and nothing is corrected, and a fault in a check is itself a violation. Both pages run the same
+checks through the same seams: the classic page's `frame` and the shell's, the same `place`, the
+same `mountRange`. `scenario_the_engine_holds_its_invariants` works both surfaces through every
+transaction kind and asserts an empty ring; the real-session probes print it. A violation either
+page ever reports is a finding about that page, with the geometry attached — which is what a
+report from a real session was missing when #196 began.

@@ -9442,3 +9442,103 @@ fn app_shell_a_unit_height_does_not_depend_on_the_window_edge() {
     let page = open(Surface::AppShell, &fx, 2980);
     scenario_a_unit_height_does_not_depend_on_the_window_edge(&page.tab, Surface::AppShell, &fx);
 }
+
+/// What the engine's check mode has reported so far (framework §4.12): the ring at
+/// `window.__viewportViolations`, always on, trace or no trace.
+fn violations(tab: &headless_chrome::Tab) -> Vec<serde_json::Value> {
+    harness::probe(tab, "(window.__viewportViolations || []).slice()")
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Framework §4.12: the engine checks its own invariants at the end of every transaction — the
+/// reader is where `P` says, the record under `P` is mounted, a landing shows content, the sums
+/// are the heights, one share per record, follow changes only by the reader, nothing is written
+/// under a drag — and reports a `violation` for each failure. A workout that reaches every
+/// transaction kind (a jump, wheels both ways, a fold, paging, growth above and at the tail, the
+/// end, the wheel back up) must report none. A violation here is a finding, never a reason to
+/// weaken the check.
+fn scenario_the_engine_holds_its_invariants(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    trace_on(tab, surface);
+    let before = violations(tab);
+    assert!(
+        before.is_empty(),
+        "the open page must already be clean: {before:?}"
+    );
+    assert!(
+        harness::jump_to_turn(tab, surface, 60),
+        "jump into the middle"
+    );
+    settle();
+    for _ in 0..6 {
+        scroll_by(tab, surface, 400);
+        settle();
+    }
+    for _ in 0..6 {
+        scroll_by(tab, surface, -400);
+        settle();
+    }
+    // A fold opened and closed where the wheels left the reader (the tail of the generic fixture
+    // ends on prose and mounts no fold header on the classic page).
+    let opened = harness::open_last_fold(tab, surface);
+    assert!(opened != -1, "a fold opens where the reader is");
+    settle();
+    let closed = harness::open_last_fold(tab, surface);
+    assert!(closed != -1, "…and closes again");
+    settle();
+    assert!(grow_above(tab, surface, 300), "a growth above the reader");
+    settle();
+    // A page down and up. Not a synthetic Space: the classic page pages NATIVELY on Space
+    // (`export.js`: "this page scrolls natively on Space"), which a dispatched key event does
+    // not trigger, so the wheel is the one gesture that pages both surfaces.
+    scroll_by(tab, surface, 800);
+    settle();
+    scroll_by(tab, surface, -800);
+    settle();
+    harness::jump_to_end(tab, surface);
+    settle();
+    let growth = LiveGrowth::start(fx.path.clone(), growth_script(), Duration::from_millis(900));
+    let _ = growth.finish(Duration::from_secs(30));
+    settle();
+    harness::jump_to_end(tab, surface);
+    settle();
+    for _ in 0..3 {
+        scroll_by(tab, surface, -400);
+        settle();
+    }
+    let found = violations(tab);
+    trace_tail(tab, "invariants", 40);
+    assert!(
+        found.is_empty(),
+        "the engine reported {} violation(s) on {surface:?}:\n{}",
+        found.len(),
+        found
+            .iter()
+            .map(|v| format!("  {v}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_the_engine_holds_its_invariants() {
+    let _serial = serial();
+    let fx = fixture("scenario-invariants-classic", 120);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_the_engine_holds_its_invariants(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_engine_holds_its_invariants() {
+    let _serial = serial();
+    let fx = fixture("scenario-invariants-app", 120);
+    let page = open(Surface::AppShell, &fx, 2978);
+    scenario_the_engine_holds_its_invariants(&page.tab, Surface::AppShell, &fx);
+}

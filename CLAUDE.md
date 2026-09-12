@@ -143,7 +143,9 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   `place:unmounted`, the scroll verdict (`scroll`, and `scroll:own` for the engine's own write coming
   back as an event — every event of a smooth write until `arrived`), estimate application (`estimates:pending` / `estimates:applied` — the sums take
   a new estimate only at rest, #194), a tail placement waiting for rest (`tail:deferred`) and the
-  `rest` that runs what waited, `reshaped` and `measured` — with the geometry it saw: the mounted
+  `rest` that runs what waited, `reshaped` and `measured`, and a `violation` for an invariant the
+  check mode (framework §4.12; always on, `window.__viewportViolations`) found broken — with the
+  geometry it saw: the mounted
   range and count, scrollTop and scrollHeight, both pad heights, the stored position and what is
   pending, the applied and live estimate, and the ms since the reader's last input. It lands in a 500-entry ring at `window.__viewportTrace`
   (`copy(window.__viewportTrace)` in the console pastes it into a bug) and as one `console.debug`

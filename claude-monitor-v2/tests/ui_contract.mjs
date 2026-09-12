@@ -1812,7 +1812,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // item that far late.
   assert.match(src, /rangeForScroll\(this\.prefix, this\.count, this\.frame\.scrollTop\(\) - this\.contentTop\(\), this\.frame\.clientHeight\(\), this\.overscan\)/, "…and so is the range a scroll offset asks for");
   assert.match(src, /return itemTop \+ within - sat;\s*\n\s*\}\s*\n/, "the offset `P` names is derived from the anchor's own rect (offsetOf)…");
-  assert.match(src, /place\(position, drift = 0, smooth = false\) \{\n    if \(!position\) return false;\n    const base = this\.offsetOf\(position\);\n(?:.*\n){0,16}?      this\.frame\.scrollTo\(want\);\n/, "…and the write-back is absolute — `scrollTo(where it goes)`, never `scrollBy(how far it drifted)`");
+  assert.match(src, /place\(position, drift = 0, smooth = false\) \{\n    if \(!position\) return false;\n(?:    if \(this\.dragging\) this\.violation\("I14".*\n)?    const base = this\.offsetOf\(position\);\n(?:.*\n){0,20}?      this\.frame\.scrollTo\(want\);\n/, "…and the write-back is absolute — `scrollTo(where it goes)`, never `scrollBy(how far it drifted)`");
   assert.equal((src.match(/this\.frame\.scrollTo\(/g) || []).length, 2, "#196 (framework I2): the engine writes the offset in exactly ONE place, place() — its instant form and its smooth form (#196 stage 4)");
   assert.match(src, /if \(base == null\) \{ this\.trace\("place:unmounted", \{ anchor: position\.key \}\); return false; \}/, "…and an anchor the window has left behind stays put — the sums there are estimates");
   assert.match(src, /`null` for an anchor whose record is not\n\s*\*\s*mounted: nothing to hold it by\./, "…which offsetOf says in its own words");
@@ -2053,7 +2053,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engine, /this\.trace\("estimates:applied", \{ estimate: [^}]*late: true/, "…and the late apply is recorded as late");
   assert.match(engine, /this\.transact\("estimates", \{ mutate: \(\) => this\.applyLate\(\), range: p0 => this\.rangeFor\(p0\) \}\);/, "the late apply is a transaction of its own at rest: `P` read before the shift, the window settled around it, the placement after (#196 stage 2)");
   assert.match(engine, /if \(options\.mutate\) this\.updatePads\(\);\n      let mounted = null;/, "…and the pads follow the sums before any mount decides it has nothing to do (measured: a window 400 records above the reader when they did not)");
-  assert.match(engine, /learn\(index, height\) \{\n\s*const key = this\.identityAt\(index\);\n\s*const kind = this\.kindFor\(index\);\n\s*const prior = this\.shares\.get\(key\);\n\s*let previous = 0;\n\s*if \(prior && prior\.kind !== kind\) this\.guesses\.get\(prior\.kind\)\.forget\(prior\.share\);\n\s*else if \(prior\) previous = prior\.share;/, "the engine learns one share per identity, replacing the record's own and moving it between kinds (I5, #196 stage 3)");
+  assert.match(engine, /learn\(index, height\) \{\n\s*const key = this\.identityAt\(index\);\n\s*const kind = this\.kindFor\(index\);\n\s*const prior = this\.shares\.get\(key\);\n\s*let previous = 0;\n\s*if \(prior && prior\.kind !== kind\) \{ this\.guesses\.get\(prior\.kind\)\.forget\(prior\.share\); this\.countShare\(prior\.kind, prior\.share, 0\); \}\n\s*else if \(prior\) previous = prior\.share;/, "the engine learns one share per identity, replacing the record's own and moving it between kinds (I5, #196 stage 3)");
   assert.doesNotMatch(engine, /lo = Math\.min\(this\.lo, hi\)/, "#194's lo-hold is gone (#196 stage 2): a mount above a moving reader is placed back at once, in the same task, so there is nothing to hold off (framework I7 — the fling case measures it)");
   assert.match(engine, /changes\.push\(\[index, Math\.round\(this\.heightOf\(index\)\), Math\.round\(height\), this\.heightFor\(index\) \? "measured" : "estimate"\]\)/, "…and the trace names which record moved the sums, from what, to what");
   assert.match(engine, /applyEstimates\(\) \{\n\s*let moved = false;\n\s*for \(const guess of this\.guesses\.values\(\)\) if \(guess\.apply\(\)\) moved = true;/, "the engine applies every kind's mean at once");
@@ -2239,4 +2239,26 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal((shell.match(/this\.recordsChanged\(swap\);/g) || []).length, 2, "an empty list and a plain delta are the one transaction");
   assert.doesNotMatch(shell + app, /\.render\(\)/, "the shell re-renders through rerender()");
   console.log("#196 stage 5 cases passed");
+}
+
+
+// ── #196 stage 6: the invariant check mode ─────────────────────────────────────────────────────
+// What the code can state but not prevent is CHECKED at the end of every transaction — the reader
+// is where P says, the record under P is mounted, a landing shows content, the sums are the
+// heights, one share per record, follow changes only by the reader, nothing is written under a
+// drag — always on, reported as `violation` entries and `window.__viewportViolations`, never
+// thrown and never corrected (framework §4.12).
+{
+  const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  assert.match(engine, /this\.syncPosition\(\);\n\s*this\.check\(cause, p0, placed, mounted, drift, following0\);/, "the checks run at the end of every transaction, after P is re-read");
+  assert.match(engine, /const following0 = this\.following;/, "…against the follow state the transaction started with (I13)");
+  for (const rule of ["I1", "I3", "I4", "I5", "I7", "I10", "I11", "I13", "I14", "shape"]) assert.match(engine, new RegExp(`v\\("${rule}"|this\\.violation\\("${rule}"`), `rule ${rule} is checked`);
+  assert.match(engine, /if \(this\.dragging\) this\.violation\("I14"/, "a write under a drag is reported where it would happen");
+  assert.match(engine, /this\.lastWrite = \{ want, got: this\.wrote \};/, "a clamped write is told apart from a hold the browser refused");
+  assert.match(engine, /Math\.abs\(this\.lastWrite\.got - this\.lastWrite\.want\) <= 1\)/, "…and I7 is checked only when the browser kept the write");
+  assert.match(engine, /window\.__viewportViolations = this\.violations;/, "the ring is readable from the page");
+  assert.match(engine, /if \(this\.violations\.length > 50\) this\.violations\.shift\(\);/, "…and bounded");
+  assert.match(engine, /this\.trace\("violation", entry\);/, "each violation is a trace entry");
+  assert.match(engine, /countShare\(kind, before, after\)/, "I5 is an O(1) comparison against a per-kind count kept beside the shares");
+  console.log("#196 stage 6 cases passed");
 }

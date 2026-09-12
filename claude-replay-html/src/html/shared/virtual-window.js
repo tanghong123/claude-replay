@@ -316,6 +316,15 @@ class VirtualWindow {
     this.guesses = new Map(Object.entries(floors).map(([kind, floor]) => [kind, new HeightGuess(floor)]));
     this.defaultKind = defaultKind != null && this.guesses.has(defaultKind) ? defaultKind : Object.keys(floors)[0];
     this.shares = new Map();
+    // Non-zero shares per kind, kept beside the map so I5 is an O(1) comparison (§4.12).
+    this.shareCounts = new Map();
+    // The invariant check mode (framework §4.12): always on, never throwing. A failed check is a
+    // `violation` trace entry and an entry here — `window.__viewportViolations` — so a report from
+    // a real session carries them; the console hears each rule once.
+    this.violations = [];
+    this.warned = new Set();
+    if (typeof window !== "undefined") window.__viewportViolations = this.violations;
+    this.lastWrite = null;
     this.rememberMs = rememberMs;
     this.prefix = [0];
     this.lo = 0;
@@ -591,6 +600,7 @@ class VirtualWindow {
    *  Returns whether the reader is where `P` says — placed, or already there. */
   place(position, drift = 0, smooth = false) {
     if (!position) return false;
+    if (this.dragging) this.violation("I14", { source: position.source });
     const base = this.offsetOf(position);
     if (base == null) { this.trace("place:unmounted", { anchor: position.key }); return false; }
     const want = base + drift;
@@ -609,6 +619,9 @@ class VirtualWindow {
     } else {
       this.frame.scrollTo(want);
       this.wrote = this.frame.scrollTop();
+      // The browser may keep less than asked at either end of the page; I7 is checked only when it
+      // kept the write (§4.12).
+      this.lastWrite = { want, got: this.wrote };
     }
     this.trace("place", { source: position.source, anchor: position.key || null, index: position.index == null ? null : position.index, want: Math.round(want), delta: Math.round(delta), drift: Math.round(drift), smooth });
     return true;
@@ -813,6 +826,7 @@ class VirtualWindow {
   }
 
   applyLate() {
+    if (!this.transacting) this.violation("I4", {});
     if (!this.applyEstimates()) return;
     this.trace("estimates:applied", { estimate: this.count ? Math.round(this.estimateAt(0)) : null, late: true });
   }
@@ -903,15 +917,23 @@ class VirtualWindow {
     const kind = this.kindFor(index);
     const prior = this.shares.get(key);
     let previous = 0;
-    if (prior && prior.kind !== kind) this.guesses.get(prior.kind).forget(prior.share);
+    if (prior && prior.kind !== kind) { this.guesses.get(prior.kind).forget(prior.share); this.countShare(prior.kind, prior.share, 0); }
     else if (prior) previous = prior.share;
-    this.shares.set(key, { kind, share: this.guesses.get(kind).learn(height, previous) });
+    const share = this.guesses.get(kind).learn(height, previous);
+    this.shares.set(key, { kind, share });
+    this.countShare(kind, prior && prior.kind === kind ? prior.share : 0, share);
+  }
+  /** The per-kind count of non-zero shares follows every change of one share (I5, §4.12). */
+  countShare(kind, before, after) {
+    const delta = (after ? 1 : 0) - (before ? 1 : 0);
+    if (delta) this.shareCounts.set(kind, (this.shareCounts.get(kind) || 0) + delta);
   }
   /** A record that is gone takes back what it taught (#194). */
   forget(key) {
     const prior = this.shares.get(key);
     if (!prior) return;
     this.guesses.get(prior.kind).forget(prior.share);
+    this.countShare(prior.kind, prior.share, 0);
     this.shares.delete(key);
   }
   /** The records from `index` on are about to be dropped or rewritten (a rewritten tail, #165):
@@ -922,6 +944,7 @@ class VirtualWindow {
   /** Nothing learned applies any more: a layout change with no ratio to apply (`remeasure`). */
   resetGuesses() {
     this.shares.clear();
+    this.shareCounts.clear();
     for (const guess of this.guesses.values()) guess.reset();
   }
   /** A width change re-guesses what has been LEARNED by the ratio the measured heights are scaled
@@ -1131,6 +1154,7 @@ class VirtualWindow {
     if (this.transacting) { this.queued.push([cause, options]); return false; }
     this.transacting = true;
     let summary = null;
+    const following0 = this.following;
     try {
       const startTop = this.frame.scrollTop();
       const p0 = this.positionFor(options);
@@ -1180,6 +1204,7 @@ class VirtualWindow {
       // A position the reader asked for (§4.10) is `P` from here on; `syncPosition` keeps it.
       if (p0 && p0.commanded) this.position = p0;
       this.syncPosition();
+      this.check(cause, p0, placed, mounted, drift, following0);
       summary = Object.assign({ p0: p0 ? p0.source : null, anchor: p0 && p0.key ? p0.key : null, placed }, mounted ? { range: [mounted.lo, mounted.hi], fresh: mounted.fresh } : {}, options.fields || {});
       // Trace only: is the viewport inside the window it left, and how the window was chosen.
       if (this.tracing) { summary.covered = this.viewportMounted(); summary.choice = this.lastRangeChoice || null; this.lastRangeChoice = null; }
@@ -1192,6 +1217,75 @@ class VirtualWindow {
     if (options.after) options.after(summary);
     if (this.queued.length) { const [next, opts] = this.queued.shift(); this.transact(next, opts); }
     return true;
+  }
+
+  /** The invariant check mode (framework §4.12): what the code can state but not prevent, checked
+   *  at the end of every transaction against what the browser did. O(1) or O(window) each; the one
+   *  layout read is the rect of an item the transaction has already laid out. A failure is
+   *  reported (`violation`), never corrected — the engine's job then is to be visible, not to hide
+   *  it under a second write. */
+  check(cause, p0, placed, mounted, drift, following0) {
+    try {
+      this.checks(cause, p0, placed, mounted, drift, following0);
+    } catch (error) {
+      // A fault in a check (a rect on an element the page removed, a shape it did not expect) is
+      // itself a violation — never an exception into the apply that ran the transaction.
+      this.violation("check", { cause, error: String(error && error.message ? error.message : error) });
+    }
+  }
+
+  checks(cause, p0, placed, mounted, drift, following0) {
+    const v = (rule, fields) => this.violation(rule, Object.assign({ cause }, fields));
+    const count = this.count;
+    if (this.lo < 0 || this.hi < this.lo || this.hi > count) v("shape", { lo: this.lo, hi: this.hi, count });
+    const pads = [parseFloat(this.topPad.style.height), parseFloat(this.bottomPad.style.height)];
+    if (!(pads[0] >= 0) || !(pads[1] >= 0)) v("shape", { pads });
+    if (this.prefix.length !== count + 1) v("I3", { prefix: this.prefix.length, count });
+    if (mounted) {
+      let sum = 0;
+      for (let i = this.lo; i < this.hi; i++) if (!this.skipAt(i)) sum += this.heightOf(i);
+      const span = this.prefix[this.hi] - this.prefix[this.lo];
+      if (Math.abs(span - sum) > 0.5) v("I3", { span: Math.round(span), sum: Math.round(sum), lo: this.lo, hi: this.hi });
+      let expect = this.lo;
+      let order = true;
+      for (const child of this.mount.children) {
+        while (expect < this.hi && this.skipAt(expect)) expect++;
+        if (Number(child.dataset.unitIndex) !== expect) { order = false; break; }
+        expect++;
+      }
+      while (expect < this.hi && this.skipAt(expect)) expect++;
+      if (!order || expect !== this.hi) v("shape", { mounted: this.mount.children.length, lo: this.lo, hi: this.hi });
+    }
+    for (const [kind, guess] of this.guesses) if (guess.count !== (this.shareCounts.get(kind) || 0)) v("I5", { kind, samples: guess.count, shares: this.shareCounts.get(kind) || 0 });
+    if (this.following !== following0) v("I13", { from: following0, to: this.following });
+    if (this.dragging || !count) return;
+    const p = this.position;
+    if (p && p.at != null && !this.inFlight() && p.at !== this.frame.scrollTop()) v("I1", { at: p.at, top: Math.round(this.frame.scrollTop()) });
+    if (p) {
+      const index = p.source === "tail" ? count - 1 : p.index;
+      if (index != null && (index < this.lo || index >= this.hi)) v("I11", { source: p.source, index, lo: this.lo, hi: this.hi });
+    }
+    if ((placed === "placed" || placed === "tail") && !this.inFlight() && !this.viewportMounted()) v("I10", { placed, lo: this.lo, hi: this.hi, top: Math.round(this.frame.scrollTop()) });
+    if (p0 && p0.source === "anchor" && placed === "placed" && !this.inFlight() && this.lastWrite && Math.abs(this.lastWrite.got - this.lastWrite.want) <= 1) {
+      const item = [...this.mount.children].find(child => child.dataset.unitKey === p0.key);
+      if (item) {
+        const row = p0.block != null ? item.querySelector(`[data-block-index="${p0.block}"]`) : null;
+        const top = (row || item).getBoundingClientRect().top - this.frame.viewportTop();
+        const want = (row ? p0.blockTop : p0.top) - drift;
+        if (Math.abs(top - want) > 1.5) v("I7", { anchor: p0.key, block: row ? p0.block : null, top: Math.round(top), want: Math.round(want), drift: Math.round(drift) });
+      }
+    }
+  }
+
+  violation(rule, fields) {
+    const entry = Object.assign({ rule, t: Math.round(performance.now()) }, fields);
+    this.violations.push(entry);
+    if (this.violations.length > 50) this.violations.shift();
+    this.trace("violation", entry);
+    if (!this.warned.has(rule) && typeof console !== "undefined" && console.warn) {
+      this.warned.add(rule);
+      console.warn(`[viewport] invariant ${rule} violated`, JSON.stringify(entry));
+    }
   }
 
   /** The placement a transaction ends with. An anchor or a model position is written now; the

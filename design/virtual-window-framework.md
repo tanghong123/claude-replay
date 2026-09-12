@@ -913,6 +913,23 @@ pins the checks' presence and their placement.
 suite; the byte gate re-baselined; the contract; CI. A violation the suite surfaces is a finding,
 not a reason to weaken the check: it is fixed at its cause or filed with the entry as evidence.
 
+**As landed (2026-09-13).** As designed, with these corrections. The check body runs as `checks()`
+inside `check()`'s own `try`, so a fault in a check is a violation of rule `check` and never an
+exception into the apply that ran the transaction. The workout pages by wheel, not by a synthetic
+Space: the classic page pages natively on Space, which a dispatched key event does not trigger, so
+the wheel is the one gesture that pages both surfaces. Its fold is opened and closed where the
+wheels leave the reader, not at the tail: the generic fixture ends on prose and mounts no fold
+header there on the classic page (and the helper answers −2, not −1, for a header outside a
+`[data-turn]`, which the classic page's folds are). Two contract pins moved with the text they
+named: the write-back pin lets the I14 check stand between the guard and the offset, and the I5 pin
+follows `countShare`. Both surfaces ran the workout with an empty ring. The three real-session
+probes with the ring printed: the walk on both surfaces (the series as at stage 5, no backward
+jump), the unfold's four cases (worst hold 1px live, 0px static, 12 wheel phases each) and the
+runaway's four (rules unchanged; the shell's live case ended its down phase following this run, the
+classic page's unpinned — the state that has alternated run to run since stage 2) — ten runs, every
+ring empty. Full browser suite 239/239 on the final tree (the 237 names of 04a2af9 plus this
+scenario's pair), two Chromes at a time.
+
 ### 4.7 Out of scope
 
 - Sparse vs dense mount under a filter (settled per page: `skipAt`/`renderAll`).
@@ -929,7 +946,9 @@ not a reason to weaken the check: it is fixed at its cause or filed with the ent
 - **The node contract** pins the shapes: one `frame.scrollTo` call site; the spontaneous
   transaction taking `P` as stored and the mount transaction re-reading it when the offset moved;
   the drift computed at the transaction's start; the pads written after a mutation before the mount;
-  no `owed`, no settle, no lo-hold; the reconcile order; the trace vocabulary; since stage 5, that
+  no `owed`, no settle, no lo-hold; the reconcile order; the trace vocabulary; since stage 6, the
+  checks' presence and placement (every rule named, the follow snapshot, the write's `want`/`got`,
+  the bounded ring, the trace entry, the O(1) share count); since stage 5, that
   no page source names a range or a mount (`reconcile(`, `rangeAround(`, `rangeForScroll(`,
   `mountRange(`, `clearWindow(`) and that both classic transports run their batch inside the
   records transaction (§4.11).
