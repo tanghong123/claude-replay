@@ -1191,6 +1191,10 @@ the line and the spy keeps the previous turn. The count of user units is taken i
 through `userUnits`, because the first render runs while the module is still being evaluated and
 that `const` is declared further down (a temporal dead zone blanked the shell on the first try; the
 console said so).
+Two consumers inherit the new reading without being named: `recordIndexAtTop()` (#118, the nearest
+hit for a cold step or a filter) now starts from the unit containing the top line rather than the
+first one starting below it, and `viewport.landing` is read on every scroll rather than only on a
+jump — one `getComputedStyle` beside the layout reads already in that path; noted, not acted on.
 
 **What changed for the keys.** `]` and `[` step from the same reading. After real paging the next
 header can sit a little below the spy's line; `]` then lands THAT header under the bar — a short
