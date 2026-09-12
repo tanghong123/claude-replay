@@ -955,7 +955,10 @@ scenario's pair), two Chromes at a time.
 - **The scenarios on both surfaces** hold I9–I14 as behaviour: the pixel-hold cases, the growth
   cases, the walk, the growing tail, the deep jump, the held thumb, the end rule.
 - **The real-session probes** (#194's `tmp_walk`, `tmp_runaway`, `tmp_unfold`, kept for #197)
-  are the acceptance: before/after numbers on the owner's sessions, both pages.
+  are the acceptance: before/after numbers on the owner's sessions, both pages. What the engine
+  records for a report from a session nobody probed — an hour of actions, states and deltas,
+  exportable without content and replayable in the harness — is `design/viewport-history.md`
+  (#197), a different instrument from the checks in §4.12.
 
 The decision rule throughout: an invariant held by construction beats one held by a timer; the
 one timer that stays (§4.2) decides only when a model-only change runs, and nothing about where
