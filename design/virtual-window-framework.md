@@ -198,7 +198,7 @@ both surfaces unless named otherwise):
 - I12 — `scenario_reading_inside_a_long_open_turn_holds_through_rewrites`, `scenario_queued_prompt_shows_its_text` (#165).
 - I13 — `scenario_follows_the_tail_when_pinned`, `scenario_a_nudge_keeps_the_tail` (#127), `scenario_a_fold_opened_at_the_tail_does_not_snap_back`
   (#185), `scenario_folding_near_the_tail_keeps_the_scroll` (#190), `scenario_resize_while_pinned`.
-- I14 — `scenario_a_press_in_the_gutter_is_not_a_thumb` (#140 step 4), and the held-thumb structural case in `tests/browser_follow.rs` (#98).
+- I14 — `scenario_a_press_in_the_gutter_is_not_a_thumb` (#140 step 4), and `app_shell_lets_the_thumb_own_the_position_while_dragged` (app shell only — the case that proved the code path with a synthetic pointer, #98).
 
 The three policies are three timers — `settleTimer`, `estimatesTimer`, `bottomTimer` — plus the
 `owed` debt that connects them. Each was right for the bug it closed and each has a documented
