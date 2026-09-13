@@ -1016,6 +1016,9 @@ fn the_app_shell_hides_and_restores_a_session() {
     monitor.pair(&tab);
     tab.navigate_to("http://127.0.0.1:2832/?ui=app").unwrap();
     tab.wait_until_navigated().unwrap();
+    // The fixture is stamped in the builders' fixed past hour, so it is Idle — out of the
+    // shell's default filter (#202). This case reads the TREE, so it asks for every bucket.
+    harness::show_every_session(&tab, "http://127.0.0.1:2832/?ui=app");
 
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
@@ -1037,7 +1040,7 @@ fn the_app_shell_hides_and_restores_a_session() {
     }
     // On failure say WHICH module the browser could not load: a served-list miss 404s one
     // import and takes the whole graph down, and nothing on the node side can see it.
-    let painted = eval(&tab, "JSON.stringify({hiddenBtn: !!document.getElementById('hiddenBtn'), tree: (document.getElementById('tree')||{innerHTML:''}).innerHTML.slice(0, 160), modules: performance.getEntriesByType('resource').filter(e => e.name.includes('/monitor-ui/')).map(e => [e.name.split('/').pop(), e.responseStatus])})");
+    let painted = eval(&tab, "JSON.stringify({filterBtn: !!document.getElementById('filterBtn'), tree: (document.getElementById('tree')||{innerHTML:''}).innerHTML.slice(0, 160), modules: performance.getEntriesByType('resource').filter(e => e.name.includes('/monitor-ui/')).map(e => [e.name.split('/').pop(), e.responseStatus])})");
     assert!(
         !first.is_empty(),
         "the store has {store_rows} rows but the app shell painted none in 30s — did app.js throw? {painted}"
@@ -1045,7 +1048,7 @@ fn the_app_shell_hides_and_restores_a_session() {
     let row = format!("document.querySelector('.tree-row.session[data-session=\"{first}\"]')");
     let before = eval(
         &tab,
-        "Number(document.getElementById('hiddenCount').textContent)||0",
+        "Number(document.querySelector('#sessionFilter [data-bucket-count=\"hidden\"]').textContent)||0",
     )
     .as_i64()
     .unwrap_or(0);
@@ -1062,9 +1065,12 @@ fn the_app_shell_hides_and_restores_a_session() {
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
-    let after_hide = eval(&tab, "JSON.stringify({shown: !document.getElementById('hiddenBtn').hidden, n: Number(document.getElementById('hiddenCount').textContent)||0})");
+    let after_hide = eval(&tab, "JSON.stringify({shown: Number(document.querySelector('#sessionFilter [data-bucket-count=\"hidden\"]').textContent) > 0, n: Number(document.querySelector('#sessionFilter [data-bucket-count=\"hidden\"]').textContent)||0})");
     // Reveal, then restore through the revealed row's action.
-    eval(&tab, "document.getElementById('hiddenBtn').click(); 'ok'");
+    eval(
+        &tab,
+        "document.querySelector('#sessionFilter [data-include-hidden]').click(); 'ok'",
+    );
     let mut revealed = false;
     for _ in 0..20 {
         if eval(
@@ -1099,7 +1105,7 @@ fn the_app_shell_hides_and_restores_a_session() {
     }
     let after_restore = eval(
         &tab,
-        "Number(document.getElementById('hiddenCount').textContent)||0",
+        "Number(document.querySelector('#sessionFilter [data-bucket-count=\"hidden\"]').textContent)||0",
     )
     .as_i64()
     .unwrap_or(-1);
@@ -1107,7 +1113,10 @@ fn the_app_shell_hides_and_restores_a_session() {
     assert!(gone, "the hidden row left the tree");
     let v: serde_json::Value = serde_json::from_str(after_hide.as_str().unwrap_or("null"))
         .unwrap_or(serde_json::Value::Null);
-    assert_eq!(v["shown"], true, "Hidden (n) appeared: {after_hide}");
+    assert_eq!(
+        v["shown"], true,
+        "the sheet's hidden count appeared: {after_hide}"
+    );
     assert_eq!(
         v["n"].as_i64().unwrap_or(-1),
         before + 1,
@@ -1518,14 +1527,17 @@ fn a_clicked_file_path_opens_its_content_in_the_page() {
     let cwd = repo.display().to_string();
     let mut s = String::new();
     s.push_str(&format!(
-        "{{\"type\":\"user\",\"cwd\":\"{cwd}\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"read it\"}}]}},\"timestamp\":\"2026-08-21T10:00:00Z\"}}\n"
+        "{{\"type\":\"user\",\"cwd\":\"{cwd}\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"read it\"}}]}},\"timestamp\":\"{}\"}}\n",
+        harness::at("00:00")
     ));
     s.push_str(&format!(
-        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Read\",\"input\":{{\"file_path\":\"{abs}\"}}}}]}},\"timestamp\":\"2026-08-21T10:00:01Z\"}}\n"
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Read\",\"input\":{{\"file_path\":\"{abs}\"}}}}]}},\"timestamp\":\"{}\"}}\n",
+        harness::at("00:01")
     ));
-    s.push_str(
-        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"artifact body line one\\nline two\\n\"}]},\"timestamp\":\"2026-08-21T10:00:02Z\"}\n",
-    );
+    s.push_str(&format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"artifact body line one\\nline two\\n\"}}]}},\"timestamp\":\"{}\"}}\n",
+        harness::at("00:02")
+    ));
     std::fs::write(&src, s).unwrap();
 
     // A PAIRED server, stood up from the public API — `/file` is offered only to a client
@@ -2444,7 +2456,7 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
     assert_eq!(rail["display"], "flex", "the rail shows: {rail}");
     assert!(
         rail["buttons"].as_u64().unwrap_or(0) >= 5,
-        "expand, write, search, attention and one agent: {rail}"
+        "expand, write, search, filter and one agent: {rail}"
     );
     assert_eq!(
         rail["agents"], 1,
@@ -2532,29 +2544,34 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
         std::time::Duration::from_secs(5),
         "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
     );
-    // #91: the attention filter reads as PRESSED — it takes the amber it filters for, where the
-    // shell's own `.navbtn.on` is the faint hover tint every row shares.
-    let attention = |t: &headless_chrome::Tab| {
-        harness::probe(t, "(function(){ var b = document.getElementById('attentionBtn'); var c = b.querySelector('.attention-count'); var m = document.getElementById('sidebarMiniAttention'); return { bg: getComputedStyle(b).backgroundColor, shadow: getComputedStyle(b).boxShadow, count: getComputedStyle(c).backgroundColor, mini: getComputedStyle(m).backgroundColor, pressed: b.getAttribute('aria-pressed') }; })()")
+    // #91 → #202: the one control that changes what the list shows reads as LIT — the session
+    // filter's glyph takes the primary tint when the bucket set leaves something out, where the
+    // shell's own hover is the tint every button shares; the rail's glyph too.
+    let glyph = |t: &headless_chrome::Tab| {
+        harness::probe(t, "(function(){ var b = document.getElementById('filterBtn'); var m = document.getElementById('sidebarMiniFilter'); return { bg: getComputedStyle(b).backgroundColor, shadow: getComputedStyle(b).boxShadow, mini: getComputedStyle(m).color, on: b.classList.contains('on') }; })()")
     };
-    let off = attention(&tab);
+    // The default set already leaves Idle out, so first Everything (unlit), then a bucket
+    // unchecked (lit).
     harness::eval(
         &tab,
-        "document.getElementById('attentionBtn').click(); 'ok'",
+        "(function(){ document.getElementById('filterBtn').click(); document.querySelector('#sessionFilter [data-filter-reset]').click(); return 'ok'; })()",
     );
     std::thread::sleep(std::time::Duration::from_millis(300));
-    let on = attention(&tab);
-    assert_eq!(on["pressed"], "true", "the filter is pressed: {on}");
+    let off = glyph(&tab);
+    assert_eq!(off["on"], false, "Everything leaves the glyph unlit: {off}");
+    harness::eval(
+        &tab,
+        "(function(){ document.querySelector('#sessionFilter [data-bucket=\"recent\"]').click(); return 'ok'; })()",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let on = glyph(&tab);
+    assert_eq!(on["on"], true, "the filter is lit: {on}");
     assert_ne!(
         on["bg"], off["bg"],
         "…and says so with a fill of its own: {off} -> {on}"
     );
-    assert_ne!(on["shadow"], off["shadow"], "…and a border: {on}");
-    assert_ne!(
-        on["count"], off["count"],
-        "…with the count inverted onto it: {on}"
-    );
-    assert_ne!(on["mini"], off["mini"], "…and the rail's button too: {on}");
+    assert_ne!(on["shadow"], off["shadow"], "…and a ring: {on}");
+    assert_ne!(on["mini"], off["mini"], "…and the rail's glyph too: {on}");
     drop(monitor);
 }
 
@@ -3424,7 +3441,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
         std::time::Duration::from_secs(5),
         "document.querySelectorAll('.outline-card.open').length",
     );
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    harness::until_drawers_settle(&tab);
     let all = harness::probe(&tab, state);
     let heads = all["heads"].as_array().unwrap();
     for w in heads.windows(2) {
@@ -4383,8 +4400,9 @@ fn the_app_shell_resizes_the_session_list() {
         "the handle sits on the sidebar's right edge: {start}"
     );
     assert_eq!(start["role"], "separator", "…named for what it is: {start}");
-    // A drag widens it. The head reflows: at 300px its five controls take their own row, and
-    // with the room a wider list gives they come back up beside the brand.
+    // A drag widens it. The head reflows: at 300px its six controls (theme, collapse, expand,
+    // the session filter — #202 — and the sidebar collapse, beside the shell switch) take their
+    // own row, and with the room a wider list gives they come back up beside the brand.
     assert_eq!(
         start["sameRow"], false,
         "at the default width the head's controls take their own row rather than overflow: {start}"
@@ -4396,16 +4414,16 @@ fn the_app_shell_resizes_the_session_list() {
     let drag = |x: i32| {
         format!("(function(){{ var r = document.getElementById('sidebarResizer'); var rect = r.getBoundingClientRect(); r.dispatchEvent(new PointerEvent('pointerdown', {{ clientX: rect.left + 3, clientY: 300, bubbles: true, pointerId: 1 }})); dispatchEvent(new PointerEvent('pointermove', {{ clientX: {x}, clientY: 300, bubbles: true, pointerId: 1 }})); dispatchEvent(new PointerEvent('pointerup', {{ clientX: {x}, clientY: 300, bubbles: true, pointerId: 1 }})); return 'ok'; }})()")
     };
-    harness::eval(&tab, &drag(430));
+    harness::eval(&tab, &drag(480));
     harness::until(
         &tab,
-        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 430",
+        "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 480",
         "the list to follow the drag",
         std::time::Duration::from_secs(5),
         "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
     );
     let wide = harness::probe(&tab, state);
-    assert_eq!(wide["stored"], "430", "the width is the viewer's: {wide}");
+    assert_eq!(wide["stored"], "480", "the width is the viewer's: {wide}");
     assert_eq!(
         wide["sameRow"], true,
         "the head's controls come back up beside the brand once there is room: {wide}"
@@ -4670,14 +4688,7 @@ fn the_app_shell_outline_panes_are_drawers() {
     // (#183). Waiting for the heights to be NON-ZERO would make the assertion below tautological;
     // waiting for the animation to END keeps it honest, because a drawer that really stayed shut
     // settles at 0 and still fails.
-    harness::until(
-        &tab,
-        "!document.querySelector('.session-navigator').classList.contains('drawers-animating')",
-        "the drawer open/close animation to finish",
-        std::time::Duration::from_secs(10),
-        "document.querySelector('.session-navigator').className",
-    );
-    std::thread::sleep(std::time::Duration::from_millis(120));
+    harness::until_drawers_settle(&tab);
     let state = r#"(function(){ var nav = document.querySelector('.session-navigator'); var cards = [...nav.querySelectorAll(':scope > .outline-card')]; var rect = function (e) { return e.getBoundingClientRect(); }; return { scroll: Math.round(nav.scrollTop), extent: Math.round(nav.scrollHeight - nav.clientHeight), keys: cards.map(function (c) { return c.dataset.navCard; }), bodies: cards.map(function (c) { return Math.round(rect(c.querySelector(':scope > .outline-card-body')).height); }), heads: cards.map(function (c) { return Math.round(rect(c.querySelector(':scope > .outline-card-head')).top); }), gaps: cards.slice(1).map(function (c, i) { return Math.round(rect(c).top - rect(cards[i]).bottom); }) }; })()"#;
     let open = harness::probe(&tab, state);
     let bodies = |v: &serde_json::Value| -> Vec<f64> {
@@ -4833,14 +4844,7 @@ fn the_app_shell_outline_toggle_completes_the_slide() {
     // (#183). Waiting for the heights to be NON-ZERO would make the assertion below tautological;
     // waiting for the animation to END keeps it honest, because a drawer that really stayed shut
     // settles at 0 and still fails.
-    harness::until(
-        &tab,
-        "!document.querySelector('.session-navigator').classList.contains('drawers-animating')",
-        "the drawer open/close animation to finish",
-        std::time::Duration::from_secs(10),
-        "document.querySelector('.session-navigator').className",
-    );
-    std::thread::sleep(std::time::Duration::from_millis(120));
+    harness::until_drawers_settle(&tab);
     let heights = r#"(function(){ var cards = [...document.querySelectorAll('.session-navigator > .outline-card')]; return cards.map(function (c) { return c.dataset.navCard + ':' + Math.round(c.querySelector(':scope > .outline-card-body').getBoundingClientRect().height); }); })()"#;
     let rest = harness::probe(&tab, heights);
     let read = |v: &serde_json::Value, key: &str| -> f64 {
@@ -5158,18 +5162,17 @@ fn the_app_shell_raw_user_text_keeps_the_turns_own_surface() {
     );
 }
 
-/// #163. "Show Hidden" is a toggle, and the bug was that nothing PAINTED its pressed state: the
-/// class and `aria-pressed` both flipped correctly, but the only rule reaching them was the
-/// generic `.navbtn.on`, which left the ordinary ink and no ring — measured on the old code as
-/// a lit ground of rgba(255,255,255,.48), ink unchanged, `box-shadow: none`. So this reads the
-/// RESOLVED colours rather than the class, which is the only way to see the difference: lit has
-/// to differ from unlit, carry the accent and the ring, and not be the hover colour either.
+/// #163 → #202. "Show Hidden" was a toggle whose press nothing painted (the class and
+/// `aria-pressed` flipped, the only rule reaching it was the generic `.navbtn.on`). The control
+/// is now the session filter's Include hidden checkbox, and the claim moves with it: checked, it
+/// PAINTS — `aria-checked`, the `on` class, the box filled with the primary colour and a tick
+/// drawn — and unchecked it is a bare box; read as RESOLVED colours, not the class.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn the_app_shell_show_hidden_reads_as_a_lit_toggle() {
+fn the_app_shell_include_hidden_reads_as_a_checked_box() {
     let _serial = serial();
-    let (_monitor, _browser, tab) = shell_with_a_session("appshell-show-hidden", 2882);
-    // Hide something, so the control has a reason to exist.
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-include-hidden", 2882);
+    // Hide something, so the checkbox has a reason to exist.
     harness::until(
         &tab,
         "!!document.querySelector('[data-ignore-op]')",
@@ -5180,52 +5183,42 @@ fn the_app_shell_show_hidden_reads_as_a_lit_toggle() {
     harness::eval(&tab, "document.querySelector('[data-ignore-op]').click()");
     harness::until(
         &tab,
-        "(function(){ var b = document.getElementById('hiddenBtn'); return !!b && !b.hidden; })()",
-        "the Show Hidden control to appear",
+        "Number(document.querySelector('#sessionFilter [data-bucket-count=\"hidden\"]').textContent) === 1",
+        "the sheet's hidden count to read 1",
         std::time::Duration::from_secs(15),
-        "(function(){ var b = document.getElementById('hiddenBtn'); return b ? 'hidden=' + b.hidden : 'absent'; })()",
+        "document.querySelector('#sessionFilter [data-bucket-count=\"hidden\"]').textContent",
     );
-    let read = "(function(){ var b = document.getElementById('hiddenBtn'); var probe = document.createElement('div'); probe.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--hover').trim(); document.body.appendChild(probe); var hover = getComputedStyle(probe).backgroundColor; probe.remove(); var m = document.getElementById('sidebarMiniHidden'); return { label: b.querySelector('.label').textContent.trim(), bg: getComputedStyle(b).backgroundColor, ring: getComputedStyle(b).boxShadow, ink: getComputedStyle(b).color, hover: hover, pressed: b.getAttribute('aria-pressed'), mini: m ? m.classList.contains('on') : null }; })()";
-    let unlit = harness::probe(&tab, read);
+    harness::eval(&tab, "document.getElementById('filterBtn').click()");
+    let read = "(function(){ var o = document.querySelector('#sessionFilter [data-include-hidden]'); var c = o.querySelector('.scope-check'); return { checked: o.getAttribute('aria-checked'), on: o.classList.contains('on'), box: getComputedStyle(c).backgroundColor, tick: getComputedStyle(c, '::after').opacity, label: o.textContent.trim().replace(/\\d+$/, '').trim() }; })()";
+    let unchecked = harness::probe(&tab, read);
     assert_eq!(
-        unlit["label"].as_str().unwrap_or(""),
-        "Show Hidden",
-        "the label says what pressing it does: {unlit}"
+        unchecked["label"].as_str().unwrap_or(""),
+        "Include hidden",
+        "the checkbox says what it does: {unchecked}"
     );
     assert_eq!(
-        unlit["pressed"].as_str().unwrap_or(""),
-        "false",
-        "it starts unpressed: {unlit}"
+        unchecked["checked"], "false",
+        "it starts unchecked: {unchecked}"
     );
-    harness::eval(&tab, "document.getElementById('hiddenBtn').click()");
+    assert_eq!(unchecked["tick"], "0", "…with no tick drawn: {unchecked}");
+    harness::eval(
+        &tab,
+        "document.querySelector('#sessionFilter [data-include-hidden]').click()",
+    );
     harness::until(
         &tab,
-        "document.getElementById('hiddenBtn').getAttribute('aria-pressed') === 'true'",
-        "the toggle to go on",
+        "document.querySelector('#sessionFilter [data-include-hidden]').getAttribute('aria-checked') === 'true'",
+        "the checkbox to go on",
         std::time::Duration::from_secs(10),
-        "document.getElementById('hiddenBtn').getAttribute('aria-pressed')",
+        "document.querySelector('#sessionFilter [data-include-hidden]').getAttribute('aria-checked')",
     );
-    let lit = harness::probe(&tab, read);
+    let checked = harness::probe(&tab, read);
+    assert_eq!(checked["on"], true, "the on class: {checked}");
     assert_ne!(
-        lit["bg"], unlit["bg"],
-        "lit differs from unlit: {unlit} -> {lit}"
+        checked["box"], unchecked["box"],
+        "checked fills the box: {unchecked} -> {checked}"
     );
-    assert_ne!(
-        lit["bg"], lit["hover"],
-        "…and lit is NOT the hover colour, or a pressed toggle looks like a pointed-at one: {lit}"
-    );
-    assert_ne!(
-        lit["ink"], unlit["ink"],
-        "…the label takes the accent too: {unlit} -> {lit}"
-    );
-    assert!(
-        lit["ring"].as_str().unwrap_or("none") != "none",
-        "…and it carries the inset ring the other lit filter has: {lit}"
-    );
-    assert_eq!(
-        lit["mini"], true,
-        "the collapsed rail's button is the same control, so it lights too: {lit}"
-    );
+    assert_eq!(checked["tick"], "1", "…and draws the tick: {checked}");
 }
 
 /// #162, the owner's third report: "the show-as-raw ({}) sign is always present for user-messages,
@@ -5396,7 +5389,7 @@ fn the_app_shell_reopens_a_toggled_shut_pane_by_pulling() {
     let body_of = "(function(k){ var b = document.querySelector('[data-nav-card=\"' + k + '\"] > .outline-card-body'); return b ? Math.round(b.getBoundingClientRect().height) : -1; })";
     // Every pane open, so the only thing a pull can act on is the one we shut.
     harness::eval(&tab, "(function(){ ['turns','tasks','agents','session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (c && !c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); }); return 'ok'; })()");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    harness::until_drawers_settle(&tab);
     let opened = harness::eval(&tab, &format!("{body_of}('tasks')"));
     assert!(
         opened.as_f64().unwrap_or(0.0) > 0.0,
@@ -5434,7 +5427,7 @@ fn the_app_shell_opens_a_pushed_shut_pane_from_its_head() {
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-open-from-head", 2893);
     let body_of = "(function(k){ var b = document.querySelector('[data-nav-card=\"' + k + '\"] > .outline-card-body'); return b ? Math.round(b.getBoundingClientRect().height) : -1; })";
     harness::eval(&tab, "(function(){ ['turns','tasks','agents','session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (c && !c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); }); return 'ok'; })()");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    harness::until_drawers_settle(&tab);
     let opened = harness::eval(&tab, &format!("{body_of}('turns')"));
     assert!(
         opened.as_f64().unwrap_or(0.0) > 0.0,
@@ -6032,7 +6025,9 @@ fn fake_agent(sid: &str, transcript: &std::path::Path) -> harness::Reap {
 
 fn bucket_world(base: &std::path::Path) -> BucketWorld {
     let stores = Stores::new(base);
-    let t = |i: u32| format!("2026-09-13T10:00:{i:02}Z");
+    // Minutes ago: the four live rows are "active recently"; the finished one, two hours back,
+    // is not.
+    let t = |i: u32| harness::rfc3339_secs_ago(120 - u64::from(i));
     let q = stores.claude_session(
         BUCKET_Q,
         &format!(
@@ -6062,9 +6057,15 @@ fn bucket_world(base: &std::path::Path) -> BucketWorld {
             harness::tool_open_at("toolu_m", &t(1))
         ),
     );
+    // Finished two hours ago: idle, and not "active recently".
+    let old = |i: u64| harness::rfc3339_secs_ago(7200 + 60 - i);
     stores.claude_session(
         BUCKET_D,
-        &harness::long_session(3, harness::Shape::default()),
+        &format!(
+            "{}{}",
+            harness::user_at("wrap it up", &old(0)),
+            harness::history::assistant_phased_at("Done.", &old(1), true)
+        ),
     );
     let a = stores.claude_session(
         BUCKET_A,
@@ -6103,11 +6104,11 @@ const BUCKET_STATES_JS: &str = "fetch('/api/sessions', {cache: 'no-store'}).then
 /// The session ids in the tree, by their last character, sorted.
 const BUCKET_TREE_JS: &str = "Array.from(document.querySelectorAll('.tree-row.session[data-session]')).map(function (e) { return e.dataset.session.slice(-1); }).sort().join('')";
 
-/// #202: the attention count is the number of BLOCKED rows — a wait, or an idle reason that
-/// cut the agent's work short — and a session whose turn ended with an answer is not in it.
-/// Against the bucket world the count reads 3 (the open question, the turn ended with a
-/// question, the exit mid-work), never the finished or the growing session; the attention
-/// filter shows exactly those three; and the tooltip is the predicate's own sentence.
+/// #202: the Blocked count is the number of rows that need a person — a wait, or an idle reason
+/// that cut the agent's work short — and a session whose turn ended with an answer is not in it.
+/// Against the bucket world the sheet's Blocked count reads 3 (the open question, the turn ended
+/// with a question, the exit mid-work), never the finished or the growing session; Blocked alone
+/// shows exactly those three; and the checkbox's title is the predicate's own sentence.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn the_app_shell_counts_the_blocked_sessions() {
@@ -6141,7 +6142,7 @@ fn the_app_shell_counts_the_blocked_sessions() {
     while Instant::now() < deadline {
         count = eval(
             &tab,
-            "Number(document.getElementById('attentionCount').textContent)",
+            "Number(document.querySelector('#sessionFilter [data-bucket-count=\"blocked\"]').textContent)",
             false,
         )
         .as_i64()
@@ -6175,59 +6176,63 @@ fn the_app_shell_counts_the_blocked_sessions() {
     );
     assert_eq!(st("4"), ("idle".into(), "exited".into()), "d: {states}");
     assert_eq!(st("5").0, "busy", "a grows under a live process: {states}");
-    // The attention filter keeps exactly the blocked rows, and releases them.
+    // Blocked alone — Active recently unchecked (Idle is off by default) — keeps exactly the
+    // blocked rows; Everything releases them.
     let all = eval(&tab, BUCKET_TREE_JS, false);
     eval(
         &tab,
-        "(function () { document.getElementById('attentionBtn').click(); return 'ok'; })()",
+        "(function () { document.getElementById('filterBtn').click(); document.querySelector('#sessionFilter [data-bucket=\"recent\"]').click(); return 'ok'; })()",
         false,
     );
     let blocked = eval(&tab, BUCKET_TREE_JS, false);
     eval(
         &tab,
-        "(function () { document.getElementById('attentionBtn').click(); return 'ok'; })()",
+        "(function () { document.querySelector('#sessionFilter [data-filter-reset]').click(); return 'ok'; })()",
         false,
     );
     let released = eval(&tab, BUCKET_TREE_JS, false);
-    let tips = eval(
+    let title = eval(
         &tab,
-        "[document.getElementById('attentionTooltip').textContent, document.getElementById('sidebarMiniAttentionTooltip').textContent]",
+        "document.querySelector('#sessionFilter [data-bucket=\"blocked\"]').title",
         false,
     );
     drop(monitor);
     drop(world);
-    assert_eq!(all.as_str(), Some("12345"), "every row before the filter");
+    assert_eq!(
+        all.as_str(),
+        Some("1235"),
+        "the default view — Active recently and Blocked — holds every row but the idle one"
+    );
     assert_eq!(
         blocked.as_str(),
         Some("123"),
-        "the attention filter shows the blocked rows and only them"
-    );
-    assert_eq!(released.as_str(), Some("12345"), "and releases them");
-    let nav = tips[0].as_str().unwrap_or("");
-    let mini = tips[1].as_str().unwrap_or("");
-    assert!(
-        nav.starts_with("Blocked sessions")
-            && nav.contains("plan approval")
-            && nav.contains("exit mid-work"),
-        "the nav tooltip is the predicate's sentence: {nav}"
+        "Blocked alone shows the blocked rows and only them"
     );
     assert_eq!(
-        mini,
-        format!("{nav} · 3"),
-        "the rail's tooltip is the same sentence with the count"
+        released.as_str(),
+        Some("12345"),
+        "and Everything releases them"
+    );
+    let title = title.as_str().unwrap_or("");
+    assert!(
+        title.starts_with("Blocked sessions")
+            && title.contains("plan approval")
+            && title.contains("exit mid-work"),
+        "the Blocked checkbox's title is the predicate's sentence: {title}"
     );
 }
 
 /// The filter sheet as the reader sees it: each checkbox's `aria-checked` and count, whether
 /// the sheet is open, the glyph's lit state and its shown/total, the attention button's press.
-const BUCKET_SHEET_JS: &str = "(function () { var s = document.getElementById('sessionFilter'); if (!s) return null; var o = {}; s.querySelectorAll('[data-bucket],[data-include-hidden]').forEach(function (b) { o[b.dataset.bucket || 'hidden'] = [b.getAttribute('aria-checked'), (b.querySelector('.scope-count') || {}).textContent]; }); o.open = !s.hidden; o.lit = document.getElementById('filterBtn').classList.contains('on'); o.count = document.getElementById('filterCount').textContent; o.attention = document.getElementById('attentionBtn').getAttribute('aria-pressed'); return o; })()";
+const BUCKET_SHEET_JS: &str = "(function () { var s = document.getElementById('sessionFilter'); if (!s) return null; var o = {}; s.querySelectorAll('[data-bucket],[data-include-hidden]').forEach(function (b) { o[b.dataset.bucket || 'hidden'] = [b.getAttribute('aria-checked'), (b.querySelector('.scope-count') || {}).textContent]; }); o.open = !s.hidden; o.lit = document.getElementById('filterBtn').classList.contains('on'); o.title = document.getElementById('filterBtn').title; return o; })()";
 
-/// #202: the session filter on the app shell — the glyph on the toolbar row opens a sheet of
-/// checkboxes (All, Active, Blocked, Idle, Include hidden) whose counts are the buckets' and
-/// whose every click the tree follows: a bucket unchecked leaves the tree, the last one
-/// unchecked puts every bucket back (a set is never empty), All restores everything, the
-/// attention button is the set at {blocked} and both paint from it, the choice survives a
-/// reload, Include hidden shows a hidden row dimmed, and Escape closes the sheet.
+/// #202: the session filter on the app shell — the glyph in the head-actions row (between
+/// Expand every group and the sidebar collapse) opens a sheet of checkboxes under the sidebar's
+/// head: Active recently, Blocked, Idle and Include hidden, with a count beside each — and the
+/// tree follows every click. Active recently is an hour of activity (busy included) and overlaps
+/// Blocked by design; a bucket unchecked leaves the tree; the last one unchecked puts every bucket
+/// back (a set is never empty); Everything restores the three and leaves Include hidden alone;
+/// the choice survives a reload; Include hidden shows a hidden row dimmed; Escape closes the sheet.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn the_app_shell_filters_the_sessions_by_bucket() {
@@ -6253,7 +6258,9 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
             && st("5").0 == "busy"
     };
     // The sheet's counts are the SHELL's rows (its 5 s poll), the verdict fetch is the API's:
-    // settle on both, or the sheet is read a poll behind the world.
+    // settle on both, or the sheet is read a poll behind the world. Recent = the four written
+    // minutes ago (the open question, the ended question, the exit mid-work, the growing one);
+    // blocked = three of those; idle = the finished session, stamped a month back.
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut states = serde_json::Value::Null;
     let mut counts = serde_json::Value::Null;
@@ -6263,8 +6270,8 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
         let tree = eval(&tab, BUCKET_TREE_JS, false);
         let by = |k: &str| counts[k][1].as_str().unwrap_or("");
         if settled(&states)
-            && tree.as_str() == Some("12345")
-            && (by("active"), by("blocked"), by("idle")) == ("1", "3", "1")
+            && tree.as_str() == Some("1235")
+            && (by("recent"), by("blocked"), by("idle")) == ("4", "3", "1")
         {
             break;
         }
@@ -6276,12 +6283,12 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     );
     assert_eq!(
         (
-            counts["active"][1].as_str(),
+            counts["recent"][1].as_str(),
             counts["blocked"][1].as_str(),
             counts["idle"][1].as_str()
         ),
-        (Some("1"), Some("3"), Some("1")),
-        "the shell's rows carry the verdicts: {counts}"
+        (Some("4"), Some("3"), Some("1")),
+        "the shell's rows carry the verdicts and the clocks: {counts}"
     );
     let click = |sel: &str| {
         let r = eval(
@@ -6300,81 +6307,92 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     let sheet = || eval(&tab, BUCKET_SHEET_JS, false);
     let checked = |s: &serde_json::Value, k: &str| s[k][0].as_str().unwrap_or("").to_string();
     let count_of = |s: &serde_json::Value, k: &str| s[k][1].as_str().unwrap_or("").to_string();
-    // 1. Closed at first; the glyph opens it; the counts are the buckets' over the five rows.
+    // 1. Closed at first, and lit: the default is Active recently and Blocked, so the idle row
+    //    is out of the tree from the start. The glyph, an iconbtn between Expand every group and
+    //    the sidebar collapse, opens the sheet; the counts are the buckets' over the five rows.
     let s0 = sheet();
     assert_eq!(s0["open"], false, "the sheet starts closed: {s0}");
-    assert_eq!(s0["lit"], false, "nothing filtered at first: {s0}");
+    assert_eq!(
+        s0["lit"], true,
+        "the default leaves Idle out, so the glyph is lit: {s0}"
+    );
+    let order = eval(&tab, "Array.from(document.querySelectorAll('.head-actions > button')).map(function (b) { return b.id; }).join(',')", false);
+    assert!(
+        order
+            .as_str()
+            .unwrap_or("")
+            .ends_with("collapseBtn,expandBtn,filterBtn,sidebarCollapse"),
+        "the glyph sits between Expand every group and the sidebar collapse: {order}"
+    );
+    assert_eq!(
+        eval(&tab, "document.getElementById('attentionBtn') === null && document.getElementById('hiddenBtn') === null && document.getElementById('sidebarMiniAttention') === null", false),
+        true,
+        "the Needs attention and Show Hidden controls are gone"
+    );
     click("#filterBtn");
     let s1 = sheet();
     assert_eq!(s1["open"], true, "the glyph opens the sheet: {s1}");
     assert_eq!(
-        (checked(&s1, "all"), count_of(&s1, "all")),
-        ("true".into(), "5".into()),
-        "All is checked and counts every row: {s1}"
+        eval(&tab, "document.querySelector('#sessionFilter [data-bucket=\"all\"]') === null && document.querySelector('#sessionFilter [data-bucket=\"recent\"] span:nth-child(2)').textContent", false).as_str(),
+        Some("Active recently"),
+        "no All checkbox, and the first is Active recently"
     );
-    assert_eq!(count_of(&s1, "active"), "1", "one active row: {s1}");
+    assert_eq!(
+        (
+            checked(&s1, "recent"),
+            checked(&s1, "blocked"),
+            checked(&s1, "idle")
+        ),
+        ("true".into(), "true".into(), "false".into()),
+        "the default: Active recently and Blocked checked, Idle not: {s1}"
+    );
+    assert_eq!(count_of(&s1, "recent"), "4", "four recent rows: {s1}");
     assert_eq!(count_of(&s1, "blocked"), "3", "three blocked rows: {s1}");
     assert_eq!(count_of(&s1, "idle"), "1", "one idle row: {s1}");
     assert_eq!(count_of(&s1, "hidden"), "0", "nothing hidden: {s1}");
-    // 2. Unchecking narrows the tree; unchecking the last bucket puts every bucket back.
+    // 2. Idle checked brings the idle row in and unlights the glyph; overlap: unchecking Blocked
+    //    changes nothing while Active recently still covers those rows; unchecking Active
+    //    recently leaves the idle row; the last uncheck puts every bucket back.
+    click("#sessionFilter [data-bucket=\"idle\"]");
+    assert_eq!(
+        tree(),
+        "12345",
+        "Idle checked brings the finished session in"
+    );
+    assert_eq!(
+        sheet()["lit"],
+        false,
+        "…and with every bucket on, the glyph is not lit"
+    );
     click("#sessionFilter [data-bucket=\"blocked\"]");
     assert_eq!(
         tree(),
-        "45",
-        "without the blocked bucket the tree holds the idle and the active row"
+        "12345",
+        "the blocked rows are recent too, so they stay"
     );
     let s2 = sheet();
     assert_eq!(
-        checked(&s2, "all"),
-        "false",
-        "All unchecks when a bucket leaves: {s2}"
+        s2["lit"], true,
+        "…yet the glyph is lit, the set leaves a bucket out: {s2}"
     );
-    assert_eq!(s2["lit"], true, "the glyph is lit while filtered: {s2}");
-    assert_eq!(s2["count"], "2/5", "the glyph counts shown of total: {s2}");
+    click("#sessionFilter [data-bucket=\"recent\"]");
+    assert_eq!(
+        tree(),
+        "4",
+        "idle alone — the finished session from two hours back"
+    );
     click("#sessionFilter [data-bucket=\"idle\"]");
-    assert_eq!(tree(), "5", "active alone");
-    click("#sessionFilter [data-bucket=\"active\"]");
     assert_eq!(
         tree(),
         "12345",
         "unchecking the last bucket puts every bucket back"
     );
     let s3 = sheet();
-    assert_eq!(
-        checked(&s3, "all"),
-        "true",
-        "…and All is checked again: {s3}"
-    );
     assert_eq!(s3["lit"], false, "…and the glyph is not lit: {s3}");
-    // 3. Blocked alone is the attention button, and the attention button is Blocked alone.
-    click("#sessionFilter [data-bucket=\"active\"]");
+    // 3. Blocked alone, remembered across a reload (the sheet does not stay open).
+    click("#sessionFilter [data-bucket=\"recent\"]");
     click("#sessionFilter [data-bucket=\"idle\"]");
     assert_eq!(tree(), "123", "blocked alone");
-    assert_eq!(
-        sheet()["attention"],
-        "true",
-        "…is the attention button pressed"
-    );
-    click("#attentionBtn");
-    assert_eq!(
-        tree(),
-        "12345",
-        "the pressed attention button releases every bucket"
-    );
-    assert_eq!(sheet()["attention"], "false");
-    click("#attentionBtn");
-    assert_eq!(tree(), "123", "…and presses back to the blocked bucket");
-    let s4 = sheet();
-    assert_eq!(
-        (
-            checked(&s4, "blocked"),
-            checked(&s4, "active"),
-            checked(&s4, "idle")
-        ),
-        ("true".into(), "false".into(), "false".into()),
-        "the sheet shows the attention button's set: {s4}"
-    );
-    // 4. The choice survives a reload (the sheet does not stay open).
     tab.navigate_to("http://127.0.0.1:2917/?ui=app").unwrap();
     tab.wait_until_navigated().unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -6391,14 +6409,11 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
         s5["open"], false,
         "the sheet is closed after a reload: {s5}"
     );
-    assert_eq!(
-        s5["attention"], "true",
-        "…and the attention button is pressed: {s5}"
-    );
-    // 5. Everything, then a hidden row and Include hidden.
+    assert_eq!(s5["lit"], true, "…and the glyph is lit: {s5}");
+    // 4. Everything, then a hidden row: Everything leaves Include hidden alone.
     click("#filterBtn");
     click("#sessionFilter [data-filter-reset]");
-    assert_eq!(tree(), "12345", "the reset action restores every bucket");
+    assert_eq!(tree(), "12345", "Everything restores every bucket");
     click(&format!(
         "[data-session=\"{BUCKET_D}\"] [data-ignore-op=\"add\"]"
     ));
@@ -6413,10 +6428,12 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
         "1",
         "Include hidden counts it: {s6}"
     );
+    click("#sessionFilter [data-filter-reset]");
+    assert_eq!(tree(), "1235", "Everything does not include the hidden row");
     assert_eq!(
-        count_of(&s6, "all"),
-        "4",
-        "…and All counts the rows in view: {s6}"
+        checked(&sheet(), "hidden"),
+        "false",
+        "…Include hidden stays as it was"
     );
     click("#sessionFilter [data-include-hidden]");
     assert_eq!(tree(), "12345", "Include hidden brings it back");
@@ -6429,7 +6446,7 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     assert_eq!(checked(&sheet(), "hidden"), "true");
     click("#sessionFilter [data-include-hidden]");
     assert_eq!(tree(), "1235", "…and unchecking hides it again");
-    // 6. Escape closes the sheet.
+    // 5. Escape closes the sheet.
     eval(
         &tab,
         "(function () { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return 'ok'; })()",

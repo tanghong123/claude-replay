@@ -94,11 +94,33 @@ function needsPerson(row) {
 }
 
 /**
- * What the attention filter selects, in the words of the predicate — the ONE text both of the
- * app shell's tooltips show (the nav button's and the collapsed rail's), so the control says
- * exactly what `needsPerson` tests.
+ * What the Blocked checkbox selects, in the words of the predicate — the ONE text the control
+ * shows (its title), so it says exactly what `needsPerson` tests.
  */
 const BLOCKED_SUMMARY = "Blocked sessions — waiting on you for a permission, an answer or a plan approval, or stopped short by a failure, a stall or an exit mid-work";
+
+/** An hour: how far back "Active recently" reaches (the owner's word, #202). */
+const RECENT_SECS = 3600;
+
+/** The session filter's three checkboxes, in the order the sheet lists them. */
+const FILTER_BUCKETS = ["recent", "blocked", "idle"];
+const FILTER_LABELS = { recent: "Active recently", blocked: "Blocked", idle: "Idle" };
+
+/**
+ * Which of the filter's buckets a row is in — one or two (#202): `recent` when the row is busy
+ * or its last activity (`activityTs`, epoch seconds) is within the hour; `blocked` when it
+ * needs a person (`needsPerson`); `idle` when neither. Recent and blocked overlap on purpose —
+ * the owner's "Active recently" is everything with activity in the last hour, a blocked
+ * session among them — so the three COVER the rows rather than partition them; the state
+ * partition (`sessionBucket`) is what a chip and the design's table read.
+ */
+function sessionFilterBuckets(row, now = Date.now() / 1000) {
+  const out = [];
+  if (displayState(row).state === "busy" || (Number(row.activityTs) || 0) > now - RECENT_SECS) out.push("recent");
+  if (needsPerson(row)) out.push("blocked");
+  if (!out.length) out.push("idle");
+  return out;
+}
 
 /**
  * The marker a session row carries — `{ label, tone }` — or null when there is nothing to
@@ -136,4 +158,4 @@ function stateTip(row) {
   return tip;
 }
 
-export { STATE_LABELS, REASON_LABELS, REASONS, REASON_BUCKETS, BUCKETS, BLOCKED_SUMMARY, displayState, sessionBucket, needsPerson, denoteState, stateTip };
+export { STATE_LABELS, REASON_LABELS, REASONS, REASON_BUCKETS, BUCKETS, BLOCKED_SUMMARY, RECENT_SECS, FILTER_BUCKETS, FILTER_LABELS, displayState, sessionBucket, sessionFilterBuckets, needsPerson, denoteState, stateTip };

@@ -96,7 +96,6 @@
 .tree-row.project .tree-action{margin-left:auto}
 .tree-row.is-hidden{opacity:.55}
 .tree-row.is-hidden.selected{opacity:.8}
-.navbtn.hidden-filter[hidden],.sidebar-mini-button.hidden-mini[hidden]{display:none}
 
 /* Reveal in file manager (parity #2). A tool-header path the server stamped is a reference:
    underlined the way the shell marks "this goes somewhere", inside the head button. The preview
@@ -487,25 +486,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .command-card .renderer-result{margin:2px 0 0;font:12px/1.7 var(--mono);color:var(--sub)}
 .command-card .renderer-result pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;padding:0;border:0;background:none}
 
-/* The attention filter reads as PRESSED (#91): the shell's `.navbtn.on` is the same faint hover
-   tint every other row takes on hover, so the one filter that changes what the list SHOWS
-   looked like a mouse happened to be over it. Pressed, it takes the amber attention colour it
-   filters for — a tinted fill, a real border in that colour, and the count inverted onto it —
-   which is legible in both themes because both define --attention and --attention-soft. */
-.navbtn.attention-filter.on{background:var(--attention-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--attention) 55%,transparent);color:var(--attention)}
-.navbtn.attention-filter.on .label{font-weight:600}
-.navbtn.attention-filter.on .attention-count{min-width:18px;padding:0 5px;border-radius:999px;text-align:center;background:var(--attention);color:var(--attention-soft);font-weight:650}
-.sidebar-mini-button.attention-mini.on{background:var(--attention-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--attention) 55%,transparent);color:var(--attention)}
-/* "Show Hidden" is a toggle, so its pressed state has to be LIT (#163). It was not: the only
-   rule reaching it was the generic `.navbtn.on`, whose pressed ground here resolves to
-   rgba(255,255,255,.48) with no ring and the ordinary ink — measured — which reads as a button
-   sitting slightly proud, not as a control that is ON. Same three-part anatomy as the attention
-   filter above (tinted ground, inset ring, accent text), in primary rather than attention:
-   revealing what was put away is not a warning. */
-.navbtn.hidden-filter.on{background:var(--primary-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 55%,transparent);color:var(--primary)}
-.navbtn.hidden-filter.on .label{font-weight:600}
-.navbtn.hidden-filter.on .count{background:var(--primary);color:var(--primary-soft)}
-.sidebar-mini-button.hidden-mini.on{background:var(--primary-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 55%,transparent);color:var(--primary)}
 
 /* The info pane's subsections fold on their own label (#89): the label is a button in the
    pane's own type, with a chevron that says which way it goes.
@@ -687,16 +667,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    popover's padding. */
 .reading-options .reading-section > .scope-menu-head:first-child { margin-top: 0; }
 
-
-/* The session filter (#202): the glyph on the sidebar's toolbar row, lit while the bucket set
-   leaves something out, with "shown/total" beside its label; its sheet of checkboxes sits under
-   the nav, over the top of the tree, in the shared popover chrome (`.navigator-options`). */
-.nav{position:relative}
-.navbtn.session-filter .count{margin-left:auto;font:10.5px var(--mono);color:var(--faint)}
-.navbtn.session-filter.on{background:var(--primary-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 55%,transparent);color:var(--primary)}
-.navbtn.session-filter.on .label{font-weight:600}
-.navbtn.session-filter.on .count{color:var(--primary)}
-.navbtn.session-filter.open{background:var(--hover)}
+/* The session filter (#202): a glyph in the head-actions row, lit while the bucket set leaves
+   something out; its sheet of checkboxes hangs under the sidebar's head, over the nav and the
+   tree, in the shared popover chrome (`.navigator-options`). The Needs attention and Show
+   Hidden controls this replaced — and their #91/#163 pressed-state rules — are gone with it. */
+.side-head{position:relative}
+.iconbtn.session-filter.on{background:var(--primary-soft);color:var(--primary);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 55%,transparent)}
 .sidebar-mini-button.filter-mini.on{color:var(--primary)}
 .session-filter-options{display:block;position:absolute;left:12px;right:12px;top:100%;width:auto;z-index:48;margin:0;padding:10px 12px 12px}
 .session-filter-options[hidden]{display:none}

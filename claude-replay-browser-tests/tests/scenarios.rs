@@ -117,7 +117,7 @@ fn fixture_bare_result(name: &str, turns: u32) -> Fixture {
     jsonl += &harness::tool_result_text(
         "orphan-1",
         "checked 42 files and found the one that matters, a very long first line that runs past seventy characters\\nsecond line\\nthird line",
-        "2026-08-21T10:15:01Z",
+        &harness::at("15:01"),
     );
     let path = stores.claude_session(SID, &jsonl);
     Fixture { base, path, turns }
@@ -129,11 +129,9 @@ fn fixture_input_requests(name: &str, turns: u32) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
     let mut jsonl = long_session(turns, Shape::default());
-    jsonl +=
-        &harness::input_request_at("ask-1", "Which shell should stay?", "2026-08-21T10:15:01Z");
-    jsonl += &harness::input_request_at("ask-2", "Ship the release now?", "2026-08-21T10:15:02Z");
-    jsonl +=
-        &harness::input_request_answer("ask-2", "ship", "Yes, ship it", "2026-08-21T10:15:03Z");
+    jsonl += &harness::input_request_at("ask-1", "Which shell should stay?", &harness::at("15:01"));
+    jsonl += &harness::input_request_at("ask-2", "Ship the release now?", &harness::at("15:02"));
+    jsonl += &harness::input_request_answer("ask-2", "ship", "Yes, ship it", &harness::at("15:03"));
     let path = stores.claude_session(SID, &jsonl);
     Fixture { base, path, turns }
 }
@@ -461,7 +459,7 @@ fn fixture_styled_command(name: &str) -> Fixture {
         "compact",
         "",
         "\\u001b[2mCompacted (ctrl+o to see full summary) \\u001b[22m",
-        "2026-08-21T10:15:01Z",
+        &harness::at("15:01"),
     );
     let path = stores.claude_session(SID, &jsonl);
     Fixture {
@@ -3558,6 +3556,17 @@ fn scenario_view_state_survives(tab: &headless_chrome::Tab, surface: Surface, _f
         "…and the Read row is open with its cap expanded"
     );
     if surface == Surface::AppShell {
+        // The fixtures are stamped in the builders' fixed past hour, so both sessions are Idle —
+        // out of the shell's default filter (#202). This half reads the TREE, so it asks for
+        // every bucket first; the reload the helper does is where the shell picks the set up.
+        harness::show_every_session(tab, &tab.get_url());
+        until(
+            tab,
+            "document.querySelectorAll('.tree-row.session').length >= 2",
+            "both sessions in the tree",
+            Duration::from_secs(20),
+            "document.querySelectorAll('.tree-row.session').length",
+        );
         // Switch to the other session and back.
         let other = format!("document.querySelector('.tree-row.session[data-session=\"{SID2}\"]')");
         until(
@@ -4887,9 +4896,10 @@ fn fixture_long_command(name: &str) -> Fixture {
     let mut jsonl = long_session(14, Shape::default());
     let command = "cargo test -p claude-replay-browser-tests --test scenarios -- --ignored --skip known_red app_shell --nocapture 2>&1 | grep -E 'the needle in a very long pipeline that keeps going and going past any reasonable head width' | sed -e 's/one thing/another thing entirely/' -e 's/and yet another substitution/to make quite sure this line cannot fit/' | sort -u | head -20";
     jsonl += &format!(
-        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"long-1\",\"name\":\"Bash\",\"input\":{{\"command\":\"{command}\"}}}}]}},\"timestamp\":\"2026-08-21T10:15:01Z\"}}\n"
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"long-1\",\"name\":\"Bash\",\"input\":{{\"command\":\"{command}\"}}}}]}},\"timestamp\":\"{stamp}\"}}\n",
+        stamp = harness::at("15:01")
     );
-    jsonl += &tool_result_text("long-1", "one line of output", "2026-08-21T10:15:02Z");
+    jsonl += &tool_result_text("long-1", "one line of output", &harness::at("15:02"));
     let path = stores.claude_session(SID, &jsonl);
     Fixture {
         base,
@@ -4906,9 +4916,10 @@ fn fixture_long_command_midway(name: &str) -> Fixture {
     let mut jsonl = long_session(14, Shape::default());
     let command = "cargo test -p claude-replay-browser-tests --test scenarios -- --ignored --skip known_red app_shell --nocapture 2>&1 | grep -E 'the needle in a very long pipeline that keeps going and going past any reasonable head width' | sed -e 's/one thing/another thing entirely/' | sort -u | head -20";
     jsonl += &format!(
-        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"mid-1\",\"name\":\"Bash\",\"input\":{{\"command\":\"{command}\"}}}}]}},\"timestamp\":\"2026-08-21T10:15:01Z\"}}\n"
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"mid-1\",\"name\":\"Bash\",\"input\":{{\"command\":\"{command}\"}}}}]}},\"timestamp\":\"{stamp}\"}}\n",
+        stamp = harness::at("15:01")
     );
-    jsonl += &tool_result_text("mid-1", "one line of output", "2026-08-21T10:15:02Z");
+    jsonl += &tool_result_text("mid-1", "one line of output", &harness::at("15:02"));
     jsonl += &long_session(22, Shape::default());
     let path = stores.claude_session(SID, &jsonl);
     Fixture {

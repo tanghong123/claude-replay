@@ -24,7 +24,7 @@ import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, ta
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
-import { BLOCKED_SUMMARY, BUCKETS, REASONS, REASON_BUCKETS, denoteState, displayState, needsPerson, sessionBucket, stateTip } from "../../claude-replay-html/src/html/shared/state-labels.js";
+import { BLOCKED_SUMMARY, BUCKETS, FILTER_BUCKETS, FILTER_LABELS, RECENT_SECS, REASONS, REASON_BUCKETS, denoteState, displayState, needsPerson, sessionBucket, sessionFilterBuckets, stateTip } from "../../claude-replay-html/src/html/shared/state-labels.js";
 import { composeCapability, composeCopy, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "../../claude-replay-html/src/html/shared/record-stream.js";
 import { applyViewChoices, parseViewMemory, serializeViewMemory, viewChoices, viewMemoryKey } from "../../claude-monitor/src/codex-ui/view-memory.js";
@@ -454,9 +454,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("seam (f) cases passed");
 }
 
-// #202: the three buckets — active / blocked / idle — are a PARTITION of the tracker's
-// vocabulary, "needs attention" is the blocked bucket by one definition, the tree filters by
-// bucket, and the control's words are the predicate's.
+// #202: the three STATE buckets — active / blocked / idle — are a PARTITION of the tracker's
+// vocabulary and "needs attention" is the blocked bucket by one definition; the session
+// filter's three checkboxes — Active recently / Blocked / Idle — COVER the rows (recent and
+// blocked overlap by design), the tree filters by them, and the control's words are the
+// predicate's.
 {
   for (const reason of REASONS) {
     const bucket = REASON_BUCKETS[reason];
@@ -472,29 +474,55 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(sessionBucket({ state: "growing" }), "active", "legacy growing is active");
   assert.equal(sessionBucket({ state: "finished" }), "idle", "legacy finished is idle");
   assert.equal(sessionBucket({ state: "idle" }), "idle");
-  const rows = [{ id: "b", agentState: "wait", stateReason: "question" }, { id: "a", agentState: "busy", stateReason: "tool" }, { id: "i", agentState: "idle", stateReason: "done" }];
+  // The filter's buckets: recent is an hour of activity or busy now, blocked is needsPerson,
+  // idle is neither; a row may be in two.
+  assert.equal(RECENT_SECS, 3600, "an hour, the owner's word");
+  assert.deepEqual(FILTER_BUCKETS, ["recent", "blocked", "idle"]);
+  assert.deepEqual(FILTER_LABELS, { recent: "Active recently", blocked: "Blocked", idle: "Idle" });
+  const now = 1_000_000, fresh = now - 60, stale = now - 7200;
+  assert.deepEqual(sessionFilterBuckets({ agentState: "busy", stateReason: "tool", activityTs: stale }, now), ["recent"], "busy is recent whatever its clock says");
+  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: fresh }, now), ["recent"], "an hour of activity is recent");
+  assert.deepEqual(sessionFilterBuckets({ agentState: "wait", stateReason: "question", activityTs: fresh }, now), ["recent", "blocked"], "a fresh wait is both");
+  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "stalled", activityTs: stale }, now), ["blocked"], "an old stall is blocked only");
+  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: stale }, now), ["idle"], "an old answer is idle");
+  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "exited" }, now), ["idle"], "no clock at all is idle");
+  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: now - RECENT_SECS - 1 }, now), ["idle"], "the hour is a boundary");
+  const rows = [{ id: "b", agentState: "wait", stateReason: "question", activityTs: fresh }, { id: "a", agentState: "busy", stateReason: "tool", activityTs: fresh }, { id: "i", agentState: "idle", stateReason: "done", activityTs: stale }, { id: "s", agentState: "idle", stateReason: "stalled", activityTs: stale }];
   const agents = groupSessions([{ label: "p", rows }]);
   const ids = tree => tree.flatMap(a => a.projects.flatMap(p => p.rows.map(r => r.id)));
-  assert.deepEqual(ids(visibleTree(agents, { buckets: new Set(["blocked"]), bucketOf: sessionBucket })), ["b"], "the blocked bucket alone");
-  assert.deepEqual(ids(visibleTree(agents, { buckets: new Set(["active", "idle"]), bucketOf: sessionBucket })), ["a", "i"], "two buckets");
-  assert.deepEqual(ids(visibleTree(agents, { buckets: null, bucketOf: sessionBucket })), ["b", "a", "i"], "no bucket set means every row");
-  assert.deepEqual(ids(visibleTree(agents, { buckets: new Set(), bucketOf: sessionBucket })), [], "an empty set shows nothing — a control never offers it");
-  assert.deepEqual(ids(visibleTree(agents, { attention: true, needs: needsPerson })), ["b"], "the attention filter is the blocked bucket");
-  assert.match(appSource, /byId\("attentionTooltip"\)\.textContent = BLOCKED_SUMMARY;/, "the nav button's tooltip is the shared summary");
-  assert.match(appSource, /byId\("sidebarMiniAttentionTooltip"\)\.textContent = `\$\{BLOCKED_SUMMARY\} · \$\{attention\}`;/, "the rail's tooltip is the same summary with the count");
-  for (const word of ["permission", "answer", "plan approval", "failure", "stall", "exit mid-work"]) assert.ok(BLOCKED_SUMMARY.includes(word), `the summary names ${word}`);
-  // The control: the tree is filtered by the shared predicate, the set is never empty and is
-  // remembered with every bucket as the default, the attention button is the set at {blocked},
-  // and the sheet offers the owner's five checkboxes.
-  assert.match(appSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden, attention: indexState\.attention, needs, buckets: filtered \? indexState\.buckets : null, bucketOf: sessionBucket \}\)/, "the tree is filtered by the shared bucket predicate — every bucket chosen is no filter");
-  assert.match(appSource, /indexState\.buckets = set\.size \? set : new Set\(BUCKETS\);/, "the bucket set is never empty");
-  assert.match(appSource, /onclick = \(\) => setBuckets\(indexState\.attention \? BUCKETS : \["blocked"\]\)/, "the attention button is the set at {blocked}");
+  const bucketsOf = r => sessionFilterBuckets(r, now);
+  assert.deepEqual(ids(visibleTree(agents, { buckets: new Set(["blocked"]), bucketsOf })), ["b", "s"], "the blocked bucket alone — fresh and old");
+  assert.deepEqual(ids(visibleTree(agents, { buckets: new Set(["recent"]), bucketsOf })), ["b", "a"], "recent — the blocked one among them");
+  assert.deepEqual(ids(visibleTree(agents, { buckets: new Set(["recent", "idle"]), bucketsOf })), ["b", "a", "i"], "two buckets");
+  assert.deepEqual(ids(visibleTree(agents, { buckets: null, bucketsOf })), ["b", "a", "i", "s"], "no bucket set means every row");
+  assert.deepEqual(ids(visibleTree(agents, { buckets: new Set(), bucketsOf })), [], "an empty set shows nothing — a control never offers it");
+  assert.deepEqual(ids(visibleTree(agents, { attention: true, needs: needsPerson })), ["b", "s"], "the attention filter (the classic API) is the blocked bucket");
+  // The control, the owner's shape: the glyph in the head-actions row before the sidebar
+  // collapse (Expand every group is inserted after Collapse every group, so the order reads
+  // theme · collapse · expand · filter · sidebar), the sheet under the sidebar's head, three
+  // checkboxes and Include hidden, no All (Everything in the head is the way back, and it
+  // leaves Include hidden alone), the demo's two controls removed, the set never empty and
+  // remembered with every bucket by default.
+  assert.match(appSource, /byId\("sidebarCollapse"\)\.insertAdjacentElement\("beforebegin", filterBtn\)/, "the glyph sits before the sidebar collapse");
+  assert.match(appSource, /byId\("collapseBtn"\)\.insertAdjacentElement\("afterend", expandBtn\)/, "…and Expand every group after Collapse every group, so the filter follows expand");
+  assert.match(appSource, /filterBtn\.className = "iconbtn session-filter"/, "…as an iconbtn like its neighbours");
+  assert.match(appSource, /document\.querySelector\("\.side-head"\)\.appendChild\(filterSheet\)/, "the sheet hangs under the sidebar's head");
+  assert.match(appSource, /byId\("attentionBtn"\)\.remove\(\);\nbyId\("sidebarMiniAttention"\)\.remove\(\);/, "the demo's Needs attention button and the rail's bell are gone");
+  assert.doesNotMatch(appSource, /hiddenBtn|"Show Hidden"/, "…and the Show Hidden control with them");
+  assert.match(appSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden, buckets: filtered \? indexState\.buckets : null, bucketsOf \}\)/, "the tree is filtered by the shared cover — every bucket chosen is no filter");
+  assert.match(appSource, /indexState\.buckets = set\.size \? set : new Set\(FILTER_BUCKETS\);/, "the bucket set is never empty");
   const stateJsSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
-  assert.match(stateJsSource, /buckets: new Set\(json\("am-prod-session-buckets", \["active", "blocked", "idle"\]\)\)/, "the set is remembered, every bucket by default");
-  assert.match(stateJsSource, /localStorage\.setItem\("am-prod-session-buckets", JSON\.stringify\(\[\.\.\.indexState\.buckets\]\)\)/, "persist writes it");
-  for (const bucket of ["all", "active", "blocked", "idle"]) assert.match(appSource, new RegExp(`data-bucket="${bucket}"`), `the sheet offers ${bucket}`);
+  assert.match(stateJsSource, /buckets: new Set\(json\("am-prod-session-filter", \["recent", "blocked"\]\)\)/, "the set is remembered under a new key, Active recently and Blocked by default (the owner's)");
+  assert.match(stateJsSource, /localStorage\.setItem\("am-prod-session-filter", JSON\.stringify\(\[\.\.\.indexState\.buckets\]\)\)/, "persist writes it");
+  assert.doesNotMatch(stateJsSource, /attention:/, "no attention flag remains");
+  for (const bucket of FILTER_BUCKETS) assert.match(appSource, new RegExp(`data-bucket="${bucket}"`), `the sheet offers ${bucket}`);
+  assert.doesNotMatch(appSource, /data-bucket="all"/, "no All checkbox — Everything in the head is the way back");
+  assert.match(appSource, /if \(event\.target\.closest\("\[data-filter-reset\]"\)\) \{ setBuckets\(FILTER_BUCKETS\); return; \}/, "Everything checks the three and touches nothing else — Include hidden stays");
   assert.match(appSource, /data-include-hidden/, "and Include hidden");
   assert.match(appSource, /title="\$\{BLOCKED_SUMMARY\}"/, "the Blocked checkbox explains itself with the predicate's sentence");
+  assert.match(appSource, /\$\{FILTER_LABELS\.recent\}/, "the checkbox is labelled from the shared table (Active recently)");
+  assert.match(appSource, /byId\("sidebarMiniSearch"\)\.insertAdjacentElement\("afterend", filterMini\)/, "the rail's filter glyph sits after search");
+  assert.match(appSource, /filterMini\.onclick = \(\) => \{ byId\("sidebarMiniExpand"\)\.click\(\); toggleFilterSheet\(true\); \};/, "…and opens the sidebar and the sheet");
   console.log("#202 bucket cases passed");
 }
 
@@ -801,14 +829,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /"sidebar-toggle": \(\) => toggleSidebar\(!indexState\.sidebarOpen\)/, "the shell acts on it");
   assert.match(appSource, /byId\("sidebarMiniWrite"\)\.onclick = \(\) => byId\("writeSwitch"\)\.click\(\);/, "the rail's write button reaches the switch");
   assert.match(appSource, /byId\("sidebarMiniSearch"\)\.onclick = openGlobalSearch;/, "…its search button the global search");
-  assert.match(appSource, /byId\("sidebarMiniAttention"\)\.onclick = \(\) => byId\("attentionBtn"\)\.click\(\);/, "…its attention button the filter");
+  assert.match(appSource, /filterMini\.onclick = \(\) => \{ byId\("sidebarMiniExpand"\)\.click\(\); toggleFilterSheet\(true\); \};/, "…its filter glyph the session filter (#202 replaced the attention button)");
   const prodCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
-  // #91: pressed, the attention filter takes the colour it filters FOR — the shell's own
-  // `.navbtn.on` is the hover tint every row shares, so the one control that changes what the
-  // list shows read as a stray mouse. Both themes define --attention and --attention-soft.
-  assert.match(prodCss, /\.navbtn\.attention-filter\.on\{background:var\(--attention-soft\);box-shadow:inset 0 0 0 1px color-mix\(in srgb,var\(--attention\) 55%,transparent\);color:var\(--attention\)\}/, "a tinted fill and a real border");
-  assert.match(prodCss, /\.navbtn\.attention-filter\.on \.attention-count\{[^}]*background:var\(--attention\);color:var\(--attention-soft\)/, "…and the count inverted onto it");
-  assert.match(prodCss, /\.sidebar-mini-button\.attention-mini\.on\{background:var\(--attention-soft\)/, "…the mini rail's button too");
+  // #91 → #202: the one control that changes what the list shows is lit when it does — the
+  // session filter's glyph takes the primary tint, where the shell's own `.iconbtn:hover` is
+  // the hover every button shares; the rail's glyph too.
+  assert.match(prodCss, /\.iconbtn\.session-filter\.on\{background:var\(--primary-soft\);color:var\(--primary\);box-shadow:inset 0 0 0 1px color-mix\(in srgb,var\(--primary\) 55%,transparent\)\}/, "the filter glyph paints its lit state");
+  assert.match(prodCss, /\.sidebar-mini-button\.filter-mini\.on\{color:var\(--primary\)\}/, "…the mini rail's glyph too");
+  assert.doesNotMatch(prodCss, /attention-filter|hidden-filter|attention-mini|hidden-mini/, "no rule for the removed controls remains");
   assert.match(appSource, /hintFor\("sidebar-toggle"\)/, "the key is discoverable on the control");
   console.log("#54 sidebar rail cases passed");
 }

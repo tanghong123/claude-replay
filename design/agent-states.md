@@ -285,19 +285,34 @@ block holds the partition (every reason in exactly one bucket, blocked = the wai
 the cut-short idles, idle = `done` and `exited`) and the tree's bucket filter.
 
 
-**The control** (the owner's design, 2026-09-12: "a filter glyph at the toolbar row on the
-left-side pane, when clicked, show the few checkboxes such as all, active, blocked, idle, and
-include hidden"): `filterBtn` on the app shell's nav, layered at runtime from `app.js` like Show
-Hidden so the extracted demo markup stays exact, opening a sheet in the shared popover chrome
-with those five checkboxes and a count beside each — the buckets' over the rows in view, the
-hidden count for Include hidden. The set is `indexState.buckets`, remembered
-(`am-prod-session-buckets`) like the other view choices; every bucket is no filter; the set is
-never empty (unchecking the last bucket puts every bucket back — a tree that shows nothing is
-not a filter); "Needs attention" is the same set at {blocked}, so either control paints both;
-Include hidden is Show Hidden by another handle and stays a view state, as on the classic page.
-The classic rail keeps its All / Active / Idle pills on the legacy `state` — the reference is
-not changed by the shell that is held to it. Held by `the_app_shell_filters_the_sessions_by_bucket`
-(port 2917) against the same bucket world: the counts, each checkbox against the tree, the
-never-empty rule, the attention button both ways, the reload, Include hidden with a hidden
-row, Escape; and the node contract's pins on the wiring (the tree through the shared predicate,
-the never-empty rule, the remembered set, the five checkboxes).
+**The filter's three checkboxes are a COVER of the rows, not the partition above** (owner,
+2026-09-13): *Active recently* is any activity in the last hour (`activityTs` within
+`RECENT_SECS` = 3600) and every session busy now; *Blocked* is `needsPerson`; *Idle* is
+neither. A fresh wait is in two of them by design — the owner's "Active recently" is everything
+with activity in the last hour, a blocked session among them — so unchecking Blocked alone
+changes nothing while Active recently still covers those rows, and Blocked alone is the old
+attention filter. `sessionFilterBuckets(row, now)` in the shared table is the one definition;
+the state partition (`sessionBucket`) stays for the chip and the table above.
+
+**The control** (the owner's design, 2026-09-12, reshaped 2026-09-13): a filter glyph in the
+sidebar's head-actions row — between *Expand every group* and the sidebar collapse, an
+`iconbtn` like its neighbours, lit while the set leaves a bucket out — opening a sheet under
+the sidebar's head in the shared popover chrome with those three checkboxes and *Include
+hidden*, a count beside each (the buckets' over the rows in view, the hidden count for Include
+hidden); *Everything* in the sheet's head checks the three and leaves Include hidden alone (there
+is no All checkbox). The set is `indexState.buckets`, remembered (`am-prod-session-filter`) like the other
+view choices and starting as *Active recently* and *Blocked* — the owner's default, so an idle
+session is out of the tree until Idle is checked or Everything pressed; every bucket is no
+filter; the set is never empty (unchecking the last bucket puts every bucket back). The demo's
+*Needs attention* button and the *Show Hidden* control are gone — the sheet's Blocked and Include
+hidden checkboxes are those two by name — and the collapsed rail's bell with them; the rail gets
+a filter glyph that opens the sidebar and the sheet. Include hidden stays a view state, as on the
+classic page, whose All / Active / Idle pills on the legacy `state` are untouched — the reference
+is not changed by the shell that is held to it. Held by
+`the_app_shell_filters_the_sessions_by_bucket` (port 2917) against the bucket world with its
+clock set minutes ago: the order of the head-actions buttons, the two controls gone, no All,
+the counts (recent 4 / blocked 3 / idle 1 over five rows), the overlap, the never-empty rule,
+the reload, Everything beside a hidden row, Include hidden, Escape;
+`the_app_shell_counts_the_blocked_sessions` (2916) for the Blocked count and Blocked alone;
+`the_app_shell_include_hidden_reads_as_a_checked_box` (#163's claim, moved) for the checkbox's
+paint; and the node contract's pins on the wiring.

@@ -38,13 +38,13 @@ function groupSessions(groups = []) {
  * The tree the sidebar draws: agents whose projects have at least one row to show, each
  * project carrying only those rows. `showHidden` admits hidden projects and rows;
  * `attention` keeps only rows `needs(row)` says need a person; `buckets` (#202, a Set of
- * `active` / `blocked` / `idle`, or null for all) keeps only rows `bucketOf(row)` places in
- * one of them. A hidden project stays hidden as a whole unless `showHidden`, even when a row
+ * `recent` / `blocked` / `idle`, or null for all) keeps only rows `bucketsOf(row)` places in
+ * at least one of them (a row may be in two — recent and blocked overlap). A hidden project stays hidden as a whole unless `showHidden`, even when a row
  * inside it is not individually hidden — the server marks such rows hidden too, so both
  * filters agree.
  */
-function visibleTree(agents, { showHidden = false, attention = false, needs = () => true, buckets = null, bucketOf = () => "idle" } = {}) {
-  const keep = row => rowVisible(row, { showHidden, attention, needs, buckets, bucketOf });
+function visibleTree(agents, { showHidden = false, attention = false, needs = () => true, buckets = null, bucketsOf = () => ["idle"] } = {}) {
+  const keep = row => rowVisible(row, { showHidden, attention, needs, buckets, bucketsOf });
   const out = [];
   for (const agent of agents) {
     const projects = [];
@@ -60,11 +60,12 @@ function visibleTree(agents, { showHidden = false, attention = false, needs = ()
 
 /**
  * Whether a row is shown: a hidden row only under `showHidden`; with `attention`, only the
- * rows `needs` says need a person; with `buckets`, only the rows whose bucket is in the set.
- * The classic rail's `okHidden` and the app shell's tree filter are this one predicate (#113).
+ * rows `needs` says need a person; with `buckets`, only the rows one of whose buckets is in
+ * the set. The classic rail's `okHidden` and the app shell's tree filter are this one
+ * predicate (#113).
  */
-function rowVisible(row, { showHidden = false, attention = false, needs = () => true, buckets = null, bucketOf = () => "idle" } = {}) {
-  return (showHidden || !row.hidden) && (!attention || needs(row)) && (!buckets || buckets.has(bucketOf(row)));
+function rowVisible(row, { showHidden = false, attention = false, needs = () => true, buckets = null, bucketsOf = () => ["idle"] } = {}) {
+  return (showHidden || !row.hidden) && (!attention || needs(row)) && (!buckets || bucketsOf(row).some(bucket => buckets.has(bucket)));
 }
 
 /** Whether a group — a project, or a desktop agent — is shown at all: hidden only under `showHidden`. */

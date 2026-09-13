@@ -11,7 +11,7 @@ import { RecordStore } from "./record-store.js";
 import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
-import { displayState, needsPerson as needs, denoteState, sessionBucket, BUCKETS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
+import { displayState, denoteState, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
@@ -281,14 +281,16 @@ function sessionTreeRow(row, fam = null, member = false) {
 }
 
 function renderTree() {
-  const agents = groupedSessions(); let html = ""; let attention = 0;
-  indexState.rows.forEach(row => { if (!row.hidden && needs(row)) attention++; });
-  // The three buckets over the rows in view (hidden rows count only under Show Hidden), and
-  // the tree filtered by the chosen set — every bucket chosen is no filter (#202).
-  const counts = { active: 0, blocked: 0, idle: 0 }; let total = 0;
-  indexState.rows.forEach(row => { if (row.hidden && !indexState.showHidden) return; total++; counts[sessionBucket(row)]++; });
+  const agents = groupedSessions(); let html = "";
+  // The filter's buckets over the rows in view (hidden rows count only under Include hidden;
+  // a row can be recent AND blocked), and the tree filtered by the chosen set — every bucket
+  // chosen is no filter (#202).
+  const now = Date.now() / 1000;
+  const bucketsOf = row => sessionFilterBuckets(row, now);
+  const counts = { recent: 0, blocked: 0, idle: 0 }; let total = 0;
+  indexState.rows.forEach(row => { if (row.hidden && !indexState.showHidden) return; total++; for (const bucket of bucketsOf(row)) counts[bucket]++; });
   const filtered = bucketFilterActive();
-  const shownAgents = visibleTree(agents, { showHidden: indexState.showHidden, attention: indexState.attention, needs, buckets: filtered ? indexState.buckets : null, bucketOf: sessionBucket });
+  const shownAgents = visibleTree(agents, { showHidden: indexState.showHidden, buckets: filtered ? indexState.buckets : null, bucketsOf });
   const shown = shownAgents.reduce((n, agent) => n + agent.projects.reduce((m, project) => m + project.rows.length, 0), 0);
   for (const agent of shownAgents) {
     const agentKey = `a:${agent.id}`, openAgent = !indexState.collapsed.has(agentKey);
@@ -314,134 +316,93 @@ function renderTree() {
       if (fams.length > SIDEBAR_SESSION_LIMIT) html += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
     }
   }
-  tree.innerHTML = html || `<div class="no-results">${indexState.attention ? "Nothing needs attention" : filtered ? "No sessions in this filter" : "No sessions"}</div>`;
-  byId("attentionCount").textContent = String(attention);
-  // The attention button and the rail's bell paint from the bucket set they stand for.
-  byId("attentionBtn").classList.toggle("on", indexState.attention); byId("attentionBtn").setAttribute("aria-pressed", String(indexState.attention));
-  byId("sidebarMiniAttention").classList.toggle("on", indexState.attention);
+  tree.innerHTML = html || `<div class="no-results">${filtered ? "No sessions in this filter — Everything, in the filter, shows them all" : "No sessions"}</div>`;
   renderFilterControl(counts, shown, total);
-  renderHiddenControl();
-  byId("sidebarMiniAttentionBadge").hidden = !attention;
-  byId("sidebarMiniAttentionBadge").textContent = String(attention);
-  // The tooltip is the predicate's own wording (#202): one shared text, on the nav button (the
-  // demo's extracted markup carries an older sentence, replaced here at runtime) and the rail.
-  byId("attentionTooltip").textContent = BLOCKED_SUMMARY;
-  byId("sidebarMiniAttention").setAttribute("aria-label", `Needs attention: ${attention} sessions`);
-  byId("sidebarMiniAttentionTooltip").textContent = `${BLOCKED_SUMMARY} · ${attention}`;
+
   byId("sidebarMiniAgents").innerHTML = agents.map(agent => { const first = agent.projects.flatMap(project => project.sessions).find(row => !row.hidden); return first ? `<button class="sidebar-mini-agent ${first.id === indexState.selected ? "selected" : ""}" data-mini-agent-session="${escapeText(first.id)}" title="${escapeText(agent.name)}">${agentLogo(agent.id)}</button>` : ""; }).join("");
 }
 
-// "Show Hidden (n)" — the way back for anything hidden. A navbtn beside the attention filter, in
-// the same anatomy (icon · label · count), present only while something IS hidden, exactly as
-// the classic rail's toggle; the mini rail gets the matching badge. Reveal is a view state
-// (not persisted, like classic), so a reload starts clean. It is a TOGGLE and has to look like
-// one (#163): the label says what pressing it does, and the pressed state is lit. The state was
-// always tracked correctly — the class and `aria-pressed` both flipped — but nothing PAINTED it
-// beyond the generic `.navbtn.on`, which left the button with the ordinary ink and no ring.
-const hiddenBtn = document.createElement("button");
-hiddenBtn.className = "navbtn hidden-filter"; hiddenBtn.id = "hiddenBtn"; hiddenBtn.type = "button"; hiddenBtn.hidden = true;
-hiddenBtn.setAttribute("aria-pressed", "false");
-hiddenBtn.innerHTML = `${svg("x")}<span class="label">Show Hidden</span><span class="count attention-count" id="hiddenCount">0</span>`;
-const hiddenCount = hiddenBtn.querySelector(".count");
-byId("attentionBtn").after(hiddenBtn);
-const hiddenMini = document.createElement("button");
-hiddenMini.className = "sidebar-mini-button hidden-mini"; hiddenMini.id = "sidebarMiniHidden"; hiddenMini.type = "button"; hiddenMini.hidden = true;
-hiddenMini.innerHTML = `${svg("x")}<span class="sidebar-mini-badge" id="sidebarMiniHiddenBadge"></span>`;
-byId("sidebarMiniAttention").after(hiddenMini);
-function renderHiddenControl() {
-  const n = indexState.ignoredCount;
-  if (!n) indexState.showHidden = false;
-  hiddenBtn.hidden = !n; hiddenMini.hidden = !n;
-  hiddenCount.textContent = String(n);
-  hiddenBtn.classList.toggle("on", indexState.showHidden);
-  hiddenMini.classList.toggle("on", indexState.showHidden); // same control, same lit state
-  hiddenBtn.setAttribute("aria-pressed", String(indexState.showHidden));
-  hiddenMini.setAttribute("aria-pressed", String(indexState.showHidden));
-  hiddenBtn.title = indexState.showHidden ? "Hide them again" : `Show ${n} hidden session${n === 1 ? "" : "s"}, projects and agents`;
-  hiddenMini.setAttribute("aria-label", `${n} hidden`); hiddenMini.title = hiddenBtn.title;
-}
-hiddenBtn.onclick = () => { indexState.showHidden = !indexState.showHidden; renderTree(); };
-hiddenMini.onclick = () => { indexState.showHidden = true; byId("sidebarMiniExpand").click(); renderTree(); };
-
-// The session filter (#202): a filter glyph on the sidebar's toolbar row opening a sheet of
-// checkboxes — All, Active, Blocked, Idle, and Include hidden — the owner's design for the
-// partition the classic rail offers as All / Active / Idle pills. The buckets are the shared
-// table's (`sessionBucket`: one definition, held to the tracker's enum by a test); the set is
-// remembered (`indexState.buckets`), every bucket is no filter, and the set is never empty (a
-// tree that shows nothing is not a filter — unchecking the last bucket puts every bucket back).
-// The attention button is this set at {blocked}, so pressing either paints both; Include hidden
-// is the Show Hidden toggle by another handle. Layered here at runtime, like Show Hidden, so the
+// The session filter (#202, the owner's shape): a glyph in the head-actions row — between
+// Expand every group and the sidebar collapse — opening a sheet under the sidebar's head with
+// three checkboxes: Active recently (any activity in the last hour, and every session busy
+// now), Blocked (what "needs attention" means: a wait, or an idle reason that cut the work
+// short) and Idle (neither), then Include hidden. "Everything" in the sheet's head checks the
+// three and leaves Include hidden alone. Recent and blocked overlap by design (the shared
+// `sessionFilterBuckets`); the set is remembered (`indexState.buckets`) and starts as Active
+// recently and Blocked, the owner's default; every bucket is no filter; the set is never empty
+// (unchecking the last puts every bucket back). The demo's
+// Needs attention button and the Show Hidden control are gone — the sheet's Blocked and
+// Include hidden checkboxes are those two by name — and the collapsed rail's bell with them;
+// the rail gets a filter glyph that opens the sidebar and the sheet. Layered at runtime so the
 // extracted demo markup stays exact.
+byId("attentionBtn").remove();
+byId("sidebarMiniAttention").remove();
 const filterBtn = document.createElement("button");
-filterBtn.className = "navbtn session-filter"; filterBtn.id = "filterBtn"; filterBtn.type = "button";
+filterBtn.type = "button"; filterBtn.className = "iconbtn session-filter"; filterBtn.id = "filterBtn";
+filterBtn.innerHTML = svg("filterLines");
+filterBtn.setAttribute("aria-label", "Filter the sessions");
 filterBtn.setAttribute("aria-expanded", "false"); filterBtn.setAttribute("aria-haspopup", "true"); filterBtn.setAttribute("aria-controls", "sessionFilter");
-filterBtn.innerHTML = `${svg("filterLines")}<span class="label">Filter</span><span class="count" id="filterCount" hidden>0</span>`;
-const filterCount = filterBtn.querySelector(".count");
-hiddenBtn.after(filterBtn);
+byId("sidebarCollapse").insertAdjacentElement("beforebegin", filterBtn);
 const filterSheet = document.createElement("div");
 filterSheet.className = "navigator-options session-filter-options"; filterSheet.id = "sessionFilter"; filterSheet.hidden = true;
 filterSheet.setAttribute("role", "group"); filterSheet.setAttribute("aria-label", "Show sessions");
-filterSheet.innerHTML = `<div class="scope-menu-head"><strong>SHOW</strong><button class="scope-menu-action" type="button" data-filter-reset>Everything</button></div>
+filterSheet.innerHTML = `<div class="scope-menu-head"><strong>SHOW</strong><button class="scope-menu-action" type="button" data-filter-reset title="Every state — Active recently, Blocked and Idle; Include hidden stays as it is">Everything</button></div>
 <div class="scope-menu-list">
-<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="all" title="Every session, whatever its state"><span class="scope-check"></span><span>All</span><span class="scope-count" data-bucket-count="all"></span></button>
-<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="active" title="Busy — thinking, running a tool, starting, or a queued prompt about to run"><span class="scope-check"></span><span>Active</span><span class="scope-count" data-bucket-count="active"></span></button>
-<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="blocked" title="${BLOCKED_SUMMARY}"><span class="scope-check"></span><span>Blocked</span><span class="scope-count" data-bucket-count="blocked"></span></button>
-<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="idle" title="Finished with nothing owed — the turn ended with an answer, or the process is gone"><span class="scope-check"></span><span>Idle</span><span class="scope-count" data-bucket-count="idle"></span></button>
+<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="recent" title="Any activity in the last hour, and every session that is busy now"><span class="scope-check"></span><span>${FILTER_LABELS.recent}</span><span class="scope-count" data-bucket-count="recent"></span></button>
+<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="blocked" title="${BLOCKED_SUMMARY}"><span class="scope-check"></span><span>${FILTER_LABELS.blocked}</span><span class="scope-count" data-bucket-count="blocked"></span></button>
+<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="idle" title="Neither of the two — no activity in the last hour and nothing owed"><span class="scope-check"></span><span>${FILTER_LABELS.idle}</span><span class="scope-count" data-bucket-count="idle"></span></button>
 </div>
 <div class="scope-menu-divider"></div>
 <div class="scope-menu-list">
 <button class="scope-option" type="button" role="checkbox" aria-checked="false" data-include-hidden title="Show the sessions, projects and agents you have hidden, dimmed"><span class="scope-check"></span><span>Include hidden</span><span class="scope-count" data-bucket-count="hidden"></span></button>
 </div>`;
-filterBtn.after(filterSheet);
+document.querySelector(".side-head").appendChild(filterSheet);
 const filterMini = document.createElement("button");
 filterMini.className = "sidebar-mini-button filter-mini"; filterMini.id = "sidebarMiniFilter"; filterMini.type = "button"; filterMini.title = "Filter the sessions";
+filterMini.setAttribute("aria-label", "Filter the sessions");
 filterMini.innerHTML = svg("filterLines");
-hiddenMini.after(filterMini);
+byId("sidebarMiniSearch").insertAdjacentElement("afterend", filterMini);
 /** Whether the bucket set leaves anything out. */
-const bucketFilterActive = () => BUCKETS.some(b => !indexState.buckets.has(b));
+const bucketFilterActive = () => FILTER_BUCKETS.some(bucket => !indexState.buckets.has(bucket));
 /** Set the buckets shown — never an empty set — and repaint everything that reads them. */
 function setBuckets(next) {
-  const set = new Set([...next].filter(b => BUCKETS.includes(b)));
-  indexState.buckets = set.size ? set : new Set(BUCKETS);
-  indexState.attention = indexState.buckets.size === 1 && indexState.buckets.has("blocked");
+  const set = new Set([...next].filter(bucket => FILTER_BUCKETS.includes(bucket)));
+  indexState.buckets = set.size ? set : new Set(FILTER_BUCKETS);
   persist(); renderTree();
 }
 function toggleFilterSheet(open) {
-  filterSheet.hidden = !open; filterBtn.setAttribute("aria-expanded", String(open)); filterBtn.classList.toggle("open", open);
+  filterSheet.hidden = !open; filterBtn.setAttribute("aria-expanded", String(open));
 }
 filterBtn.onclick = () => toggleFilterSheet(filterSheet.hidden);
 filterMini.onclick = () => { byId("sidebarMiniExpand").click(); toggleFilterSheet(true); };
 filterSheet.addEventListener("click", event => {
-  if (event.target.closest("[data-filter-reset]")) { setBuckets(BUCKETS); return; }
+  if (event.target.closest("[data-filter-reset]")) { setBuckets(FILTER_BUCKETS); return; }
   if (event.target.closest("[data-include-hidden]")) { indexState.showHidden = !indexState.showHidden; renderTree(); return; }
   const option = event.target.closest("[data-bucket]"); if (!option) return;
   const bucket = option.dataset.bucket;
-  if (bucket === "all") { setBuckets(BUCKETS); return; }
   const next = new Set(indexState.buckets); if (next.has(bucket)) next.delete(bucket); else next.add(bucket);
   setBuckets(next);
 });
 document.addEventListener("click", event => { if (!filterSheet.hidden && !filterSheet.contains(event.target) && !filterBtn.contains(event.target) && !filterMini.contains(event.target)) toggleFilterSheet(false); });
 document.addEventListener("keydown", event => { if (event.key === "Escape" && !filterSheet.hidden) toggleFilterSheet(false); });
-/** Paint the filter button, the rail's glyph and the sheet from the one state. */
+/** Paint the glyphs and the sheet from the one state. */
 function renderFilterControl(counts, shown, total) {
+  if (!indexState.ignoredCount) indexState.showHidden = false;
   const filtered = bucketFilterActive();
-  const chosen = BUCKETS.filter(b => indexState.buckets.has(b));
+  const chosen = FILTER_BUCKETS.filter(bucket => indexState.buckets.has(bucket)).map(bucket => FILTER_LABELS[bucket]);
   filterBtn.classList.toggle("on", filtered); filterMini.classList.toggle("on", filtered);
-  filterCount.hidden = !filtered; filterCount.textContent = `${shown}/${total}`;
-  filterBtn.title = filtered ? `Showing ${chosen.join(" and ")} sessions — ${shown} of ${total}` : "Filter the sessions by state — active, blocked, idle — and include hidden ones";
+  filterBtn.title = filtered ? `Showing ${chosen.join(" and ")} — ${shown} of ${total}` : "Filter the sessions — active recently, blocked, idle — and include hidden ones";
   for (const option of filterSheet.querySelectorAll("[data-bucket]")) {
-    const bucket = option.dataset.bucket; const on = bucket === "all" ? !filtered : indexState.buckets.has(bucket);
+    const on = indexState.buckets.has(option.dataset.bucket);
     option.classList.toggle("on", on); option.setAttribute("aria-checked", String(on));
   }
   const include = filterSheet.querySelector("[data-include-hidden]");
   include.classList.toggle("on", indexState.showHidden); include.setAttribute("aria-checked", String(indexState.showHidden));
   for (const el of filterSheet.querySelectorAll("[data-bucket-count]")) {
     const key = el.dataset.bucketCount;
-    el.textContent = String(key === "all" ? total : key === "hidden" ? indexState.ignoredCount : counts[key] || 0);
+    el.textContent = String(key === "hidden" ? indexState.ignoredCount : counts[key] || 0);
   }
 }
-// The remembered set decides the attention button's pressed state from the first paint.
-indexState.attention = indexState.buckets.size === 1 && indexState.buckets.has("blocked");
 async function applyIgnore(op, key) {
   try {
     const response = await fetch(ignoreQuery({ op, key }), { cache: "no-store" });
@@ -1617,10 +1578,6 @@ function paintJump() {
 byId("jumpToBottom").onclick = () => viewport.follow();
 function updateStickyHeaders() { const top = transcript.getBoundingClientRect().top; viewport.window.querySelectorAll("[data-process-surface]").forEach(surface => { const rect = surface.getBoundingClientRect(); surface.dataset.prodSticky = String(rect.top < top && rect.bottom > top + 40); }); }
 
-// "Needs attention" is the session filter at {blocked} (#202): pressing it narrows the set to the
-// blocked bucket, pressing it again puts every bucket back; the paint is renderTree's.
-byId("attentionBtn").onclick = () => setBuckets(indexState.attention ? BUCKETS : ["blocked"]);
-byId("sidebarMiniAttention").onclick = () => byId("attentionBtn").click();
 byId("themeBtn").onclick = () => { const dark = document.documentElement.dataset.theme !== "dark"; document.documentElement.dataset.theme = dark ? "dark" : ""; localStorage.setItem("am-demo-theme", dark ? "dark" : "light"); };
 if (localStorage.getItem("am-demo-theme") === "dark") document.documentElement.dataset.theme = "dark";
 function toggleSidebar(open) { indexState.sidebarOpen = open; app.classList.toggle("sidebar-off", !open); persist(); viewport.remeasure(); }

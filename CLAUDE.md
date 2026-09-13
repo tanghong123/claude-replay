@@ -36,10 +36,13 @@ page is not deprecated — it goes when the app shell has been validated, and no
 blocked (a wait, or an idle reason that cut the work short — this is what "needs attention"
 means and counts) and idle (`done`, `exited`); `sessionBucket` in `shared/state-labels.js` is
 the one definition, held to the tracker's enum by a test, and a turn that ended with an answer
-is idle, not blocked. The app shell's session filter (the glyph on the sidebar's toolbar row:
-All / Active / Blocked / Idle / Include hidden, remembered, never an empty set) is that
-partition; "Needs attention" is the same set at {blocked}; the classic rail keeps its
-All / Active / Idle pills on the legacy `state`.
+is idle, not blocked. The app shell's session filter (a glyph in the sidebar's head-actions row,
+between Expand every group and the sidebar collapse, opening Active recently / Blocked / Idle /
+Include hidden checkboxes; Active recently and Blocked by default, remembered, never an empty
+set; "Everything" checks the three and leaves Include hidden alone) filters by a COVER of that partition: Active recently is an hour of
+activity or busy now and overlaps Blocked by design (`sessionFilterBuckets`). It replaced the
+Needs attention and Show Hidden controls; the classic rail keeps its All / Active / Idle pills on
+the legacy `state`.
 
 `src/codex-ui/{reference.css,reference-shell.html,icons.js}` are **generated**, extracted
 byte-for-byte from `design/agent-monitor-codex-demo.html` by
@@ -213,6 +216,15 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   and the stall is that laziness at the scale of a walk. No page-side watchdog exists for it;
   `until` ends a timed-out wait with `harness::renderer_verdict`, two samples verbatim, so the
   renderer is read before the engine. The owner asked that it not be chased further.
+  **A case that reads the session TREE must say so**: the builders stamp a fixture in a fixed past
+  hour, so it lands in the Idle bucket and the app shell's default filter (Active recently +
+  Blocked, #202) leaves it out — `harness::show_every_session(&tab, url)` writes the shell's own
+  remembered set and reloads. Fixtures that must be placed relative to now use `harness::at`,
+  `rfc3339` and `rfc3339_secs_ago`; `CR_FIXTURE_DAY=YYYY-MM-DDTHH` pins the clock for a bisect.
+  Waiting on the outline's drawers is `harness::until_drawers_settle` — the app's own settled
+  signal (each open body painted at the height it declared), because `drawers-animating` clears
+  260 ms after a toggle while the paint can land a second later, which reads exactly like a
+  drawer that never opened.
   A killed run used to leave its browsers behind — a SIGKILL runs no `Drop` and macOS has no
   PDEATHSIG — and sixty such processes once exhausted the machine and took the session's
   background jobs with them. `chrome()` now names each profile `cr-browser-chrome-<launching

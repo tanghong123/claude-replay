@@ -73,10 +73,61 @@ impl Drop for Reap {
 // file's mtime). A growth scenario that must read as live uses [`user_at`] & co with a
 // now-relative timestamp instead.
 
+/// The fixture clock: a FIXED past hour, as it always was. A session the builders write is
+/// therefore "idle" to the monitor, which matters since #202 gave the app shell a default filter
+/// of Active recently + Blocked — a case that needs its fixture to appear in the session TREE
+/// calls [`show_every_session`] and says so. (Making the clock live instead was tried and
+/// reverted: it puts every fixture in the recent bucket, but it also makes a finished session
+/// read as freshly active, and two viewport scenarios that grow a record above the reader then
+/// failed — measured, `CR_FIXTURE_DAY` pinned to this hour passes and the live clock does not.)
+/// `CR_FIXTURE_DAY=YYYY-MM-DDTHH` pins it for a bisect.
+fn day() -> String {
+    std::env::var("CR_FIXTURE_DAY")
+        .ok()
+        .filter(|p| p.len() == 13)
+        .unwrap_or_else(|| DAY.to_string())
+}
+
 const DAY: &str = "2026-08-21T10";
 
+/// `secs` seconds since the epoch as RFC 3339 (civil-from-days; no date crate).
+pub fn rfc3339(t: u64) -> String {
+    let (days, rem) = (t / 86400, t % 86400);
+    let z = days as i64 + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+/// `secs` seconds before now, RFC 3339 — for a fixture that must NOT read as recent.
+pub fn rfc3339_secs_ago(secs: u64) -> String {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    rfc3339(t.saturating_sub(secs))
+}
+
+/// A stamp in the fixture hour at `mm:ss` — for a line a case writes by hand beside the
+/// builders' lines.
+pub fn at(mmss: &str) -> String {
+    format!("{}:{mmss}Z", day())
+}
+
 fn stamp(s: u32) -> String {
-    format!("{DAY}:{:02}:00Z", s % 60)
+    format!("{}:{:02}:00Z", day(), s % 60)
 }
 
 /// A user turn.
@@ -738,6 +789,17 @@ impl Monitor {
 
     /// The first navigation of every tab: `?token=` sets the cookie and redirects to a bare
     /// `/`, dropping every other query — so pair first, then ask for a page.
+    /// Pair the tab with this monitor — and, while we are on its origin, leave the app shell's
+    /// session filter showing every bucket (#202).
+    ///
+    /// The shell's filter defaults to Active recently + Blocked and the builders stamp a fixture
+    /// in a FIXED past hour, so an ordinary fixture sits in the Idle bucket: an app-shell case
+    /// would find an empty tree. Nine cases across two files broke on exactly that, none of them
+    /// about the filter — "expand every group", the outline's two states, the options popover,
+    /// the turn bar. Pairing is what those cases all do first, and it already visits the origin
+    /// localStorage belongs to, so the set is written here: the same thing a reader who pressed
+    /// "Everything" would leave behind. A case that IS about the filter does not pair (or clears
+    /// the key) and gets the product's default, untouched.
     pub fn pair(&self, tab: &headless_chrome::Tab) {
         let token = self
             .token()
@@ -745,11 +807,20 @@ impl Monitor {
             .unwrap_or_default();
         tab.navigate_to(&self.url(&token)).unwrap();
         tab.wait_until_navigated().unwrap();
+        seed_every_bucket(tab);
     }
 
-    /// Navigate the tab to a page of this monitor and wait for the navigation.
+    /// Navigate the tab to a page of this monitor and wait for the navigation. On this monitor's
+    /// origin already? Then the filter seed [`Monitor::pair`] left is still there.
     pub fn open(&self, tab: &headless_chrome::Tab, path_and_query: &str) {
-        tab.navigate_to(&self.url(path_and_query)).unwrap();
+        let url = self.url(path_and_query);
+        if !tab.get_url().starts_with(&self.url("")) {
+            // localStorage is per origin: reach the origin first, seed, then go (#202).
+            tab.navigate_to(&self.url("")).unwrap();
+            let _ = tab.wait_until_navigated();
+            seed_every_bucket(tab);
+        }
+        tab.navigate_to(&url).unwrap();
         tab.wait_until_navigated().unwrap();
     }
 }
@@ -1023,6 +1094,40 @@ pub fn renderer_verdict(tab: &headless_chrome::Tab) -> String {
     std::thread::sleep(Duration::from_millis(300));
     let second = renderer_activity(tab, 300);
     format!("renderer (frames, scroll events) in two 300 ms samples of scroll activity: {first:?}, {second:?} — none in either is the #204 signature: a renderer stall, not an engine bug")
+}
+
+/// Write the app shell's remembered session filter as all three buckets, on whatever origin the
+/// tab is already on (#202). No reload: the caller navigates next.
+fn seed_every_bucket(tab: &headless_chrome::Tab) {
+    eval(
+        tab,
+        "(function(){ try { localStorage.setItem('am-prod-session-filter', JSON.stringify(['recent','blocked','idle'])); } catch (e) {} return 'ok'; })()",
+    );
+}
+
+/// Show every session in the app shell's tree, whatever its state (#202) — for a case that
+/// navigated itself rather than through [`Monitor::open`]. Seeds the shell's own remembered set
+/// and reloads `url`, which is where the shell picks it up.
+pub fn show_every_session(tab: &headless_chrome::Tab, url: &str) {
+    seed_every_bucket(tab);
+    tab.navigate_to(url).unwrap();
+    tab.wait_until_navigated().unwrap();
+}
+
+/// Wait until every OPEN outline drawer is painted at the height the app declared for it — the
+/// app's own settled signal (#202b). `drawers-animating` clears 260 ms after the last toggle, but
+/// the paint can land later than that: measured on this machine, a pane's inline `height: 97px`
+/// was in place at t+250 ms while its rect still read 0 until t+1750 ms, which reads exactly like
+/// a drawer that never opened. Comparing the rect with the INLINE height keeps the following
+/// assertion honest — a drawer that really stayed shut settles at `0px` and still fails it.
+pub fn until_drawers_settle(tab: &headless_chrome::Tab) {
+    until(
+        tab,
+        "(function(){ var nav = document.querySelector('.session-navigator'); if (!nav || nav.classList.contains('drawers-animating')) return false; return [...nav.querySelectorAll(':scope > .outline-card:not(.pane-off)')].every(function (c) { var b = c.querySelector(':scope > .outline-card-body'); if (!b) return true; var want = parseFloat(b.style.height || '0'); return Math.abs(b.getBoundingClientRect().height - want) <= 1; }); })()",
+        "every open drawer to be painted at the height the app declared",
+        Duration::from_secs(15),
+        "JSON.stringify([...document.querySelectorAll('.session-navigator > .outline-card:not(.pane-off)')].map(function (c) { var b = c.querySelector(':scope > .outline-card-body'); return [c.dataset.navCard, c.className, b && b.style.height, b && Math.round(b.getBoundingClientRect().height)]; }))",
+    );
 }
 
 /// Poll a boolean JS predicate until true, or PANIC with `what`, a diagnostic and the
@@ -1758,7 +1863,7 @@ pub fn selection_text(tab: &headless_chrome::Tab) -> String {
 /// neither an exit code nor a duration, so these heads need a Codex store.
 pub fn codex_tool_session(id: &str, turns: u32) -> String {
     fn at(k: u32, i: u32) -> String {
-        format!("{DAY}:{:02}:{:02}Z", k % 60, i % 60)
+        format!("{}:{:02}:{:02}Z", day(), k % 60, i % 60)
     }
     fn user(k: u32, i: u32, text: &str) -> String {
         format!(
