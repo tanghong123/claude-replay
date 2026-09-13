@@ -5428,6 +5428,17 @@ fn the_app_shell_opens_a_pushed_shut_pane_from_its_head() {
     let body_of = "(function(k){ var b = document.querySelector('[data-nav-card=\"' + k + '\"] > .outline-card-body'); return b ? Math.round(b.getBoundingClientRect().height) : -1; })";
     harness::eval(&tab, "(function(){ ['turns','tasks','agents','session'].forEach(function (k) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (c && !c.classList.contains('open')) c.querySelector('[data-nav-card-toggle]').click(); }); return 'ok'; })()");
     harness::until_drawers_settle(&tab);
+    // #206: a closing push spends nothing on a tail that is already wholly visible, so this
+    // case's setup needs the column under pressure — a window short enough to cut the tail off.
+    tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: Some(0),
+        top: Some(0),
+        width: Some(1400.0),
+        height: Some(520.0),
+    })
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    harness::until_drawers_settle(&tab);
     let opened = harness::eval(&tab, &format!("{body_of}('turns')"));
     assert!(
         opened.as_f64().unwrap_or(0.0) > 0.0,
