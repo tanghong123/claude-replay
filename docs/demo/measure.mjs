@@ -1,0 +1,21 @@
+import { launch, Cdp, attach, evalIn, until, sleep } from "./cdp.mjs";
+const PORT = process.env.PORT || "2790";
+const BIG = "aaaaaaaa-0000-4000-8000-000000000009";
+const { child, wsUrl } = await launch({});
+const cdp = await Cdp.connect(wsUrl);
+const { send } = await attach(cdp);
+await send("Page.enable"); await send("Runtime.enable");
+await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+const open = async () => {
+  const t0 = Date.now();
+  await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/?ui=app&session=${BIG}&t=${Date.now()}` });
+  await until(send, "document.querySelectorAll('[data-record]').length > 0 || document.querySelectorAll('.turn').length > 0", "records", 90000, "document.body.innerText.slice(0,120)");
+  const ms = Date.now() - t0;
+  const turns = await evalIn(send, "Number((document.querySelector('[data-nav-card=\"turns\"] .outline-card-head .count, [data-nav-card=\"turns\"] .outline-card-head')||{}).innerText?.replace(/\\D+/g,'')||0)");
+  return { ms, turns };
+};
+const a = await open(); await sleep(1500);
+const b = await open(); await sleep(1000);
+const c = await open();
+console.log(JSON.stringify({ first: a, second: b, third: c }));
+cdp.close(); child.kill();
