@@ -2575,6 +2575,11 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
     drop(monitor);
 }
 
+/// #212: what the engine believed on each side of the rail reflow — the mounted units around the
+/// viewport top, the engine's own last states and the reader's last actions. Dumped under
+/// `SCENARIO_TRACE`.
+const SNAP_212: &str = r#"(function(){ var s = document.querySelector('.transcript'); var top = s.getBoundingClientRect().top; var near = []; for (var c of document.querySelector('.virtual-window').children) { var r = c.getBoundingClientRect(); if (r.bottom > top - 300 && r.top < top + 300) near.push([c.dataset.unitKey || '?', Math.round(r.top - top), Math.round(r.height)]); } var h = window.__viewportHistory; var st = h && h.states ? h.states.slice(-6).map(function(x){ return [x.cause, x.turn, x.lo, x.hi, Math.round(x.top || 0), x.pads && x.pads.map(Math.round)]; }) : null; var ac = h && h.actions ? h.actions.slice(-6).map(function(x){ return [x.kind, x.dy !== undefined ? Math.round(x.dy) : (x.key || x.id || ''), Math.round(x.t || 0)]; }) : null; return JSON.stringify({ scrollTop: Math.round(s.scrollTop), scrollH: Math.round(s.scrollHeight), clientH: Math.round(s.clientHeight), width: Math.round(s.getBoundingClientRect().width), near: near, states: st, actions: ac, viol: (window.__viewportViolations || []).length }); })()"#;
+
 /// #55/#148: the outline pane has TWO states — open, and collapsed to its icon rail — and the
 /// vocabulary that walks them is complete without a third.
 ///
@@ -2646,6 +2651,16 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
     harness::scroll_by(&tab, harness::Surface::AppShell, -2400);
     std::thread::sleep(std::time::Duration::from_millis(600));
     let anchor_before = harness::view_anchor(&tab, harness::Surface::AppShell);
+    // #212: SCENARIO_TRACE=1 dumps what the engine believed on each side of the reflow, because an
+    // intermittent viewport case is measured, not reasoned about.
+    let trace_212 = std::env::var_os("SCENARIO_TRACE").is_some();
+    let snap_212 = SNAP_212;
+    if trace_212 {
+        eprintln!(
+            "#212 before the reflow: anchor={anchor_before:?} {}",
+            harness::eval(&tab, snap_212)
+        );
+    }
 
     // The key collapses to the rail — from anywhere, no control focused.
     let off = "document.querySelector('.workspace').classList.contains('navigator-off')";
@@ -2667,6 +2682,12 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
     // The reader's place survives the reflow — the half of #55 that was never about hiding.
     std::thread::sleep(std::time::Duration::from_millis(400));
     let anchor_after = harness::view_anchor(&tab, harness::Surface::AppShell);
+    if trace_212 {
+        eprintln!(
+            "#212 after the reflow:  anchor={anchor_after:?} {}",
+            harness::eval(&tab, snap_212)
+        );
+    }
     assert_eq!(
         anchor_after.0, anchor_before.0,
         "the unit at the top of the view is the same one through the reflow"
@@ -2711,7 +2732,7 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
         // parks itself off-screen over a .22s transition — mid-flight it covers the middle of the
         // window, and the rail's button is under it. Wait for the panel, not for a clock.
         harness::until_preview_parked(&tab);
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        std::thread::sleep(std::time::Duration::from_millis(700));
 
         // From the rail: the expand button is there and clickable.
         let expand = harness::probe(
@@ -3682,7 +3703,7 @@ fn the_app_shell_options_popover_fits_and_scrolls() {
         // resize can start late, so waiting a fixed 600 ms measured it mid-flight (at
         // translateX(0), covering the popover) and read as a covered control.
         harness::until_preview_parked(&tab);
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::thread::sleep(std::time::Duration::from_millis(600));
         harness::eval(
             &tab,
             "(function(){ var p = document.getElementById('navigatorOptions'); if (!p.classList.contains('open')) document.getElementById('filterTranscriptBtn').click(); return 'ok'; })()",
