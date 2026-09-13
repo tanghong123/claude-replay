@@ -2286,7 +2286,6 @@ fn app_shell_lets_the_thumb_own_the_position_while_dragged() {
     let fx = open_turn_fixture("scenario-thumb-app");
     let page = open(Surface::AppShell, &fx, 2879);
     let tab = &page.tab;
-    let heights = r#"(function(){var vw=document.querySelector('.virtual-window');var out={};for(const c of vw.children){out[(c.dataset.unitIndex||'?')+':'+(c.dataset.unitKey||'?')]=Math.round(c.getBoundingClientRect().height);}var t=document.querySelectorAll('.virtual-pad');out['__pads']=[t[0].style.height,t[1].style.height];return out;})()"#;
     jump_to_end(tab, Surface::AppShell);
     await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
     settle();
@@ -5013,7 +5012,7 @@ fn scenario_a_fold_keeps_its_head_state_across_a_rematerialization(
     );
     settle();
     // …then tag the FRESH element and read the state it settled into.
-    let opened = probe(
+    let _ = probe(
         tab,
         &match surface {
             Surface::Classic => format!("(function(){{ var f = document.getElementById('{id}'); if (!f) return null; f.dataset.auditTag = '1'; var t = f.querySelector(':scope > .fold-h > .tool-target'); return {{ id: f.id, ws: t ? getComputedStyle(t).whiteSpace : 'no-target', open: f.dataset.open }}; }})()"),
@@ -6196,7 +6195,6 @@ fn app_shell_a_fleet_row_descent_keeps_the_way_back() {
     let fx = fixture_workflow("scenario-fleet-descent");
     let page = open(Surface::AppShell, &fx, 2923);
     let tab = &page.tab;
-    let heights = r#"(function(){var vw=document.querySelector('.virtual-window');var out={};for(const c of vw.children){out[(c.dataset.unitIndex||'?')+':'+(c.dataset.unitKey||'?')]=Math.round(c.getBoundingClientRect().height);}var t=document.querySelectorAll('.virtual-pad');out['__pads']=[t[0].style.height,t[1].style.height];return out;})()"#;
     jump_to_end(tab, Surface::AppShell);
     await_tail(tab, Surface::AppShell, "the jump to land at the tail");
     until(

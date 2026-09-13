@@ -2700,7 +2700,18 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
     let hittable = r#"function (el) { if (!el) return false; var r = el.getBoundingClientRect(); if (r.width < 4 || r.height < 4) return false; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(hit && (hit === el || el.contains(hit) || hit.contains(el))); }"#;
     for (label, w) in [("wide", 1500.0), ("narrow", 820.0)] {
         harness::resize(&tab, w, 900.0);
-        std::thread::sleep(std::time::Duration::from_millis(700));
+        harness::until(
+            &tab,
+            &format!("innerWidth <= {}", w as i64 + 1),
+            "the window to reach this leg's width",
+            std::time::Duration::from_secs(10),
+            "innerWidth",
+        );
+        // The narrow leg crosses 1180px, where the preview panel becomes a fixed overlay that
+        // parks itself off-screen over a .22s transition — mid-flight it covers the middle of the
+        // window, and the rail's button is under it. Wait for the panel, not for a clock.
+        harness::until_preview_parked(&tab);
+        std::thread::sleep(std::time::Duration::from_millis(400));
 
         // From the rail: the expand button is there and clickable.
         let expand = harness::probe(
@@ -3659,7 +3670,19 @@ fn the_app_shell_options_popover_fits_and_scrolls() {
     // The rule is real even though that bug was not, so it gets a guard rather than a comment.
     for width in [820.0_f64, 680.0] {
         harness::resize(&tab, width, 900.0);
-        std::thread::sleep(std::time::Duration::from_millis(600));
+        harness::until(
+            &tab,
+            &format!("innerWidth <= {}", width as i64 + 1),
+            "the window to narrow",
+            std::time::Duration::from_secs(10),
+            "innerWidth",
+        );
+        // Below 1180px the preview panel becomes a fixed overlay at z-index 50 and parks itself
+        // off-screen; the popover under it is z-index 48. The park is a .22s transition that a
+        // resize can start late, so waiting a fixed 600 ms measured it mid-flight (at
+        // translateX(0), covering the popover) and read as a covered control.
+        harness::until_preview_parked(&tab);
+        std::thread::sleep(std::time::Duration::from_millis(300));
         harness::eval(
             &tab,
             "(function(){ var p = document.getElementById('navigatorOptions'); if (!p.classList.contains('open')) document.getElementById('filterTranscriptBtn').click(); return 'ok'; })()",

@@ -236,6 +236,14 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   signal (each open body painted at the height it declared), because `drawers-animating` clears
   260 ms after a toggle while the paint can land a second later, which reads exactly like a
   drawer that never opened.
+  **A case that narrows the window past 1180px waits for `harness::until_preview_parked`** before
+  it hit-tests anything: below that width the preview panel stops being a grid column and becomes
+  a fixed overlay at z-index 50 that parks itself off-screen over a .22s transition, and a resize
+  can start that transition late — measured, 600 ms after a resize to 820px the panel still sat at
+  `translateX(0)` across the middle of the window, so a control under it (the transcript filter
+  popover is z-index 48) failed its hit test and read as a control something had painted over
+  (#211). Wait for the window to reach the new width first, or the wait answers about the old
+  layout.
   A killed run used to leave its browsers behind — a SIGKILL runs no `Drop` and macOS has no
   PDEATHSIG — and sixty such processes once exhausted the machine and took the session's
   background jobs with them. `chrome()` now names each profile `cr-browser-chrome-<launching

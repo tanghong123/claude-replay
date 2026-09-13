@@ -1130,6 +1130,29 @@ pub fn until_drawers_settle(tab: &headless_chrome::Tab) {
     );
 }
 
+/// Wait for the preview panel to finish PARKING itself off-screen after a resize.
+///
+/// Below 1180px the panel stops being a grid column and becomes a fixed overlay at z-index 50,
+/// parked with `transform: translateX(105%)` over a .22s transition. Crossing that boundary with a
+/// resize can start the transition late: measured here, 600 ms after a resize to 820px the panel
+/// was still at translateX(0), covering the whole right of the window — so a control under it
+/// (the transcript filter popover is z-index 48) failed a hit test and read exactly like a control
+/// painted over by the panel. A fixed sleep is the wrong instrument for an animation whose START
+/// is what moves; wait for the panel to arrive instead.
+///
+/// Vacuously true above 1180px (there the panel is a grid column, not an overlay) and when the
+/// preview is open, where the panel is MEANT to be on screen. Wait for the window to reach the new
+/// width before calling it, or it answers about the old layout.
+pub fn until_preview_parked(tab: &headless_chrome::Tab) {
+    until(
+        tab,
+        "(function(){ var pv = document.querySelector('.preview'); var app = document.getElementById('app'); if (!pv || !app) return true; if (innerWidth > 1180) return true; if (!app.classList.contains('preview-off')) return true; var r = pv.getBoundingClientRect(); return r.left >= innerWidth - 1; })()",
+        "the preview panel to park itself off-screen",
+        Duration::from_secs(10),
+        "(function(){ var pv = document.querySelector('.preview'); var r = pv && pv.getBoundingClientRect(); return JSON.stringify({ app: document.getElementById('app').className, width: innerWidth, rect: r && [Math.round(r.left), Math.round(r.width)], tf: pv && getComputedStyle(pv).transform }); })()",
+    );
+}
+
 /// Poll a boolean JS predicate until true, or PANIC with `what`, a diagnostic and the
 /// renderer's verdict — never a vacuous return. `diag` is a JS expression evaluated on timeout
 /// (a string).
