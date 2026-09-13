@@ -1143,7 +1143,9 @@ pub fn until_drawers_settle(tab: &headless_chrome::Tab) {
 ///
 /// The signal is the engine's own last recorded state, which is exactly what a later transaction
 /// will act on. A timeout here names a real problem rather than a confusing anchor mismatch three
-/// assertions later.
+/// assertions later. It follows that this is for a scroll big enough to make the engine transact:
+/// a small wheel that leaves the mounted window where it was records no state, so the last one
+/// stays true and the wait times out on a page that is behaving.
 pub fn until_reader_owns_the_view(tab: &headless_chrome::Tab) {
     until(
         tab,
