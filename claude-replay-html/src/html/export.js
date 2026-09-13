@@ -227,6 +227,7 @@
   var recText = [];      // lazy lowercase text per record, for search (null = unbuilt)
   var recSearchParts = []; // lazy {start,end,mask} ownership spans into recText
   var recHit = [];       // with a filter active: does this record (or a nested one) match?
+  var recTurn = [];      // the turn each record belongs to — the last turn start at or before it — for the history (#197)
   var idIndex = {};      // block id (incl. nested items) -> top-level record index
   var EST_H = 30;
   // #184: EST_H is the SEED, not the answer. A constant floor is the guess that is furthest from
@@ -471,6 +472,7 @@
     recText.push(null);
     recSearchParts.push(null);
     recHit.push(false);
+    recTurn.push(b.turn != null ? b.turn : recTurn.length ? recTurn[recTurn.length - 1] : null);
     indexIds(b, records.length - 1);
     if (b.turn != null) addTurn(b);
     else if (b.epoch) addEpoch(b);
@@ -947,6 +949,7 @@
   }
 
   function renderMeta(m) {
+    if (m.version && vw) vw.version = m.version;
     if (m.title) {
       document.title = m.title;
       $("title").textContent = m.title;
@@ -1481,6 +1484,7 @@
     recText.length = from;
     recSearchParts.length = from;
     recHit.length = from;
+    recTurn.length = from;
     // Ids of dropped records (incl. nested) leave the index; a full rebuild is
     // cheap and only runs on tail rewrites.
     idIndex = {};
@@ -1871,6 +1875,9 @@
     // carries an id, but keying them all `"undefined"` would make each reusable as any other,
     // and one character of prefix costs nothing to rule that out by shape.
     identityAt(index) { var b = records[index]; return b && b.id ? b.id : "@" + index; }
+    // A record in this page's vocabulary, for the history (#197, design/viewport-history.md §3):
+    // its block kind and its turn; one engine item is one record here.
+    describeAt(index) { var b = records[index]; return { kind: b ? b.kind : null, turn: recTurn[index] == null ? null : recTurn[index], from: index, to: index }; }
     // Where the measured heights live — persistence only, since #196 stage 3: the engine owns the
     // estimator (one kind on this page, `record`, floored at EST_H — the old second half of rule
     // 5's comment, "learning a real height only ever grows the page BELOW the reader, which nobody
@@ -1953,6 +1960,7 @@
     floors: { record: EST_H },
     skipAt: isHiddenRec,
     renderAll: function () { return !!filter && filterFull; },
+    page: "classic",
   });
 
   // #132 step 4's ratio needs a width to compare against, and the engine's is zero until the
@@ -2443,6 +2451,7 @@
     // away the block they just opened. This page grows the fold in place rather than through a
     // reconcile, so without this the ResizeObserver's own measure reaches `convergeBottom`.
     vw.readerReshaped();
+    vw.noteAction("fold", { key: f.id || null, open: !!open });
     var h = f.querySelector(":scope > .fold-h");
     var apply = function () {
       setFold(f, open, full);
@@ -2957,6 +2966,22 @@
   }
   $("btn-exp").addEventListener("click", function () { allFolds(true); });
   $("btn-col").addEventListener("click", function () { allFolds(false); });
+  // The viewport history (#197, design/viewport-history.md): the engine's last hour — the
+  // reader's actions, its state after every transaction, the shape of every delta — as JSON for
+  // a bug report: kinds, heights, indices, turns and timings, never content.
+  // `copy(__viewportHistory.export())` in the console is the same object.
+  function saveHistory() {
+    var out = vw.exportHistory();
+    var stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+    saveBlob("viewport-history-classic-" + stamp + ".json", new Blob([JSON.stringify(out)], { type: "application/json" }));
+  }
+  var histBtn = $("btn-hist");
+  if (histBtn) histBtn.addEventListener("click", saveHistory);
+  // …and every top-bar control the reader presses is an action in it, by id.
+  $("topbar").addEventListener("click", function (e) {
+    var b = e.target.closest ? e.target.closest(".tbtn") : null;
+    if (b && b.id) vw.noteAction("control", b.id);
+  }, true);
   var wideBtn = $("btn-wide");
   if (wideBtn) wideBtn.addEventListener("click", function () { setWide(!wide); });
   window.addEventListener("resize", function () { fitBar(); }, { passive: true });

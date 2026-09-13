@@ -199,6 +199,19 @@ function traceWanted(search, stored) {
   return stored === "1";
 }
 
+/** The viewport history's bound (design/viewport-history.md §2): an hour, or what a case asks for
+ *  with `?historyMs=<n>` — the one way a scenario can prove that entries age out. */
+const HISTORY_MS = 3600000;
+/** The count backstop per stream, never the bound: a live session at one transaction a second is
+ *  3 600 states an hour. */
+const HISTORY_CAPS = { actions: 2000, states: 4000, deltas: 2000 };
+/** Inputs of one kind this close together are one gesture: a wheel is one action, not forty. */
+const HISTORY_COALESCE_MS = 300;
+function historyWanted(search) {
+  const m = /(^|[?&])historyMs=(\d+)(&|$)/.exec(search || "");
+  return m ? Number(m[2]) : null;
+}
+
 /** The scroll correction that puts an anchored element back where it was: the page measures
  *  `currentTop` and remembers `wantTop`, both relative to the viewport. Below `epsilon` the
  *  correction is noise and scrolling by it would fight the reader. */
@@ -288,7 +301,7 @@ const TAIL = Object.freeze({ source: "tail" });
 
 class VirtualWindow {
   constructor(options) {
-    const { frame, mount, overscan, slacks, userIntentMs, rememberMs, clampIndex, skipAt, renderAll, floors, defaultKind } = options;
+    const { frame, mount, overscan, slacks, userIntentMs, rememberMs, clampIndex, skipAt, renderAll, floors, defaultKind, historyMs, page, version } = options;
     this.frame = frame;
     this.mount = mount.window;
     this.topPad = mount.top;
@@ -325,6 +338,25 @@ class VirtualWindow {
     this.warned = new Set();
     if (typeof window !== "undefined") window.__viewportViolations = this.violations;
     this.lastWrite = null;
+    // The viewport history (design/viewport-history.md): always on, the last hour of three
+    // streams — the reader's actions, the engine after every transaction, the shape of every
+    // records change — built from what the engine already knows and bounded by TIME; the caps in
+    // `HISTORY_CAPS` are the backstop. What only the page knows (a fold, a control) reaches it
+    // through `noteAction`; the page's own vocabulary for a record through `describeAt`.
+    const boundWanted = historyWanted(typeof location === "undefined" ? "" : location.search);
+    this.historyMs = boundWanted != null ? boundWanted : historyMs != null ? historyMs : HISTORY_MS;
+    this.page = page || null;
+    this.version = version || null;
+    this.floors = floors;
+    this.history = { actions: [], states: [], deltas: [] };
+    this.lastAction = null;
+    this.dragStarted = 0;
+    // The last offset `onScroll` read for its own classification: the engine's belief of where the
+    // reader is when nothing else says (`topBelief`) — never a read made for the history.
+    this.topSeen = null;
+    this.padsWritten = [0, 0];
+    this.pendingDelta = null;
+    if (typeof window !== "undefined") window.__viewportHistory = { actions: this.history.actions, states: this.history.states, deltas: this.history.deltas, export: () => this.exportHistory() };
     this.rememberMs = rememberMs;
     this.prefix = [0];
     this.lo = 0;
@@ -418,9 +450,10 @@ class VirtualWindow {
     // the content box exactly as it was, so the default box hears nothing at all.
     if (mount.content) this.outerObserver.observe(mount.content, { box: "border-box" });
     const noteIntent = event => {
-      if (event.type === "keydown" && event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
+      if (event.type === "keydown" && event.target && (/^(INPUT|TEXTAREA)$/.test(event.target.tagName) || event.target.isContentEditable)) return;
       if (event.type === "pointermove" && !event.buttons) return;
       this.markIntent(event.timeStamp);
+      this.noteInput(event);
     };
     for (const type of ["pointerdown", "pointermove", "wheel", "touchstart", "touchmove", "keydown"]) {
       frame.on(type, noteIntent, { passive: true, capture: true });
@@ -834,6 +867,7 @@ class VirtualWindow {
   beginDrag() {
     if (this.dragging) return;
     this.dragging = true;
+    this.dragStarted = Math.round(performance.now());
     this.position = null;
     this.wrote = null;
     this.lastUserInput = performance.now();
@@ -848,6 +882,9 @@ class VirtualWindow {
     this.updateWindow();
     this.scheduleRemember();
     if (this.pendingTail || this.estimatesPending) this.armRest();
+    // The history: one entry for the whole drag, dated from where it began.
+    const released = Math.round(performance.now());
+    this.record("actions", { kind: "drag", t: this.dragStarted, until: released, ms: released - this.dragStarted });
   }
 
   /** Heights from `itemHeight` (rule 8) — the same function the classic page measures with. A
@@ -890,6 +927,12 @@ class VirtualWindow {
    *  shapes, and one mean over all of them would be wrong about each); an unknown kind falls back
    *  to the default. */
   kindOf() { return this.defaultKind; }
+
+  /** Record `index` in the PAGE's vocabulary, for the history (design/viewport-history.md §3): its
+   *  kind there, its turn, and the record range the engine's item covers — the shell's process
+   *  unit spans records, and `kinds` then lists theirs. The default is the estimator's kind, no
+   *  turn, one record. */
+  describeAt(index) { return { kind: this.kindOf(index), turn: null, from: index, to: index }; }
   kindFor(index) {
     const kind = this.kindOf(index);
     return this.guesses.has(kind) ? kind : this.defaultKind;
@@ -998,6 +1041,7 @@ class VirtualWindow {
     const pads = padHeights(this.prefix, this.lo, this.hi, this.count);
     this.topPad.style.height = `${pads.top}px`;
     this.bottomPad.style.height = `${pads.bottom}px`;
+    this.padsWritten = [Math.round(pads.top), Math.round(pads.bottom)];
   }
 
   /** The elements just mounted, ATTACHED, before anything has measured them (#140 step 4). A page
@@ -1020,7 +1064,17 @@ class VirtualWindow {
    *  changed yet. */
   recordsChanged(mutate) {
     return this.transact("records", {
-      mutate: () => { const from = mutate ? mutate() : undefined; return from == null ? Infinity : from; },
+      mutate: () => {
+        // The delta's shape for the history (design/viewport-history.md §2.3): the count and the
+        // tail before, and the first rewritten index — the count before when the batch only
+        // appended. Closed by `closeDelta` once the mount has measured what it brought in.
+        const count0 = this.count;
+        const tail0 = this.tailSnapshot();
+        const from = mutate ? mutate() : undefined;
+        const first = from == null ? Infinity : from;
+        this.pendingDelta = { count0, count1: this.count, from: Math.min(first, count0), tail0 };
+        return first;
+      },
       dirtyFrom: from => from,
       range: p0 => this.count ? this.rangeFor(p0) : { lo: 0, hi: 0 },
     });
@@ -1212,6 +1266,10 @@ class VirtualWindow {
       this.transacting = false;
     }
     this.trace(cause, summary);
+    // The history (design/viewport-history.md): the state after every transaction, and the delta a
+    // records change opened — both from what the engine knows, with no layout read.
+    this.record("states", this.stateEntry(cause, summary));
+    if (this.pendingDelta) this.closeDelta();
     // What the caller does once the transaction has actually run — direct or queued (`command`'s
     // follow decision and memory; a page callback inside a transaction queues its command).
     if (options.after) options.after(summary);
@@ -1288,6 +1346,144 @@ class VirtualWindow {
     }
   }
 
+  /* ── the history (design/viewport-history.md) ──
+   * Always on, bounded by time, three streams on one clock (`t`, performance.now() rounded). No
+   * entry reads layout: a state carries what the engine already knows, and `top` is its BELIEF of
+   * the offset, never a fresh read — the node contract holds this path to it (§6 there). The rings
+   * are mutated in place: `window.__viewportHistory` holds the same arrays. */
+
+  /** Push `entry` onto `stream`, stamped now unless it carries its own time, and drop what has
+   *  aged past the bound (a coalesced gesture ages from its last input). */
+  record(stream, entry) {
+    const ring = this.history[stream];
+    if (entry.t == null) entry.t = Math.round(performance.now());
+    ring.push(entry);
+    const horizon = entry.t - this.historyMs;
+    while (ring.length && (ring[0].until != null ? ring[0].until : ring[0].t) < horizon) ring.shift();
+    while (ring.length > HISTORY_CAPS[stream]) ring.shift();
+    if (stream === "actions") this.lastAction = entry;
+    return entry;
+  }
+
+  /** An input the frame heard (the constructor's `noteIntent`): one action per GESTURE — inputs of
+   *  one kind within `HISTORY_COALESCE_MS` of the last fold into it, counted, a wheel with its
+   *  deltaY summed — so a flick is one entry and a held key is one entry. */
+  noteInput(event) {
+    const t = Math.round(performance.now());
+    const kind = event.type === "wheel" ? "wheel" : event.type === "keydown" ? "key" : /^touch/.test(event.type) ? "touch" : "pointer";
+    // Never content (design/viewport-history.md §4): a key is named only when it is not a
+    // character — an arrow, Page Down, Home, Enter — and any character, whatever it is, is `char`.
+    const key = kind === "key" ? (event.key === " " ? "Space" : String(event.key).length > 1 ? String(event.key) : "char") : null;
+    const last = this.lastAction;
+    if (last && last.until != null && last.kind === kind && (last.key == null ? null : last.key) === key && t - last.until <= HISTORY_COALESCE_MS) {
+      last.n++;
+      last.until = t;
+      if (kind === "wheel") last.dy += Math.round(event.deltaY || 0);
+      return;
+    }
+    const entry = { kind, t, until: t, n: 1 };
+    if (kind === "wheel") entry.dy = Math.round(event.deltaY || 0);
+    if (key != null) entry.key = key;
+    this.record("actions", entry);
+  }
+
+  /** What only the page knows: a fold toggled, a control pressed, a filter, a search step.
+   *  `target` is the page's word for it — a key, an id, a flag — never content. */
+  noteAction(kind, target) {
+    this.record("actions", target == null ? { kind } : { kind, target });
+  }
+
+  /** The engine's belief of the scroll offset, without a read: the offset `P` was read or written
+   *  at, else what it last wrote (the destination while a smooth write travels), else the last
+   *  offset `onScroll` classified. */
+  topBelief() {
+    const p = this.position;
+    if (p && p.at != null) return Math.round(p.at);
+    if (typeof this.wrote === "number") return Math.round(this.wrote);
+    if (this.wrote && typeof this.wrote === "object") return Math.round(this.wrote.to);
+    return this.topSeen == null ? null : Math.round(this.topSeen);
+  }
+
+  /** The engine after a transaction, from what it knows (§2.2 there): the summary the trace gets,
+   *  the window, the reader state, the pads it wrote, the sums, the default kind's means, its
+   *  belief of the offset, and the turn under `P` in the page's vocabulary. */
+  stateEntry(cause, summary) {
+    const p = this.position;
+    const index = p && p.index != null ? p.index : this.count ? this.count - 1 : null;
+    const about = index != null ? this.describeAt(index) : null;
+    const guess = this.guesses.get(this.defaultKind);
+    return Object.assign({ cause }, summary, {
+      lo: this.lo, hi: this.hi, count: this.count,
+      following: this.following, dragging: this.dragging,
+      position: p ? `${p.source}:${p.key != null ? p.key : p.index}` : this.following ? "tail" : null,
+      pending: (this.pendingTail ? "tail " : "") + (this.estimatesPending ? "estimates" : "") || null,
+      pads: this.padsWritten.slice(),
+      sums: Math.round(this.prefix[this.count] || 0),
+      estimate: Math.round(guess.estimate()),
+      live: Math.round(guess.value()),
+      top: this.topBelief(),
+      turn: about && about.turn != null ? about.turn : null,
+    });
+  }
+
+  /** The last record as the page describes it, with its measured height or null. */
+  tailSnapshot() {
+    if (!this.count) return null;
+    const index = this.count - 1;
+    const height = this.heightFor(index);
+    return { index, height: height ? Math.round(height) : null, kind: this.describeAt(index).kind };
+  }
+
+  /** The delta a records transaction opened (`recordsChanged`) closes here, after the mount has
+   *  measured what it brought in: the tail after, and the kinds of `[from, count1)` — the final
+   *  records show only final kinds, and a rewrite changes the kind at an index (a queued prompt
+   *  picked up), so without these a rewrite could not be rebuilt. Capped: the opening batch is the
+   *  whole session, whose shape the export already carries. */
+  closeDelta() {
+    const delta = this.pendingDelta;
+    this.pendingDelta = null;
+    delta.tail1 = this.tailSnapshot();
+    const to = Math.min(delta.count1, delta.from + 64);
+    delta.kinds = [];
+    for (let i = delta.from; i < to; i++) delta.kinds.push(this.describeAt(i).kind);
+    if (delta.count1 > to) delta.more = delta.count1 - to;
+    this.record("deltas", delta);
+  }
+
+  /** The export (§4 there): the frame's parameters, the session's SHAPE — each engine item's kind,
+   *  measured height, turn and record range, and the record-level kinds when an item spans records
+   *  — and the three streams with the violations. Kinds, heights, indices, turns and timings: no
+   *  text, no ids, no path. The one layout read here (`clientHeight`) is the reader's own export,
+   *  not the push path. */
+  exportHistory() {
+    const items = [];
+    const records = [];
+    let spans = false;
+    for (let i = 0; i < this.count; i++) {
+      const about = this.describeAt(i);
+      const height = this.heightFor(i);
+      const from = about.from == null ? i : about.from;
+      const to = about.to == null ? i : about.to;
+      items.push([about.kind, height ? Math.round(height) : null, about.turn == null ? null : about.turn, from, to]);
+      const kinds = about.kinds || [about.kind];
+      if (kinds.length !== 1 || to !== from) spans = true;
+      for (const kind of kinds) records.push(kind);
+    }
+    return {
+      format: "viewport-history/1",
+      page: this.page,
+      version: this.version,
+      exported: new Date().toISOString(),
+      elapsed: Math.round(performance.now()),
+      frame: { clientHeight: Math.round(this.frame.clientHeight()), overscan: this.overscan, slacks: this.slacks, userIntentMs: this.userIntentMs, floors: this.floors, historyMs: this.historyMs },
+      session: { count: this.count, items, records: spans ? records : null },
+      actions: this.history.actions.slice(),
+      states: this.history.states.slice(),
+      deltas: this.history.deltas.slice(),
+      violations: this.violations.slice(),
+    };
+  }
+
   /** The placement a transaction ends with. An anchor or a model position is written now; the
    *  tail waits for rest unless the reader asked for it (#165: the pin does not outrank a hand on
    *  the wheel — a tail rewrite once a second slammed a reader crawling up inside the hold slack
@@ -1344,6 +1540,7 @@ class VirtualWindow {
     // 1210-turn session — even "Show 2 more" did it. Nothing waits for the window now except the
     // tail and the estimates, and the pin is dropped right here, so there is no stamp to release.
     this.trace("reshaped", { wasFollowing: this.following });
+    this.record("actions", { kind: "reshaped" });
     // The reader acted (a synthetic click fires no pointerdown, so nothing else would): a landing
     // they asked for is released, or every later measure would place the stale target instead of
     // the head they just toggled (§4.10).
@@ -1377,11 +1574,15 @@ class VirtualWindow {
    *  created before the gesture that followed it. `dragging` still answers for a held thumb,
    *  which produces no input event of its own. */
   onScroll(event) {
+    // One read, for the classification, kept as the engine's belief of the offset for the history
+    // (`topBelief`): the reader's own scroll is the one move the engine does not make.
+    const top = this.frame.scrollTop();
+    this.topSeen = top;
     // The engine's own write (framework §4.1): `place` recorded what it wrote, and an event at that
     // offset is neither the reader's nor displacement — nothing to classify, nothing to re-read,
     // no window to update (the transaction that placed already mounted around `P`).
-    if (this.ownScroll(this.frame.scrollTop())) {
-      this.trace("scroll:own", { top: Math.round(this.frame.scrollTop()) });
+    if (this.ownScroll(top)) {
+      this.trace("scroll:own", { top: Math.round(top) });
       this.afterScroll();
       return;
     }
@@ -1428,6 +1629,8 @@ class VirtualWindow {
   command(cause, position, options = {}) {
     if (!this.count || !position) return false;
     if (options.intent) this.markIntent();
+    // The history (design/viewport-history.md §2.1): the move the page asked for, with its target.
+    this.record("actions", { kind: cause, index: position.index == null ? null : position.index, key: position.key == null ? null : position.key, top: position.top == null ? null : Math.round(position.top), offset: position.offset == null ? null : Math.round(position.offset), intent: !!options.intent, smooth: !!options.smooth });
     const wasFollowing = this.following;
     // A jump is the reader choosing a place (I1); `positionFor` would answer the tail otherwise.
     if (wasFollowing) this.following = false;
@@ -1538,6 +1741,7 @@ class VirtualWindow {
    *  memory written. */
   follow(options = {}) {
     if (options.intent) this.markIntent();
+    this.record("actions", { kind: "follow", intent: !!options.intent });
     // The pin is set even before there is anything to converge on (a live page opening ahead of
     // its first records, #196 stage 4: bailing on an empty page left every fresh classic open
     // unpinned): the first records that arrive find it set and converge.

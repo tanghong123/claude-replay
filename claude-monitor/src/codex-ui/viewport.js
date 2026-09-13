@@ -86,6 +86,8 @@ export class Viewport extends VirtualWindow {
       // withdraw what was never learned.
       floors: ESTIMATES,
       defaultKind: "process",
+      page: "app",
+      version: document.body.dataset.version || null,
     });
     this.scroller = scroller;
     this.inner = inner;
@@ -116,6 +118,17 @@ export class Viewport extends VirtualWindow {
    *  three populations with three different shapes, and one mean over all of them would be wrong
    *  about each. The shell names the kind; the engine keeps the means (#196 stage 3). */
   kindOf(index) { return this.units[index]?.type; }
+  /** A unit in this shell's vocabulary, for the history (#197, design/viewport-history.md §3): its
+   *  type, its turn, the records it spans and their kinds — a process group is one engine item
+   *  over several records, which is what the export's record-level shape needs. */
+  describeAt(index) {
+    const unit = this.units[index];
+    if (!unit) return { kind: null, turn: null, from: index, to: index };
+    const records = this.state.records || [];
+    const kinds = [];
+    for (let i = unit.from; i <= unit.to; i++) kinds.push(records[i] ? records[i].kind : null);
+    return { kind: unit.type, turn: unit.turn == null ? null : unit.turn, from: unit.from, to: unit.to, kinds };
+  }
   // Where the measured heights live — per session, in `state` — and nothing else: the engine
   // learns from every measure before it hands the height over.
   heightFor(index) { const unit = this.units[index]; return unit ? this.state.heights.get(unit.key) : 0; }

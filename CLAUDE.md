@@ -153,6 +153,26 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   built — `trace()` returns on one boolean — though each seam still evaluates the fields it
   passes (an object literal and a few rounded reads; negligible beside the reconcile that called
   it, not zero). `scenario_the_trace_records_what_the_engine_did` holds it on both surfaces.
+  **The viewport history (#197)** is what the engine keeps WITHOUT being asked: the last hour of
+  three streams, always on, in `window.__viewportHistory` — `actions` (what the reader did: each
+  wheel gesture with its summed deltaY, each key, a drag, every commanded move with its target,
+  and what only the page knows through `noteAction` — a fold by key, a control by id), `states`
+  (the engine after every transaction: the trace's summary plus the window, the count, the pads
+  and sums it wrote, its estimates, its BELIEF of the offset — `P`'s own, or what it last wrote,
+  or what its scroll handler last read, never a fresh layout read — and the turn under `P`) and
+  `deltas` (the shape of every records change: the count before and after, the first rewritten
+  index, the kinds it brought in, the last record before and after with its measured height).
+  `window.__viewportHistory.export()` — the ⧗ button on the classic top bar, "Viewport history —
+  Save" in the shell's Reading popover — is the bug report: the frame's parameters, the session's
+  SHAPE (each engine item's kind, measured height, turn and record range, and the record-level
+  kinds where a shell unit spans records), the three streams and the violations; kinds, heights,
+  indices, turns and timings, never content. Bounded by time (`historyMs`, an hour; `?historyMs=<n>`
+  for a case) with a count cap per stream as the backstop. `design/viewport-history.md` is the
+  design; `scenario_the_history_records_what_happened` holds it on both surfaces. **The standing
+  discipline** (owner, #197): a viewport bug is reproduced from the SHORTEST synthetic transcript
+  that shows it before it is fixed — an export names the height profile and the sequence of
+  events to rebuild it from, and the harness's builders (`long_session`, `user_at`,
+  `tool_result_lines`, …) are what the repro is written in.
   **The engine's design as a framework** — the model, its fourteen numbered invariants with what
   holds each today (construction, a timer, or only a case), the seams a page implements, and the
   #196 refactors — is `design/virtual-window-framework.md` (#195); the history that led to it is

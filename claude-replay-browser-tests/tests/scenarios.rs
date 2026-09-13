@@ -9542,3 +9542,346 @@ fn app_shell_the_engine_holds_its_invariants() {
     let page = open(Surface::AppShell, &fx, 2978);
     scenario_the_engine_holds_its_invariants(&page.tab, Surface::AppShell, &fx);
 }
+
+/// One stream of the viewport history (design/viewport-history.md), read from the page.
+fn history(tab: &headless_chrome::Tab, stream: &str) -> Vec<serde_json::Value> {
+    harness::probe(
+        tab,
+        &format!("(window.__viewportHistory ? window.__viewportHistory.{stream} : []).slice()"),
+    )
+    .as_array()
+    .cloned()
+    .unwrap_or_default()
+}
+
+/// design/viewport-history.md (#197): always on, the engine keeps the last hour of the reader's
+/// actions, its state after every transaction and the shape of every records change, built from
+/// what it already knows and exportable without content. A workout — wheels, a jump, a fold, live
+/// growth — leaves the three streams holding what happened, in order; the export has the format
+/// and carries no text; and with a small bound, entries age out.
+fn scenario_the_history_records_what_happened(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    // The open itself is recorded: the first records transaction that brought records in is a
+    // delta from nothing (the shell clears its units first — an empty-to-empty delta, recorded
+    // as the transaction it is), and the engine's state after it is a state entry.
+    let opened = history(tab, "deltas");
+    assert!(!opened.is_empty(), "{surface:?}: the open is a delta");
+    let first = opened
+        .iter()
+        .find(|d| d["count1"].as_i64().unwrap_or(0) > 0)
+        .unwrap_or_else(|| panic!("{surface:?}: a delta brought the fixture in: {opened:?}"));
+    assert_eq!(
+        first["count0"], 0,
+        "the first delta starts from nothing: {first}"
+    );
+    assert_eq!(first["from"], 0, "…and is a rewrite from 0: {first}");
+    let count_open = first["count1"].as_i64().unwrap_or(0);
+    assert!(count_open > 0, "…into the fixture: {first}");
+    assert!(
+        first["kinds"].as_array().is_some_and(|k| !k.is_empty()),
+        "a delta names the kinds it brought in: {first}"
+    );
+    assert!(
+        !history(tab, "states").is_empty(),
+        "{surface:?}: the open's transactions are states"
+    );
+    // Three wheel gestures, each settled, are three wheel actions with their deltaY (the harness
+    // dispatches its wheel within the coalescing window of a retry, so a gesture may count two).
+    for _ in 0..3 {
+        scroll_by(tab, surface, 400);
+        settle();
+    }
+    let actions = history(tab, "actions");
+    let wheels: Vec<&serde_json::Value> = actions.iter().filter(|a| a["kind"] == "wheel").collect();
+    assert!(
+        wheels.len() >= 3,
+        "{surface:?}: three settled wheels are three actions, got {}: {actions:?}",
+        wheels.len()
+    );
+    assert!(
+        wheels
+            .iter()
+            .all(|w| w["dy"].as_i64().unwrap_or(0) >= 400 && w["n"].as_i64().unwrap_or(0) >= 1),
+        "{surface:?}: a wheel action carries its summed deltaY and its count: {wheels:?}"
+    );
+    // A jump the page offers is a commanded move with its target.
+    let before_jump = history(tab, "actions").len();
+    assert!(
+        harness::jump_to_turn(tab, surface, 20),
+        "{surface:?}: jump to turn 20"
+    );
+    settle();
+    let actions = history(tab, "actions");
+    let jump = actions[before_jump..]
+        .iter()
+        .find(|a| a["kind"] == "jump" || a["kind"] == "reveal");
+    assert!(
+        jump.is_some_and(|j| j["index"].is_number() || j["key"].is_string()),
+        "{surface:?}: the jump is an action with its target: {:?}",
+        &actions[before_jump..]
+    );
+    // A fold the reader opens is the page's own word, through `noteAction`.
+    let before_fold = history(tab, "actions").len();
+    let opened_fold = harness::open_last_fold(tab, surface);
+    assert!(
+        opened_fold != -1,
+        "{surface:?}: a fold opens where the reader is"
+    );
+    settle();
+    let actions = history(tab, "actions");
+    let fold = actions[before_fold..].iter().find(|a| a["kind"] == "fold");
+    assert!(
+        fold.is_some_and(|f| f["target"]["open"] == true),
+        "{surface:?}: the fold is an action naming what opened: {:?}",
+        &actions[before_fold..]
+    );
+    // Live growth is a delta per apply: appended, the tail named before and after.
+    let deltas_before = history(tab, "deltas").len();
+    let count_before = history(tab, "states")
+        .last()
+        .and_then(|s| s["count"].as_i64())
+        .unwrap_or(0);
+    let growth = LiveGrowth::start(fx.path.clone(), growth_script(), Duration::from_millis(900));
+    let _ = growth.finish(Duration::from_secs(30));
+    settle();
+    let deltas = history(tab, "deltas");
+    assert!(
+        deltas.len() > deltas_before,
+        "{surface:?}: growth is recorded as deltas ({} before, {} after)",
+        deltas_before,
+        deltas.len()
+    );
+    let grew: Vec<&serde_json::Value> = deltas[deltas_before..]
+        .iter()
+        .filter(|d| d["count1"].as_i64() > d["count0"].as_i64())
+        .collect();
+    assert!(
+        !grew.is_empty(),
+        "{surface:?}: a delta grew the count: {deltas:?}"
+    );
+    for d in &grew {
+        let (count0, count1, from) = (
+            d["count0"].as_i64().unwrap(),
+            d["count1"].as_i64().unwrap(),
+            d["from"].as_i64().unwrap(),
+        );
+        assert!(
+            count0 >= count_before,
+            "growth starts from the count the states saw: {d}"
+        );
+        assert!(
+            from <= count0,
+            "the rewritten index is never past the count before: {d}"
+        );
+        assert_eq!(
+            d["tail1"]["index"],
+            count1 - 1,
+            "the tail after is the last record: {d}"
+        );
+        assert!(d["tail1"]["kind"].is_string(), "…with its kind: {d}");
+        let kinds = d["kinds"].as_array().map(Vec::len).unwrap_or(0) as i64;
+        let more = d["more"].as_i64().unwrap_or(0);
+        assert_eq!(
+            kinds + more,
+            count1 - from,
+            "the kinds cover [from, count1): {d}"
+        );
+    }
+    // A tool call and then a queued prompt: two top-level records that are neither a prompt nor
+    // prose (consecutive tool calls nest into ONE record, #176), so on the shell one process unit
+    // spans two records — which is what the export's record-level shape exists for.
+    let deltas_seen = history(tab, "deltas").len();
+    harness::append(&fx.path, &tool_open_at("hist-a", &now_minus(5)));
+    harness::append(&fx.path, &tool_result_at("hist-a", &now_minus(4)));
+    harness::append(
+        &fx.path,
+        &queued_at("a question queued behind the tool call", &now_minus(3)),
+    );
+    harness::until(
+        tab,
+        &format!("window.__viewportHistory.deltas.length > {deltas_seen}"),
+        "the tool call and the queued prompt to arrive as a delta",
+        Duration::from_secs(20),
+        "window.__viewportHistory.deltas.length",
+    );
+    settle();
+    // A state is the engine after a transaction, from what it knows: the window, the count, its
+    // belief of the offset and the turn under `P`.
+    let states = history(tab, "states");
+    let last = states.last().expect("a state after the growth");
+    for field in [
+        "cause",
+        "lo",
+        "hi",
+        "count",
+        "following",
+        "sums",
+        "pads",
+        "estimate",
+        "live",
+    ] {
+        assert!(
+            !last[field].is_null(),
+            "{surface:?}: a state carries `{field}`: {last}"
+        );
+    }
+    assert!(
+        last["top"].is_number(),
+        "{surface:?}: a state carries the engine's belief of the offset: {last}"
+    );
+    assert!(
+        last["turn"].is_number(),
+        "{surface:?}: a state names the turn under P: {last}"
+    );
+    let count_now = last["count"].as_i64().unwrap_or(0);
+    // The export: the format, the session's shape and no content.
+    let export = harness::probe(tab, "window.__viewportHistory.export()");
+    assert_eq!(
+        export["format"], "viewport-history/1",
+        "{surface:?}: the export's format"
+    );
+    assert_eq!(
+        export["page"],
+        match surface {
+            Surface::Classic => "classic",
+            Surface::AppShell => "app",
+        },
+        "{surface:?}: the export names its page"
+    );
+    for key in [
+        "frame",
+        "session",
+        "actions",
+        "states",
+        "deltas",
+        "violations",
+        "exported",
+        "elapsed",
+    ] {
+        assert!(
+            !export[key].is_null(),
+            "{surface:?}: the export carries `{key}`"
+        );
+    }
+    assert_eq!(
+        export["session"]["count"], count_now,
+        "{surface:?}: the session's count is the engine's"
+    );
+    let items = export["session"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        items.len() as i64,
+        count_now,
+        "{surface:?}: one item per engine index"
+    );
+    for item in &items {
+        let row = item.as_array().expect("an item is a row");
+        assert_eq!(row.len(), 5, "kind, height, turn, from, to: {item}");
+        assert!(row[0].is_string(), "an item's kind: {item}");
+        assert!(
+            row[1].is_null() || row[1].is_number(),
+            "an item's measured height or null: {item}"
+        );
+        assert!(
+            row[3].is_number() && row[4].is_number(),
+            "an item's record range: {item}"
+        );
+    }
+    assert!(
+        items.iter().any(|i| i[1].is_number()),
+        "{surface:?}: the mounted items carry measured heights"
+    );
+    match surface {
+        Surface::Classic => assert!(
+            export["session"]["records"].is_null(),
+            "one item is one record on the classic page"
+        ),
+        Surface::AppShell => assert!(
+            export["session"]["records"]
+                .as_array()
+                .is_some_and(|r| r.len() as i64 > count_now && r.iter().all(|k| k.is_string())),
+            "the shell's process unit spans two records, so the record-level kinds are listed: {} (items {:?})",
+            export["session"]["records"],
+            &items[items.len().saturating_sub(4)..]
+        ),
+    }
+    let text = serde_json::to_string(&export).unwrap();
+    for phrase in ["lorem", "eiusmod", "question ", "answer ", SID] {
+        assert!(
+            !text.contains(phrase),
+            "{surface:?}: the export carries no content, found {phrase:?}"
+        );
+    }
+    // The bound: reopened with a small one, what the reader did before the bound ages out when
+    // the next entry is pushed.
+    eval(
+        tab,
+        "location.href = location.href + (location.search ? '&' : '?') + 'historyMs=1500'; 'ok'",
+    );
+    let mounted = match surface {
+        Surface::Classic => "!!window.__viewportHistory && document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3",
+        Surface::AppShell => "!!window.__viewportHistory && !!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3",
+    };
+    harness::until(
+        tab,
+        mounted,
+        "the page to reopen with a 1.5s bound",
+        Duration::from_secs(60),
+        "location.href",
+    );
+    settle();
+    scroll_by(tab, surface, 400);
+    settle();
+    assert!(
+        history(tab, "actions").iter().any(|a| a["kind"] == "wheel"),
+        "{surface:?}: the wheel is recorded under the small bound"
+    );
+    std::thread::sleep(Duration::from_millis(2000));
+    assert!(
+        harness::jump_to_turn(tab, surface, 10),
+        "{surface:?}: a jump after the bound"
+    );
+    settle();
+    let aged = history(tab, "actions");
+    assert!(
+        aged.iter().all(|a| a["kind"] != "wheel"),
+        "{surface:?}: the wheel aged out of a 1.5s history: {aged:?}"
+    );
+    assert!(
+        aged.iter()
+            .any(|a| a["kind"] == "jump" || a["kind"] == "reveal"),
+        "{surface:?}: …and the jump that pushed it out remains: {aged:?}"
+    );
+    let states = history(tab, "states");
+    let (min_t, max_t) = states.iter().fold((i64::MAX, i64::MIN), |(lo, hi), s| {
+        let t = s["t"].as_i64().unwrap_or(0);
+        (lo.min(t), hi.max(t))
+    });
+    assert!(
+        max_t - min_t <= 1500,
+        "{surface:?}: every state is within the bound of the newest ({min_t}..{max_t})"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_the_history_records_what_happened() {
+    let _serial = serial();
+    let fx = fixture("scenario-history-classic", 60);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_the_history_records_what_happened(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_history_records_what_happened() {
+    let _serial = serial();
+    let fx = fixture("scenario-history-app", 60);
+    let page = open(Surface::AppShell, &fx, 2981);
+    scenario_the_history_records_what_happened(&page.tab, Surface::AppShell, &fx);
+}

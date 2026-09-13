@@ -176,6 +176,8 @@ bindComponentEvents(transcript, recordState, {
   rerender: () => { viewport.readerReshaped(); viewport.rerender(); viewport.scheduleRemember(); },
   // …and for the branches that grow the page IN PLACE without a re-render (the cap expander).
   reshaped: () => viewport.readerReshaped(),
+  // What only the page knows reaches the viewport history (#197): a fold, a prompt toggle.
+  note: (kind, target) => viewport.noteAction(kind, target),
   codeSize: (key, delta) => setCodeOverride(key, { size: clampSize(effectiveCode(key).size + delta * SIZE_STEP) }),
   codeWrap: key => setCodeOverride(key, { wrap: !effectiveCode(key).wrap }),
   remember: () => viewport.scheduleRemember(),
@@ -1264,7 +1266,8 @@ const readingSection = document.createElement("div");
 readingSection.className = "reading-section";
 readingSection.innerHTML = `<div class="scope-menu-head"><strong>Reading</strong><button class="scope-menu-action" type="button" data-reading-reset>Reset</button></div>
 <div class="reading-row"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>
-<div class="reading-row"><span>User turns as raw text</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="rawUser" aria-label="Show user turns as raw text — exactly as typed, whitespace intact" aria-checked="false"><span></span></button></div>`;
+<div class="reading-row"><span>User turns as raw text</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="rawUser" aria-label="Show user turns as raw text — exactly as typed, whitespace intact" aria-checked="false"><span></span></button></div>
+<div class="reading-row"><span>Viewport history</span><button class="scope-menu-action" type="button" data-history-save title="Save the last hour of what you did and what the page did — kinds, heights and timings, no content">Save</button></div>`;
 // Production-only chrome, built here so the extracted demo shell stays byte-identical (the
 // same reason the retired rail X wrote its own SVG). The cluster is the positioning
 // context the popover anchors to; `navigator-options` carries the shared popover styling,
@@ -1388,8 +1391,27 @@ function applyReading() {
 function setReading(patch) { uiState.reading = { ...uiState.reading, ...patch, size: clampSize(patch.size ?? uiState.reading.size) }; uiState.readingChosen = true; persist(); applyReading(); }
 readingSection.onclick = event => {
   const toggle = event.target.closest("[data-reading-toggle]"); if (toggle) { const key = toggle.dataset.readingToggle; setReading({ [key]: !uiState.reading[key] }); return; }
+  if (event.target.closest("[data-history-save]")) { saveHistory(); return; }
   if (event.target.closest("[data-reading-reset]")) setReading({ size: 12, wrap: false, wide: false });
 };
+// The viewport history (#197, design/viewport-history.md): the engine's last hour — the reader's
+// actions, its state after every transaction, the shape of every delta — as JSON for a bug
+// report: kinds, heights, indices, turns and timings, never content.
+// `copy(__viewportHistory.export())` in the console is the same object.
+function saveHistory() {
+  const out = viewport.exportHistory();
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  const url = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: "application/json" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = `viewport-history-app-${stamp}.json`;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+// …and every control the reader presses outside the transcript is an action in it, by id.
+document.addEventListener("click", event => {
+  const button = event.target.closest ? event.target.closest("button[id]") : null;
+  if (button && !button.closest("#transcript")) viewport.noteAction("control", button.id);
+}, true);
 applyReading();
 byId("filterTranscriptBtn").onclick = () => { setPopover(byId("navigatorOptions").classList.contains("open") ? null : "filter"); renderFilterMenu(); };
 byId("navigatorOptions").onclick = event => { const scope = event.target.closest("[data-scope]"); if (scope) { const key = scope.dataset.scope; if (key === "w") uiState.searchWhole = !uiState.searchWhole; else { const everything = ALL_SCOPES.every(k => uiState.searchScopes.has(k)); if (everything) uiState.searchScopes = new Set([key]); else if (uiState.searchScopes.has(key)) { uiState.searchScopes.delete(key); if (!uiState.searchScopes.size) uiState.searchScopes = new Set(ALL_SCOPES); } else uiState.searchScopes.add(key); } applyScopeFromMenu(); } const tool = event.target.closest("[data-tool-filter]"); if (tool) { uiState.toolFilters.has(tool.dataset.toolFilter) ? uiState.toolFilters.delete(tool.dataset.toolFilter) : uiState.toolFilters.add(tool.dataset.toolFilter); renderFilterMenu(); applyToolFilter(); } };

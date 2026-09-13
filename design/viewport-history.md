@@ -1,6 +1,6 @@
 # The viewport history: an hour of what the reader did and what the engine saw (#197)
 
-Status: design, 2026-09-13. Points 3 and 4 of the owner's directive (recorded on #195): "enhance the
+Status: stage A landed 2026-09-13 (§8); stage B, the sandbox, pending. Points 3 and 4 of the owner's directive (recorded on #195): "enhance the
 diagnostic approach, keeping a limited history of user actions and corresponding app states (one
 hour is sufficient), so if a user reports an issue, you should be able to tell exactly the sequence
 of events (you may want to document the position of the tail, this way you can simulate growth in a
@@ -120,12 +120,19 @@ One control on both pages — the classic topbar beside the theme button, the sh
 ```
 { format: "viewport-history/1", page: "classic" | "app", version, exported: <ISO>, elapsed: <ms>,
   frame: { clientHeight, overscan, slacks, userIntentMs, floors, historyMs },
-  session: { count, records: [[kind, height | null, turn | null], …], units: [[from, to], …] | null },
+  session: { count, items: [[kind, height | null, turn | null, from, to], …], records: [kind, …] | null },
   actions: [...], states: [...], deltas: [...], violations: [...] }
 ```
 
-Sessions are private: the export carries kinds, heights, indices, turns and timings — no text, no
-ids, no path, no session id, and the filename carries none either. An export committed as a fixture
+`items` is one row per ENGINE index — the item's kind in the page's vocabulary, its measured height
+or null, its turn, and the record range it covers; `records` lists the record-level kinds when some
+item spans records (the shell's process unit), and is null when the items are the records (the
+classic page). Sessions are private: the export carries kinds, heights, indices, turns and timings —
+no text, no path, no session id, and the filename carries none either; a state's `anchor` and
+`position` name a record by its KEY, which is the stream's positional id (`b16678`,
+`assistant:b16822`), not content. A key is named only
+when it is not a character (an arrow, Page Down, Home, Enter); any character is `char`, and a key
+in a field or an editable element is not recorded at all. An export committed as a fixture
 (§5) is checked for exactly that.
 
 ## 5. The sandbox
@@ -172,3 +179,41 @@ first sandbox cases.
   shortest synthetic transcript that shows it before it is fixed). A release.
 - **B** — the sandbox helper, the probes as exports, the replay probe. A release; `#197` done after
   B.
+
+## 8. Stage A as landed (2026-09-13)
+
+As designed, with these corrections found by the code and the scenario:
+
+- **The delta's `from` is the count before when the batch only appended**, so `from < count0` reads
+  as a rewrite and `from == count0` as an append; `kinds` covers `[from, count1)` capped at 64 with
+  `more` counting the rest, since the opening batch is the whole session and the export's shape
+  carries it. The shell's open is TWO deltas — its units cleared (empty to empty, recorded as the
+  transaction it is) and then the fixture in; a reader of a history takes the first delta that
+  brought records in as the open.
+- **The belief of the offset** needs no wrapper over the engine's 32 read sites: `P` carries `at`
+  whenever it was read or written, `wrote` is the last placement, and the one site with neither —
+  the reader's own scroll — keeps its single read as `topSeen`. The node contract holds the push
+  path (`record`, `noteInput`, `noteAction`, `topBelief`, `stateEntry`, `tailSnapshot`,
+  `closeDelta`) free of `scrollTop()`, `scrollHeight()`, `clientHeight()`,
+  `getBoundingClientRect` and `getComputedStyle`; the export's one `clientHeight` read is the
+  reader's own action.
+- **A drag is recorded after the model's own reset**, not before it: the stage-2 pin that the
+  window updates the moment a thumb is released stands, and the entry is dated from the press.
+- **`describeAt` on the shell returns the unit's `kinds`** (the records it spans) and the export
+  lists record-level kinds only when some item spans records — otherwise `records` is null and the
+  items ARE the records. Consecutive tool calls nest into ONE top-level record (#176), and a
+  thinking block ahead of a call nests with it, so a synthetic process unit spans two records only
+  across two different process kinds — the scenario appends a tool call and then a queued prompt.
+- **The classic page keeps `recTurn`** beside its other per-record arrays (pushed with each record,
+  truncated with them), so the turn under `P` costs no scan; the shell's units carry their turn.
+- **Controls**: the classic top bar's ⧗ button and a capture-phase listener that records every
+  `.tbtn` press by id; the shell's Reading popover row "Viewport history — Save" and a listener that
+  records every `button[id]` press outside the transcript. The download is the page's own blob
+  link; the console's `__viewportHistory.export()` is the same object.
+- **What `noteAction` names**: a fold (both pages), a prompt toggle (the shell), and every control by
+  id. A search step is visible as the `reveal` command it issues, a filter change as the `btn-tools`
+  control (the shell's `filterTranscriptBtn`) followed by its `rerender` transaction; neither needed
+  a word of its own.
+- **Held by**: `scenario_the_history_records_what_happened` on both surfaces (§6's list, with the
+  bound proved at 1.5 s by reopening with `?historyMs=1500`), the #197 block of the node contract,
+  the real-session probes printing the streams' sizes and last entries beside the violation ring.

@@ -346,11 +346,12 @@ export function bindComponentEvents(root, state, actions) {
     const attachment = event.target.closest("[data-attachment]");
     if (attachment) { actions.openAttachment(attachment.dataset.attachment, attachment.dataset.path, attachment.dataset.fsig, attachment.dataset.attachmentAction, attachment.dataset.sig, { src: attachment.querySelector("img")?.getAttribute("src") || "", name: attachment.dataset.name || "" }); return; }
     const prompt = event.target.closest("[data-prompt-toggle]");
-    if (prompt) { const key = prompt.dataset.promptToggle; state.promptExpanded.has(key) ? state.promptExpanded.delete(key) : state.promptExpanded.add(key); actions.rerender(); return; }
+    if (prompt) { const key = prompt.dataset.promptToggle; state.promptExpanded.has(key) ? state.promptExpanded.delete(key) : state.promptExpanded.add(key); actions.note?.("prompt", key); actions.rerender(); return; }
     const process = event.target.closest("[data-process-surface]");
     if (process && event.target.closest("[data-process-toggle]")) {
       const key = process.dataset.processKey;
       state.processFolds.set(key, !process.classList.contains("closed"));
+      actions.note?.("fold", { key, open: process.classList.contains("closed") });
       actions.rerender(); return;
     }
     if (process && event.target.closest("[data-process-more]")) {
@@ -386,6 +387,7 @@ export function bindComponentEvents(root, state, actions) {
       state.headSteps?.set(id, step);
       const next = headStepState(step);
       state.folds.set(id, !next.open);
+      actions.note?.("fold", { key: id, open: next.open });
       if (state.fullTargets) {
         if (next.full) state.fullTargets.add(id);
         else state.fullTargets.delete(id);

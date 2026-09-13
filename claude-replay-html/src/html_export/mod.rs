@@ -1426,6 +1426,7 @@ fn build_page(
     <button id="btn-col" class="tbtn ticon" title="Collapse all">▸▸</button>
     <button id="btn-raw" class="tbtn ticon" title="Show user turns as raw text — exactly as typed, whitespace intact">{{}}</button>
     <button id="btn-wide" class="tbtn ticon" title="Wide mode — drop the reading-width cap for diff-heavy sessions">⇔</button>
+    <button id="btn-hist" class="tbtn ticon" title="Save the viewport history — the last hour of what you did and what the page did, as kinds, heights and timings; no content">⧗</button>
 {theme_btn}
   </div>
   <!-- Filter and Agents sit LEFT of the search box (#156). The box is the only thing here that

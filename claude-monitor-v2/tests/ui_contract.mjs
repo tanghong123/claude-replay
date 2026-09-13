@@ -2169,7 +2169,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   const pages = classic + shell + app;
   assert.doesNotMatch(pages, /\b(reconcile|rangeAround|rangeForScroll|mountRange|clearWindow|applyWindow|replaceMounted|setWindow)\(/, "no page names a window: the range is the engine's, from P0 (framework I11)");
-  assert.match(engine, /recordsChanged\(mutate\) \{\n\s*return this\.transact\("records", \{\n\s*mutate: \(\) => \{ const from = mutate \? mutate\(\) : undefined; return from == null \? Infinity : from; \},\n\s*dirtyFrom: from => from,\n\s*range: p0 => this\.count \? this\.rangeFor\(p0\) : \{ lo: 0, hi: 0 \},/, "the records transaction: the page's mutation, its return as dirtyFrom, the window from P0, an empty count empties the window");
+  assert.match(engine, /recordsChanged\(mutate\) \{\n\s*return this\.transact\("records", \{\n\s*mutate: \(\) => \{\n(?:\s*\/\/.*\n)*\s*const count0 = this\.count;\n\s*const tail0 = this\.tailSnapshot\(\);\n\s*const from = mutate \? mutate\(\) : undefined;\n\s*const first = from == null \? Infinity : from;\n\s*this\.pendingDelta = \{ count0, count1: this\.count, from: Math\.min\(first, count0\), tail0 \};\n\s*return first;\n\s*\},\n\s*dirtyFrom: from => from,\n\s*range: p0 => this\.count \? this\.rangeFor\(p0\) : \{ lo: 0, hi: 0 \},/, "the records transaction: the page's mutation, its return as dirtyFrom, the window from P0, an empty count empties the window — and the delta's shape taken around the mutation (#197)");
   assert.match(engine, /const changed = options\.mutate \? options\.mutate\(\) : undefined;\n(?:.*\n){0,2}?\s*const dirtyFrom = typeof options\.dirtyFrom === "function" \? options\.dirtyFrom\(changed\) : options\.dirtyFrom;/, "…and `dirtyFrom` may be a function of what the mutation returned");
   assert.match(engine, /if \(options\.place === false \|\| options\.position === null\) return null;\n(?:.*\n){0,3}?\s*if \(this\.following\) return options\.tail === false \? null : TAIL;\n\s*if \(!this\.count \|\| this\.dragging\) return null;/, "the tail is P0 before the count is asked: a records change that fills an empty page while following starts from the tail");
   assert.doesNotMatch(engine, /options\.refresh|refresh: |, refresh[,)]|forceIndex|reconcile\(lo, hi|\bclearWindow\(/, "the `refresh` option, `forceIndex`, the page-facing reconcile and clearWindow are gone");
@@ -2261,4 +2261,64 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engine, /this\.trace\("violation", entry\);/, "each violation is a trace entry");
   assert.match(engine, /countShare\(kind, before, after\)/, "I5 is an O(1) comparison against a per-kind count kept beside the shares");
   console.log("#196 stage 6 cases passed");
+}
+
+
+// ── #197: the viewport history ────────────────────────────────────────────────────────────────
+// Always on, the last hour of three streams — the reader's actions, the engine after every
+// transaction, the shape of every records change — built from what the engine already knows and
+// bounded by time; exportable without content; what only a page knows reaches it through
+// `noteAction` and `describeAt` (design/viewport-history.md).
+{
+  const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  const classic = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  const classicShell = readFileSync(new URL("../../claude-replay-html/src/html_export/mod.rs", import.meta.url), "utf8");
+  const shell = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  const components = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  // The bound is time, an hour by default, a case's value by URL; the caps are the backstop.
+  assert.match(engine, /const HISTORY_MS = 3600000;/, "the history's bound is an hour");
+  assert.match(engine, /this\.historyMs = boundWanted != null \? boundWanted : historyMs != null \? historyMs : HISTORY_MS;/, "…a constructor parameter, and `?historyMs=<n>` for a case");
+  assert.match(engine, /while \(ring\.length && \(ring\[0\]\.until != null \? ring\[0\]\.until : ring\[0\]\.t\) < horizon\) ring\.shift\(\);/, "an entry older than the bound is dropped when a new one is pushed");
+  assert.match(engine, /while \(ring\.length > HISTORY_CAPS\[stream\]\) ring\.shift\(\);/, "…and the count cap is the backstop");
+  assert.match(engine, /window\.__viewportHistory = \{ actions: this\.history\.actions, states: this\.history\.states, deltas: this\.history\.deltas, export: \(\) => this\.exportHistory\(\) \};/, "the streams and the export are readable from the page");
+  // The cost rule made checkable: nothing on the push path reads layout.
+  const pushPath = engine.slice(engine.indexOf("\n  record(stream, entry) {"), engine.indexOf("\n  exportHistory() {"));
+  assert.ok(pushPath.length > 500, "the push path was found");
+  for (const name of ["noteInput(", "noteAction(", "topBelief(", "stateEntry(", "tailSnapshot(", "closeDelta("]) assert.ok(pushPath.includes(name), `${name} is on the push path`);
+  assert.doesNotMatch(pushPath, /scrollTop\(\)|scrollHeight\(\)|clientHeight\(\)|getBoundingClientRect|getComputedStyle|offsetHeight|offsetTop/, "the history's push path makes no layout read (the #192 lesson)");
+  assert.match(engine, /this\.trace\(cause, summary\);\n(?:\s*\/\/.*\n)*\s*this\.record\("states", this\.stateEntry\(cause, summary\)\);\n\s*if \(this\.pendingDelta\) this\.closeDelta\(\);/, "the state after every transaction is one entry, and a records change closes its delta there");
+  assert.match(engine, /this\.markIntent\(event\.timeStamp\);\n\s*this\.noteInput\(event\);/, "every input the frame hears is an action");
+  assert.match(engine, /if \(last && last\.until != null && last\.kind === kind && \(last\.key == null \? null : last\.key\) === key && t - last\.until <= HISTORY_COALESCE_MS\) \{/, "…coalesced per gesture");
+  assert.match(engine, /const key = kind === "key" \? \(event\.key === " " \? "Space" : String\(event\.key\)\.length > 1 \? String\(event\.key\) : "char"\) : null;/, "a key is named only when it is not a character — the history carries no content");
+  assert.match(engine, /if \(event\.type === "keydown" && event\.target && \(\/\^\(INPUT\|TEXTAREA\)\$\/\.test\(event\.target\.tagName\) \|\| event\.target\.isContentEditable\)\) return;/, "…and a key in a field or an editable element is not the reader's input at all");
+  assert.match(engine, /const top = this\.frame\.scrollTop\(\);\n\s*this\.topSeen = top;\n(?:\s*\/\/.*\n)*\s*if \(this\.ownScroll\(top\)\) \{/, "the scroll handler's one read is kept as the engine's belief of the offset");
+  assert.match(engine, /if \(p && p\.at != null\) return Math\.round\(p\.at\);\n\s*if \(typeof this\.wrote === "number"\) return Math\.round\(this\.wrote\);/, "…after P's own offset and what the engine last wrote");
+  assert.match(engine, /if \(options\.intent\) this\.markIntent\(\);\n(?:\s*\/\/.*\n)*\s*this\.record\("actions", \{ kind: cause, index:/, "a commanded move is an action with its target");
+  assert.match(engine, /this\.record\("actions", \{ kind: "follow", intent: !!options\.intent \}\);/, "…and so is the end");
+  assert.match(engine, /this\.record\("actions", \{ kind: "drag", t: this\.dragStarted, until: released, ms: released - this\.dragStarted \}\);/, "a drag is one entry, dated from where it began");
+  assert.match(engine, /describeAt\(index\) \{ return \{ kind: this\.kindOf\(index\), turn: null, from: index, to: index \}; \}/, "the page's vocabulary for a record has a default");
+  assert.match(engine, /format: "viewport-history\/1",/, "the export names its format");
+  for (const key of ["page:", "version:", "exported:", "elapsed:", "frame:", "session:", "actions:", "states:", "deltas:", "violations:"]) assert.ok(engine.slice(engine.indexOf("  exportHistory() {")).includes(`      ${key}`), `the export carries ${key}`);
+  // Both pages: their vocabulary, their folds, their control.
+  assert.match(classic, /describeAt\(index\) \{ var b = records\[index\]; return \{ kind: b \? b\.kind : null, turn: recTurn\[index\] == null \? null : recTurn\[index\], from: index, to: index \}; \}/, "the classic page describes a record by its block kind and turn");
+  assert.match(classic, /recTurn\.push\(b\.turn != null \? b\.turn : recTurn\.length \? recTurn\[recTurn\.length - 1\] : null\);/, "…the turn kept per record as records arrive");
+  assert.match(classic, /recHit\.length = from;\n\s*recTurn\.length = from;/, "…and truncated with them");
+  assert.match(classic, /vw\.readerReshaped\(\);\n\s*vw\.noteAction\("fold", \{ key: f\.id \|\| null, open: !!open \}\);/, "a classic fold toggle names itself to the history");
+  assert.match(classic, /page: "classic",/, "the classic page names itself in the export");
+  assert.match(classic, /if \(m\.version && vw\) vw\.version = m\.version;/, "…with the version the meta carries");
+  assert.match(classic, /var out = vw\.exportHistory\(\);/, "the classic control exports");
+  assert.match(classic, /\$\("btn-hist"\)/, "…from the top bar's history button");
+  assert.match(classicShell, /<button id="btn-hist" class="tbtn ticon"/, "…which the shell draws");
+  assert.match(classic, /if \(b && b\.id\) vw\.noteAction\("control", b\.id\);/, "every top-bar control pressed is an action, by id");
+  assert.match(shell, /describeAt\(index\) \{\n\s*const unit = this\.units\[index\];/, "the shell describes a unit by its type, turn and record range");
+  assert.match(shell, /return \{ kind: unit\.type, turn: unit\.turn == null \? null : unit\.turn, from: unit\.from, to: unit\.to, kinds \};/, "…with the kinds of the records it spans");
+  assert.match(shell, /page: "app",\n\s*version: document\.body\.dataset\.version \|\| null,/, "the shell names itself and its version in the export");
+  assert.match(app, /note: \(kind, target\) => viewport\.noteAction\(kind, target\),/, "what a component knows reaches the history through `note`");
+  assert.match(components, /state\.processFolds\.set\(key, !process\.classList\.contains\("closed"\)\);\n\s*actions\.note\?\.\("fold", \{ key, open: process\.classList\.contains\("closed"\) \}\);/, "a process fold names itself");
+  assert.match(components, /state\.folds\.set\(id, !next\.open\);\n\s*actions\.note\?\.\("fold", \{ key: id, open: next\.open \}\);/, "…and so does a renderer head");
+  assert.match(app, /if \(event\.target\.closest\("\[data-history-save\]"\)\) \{ saveHistory\(\); return; \}/, "the shell's control is in the Reading popover");
+  assert.match(app, /const out = viewport\.exportHistory\(\);/, "…and exports");
+  assert.match(app, /if \(button && !button\.closest\("#transcript"\)\) viewport\.noteAction\("control", button\.id\);/, "every control pressed outside the transcript is an action, by id");
+  console.log("#197 history cases passed");
 }
