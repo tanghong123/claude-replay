@@ -2578,7 +2578,11 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
 /// #212: what the engine believed on each side of the rail reflow — the mounted units around the
 /// viewport top, the engine's own last states and the reader's last actions. Dumped under
 /// `SCENARIO_TRACE`.
-const SNAP_212: &str = r#"(function(){ var s = document.querySelector('.transcript'); var top = s.getBoundingClientRect().top; var near = []; for (var c of document.querySelector('.virtual-window').children) { var r = c.getBoundingClientRect(); if (r.bottom > top - 300 && r.top < top + 300) near.push([c.dataset.unitKey || '?', Math.round(r.top - top), Math.round(r.height)]); } var h = window.__viewportHistory; var st = h && h.states ? h.states.slice(-6).map(function(x){ return [x.cause, x.turn, x.lo, x.hi, Math.round(x.top || 0), x.pads && x.pads.map(Math.round)]; }) : null; var ac = h && h.actions ? h.actions.slice(-6).map(function(x){ return [x.kind, x.dy !== undefined ? Math.round(x.dy) : (x.key || x.id || ''), Math.round(x.t || 0)]; }) : null; return JSON.stringify({ scrollTop: Math.round(s.scrollTop), scrollH: Math.round(s.scrollHeight), clientH: Math.round(s.clientHeight), width: Math.round(s.getBoundingClientRect().width), near: near, states: st, actions: ac, viol: (window.__viewportViolations || []).length }); })()"#;
+/// The outline pane's measured width, the reference a reflow is waited on against (#212).
+const NAV_W: &str =
+    "Math.round(document.querySelector('.session-navigator').getBoundingClientRect().width)";
+
+const SNAP_212: &str = r#"(function(){ var s = document.querySelector('.transcript'); var top = s.getBoundingClientRect().top; var near = []; for (var c of document.querySelector('.virtual-window').children) { var r = c.getBoundingClientRect(); if (r.bottom > top - 300 && r.top < top + 300) near.push([c.dataset.unitKey || '?', Math.round(r.top - top), Math.round(r.height)]); } var h = window.__viewportHistory; var st = h && h.states ? h.states.slice(-8).map(function(x){ return [Math.round(x.t || 0), x.cause, x.turn, x.lo, x.hi, Math.round(x.top || 0), x.following ? 'follow' : '-', x.position, x.pending]; }) : null; var ac = h && h.actions ? h.actions.slice(-8).map(function(x){ return [Math.round(x.t || 0), x.kind, x.dy !== undefined ? Math.round(x.dy) : (x.key || x.id || '')]; }) : null; var hand = null; if (h && h.actions && h.states) { var lw = null; for (var i = h.actions.length - 1; i >= 0; i--) { if (h.actions[i].kind === 'wheel') { lw = h.actions[i].t; break; } } if (lw != null) { for (var j = 0; j < h.states.length; j++) { if (h.states[j].t >= lw && h.states[j].following === false) { hand = Math.round(h.states[j].t - lw); break; } } } } return JSON.stringify({ handoverMs: hand, scrollTop: Math.round(s.scrollTop), scrollH: Math.round(s.scrollHeight), clientH: Math.round(s.clientHeight), width: Math.round(s.getBoundingClientRect().width), near: near, states: st, actions: ac, viol: (window.__viewportViolations || []).length }); })()"#;
 
 /// #55/#148: the outline pane has TWO states — open, and collapsed to its icon rail — and the
 /// vocabulary that walks them is complete without a third.
@@ -2649,6 +2653,10 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
 
     // Read from the middle of the session, so the anchor is a real unit and not the tail.
     harness::scroll_by(&tab, harness::Surface::AppShell, -2400);
+    // The reader has to OWN the view before the case asks what the reader sees: until follow is
+    // released the engine believes the reader is at the tail, and the reflow below then places
+    // there — correctly, by its own lights, and nothing to do with holding a place (#212).
+    harness::until_reader_owns_the_view(&tab);
     std::thread::sleep(std::time::Duration::from_millis(600));
     let anchor_before = harness::view_anchor(&tab, harness::Surface::AppShell);
     // #212: SCENARIO_TRACE=1 dumps what the engine believed on each side of the reflow, because an
@@ -2673,13 +2681,17 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
         std::time::Duration::from_secs(5),
         "document.querySelector('.workspace').className",
     );
+    // The class flips at once and the width animates: measuring here reads the OLD width unless
+    // the reflow is allowed to finish (#212).
+    harness::until_navigator_reflow(&tab, open["navigator"].as_f64().unwrap_or(0.0));
     let railed = harness::probe(&tab, widths);
     assert!(
         railed["transcript"].as_f64().unwrap() > open["transcript"].as_f64().unwrap() + 100.0,
         "the transcript takes the width the pane gave up: {open} → {railed}"
     );
 
-    // The reader's place survives the reflow — the half of #55 that was never about hiding.
+    // The reader's place survives the reflow — the half of #55 that was never about hiding. The
+    // pane has settled by here (above), so this asks about the reader and not about a transition.
     std::thread::sleep(std::time::Duration::from_millis(400));
     let anchor_after = harness::view_anchor(&tab, harness::Surface::AppShell);
     if trace_212 {
@@ -2747,6 +2759,7 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
             expand["reachable"], true,
             "at the {label} window the rail's expand button is genuinely clickable — this is what              makes the top-bar toggle unnecessary rather than merely redundant: {expand}"
         );
+        let railed_w = harness::eval(&tab, NAV_W).as_f64().unwrap_or(0.0);
         harness::eval(
             &tab,
             "document.getElementById('navigatorRailExpand').click(); 'ok'",
@@ -2758,6 +2771,7 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
             std::time::Duration::from_secs(5),
             "document.querySelector('.workspace').className",
         );
+        harness::until_navigator_reflow(&tab, railed_w);
 
         // …and back, from the caption.
         let close = harness::probe(
@@ -2768,6 +2782,7 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
             close["reachable"], true,
             "at the {label} window the caption's collapse button is clickable too: {close}"
         );
+        let opened_w = harness::eval(&tab, NAV_W).as_f64().unwrap_or(0.0);
         harness::eval(
             &tab,
             "document.getElementById('navigatorClose').click(); 'ok'",
@@ -2779,6 +2794,8 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
             std::time::Duration::from_secs(5),
             "document.querySelector('.workspace').className",
         );
+        // The next leg resizes, so leave the pane settled rather than mid-collapse.
+        harness::until_navigator_reflow(&tab, opened_w);
     }
     drop(monitor);
 }

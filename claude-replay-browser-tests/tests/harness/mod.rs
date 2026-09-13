@@ -1130,6 +1130,59 @@ pub fn until_drawers_settle(tab: &headless_chrome::Tab) {
     );
 }
 
+/// Wait until the engine has handed the view to the READER — follow released, the position an
+/// anchor rather than the tail.
+///
+/// A case that scrolls away from the tail and then asks what the reader sees is asking about an
+/// anchored engine; while `following` is still true the engine believes the reader is at the tail
+/// and any reflow or growth places there, correctly by its own lights. Measured on #212: in a
+/// passing run the wheel at t=1085 ms is followed 4 ms later by an `update` that sets
+/// `position: anchor:process:b91` and drops follow; in a failing run no transaction follows the
+/// wheel at all within 600 ms, the engine stays at `tail`, and the pane's reflow then puts the
+/// reader back at the bottom — a true answer to a question the case did not mean to ask.
+///
+/// The signal is the engine's own last recorded state, which is exactly what a later transaction
+/// will act on. A timeout here names a real problem rather than a confusing anchor mismatch three
+/// assertions later.
+pub fn until_reader_owns_the_view(tab: &headless_chrome::Tab) {
+    until(
+        tab,
+        "(function(){ var h = window.__viewportHistory; if (!h || !h.states || !h.states.length) return false; var s = h.states[h.states.length - 1]; return s.following === false; })()",
+        "the engine to hand the view to the reader (follow released after the scroll)",
+        Duration::from_secs(8),
+        "(function(){ var h = window.__viewportHistory; var s = h && h.states && h.states[h.states.length - 1]; var t = document.querySelector('.transcript'); return JSON.stringify({ following: s && s.following, position: s && s.position, belief: s && Math.round(s.top), scrollTop: t && Math.round(t.scrollTop), lastActions: h && h.actions.slice(-3) }); })()",
+    );
+}
+
+/// Wait for the outline pane's reflow to FINISH — the pane away from `was_nav_width` and measured
+/// the same twice in a row.
+///
+/// Collapsing the pane to its rail (or opening it again) flips a class at once and animates the
+/// width; a case that measures right after the class sees the old width, and one that sleeps a
+/// fixed time sees whatever the transition reached. #212 is what that costs: on this machine the
+/// same case failed at three different assertions across nine runs — the transcript's width right
+/// after the flip, the reader's anchor 400 ms later, and a control's hit test after a click — which
+/// is one instrument problem wearing three faces, not three bugs. Two equal samples 200 ms apart
+/// is the app's own settled signal here, the same shape as `until_drawers_settle`.
+pub fn until_navigator_reflow(tab: &headless_chrome::Tab, was_nav_width: f64) {
+    // The predicate remembers the previous sample ON THE PAGE, so `until`'s polling supplies the
+    // interval. Two equal samples alone are not enough: before the transition STARTS, two samples
+    // 200 ms apart are equal at the old width, which is how #212 read a pane that had not moved as
+    // a pane that had settled (measured: `{navigator: 290, transcript: 800}` on both sides of a
+    // collapse whose class was already on). So the pane must also have left the width it had.
+    eval(tab, "window.__navWidths = null; 'ok'");
+    until(
+        tab,
+        &format!(
+            "(function(){{ var n = document.querySelector('.session-navigator'); var t = document.querySelector('.transcript'); if (!n || !t) return true; var w = [Math.round(n.getBoundingClientRect().width), Math.round(t.getBoundingClientRect().width)]; var prev = window.__navWidths; window.__navWidths = w; return w[0] !== {} && !!prev && prev[0] === w[0] && prev[1] === w[1]; }})()",
+            was_nav_width.round() as i64
+        ),
+        "the outline pane to leave its old width and stop moving",
+        Duration::from_secs(10),
+        "(function(){ var n = document.querySelector('.session-navigator'); var t = document.querySelector('.transcript'); return JSON.stringify({ nav: n && Math.round(n.getBoundingClientRect().width), transcript: Math.round(t.getBoundingClientRect().width), workspace: document.querySelector('.workspace').className }); })()",
+    );
+}
+
 /// Wait for the preview panel to finish PARKING itself off-screen after a resize.
 ///
 /// Below 1180px the panel stops being a grid column and becomes a fixed overlay at z-index 50,
