@@ -678,3 +678,18 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .session-filter-options[hidden]{display:none}
 .session-filter-options .scope-option{grid-template-columns:18px minmax(0,1fr) auto}
 .session-filter-options .scope-count{color:var(--faint);font:10px var(--mono)}
+
+/* The head's controls at every width the sidebar can be dragged to (#210, after #202 added the
+   filter glyph). The row is the shell switch and five glyphs; at 34px each with 2px between them
+   and 19px of head padding it wanted 275px, and the sidebar's minimum is 232 — so the sidebar
+   collapse, last in the row, sat outside the sidebar. The spacing is tighter everywhere (the
+   owner: "there is some space on the left, and we can squeeze the space a bit between glyphs"),
+   and below `SIDEBAR_TIGHT` the glyphs themselves give up four pixels each, which is what keeps
+   the previous minimum width AND the collapse control. Nothing is hidden at any width. */
+.side-head{padding-left:14px;padding-right:14px}
+.head-actions{gap:1px}
+#app.sidebar-tight .side-head{padding-left:10px;padding-right:10px}
+#app.sidebar-tight .head-actions{gap:0}
+#app.sidebar-tight .side-head .iconbtn{width:30px;height:30px;border-radius:8px}
+#app.sidebar-tight .side-head .iconbtn.shell-toggle{padding:0 6px}
+#app.sidebar-tight .side-head .iconbtn .icon{width:15px;height:15px}

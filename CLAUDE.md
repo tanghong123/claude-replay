@@ -32,6 +32,11 @@ page (v1's rail, v2's splice shell). A button in each switches and REMEMBERS the
 `<state_dir>/ui.json`, shared by both binaries; `?ui=classic` / `?ui=app` override for one
 request without disturbing it, which is what makes side-by-side comparison possible. The classic
 page is not deprecated — it goes when the app shell has been validated, and not before.
+**The sidebar head's controls fit at every width** (#210): the row is the shell switch and five
+glyphs, and below `SIDEBAR_TIGHT` (272px) the shell wears `sidebar-tight`, which squeezes the
+head's padding, the gaps and the glyphs so the last of them — the sidebar collapse — stays inside
+the sidebar at its 232px minimum. Nothing is hidden at any width; a new control in that row has to
+be measured against the minimum, not the default.
 **Sessions sort into three buckets** (#202, `design/agent-states.md` §10): active (busy),
 blocked (a wait, or an idle reason that cut the work short — this is what "needs attention"
 means and counts) and idle (`done`, `exited`); `sessionBucket` in `shared/state-labels.js` is

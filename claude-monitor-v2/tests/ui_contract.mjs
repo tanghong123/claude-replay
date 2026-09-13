@@ -837,6 +837,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(prodCss, /\.iconbtn\.session-filter\.on\{background:var\(--primary-soft\);color:var\(--primary\);box-shadow:inset 0 0 0 1px color-mix\(in srgb,var\(--primary\) 55%,transparent\)\}/, "the filter glyph paints its lit state");
   assert.match(prodCss, /\.sidebar-mini-button\.filter-mini\.on\{color:var\(--primary\)\}/, "…the mini rail's glyph too");
   assert.doesNotMatch(prodCss, /attention-filter|hidden-filter|attention-mini|hidden-mini/, "no rule for the removed controls remains");
+  // #210: the head's controls fit at every width the sidebar can be dragged to. #202's filter made
+  // the row wider than the narrowest sidebar, and the last of them — the sidebar collapse — sat
+  // outside it. The spacing is tighter everywhere, and below `SIDEBAR_TIGHT` the glyphs give up
+  // four pixels each; nothing is hidden at any width.
+  assert.match(appSource, /const SIDEBAR_TIGHT = 272;/, "the width where the full-size row stops fitting is named");
+  assert.match(appSource, /app\.classList\.toggle\("sidebar-tight", width < SIDEBAR_TIGHT\);/, "…and the shell wears it as a class, from the one place that sets the width");
+  assert.match(prodCss, /\.side-head\{padding-left:14px;padding-right:14px\}/, "the head's own padding is tighter");
+  assert.match(prodCss, /\.head-actions\{gap:1px\}/, "…and so is the gap between the glyphs");
+  assert.match(prodCss, /#app\.sidebar-tight \.side-head \.iconbtn\{width:30px;height:30px/, "…and in the tight state the glyphs themselves give up four pixels");
+  assert.doesNotMatch(prodCss, /\.sidebar-tight[^{]*\{[^}]*display:none/, "nothing is hidden at any width — the controls shrink, they do not disappear");
   assert.match(appSource, /hintFor\("sidebar-toggle"\)/, "the key is discoverable on the control");
   console.log("#54 sidebar rail cases passed");
 }

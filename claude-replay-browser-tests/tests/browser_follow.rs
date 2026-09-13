@@ -4386,7 +4386,7 @@ fn the_app_shell_resizes_the_session_list() {
         std::time::Duration::from_secs(30),
         "document.body.innerText.slice(0, 120)",
     );
-    let state = "(function(){ var side = document.querySelector('.sidebar'), head = document.querySelector('.side-head'); var handle = document.getElementById('sidebarResizer'); var hr = handle ? handle.getBoundingClientRect() : null; var sr = side.getBoundingClientRect(); var brand = head.querySelector('.brand').getBoundingClientRect(), acts = head.querySelector('.head-actions').getBoundingClientRect(); return { width: Math.round(sr.width), handle: hr ? [Math.round(hr.right - sr.right), Math.round(hr.width)] : null, sameRow: Math.abs(acts.top - brand.top) <= 10, actionsInside: acts.right <= sr.right + 0.5, stored: localStorage.getItem('am-sidebar-width'), role: handle ? handle.getAttribute('role') : '' }; })()";
+    let state = "(function(){ var side = document.querySelector('.sidebar'), head = document.querySelector('.side-head'); var handle = document.getElementById('sidebarResizer'); var hr = handle ? handle.getBoundingClientRect() : null; var sr = side.getBoundingClientRect(); var brand = head.querySelector('.brand').getBoundingClientRect(), acts = head.querySelector('.head-actions').getBoundingClientRect(); return { width: Math.round(sr.width), handle: hr ? [Math.round(hr.right - sr.right), Math.round(hr.width)] : null, sameRow: Math.abs(acts.top - brand.top) <= 10, actionsInside: acts.right <= sr.right + 0.5, controls: [].slice.call(head.querySelector('.head-actions').children).map(function (e) { var b = e.getBoundingClientRect(); var mid = document.elementFromPoint(Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)); return { id: e.id || '?', inside: b.left >= sr.left - 0.5 && b.right <= sr.right + 0.5, hit: mid === e || e.contains(mid) }; }), tight: document.getElementById('app').classList.contains('sidebar-tight'), stored: localStorage.getItem('am-sidebar-width'), role: handle ? handle.getAttribute('role') : '' }; })()";
     let start = harness::probe(&tab, state);
     assert_eq!(
         start["width"], 300,
@@ -4436,6 +4436,41 @@ fn the_app_shell_resizes_the_session_list() {
         "the list to stop at its minimum",
         std::time::Duration::from_secs(5),
         "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
+    );
+    // #210, the owner's report: "we could shrink the width of the side bar and hide the collapse
+    // side bar button". The head's row is the shell switch and five glyphs, and #202's filter made
+    // it wider than the narrowest sidebar — so the last of them, the sidebar collapse, sat outside
+    // it. At the minimum every control is inside the sidebar AND answers a click at its own centre
+    // (the two are different questions: a control can be inside and covered).
+    let tight = harness::probe(&tab, state);
+    assert_eq!(
+        tight["width"], 232,
+        "the drag clamped to the minimum: {tight}"
+    );
+    assert_eq!(
+        tight["tight"], true,
+        "…and the head is in its tight state there: {tight}"
+    );
+    let controls = tight["controls"].as_array().cloned().unwrap_or_default();
+    assert!(
+        controls.len() >= 6,
+        "the head carries the shell switch and five glyphs: {tight}"
+    );
+    for control in &controls {
+        assert_eq!(
+            control["inside"], true,
+            "{} is inside the sidebar at its minimum width: {tight}",
+            control["id"]
+        );
+        assert_eq!(
+            control["hit"], true,
+            "…and {} answers a click at its centre: {tight}",
+            control["id"]
+        );
+    }
+    assert!(
+        controls.iter().any(|c| c["id"] == "sidebarCollapse"),
+        "…the sidebar collapse among them, which is the one that went missing: {tight}"
     );
     harness::eval(&tab, &drag(900));
     harness::until(

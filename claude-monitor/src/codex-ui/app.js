@@ -1641,6 +1641,9 @@ byId("sidebarMiniExpand").title = `Expand the sidebar  ( ${hintFor("sidebar-togg
 // sheet), remembered across reloads, reset by a double-click and nudged by the arrow keys.
 const SIDEBAR_WIDTH_KEY = "am-sidebar-width";
 const SIDEBAR_MIN = 232, SIDEBAR_MAX = 520, SIDEBAR_DEFAULT = 300;
+// Where the head's controls stop fitting at their full size (#202/#210): the row is the shell
+// switch plus five 34px glyphs with 1px between them, and the head's padding either side.
+const SIDEBAR_TIGHT = 272;
 const sidebarResizer = document.createElement("div");
 sidebarResizer.className = "sidebar-resizer";
 sidebarResizer.id = "sidebarResizer";
@@ -1660,6 +1663,12 @@ function setSidebarWidth(value, remember) {
   const asked = Number(value);
   const width = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(Number.isFinite(asked) ? asked : SIDEBAR_DEFAULT)));
   document.documentElement.style.setProperty("--sidebar-user", `${width}px`);
+  // Below `SIDEBAR_TIGHT` the head's own row — the shell switch and five glyphs — is wider than
+  // the sidebar, and the last of them (the sidebar collapse) would sit outside it. The CSS class
+  // squeezes the glyphs and the head's padding so every control stays reachable at the narrowest
+  // width the reader can drag to, which is what #202's sixth glyph cost (measured: the row is
+  // 237px wide and needs 275 with the head's padding, against a 232px minimum).
+  app.classList.toggle("sidebar-tight", width < SIDEBAR_TIGHT);
   sidebarResizer.setAttribute("aria-valuenow", String(width));
   sidebarResizer.title = `Drag to resize the session list · double-click for ${SIDEBAR_DEFAULT}px`;
   if (remember) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width));
