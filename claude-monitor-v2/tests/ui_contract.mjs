@@ -954,15 +954,22 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /drawers\.dir\.set\(key, delta > 0 \? "closing" : "opening"\);/, "each pane remembers the direction of its last movement, for the toggle to complete");
   assert.match(appSource, /if \(dy > 0\) \{\n    dy = routeDrawerDelta\(dy\);\n    if \(dy > 0\) nav\.scrollTop \+= dy;/, "a push closes first and only the REMAINDER scrolls the column");
   assert.match(appSource, /const used = Math\.min\(nav\.scrollTop, -dy\);/, "…and a pull gives the scroll back before it reopens, so the column retraces exactly");
-  // #157, the owner's flow model: a run of wheel events with no real pause is ONE gesture and it
-  // owns whatever it started on, so the pointer drifting over a list mid-motion cannot steal the
-  // push — and stopping lets the next one aim afresh, which is how a PART-WAY pane's clipped list
-  // is scrollable at all. With friction at the handover, so a fling through a long list cannot
-  // carry on and shut every pane behind it.
+  // #157 → #206, the owner's flow model with the owner's amendment: a run of wheel events with no
+  // real pause is ONE gesture and it owns WHERE IT BEGAN for its whole run — a gesture that began
+  // inside a pane's body scrolls that pane and nothing else (no handover to the drawers when the
+  // list ends, which is what the old friction guarded), and one that began anywhere else keeps
+  // the chain even if the pointer lands in a pane while it continues. Stopping ends a gesture,
+  // which is how a PART-WAY pane's clipped list is scrollable at all.
   assert.match(appSource, /let wheelOwner = null;/, "a gesture owns a target for its whole run");
-  assert.match(appSource, /wheelIdle = setTimeout\(\(\) => \{ wheelOwner = null; wheelResist = 0; \}, WHEEL_IDLE_MS\);/, "…and a pause is what ends it");
-  assert.match(appSource, /wheelResist \+= Math\.abs\(dy\);\n    if \(wheelResist < WHEEL_RESIST_PX\) \{ event\.preventDefault\(\); return; \}/, "…with static friction to overcome before the chain takes a push the list can no longer use");
-  assert.match(appSource, /if \(listWithRoom\(event\.target, dy\)\) \{ wheelResist = 0; return; \}/, "…and a list that can still move keeps it, scrolled by the browser itself");
+  assert.match(appSource, /let wheelPane = null;/, "…and remembers the pane it began in");
+  assert.match(appSource, /wheelIdle = setTimeout\(\(\) => \{ wheelOwner = null; wheelPane = null; \}, WHEEL_IDLE_MS\);/, "…and a pause is what ends it");
+  assert.match(appSource, /wheelPane = paneBodyAt\(event\.target\);\n    wheelOwner = wheelPane \? "pane" : "chain";/, "where the gesture began decides what it drives (#206)");
+  assert.match(appSource, /if \(wheelOwner === "pane"\) \{\n    const list = listWithRoom\(wheelPane, dy\);\n    if \(list\) return;/, "…a pane gesture scrolls the pane's own list, by the browser itself");
+  assert.match(appSource, /if \(list\) return;\s*\/\/ the browser scrolls the pane's own list\n    event\.preventDefault\(\);/, "…and at the list's end the gesture is spent: the drawers never take over");
+  assert.doesNotMatch(appSource, /WHEEL_RESIST_PX|wheelResist/, "the friction went with the handover it guarded");
+  assert.match(appSource, /function drawersUnderNoPressure\(cards\) \{/, "a closing push leaves a wholly visible tail alone (#206)");
+  assert.match(appSource, /const exempt = delta > 0 \? drawersUnderNoPressure\(cards\) : new Set\(\);/, "…only when closing — a pull gives back in the order it took");
+  assert.match(appSource, /if \(exempt\.has\(card\)\) continue;/, "…and the walk skips them");
   assert.match(css, /\.session-navigator\{overflow-anchor:none\}/, "scroll anchoring would fight a body that is changing height");
   assert.doesNotMatch(css, /\.navigator-list\{[^}]*overscroll-behavior:contain/, "the list never contains its overscroll — the wheel reaches the chain once the list is at its end");
   console.log("#58/#59/#74 outline pane cases passed");

@@ -521,3 +521,48 @@ drive in a sequence had to become the remainder.
 
 The reader-facing explanation, with diagrams, is
 [`outline-spacer-explained.md`](outline-spacer-explained.md).
+
+## #206: where a gesture begins, and where the pressure comes from (owner, 2026-09-13)
+
+Three amendments to the gesture model, in the owner's words:
+
+> if at the beginning of the scroll, the mouse is inside a pane, the behavior should be scroll the
+> content of the pane only (no more transition to drawer motion), if the mouse is outside a pane,
+> then the behavior would be pulling and pushing drawers. Note that if the mouse is outside the
+> drawer but during the scrolling inside, we will continue with the drawer motion unless the user
+> stops. Lastly, I see no point of closing the bottom drawer once it is all visible (then that
+> means if the second to the last drawer is also all visible, then no need to further collapse it
+> because there can be no pressure from below).
+
+**1. Where it begins decides what it drives.** A gesture that starts inside a pane's BODY scrolls
+that pane's list and nothing else; when the list reaches its end the gesture is spent and the
+drawers do not take over. A gesture that starts anywhere else — the column, a card's head, the gap
+between cards — works the chain. `paneBodyAt(event.target)` at the first event of a run decides it,
+and `wheelOwner` holds it until the run ends.
+
+**2. The run keeps what it began with.** The pointer landing inside a pane mid-run changes
+nothing: the chain keeps the push. Only stopping (`WHEEL_IDLE_MS`, 200 ms of quiet) ends a gesture,
+and the next one aims from wherever the pointer is then.
+
+**What this deletes.** #157's static friction (`WHEEL_RESIST_PX`) existed to make the handover
+from an exhausted list to the chain cost something, so a fling through a long list could not carry
+on and shut every pane behind it. With no handover at all there is nothing to resist, and the
+constant is gone.
+
+**3. No pressure from below, no collapse.** Closing a drawer buys room for what is under it. When
+the last card is already wholly inside the column's viewport, nothing under it is asking for room,
+so a closing push spends nothing on it — and the same then holds for the card above it, and so on
+up the run. `drawersUnderNoPressure` walks from the bottom and exempts that run; the walk skips
+them. Opening is never exempt: a pull gives back in the order the push took, so a push and an
+equal pull still cancel exactly.
+
+The consequence a reader sees: with the whole column visible, scrolling down over it does nothing
+— which is right, because there is nothing it could reveal. Make the window shorter and the same
+push closes from the top again.
+
+**Held by** `the_app_shell_a_panes_own_list_takes_the_wheel` (rule 1, both halves: the list
+scrolls and the gesture is spent at its end; then, in a short window, a push from outside moves
+the drawers) and `the_app_shell_drawers_answer_where_the_gesture_began_and_the_pressure_below`
+(rule 3 in a tall window and its converse in a short one, then rule 2: a run begun outside keeps
+the chain after the pointer enters a pane). The node contract pins the ownership, the absence of
+the friction, and the exemption.

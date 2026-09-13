@@ -676,17 +676,39 @@ function drawerOpenOf(key) {
   if (!drawers.open.has(key)) drawers.open.set(key, uiState.navCards.has(key) ? 1 : 0);
   return drawers.open.get(key);
 }
+/** The panes a CLOSING push must leave alone: the ones from the first index whose card, and every
+ *  card after it, is wholly inside the column's viewport (#206, owner: "I see no point of closing
+ *  the bottom drawer once it is all visible (then that means if the second to the last drawer is
+ *  also all visible, then no need to further collapse it because there can be no pressure from
+ *  below)"). Closing buys room for what is below; a tail that is already wholly visible is asking
+ *  for none, so taking from it would shrink the column for nothing. Opening is never exempt — a
+ *  pull gives back in the order it took. */
+function drawersUnderNoPressure(cards) {
+  const nav = byId("sessionNavigator");
+  const view = nav.getBoundingClientRect();
+  const exempt = new Set();
+  for (let i = cards.length - 1; i >= 0; i--) {
+    const box = cards[i].getBoundingClientRect();
+    // Wholly inside the visible column, within a pixel of rounding.
+    if (box.top >= view.top - 1 && box.bottom <= view.bottom + 1) exempt.add(cards[i]);
+    else break; // the run must reach the bottom: a card that is cut off puts every card above it under pressure
+  }
+  return exempt;
+}
 /** Spend `delta` px on the panes and return what is LEFT OVER. Closing (`delta > 0`) walks from
- *  the top and takes from the first pane with anything still open; opening walks from the bottom,
- *  so the column gives back in the reverse order it took, and a push followed by an equal pull
- *  lands exactly where it started. Both walks read the CURRENT states, which is what lets a pane
- *  the toggle shut be reopened by pulling: it is a pane at 0, found like any other. */
+ *  the top and takes from the first pane with anything still open, skipping a tail that is under
+ *  no pressure (above); opening walks from the bottom, so the column gives back in the reverse
+ *  order it took, and a push followed by an equal pull lands exactly where it started. Both walks
+ *  read the CURRENT states, which is what lets a pane the toggle shut be reopened by pulling: it
+ *  is a pane at 0, found like any other. */
 function routeDrawerDelta(delta) {
   const cards = drawerCards();
+  const exempt = delta > 0 ? drawersUnderNoPressure(cards) : new Set();
   const order = delta > 0 ? cards : [...cards].reverse();
   let left = Math.abs(delta);
   for (const card of order) {
     if (left <= 0.5) break;
+    if (exempt.has(card)) continue;
     const key = card.dataset.navCard;
     const natural = drawers.natural.get(key) || 0;
     if (!natural) continue;
@@ -737,31 +759,50 @@ function wheelPixels(event) {
   if (event.deltaMode === 2) return event.deltaY * nav.clientHeight;
   return event.deltaY;
 }
-/* THE INTENTION FLOWS (#157, owner's model). A run of wheel events with no real pause is ONE
- * gesture, and a gesture owns whatever it started on: begin on a list and the list keeps it,
- * begin on the chain and the chain keeps it, whatever the pointer happens to be over as things
- * move underneath. Stop, and the next push aims afresh — which is what lets the reader scroll the
- * clipped list of a PART-WAY drawer: they stopped moving the drawer, so the new gesture is
- * theirs to aim.
+/* THE INTENTION FLOWS (#157, owner's model), and WHERE A GESTURE BEGINS DECIDES WHAT IT DRIVES
+ * (#206, owner 2026-09-13: "if at the beginning of the scroll, the mouse is inside a pane, the
+ * behavior should be scroll the content of the pane only (no more transition to drawer motion),
+ * if the mouse is outside a pane, then the behavior would be pulling and pushing drawers. Note
+ * that if the mouse is outside the drawer but during the scrolling inside, we will continue with
+ * the drawer motion unless the user stops.")
  *
- * And there is FRICTION at the handover. A list that runs out mid-gesture does not hand the push
- * straight to the drawers: the overflow accumulates, and only once it passes `WHEEL_RESIST_PX`
- * does the chain take over — static friction to overcome, so a fling through a long list cannot
- * carry on and shut every pane behind it. */
+ * A run of wheel events with no real pause is ONE gesture, and the gesture owns what it started
+ * on for its whole run:
+ *
+ *   began inside a pane's BODY   the pane's own list scrolls, and nothing else — when the list
+ *                                reaches its end the gesture is spent, and the drawers do NOT
+ *                                take over. (#157 handed over after a static-friction budget;
+ *                                the owner asked for no handover at all, so the friction went
+ *                                with it.)
+ *   began anywhere else          the chain: closing and opening drawers, the remainder scrolling
+ *                                the column — and it keeps the chain even if the pointer lands
+ *                                inside a pane while the run continues.
+ *
+ * Stopping is what ends a gesture (`WHEEL_IDLE_MS` of quiet), and the next push aims afresh from
+ * wherever the pointer is then. That is also what lets the reader scroll the clipped list of a
+ * PART-WAY drawer: they stopped, so the new gesture is theirs to aim. */
 const WHEEL_IDLE_MS = 200;
-const WHEEL_RESIST_PX = 60;
-let wheelOwner = null;   // "list" | "chain" while a gesture is in flight
-let wheelResist = 0;     // overflow piled up since the list ran out
+let wheelOwner = null;   // "pane" | "chain" while a gesture is in flight
+let wheelPane = null;    // the pane body a "pane" gesture began in
 let wheelIdle = 0;
-/** The scroller under the pointer that still has room in this direction, or null. */
-function listWithRoom(target, dy) {
-  const nav = byId("sessionNavigator");
-  for (let el = target; el && el !== nav; el = el.parentElement) {
+/** The pane BODY the pointer is inside, or null — where a gesture begins decides what it drives
+ *  (#206). The body is the pane's content; its head belongs to the drawer, so a push that starts
+ *  on a head works the chain like any other push from outside. */
+function paneBodyAt(target) {
+  for (let el = target; el && el !== byId("sessionNavigator"); el = el.parentElement) {
+    if (el instanceof Element && el.classList.contains("outline-card-body")) return el;
+  }
+  return null;
+}
+/** The scroller inside `body` that still has room in this direction, or null. */
+function listWithRoom(body, dy) {
+  if (!body) return null;
+  for (const el of [body, ...body.querySelectorAll("*")]) {
     if (!(el instanceof Element)) continue;
     if (!/(auto|scroll)/.test(getComputedStyle(el).overflowY)) continue;
     const room = el.scrollHeight - el.clientHeight;
     if (room <= 1) continue;
-    return (dy > 0 ? el.scrollTop < room - 1 : el.scrollTop > 1) ? el : null;
+    if (dy > 0 ? el.scrollTop < room - 1 : el.scrollTop > 1) return el;
   }
   return null;
 }
@@ -774,16 +815,17 @@ byId("sessionNavigator").addEventListener("wheel", event => {
   let dy = wheelPixels(event);
   if (!dy) return;
   clearTimeout(wheelIdle);
-  wheelIdle = setTimeout(() => { wheelOwner = null; wheelResist = 0; }, WHEEL_IDLE_MS);
+  wheelIdle = setTimeout(() => { wheelOwner = null; wheelPane = null; }, WHEEL_IDLE_MS);
   if (!wheelOwner) {
-    wheelOwner = listWithRoom(event.target, dy) ? "list" : "chain";
-    wheelResist = 0;
+    // Where the gesture BEGAN, kept for its whole run (#206): a pane's body owns it, or the chain.
+    wheelPane = paneBodyAt(event.target);
+    wheelOwner = wheelPane ? "pane" : "chain";
   }
-  if (wheelOwner === "list") {
-    if (listWithRoom(event.target, dy)) { wheelResist = 0; return; } // the browser scrolls it
-    wheelResist += Math.abs(dy);
-    if (wheelResist < WHEEL_RESIST_PX) { event.preventDefault(); return; } // held at the end
-    wheelOwner = "chain";
+  if (wheelOwner === "pane") {
+    const list = listWithRoom(wheelPane, dy);
+    if (list) return;             // the browser scrolls the pane's own list
+    event.preventDefault();       // …and at its end the gesture is spent: no handover
+    return;
   }
   if (dy > 0) {
     dy = routeDrawerDelta(dy);

@@ -5458,16 +5458,15 @@ fn the_app_shell_opens_a_pushed_shut_pane_from_its_head() {
     );
 }
 
-/// #157, the regression the owner hit: "I am no longer able to scroll the content in any pane
-/// now." The first version of the push model swallowed every wheel at the column, so a pane's own
-/// list — its `.navigator-list`, a scroller in its own right — never saw one.
+/// #157, the regression the owner hit ("I am no longer able to scroll the content in any pane
+/// now") and #206, the owner's amendment to the rule that fixed it.
 ///
-/// The rule the fix encodes is the owner's, and it is about INTENTION FLOWING. A run of wheel
-/// events with no real pause is ONE gesture and it owns whatever it started on; stopping lets the
-/// next gesture aim afresh. So a list under the pointer takes the push, and the chain only gets
-/// it once the list has nothing left to give — and even then not immediately, because there is
-/// friction to overcome first, so a fling through a long list cannot carry on and shut every pane
-/// behind it.
+/// The rule is about INTENTION FLOWING: a run of wheel events with no real pause is ONE gesture
+/// and it owns WHERE IT BEGAN for its whole run; stopping lets the next gesture aim afresh. A
+/// gesture that begins inside a pane's body scrolls that pane's list and nothing else — when the
+/// list reaches its end the gesture is spent, and the drawers never take over (#206 asked for no
+/// handover at all, so #157's friction went with it). A gesture that begins anywhere else works
+/// the chain.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn the_app_shell_a_panes_own_list_takes_the_wheel() {
@@ -5508,25 +5507,153 @@ fn the_app_shell_a_panes_own_list_takes_the_wheel() {
         scrolled["body"], before["body"],
         "…and the drawer did not move while the list still had room: {before} -> {scrolled}"
     );
-    // Send the list to its end and let the gesture lapse, so the next push aims afresh with the
-    // list unable to take it. The chain is still reachable — which is the other half of the rule,
-    // and the reason the list must not contain its own overscroll.
-    //
-    // (The FRICTION is deliberately not asserted here. It guards the handover WITHIN a gesture —
-    // a fling that exhausts the list mid-run must not carry on into the panes — whereas a push
-    // begun after a pause is the reader aiming again, and there is no transition to resist. The
-    // contract pins the friction directly, which is the honest place for a rule about a timer.)
+    // #206: the list at its end, and a NEW gesture that begins in the same pane does nothing —
+    // where a gesture starts decides what it drives, and a pane gesture never reaches the chain.
     harness::eval(&tab, "(function(){ var l = document.querySelector('[data-nav-card=\"turns\"] .navigator-list'); l.scrollTop = l.scrollHeight; return 'ok'; })()");
     std::thread::sleep(std::time::Duration::from_millis(400));
-    for _ in 0..4 {
-        harness::eval(&tab, &format!("({push})(80)"));
+    let at_end = harness::probe(&tab, state);
+    for _ in 0..6 {
+        harness::eval(&tab, &format!("({push})(120)"));
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    let handed = harness::probe(&tab, state);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let spent = harness::probe(&tab, state);
+    assert_eq!(
+        spent["body"], at_end["body"],
+        "a gesture that began in the pane is spent at the list's end — the drawers do not take over: {at_end} -> {spent}"
+    );
+    // The same push from OUTSIDE a pane body is the chain's. A short window first, so the column
+    // overflows and the tail is under pressure — with everything visible there is nothing to buy
+    // room for, and #206 says a push then closes nothing (its own case, below).
+    tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: Some(0),
+        top: Some(0),
+        width: Some(1400.0),
+        height: Some(560.0),
+    })
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let short = harness::probe(&tab, state);
+    let outside = "(function(dy){ document.querySelector('.session-navigator').dispatchEvent(new WheelEvent('wheel', { deltaY: dy, bubbles: true, cancelable: true })); return 'ok'; })";
+    for _ in 0..6 {
+        harness::eval(&tab, &format!("({outside})(120)"));
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let chained = harness::probe(&tab, state);
     assert!(
-        handed["body"].as_f64().unwrap_or(1e9) < before["body"].as_f64().unwrap_or(0.0),
-        "…and once the list has nothing left to give, the chain takes the push: {before} -> {handed}"
+        chained["body"].as_f64().unwrap_or(1e9) < short["body"].as_f64().unwrap_or(0.0),
+        "…while a gesture that began outside a pane moves the drawers: {short} -> {chained}"
+    );
+    drop(monitor);
+}
+
+/// #206, the owner's two other amendments to the drawer gesture.
+///
+/// **A gesture that began outside a pane keeps the chain**, even when the pointer lands inside a
+/// pane while it continues — "if the mouse is outside the drawer but during the scrolling inside,
+/// we will continue with the drawer motion unless the user stops".
+///
+/// **A wholly visible tail is never collapsed**: "I see no point of closing the bottom drawer
+/// once it is all visible (then that means if the second to the last drawer is also all visible,
+/// then no need to further collapse it because there can be no pressure from below)". Closing
+/// buys room for what is below; when the last cards are already inside the column's viewport,
+/// nothing is asking for room, so a push spends nothing on them.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_drawers_answer_where_the_gesture_began_and_the_pressure_below() {
+    let _serial = serial();
+    let base = base("appshell-drawer-gestures");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000206".to_string();
+    stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2918, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    // Tall enough that every card is wholly visible: no pressure from below.
+    tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: Some(0),
+        top: Some(0),
+        width: Some(1400.0),
+        height: Some(1000.0),
+    })
+    .unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length >= 60",
+        "the turns to list",
+        std::time::Duration::from_secs(30),
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+    );
+    harness::until_drawers_settle(&tab);
+    let state = r#"(function(){ var nav = document.querySelector('.session-navigator'); var view = nav.getBoundingClientRect(); var cards = [...nav.querySelectorAll(':scope > .outline-card:not(.pane-off)')]; return { bodies: cards.map(function (c) { var b = c.querySelector(':scope > .outline-card-body'); return Math.round(b ? b.getBoundingClientRect().height : -1); }), tailVisible: cards.length ? cards[cards.length - 1].getBoundingClientRect().bottom <= view.bottom + 1 : false, overflow: Math.round(nav.scrollHeight - nav.clientHeight), scroll: Math.round(nav.scrollTop) }; })()"#;
+    let outside = "(function(dy){ document.querySelector('.session-navigator').dispatchEvent(new WheelEvent('wheel', { deltaY: dy, bubbles: true, cancelable: true })); return 'ok'; })";
+    let inside = "(function(dy){ var l = document.querySelector('[data-nav-card=\"turns\"] .navigator-list'); l.dispatchEvent(new WheelEvent('wheel', { deltaY: dy, bubbles: true, cancelable: true })); return 'ok'; })";
+    let push = |js: &str, n: usize| {
+        for _ in 0..n {
+            harness::eval(&tab, &format!("({js})(120)"));
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    };
+
+    // 1. Nothing below is asking for room: a push from outside spends nothing on the drawers.
+    let visible = harness::probe(&tab, state);
+    assert_eq!(
+        visible["tailVisible"], true,
+        "the window is tall enough that the last card is wholly visible: {visible}"
+    );
+    push(outside, 8);
+    let after_visible = harness::probe(&tab, state);
+    assert_eq!(
+        after_visible["bodies"], visible["bodies"],
+        "with the tail wholly visible a push closes nothing — there is no pressure from below: {visible} -> {after_visible}"
+    );
+
+    // 2. Shorten the window so the tail is cut off, and the same push closes from the top.
+    tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: Some(0),
+        top: Some(0),
+        width: Some(1400.0),
+        height: Some(520.0),
+    })
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let pressed = harness::probe(&tab, state);
+    assert!(
+        pressed["overflow"].as_f64().unwrap_or(0.0) > 40.0,
+        "the short window puts the column under pressure: {pressed}"
+    );
+    push(outside, 8);
+    let closed = harness::probe(&tab, state);
+    let first = |v: &serde_json::Value| v["bodies"][0].as_f64().unwrap_or(-1.0);
+    assert!(
+        first(&closed) < first(&pressed),
+        "…and then a push from outside closes the top drawer first: {pressed} -> {closed}"
+    );
+
+    // 3. A run that began outside keeps the chain when the pointer lands in a pane: the same
+    //    gesture continues (each push is well inside the 200 ms that ends one). Pull everything
+    //    back open first, so there is something for the run to spend.
+    for _ in 0..14 {
+        harness::eval(&tab, &format!("({outside})(-160)"));
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let before_run = harness::probe(&tab, state);
+    assert!(
+        first(&before_run) > 40.0,
+        "the pull reopened the top drawer, so the run below has something to spend: {before_run}"
+    );
+    harness::eval(&tab, &format!("({outside})(120)"));
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    push(inside, 6);
+    let carried = harness::probe(&tab, state);
+    assert!(
+        first(&carried) < first(&before_run) || carried["scroll"].as_f64().unwrap_or(0.0) > before_run["scroll"].as_f64().unwrap_or(0.0),
+        "a gesture that began outside a pane keeps the chain once the pointer is inside one: {before_run} -> {carried}"
     );
     drop(monitor);
 }

@@ -216,6 +216,12 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   and the stall is that laziness at the scale of a walk. No page-side watchdog exists for it;
   `until` ends a timed-out wait with `harness::renderer_verdict`, two samples verbatim, so the
   renderer is read before the engine. The owner asked that it not be chased further.
+  **The outline drawers' gesture** (#157, amended by #206): a run of wheel events with no pause is
+  ONE gesture and it owns WHERE IT BEGAN — inside a pane's body it scrolls that pane's list and is
+  spent at its end (no handover to the drawers), anywhere else it works the chain and keeps it even
+  if the pointer lands in a pane; stopping ends it. A closing push never collapses a run of cards
+  at the bottom that is already wholly visible, because nothing under them is asking for room.
+  `design/outline-drawers.md` has the model.
   **A case that reads the session TREE must say so**: the builders stamp a fixture in a fixed past
   hour, so it lands in the Idle bucket and the app shell's default filter (Active recently +
   Blocked, #202) leaves it out — `harness::show_every_session(&tab, url)` writes the shell's own
