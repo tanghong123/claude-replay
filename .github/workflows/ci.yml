@@ -55,6 +55,21 @@ jobs:
           CHROME: /usr/bin/google-chrome
         run: cargo test -p claude-replay-browser-tests -- --ignored --skip known_red
 
+  version:
+    name: version guard
+    # #200: the workspace version never moves backwards along main, and a release commit names
+    # its own version — refused here even when the release ran outside scripts/release.sh.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Tags
+        run: git fetch --tags --force --quiet origin
+      - name: The workspace version is at or above the highest tag, and a release commit names it
+        run: sh scripts/release-check.sh
+
   guard:
     name: secrets · blocked emails
     runs-on: ubuntu-latest

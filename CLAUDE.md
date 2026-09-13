@@ -229,13 +229,22 @@ server must hold the `Server` Drop guard (`tests/tmux_smoke.rs`), or a failed
 assertion strands the server and whatever runs inside it.
 
 ## Releasing
-After each completed CODE task (docs/design-only changes need no release): bump
-`[workspace.package] version` in the root Cargo.toml, `cargo build` to refresh
-Cargo.lock, commit, annotated signed tag (`git tag -a vX.Y.Z -m "..."`), push
-`origin main` then the tag — the tag push triggers the Release workflow, which
-publishes binaries and bumps the Homebrew tap. Verify the commit really landed
-before tagging — a failed commit with the tag commands still running once
-shipped a tag pointing at the wrong commit.
+After each completed CODE task (docs/design-only changes need no release), release with
+**`scripts/release.sh <version> --subject "<what shipped>" [--message-file <body>]`** — the
+one mechanical path (#200): a clean tree on main that origin/main is an ancestor of; the
+version guard (`scripts/release-check.sh --next <version> --fetch`: refuses a version at or
+below the highest tag on either side, or one already tagged, unless `--allow-backwards`, which
+is printed); the bump of `[workspace.package] version` and nothing else (the SECTION — a naive
+`^version` match hits `version.workspace = true` first, which is how a release once moved main
+from 1.259.0 back to 1.258.0 while another tree was releasing); `cargo build` for Cargo.lock;
+the gates; the release commit and the signed annotated tag, the commit verified before the tag
+(a failed commit with the tag commands still running once shipped a tag pointing at the wrong
+commit); the push to `origin main`, then the tag — the tag push triggers the Release workflow,
+which publishes binaries and bumps the Homebrew tap — then the mirror. `--dry-run` stops after
+the gates. CI's `version guard` job runs the same check on every push to main (the workspace
+version never below the highest tag; a release commit names its own version and owns its tag),
+and the Release workflow refuses a tag that does not name the workspace version, so a release
+cut by hand is still refused where it went wrong before.
 
 **Publish to BOTH taps** (owner, 2026-08-29). The tag push bumps the public Homebrew tap
 (`tanghong123/tap`) on its own; the corp tap is a separate, manual step and does not happen

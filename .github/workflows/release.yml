@@ -18,6 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: The tag names the workspace version (#200)
+        run: |
+          ver=$(awk '/^\[workspace\.package\]/{s=1;next} /^\[/{s=0} s && /^version *= *"/{sub(/^version *= *"/,""); sub(/".*$/,""); print; exit}' Cargo.toml)
+          [ "v$ver" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME does not name the workspace version $ver — nothing is published"; exit 1; }
       - name: Create release
         run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
         env:
