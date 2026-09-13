@@ -221,7 +221,12 @@ Tests build their scratch under `std::env::temp_dir()` — ~100 call sites acros
 crates — and `.cargo/config.toml` points `TMPDIR` at the workspace's own `target/`,
 so all of it stays inside the repo and `cargo clean` (or `scripts/sweep.sh`) clears it
 (#164). It used to land in macOS's opaque `/var/folders/…`, which nothing sweeps: 8,014
-directories and 267 MB had accumulated there. A full run leaves ~3.4 MB.
+directories and 267 MB had accumulated there. A full run leaves ~3.4 MB — except the browser
+harness's roots (`cr-browser-follow-<pid>-<case>`, `cr-browser-state-<pid>`,
+`cr-browser-chrome-<pid>-<n>`), one per case per run and ~0.3 GB for a walk over a long
+session, which the sweep prunes by the LIVENESS of the pid in the name, not by age (#205: the
+age rule had kept 43 GB of them after one day's runs); a running suite's roots are never in
+range, so the sweep is safe beside a live run. Everything else goes by age.
 Scratch inside the repo is scratch inside a GIT repo, so the same file sets
 `GIT_CEILING_DIRECTORIES=target` — a fixture that shells out to `git` sees no
 repository, exactly as it did in the system temp. A test that spawns a `tmux`

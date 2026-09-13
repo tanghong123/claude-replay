@@ -19,9 +19,10 @@
 #
 # Also removed: `incremental/` (the global cargo config sets `incremental = false` for sccache's
 # sake, so anything there is legacy), stale `.fingerprint` entries, the headless-Chrome profiles
-# the browser harness leaves behind, and test scratch older than a day — `.cargo/config.toml`
-# points TMPDIR at `target/`, so pid-keyed scratch dirs collect here in the tens of thousands
-# (#164 moved them out of macOS's unsweepable /var/folders precisely so this could reach them).
+# the browser harness leaves behind — by the liveness of the test process that made them (#205),
+# not by age — and other test scratch older than a day — `.cargo/config.toml` points TMPDIR at
+# `target/`, so pid-keyed scratch dirs collect here in the tens of thousands (#164 moved them out
+# of macOS's unsweepable /var/folders precisely so this could reach them).
 #
 # Usage:  scripts/sweep.sh [--dry-run]
 set -euo pipefail
@@ -119,14 +120,10 @@ for d in debug/.fingerprint release/.fingerprint; do
   fi
 done
 
-# Test scratch (TMPDIR lives here) and the browser harness's Chrome profiles.
+# Test scratch (TMPDIR lives here): the browser harness's roots by the LIVENESS of the test
+# process that made them, everything else by age — scripts/sweep-scratch.sh (#205).
 echo "==> pruning test scratch"
-scratch=(-name 'cr-*' -o -name 'chrome-search-profile*' -o -name 'sc-*' -o -name 'qw-*')
-if [[ -n "$DRY" ]]; then
-  echo "    $(find "$TARGET" -maxdepth 1 -mindepth 1 \( "${scratch[@]}" \) -mtime +1 | wc -l | tr -d ' ') entries older than a day"
-else
-  find "$TARGET" -maxdepth 1 -mindepth 1 \( "${scratch[@]}" \) -mtime +1 -exec rm -rf {} + 2>/dev/null || true
-fi
+bash "$(dirname "$0")/sweep-scratch.sh" "$TARGET" ${DRY:+--dry-run}
 
 AFTER=$(usage)
 awk -v b="$BEFORE" -v a="$AFTER" -v dry="${DRY:-}" 'BEGIN {
