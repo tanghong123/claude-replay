@@ -990,8 +990,44 @@ pub fn probe(tab: &headless_chrome::Tab, js: &str) -> serde_json::Value {
     .unwrap_or(serde_json::Value::Null)
 }
 
-/// Poll a boolean JS predicate until true, or PANIC with `what` and a diagnostic — never a
-/// vacuous return. `diag` is a JS expression evaluated on timeout (a string).
+/// The renderer under scroll activity for `ms`: animation frames delivered and scroll events
+/// dispatched while the page's scroller is nudged a pixel each way on a 16 ms timer (#204).
+/// Measured the way the walk probes measured it — a counter started in the page, a sleep here,
+/// a read. What it showed on 2026-09-13, on a healthy classic page in a fresh headless tab:
+/// most 300 ms samples read 1 frame and 0 scroll events even as `scrollTop` was written, one
+/// sample in ten read 24 and 21 — the same tab, the same page. Headless Chrome's frame
+/// production for a tab is lazy, and the 2026-09-12 stall (frames and scroll events stopped
+/// mid-walk while `scrollTop` kept advancing) is that laziness at the scale of a walk, on a
+/// machine in distress. So this is a REPORT for a failure message, not a judge: it says what
+/// the renderer delivered while a case waited. Returns `(frames, scroll events)`, or `(-1, -1)`
+/// when the page cannot be asked.
+pub fn renderer_activity(tab: &headless_chrome::Tab, ms: u64) -> (i64, i64) {
+    let started = eval(tab, "(function () { if (window.__cr_renderer) return 'running'; var s = document.scrollingElement || document.documentElement; var f = { frames: 0, scrolls: 0, up: true, top: s.scrollTop }; window.__cr_renderer = f; f.onScroll = function () { f.scrolls++; }; window.addEventListener('scroll', f.onScroll, { passive: true }); f.dir = f.top > 0 ? -1 : 1; f.timer = setInterval(function () { s.scrollTop = f.top + (f.up ? f.dir : 0); f.up = !f.up; }, 16); (function tick() { if (!window.__cr_renderer) return; f.frames++; requestAnimationFrame(tick); })(); return 'started'; })()");
+    if started.as_str() != Some("started") {
+        return (-1, -1);
+    }
+    std::thread::sleep(Duration::from_millis(ms + 50));
+    let read = probe(tab, "(function () { var f = window.__cr_renderer; if (!f) return null; window.__cr_renderer = null; clearInterval(f.timer); window.removeEventListener('scroll', f.onScroll); (document.scrollingElement || document.documentElement).scrollTop = f.top; return [f.frames, f.scrolls]; })()");
+    (
+        read[0].as_i64().unwrap_or(-1),
+        read[1].as_i64().unwrap_or(-1),
+    )
+}
+
+/// The renderer's line for a timed-out wait: two 300 ms samples of [`renderer_activity`],
+/// verbatim — none in either sample is the #204 signature (nothing painted or dispatched while
+/// the main thread still answers layout), and a reader who sees it reads the renderer before
+/// reading the engine. Not a verdict: a fresh headless tab ticks lazily on its own.
+pub fn renderer_verdict(tab: &headless_chrome::Tab) -> String {
+    let first = renderer_activity(tab, 300);
+    std::thread::sleep(Duration::from_millis(300));
+    let second = renderer_activity(tab, 300);
+    format!("renderer (frames, scroll events) in two 300 ms samples of scroll activity: {first:?}, {second:?} — none in either is the #204 signature: a renderer stall, not an engine bug")
+}
+
+/// Poll a boolean JS predicate until true, or PANIC with `what`, a diagnostic and the
+/// renderer's verdict — never a vacuous return. `diag` is a JS expression evaluated on timeout
+/// (a string).
 pub fn until(tab: &headless_chrome::Tab, js: &str, what: &str, timeout: Duration, diag: &str) {
     let t0 = Instant::now();
     while t0.elapsed() < timeout {
@@ -1001,7 +1037,8 @@ pub fn until(tab: &headless_chrome::Tab, js: &str, what: &str, timeout: Duration
         std::thread::sleep(Duration::from_millis(200));
     }
     let seen = eval(tab, diag);
-    panic!("timed out waiting for {what}; seen: {seen}");
+    let renderer = renderer_verdict(tab);
+    panic!("timed out waiting for {what}; seen: {seen}; {renderer}");
 }
 
 /// A key press on the document (the app shell's and the classic page's handlers both listen

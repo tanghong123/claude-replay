@@ -201,6 +201,18 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   holds each today (construction, a timer, or only a case), the seams a page implements, and the
   #196 refactors — is `design/virtual-window-framework.md` (#195); the history that led to it is
   `design/virtual-window.md` and `design/one-engine-two-pages.md`.
+  **A renderer stall is not an engine bug (#204).** On 2026-09-12, with the machine in distress
+  (dozens of stranded Chromes), the walk probe saw the classic page stop delivering animation
+  frames and scroll events mid-walk while `scrollTop` kept advancing and rects kept moving: the
+  main thread answered layout, nothing was painted or dispatched, and the engine was never told
+  about the scroll. It did not reproduce in 24 walk runs on a quiet machine (the current and the
+  stage-5 engine, a second Chrome, held memory pressure to 27 % free, eight idle Chromes). What
+  did show, at small scale: a fresh headless tab on a healthy static page ticks lazily — most
+  300 ms samples read 1 frame and 0 scroll events even as `scrollTop` was written, one in ten
+  read 24 and 21 (`harness::renderer_activity`) — so headless frame production is lazy per tab
+  and the stall is that laziness at the scale of a walk. No page-side watchdog exists for it;
+  `until` ends a timed-out wait with `harness::renderer_verdict`, two samples verbatim, so the
+  renderer is read before the engine. The owner asked that it not be chased further.
   A killed run used to leave its browsers behind — a SIGKILL runs no `Drop` and macOS has no
   PDEATHSIG — and sixty such processes once exhausted the machine and took the session's
   background jobs with them. `chrome()` now names each profile `cr-browser-chrome-<launching
