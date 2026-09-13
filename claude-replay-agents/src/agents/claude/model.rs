@@ -4162,7 +4162,6 @@ mod tests {
         );
     }
 
-    #[test]
     /// #207: `SendUserFile` names the file it delivered — the first, `+n` for the rest — and the
     /// path is relativized like every other path the viewer shows (the owner asked why the one
     /// place it appeared, the tool's own output prose, printed it absolute).
