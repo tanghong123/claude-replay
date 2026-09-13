@@ -105,6 +105,13 @@ pub fn page(version: &str, paired: bool, default_ui: bool) -> String {
     format!("{head}{REFERENCE_SHELL}{PAGE_TAIL}")
 }
 
+/// The monitor's tab icon (#203): the green list mark the classic rail inlines as a data URI
+/// (`rail.html`), served here so the app shell — extracted byte-for-byte from the hand-written
+/// demo, which declares no `<link rel="icon">` — gets it from the production layer's injected
+/// link, and the browser's automatic `/favicon.ico` request resolves instead of 404ing. One
+/// source for both shells and both binaries.
+pub const FAVICON_SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='#2e7d55'/><g fill='#fff'><circle cx='9' cy='10' r='2'/><rect x='13' y='9' width='11' height='2' rx='1'/><circle cx='9' cy='16' r='2'/><rect x='13' y='15' width='11' height='2' rx='1'/><circle cx='9' cy='22' r='2'/><rect x='13' y='21' width='11' height='2' rx='1'/></g></svg>";
+
 pub fn asset(name: &str) -> Option<HttpResponse> {
     // Shared modules (seam 0): ONE source in the html crate, served here unchanged as ES
     // modules and inlined by that crate into its own pages. Anything under `shared/` the html
@@ -118,6 +125,8 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
         return Some(response);
     }
     let (content_type, bytes) = match name {
+        // The tab icon under both names the browser may ask for (#203).
+        "favicon.svg" | "favicon.ico" => ("image/svg+xml", FAVICON_SVG.as_bytes()),
         "monitor-ui/reference.css" => (
             "text/css; charset=utf-8",
             include_bytes!("codex-ui/reference.css").as_slice(),

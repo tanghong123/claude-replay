@@ -206,6 +206,14 @@ mod tests {
         assert!(
             body(&dispatch(&backend, &front, &get("monitor-ui/app.js", ""))).contains("import")
         );
+        // #203: the tab icon, one source for both shells — under the name the app shell's link
+        // asks for and the one the browser asks for on its own.
+        for name in ["favicon.svg", "favicon.ico"] {
+            let icon = dispatch(&backend, &front, &get(name, ""));
+            assert_eq!(icon.code, "200 OK", "{name}");
+            assert_eq!(icon.content_type, "image/svg+xml", "{name}");
+            assert!(body(&icon).starts_with("<svg"), "{name}");
+        }
         // The shared API arms.
         assert!(body(&dispatch(&backend, &front, &get("api/ui", ""))).contains("\"ui\""));
         assert!(body(&dispatch(&backend, &front, &get("api/sessions", ""))).contains("\"groups\""));

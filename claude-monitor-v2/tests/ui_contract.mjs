@@ -2322,3 +2322,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /if \(button && !button\.closest\("#transcript"\)\) viewport\.noteAction\("control", button\.id\);/, "every control pressed outside the transcript is an action, by id");
   console.log("#197 history cases passed");
 }
+
+
+// ── #203: the app shell's tab icon ──────────────────────────────────────────────────────────
+{
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  const ui = readFileSync(new URL("../../claude-monitor/src/ui.rs", import.meta.url), "utf8");
+  const rail = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
+  assert.doesNotMatch(referenceShell, /rel="icon"/, "the extracted shell declares no icon (the demo stays byte-identical)");
+  assert.match(app, /if \(!document\.querySelector\('link\[rel~="icon"\]'\)\) \{\n\s*const icon = document\.createElement\("link"\);\n\s*icon\.rel = "icon";\n\s*icon\.type = "image\/svg\+xml";\n\s*icon\.href = "\/favicon\.svg";/, "…so the production layer injects the link to the served icon");
+  assert.match(ui, /"favicon\.svg" \| "favicon\.ico" => \("image\/svg\+xml", FAVICON_SVG\.as_bytes\(\)\),/, "the route table serves it under both names");
+  const served = /pub const FAVICON_SVG: &str = "([^"]+)";/.exec(ui)?.[1];
+  const inline = /<link rel="icon" href="data:image\/svg\+xml,([^"]+)">/.exec(rail)?.[1];
+  assert.ok(served && inline, "both icon sources were found");
+  assert.equal(decodeURIComponent(inline), served, "…and it is the rail's own mark: one source, two shells, both binaries");
+  console.log("#203 favicon cases passed");
+}

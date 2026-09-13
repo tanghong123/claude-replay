@@ -5913,3 +5913,84 @@ fn the_app_shell_panes_open_on_what_is_live() {
     );
     drop(monitor);
 }
+
+/// #203: the app shell's tab has the monitor's icon. The extracted shell declares no
+/// `<link rel="icon">` (the demo is hand-written and stays byte-identical), so when the app
+/// shell became the default the browser's automatic `/favicon.ico` request 404'd and the tab
+/// showed the document icon. Now the production layer injects the link and the route table
+/// serves the same green SVG the classic rail inlines — one source — on both binaries; the
+/// classic rail is unchanged.
+fn app_shell_favicon(kind: Kind, port: u16, label: &str) {
+    let _serial = serial();
+    let base = base(&format!("appshell-favicon-{label}"));
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        "cccccccc-0000-4000-8000-0000000000f1",
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    let monitor = Monitor::spawn(kind, port, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('.brand small') && !!document.querySelector('link[rel~=\"icon\"]')",
+        "the app shell to paint and declare its icon",
+        std::time::Duration::from_secs(30),
+        "document.readyState + ' ' + document.head.innerHTML.length",
+    );
+    let href = harness::eval(
+        &tab,
+        "document.querySelector('link[rel~=\"icon\"]').getAttribute('href')",
+    );
+    assert_eq!(
+        href, "/favicon.svg",
+        "{label}: the link points at the served icon"
+    );
+    for name in ["/favicon.svg", "/favicon.ico"] {
+        let served = harness::eval(
+            &tab,
+            &format!(
+                "fetch('{name}').then(r => r.status + ' ' + (r.headers.get('content-type') || ''))"
+            ),
+        );
+        assert_eq!(served, "200 image/svg+xml", "{label}: {name} is served");
+    }
+    let svg = harness::eval(&tab, "fetch('/favicon.svg').then(r => r.text())");
+    assert!(
+        svg.as_str()
+            .is_some_and(|s| s.starts_with("<svg") && s.contains("#2e7d55")),
+        "{label}: the monitor's green mark: {svg}"
+    );
+    // The classic rail keeps its own inline icon, unchanged.
+    if matches!(kind, Kind::V1) {
+        tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=classic"))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        let inline = harness::eval(
+            &tab,
+            "(document.querySelector('link[rel~=\"icon\"]') || { getAttribute: () => '' }).getAttribute('href')",
+        );
+        assert!(
+            inline
+                .as_str()
+                .is_some_and(|s| s.starts_with("data:image/svg+xml")),
+            "the classic rail keeps its inline icon: {inline}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_has_the_monitors_favicon_on_v1() {
+    app_shell_favicon(Kind::V1, 2990, "v1");
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_has_the_monitors_favicon_on_v2() {
+    app_shell_favicon(Kind::V2, 2991, "v2");
+}

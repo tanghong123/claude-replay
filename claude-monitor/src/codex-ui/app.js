@@ -45,6 +45,17 @@ for (const [id, icon, label] of [["themeBtn", "moon", "Toggle light and dark"], 
 const filterIcon = document.querySelector("#filterTranscriptBtn [data-icon]");
 if (filterIcon) filterIcon.innerHTML = svg("filterLines");
 document.querySelector(".brand small").textContent = `v${document.body.dataset.version || "dev"}`;
+// The tab's icon (#203). The extracted shell declares none — the demo is hand-written and stays
+// byte-identical — so once this shell became the default the browser's automatic /favicon.ico
+// request 404'd and the tab showed the document icon. The production layer points it at the
+// served SVG instead: the same green mark the classic rail inlines, from `ui::asset`.
+if (!document.querySelector('link[rel~="icon"]')) {
+  const icon = document.createElement("link");
+  icon.rel = "icon";
+  icon.type = "image/svg+xml";
+  icon.href = "/favicon.svg";
+  document.head.append(icon);
+}
 
 // The shell switch. Both frontends are supported while this one is being validated, so the way
 // back has to be a control a person can see — not a query parameter they have to remember. It
