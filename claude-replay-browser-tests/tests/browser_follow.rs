@@ -2578,6 +2578,93 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
 /// #212: what the engine believed on each side of the rail reflow — the mounted units around the
 /// viewport top, the engine's own last states and the reader's last actions. Dumped under
 /// `SCENARIO_TRACE`.
+/// #213: a transaction that lands before the engine has heard the reader's scroll puts them back
+/// at the tail, and the scroll is then lost entirely.
+///
+/// The engine releases follow in its SCROLL handler, so between the reader's wheel and the browser
+/// delivering that event it still believes they are at the tail and places there. The window is
+/// not theoretical: measured at the wheel's own clock on this machine, the handover is bimodal at
+/// about 5 ms or about a second (6, 4, 1018, 1019, 939, 7), and a session that is growing
+/// transacts on its own inside it.
+///
+/// This makes the window deterministic rather than waiting for a slow one: the wheel, the scroll
+/// and the thing that transacts all happen in ONE task, so the scroll event cannot have been
+/// classified when the transaction runs. Measured on the shell today, from the tail of a 60-turn
+/// session: the reader scrolls 2400px up to `process:b91` at offset 9963, the outline pane
+/// collapses, and 2.5 s later they are at `user:t59` with a gap of 0 — the tail — with every
+/// engine state still reading `follow` / `tail`. Their scroll did not merely fail to hold; by the
+/// time the event arrived the gap was 0, so it classified as "already following" and the 2400px
+/// they moved was never seen at all.
+///
+/// `known_red_213` until the engine stops acting on a follow flag the reader has already
+/// contradicted. The classic page runs the same engine and should get this case with the fix.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_known_red_213_holds_a_scroll_a_transaction_arrives_on_top_of() {
+    let _serial = serial();
+    let base = base("appshell-213-window");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000213".to_string();
+    stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2919, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0",
+        "the app shell to mount the fixture",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    // At rest at the tail, so the move below is the reader's first.
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    // One task: their wheel, their scroll, and the reflow they did not ask for. Nothing here waits,
+    // which is the point — a `settle()` between the scroll and the transaction hides the bug.
+    let moved = harness::probe(
+        &tab,
+        r#"(function(){
+            var s = document.querySelector('.transcript');
+            var top = s.getBoundingClientRect().top;
+            var at = function(){ for (var c of document.querySelector('.virtual-window').children) { var r = c.getBoundingClientRect(); if (r.bottom > top + 1) return c.dataset.unitKey; } return null; };
+            var was = at();
+            var want = Math.max(0, s.scrollTop - 2400);
+            s.dispatchEvent(new WheelEvent('wheel', { deltaY: -2400, bubbles: true }));
+            s.scrollTo({ top: want, behavior: 'instant' });
+            var now = at();
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', bubbles: true, cancelable: true }));
+            return { was: was, reader: now, top: Math.round(s.scrollTop) };
+        })()"#,
+    );
+    assert_ne!(
+        moved["reader"], moved["was"],
+        "the reader's 2400px landed before the transaction: {moved}"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    let after = harness::probe(
+        &tab,
+        r#"(function(){
+            var s = document.querySelector('.transcript');
+            var top = s.getBoundingClientRect().top;
+            var at = null;
+            for (var c of document.querySelector('.virtual-window').children) { var r = c.getBoundingClientRect(); if (r.bottom > top + 1) { at = c.dataset.unitKey; break; } }
+            var h = window.__viewportHistory;
+            var last = h && h.states.length ? h.states[h.states.length - 1] : null;
+            return { at: at, top: Math.round(s.scrollTop), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), following: last && last.following, position: last && last.position };
+        })()"#,
+    );
+    assert_eq!(
+        after["at"], moved["reader"],
+        "the reader is where their scroll put them, not where the transaction preferred: {moved} -> {after}"
+    );
+    assert_eq!(
+        after["following"], false,
+        "…and the engine has learned they left the tail: {after}"
+    );
+    drop(monitor);
+}
+
 /// The outline pane's measured width, the reference a reflow is waited on against (#212).
 const NAV_W: &str =
     "Math.round(document.querySelector('.session-navigator').getBoundingClientRect().width)";
