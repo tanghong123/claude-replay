@@ -415,6 +415,22 @@ pub(crate) fn tool_target(input: &Value, cwd: &str) -> String {
             return relativize(v, cwd);
         }
     }
+    // A tool that names SEVERAL files (`SendUserFile { files: [...] }`, #207): the first, and a
+    // count for the rest, like the questions lift above. Without this the header read
+    // `SendUserFile()` and the only place the delivered path appeared was the tool's own output
+    // prose — absolute, and not a path anything in the viewer could act on.
+    if let Some(files) = input.get("files").and_then(Value::as_array) {
+        let paths: Vec<&str> = files.iter().filter_map(Value::as_str).collect();
+        if let Some(first) = paths.first() {
+            let more = paths.len() - 1;
+            let first = relativize(first, cwd);
+            return if more > 0 {
+                format!("{first} +{more}")
+            } else {
+                first
+            };
+        }
+    }
     // A shell command keeps its line breaks — the header lays a multi-line command
     // out across rows (see `render::tool_header_lines`), matching Claude Code.
     if let Some(v) = input.get("command").and_then(|v| v.as_str()) {
@@ -4144,6 +4160,26 @@ mod tests {
             want,
             "parse_main golden matches the streaming engine on a mid-session cd"
         );
+    }
+
+    #[test]
+    /// #207: `SendUserFile` names the file it delivered — the first, `+n` for the rest — and the
+    /// path is relativized like every other path the viewer shows (the owner asked why the one
+    /// place it appeared, the tool's own output prose, printed it absolute).
+    #[test]
+    fn tool_target_names_the_files_a_tool_delivered() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let one = serde_json::json!({ "files": ["/w/video/tour.mp4"], "caption": "the tour", "status": "normal" });
+        assert_eq!(tool_target(&one, "/w"), "video/tour.mp4");
+        let two = serde_json::json!({ "files": ["/w/a.html", "/w/b.html"] });
+        assert_eq!(tool_target(&two, "/w"), "a.html +1");
+        // Outside the cwd it falls back to the home tilde, which is the ~/ the owner asked for.
+        if !home.is_empty() {
+            let away = serde_json::json!({ "files": [format!("{home}/code/demo/tour.mp4")] });
+            assert_eq!(tool_target(&away, "/w"), "~/code/demo/tour.mp4");
+        }
+        // An empty list is no target at all, not a crash.
+        assert_eq!(tool_target(&serde_json::json!({ "files": [] }), "/w"), "");
     }
 
     #[test]

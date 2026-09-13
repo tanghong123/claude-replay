@@ -9896,3 +9896,103 @@ fn app_shell_the_history_records_what_happened() {
     let page = open(Surface::AppShell, &fx, 2981);
     scenario_the_history_records_what_happened(&page.tab, Surface::AppShell, &fx);
 }
+
+/// #207: a file the agent DELIVERED is offered like any other path — the header names it,
+/// relativized, and carries the capability stamp a reveal needs. The owner asked for exactly
+/// this: "agent-replay should recognize it as a file path and handle it like any other file
+/// paths", and "I wonder why we did not shorten the path with ~/". Written once, run on both
+/// pages: the classic page renders the head's `path`/`sig` as a link, the app shell renders the
+/// same pair as its renderer target.
+fn scenario_a_delivered_file_is_offered_like_any_path(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    let js = match surface {
+        Surface::Classic => "(function(){ var a = [...document.querySelectorAll('#stream a[data-path]')].find(function (e) { return /tour\\.mp4$/.test(e.dataset.path || ''); }); if (!a) return null; return { text: a.textContent.trim(), path: a.dataset.path, sig: !!a.dataset.sig, title: a.title }; })()",
+        Surface::AppShell => "(function(){ var e = [...document.querySelectorAll('[data-reference-path]')].find(function (x) { return /tour\\.mp4$/.test(x.dataset.referencePath || ''); }); if (!e) return null; return { text: e.textContent.trim(), path: e.dataset.referencePath, sig: !!e.dataset.referenceSig, title: e.title }; })()",
+    };
+    until(
+        tab,
+        &format!("!!{js}"),
+        "the delivered file to be offered as a path",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let link = harness::probe(tab, js);
+    assert!(
+        link["text"]
+            .as_str()
+            .unwrap_or("")
+            .ends_with("video/tour.mp4"),
+        "{surface:?}: the header names the file it delivered: {link}"
+    );
+    assert!(
+        !link["text"].as_str().unwrap_or("").starts_with('/'),
+        "{surface:?}: …relativized, not the absolute path the tool printed: {link}"
+    );
+    assert!(
+        link["sig"].as_bool().unwrap_or(false),
+        "{surface:?}: …stamped, so the click can reach the reveal route: {link}"
+    );
+    // What the click DOES is the page's own choice — the classic page titles the link with the
+    // action and the path ("Reveal /…/tour.mp4"), the shell with the action alone ("Open in the
+    // preview pane"), because the render policy decides whether the bytes may be shown. Either
+    // way the reader is told before they click.
+    let title = link["title"].as_str().unwrap_or("").to_lowercase();
+    assert!(
+        title.contains("reveal") || title.contains("open") || title.contains("preview"),
+        "{surface:?}: …and the title says what the click will do: {link}"
+    );
+}
+
+/// A session that delivers a file: the call names it in `files`, the result is the tool's own
+/// prose. Written by hand — nothing here comes from a real session.
+fn delivered_file_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let dir = base.join("video");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("tour.mp4");
+    std::fs::write(&file, b"not really an mp4").unwrap();
+    let abs = file.to_string_lossy().to_string();
+    let cwd = base.to_string_lossy().to_string();
+    let mut jsonl = String::new();
+    jsonl += &format!(
+        "{{\"type\":\"user\",\"cwd\":\"{cwd}\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"send me the tour\"}}]}},\"timestamp\":\"{}\"}}\n",
+        harness::at("00:00")
+    );
+    jsonl += &format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"stop_reason\":\"tool_use\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"f1\",\"name\":\"SendUserFile\",\"input\":{{\"files\":[\"{abs}\"],\"caption\":\"the tour\",\"status\":\"normal\"}}}}]}},\"timestamp\":\"{}\"}}\n",
+        harness::at("00:01")
+    );
+    jsonl += &format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"f1\",\"content\":\"1 file delivered to user.\\n  {abs} → file_uuid: 11111111-2222-4333-8444-555555555555\"}}]}},\"timestamp\":\"{}\"}}\n",
+        harness::at("00:02")
+    );
+    jsonl += &long_session(8, Shape::default());
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture {
+        base,
+        path,
+        turns: 9,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_delivered_file_is_offered_like_any_path() {
+    let _serial = serial();
+    let fx = delivered_file_fixture("scenario-delivered-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_delivered_file_is_offered_like_any_path(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_delivered_file_is_offered_like_any_path() {
+    let _serial = serial();
+    let fx = delivered_file_fixture("scenario-delivered-app");
+    let page = open(Surface::AppShell, &fx, 2982);
+    scenario_a_delivered_file_is_offered_like_any_path(&page.tab, Surface::AppShell, &fx);
+}

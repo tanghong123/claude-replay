@@ -958,7 +958,12 @@ impl Emitter<'_> {
                 // local `/__reveal` endpoint. A `--dump-html` file is meant to be
                 // shared, and its absolute paths don't resolve on another machine,
                 // so its headers stay plain text.
-                if self.reveal && matches!(kind, "read" | "write" | "edit") && !target.is_empty() {
+                // …and so does a tool that DELIVERS a local file (#207: `SendUserFile` names the
+                // file it sent; its kind is the generic `tool`, but its target is a path on this
+                // machine and a reader wants the same reveal every other path offers).
+                let names_a_file =
+                    matches!(kind, "read" | "write" | "edit") || name == "SendUserFile";
+                if self.reveal && names_a_file && !target.is_empty() {
                     // #173: resolve against the block's OWN recorded cwd (running-current), not
                     // the session `first_cwd` — a mid-session `cd` moved it. Fall back to the
                     // session cwd when the block carries none.
@@ -4067,6 +4072,39 @@ mod tests {
         assert_eq!(out[0]["head"]["path"], json!("/repo/src/x.rs"));
         // Bash is a command, not a file — no path link.
         assert!(out[1]["head"].get("path").is_none(), "bash has no path");
+    }
+
+    /// #207: a tool that DELIVERED a file offers that file the way a read or a write does — the
+    /// owner asked for the delivered path to be "handled like any other file paths". Its kind is
+    /// the generic `tool`, so the link is keyed on the name; the stamp is the same one, and a
+    /// dump (shared elsewhere) still carries no local path.
+    #[test]
+    fn a_delivered_file_gets_the_same_reveal_link_as_a_read() {
+        let blocks = vec![
+            Block::ToolUse {
+                name: "SendUserFile".into(),
+                target: "video/tour.mp4".into(), // relative → resolved against cwd
+                diffs: vec![],
+                output: Some("1 file delivered to user.".into()),
+                patch: None,
+                read_lines: None,
+                cwd: String::new(),
+                execution: None,
+                published: None,
+            },
+            bash("ls -la", "out"),
+        ];
+        let out = stream(&blocks, &FoldPolicy::none()); // stream() uses reveal = true
+        assert_eq!(out[0]["head"]["path"], json!("/repo/video/tour.mp4"));
+        assert!(
+            out[0]["head"].get("sig").is_some(),
+            "…stamped for the reveal capability: {}",
+            out[0]["head"]
+        );
+        assert!(
+            out[1]["head"].get("path").is_none(),
+            "bash is still not a file"
+        );
     }
 
     #[test]
