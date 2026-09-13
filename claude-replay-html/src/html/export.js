@@ -1936,7 +1936,10 @@
     // an estimate applied, the pads corrected — leaves the sticky bar and the side list naming a
     // turn the reader is no longer on. Measured on the app shell, whose bar sat three turns
     // behind the engine's own belief until a one-pixel nudge repainted it.
-    afterTransaction() { spy(); }
+    // #209 deliberately does NOT spy at the boundary. The app shell repaints its bar there from the
+    // ENGINE's belief, which costs no layout read; this page's spy has only rects to measure, and
+    // forcing that flush at the boundary moved the reader — the classic turn-bar case went red on
+    // it. The spy stays on the scroll frame, where the reader's own motion is what it answers.
     afterScroll() {
       if (newCount && atBottom()) newCount = 0; // caught up by scrolling down
       // NOT inside the frame below: a background tab pauses `requestAnimationFrame`, and the

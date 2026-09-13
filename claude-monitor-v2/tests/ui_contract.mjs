@@ -717,10 +717,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /row\.setAttribute\("aria-current", "true"\)/, "…and aria-current");
   assert.match(appSource, /const next = Math\.max\(0, Math\.min\(turns\.length - 1, currentUserUnitIndex\(\) \+ delta\)\);/, "the keys step from the same rule");
   // #199: one rule for the bar, the pane and the keys — with the classic page's two spy rules.
-  assert.match(appSource, /function updateTurnBar\(\) \{\s*\n\s*const index = currentUserUnitIndex\(\);/, "the turn bar reads the shared rule");
+  assert.match(appSource, /function updateTurnBar\(atKey\) \{\s*\n\s*const index = currentUserUnitIndex\(atKey\);/, "the turn bar reads the shared rule (#209 gave it the engine's key for the transaction boundary)");
   assert.match(appSource, /const index = currentUserUnitIndex\(\);\s*\n\s*const unit = index >= 0 \? userUnits\(\)\[index\] : null;\s*\n\s*const key = unit \? String\(unit\.from\) : null;/, "…and so does the navigator pane");
   assert.match(appSource, /if \(units\.length && \(viewport\.following \|\| viewport\.gapToBottom\(\) <= viewport\.slacks\.hold\)\) \{\s*\n\s*let last = -1;\s*\n\s*for \(const unit of units\) if \(unit\.type === "user"\) last\+\+;/, "at the bottom the last turn is current (#89 on the classic page, #199 here)");
-  assert.match(appSource, /return currentTurnIndex\(units, unitAtTop\(\)\);/, "…and everywhere else the turn of the unit at the top");
+  assert.match(appSource, /return currentTurnIndex\(units, atKey === undefined \? unitAtTop\(\) : atKey\);/, "…and everywhere else the turn of the unit at the top, unless the engine named one (#209)");
   assert.match(appSource, /if \(child\.getBoundingClientRect\(\)\.top <= line\) key = child\.dataset\.unitKey;\s*\n\s*else break;/, "the unit at the top is the LAST one whose top is above the line — a unit spanning the viewport names itself");
   assert.match(appSource, /const line = viewport\.scroller\.getBoundingClientRect\(\)\.top \+ viewport\.landing \+ 8;/, "…and the line sits just below where a jump lands its target, so a clicked turn is the turn named");
   assert.match(appSource, /return key \?\? viewport\.window\.firstElementChild\?\.dataset\.unitKey \?\? null;/, "…and the first child stands in when nothing has scrolled past the line");
@@ -975,10 +975,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // a spy that ran there can hold a reading from a window the place then moved.
   const engineSource209 = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   assert.match(engineSource209, /afterTransaction\(\) \{\}/, "the engine offers the hook");
-  assert.match(engineSource209, /if \(!this\.queued\.length\) this\.afterTransaction\(\);/, "…called once the transaction is complete, and not between queued ones");
+  assert.match(engineSource209, /if \(!this\.queued\.length && !this\.inFlight\(\)\) this\.afterTransaction\(\);/, "…called once the transaction is complete, not between queued ones, and never while a smooth write travels");
+  assert.match(engineSource209, /this\.trace\("arrived"[\s\S]{0,400}?this\.afterTransaction\(\);/, "…and the arrival of that write calls it instead");
   assert.match(viewportSource, /afterTransaction\(\) \{ this\.actions\.afterTransaction\?\.\(\); \}/, "the shell's viewport forwards it");
-  assert.match(appSource, /afterTransaction: \(\) => \{ updateStickyHeaders\(\); updateOutlineFocus\(\); updateTurnBar\(\); \}/, "…and the shell repaints its three DOM spies there");
-  assert.match(classicExportSource, /afterTransaction\(\) \{ spy\(\); \}/, "the classic page runs its scrollspy there too");
+  assert.match(appSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) updateTurnBar\(p\.key\); \}/, "…and the shell repaints the bar from the ENGINE's belief");
+  assert.match(appSource, /return currentTurnIndex\(units, atKey === undefined \? unitAtTop\(\) : atKey\);/, "…which is what the key argument is for: no layout read at the boundary");
+  assert.doesNotMatch(classicExportSource, /afterTransaction\(\) \{/, "the classic page does NOT spy at the boundary — its spy measures rects, and forcing that flush there moved the reader");
   assert.match(css, /\.session-navigator\{overflow-anchor:none\}/, "scroll anchoring would fight a body that is changing height");
   assert.doesNotMatch(css, /\.navigator-list\{[^}]*overscroll-behavior:contain/, "the list never contains its overscroll — the wheel reaches the chain once the list is at its end");
   console.log("#58/#59/#74 outline pane cases passed");
@@ -1853,7 +1855,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   assert.match(appSource, /const on = !!unit && viewport\.scroller\.scrollTop > 8;/, "off only at the very top, where the turn names itself");
   assert.match(appSource, /turnStickyText\.textContent = `Turn \$\{unit\.turn\} — \$\{unit\.label \|\| ""\}`\.trimEnd\(\);/, "…and reads 'Turn N — label', the classic page's own words");
-  assert.match(appSource, /const index = currentUserUnitIndex\(\);\s*\n\s*const unit = index >= 0 \? userUnits\(\)\[index\] : null;\s*\n\s*\/\/ Off at the very top/, "fed by the same current-turn rule the outline pane and the keys use (#199)");
+  assert.match(appSource, /const index = currentUserUnitIndex\(atKey\);\s*\n\s*const unit = index >= 0 \? userUnits\(\)\[index\] : null;\s*\n\s*\/\/ Off at the very top/, "fed by the same current-turn rule the outline pane and the keys use (#199), with the engine's key when the transaction boundary gives one (#209)");
   assert.match(appSource, /turnStickyBar\.onclick = \(\) => \{ if \(turnStickyAt != null\) viewport\.jumpToRecord\(turnStickyAt, "turn"\); \};/, "a click returns to that turn's record");
   assert.match(appSource, /updateStickyHeaders\(\); updateOutlineFocus\(\); updateTurnBar\(\);/, "…and it is refreshed on every scroll");
   assert.match(productionCss, /\.transcript\{scroll-padding-top:52px\}/, "the scroller declares the bar's height");

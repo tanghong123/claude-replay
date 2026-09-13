@@ -150,10 +150,12 @@ sessionCopyMenu.addEventListener("click", async event => {
 
 const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, {
   afterRender: () => { applyFilters(); markSearch(); paintCodeBars(); updateStickyHeaders(); updateOutlineFocus(); updateTurnBar(); },
-  // The window is where it will stay (#209): repaint the spies that read the DOM. `afterRender`
-  // fires BEFORE the transaction's placement, so a spy that ran there can hold a reading from a
-  // window the place then moved — the turn bar sat three turns behind the engine's own belief.
-  afterTransaction: () => { updateStickyHeaders(); updateOutlineFocus(); updateTurnBar(); },
+  // The window is where it will stay (#209): repaint the bar from the engine's OWN belief of where
+  // the reader is. `afterRender` fires before the transaction's placement, so a bar painted there
+  // can name a window the place has since moved — measured at three turns behind, until a
+  // one-pixel nudge put it right. The key costs no layout read; reading the DOM here does, and
+  // that forced flush moved the reader (the smooth-step case's record went 190px).
+  afterTransaction: () => { const p = viewport.position; if (p && p.key) updateTurnBar(p.key); },
   afterScroll: () => {
     updateStickyHeaders(); updateOutlineFocus(); updateTurnBar();
     // The reader moved themselves: wherever a jump last landed them is no longer where they
@@ -2016,22 +2018,24 @@ function recordIndexAtTop() {
 // following, so "at the bottom" here is the same 80px it is for the tail.
 // (Counted inline rather than through `userUnits`: the first render runs while this module is
 // still being evaluated, and that `const` is declared further down — a temporal dead zone.)
-function currentUserUnitIndex() {
+function currentUserUnitIndex(atKey) {
   const units = recordState.units;
   if (units.length && (viewport.following || viewport.gapToBottom() <= viewport.slacks.hold)) {
     let last = -1;
     for (const unit of units) if (unit.type === "user") last++;
     if (last >= 0) return last;
   }
-  return currentTurnIndex(units, unitAtTop());
+  // `atKey` given: the engine's own belief of where the reader is (#209), which costs no layout
+  // read — the rule below scans the mounted rects.
+  return currentTurnIndex(units, atKey === undefined ? unitAtTop() : atKey);
 }
 // The pane follows the transcript (#52): the outline row of the turn at the viewport top is the
 // current one — marked (`current`, `aria-current`) on every scroll and render, and revealed in
 // the pane's OWN scroller (never the transcript's), only when the current row changes, so the
 // spy never fights the reader. The click direction — a row jumps the transcript to its turn —
 // lands that turn at the top, so the spy then names the row that was clicked.
-function updateTurnBar() {
-  const index = currentUserUnitIndex();
+function updateTurnBar(atKey) {
+  const index = currentUserUnitIndex(atKey);
   const unit = index >= 0 ? userUnits()[index] : null;
   // Off at the very top of the first turn — nothing has scrolled past, so the turn is on
   // screen naming itself. Anywhere else it names the turn the reader is inside, including

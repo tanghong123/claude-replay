@@ -805,6 +805,9 @@ class VirtualWindow {
       this.trace("arrived", { top: Math.round(top) });
       if (!this.viewportMounted()) this.updateWindow();
       this.scheduleRemember();
+      // The window is where it will stay now (#209): the spies a transaction could not repaint
+      // while this write travelled get their turn.
+      this.afterTransaction();
     }
     return true;
   }
@@ -1282,7 +1285,10 @@ class VirtualWindow {
     // read a window that no longer exists; nothing then repainted it, and the app shell's turn bar
     // sat three turns behind the engine's own belief until the next scroll. A one-pixel nudge put
     // it right, which is what proved the value stale rather than wrong.
-    if (!this.queued.length) this.afterTransaction();
+    // …but never while a smooth write is still travelling: the spy reads layout, and forcing that
+    // read mid-animation disturbs the very write the transaction issued (measured: the smooth-step
+    // case's record under the reader moved 190px). The arrival calls it instead.
+    if (!this.queued.length && !this.inFlight()) this.afterTransaction();
     if (this.queued.length) { const [next, opts] = this.queued.shift(); this.transact(next, opts); }
     return true;
   }
