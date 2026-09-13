@@ -43,11 +43,62 @@ function displayState(row) {
   return { state, reason, label: REASON_LABELS[reason] || STATE_LABELS[state] || reason };
 }
 
-/** Whether the row needs a person: a wait state, or a reason that ended the agent's own work. */
-function needsPerson(row) {
+/**
+ * The three buckets a reader sorts the list by (#202) — a PARTITION of the tracker's vocabulary,
+ * every row in exactly one, keyed by the reason the row displays (a `wait` state always carries
+ * a wait reason, so the reason decides; the state is the fallback for a reason this table has
+ * never heard of):
+ *
+ *   active  — busy: more progress is coming without anyone — thinking, running a tool, starting,
+ *             a queued prompt about to run;
+ *   blocked — nothing more happens until a person acts: a WAIT state (a modal — permission, a
+ *             question dialog, plan approval), or an idle reason that cut the agent's own work
+ *             short — a turn that ended with a question, a failure, a stall, an exit mid-work;
+ *   idle    — finished with nothing owed: the turn ended with an answer (`done`), or the process
+ *             is gone (`exited`).
+ *
+ * "Needs attention" IS the blocked bucket — `needsPerson` below is that test and nothing else.
+ * A session whose turn simply ended is idle even though its agent now waits for the next
+ * prompt: that is the reader's move, not the agent's need, and `denoteState` marks such a row
+ * "New result" until the reader opens it. The monitor's `every_tracker_reason_has_a_label` test
+ * holds this table to the Rust enum as it holds the labels.
+ */
+const REASON_BUCKETS = {
+  permission: "blocked",
+  question: "blocked",
+  "plan-approval": "blocked",
+  "ended-question": "blocked",
+  error: "blocked",
+  stalled: "blocked",
+  "exited-mid-work": "blocked",
+  "queued-prompt": "active",
+  thinking: "active",
+  tool: "active",
+  starting: "active",
+  done: "idle",
+  exited: "idle"
+};
+
+/** The bucket names, in the order a filter lists them. */
+const BUCKETS = ["active", "blocked", "idle"];
+
+/** Which bucket the row is in: `active`, `blocked` or `idle`. */
+function sessionBucket(row) {
   const s = displayState(row);
-  return s.state === "wait" || ["question", "ended-question", "error", "stalled", "exited-mid-work", "permission", "plan-approval"].includes(s.reason);
+  return REASON_BUCKETS[s.reason] || (s.state === "busy" ? "active" : s.state === "wait" ? "blocked" : "idle");
 }
+
+/** Whether the row needs a person — the blocked bucket, by the one definition above. */
+function needsPerson(row) {
+  return sessionBucket(row) === "blocked";
+}
+
+/**
+ * What the attention filter selects, in the words of the predicate — the ONE text both of the
+ * app shell's tooltips show (the nav button's and the collapsed rail's), so the control says
+ * exactly what `needsPerson` tests.
+ */
+const BLOCKED_SUMMARY = "Blocked sessions — waiting on you for a permission, an answer or a plan approval, or stopped short by a failure, a stall or an exit mid-work";
 
 /**
  * The marker a session row carries — `{ label, tone }` — or null when there is nothing to
@@ -85,4 +136,4 @@ function stateTip(row) {
   return tip;
 }
 
-export { STATE_LABELS, REASON_LABELS, REASONS, displayState, needsPerson, denoteState, stateTip };
+export { STATE_LABELS, REASON_LABELS, REASONS, REASON_BUCKETS, BUCKETS, BLOCKED_SUMMARY, displayState, sessionBucket, needsPerson, denoteState, stateTip };

@@ -686,3 +686,19 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 /* The popover holds one section now, so the section's own top spacing would double the
    popover's padding. */
 .reading-options .reading-section > .scope-menu-head:first-child { margin-top: 0; }
+
+
+/* The session filter (#202): the glyph on the sidebar's toolbar row, lit while the bucket set
+   leaves something out, with "shown/total" beside its label; its sheet of checkboxes sits under
+   the nav, over the top of the tree, in the shared popover chrome (`.navigator-options`). */
+.nav{position:relative}
+.navbtn.session-filter .count{margin-left:auto;font:10.5px var(--mono);color:var(--faint)}
+.navbtn.session-filter.on{background:var(--primary-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 55%,transparent);color:var(--primary)}
+.navbtn.session-filter.on .label{font-weight:600}
+.navbtn.session-filter.on .count{color:var(--primary)}
+.navbtn.session-filter.open{background:var(--hover)}
+.sidebar-mini-button.filter-mini.on{color:var(--primary)}
+.session-filter-options{display:block;position:absolute;left:12px;right:12px;top:100%;width:auto;z-index:48;margin:0;padding:10px 12px 12px}
+.session-filter-options[hidden]{display:none}
+.session-filter-options .scope-option{grid-template-columns:18px minmax(0,1fr) auto}
+.session-filter-options .scope-count{color:var(--faint);font:10px var(--mono)}

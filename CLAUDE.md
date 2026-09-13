@@ -32,6 +32,14 @@ page (v1's rail, v2's splice shell). A button in each switches and REMEMBERS the
 `<state_dir>/ui.json`, shared by both binaries; `?ui=classic` / `?ui=app` override for one
 request without disturbing it, which is what makes side-by-side comparison possible. The classic
 page is not deprecated — it goes when the app shell has been validated, and not before.
+**Sessions sort into three buckets** (#202, `design/agent-states.md` §10): active (busy),
+blocked (a wait, or an idle reason that cut the work short — this is what "needs attention"
+means and counts) and idle (`done`, `exited`); `sessionBucket` in `shared/state-labels.js` is
+the one definition, held to the tracker's enum by a test, and a turn that ended with an answer
+is idle, not blocked. The app shell's session filter (the glyph on the sidebar's toolbar row:
+All / Active / Blocked / Idle / Include hidden, remembered, never an empty set) is that
+partition; "Needs attention" is the same set at {blocked}; the classic rail keeps its
+All / Active / Idle pills on the legacy `state`.
 
 `src/codex-ui/{reference.css,reference-shell.html,icons.js}` are **generated**, extracted
 byte-for-byte from `design/agent-monitor-codex-demo.html` by

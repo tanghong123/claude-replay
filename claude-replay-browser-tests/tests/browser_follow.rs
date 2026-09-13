@@ -5994,3 +5994,448 @@ fn the_app_shell_has_the_monitors_favicon_on_v1() {
 fn the_app_shell_has_the_monitors_favicon_on_v2() {
     app_shell_favicon(Kind::V2, 2991, "v2");
 }
+
+// ── #202: the blocked count and the three buckets ────────────────────────────────────────
+
+/// The bucket world's session ids (#202), one per tracker state; the last character is the
+/// key a case reads them back by.
+const BUCKET_Q: &str = "eeeeeeee-0000-4000-8000-000000000001"; // wait · question
+const BUCKET_E: &str = "eeeeeeee-0000-4000-8000-000000000002"; // idle · ended-question
+const BUCKET_M: &str = "eeeeeeee-0000-4000-8000-000000000003"; // idle · exited-mid-work
+const BUCKET_D: &str = "eeeeeeee-0000-4000-8000-000000000004"; // idle · exited
+const BUCKET_A: &str = "eeeeeeee-0000-4000-8000-000000000005"; // busy
+
+/// A hermetic world with one session in each state the buckets sort by (#202): `q` waits on
+/// an open AskUserQuestion under a live agent process (wait · question), `e` ended its turn
+/// with a question under a live process (idle · ended-question), `m` has a Bash call open and
+/// no process (idle · exited-mid-work), `d` finished with an answer and no process (idle ·
+/// exited), `a` grows under a live process (busy). The "live agent process" is a shell whose
+/// argv[0] is `claude` and whose argv carries the session id — what the monitor's probe links
+/// a row to (`link`, rule 1) — sleeping, holding the transcript open on stdin (rule 2), and
+/// reaped with the world.
+struct BucketWorld {
+    stores: Stores,
+    _agents: Vec<harness::Reap>,
+    _growth: harness::LiveGrowth,
+}
+
+fn fake_agent(sid: &str, transcript: &std::path::Path) -> harness::Reap {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.arg0("claude")
+        .args(["-c", "while :; do sleep 1; done", "claude", "--resume", sid])
+        .stdin(std::fs::File::open(transcript).unwrap())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    harness::Reap(cmd.spawn().expect("a fake agent process (/bin/sh)"))
+}
+
+fn bucket_world(base: &std::path::Path) -> BucketWorld {
+    let stores = Stores::new(base);
+    let t = |i: u32| format!("2026-09-13T10:00:{i:02}Z");
+    let q = stores.claude_session(
+        BUCKET_Q,
+        &format!(
+            "{}{}",
+            harness::user_at("pick a colour", &t(0)),
+            harness::pending_call_at(
+                "toolu_q",
+                "AskUserQuestion",
+                "{\"questions\":[{\"question\":\"Which colour?\"}]}",
+                &t(1)
+            )
+        ),
+    );
+    let e = stores.claude_session(
+        BUCKET_E,
+        &format!(
+            "{}{}",
+            harness::user_at("pick a colour", &t(0)),
+            harness::history::assistant_phased_at("Blue or green, which do you want?", &t(1), true)
+        ),
+    );
+    stores.claude_session(
+        BUCKET_M,
+        &format!(
+            "{}{}",
+            harness::user_at("build it", &t(0)),
+            harness::tool_open_at("toolu_m", &t(1))
+        ),
+    );
+    stores.claude_session(
+        BUCKET_D,
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    let a = stores.claude_session(
+        BUCKET_A,
+        &format!(
+            "{}{}",
+            harness::user_at("keep going", &t(0)),
+            harness::history::assistant_phased_at("On it.", &t(1), false)
+        ),
+    );
+    let agents = vec![
+        fake_agent(BUCKET_Q, &q),
+        fake_agent(BUCKET_E, &e),
+        fake_agent(BUCKET_A, &a),
+    ];
+    let script: Vec<String> = (0..600)
+        .map(|i| {
+            format!(
+                "{}{}",
+                harness::tool_open_at(&format!("toolu_a{i}"), &t(2)),
+                harness::tool_result_at(&format!("toolu_a{i}"), &t(2))
+            )
+        })
+        .collect();
+    let growth = harness::LiveGrowth::start(a, script, Duration::from_millis(400));
+    BucketWorld {
+        stores,
+        _agents: agents,
+        _growth: growth,
+    }
+}
+
+/// The rows' tracker verdicts as the shell's poll sees them: `{ <last id char>: [agentState,
+/// stateReason, has pid] }`.
+const BUCKET_STATES_JS: &str = "fetch('/api/sessions', {cache: 'no-store'}).then(function (r) { return r.json(); }).then(function (j) { var out = {}; (j.groups || []).forEach(function (g) { (g.rows || []).forEach(function (r) { out[String(r.id).slice(-1)] = [r.agentState, r.stateReason, r.pid || null, r.conf || null, r.state, r.stateDetail || null, r.stateConfidence || null]; }); }); return out; })";
+
+/// The session ids in the tree, by their last character, sorted.
+const BUCKET_TREE_JS: &str = "Array.from(document.querySelectorAll('.tree-row.session[data-session]')).map(function (e) { return e.dataset.session.slice(-1); }).sort().join('')";
+
+/// #202: the attention count is the number of BLOCKED rows — a wait, or an idle reason that
+/// cut the agent's work short — and a session whose turn ended with an answer is not in it.
+/// Against the bucket world the count reads 3 (the open question, the turn ended with a
+/// question, the exit mid-work), never the finished or the growing session; the attention
+/// filter shows exactly those three; and the tooltip is the predicate's own sentence.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_counts_the_blocked_sessions() {
+    let _serial = serial();
+    let base = base("appshell-buckets");
+    let world = bucket_world(&base);
+    let monitor = Monitor::spawn(Kind::V2, 2916, &base, Some(&world.stores), false);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    tab.navigate_to("http://127.0.0.1:2916/?ui=app").unwrap();
+    tab.wait_until_navigated().unwrap();
+    // A wait publishes at once, an ended turn after one stable tick, the process probe runs
+    // every 10 s and the shell polls every 5 s: wait for every verdict to settle, not only
+    // for the count — a count of 3 reached through the wrong rows would pass by luck.
+    let expected = |v: &serde_json::Value| {
+        let st = |k: &str| {
+            (
+                v[k][0].as_str().unwrap_or(""),
+                v[k][1].as_str().unwrap_or(""),
+            )
+        };
+        st("1") == ("wait", "question")
+            && st("2") == ("idle", "ended-question")
+            && st("3") == ("idle", "exited-mid-work")
+            && st("4") == ("idle", "exited")
+            && st("5").0 == "busy"
+    };
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut count = -1;
+    let mut states = serde_json::Value::Null;
+    while Instant::now() < deadline {
+        count = eval(
+            &tab,
+            "Number(document.getElementById('attentionCount').textContent)",
+            false,
+        )
+        .as_i64()
+        .unwrap_or(-1);
+        states = eval(&tab, BUCKET_STATES_JS, true);
+        if count == 3 && expected(&states) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1000));
+    }
+    let st = |k: &str| {
+        (
+            states[k][0].as_str().unwrap_or("").to_string(),
+            states[k][1].as_str().unwrap_or("").to_string(),
+        )
+    };
+    assert_eq!(
+        count, 3,
+        "three blocked rows — q (wait · question), e (idle · ended-question), m (idle · exited-mid-work) — and neither the finished nor the growing one; the rows' verdicts [agentState, stateReason, pid, conf, state, detail, confidence]: {states}"
+    );
+    assert_eq!(st("1"), ("wait".into(), "question".into()), "q: {states}");
+    assert_eq!(
+        st("2"),
+        ("idle".into(), "ended-question".into()),
+        "e: {states}"
+    );
+    assert_eq!(
+        st("3"),
+        ("idle".into(), "exited-mid-work".into()),
+        "m: {states}"
+    );
+    assert_eq!(st("4"), ("idle".into(), "exited".into()), "d: {states}");
+    assert_eq!(st("5").0, "busy", "a grows under a live process: {states}");
+    // The attention filter keeps exactly the blocked rows, and releases them.
+    let all = eval(&tab, BUCKET_TREE_JS, false);
+    eval(
+        &tab,
+        "(function () { document.getElementById('attentionBtn').click(); return 'ok'; })()",
+        false,
+    );
+    let blocked = eval(&tab, BUCKET_TREE_JS, false);
+    eval(
+        &tab,
+        "(function () { document.getElementById('attentionBtn').click(); return 'ok'; })()",
+        false,
+    );
+    let released = eval(&tab, BUCKET_TREE_JS, false);
+    let tips = eval(
+        &tab,
+        "[document.getElementById('attentionTooltip').textContent, document.getElementById('sidebarMiniAttentionTooltip').textContent]",
+        false,
+    );
+    drop(monitor);
+    drop(world);
+    assert_eq!(all.as_str(), Some("12345"), "every row before the filter");
+    assert_eq!(
+        blocked.as_str(),
+        Some("123"),
+        "the attention filter shows the blocked rows and only them"
+    );
+    assert_eq!(released.as_str(), Some("12345"), "and releases them");
+    let nav = tips[0].as_str().unwrap_or("");
+    let mini = tips[1].as_str().unwrap_or("");
+    assert!(
+        nav.starts_with("Blocked sessions")
+            && nav.contains("plan approval")
+            && nav.contains("exit mid-work"),
+        "the nav tooltip is the predicate's sentence: {nav}"
+    );
+    assert_eq!(
+        mini,
+        format!("{nav} · 3"),
+        "the rail's tooltip is the same sentence with the count"
+    );
+}
+
+/// The filter sheet as the reader sees it: each checkbox's `aria-checked` and count, whether
+/// the sheet is open, the glyph's lit state and its shown/total, the attention button's press.
+const BUCKET_SHEET_JS: &str = "(function () { var s = document.getElementById('sessionFilter'); if (!s) return null; var o = {}; s.querySelectorAll('[data-bucket],[data-include-hidden]').forEach(function (b) { o[b.dataset.bucket || 'hidden'] = [b.getAttribute('aria-checked'), (b.querySelector('.scope-count') || {}).textContent]; }); o.open = !s.hidden; o.lit = document.getElementById('filterBtn').classList.contains('on'); o.count = document.getElementById('filterCount').textContent; o.attention = document.getElementById('attentionBtn').getAttribute('aria-pressed'); return o; })()";
+
+/// #202: the session filter on the app shell — the glyph on the toolbar row opens a sheet of
+/// checkboxes (All, Active, Blocked, Idle, Include hidden) whose counts are the buckets' and
+/// whose every click the tree follows: a bucket unchecked leaves the tree, the last one
+/// unchecked puts every bucket back (a set is never empty), All restores everything, the
+/// attention button is the set at {blocked} and both paint from it, the choice survives a
+/// reload, Include hidden shows a hidden row dimmed, and Escape closes the sheet.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_filters_the_sessions_by_bucket() {
+    let _serial = serial();
+    let base = base("appshell-filter");
+    let world = bucket_world(&base);
+    let monitor = Monitor::spawn(Kind::V2, 2917, &base, Some(&world.stores), false);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    tab.navigate_to("http://127.0.0.1:2917/?ui=app").unwrap();
+    tab.wait_until_navigated().unwrap();
+    let settled = |v: &serde_json::Value| {
+        let st = |k: &str| {
+            (
+                v[k][0].as_str().unwrap_or(""),
+                v[k][1].as_str().unwrap_or(""),
+            )
+        };
+        st("1") == ("wait", "question")
+            && st("2") == ("idle", "ended-question")
+            && st("3") == ("idle", "exited-mid-work")
+            && st("4") == ("idle", "exited")
+            && st("5").0 == "busy"
+    };
+    // The sheet's counts are the SHELL's rows (its 5 s poll), the verdict fetch is the API's:
+    // settle on both, or the sheet is read a poll behind the world.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut states = serde_json::Value::Null;
+    let mut counts = serde_json::Value::Null;
+    while Instant::now() < deadline {
+        states = eval(&tab, BUCKET_STATES_JS, true);
+        counts = eval(&tab, BUCKET_SHEET_JS, false);
+        let tree = eval(&tab, BUCKET_TREE_JS, false);
+        let by = |k: &str| counts[k][1].as_str().unwrap_or("");
+        if settled(&states)
+            && tree.as_str() == Some("12345")
+            && (by("active"), by("blocked"), by("idle")) == ("1", "3", "1")
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1000));
+    }
+    assert!(
+        settled(&states),
+        "the world settled into its five verdicts: {states}"
+    );
+    assert_eq!(
+        (
+            counts["active"][1].as_str(),
+            counts["blocked"][1].as_str(),
+            counts["idle"][1].as_str()
+        ),
+        (Some("1"), Some("3"), Some("1")),
+        "the shell's rows carry the verdicts: {counts}"
+    );
+    let click = |sel: &str| {
+        let r = eval(
+            &tab,
+            &format!("(function () {{ var el = document.querySelector('{sel}'); if (!el) return 'missing'; el.click(); return 'ok'; }})()"),
+            false,
+        );
+        assert_eq!(r.as_str(), Some("ok"), "clicked {sel}");
+    };
+    let tree = || {
+        eval(&tab, BUCKET_TREE_JS, false)
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    };
+    let sheet = || eval(&tab, BUCKET_SHEET_JS, false);
+    let checked = |s: &serde_json::Value, k: &str| s[k][0].as_str().unwrap_or("").to_string();
+    let count_of = |s: &serde_json::Value, k: &str| s[k][1].as_str().unwrap_or("").to_string();
+    // 1. Closed at first; the glyph opens it; the counts are the buckets' over the five rows.
+    let s0 = sheet();
+    assert_eq!(s0["open"], false, "the sheet starts closed: {s0}");
+    assert_eq!(s0["lit"], false, "nothing filtered at first: {s0}");
+    click("#filterBtn");
+    let s1 = sheet();
+    assert_eq!(s1["open"], true, "the glyph opens the sheet: {s1}");
+    assert_eq!(
+        (checked(&s1, "all"), count_of(&s1, "all")),
+        ("true".into(), "5".into()),
+        "All is checked and counts every row: {s1}"
+    );
+    assert_eq!(count_of(&s1, "active"), "1", "one active row: {s1}");
+    assert_eq!(count_of(&s1, "blocked"), "3", "three blocked rows: {s1}");
+    assert_eq!(count_of(&s1, "idle"), "1", "one idle row: {s1}");
+    assert_eq!(count_of(&s1, "hidden"), "0", "nothing hidden: {s1}");
+    // 2. Unchecking narrows the tree; unchecking the last bucket puts every bucket back.
+    click("#sessionFilter [data-bucket=\"blocked\"]");
+    assert_eq!(
+        tree(),
+        "45",
+        "without the blocked bucket the tree holds the idle and the active row"
+    );
+    let s2 = sheet();
+    assert_eq!(
+        checked(&s2, "all"),
+        "false",
+        "All unchecks when a bucket leaves: {s2}"
+    );
+    assert_eq!(s2["lit"], true, "the glyph is lit while filtered: {s2}");
+    assert_eq!(s2["count"], "2/5", "the glyph counts shown of total: {s2}");
+    click("#sessionFilter [data-bucket=\"idle\"]");
+    assert_eq!(tree(), "5", "active alone");
+    click("#sessionFilter [data-bucket=\"active\"]");
+    assert_eq!(
+        tree(),
+        "12345",
+        "unchecking the last bucket puts every bucket back"
+    );
+    let s3 = sheet();
+    assert_eq!(
+        checked(&s3, "all"),
+        "true",
+        "…and All is checked again: {s3}"
+    );
+    assert_eq!(s3["lit"], false, "…and the glyph is not lit: {s3}");
+    // 3. Blocked alone is the attention button, and the attention button is Blocked alone.
+    click("#sessionFilter [data-bucket=\"active\"]");
+    click("#sessionFilter [data-bucket=\"idle\"]");
+    assert_eq!(tree(), "123", "blocked alone");
+    assert_eq!(
+        sheet()["attention"],
+        "true",
+        "…is the attention button pressed"
+    );
+    click("#attentionBtn");
+    assert_eq!(
+        tree(),
+        "12345",
+        "the pressed attention button releases every bucket"
+    );
+    assert_eq!(sheet()["attention"], "false");
+    click("#attentionBtn");
+    assert_eq!(tree(), "123", "…and presses back to the blocked bucket");
+    let s4 = sheet();
+    assert_eq!(
+        (
+            checked(&s4, "blocked"),
+            checked(&s4, "active"),
+            checked(&s4, "idle")
+        ),
+        ("true".into(), "false".into(), "false".into()),
+        "the sheet shows the attention button's set: {s4}"
+    );
+    // 4. The choice survives a reload (the sheet does not stay open).
+    tab.navigate_to("http://127.0.0.1:2917/?ui=app").unwrap();
+    tab.wait_until_navigated().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline && tree() != "123" {
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert_eq!(
+        tree(),
+        "123",
+        "the remembered set filters the tree after a reload"
+    );
+    let s5 = sheet();
+    assert_eq!(
+        s5["open"], false,
+        "the sheet is closed after a reload: {s5}"
+    );
+    assert_eq!(
+        s5["attention"], "true",
+        "…and the attention button is pressed: {s5}"
+    );
+    // 5. Everything, then a hidden row and Include hidden.
+    click("#filterBtn");
+    click("#sessionFilter [data-filter-reset]");
+    assert_eq!(tree(), "12345", "the reset action restores every bucket");
+    click(&format!(
+        "[data-session=\"{BUCKET_D}\"] [data-ignore-op=\"add\"]"
+    ));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline && tree() != "1235" {
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert_eq!(tree(), "1235", "the hidden row left the tree");
+    let s6 = sheet();
+    assert_eq!(
+        count_of(&s6, "hidden"),
+        "1",
+        "Include hidden counts it: {s6}"
+    );
+    assert_eq!(
+        count_of(&s6, "all"),
+        "4",
+        "…and All counts the rows in view: {s6}"
+    );
+    click("#sessionFilter [data-include-hidden]");
+    assert_eq!(tree(), "12345", "Include hidden brings it back");
+    let dimmed = eval(
+        &tab,
+        &format!("document.querySelector('[data-session=\"{BUCKET_D}\"]').classList.contains('is-hidden')"),
+        false,
+    );
+    assert_eq!(dimmed, true, "…dimmed");
+    assert_eq!(checked(&sheet(), "hidden"), "true");
+    click("#sessionFilter [data-include-hidden]");
+    assert_eq!(tree(), "1235", "…and unchecking hides it again");
+    // 6. Escape closes the sheet.
+    eval(
+        &tab,
+        "(function () { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return 'ok'; })()",
+        false,
+    );
+    assert_eq!(sheet()["open"], false, "Escape closes the sheet");
+    drop(monitor);
+    drop(world);
+}

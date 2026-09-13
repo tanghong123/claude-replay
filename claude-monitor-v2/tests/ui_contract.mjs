@@ -24,7 +24,7 @@ import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, ta
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
-import { REASONS, denoteState, displayState, needsPerson, stateTip } from "../../claude-replay-html/src/html/shared/state-labels.js";
+import { BLOCKED_SUMMARY, BUCKETS, REASONS, REASON_BUCKETS, denoteState, displayState, needsPerson, sessionBucket, stateTip } from "../../claude-replay-html/src/html/shared/state-labels.js";
 import { composeCapability, composeCopy, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "../../claude-replay-html/src/html/shared/record-stream.js";
 import { applyViewChoices, parseViewMemory, serializeViewMemory, viewChoices, viewMemoryKey } from "../../claude-monitor/src/codex-ui/view-memory.js";
@@ -452,6 +452,50 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const spliceSrc = readFileSync(new URL("../src/shell.html", import.meta.url), "utf8");
   assert.match(spliceSrc, /__shared\.stateTip\(/, "the splice's tooltip is the shared one");
   console.log("seam (f) cases passed");
+}
+
+// #202: the three buckets — active / blocked / idle — are a PARTITION of the tracker's
+// vocabulary, "needs attention" is the blocked bucket by one definition, the tree filters by
+// bucket, and the control's words are the predicate's.
+{
+  for (const reason of REASONS) {
+    const bucket = REASON_BUCKETS[reason];
+    assert.ok(BUCKETS.includes(bucket), `${reason} is in exactly one bucket (${bucket})`);
+    assert.equal(sessionBucket({ agentState: "idle", stateReason: reason }), bucket, `${reason} sorts by its reason`);
+    assert.equal(needsPerson({ agentState: "idle", stateReason: reason }), bucket === "blocked", `${reason}: needs attention iff blocked`);
+  }
+  assert.deepEqual(REASONS.filter(r => REASON_BUCKETS[r] === "blocked").sort(), ["ended-question", "error", "exited-mid-work", "permission", "plan-approval", "question", "stalled"], "blocked = the wait reasons and the idle reasons that cut the agent's work short");
+  assert.deepEqual(REASONS.filter(r => REASON_BUCKETS[r] === "idle").sort(), ["done", "exited"], "idle = finished with nothing owed — a turn that ended with an answer is idle, not blocked");
+  assert.deepEqual(REASONS.filter(r => REASON_BUCKETS[r] === "active").sort(), ["queued-prompt", "starting", "thinking", "tool"], "active = busy");
+  assert.equal(sessionBucket({ agentState: "wait", stateReason: "never-heard-of" }), "blocked", "an unknown wait reason still blocks");
+  assert.equal(sessionBucket({ agentState: "busy", stateReason: "never-heard-of" }), "active");
+  assert.equal(sessionBucket({ state: "growing" }), "active", "legacy growing is active");
+  assert.equal(sessionBucket({ state: "finished" }), "idle", "legacy finished is idle");
+  assert.equal(sessionBucket({ state: "idle" }), "idle");
+  const rows = [{ id: "b", agentState: "wait", stateReason: "question" }, { id: "a", agentState: "busy", stateReason: "tool" }, { id: "i", agentState: "idle", stateReason: "done" }];
+  const agents = groupSessions([{ label: "p", rows }]);
+  const ids = tree => tree.flatMap(a => a.projects.flatMap(p => p.rows.map(r => r.id)));
+  assert.deepEqual(ids(visibleTree(agents, { buckets: new Set(["blocked"]), bucketOf: sessionBucket })), ["b"], "the blocked bucket alone");
+  assert.deepEqual(ids(visibleTree(agents, { buckets: new Set(["active", "idle"]), bucketOf: sessionBucket })), ["a", "i"], "two buckets");
+  assert.deepEqual(ids(visibleTree(agents, { buckets: null, bucketOf: sessionBucket })), ["b", "a", "i"], "no bucket set means every row");
+  assert.deepEqual(ids(visibleTree(agents, { buckets: new Set(), bucketOf: sessionBucket })), [], "an empty set shows nothing — a control never offers it");
+  assert.deepEqual(ids(visibleTree(agents, { attention: true, needs: needsPerson })), ["b"], "the attention filter is the blocked bucket");
+  assert.match(appSource, /byId\("attentionTooltip"\)\.textContent = BLOCKED_SUMMARY;/, "the nav button's tooltip is the shared summary");
+  assert.match(appSource, /byId\("sidebarMiniAttentionTooltip"\)\.textContent = `\$\{BLOCKED_SUMMARY\} · \$\{attention\}`;/, "the rail's tooltip is the same summary with the count");
+  for (const word of ["permission", "answer", "plan approval", "failure", "stall", "exit mid-work"]) assert.ok(BLOCKED_SUMMARY.includes(word), `the summary names ${word}`);
+  // The control: the tree is filtered by the shared predicate, the set is never empty and is
+  // remembered with every bucket as the default, the attention button is the set at {blocked},
+  // and the sheet offers the owner's five checkboxes.
+  assert.match(appSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden, attention: indexState\.attention, needs, buckets: filtered \? indexState\.buckets : null, bucketOf: sessionBucket \}\)/, "the tree is filtered by the shared bucket predicate — every bucket chosen is no filter");
+  assert.match(appSource, /indexState\.buckets = set\.size \? set : new Set\(BUCKETS\);/, "the bucket set is never empty");
+  assert.match(appSource, /onclick = \(\) => setBuckets\(indexState\.attention \? BUCKETS : \["blocked"\]\)/, "the attention button is the set at {blocked}");
+  const stateJsSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  assert.match(stateJsSource, /buckets: new Set\(json\("am-prod-session-buckets", \["active", "blocked", "idle"\]\)\)/, "the set is remembered, every bucket by default");
+  assert.match(stateJsSource, /localStorage\.setItem\("am-prod-session-buckets", JSON\.stringify\(\[\.\.\.indexState\.buckets\]\)\)/, "persist writes it");
+  for (const bucket of ["all", "active", "blocked", "idle"]) assert.match(appSource, new RegExp(`data-bucket="${bucket}"`), `the sheet offers ${bucket}`);
+  assert.match(appSource, /data-include-hidden/, "and Include hidden");
+  assert.match(appSource, /title="\$\{BLOCKED_SUMMARY\}"/, "the Blocked checkbox explains itself with the predicate's sentence");
+  console.log("#202 bucket cases passed");
 }
 
 // Seam (d) (#45): keymap.js and reading.js are shared; the classic page and the rail resolve

@@ -9,6 +9,11 @@ const json = (key, fallback) => {
 export const indexState = {
   groups: [], rows: new Map(), selected: "", attention: false,
   collapsed: new Set(json("am-demo-collapsed", [])), ignoredCount: 0, showHidden: false,
+  // The session filter (#202): which of the three buckets — active / blocked / idle — the
+  // tree shows. Remembered like the other view choices; every bucket is "no filter". The
+  // attention button is this set at {blocked}; Show Hidden stays a view state (not
+  // remembered, like classic), so a reload starts with hidden rows hidden.
+  buckets: new Set(json("am-prod-session-buckets", ["active", "blocked", "idle"])),
   // Fork families opened in the tree (view state, like classic famOpen), and whether the
   // selected id was a LIST row when chosen — a sub-agent child never is, and must not be
   // declared gone by the index poll for that reason.
@@ -87,6 +92,7 @@ export function persist() {
   localStorage.setItem("am-prod-info-folds", JSON.stringify([...uiState.infoFolds]));
   localStorage.setItem("am-prod-live-only", JSON.stringify([...uiState.liveOnly]));
   localStorage.setItem("am-prod-read", JSON.stringify(indexState.read));
+  localStorage.setItem("am-prod-session-buckets", JSON.stringify([...indexState.buckets]));
   if (uiState.readingChosen) localStorage.setItem(READING_KEY, JSON.stringify(uiState.reading));
 }
 

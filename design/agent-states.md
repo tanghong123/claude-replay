@@ -244,3 +244,60 @@ the `agents` crate: the two `turn_ended` overrides — the seam audit stays happ
 4. Codex parity: rules 2 and 5 need Codex's interactive-tool vocabulary (none declared
    today — #21 left it `false`) and its permission model mapped; until then Codex
    sessions get busy/idle with full fidelity and `wait` only via queued-prompt absence.
+
+## 10. The three buckets a reader filters by (#202)
+
+The owner asked what "needs attention" means, having seen the app shell's count read 0 for
+days. The answer is a partition of §1's vocabulary, written once in
+`claude-replay-html/src/html/shared/state-labels.js` (`REASON_BUCKETS`, `sessionBucket`) and
+held to the Rust enum by the monitor's `every_tracker_reason_has_a_label` test — every row is
+in exactly one bucket, keyed by the reason it displays:
+
+| Bucket | Tracker vocabulary | Reader's action |
+|---|---|---|
+| **active** | busy: `thinking`, `tool`, `starting`, `queued-prompt` | None. |
+| **blocked** (= needs attention) | a `wait` state — `permission`, `question`, `plan-approval` — or an idle reason that cut the agent's work short: `ended-question`, `error`, `stalled`, `exited-mid-work` | Act: answer, grant, approve, read the failure. |
+| **idle** | `done` (the turn ended with an answer), `exited` (no process) | Nothing owed. |
+
+`needsPerson(row)` is `sessionBucket(row) === "blocked"` and nothing else; the app shell's
+attention count is the number of blocked rows that are not hidden, and both of its tooltips
+(the nav button's and the collapsed rail's) show `BLOCKED_SUMMARY`, the predicate in words.
+
+**What the 0 meant.** Measured on the owner's own tracker files (counts only) on 2026-09-13:
+the snapshot held 123 sessions — 112 `idle · exited`, 10 `idle · done`, 1 `busy · thinking` —
+so the count was 0 because no session was blocked; the ten that had just finished a turn were
+idle by the table above, their agents waiting for the next prompt, which is the reader's move
+and not the agent's need (`denoteState` marks such a row "New result" until it is opened). The
+event log over the three days before held 81 blocked transitions (41 `ended-question`, 31
+`stalled`, 9 `wait · question`) among 5 317, so the count is non-zero regularly and briefly:
+a blocked session stays blocked only until the owner answers it. The count was correct; the
+words around it were not, and a session that finished its turn is not in it by design.
+
+**Held by** `the_app_shell_counts_the_blocked_sessions` (browser_follow.rs, port 2916): a
+hermetic world with one session per state — a pending AskUserQuestion under a live agent
+process (`wait · question`), a turn ended with a question under a live process
+(`idle · ended-question`), an open Bash call with no process (`idle · exited-mid-work`), a
+finished session (`idle · exited`), a growing one under a live process (`busy`); the "live
+process" is a shell whose argv[0] is `claude` and whose argv carries the session id, which is
+what the probe's `link` rule 1 keys on. The count reads 3, the attention filter shows exactly
+those three rows, and the tooltip is the predicate's own sentence. The node contract's #202
+block holds the partition (every reason in exactly one bucket, blocked = the wait reasons and
+the cut-short idles, idle = `done` and `exited`) and the tree's bucket filter.
+
+
+**The control** (the owner's design, 2026-09-12: "a filter glyph at the toolbar row on the
+left-side pane, when clicked, show the few checkboxes such as all, active, blocked, idle, and
+include hidden"): `filterBtn` on the app shell's nav, layered at runtime from `app.js` like Show
+Hidden so the extracted demo markup stays exact, opening a sheet in the shared popover chrome
+with those five checkboxes and a count beside each — the buckets' over the rows in view, the
+hidden count for Include hidden. The set is `indexState.buckets`, remembered
+(`am-prod-session-buckets`) like the other view choices; every bucket is no filter; the set is
+never empty (unchecking the last bucket puts every bucket back — a tree that shows nothing is
+not a filter); "Needs attention" is the same set at {blocked}, so either control paints both;
+Include hidden is Show Hidden by another handle and stays a view state, as on the classic page.
+The classic rail keeps its All / Active / Idle pills on the legacy `state` — the reference is
+not changed by the shell that is held to it. Held by `the_app_shell_filters_the_sessions_by_bucket`
+(port 2917) against the same bucket world: the counts, each checkbox against the tree, the
+never-empty rule, the attention button both ways, the reload, Include hidden with a hidden
+row, Escape; and the node contract's pins on the wiring (the tree through the shared predicate,
+the never-empty rule, the remembered set, the five checkboxes).

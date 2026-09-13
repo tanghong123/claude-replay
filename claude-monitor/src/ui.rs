@@ -469,6 +469,18 @@ mod state_label_tests {
                 table.contains(&quoted) || table.contains(&bare),
                 "state-labels.js has no label for the tracker reason `{key}`"
             );
+            // #202: and a bucket — active / blocked / idle — in REASON_BUCKETS, the one
+            // definition of "needs attention" both of the app shell's tooltips describe.
+            let buckets = table
+                .split("const REASON_BUCKETS = {")
+                .nth(1)
+                .and_then(|t| t.split("};").next())
+                .expect("state-labels.js declares REASON_BUCKETS");
+            assert!(
+                buckets.contains(&format!("{key}: \""))
+                    || buckets.contains(&format!("\"{key}\": \"")),
+                "state-labels.js REASON_BUCKETS has no bucket for the tracker reason `{key}`"
+            );
         }
     }
 }

@@ -186,6 +186,15 @@ pub fn tool_open_at(id: &str, ts: &str) -> String {
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"echo {id}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
     )
 }
+/// A tool call by NAME with no result yet — the shape the state tracker reads as a pending
+/// tool (#202): `AskUserQuestion` / `ExitPlanMode` are interactive (a wait when the process is
+/// alive), anything else is work in flight (busy under a live process, exited-mid-work without
+/// one). `input` is a JSON object literal.
+pub fn pending_call_at(id: &str, name: &str, input: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"stop_reason\":\"tool_use\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"{name}\",\"input\":{input}}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
 /// A `Workflow` call and its result (#38/#119): the result text carries `Transcript dir:`, whose
 /// trailing component IS the run id — the only place a transcript names the fleet it launched.
 pub fn workflow_call_at(id: &str, run: &str, ts: &str) -> String {
