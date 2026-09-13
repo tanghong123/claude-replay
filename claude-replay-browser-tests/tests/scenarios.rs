@@ -47,6 +47,25 @@ fn fixture(name: &str, turns: u32) -> Fixture {
 
 /// The id the monitor addresses the fixture by: its file stem, for a Claude session and a Codex
 /// rollout alike (the rail lists `rollout-<id>`, not the session_meta id).
+/// `&trace=viewport` when `SCENARIO_TRACE` is set — the same switch `trace_tail` already reads.
+/// An intermittent viewport case is diagnosed by running it in a loop with the engine's own trace
+/// on and dumping it AT the failing step, not by reasoning about it (#209; #192 built the trace
+/// for exactly this).
+fn trace_query() -> &'static str {
+    if std::env::var_os("SCENARIO_TRACE").is_some() {
+        "&trace=viewport"
+    } else {
+        ""
+    }
+}
+
+/// The engine's last `n` trace entries as one block of text, for a failure message — empty when
+/// the trace is off.
+fn trace_lines(tab: &headless_chrome::Tab, n: usize) -> String {
+    let js = format!("(function(){{ var t = window.__viewportTrace || []; return t.slice(-{n}).map(function (e) {{ return [e.seq, e.cause, 'lo=' + e.lo, 'hi=' + e.hi, 'p0=' + (e.p0 == null ? '' : e.p0), 'placed=' + (e.placed == null ? '' : e.placed), 'top=' + Math.round(e.top || 0), 'sums=' + Math.round(e.sums || 0), 'pads=' + (e.pads || []).map(Math.round).join('/'), 'est=' + (e.estimate == null ? '' : Math.round(e.estimate)), 'live=' + (e.live == null ? '' : Math.round(e.live)), 'since=' + (e.sinceInput == null ? '' : Math.round(e.sinceInput))].join(' '); }}).join('\n'); }})()");
+    harness::eval(tab, &js).as_str().unwrap_or("").to_string()
+}
+
 fn sid_of(fx: &Fixture) -> String {
     fx.path.file_stem().unwrap().to_string_lossy().to_string()
 }
@@ -191,7 +210,10 @@ fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
             };
             let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
             monitor.pair(&tab);
-            monitor.open(&tab, &format!("?ui=app&session={}", sid_of(fx)));
+            monitor.open(
+                &tab,
+                &format!("?ui=app&session={}{}", sid_of(fx), trace_query()),
+            );
             harness::until(
                 &tab,
                 "document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3",
@@ -8756,12 +8778,30 @@ fn scenario_a_gradual_walk_forward_keeps_its_place(
         let turn = harness::sticky_turn(tab, surface)
             .map(|t| t.0)
             .unwrap_or(-1);
-        assert!(
-            turn < 0 || turn >= last_turn,
-            "{surface:?}: step {n}: the turn under the reader went BACKWARD, {last_turn} -> {turn}, \
-             on a forward walk: the re-estimated sums put the reader in a pad and the model anchor \
-             wrote a position from them (#194)"
-        );
+        if turn >= 0 && turn < last_turn {
+            // #209: the trace AT the step, when it is on (`CR_TRACE=1`), plus what the bar reads
+            // from — the bar names the last unit whose top is above the landing line, so the
+            // question is always which unit that was and what the engine had just written.
+            let tail = trace_lines(tab, 14);
+            // Is the bar STALE, or does it genuinely disagree with the engine? Nudge the scroller
+            // by a pixel and back: that repaints the bar from the settled DOM without moving the
+            // reader. If it then agrees with the engine's own belief, the bar had latched a value
+            // from a transient state and nothing repainted it.
+            let repainted = harness::probe(tab, "(function(){ var s = document.querySelector('.transcript') || document.scrollingElement; var bar = document.getElementById('turnStickyBar') || document.getElementById('stickybar'); var before = bar ? bar.innerText.replace(/\\s+/g, ' ').slice(0, 28) : ''; s.scrollTop += 1; s.dispatchEvent(new Event('scroll')); s.scrollTop -= 1; s.dispatchEvent(new Event('scroll')); return { before: before }; })()");
+            std::thread::sleep(Duration::from_millis(400));
+            let after_nudge = harness::sticky_turn(tab, surface)
+                .map(|t| t.0)
+                .unwrap_or(-1);
+            // The always-on viewport history (#197) is the record of what the engine did — its
+            // state after every transaction, with the turn it believed the reader was on. No flag
+            // needed; the trace above adds the seams when `SCENARIO_TRACE` is set.
+            let dom = harness::probe(tab, "(function(){ var s = document.querySelector('.transcript') || document.scrollingElement; var w = document.querySelector('.virtual-window') || document.getElementById('vwin'); var vt = s.getBoundingClientRect().top; var kids = w ? [...w.children] : []; var bar = document.getElementById('turnStickyBar') || document.getElementById('stickybar'); var h = window.__viewportHistory; var states = h ? h.states.slice(-8).map(function (e) { return [e.cause, 'lo=' + e.lo, 'hi=' + e.hi, 'turn=' + e.turn, 'top=' + Math.round(e.top || 0), 'sums=' + Math.round(e.sums || 0), 'pads=' + (e.pads || []).map(Math.round).join('/'), 'est=' + Math.round(e.estimate || 0), 'live=' + Math.round(e.live || 0), 'pending=' + (e.pending || ''), 'follow=' + e.following].join(' '); }) : ['(no history)']; var actions = h ? h.actions.slice(-4).map(function (a) { return a.kind + (a.dy ? ':' + a.dy : '') + '@' + Math.round(a.t); }) : []; return { bar: bar && bar.classList.contains('on') ? bar.innerText.replace(/\\s+/g, ' ').slice(0, 28) : '(off)', top: Math.round(s.scrollTop), height: Math.round(s.scrollHeight), mounted: kids.length, firstKeys: kids.slice(0, 3).map(function (e) { return (e.dataset.unitKey || e.id || '?') + '@' + Math.round(e.getBoundingClientRect().top - vt); }), actions: actions, states: states }; })()");
+            panic!(
+                "{surface:?}: step {n}: the turn under the reader went BACKWARD, {last_turn} -> {turn}, \
+                 on a forward walk: the re-estimated sums put the reader in a pad and the model anchor \
+                 wrote a position from them (#194)\n  after a 1px nudge the bar reads {after_nudge} ({repainted})\n  {dom:#}\n  trace:\n{tail}"
+            );
+        }
         if turn >= 0 {
             last_turn = turn;
         }

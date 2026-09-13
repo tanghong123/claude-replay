@@ -232,7 +232,7 @@ What a page implements (the contract), and what the engine owns outright.
 | `renderAll()` | default never; mount everything (the classic page's small filtered set) |
 | `renderItem(i)` | index → a detached element stamped with its identity (`data-unit-key`) and, for the anchor's row form, `[data-block-index]` rows |
 | `afterMount(fresh)` | the elements just mounted, attached, before measurement (the classic page clamps long turns here; a no-op elsewhere) |
-| `afterRender()` / `afterScroll()` / `followChanged()` / `remember()` | the page's hooks; `afterScroll` is where a spy runs |
+| `afterRender()` / `afterScroll()` / `afterTransaction()` / `followChanged()` / `remember()` | the page's hooks. **A spy that reads the DOM belongs in `afterTransaction`** (#209), not in the other two: a transaction mounts, measures, then PLACES, and both of those fire before the placement, so a spy that ran there can hold a reading from a window the place has since moved. Measured on the walk fixture — the sums swung ±15k px as estimates landed, the offset was corrected by ±5k to hold the reader's record still, and the app shell's turn bar sat three turns behind the engine's own belief until a one-pixel nudge repainted it. `afterTransaction` fires once, after the last of a queued run. |
 | `following` | a get/set pair over the page's own flag |
 | `frame` | `{scrollTop, scrollTo, clientHeight, scrollHeight, viewportTop, on, isScrollbarTarget}` — the element scroller or the document |
 | `mount` | `{top, window, bottom, content}` — the pads, the run, and what to watch for chrome growth |

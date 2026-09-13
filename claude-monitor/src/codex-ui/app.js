@@ -150,6 +150,10 @@ sessionCopyMenu.addEventListener("click", async event => {
 
 const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, {
   afterRender: () => { applyFilters(); markSearch(); paintCodeBars(); updateStickyHeaders(); updateOutlineFocus(); updateTurnBar(); },
+  // The window is where it will stay (#209): repaint the spies that read the DOM. `afterRender`
+  // fires BEFORE the transaction's placement, so a spy that ran there can hold a reading from a
+  // window the place then moved — the turn bar sat three turns behind the engine's own belief.
+  afterTransaction: () => { updateStickyHeaders(); updateOutlineFocus(); updateTurnBar(); },
   afterScroll: () => {
     updateStickyHeaders(); updateOutlineFocus(); updateTurnBar();
     // The reader moved themselves: wherever a jump last landed them is no longer where they

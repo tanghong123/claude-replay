@@ -276,7 +276,8 @@ function classifyScroll(following, userIntent, gap, acquire, hold, heal) {
  *   renderAll    (default never) mount every item, whatever the offset says.
  *   renderItem   — index → an element, already stamped with its identity.
  *   following    — the page's own flag (both pages render from it), through a get/set pair.
- *   afterMount / afterRender / afterScroll / followChanged / remember — the page's hooks.
+ *   afterMount / afterRender / afterScroll / afterTransaction / followChanged / remember — the
+ *   page's hooks (`afterTransaction` is the one a DOM-reading spy wants: #209).
  *
  * Every layout read and DOM write in here is the engine's own; the arithmetic above stays pure
  * so the node contract can test the rules directly. */
@@ -1273,9 +1274,22 @@ class VirtualWindow {
     // What the caller does once the transaction has actually run — direct or queued (`command`'s
     // follow decision and memory; a page callback inside a transaction queues its command).
     if (options.after) options.after(summary);
+    // Every spy that reads the DOM repaints HERE, not on the render or the scroll inside the
+    // transaction (#209). A transaction mounts, then measures, then PLACES — and a place can move
+    // the window by thousands of pixels when an estimate lands (measured on the walk fixture: the
+    // sums swung ±15k px per wheel and the offset was corrected by ±5k to keep the reader's record
+    // still). `afterRender` fires inside that, before the correction, so a spy that ran there had
+    // read a window that no longer exists; nothing then repainted it, and the app shell's turn bar
+    // sat three turns behind the engine's own belief until the next scroll. A one-pixel nudge put
+    // it right, which is what proved the value stale rather than wrong.
+    if (!this.queued.length) this.afterTransaction();
     if (this.queued.length) { const [next, opts] = this.queued.shift(); this.transact(next, opts); }
     return true;
   }
+
+  /** The page's hook for "the transaction is complete, and the window is where it will stay".
+   *  Overridden by a page that has spies to repaint (#209); nothing by default. */
+  afterTransaction() {}
 
   /** The invariant check mode (framework §4.12): what the code can state but not prevent, checked
    *  at the end of every transaction against what the browser did. O(1) or O(window) each; the one

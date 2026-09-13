@@ -159,6 +159,7 @@ export class Viewport extends VirtualWindow {
   }
   afterRender() { this.actions.afterRender?.(); }
   afterScroll() { this.actions.afterScroll?.(); }
+  afterTransaction() { this.actions.afterTransaction?.(); }
   followChanged() { this.actions.followChanged?.(); }
 
   /** A session is opening: read what was remembered for it. A remembered anchor is applied by

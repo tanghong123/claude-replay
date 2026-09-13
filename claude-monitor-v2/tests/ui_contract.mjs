@@ -970,6 +970,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /function drawersUnderNoPressure\(cards\) \{/, "a closing push leaves a wholly visible tail alone (#206)");
   assert.match(appSource, /const exempt = delta > 0 \? drawersUnderNoPressure\(cards\) : new Set\(\);/, "…only when closing — a pull gives back in the order it took");
   assert.match(appSource, /if \(exempt\.has\(card\)\) continue;/, "…and the walk skips them");
+  // #209: a spy that reads the DOM repaints when the TRANSACTION is done, not when the render is.
+  // A transaction mounts, measures, then places — and `afterRender` fires before the placement, so
+  // a spy that ran there can hold a reading from a window the place then moved.
+  const engineSource209 = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
+  assert.match(engineSource209, /afterTransaction\(\) \{\}/, "the engine offers the hook");
+  assert.match(engineSource209, /if \(!this\.queued\.length\) this\.afterTransaction\(\);/, "…called once the transaction is complete, and not between queued ones");
+  assert.match(viewportSource, /afterTransaction\(\) \{ this\.actions\.afterTransaction\?\.\(\); \}/, "the shell's viewport forwards it");
+  assert.match(appSource, /afterTransaction: \(\) => \{ updateStickyHeaders\(\); updateOutlineFocus\(\); updateTurnBar\(\); \}/, "…and the shell repaints its three DOM spies there");
+  assert.match(classicExportSource, /afterTransaction\(\) \{ spy\(\); \}/, "the classic page runs its scrollspy there too");
   assert.match(css, /\.session-navigator\{overflow-anchor:none\}/, "scroll anchoring would fight a body that is changing height");
   assert.doesNotMatch(css, /\.navigator-list\{[^}]*overscroll-behavior:contain/, "the list never contains its overscroll — the wheel reaches the chain once the list is at its end");
   console.log("#58/#59/#74 outline pane cases passed");

@@ -1931,6 +1931,12 @@
       paintBadge();
     }
     afterRender() { paintBadge(); }
+    // The transaction is complete and the window is where it will stay (#209): run the scrollspy
+    // again. `afterScroll` schedules it on a frame, and a placement that lands after that frame —
+    // an estimate applied, the pads corrected — leaves the sticky bar and the side list naming a
+    // turn the reader is no longer on. Measured on the app shell, whose bar sat three turns
+    // behind the engine's own belief until a one-pixel nudge repainted it.
+    afterTransaction() { spy(); }
     afterScroll() {
       if (newCount && atBottom()) newCount = 0; // caught up by scrolling down
       // NOT inside the frame below: a background tab pauses `requestAnimationFrame`, and the
