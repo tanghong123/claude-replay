@@ -1876,8 +1876,10 @@
     // and one character of prefix costs nothing to rule that out by shape.
     identityAt(index) { var b = records[index]; return b && b.id ? b.id : "@" + index; }
     // A record in this page's vocabulary, for the history (#197, design/viewport-history.md §3):
-    // its block kind and its turn; one engine item is one record here.
-    describeAt(index) { var b = records[index]; return { kind: b ? b.kind : null, turn: recTurn[index] == null ? null : recTurn[index], from: index, to: index }; }
+    // its block kind — with an assistant's phase folded in, since commentary and a final answer
+    // shape a turn differently and the sandbox rebuilds from kinds alone — and its turn; one
+    // engine item is one record here.
+    describeAt(index) { var b = records[index]; return { kind: b ? (b.kind === "assistant" && b.phase === "commentary" ? "commentary" : b.kind) : null, turn: recTurn[index] == null ? null : recTurn[index], from: index, to: index }; }
     // Where the measured heights live — persistence only, since #196 stage 3: the engine owns the
     // estimator (one kind on this page, `record`, floored at EST_H — the old second half of rule
     // 5's comment, "learning a real height only ever grows the page BELOW the reader, which nobody

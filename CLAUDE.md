@@ -172,7 +172,23 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   discipline** (owner, #197): a viewport bug is reproduced from the SHORTEST synthetic transcript
   that shows it before it is fixed — an export names the height profile and the sequence of
   events to rebuild it from, and the harness's builders (`long_session`, `user_at`,
-  `tool_result_lines`, …) are what the repro is written in.
+  `tool_result_lines`, …) are what the repro is written in. **The sandbox** (#197 stage B,
+  `claude-replay-browser-tests/tests/harness/history.rs`, cases in `tests/sandbox.rs`) is that path
+  made mechanical: `Export::load` a saved history, `calibrate` the surface (prose models, folded
+  heights and the pasted-image scale measured through the page's own export), `synthetic` writes a
+  transcript with the same record kinds and heights (each kind maps to a builder whose tool NAME
+  the engine shapes into the same kind — Bash/Read/thinking coalesce into `act`, Edit/Write/Skill
+  stand alone, WebFetch is `tool`; an assistant's `commentary` phase is in its kind), `growth`
+  replays the deltas, `steps` replays the actions (a wheel by the offset the states saw, not its
+  `dy`) and the diff names the first step whose turn under `P` left the recording's by more than
+  the tolerance. The synthetic session is surface-neutral, so an export recorded on one page replays
+  on the other: `sandbox_walk_classic_export_replays_on_the_shell` is the parity instrument (after
+  a commanded move both pages show the same turn; over the same wheels the shell runs ahead by a
+  measured, pinned number, because its rows are shorter). To reproduce a report: save the history
+  from the page, put the JSON under `tests/fixtures/history/` (kinds, heights, indices, turns and
+  timings — `history_fixtures_carry_no_content` refuses a uuid, a path or prose), and write a case
+  like `sandbox_walk_classic_replays` (or `sandbox_runaway_classic_live_replays` for a tail that
+  grew while the reader moved: the deltas replay as timed appends).
   **The engine's design as a framework** — the model, its fourteen numbered invariants with what
   holds each today (construction, a timer, or only a case), the seams a page implements, and the
   #196 refactors — is `design/virtual-window-framework.md` (#195); the history that led to it is

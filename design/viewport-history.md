@@ -1,6 +1,6 @@
 # The viewport history: an hour of what the reader did and what the engine saw (#197)
 
-Status: stage A landed 2026-09-13 (§8); stage B, the sandbox, pending. Points 3 and 4 of the owner's directive (recorded on #195): "enhance the
+Status: stage A landed 2026-09-13 (§8), stage B 2026-09-13 (§9). Points 3 and 4 of the owner's directive (recorded on #195): "enhance the
 diagnostic approach, keeping a limited history of user actions and corresponding app states (one
 hour is sufficient), so if a user reports an issue, you should be able to tell exactly the sequence
 of events (you may want to document the position of the tail, this way you can simulate growth in a
@@ -217,3 +217,81 @@ As designed, with these corrections found by the code and the scenario:
 - **Held by**: `scenario_the_history_records_what_happened` on both surfaces (§6's list, with the
   bound proved at 1.5 s by reopening with `?historyMs=1500`), the #197 block of the node contract,
   the real-session probes printing the streams' sizes and last entries beside the violation ring.
+
+## 9. Stage B as landed (2026-09-13)
+
+`claude-replay-browser-tests/tests/harness/history.rs` and `tests/sandbox.rs`. An `Export` is loaded
+from the JSON; its `profile` is record-level (the shell's units spread their measured height over
+the records they span); `calibrate` opens a session of known prose lengths, one pasted image of
+each of two heights and the folded kinds, and reads the heights back through the page's own export
+— a linear model per prose kind, the folded heights, and the pasted image's scale and chrome;
+`synthetic` writes the transcript; `growth` turns the deltas after the open into timed appends;
+`steps` turns the actions into the harness's gestures; the replay reads the engine's state after
+each and `summarize` names the first step past the tolerance.
+
+What the code found, and the design did not know:
+
+- **The engine's shaping is the structure.** Bash and Read calls and thinking coalesce into one
+  `act` record; Edit, Write and Skill stand alone; WebFetch, WebSearch, TodoWrite and ToolSearch
+  are `tool`; Task is `agent` (measured with `--dump-html`). A rebuilt page has the recording's
+  record count only when each kind maps to a builder the engine shapes the same way (`call_at`,
+  by tool NAME) — the first attempts merged 411 of 8 954 records and every index after a merge
+  compared a different record.
+- **An assistant's phase is part of its kind.** The shell files commentary (`stop_reason:
+  tool_use`) among the process rows and gives a final answer its own unit, and a turn can end and
+  be continued, so the phase cannot be inferred from position: `describeAt` on both pages reports
+  `commentary` as the kind, and the builder writes the `stop_reason` the engine reads.
+- **A wheel's `dy` is not the distance.** The action sums the deltas the frame heard — the
+  harness's `scroll_by` dispatches its wheel twice on a retry, and a browser scrolls a real wheel
+  by its own curve — so the replay scrolls by the offset the states recorded before and after the
+  gesture (`moved_between`).
+- **Attachments are records without turns**: a user message whose only block is an image is an
+  attachment of the prompt before it. The page scales a pasted image to its column, so the card is
+  sized by source rows through the calibrated scale (a 32-pixel-wide PNG written by the harness).
+- **The classic page clamps a long prompt**, so the user model is fitted on the lengths below the
+  clamp.
+
+Measured on the walk export (the owner's session, 8 954 records, 226 of them measured; the walk
+probe's 35 and 33 actions): the rebuilt classic page has 8 954 records; over the records measured
+in both, the residual is 0 px for act, user, think, write, command and skill, −0.2 px commentary,
++12.6 px assistant, +2.3 px attachment and −82 px tool (seven records, some of them open); the
+replay's turn under `P` stays within 2 of the recording after every action. The shell: 2 101 units
+of 2 101; residuals −0.9 px user, +0.1 px assistant, −56 px process (its rows are the builders' own
+heights, not the recording's — the export carries a unit's height, not a row's); the replay within
+3. Three runs of each on this machine: the classic replay's worst delta 2, 2, 2; the shell's 3, 3, 3
+— the bound is the range's top, not a guess.
+
+The runaway exports (the #194 probe's live cases: the owner's session at 2 946 and 2 956 records
+when the page opened, 21 wheels while the tail grows; classic 13 deltas, 5 of them rewrites; shell
+23, 14 rewrites) are the fixtures that make `growth` execute — the deltas after the open replayed as
+timed appends on the recorded clock (`steps` and `growth` count from the open, so the two stay in
+step). The rebuilt classic page has 2 961 records of 2 961 (residuals 0 px act, user and think,
+−1.1 px commentary, +17.4 px assistant); the replay within 3 after every action. The shell: 675
+units of 675 (−44 px process, +5 px assistant); within 1.
+
+**The parity instrument**: the classic walk export replayed on the SHELL — the synthetic session is
+surface-neutral, so `replay` takes the surface, and the same gestures are run on the other page
+against the classic recording. What it measured: the shell builds 2 101 units from the same
+transcript (as its own export said), its page is 448 501 px tall where the classic page is
+866 468 (−48 %: the process rows are compact by design); after the commanded moves both pages show
+the same turn (the end: 863 and 863; the jump: 766 and 766); over the walk's thirty wheels of
+400 px the shell runs AHEAD of the classic page, monotonically, by 5 or 6 turns at the end (five
+runs: 6, 6, 5, 5, 5 — the classic page moved 766 → 772, the shell 766 → 776/778), and is never behind
+it. That is the two pages' layouts, not the engine — the same pixels cover more turns on the
+shorter page — so the case pins it two-sided: a commanded move within the within-surface
+tolerance, a wheel never behind by more than that tolerance (a shell that moved less than the
+classic page is broken), ahead by at most the measured 6 (`CROSS_SURFACE_DRIFT`). The number is
+the height ratio's and so the platform's fonts'; a different figure on CI is recorded here and
+re-pinned as a stated decision, never widened past a red run.
+
+Approximations that stand: a rewrite is replayed as an append (the runaway exports carry 19 of
+them and the replay still lands within 3), a fold as the fold nearest the reader, and drags,
+controls and pointer moves are not replayed.
+
+Held by `sandbox_calibration_measures_prose_on_both_surfaces`, `sandbox_walk_classic_replays`,
+`sandbox_walk_app_replays`, `sandbox_runaway_classic_live_replays` and
+`sandbox_runaway_app_live_replays` (each asserting an empty violation ring and the turn within 3
+after every action), `sandbox_walk_classic_export_replays_on_the_shell` (the parity pin above),
+`history_fixtures_carry_no_content` over `tests/fixtures/history/` (the walk and the runaway
+exports of both pages: no uuid, no path, no transcript name, no string long enough to be prose),
+and the node contract's pin on both pages' `commentary` kind.

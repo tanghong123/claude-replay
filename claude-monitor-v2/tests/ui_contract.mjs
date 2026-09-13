@@ -2301,7 +2301,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engine, /format: "viewport-history\/1",/, "the export names its format");
   for (const key of ["page:", "version:", "exported:", "elapsed:", "frame:", "session:", "actions:", "states:", "deltas:", "violations:"]) assert.ok(engine.slice(engine.indexOf("  exportHistory() {")).includes(`      ${key}`), `the export carries ${key}`);
   // Both pages: their vocabulary, their folds, their control.
-  assert.match(classic, /describeAt\(index\) \{ var b = records\[index\]; return \{ kind: b \? b\.kind : null, turn: recTurn\[index\] == null \? null : recTurn\[index\], from: index, to: index \}; \}/, "the classic page describes a record by its block kind and turn");
+  assert.match(classic, /describeAt\(index\) \{ var b = records\[index\]; return \{ kind: b \? \(b\.kind === "assistant" && b\.phase === "commentary" \? "commentary" : b\.kind\) : null, turn: recTurn\[index\] == null \? null : recTurn\[index\], from: index, to: index \}; \}/, "the classic page describes a record by its block kind — an assistant's commentary phase folded in — and turn");
+  assert.match(shell, /kinds\.push\(records\[i\] \? \(records\[i\]\.kind === "assistant" && records\[i\]\.phase === "commentary" \? "commentary" : records\[i\]\.kind\) : null\);/, "…and so does the shell for the records a unit spans");
   assert.match(classic, /recTurn\.push\(b\.turn != null \? b\.turn : recTurn\.length \? recTurn\[recTurn\.length - 1\] : null\);/, "…the turn kept per record as records arrive");
   assert.match(classic, /recHit\.length = from;\n\s*recTurn\.length = from;/, "…and truncated with them");
   assert.match(classic, /vw\.readerReshaped\(\);\n\s*vw\.noteAction\("fold", \{ key: f\.id \|\| null, open: !!open \}\);/, "a classic fold toggle names itself to the history");

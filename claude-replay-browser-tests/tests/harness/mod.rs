@@ -20,6 +20,10 @@
 
 #![allow(dead_code)]
 
+/// The sandbox (#197 stage B): an exported viewport history rebuilt and replayed.
+#[allow(dead_code)]
+pub mod history;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
