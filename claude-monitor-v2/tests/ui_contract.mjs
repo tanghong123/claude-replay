@@ -944,7 +944,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(css, /\.navigator-list\{max-height:min\(48vh,560px\);overflow-y:auto;/, "a long list scrolls itself under a max-height");
   assert.doesNotMatch(css, /outline-card\.open\{flex:|\.focus\{flex:/, "no shared height, no focus share");
   assert.match(appSource, /function stackOutlineHeads\(\) \{/, "the stack offsets are measured");
-  assert.match(appSource, /slot \+= head\.getBoundingClientRect\(\)\.height \+ \(parseFloat\(getComputedStyle\(card\)\.marginBottom\) \|\| 0\);/, "…each slot the caption plus the heads AND THE GAPS above it (#139), so a compacted card rests exactly on its slot");
+  assert.match(appSource, /slot \+= shut \+ \(parseFloat\(getComputedStyle\(card\)\.marginBottom\) \|\| 0\);/, "…each slot the caption plus the COMPACTED CARDS and the gaps above it (#139, corrected in #214: the head's own height is 6px short of a compacted card, and three of them then came to rest 2px apart where the gap is 8), so a compacted card rests exactly on its slot");
   assert.match(appSource, /byId\("sessionNavigator"\)\.addEventListener\("wheel", event => \{/, "…and the reader's PUSH spends on the panes (#157), never the offset, which closing would eat as it went");
   assert.match(appSource, /toggleDrawer\(card\.dataset\.navCardToggle\);/, "a head opens and shuts ITS drawer, and nothing else changes")
   assert.doesNotMatch(appSource, /navFocus|classList\.toggle\("focus"/, "no focus state");
@@ -962,7 +962,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /function paintDrawerClasses\(\) \{/, "…and the state classes go on before anything measures, since the list's max-height is addressed to `.open`");
   assert.doesNotMatch(appSource, /function paintDrawers\(\) \{[^}]*offsetHeight/, "the paint path reads no layout: a pane must not appear to move because its B was re-measured under it");
   assert.match(appSource, /drawers\.dir\.set\(key, delta > 0 \? "closing" : "opening"\);/, "each pane remembers the direction of its last movement, for the toggle to complete");
-  assert.match(appSource, /if \(dy > 0\) \{\n    dy = routeDrawerDelta\(dy\);\n    if \(dy > 0\) nav\.scrollTop \+= dy;/, "a push closes first and only the REMAINDER scrolls the column");
+  assert.match(appSource, /if \(dy > 0\) \{\n    dy = routeDrawerDelta\(dy\);[\s\S]{0,200}?if \(dy > 0\) nav\.scrollTop \+= Math\.min\(dy, Math\.max\(0, cardTailOffset\(\)\)\);/, "a push closes first, and the REMAINDER scrolls the column only as far as there is a card to reveal (#214)");
   assert.match(appSource, /const used = Math\.min\(nav\.scrollTop, -dy\);/, "…and a pull gives the scroll back before it reopens, so the column retraces exactly");
   // #157 → #206, the owner's flow model with the owner's amendment: a run of wheel events with no
   // real pause is ONE gesture and it owns WHERE IT BEGAN for its whole run — a gesture that began
@@ -980,6 +980,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /function drawersUnderNoPressure\(cards\) \{/, "a closing push leaves a wholly visible tail alone (#206)");
   assert.match(appSource, /const exempt = delta > 0 \? drawersUnderNoPressure\(cards\) : new Set\(\);/, "…only when closing — a pull gives back in the order it took");
   assert.match(appSource, /if \(exempt\.has\(card\)\) continue;/, "…and the walk skips them");
+  // #214, the owner's report: the last pane kept "pushing" after it was wholly revealed, and it
+  // came to rest ON the pane above it with the gap gone. Three things, all of them about the same
+  // question the drawers already ask — is anything below asking for room?
+  assert.match(appSource, /function cardTailOffset\(\) \{/, "the remainder has somewhere real to go, or nowhere (#214)");
+  assert.match(appSource, /return cards\[cards\.length - 1\]\.getBoundingClientRect\(\)\.bottom - view\.bottom;/, "…measured against the LAST CARD's bottom, never the padding under it");
+  assert.match(appSource, /function reclaimColumnScroll\(\) \{/, "…and closing a drawer gives the offset back, since the padding keeps the browser's own clamp too high");
+  assert.match(appSource, /paintDrawers\(\);\n  reclaimColumnScroll\(\);/, "…on every gesture, not only at its end");
+  assert.match(appSource, /const shut = card\.getBoundingClientRect\(\)\.height - \(body \? body\.getBoundingClientRect\(\)\.height : 0\);/, "a slot steps by the card's SHUT height, measured as the card minus the body it shows");
   // #209: a spy that reads the DOM repaints when the TRANSACTION is done, not when the render is.
   // A transaction mounts, measures, then places — and `afterRender` fires before the placement, so
   // a spy that ran there can hold a reading from a window the place then moved.

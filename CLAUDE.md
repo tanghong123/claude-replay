@@ -225,7 +225,15 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   ONE gesture and it owns WHERE IT BEGAN — inside a pane's body it scrolls that pane's list and is
   spent at its end (no handover to the drawers), anywhere else it works the chain and keeps it even
   if the pointer lands in a pane; stopping ends it. A closing push never collapses a run of cards
-  at the bottom that is already wholly visible, because nothing under them is asking for room.
+  at the bottom that is already wholly visible, because nothing under them is asking for room. The
+  REMAINDER answers the same question (#214): it moves the column only while there is still card
+  below the fold — never into the 90px of breathing room the column ends with, which is padding and
+  reveals nothing — and whatever closing a drawer makes empty is given straight back, since that
+  padding holds the browser's own clamp too high. An offset the drawers did not pay for is what
+  breaks the gap: the cards are sticky at their slots with a z-index rising downward, so one that
+  has caught its slot holds still while the next keeps coming, and the owner photographed a pane
+  resting 37px inside the body of the pane above it. The gaps are rigid at every openness AND at
+  every offset, which makes a slot's step the card's SHUT height rather than its head's.
   `design/outline-drawers.md` has the model.
   **A case that reads the session TREE must say so**: the builders stamp a fixture in a fixed past
   hour, so it lands in the Idle bucket and the app shell's default filter (Active recently +

@@ -566,3 +566,62 @@ the drawers) and `the_app_shell_drawers_answer_where_the_gesture_began_and_the_p
 (rule 3 in a tall window and its converse in a short one, then rule 2: a run begun outside keeps
 the chain after the pointer enters a pane). The node contract pins the ownership, the absence of
 the friction, and the exemption.
+
+## #214: a push with nothing left to reveal, and the gap that is rigid at every offset (owner, 2026-09-14)
+
+The owner photographed the column mid-push: the Agents card resting ON the Tasks list, a task row
+cut in half behind its head, and the 8px between them gone.
+
+> the last drawer should stop pushing when it is fully revealed … instead, now it can continue
+> push, but somehow the second drawer was not, so it overlaps with the second drawer … regardless
+> whether the last drawer stops or not, there should always be a gap between these two panes
+
+Two claims, and the second holds whatever the first decides. Both were true, and they turned out to
+be one mechanism plus two pieces of arithmetic that had never been asked to be exact.
+
+**The column had somewhere to go that showed nothing.** `.session-navigator` ends with 90px of
+breathing room, written as `padding-bottom`. The browser counts that as scrollable overflow, so a
+column whose cards all fit still reports 45px of it. #206's rule then exempts every card — nothing
+below is asking for room — the closing walk spends nothing, and the whole delta falls through to
+`nav.scrollTop`. The push "continues", and what it buys is empty space.
+
+**And an offset the drawers did not pay for is what breaks the gap.** The cards are `position:
+sticky` at their slots with a z-index rising down the column, so an offset moves each card up until
+it catches its slot — a card that has caught it holds still while the next one keeps coming.
+Measured on the owner's shape: Turns held at its slot while Tasks flowed 45px up into it, ending
+**37px inside** the Turns body with a gap of −37 and Tasks, one z-index higher and opaque, painting
+over a task row. That is the photograph.
+
+So the offset answers the same question the drawers do, in both directions:
+
+| | |
+|---|---|
+| **spend** | a push's remainder moves the column only while `cardTailOffset()` is positive — while there is still CARD below the fold, never the padding under it |
+| **give back** | whatever closing a drawer makes empty is returned at once (`reclaimColumnScroll`), because the browser's own clamp is held too high by that same padding |
+
+The give-back is what the first rule alone misses: a push in a short window legitimately scrolls
+while the cards are still tall, and without it that offset survives the close and leaves every card
+stuck a little too high.
+
+**Two pieces of arithmetic that had to become exact,** because with the offset under control the
+gap is now a promise rather than a coincidence:
+
+- **A slot steps by the card's SHUT height, not its head's.** A shut card here is 41px and its head
+  is 35px: a border and the head's own margin. Six pixels per card, so three stacked cards came to
+  rest 2px apart where the gap is 8, and enough of them would have overlapped outright. The step is
+  measured as the card minus the body it is currently showing, so it is right whatever the box
+  model does.
+- **The last card cannot stick past the end of its own containing block.** The cards' containing
+  block is the column's content box, which stops at the last card — the 90px below it is padding,
+  outside the box. So the last card can never reach its slot, and any leftover offset lands it
+  inside the card above. Moving that room into the flow would fix it (measured: worst gap −1px
+  before, 8px after, over thirty pushes) but it reinstates the floor box #139 deleted as dead
+  scroll. The give-back reaches the same state without it: with no offset left over, the last card
+  never needs its slot.
+
+**Held by** `the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing`, in two legs. With the
+last card wholly visible: the column does not scroll, nothing closes, and the gap is untouched. Then
+in a short window, thirty pushes with the gap measured at **every step** — an overlap mid-gesture is
+exactly what the owner saw — ending with the panes shut from the top, the offset given back, and the
+last card wholly in view. The node contract pins the two clamps, the slot's step, and that the floor
+box is still gone.

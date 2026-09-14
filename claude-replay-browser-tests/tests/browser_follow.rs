@@ -2665,6 +2665,191 @@ fn the_app_shell_known_red_213_holds_a_scroll_a_transaction_arrives_on_top_of() 
     drop(monitor);
 }
 
+/// #214: a push with nothing left to reveal moves nothing, and no pane is ever drawn on top of
+/// the pane above it.
+///
+/// The owner photographed the outline mid-push: the Agents card sitting ON the Tasks list, a task
+/// row cut in half behind its head, and the 8px gap between them gone. Their words: "the last
+/// drawer should stop pushing when it is fully revealed … instead, now it can continue push, but
+/// somehow the second drawer was not, so it overlaps with the second drawer … regardless whether
+/// the last drawer stops or not, there should always be a gap between these two panes".
+///
+/// The mechanism, measured on this fixture before the fix: every card was wholly visible, so #206's
+/// no-pressure rule exempted all three and the closing walk spent nothing — and the remainder then
+/// went to `nav.scrollTop`, because the column carries 90px of bottom padding
+/// (`.session-navigator{padding:20px 60px 90px 18px}`) which is scrollable overflow that shows the
+/// reader nothing. Scrolling it dragged the cards up under the sticky ones above: Turns held at its
+/// slot while Tasks flowed 45px up into it, ending 37px inside the Turns body with a gap of -37 and
+/// Tasks' higher z-index painting over the list. The push "continued" and nothing was revealed.
+///
+/// So the column may scroll only as far as there is CARD below the fold. With nothing below asking
+/// for room the push is spent, and the gap holds by construction rather than by luck.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing() {
+    let _serial = serial();
+    let base = base("appshell-214-push");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000215".to_string();
+    // The owner's column: turns, a long list of running tasks, a set of live sub-agents.
+    let mut transcript = harness::long_session(40, harness::Shape::default());
+    for i in 1..=9 {
+        transcript += &harness::agent_spawn(&format!("call_a{i}"), "Explore", 20 + i);
+        transcript += &harness::agent_result(
+            &format!("call_a{i}"),
+            &format!("aExplore-{i}"),
+            "Explore",
+            20 + i,
+        );
+    }
+    stores.claude_session(&sid, &transcript);
+    for i in 1..=9 {
+        stores.claude_child(
+            &sid,
+            &format!("aExplore-{i}"),
+            &harness::long_session(3, harness::Shape::default()),
+        );
+    }
+    let mut tasks = Vec::new();
+    for i in 1..=30u32 {
+        tasks.push((
+            format!("{i}"),
+            format!("task number {i} with a subject long enough to wrap onto a second line"),
+            if i <= 5 { "completed" } else { "in_progress" },
+        ));
+    }
+    let borrowed: Vec<(&str, &str, &str)> = tasks
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), *c))
+        .collect();
+    stores.claude_tasks(&sid, &borrowed);
+    let monitor = Monitor::spawn(Kind::V2, 2920, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    // Tall enough that every card is wholly visible, which is the owner's situation: the column
+    // still overflows, but only by its own bottom padding.
+    tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: Some(0),
+        top: Some(0),
+        width: Some(1400.0),
+        height: Some(820.0),
+    })
+    .unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.querySelectorAll('.session-navigator > .outline-card:not(.pane-off)').length >= 3",
+        "the three outline cards",
+        std::time::Duration::from_secs(30),
+        "[...document.querySelectorAll('.session-navigator > .outline-card')].map(c => c.dataset.navCard).join(',')",
+    );
+    harness::until_drawers_settle(&tab);
+    let state = r#"(function(){
+        var nav = document.querySelector('.session-navigator');
+        var view = nav.getBoundingClientRect();
+        var cards = [...nav.querySelectorAll(':scope > .outline-card:not(.pane-off)')];
+        var boxes = cards.map(function (c) { var r = c.getBoundingClientRect(); var b = c.querySelector(':scope > .outline-card-body'); return { key: c.dataset.navCard, top: Math.round(r.top - view.top), bottom: Math.round(r.bottom - view.top), body: Math.round(b ? b.getBoundingClientRect().height : -1), slot: c.style.getPropertyValue('--slot') }; });
+        var gaps = [];
+        for (var i = 1; i < boxes.length; i++) gaps.push(boxes[i].top - boxes[i - 1].bottom);
+        var last = boxes.length ? boxes[boxes.length - 1] : null;
+        return { boxes: boxes, gaps: gaps, minGap: gaps.length ? Math.min.apply(null, gaps) : 99,
+                 lastWhollyVisible: !!last && last.top >= -1 && last.bottom <= Math.round(view.height) + 1,
+                 scroll: Math.round(nav.scrollTop), overflow: Math.round(nav.scrollHeight - nav.clientHeight) };
+    })()"#;
+    let outside = "(function(dy){ document.querySelector('.session-navigator').dispatchEvent(new WheelEvent('wheel', { deltaY: dy, bubbles: true, cancelable: true })); return 'ok'; })";
+
+    let rest = harness::probe(&tab, state);
+    assert_eq!(
+        rest["lastWhollyVisible"], true,
+        "the window is tall enough that the last card is wholly visible: {rest}"
+    );
+    assert!(
+        rest["overflow"].as_f64().unwrap_or(0.0) > 20.0,
+        "…and the column still reports overflow, which is its own bottom padding and nothing a \
+         reader could want to see: {rest}"
+    );
+    assert!(
+        rest["minGap"].as_f64().unwrap_or(-1.0) >= 4.0,
+        "the panes start with a gap between them: {rest}"
+    );
+
+    // Push hard, from outside any pane, long past the point where anything could be revealed.
+    for _ in 0..40 {
+        harness::eval(&tab, &format!("({outside})(120)"));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let pushed = harness::probe(&tab, state);
+    assert_eq!(
+        pushed["scroll"].as_f64().unwrap_or(-1.0),
+        0.0,
+        "with the last card wholly visible the push reveals nothing, so it moves nothing — the \
+         column does not scroll into its own padding: {rest} -> {pushed}"
+    );
+    assert!(
+        pushed["minGap"].as_f64().unwrap_or(-1.0) >= 4.0,
+        "…and no pane is drawn on the pane above it: the gap survives the push: {rest} -> {pushed}"
+    );
+    assert_eq!(
+        pushed["boxes"], rest["boxes"],
+        "…and nothing closed either, which is #206's rule: {rest} -> {pushed}"
+    );
+
+    // The owner's second clause, which holds whatever the first one decides: "regardless whether
+    // the last drawer stops or not, there should always be a gap between these two panes". Shorten
+    // the window so the last card IS cut off and the column has somewhere real to go, then push
+    // through the whole range — the drawers close from the top, and only once they are heads does
+    // the remainder scroll. The gap is measured at every step, not only at the end, because an
+    // overlap mid-gesture is exactly what the owner photographed.
+    tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: Some(0),
+        top: Some(0),
+        width: Some(1400.0),
+        height: Some(470.0),
+    })
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let short = harness::probe(&tab, state);
+    assert_eq!(
+        short["lastWhollyVisible"], false,
+        "the short window cuts the last card off, so there is room below to ask for: {short}"
+    );
+    let mut worst = f64::MAX;
+    for step in 0..30 {
+        harness::eval(&tab, &format!("({outside})(120)"));
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let now = harness::probe(&tab, state);
+        let gap = now["minGap"].as_f64().unwrap_or(-1.0);
+        worst = worst.min(gap);
+        assert!(
+            gap >= 4.0,
+            "step {step}: a pane is drawn on the pane above it — the gap between cards is rigid at \
+             every openness and at every offset (rule 4): {now}"
+        );
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let closed = harness::probe(&tab, state);
+    assert!(
+        closed["boxes"][0]["body"].as_f64().unwrap_or(-1.0) < 1.0,
+        "the leg is worth something: the walk shut the panes from the top: {short} -> {closed}"
+    );
+    // What closing a drawer frees is given straight back: the reader is never left parked in the
+    // empty space a push opened up under the last card, which is where the offset used to survive
+    // and hold every card above it a little too high.
+    assert_eq!(
+        closed["scroll"].as_f64().unwrap_or(-1.0),
+        0.0,
+        "…and the offset a push spent was given back as the drawers closed: {closed}"
+    );
+    assert_eq!(
+        closed["lastWhollyVisible"], true,
+        "…leaving the last card wholly in view: {closed}"
+    );
+    eprintln!("#214 narrowest gap over the whole gesture: {worst}px");
+    drop(monitor);
+}
+
 /// The outline pane's measured width, the reference a reflow is waited on against (#212).
 const NAV_W: &str =
     "Math.round(document.querySelector('.session-navigator').getBoundingClientRect().width)";

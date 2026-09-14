@@ -670,7 +670,14 @@ function stackOutlineHeads() {
     const list = body && body.querySelector(":scope > .navigator-list");
     if (body) drawers.natural.set(card.dataset.navCard, list ? list.offsetHeight : body.scrollHeight);
     // The gap belongs to the slot: a compacted card rests on `slot`, so sticky catches at once.
-    slot += head.getBoundingClientRect().height + (parseFloat(getComputedStyle(card).marginBottom) || 0);
+    // The step is the card's height when SHUT, measured as the card minus the body it is showing
+    // right now — its head plus whatever chrome the box carries, a border and the head's own
+    // margin here. The head's height ALONE was 6px short of it, so three stacked cards came to
+    // rest 2px apart where the gap is 8, and enough of them would have overlapped outright: the
+    // gaps are rigid at every openness AND at every offset (rule 4), which is a promise about the
+    // slots as much as about the margins (#214).
+    const shut = card.getBoundingClientRect().height - (body ? body.getBoundingClientRect().height : 0);
+    slot += shut + (parseFloat(getComputedStyle(card).marginBottom) || 0);
     drawerOpenOf(card.dataset.navCard); // seed it before anything measures the column
   }
   paintDrawers();
@@ -758,6 +765,41 @@ function paintDrawers() {
     body.style.height = `${Math.round((drawers.natural.get(key) || 0) * drawerOpenOf(key))}px`;
   }
 }
+/** Where the LAST card's bottom sits relative to the column's: positive while there is still card
+ *  below the fold, negative when the column is showing empty space under it.
+ *
+ *  The column ends with 90px of breathing room (`.session-navigator{padding:20px 60px 90px 18px}`),
+ *  which the browser counts as scrollable overflow. Scrolling into it reveals nothing and costs the
+ *  reader the layout: the cards are sticky at their slots with a z-index rising down the column, so
+ *  an offset the drawers did not pay for drags each card up under the one above it. Measured on the
+ *  owner's shape (#214): every card wholly visible, #206's rule exempting all three so the closing
+ *  walk spent nothing, the whole delta going to `scrollTop`, and Turns then holding at its slot
+ *  while Tasks flowed 45px up into it — 37px INSIDE the Turns body, the 8px gap gone, Tasks
+ *  painting over a task row. The owner photographed it: "the last drawer should stop pushing when
+ *  it is fully revealed … there should always be a gap between these two panes".
+ *
+ *  So the offset answers the same question the drawers do — is anything below asking for room? —
+ *  in both directions: a push may spend its remainder only while this is positive, and whatever
+ *  closing a drawer makes empty is given straight back (`reclaimColumnScroll`). */
+function cardTailOffset() {
+  const nav = byId("sessionNavigator");
+  const cards = drawerCards();
+  if (!cards.length) return 0;
+  const view = nav.getBoundingClientRect();
+  return cards[cards.length - 1].getBoundingClientRect().bottom - view.bottom;
+}
+/** Give back the offset a closing drawer just made empty. The browser does this itself when
+ *  content shrinks — it clamps `scrollTop` to the new maximum — but the column's bottom padding
+ *  keeps that maximum artificially high, so the offset survives as empty space below the last card
+ *  and every card above stays stuck a little too high. Without it a push in a short window left
+ *  9px of offset behind after the drawers had shut, and the last card, which cannot stick past the
+ *  end of its own containing block, came to rest 1px inside the card above it. */
+function reclaimColumnScroll() {
+  const nav = byId("sessionNavigator");
+  if (nav.scrollTop <= 0) return;
+  const empty = -cardTailOffset();
+  if (empty > 0) nav.scrollTop = Math.max(0, nav.scrollTop - empty);
+}
 /** A wheel delta in PIXELS, whatever units the device reports it in. */
 function wheelPixels(event) {
   const nav = byId("sessionNavigator");
@@ -835,7 +877,8 @@ byId("sessionNavigator").addEventListener("wheel", event => {
   }
   if (dy > 0) {
     dy = routeDrawerDelta(dy);
-    if (dy > 0) nav.scrollTop += dy;
+    // The remainder scrolls the column only as far as there is a card left to reveal (#214).
+    if (dy > 0) nav.scrollTop += Math.min(dy, Math.max(0, cardTailOffset()));
   } else {
     const used = Math.min(nav.scrollTop, -dy);
     if (used > 0) nav.scrollTop -= used;
@@ -843,6 +886,7 @@ byId("sessionNavigator").addEventListener("wheel", event => {
     if (dy < 0) routeDrawerDelta(dy);
   }
   paintDrawers();
+  reclaimColumnScroll();
   event.preventDefault();
 }, { passive: false });
 /** A toggle's height change is animated; a gesture's is not — that one tracks the wheel 1:1. */
