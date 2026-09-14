@@ -923,7 +923,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const same = [{ id: "x", status: "pending" }, { id: "x", status: "pending" }];
   assert.deepEqual(taskOrder(same).map(r => r.index), [0, 1], "ties keep the stream's order");
   assert.deepEqual(taskGroups([]), [], "no tasks, no groups");
-  assert.match(appSource, /const taskShown = taskGroups\(tasks\)\.filter\(group => !liveTasksOnly \|\| group\.key !== "completed"\);/, "#186: the pane filters the GROUPS, never the list — each row carries its index into `meta.tasks` and `data-task-open` hands that index straight back to `openTaskPopover`, so a filtered array would open the wrong task's details");
+  assert.match(appSource, /const afterFilter = taskGroups\(tasks\)\.filter\(group => group\.key === "other" \|\| shownGroups\.has\(group\.key\)\);/, "#186, as #218 leaves it: the pane filters the GROUPS, never the list — each row carries its index into `meta.tasks` and `data-task-open` hands that index straight back to `openTaskPopover`, so a filtered array would open the wrong task's details");
   assert.match(appSource, /taskShown\.map\(group => `<div class="work-group" data-task-group="\$\{group\.key\}">/, "the pane renders the groups with a boundary");
   const stateSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
   assert.match(stateSource, /liveOnly: new Set\(json\("am-prod-live-only", \["tasks", "agents"\]\)\),/, "…live-only is ON for both panes by default (#186), and remembered per viewer like the other outline choices");
@@ -931,8 +931,25 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // was unfindable there (a faint dot beside the decorative dots the counts wear) and, once found,
   // unclickable — the head outranked it, so the pointer toggled the drawer instead.
   assert.doesNotMatch(appSource, /button\.id = `\$\{key\}LiveOnly`;/, "the dot on the card head is gone (#215)");
-  assert.match(appSource, /const LIVE_ONLY_PANES = \{ tasks: "running and pending tasks", agents: "running sub-agents" \};/, "…the panes that carry the filter are named once");
-  assert.match(appSource, /if \(!LIVE_ONLY_PANES\[key\] \|\| !on\) return row;/, "…each gets a sub-row under its pane, and only while that pane is shown");
+  assert.match(appSource, /const LIVE_ONLY_PANES = \{ agents: "running sub-agents" \};/, "…the panes that carry a single live box are named once");
+  assert.match(appSource, /if \(!on\) return row;/, "…a sub-row only while its pane is shown");
+  // #218, the owner: "for tasks, I think we will need checkboxes for running and pending (not
+  // active)". Live work is running work AND pending work, and a reader watching a queue separates
+  // them. Three rows rather than two, because with only the live pair the completed tasks are an
+  // implicit the control never mentions; the keys are the pane's own group keys so the menu and
+  // the grouping cannot drift.
+  assert.match(appSource, /const TASK_GROUP_ROWS = \[\n\s*\{ key: "in_progress", label: "Running" \},\n\s*\{ key: "pending", label: "Pending" \},\n\s*\{ key: "completed", label: "Completed" \},\n\s*\];/, "the Tasks pane's filter is one row per state (#218)");
+  assert.match(appSource, /const afterFilter = taskGroups\(tasks\)\.filter\(group => group\.key === "other" \|\| shownGroups\.has\(group\.key\)\);/, "…and the pane shows the states the reader checked, with `other` always shown since no box would ever bring it back");
+  assert.match(appSource, /if \(!uiState\.taskGroupsShown\.size\) for \(const g of TASK_GROUP_ROWS\) uiState\.taskGroupsShown\.add\(g\.key\);/, "…never all three off, the same rule the session filter has (#202)");
+  assert.match(stateSource, /taskGroupsShown: new Set\(json\("am-prod-task-groups", \["in_progress", "pending"\]\)\),/, "…running and pending by default, which is what the one box used to mean, and remembered");
+  assert.match(stateSource, /localStorage\.setItem\("am-prod-task-groups", JSON\.stringify\(\[\.\.\.uiState\.taskGroupsShown\]\)\);/, "…and written, or it is a choice the reader makes again every reload");
+  assert.match(appSource, /recordState\.taskGroupCounts = Object\.fromEntries\(taskGroups\(tasks\)\.map\(g => \[g\.key, g\.rows\.length\]\)\);/, "…each row saying what its box is worth");
+  // #217, the owner: "hide tasks on the tasks pane that says no title recorded in this session. It
+  // is pointless to show those tasks." Out of the LIST, which is for scanning; the detail card
+  // still says the absence honestly (#187/#188), because a card is opened deliberately.
+  assert.match(appSource, /const titled = row => !!\(row\.task\.subject \|\| row\.task\.title\);/, "a task with no recorded title stays out of the pane (#217)");
+  assert.match(appSource, /\.map\(group => \(\{ \.\.\.group, rows: group\.rows\.filter\(titled\) \}\)\)/, "…filtered per ROW, never out of `tasks`, because a row's index is what opens its details");
+  assert.match(appSource, /const untitledTasks = liveRows - taskShown\.reduce\(\(n, group\) => n \+ group\.rows\.length, 0\);/, "…and counted apart from the filter's own hiding, since only one of the two is the reader's to undo");
   assert.match(appSource, /data-live-only="\$\{escapeText\(key\)\}"/, "…as a checkbox row in the menu");
   assert.match(appSource, /const live = event\.target\.closest\("\[data-live-only\]"\);/, "…handled before the pane toggle, since it sits inside that row's menu");
   assert.match(appSource, /recordState\.hiddenByFilter = \{ tasks: liveTasksOnly \? hiddenTasks : 0, agents: liveAgentsOnly \? hiddenAgents : 0 \};/, "…and the row says how much the filter is holding back, which the head's counts cannot");

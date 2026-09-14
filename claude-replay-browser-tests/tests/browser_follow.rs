@@ -2905,6 +2905,10 @@ fn the_app_shell_filters_a_pane_to_what_is_live_from_the_outline_menu() {
             ("3", "three, done", "completed"),
             ("4", "four, running", "in_progress"),
             ("5", "five, pending", "pending"),
+            // Two the session recorded no title for — one of them RUNNING, so it would sit in the
+            // default view if it were shown at all (#217).
+            ("6", "", "in_progress"),
+            ("7", "", "completed"),
         ],
     );
     let monitor = Monitor::spawn(Kind::V2, 2921, &base, Some(&stores), true);
@@ -2958,65 +2962,71 @@ fn the_app_shell_filters_a_pane_to_what_is_live_from_the_outline_menu() {
     );
     let menu = harness::probe(
         &tab,
-        &format!("(function(){{ var hittable = {hittable}; var m = document.getElementById('navigatorPanesMenu'); var rows = [...m.querySelectorAll('[data-live-only]')]; var t = m.querySelector('[data-live-only=\"tasks\"]'); var pane = m.querySelector('[data-pane-toggle=\"tasks\"]'); return {{ open: m.classList.contains('open'), keys: rows.map(function (r) {{ return r.dataset.liveOnly; }}), checked: t && t.getAttribute('aria-checked'), hit: hittable(t), hitTag: (function(){{ if (!t) return null; var r = t.getBoundingClientRect(); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return h ? h.tagName + '.' + (h.className || '').toString().split(' ')[0] : null; }})(), hidden: t ? (t.querySelector('small') || {{}}).textContent || null : null, underItsPane: !!(pane && pane.nextElementSibling === t) }}; }})()"),
+        &format!("(function(){{ var hittable = {hittable}; var m = document.getElementById('navigatorPanesMenu'); var rows = [...m.querySelectorAll('[data-live-only]')]; var t = m.querySelector('[data-task-group]'); var pane = m.querySelector('[data-pane-toggle=\"tasks\"]'); var states = [...m.querySelectorAll('[data-task-group]')].map(function (r) {{ return [r.dataset.taskGroup, r.querySelector('span:nth-of-type(2)').textContent, r.getAttribute('aria-checked')]; }}); return {{ open: m.classList.contains('open'), states: states, keys: rows.map(function (r) {{ return r.dataset.liveOnly; }}), checked: t && t.getAttribute('aria-checked'), hit: hittable(t), hitTag: (function(){{ if (!t) return null; var r = t.getBoundingClientRect(); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return h ? h.tagName + '.' + (h.className || '').toString().split(' ')[0] : null; }})(), hidden: t ? (t.querySelector('small') || {{}}).textContent || null : null, underItsPane: !!(pane && pane.nextElementSibling === t) }}; }})()"),
     );
     assert_eq!(menu["open"], true, "the outline's drop-down opens: {menu}");
     assert_eq!(
+        menu["states"],
+        serde_json::json!([
+            ["in_progress", "Running", "true"],
+            ["pending", "Pending", "true"],
+            ["completed", "Completed", "false"]
+        ]),
+        "…the Tasks pane carries one row per state, running and pending checked (#218): {menu}"
+    );
+    assert_eq!(
         menu["keys"],
-        serde_json::json!(["tasks", "agents"]),
-        "…with a row for each pane that has such a filter, and no others: {menu}"
+        serde_json::json!(["agents"]),
+        "…and a single live box for the agents, which are running or finished: {menu}"
     );
     assert_eq!(
         menu["underItsPane"], true,
-        "…each one directly under the pane it belongs to: {menu}"
-    );
-    assert_eq!(
-        menu["checked"], "true",
-        "…on by default, as it has been since #186: {menu}"
+        "…the first task row directly under the pane it belongs to: {menu}"
     );
     assert_eq!(
         menu["hit"], true,
         "…and clickable, which the dot it replaces was not: {menu}"
     );
-    assert_eq!(
-        menu["hidden"], "3 hidden",
-        "…saying what it is holding back, which the head's counts cannot: {menu}"
-    );
 
     // 3. It filters the pane, both ways.
-    let rows = "(function(){ return { tasks: document.querySelectorAll('#navigatorWork .work-task').length, agents: document.querySelectorAll('#navigatorAgents .outline-agent').length }; })()";
+    let rows = "(function(){ var titles = [...document.querySelectorAll('#navigatorWork .work-task strong')].map(function (e) { return e.textContent.trim(); }); return { tasks: titles.length, untitled: titles.filter(function (t) { return /no title recorded/.test(t); }).length, agents: document.querySelectorAll('#navigatorAgents .outline-agent').length }; })()";
     let live = harness::probe(&tab, rows);
     assert_eq!(
         live["tasks"], 2,
-        "the pane starts filtered: the running one and the pending one, not the three finished: {live}"
+        "the pane starts on the running one and the pending one — not the three finished, and not \
+         the two the session recorded no title for, one of which is running (#217): {live}"
     );
-    harness::eval(
-        &tab,
-        "document.querySelector('#navigatorPanesMenu [data-live-only=\"tasks\"]').click(); 'ok'",
-    );
-    std::thread::sleep(std::time::Duration::from_millis(260));
+    let click_state = |key: &str| {
+        harness::eval(
+            &tab,
+            &format!("document.querySelector('#navigatorPanesMenu [data-task-group=\"{key}\"]').click(); 'ok'"),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(260));
+    };
+    click_state("completed");
     let every = harness::probe(&tab, rows);
     assert_eq!(
         every["tasks"], 5,
-        "unchecking it shows every task: {live} -> {every}"
+        "checking Completed adds the three finished ones — and still not the untitled pair: \
+         {live} -> {every}"
     );
     assert_eq!(
         every["agents"], live["agents"],
-        "…and leaves the other pane's filter alone, which is why they are two rows: {live} -> {every}"
+        "…and leaves the agents' own box alone, which is why they are separate rows: {live} -> {every}"
     );
-    harness::eval(
-        &tab,
-        "document.querySelector('#navigatorPanesMenu [data-live-only=\"tasks\"]').click(); 'ok'",
-    );
-    std::thread::sleep(std::time::Duration::from_millis(260));
+    click_state("completed");
     let back = harness::probe(&tab, rows);
-    assert_eq!(back["tasks"], 2, "…and checking it filters again: {back}");
+    assert_eq!(back["tasks"], 2, "…and unchecking it filters again: {back}");
+    // Never all three off: the last one back puts every state on, as the session filter does (#202).
+    click_state("in_progress");
+    click_state("pending");
+    let none = harness::probe(&tab, rows);
+    assert_eq!(
+        none["tasks"], 5,
+        "unchecking the last state puts every state back rather than emptying the pane: {none}"
+    );
 
     // 4. It is remembered, like the choice it replaces.
-    harness::eval(
-        &tab,
-        "document.querySelector('#navigatorPanesMenu [data-live-only=\"tasks\"]').click(); 'ok'",
-    );
     std::thread::sleep(std::time::Duration::from_millis(200));
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
@@ -3035,6 +3045,11 @@ fn the_app_shell_filters_a_pane_to_what_is_live_from_the_outline_menu() {
     assert_eq!(
         remembered["tasks"], 5,
         "the choice survives a reload: {remembered}"
+    );
+    assert_eq!(
+        remembered["untitled"], 0,
+        "…and a task with no recorded title is out of the pane whatever the reader checks (#217): \
+         {remembered}"
     );
     drop(monitor);
 }
@@ -6539,7 +6554,7 @@ fn the_app_shell_panes_open_on_what_is_live() {
             "document.querySelector('.session-navigator').innerText.slice(0, 200)",
         );
     };
-    let state = "(function(){ var q = function (s) { return [...document.querySelectorAll(s)].map(function (e) { return e.textContent.trim(); }); }; return { tasks: q('#navigatorWork .work-task strong'), groups: q('#navigatorWork .work-group span:first-child'), agents: q('#navigatorAgents .outline-agent-copy strong'), taskCount: document.getElementById('navigatorWorkCount').textContent.replace(/\\s+/g, ' ').trim(), agentCount: document.getElementById('navigatorAgentCount').textContent.replace(/\\s+/g, ' ').trim(), tasksOn: String(JSON.parse(localStorage.getItem('am-prod-live-only') || '[]').includes('tasks')), agentsOn: String(JSON.parse(localStorage.getItem('am-prod-live-only') || '[]').includes('agents')), agentsEmpty: (document.querySelector('#navigatorAgents .activity-empty') || {}).textContent || '' }; })()";
+    let state = "(function(){ var q = function (s) { return [...document.querySelectorAll(s)].map(function (e) { return e.textContent.trim(); }); }; return { tasks: q('#navigatorWork .work-task strong'), groups: q('#navigatorWork .work-group span:first-child'), agents: q('#navigatorAgents .outline-agent-copy strong'), taskCount: document.getElementById('navigatorWorkCount').textContent.replace(/\\s+/g, ' ').trim(), agentCount: document.getElementById('navigatorAgentCount').textContent.replace(/\\s+/g, ' ').trim(), tasksOn: String(JSON.parse(localStorage.getItem('am-prod-task-groups') || '[]').length < 3), agentsOn: String(JSON.parse(localStorage.getItem('am-prod-live-only') || '[]').includes('agents')), agentsEmpty: (document.querySelector('#navigatorAgents .activity-empty') || {}).textContent || '' }; })()";
 
     open(&tab);
     let live = harness::probe(&tab, state);

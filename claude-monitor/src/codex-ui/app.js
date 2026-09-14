@@ -960,17 +960,38 @@ function renderNavigator() {
   // reads — "renders it useless" — so the pane opens on what is still moving and the reader asks
   // for the rest. The row objects carry their own stream index, so filtering the LIST is safe:
   // `taskGroups` re-derives the groups from whatever it is given.
-  const liveTasksOnly = uiState.liveOnly.has("tasks");
+  // #218: the pane shows the task states the reader checked. "other" (cancelled, or a status the
+  // stream never classified) is always shown — it is neither live nor done, and a box that does not
+  // exist would hide it for good.
+  const shownGroups = uiState.taskGroupsShown;
+  const liveTasksOnly = !TASK_GROUP_ROWS.every(g => shownGroups.has(g.key));
   // Filter the GROUPS, never the list. Each row carries `index`, the position in `meta.tasks`,
   // and `data-task-open` hands that index straight to `openTaskPopover`, which reads the FULL
   // list back — so filtering the array first would silently open the wrong task's details.
-  const taskShown = taskGroups(tasks).filter(group => !liveTasksOnly || group.key !== "completed");
-  const hiddenTasks = tasks.length - taskShown.reduce((n, group) => n + group.rows.length, 0);
+  const afterFilter = taskGroups(tasks).filter(group => group.key === "other" || shownGroups.has(group.key));
+  // #217, the owner: "hide tasks on the tasks pane that says no title recorded in this session. It
+  // is pointless to show those tasks". A task the session recorded no title for is a row that says
+  // it has nothing to say, and a pane is for SCANNING. The detail card still says the absence
+  // honestly (#187/#188) — a card is opened deliberately, and there the gap is the answer. Filtered
+  // per ROW rather than out of `tasks`, because each row carries its index into that array and
+  // `data-task-open` hands the index straight back to the popover.
+  const titled = row => !!(row.task.subject || row.task.title);
+  const taskShown = afterFilter
+    .map(group => ({ ...group, rows: group.rows.filter(titled) }))
+    .filter(group => group.rows.length);
+  // The two hidings are counted apart, because only one of them is the reader's to undo: the
+  // filter's count is what its control reports, and an untitled task is gone whatever they choose.
+  const liveRows = afterFilter.reduce((n, group) => n + group.rows.length, 0);
+  const hiddenTasks = tasks.length - liveRows;
+  const untitledTasks = liveRows - taskShown.reduce((n, group) => n + group.rows.length, 0);
   // An empty pane must never look like missing data: say that the filter is what emptied it, and
   // how much it is holding, because the reader cannot see what is not there.
+  const untitledNote = untitledTasks ? ` · ${untitledTasks} with no recorded title` : "";
   const noTasks = liveTasksOnly && hiddenTasks
-    ? `<div class="activity-empty">Nothing live — ${hiddenTasks} finished ${hiddenTasks === 1 ? "task" : "tasks"} hidden</div>`
-    : '<div class="activity-empty">No session tasks</div>';
+    ? `<div class="activity-empty">Nothing live — ${hiddenTasks} finished ${hiddenTasks === 1 ? "task" : "tasks"} hidden${escapeText(untitledNote)}</div>`
+    : untitledTasks
+      ? `<div class="activity-empty">No session tasks${escapeText(untitledNote)}</div>`
+      : '<div class="activity-empty">No session tasks</div>';
   byId("navigatorWork").innerHTML = taskShown.map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("") || noTasks;
   const agents = directAgents(), activeAgents = agents.filter(agent => agent.running).length;
   byId("navigatorAgentCount").innerHTML = outlineSummary(activeAgents, agents.length - activeAgents, agents.length);
@@ -992,6 +1013,8 @@ function renderNavigator() {
   // reads "25 active · 253/308 done" either way, so without this the reader has no way to tell a
   // pane that is filtered from a pane that is simply short.
   recordState.hiddenByFilter = { tasks: liveTasksOnly ? hiddenTasks : 0, agents: liveAgentsOnly ? hiddenAgents : 0 };
+  // How many tasks each state holds, for the menu's rows to show what a box is worth (#218).
+  recordState.taskGroupCounts = Object.fromEntries(taskGroups(tasks).map(g => [g.key, g.rows.length]));
   renderSessionInfo(turns.length, agents.length);
   document.querySelectorAll("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   stackOutlineHeads();
@@ -1752,8 +1775,16 @@ function toggleNavigator(open) { uiState.navigatorOpen = open; persist(); render
 // the trigger, hovered, exactly as the session title opens the copy menu — same surface, same
 // pointer bridge across the gap, same 120ms grace so the pointer can travel into it. Production
 // -only chrome layered on at runtime, because `reference-shell.html` is extracted from the demo.
-/** The panes whose rows carry an "Active only" sub-row, and what that row is filtering (#215). */
-const LIVE_ONLY_PANES = { tasks: "running and pending tasks", agents: "running sub-agents" };
+/** The panes whose rows carry a filter sub-row, and what that row is filtering (#215). */
+const LIVE_ONLY_PANES = { agents: "running sub-agents" };
+/** The Tasks pane's sub-rows: one per state a reader distinguishes (#218). The keys are the pane's
+ *  own group keys, so the menu and the grouping cannot drift apart. Agents keeps a single box,
+ *  because a sub-agent is running or it is finished and one box already says which. */
+const TASK_GROUP_ROWS = [
+  { key: "in_progress", label: "Running" },
+  { key: "pending", label: "Pending" },
+  { key: "completed", label: "Completed" },
+];
 const panesTrigger = document.createElement("button");
 panesTrigger.id = "navigatorPanesTrigger";
 panesTrigger.type = "button";
@@ -1780,7 +1811,18 @@ function renderPanesMenu() {
     // filter … it is not a frequent operation". A pane row is one full-width button, so the second
     // choice cannot nest inside it; it is an indented sub-row under the pane it belongs to, and
     // only while that pane is on — a filter for a pane nobody is showing is noise.
-    if (!LIVE_ONLY_PANES[key] || !on) return row;
+    if (!on) return row;
+    // Tasks: one row per state (#218). The count beside a CHECKED row is what it is showing, so
+    // the reader can see what each box is worth before unchecking it.
+    if (key === "tasks") {
+      const counts = recordState.taskGroupCounts || {};
+      return row + TASK_GROUP_ROWS.map(g => {
+        const shown = uiState.taskGroupsShown.has(g.key);
+        const n = counts[g.key] || 0;
+        return `<button class="pane-option pane-suboption ${shown ? "on" : ""}" type="button" role="menuitemcheckbox" aria-checked="${shown}" data-task-group="${escapeText(g.key)}" title="${shown ? `Showing the ${g.label.toLowerCase()} tasks` : `Show the ${g.label.toLowerCase()} tasks`}"><span class="pane-check" aria-hidden="true"></span><span>${escapeText(g.label)}</span>${n ? `<small>${n}</small>` : ""}</button>`;
+      }).join("");
+    }
+    if (!LIVE_ONLY_PANES[key]) return row;
     const live = uiState.liveOnly.has(key);
     const hidden = (recordState.hiddenByFilter || {})[key] || 0;
     const count = live && hidden ? `<small>${hidden} hidden</small>` : "";
@@ -1805,6 +1847,20 @@ function schedulePanesClose() {
   }, 120);
 }
 panesMenu.onclick = event => {
+  // A task state, first: the Tasks pane's rows are one per state (#218). Never all three off — an
+  // empty set is a pane that looks broken, and the way back would be a control the reader cannot
+  // see the effect of; unchecking the last one puts every state back, as the session filter does.
+  const group = event.target.closest("[data-task-group]");
+  if (group) {
+    const key = group.dataset.taskGroup;
+    if (uiState.taskGroupsShown.has(key)) uiState.taskGroupsShown.delete(key);
+    else uiState.taskGroupsShown.add(key);
+    if (!uiState.taskGroupsShown.size) for (const g of TASK_GROUP_ROWS) uiState.taskGroupsShown.add(g.key);
+    persist();
+    renderNavigator();
+    renderPanesMenu();
+    return;
+  }
   // The sub-row first: it sits inside the same menu and names its own pane (#215).
   const live = event.target.closest("[data-live-only]");
   if (live) {

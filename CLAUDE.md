@@ -235,9 +235,18 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   resting 37px inside the body of the pane above it. The gaps are rigid at every openness AND at
   every offset, which makes a slot's step the card's SHUT height rather than its head's.
   `design/outline-drawers.md` has the model.
-  **Each pane's live-only filter is a row in the outline's drop-down** (#186, moved there by #215):
-  the panes menu under the word "Outline" carries an "Active only" checkbox indented beneath Tasks
-  and beneath Agents, on by default, remembered, and saying how many rows it is holding back. It
+  **Each pane's filter is a row in the outline's drop-down** (#186, moved there by #215): the panes
+  menu under the word "Outline" carries the choices indented beneath the pane they belong to, on by
+  default, remembered, and saying how much they hold back. Tasks has one row per STATE — Running,
+  Pending, Completed, keyed by the pane's own group keys so the menu and the grouping cannot drift
+  (#218) — running and pending checked, and unchecking the last one puts every state back the way
+  the session filter does; a state the vocabulary does not cover (`other`) is always shown, since no
+  box would ever bring it back. Agents keeps a single "Active only" box, because a sub-agent is
+  running or it is finished. **A task the session recorded no title for is not listed** in that pane
+  at all (#217, the owner: "it is pointless to show those tasks"); the pane says how many it is
+  holding, and the classic page's task PANEL still lists it and still opens the card that explains
+  the absence (#187/#188), because a board that dropped a task would be lying about what the session
+  holds. It
   used to be a dot on the card's head, where it was both unfindable and unclickable — a head action
   is absolutely positioned over a head that outranked it, so it reported a perfect 24×24 rectangle
   and answered no click at all; `.outline-card-action` is `z-index:3` now, which is what makes the

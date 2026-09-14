@@ -68,6 +68,12 @@ export const uiState = {
   // showing everything "renders it useless". Per VIEWER, like the other outline choices, and the
   // pane's own header keeps showing both counts so what is held back is never a secret.
   liveOnly: new Set(json("am-prod-live-only", ["tasks", "agents"])),
+  // …and for TASKS, which of the three states the pane shows (#218, the owner: "for tasks, I think
+  // we will need checkboxes for running and pending (not active)"). Live work is running work and
+  // pending work, and a reader watching a queue separates them; a single "active" box could not.
+  // The keys are the pane's own group keys, so the filter and the grouping cannot drift. Running
+  // and pending by default, which is exactly what the one box used to mean.
+  taskGroupsShown: new Set(json("am-prod-task-groups", ["in_progress", "pending"])),
   searchTab: "all", searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), searchWhole: false, toolFilters: new Set(),
   globalResults: [], globalIndex: 0,
   reading: parseReading(localStorage.getItem(READING_KEY)) || { ...DEFAULT_READING },
@@ -92,6 +98,7 @@ export function persist() {
   localStorage.setItem("am-prod-nav-panes", JSON.stringify([...uiState.navPanes]));
   localStorage.setItem("am-prod-info-folds", JSON.stringify([...uiState.infoFolds]));
   localStorage.setItem("am-prod-live-only", JSON.stringify([...uiState.liveOnly]));
+  localStorage.setItem("am-prod-task-groups", JSON.stringify([...uiState.taskGroupsShown]));
   localStorage.setItem("am-prod-read", JSON.stringify(indexState.read));
   localStorage.setItem("am-prod-session-filter", JSON.stringify([...indexState.buckets]));
   if (uiState.readingChosen) localStorage.setItem(READING_KEY, JSON.stringify(uiState.reading));

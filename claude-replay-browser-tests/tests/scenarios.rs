@@ -4348,6 +4348,33 @@ fn scenario_a_task_with_no_title_says_why(
     eval(tab, open);
     settle();
     settle();
+    // #217, the owner: "hide tasks on the tasks pane that says no title recorded in this session.
+    // It is pointless to show those tasks." That is about the app shell's OUTLINE pane, which sits
+    // beside the transcript and is SCANNED; the classic page's task panel is the board itself, and
+    // a board that silently dropped a task would be lying about what the session holds. So the two
+    // surfaces answer differently here, deliberately, and each says which: the pane lists nothing
+    // and reports the count, the panel lists the row and opens the card that explains the absence
+    // (#187/#188).
+    if surface == Surface::AppShell {
+        let pane = probe(
+            tab,
+            "(function(){ var w = document.getElementById('navigatorWork'); if (!w) return null; var titles = [...w.querySelectorAll('.work-task strong')].map(function (e) { return e.textContent.trim(); }); return { rows: titles.length, untitled: titles.filter(function (t) { return /no title recorded/.test(t); }).length, empty: (w.querySelector('.activity-empty') || {}).textContent || '' }; })()",
+        );
+        assert_eq!(
+            pane["untitled"], 0,
+            "the outline pane does not list a task the session recorded no title for: {pane}"
+        );
+        assert_eq!(
+            pane["rows"], 0,
+            "…and this fixture's only task is that one, so the pane has nothing to list: {pane}"
+        );
+        let empty = pane["empty"].as_str().unwrap_or("");
+        assert!(
+            empty.contains("no recorded title"),
+            "…and it says what it is holding back rather than looking like missing data: {pane}"
+        );
+        return;
+    }
     let card = match surface {
         Surface::Classic => "(function(){ var c = document.querySelector('#taskbox .tcard'); if (!c) return null; return { rows: document.querySelectorAll('#taskbox .task-item').length, id: (c.querySelector('.tcard-id')||{}).textContent, title: (c.querySelector('.tcard-title')||{}).textContent, gap: (c.querySelector('.tcard-gap')||{}).textContent || '', labels: [...c.querySelectorAll('.tcard-label')].map(e => e.textContent), row: (document.querySelector('#taskbox .task-subj')||{}).textContent }; })()",
         Surface::AppShell => "(function(){ var c = document.querySelector('.task-card'); if (!c) return null; return { rows: document.querySelectorAll('#navigatorWork .work-task').length, id: (c.querySelector('.task-card-id')||{}).textContent, title: (c.querySelector('.task-card-title')||{}).textContent, gap: (c.querySelector('.task-card-gap')||{}).textContent || '', labels: [...c.querySelectorAll('.task-card-label')].map(e => e.textContent), row: (document.querySelector('#navigatorWork .work-copy strong')||{}).textContent }; })()",
