@@ -179,10 +179,23 @@ write site); the pages' own writes are stage 4's.
 | **I10** | **A jump lands on content.** `P := (target, landing)`; the window is chosen around the target; `place()` puts it there. | #66, #191 | **construction** (`rangeAround`, the landing loop) — but a fling INTO a pad had no anchor at all until #191's model form | construction — the model form of `P` is the fallback source, always |
 | **I11** | **The record under `P` is mounted after every transaction.** The window is chosen around `P`, never around the raw offset, whenever `P` has an anchor source. | #194 (the walk unmounted the record under the reader), #66 | **policy** — `updateWindow` ranges around the anchor; a delta's reconcile mounted above mid-gesture until the lo-hold patch | construction — `range = rangeFor(P)` in `transact()`: `rangeAround` for an anchor or model `P`, `rangeAtEnd` for the tail (stage 5); the lo-hold patch goes |
 | **I12** | **A rewrite that drops `P`'s identity falls back to the model form captured before the rewrite.** The same id naming a different record is detected by index, not trusted. | #165 | **partly** — `indexOfIdentity` scans; a dropped key logs `restore:unmounted` and stays put | construction — `transact()` captures both forms before a rewrite; the anchor is validated by index+key |
-| **I13** | **Follow is dropped only by the reader.** | #103, #165, #185 | **construction** (`classifyScroll` on the reader's scroll; `readerReshaped`) | same |
+| **I13** | **Follow is dropped only by the reader.** | #103, #165, #185, #213 | **construction** (`classifyScroll` on the reader's scroll; `readerReshaped`; `confirmFollow` before a transaction begins, which applies the reader's own scroll when the browser delivered the event late) | same |
 | **I14** | **Under a drag nothing is written; at release `P` is re-read from where the thumb left it.** | #98, #132 step 3 | construction (`beginDrag`/`endDrag`) | same |
 
 **What today's engine holds by construction:** I3, I5, I6, I10 (mostly), I13, I14.
+
+**I13 and the late scroll event (#213).** Follow is released in the scroll handler, and the browser
+can deliver that event most of a second after the wheel (measured at the wheel's own clock: 6, 4,
+1018, 1019, 939, 7 ms). Inside that window a transaction places at the tail, correctly by its own
+lights, and the reader's scroll is then never classified at all — by the time the event arrives the
+gap is 0 and `classifyScroll` reads "already following". `confirmFollow` closes it: at the start of
+a transaction, if the offset is not where the engine last left it, the reader moved it, and the
+same `classifyScroll` runs on what is true now. The test is the engine's BELIEF rather than the gap,
+because a gap alone would unfollow on every growth — growth adds content below without moving the
+offset. It runs BEFORE `following0` is read, since it is the deferred half of the scroll handler
+rather than a decision the transaction makes; with the call inside that window the check fired
+exactly as it should have, one I13 `{from: true, to: false}` on a `records` transaction in two runs
+of three of the runaway replay.
 **By policy (timers/guards):** I1, I4, I7, I8, I11.
 **Only by tests:** I9, I12 (half).
 **Not held:** I2 — and this is the count to keep in view: 3 write sites in the engine, ~16 more in the two pages, every one of them a place where `scrollTop` moves without `P` knowing.

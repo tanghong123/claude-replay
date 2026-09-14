@@ -1240,11 +1240,15 @@ class VirtualWindow {
     if (this.transacting) { this.queued.push([cause, options]); return false; }
     this.transacting = true;
     let summary = null;
+    // The reader may have taken the view before the browser delivered their scroll (#213). Applying
+    // that is the DEFERRED HALF of the scroll handler, not a decision this transaction makes, so it
+    // happens before `following0` — which is I13's reading of what the engine believed when the
+    // transaction began. I13 ("follow is dropped only by the reader") is exactly what this upholds:
+    // the drop is theirs, and the engine is only hearing about it late.
+    const startTop = this.frame.scrollTop();
+    this.confirmFollow(startTop);
     const following0 = this.following;
     try {
-      const startTop = this.frame.scrollTop();
-      // Before the flag is read: the reader may have taken the view without the event arriving yet.
-      this.confirmFollow(startTop);
       const p0 = this.positionFor(options);
       // The reader's scroll since `P` was read — everything the offset moved between the last
       // transaction and this one's start (see `place`). Zero after a re-read, and for a page's own
