@@ -976,6 +976,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /recordState\.shownTaskRows = taskShown\.flatMap\(group => group\.rows\);/, "the pane records the rows it rendered (#225)");
   assert.match(appSource, /const shown = recordState\.shownTaskRows \|\| \[\];\n\s*const target = taskCenterTarget\(shown\);/, "…and the centring control aims at those, not at the board behind them");
   assert.doesNotMatch(appSource, /tasksCenter\.dataset\.slot/, "…from the only action slot there is, now that the dot is gone");
+  // #226, the owner, after a click left the Tasks card sitting ON the Turns list: "The control
+  // should not change drawer positions, only the items in the pane." It used to turn the pane on,
+  // force its drawer fully open (#139) and open the whole column; one drawer opened without taking
+  // room from the others overruns the column and the sticky cards ride over one another.
+  assert.doesNotMatch(appSource, /function centerTasks\(\)[\s\S]{0,900}?setDrawerOpen/, "the centring control does not move the drawers (#226)");
+  assert.doesNotMatch(appSource, /function centerTasks\(\)[\s\S]{0,900}?toggleNavigator/, "…nor opens the column the reader closed");
+  assert.doesNotMatch(appSource, /function centerTasks\(\)[\s\S]{0,900}?navCards\.add/, "…nor turns a pane back on");
   assert.doesNotMatch(navCss215, /outline-card-action\[data-slot="2"\]/, "…so the second slot's rule goes with it");
   assert.match(navCss215, /\.outline-card:has\(>\.outline-card-action\)>\.outline-card-head\{grid-template-columns:18px minmax\(0,1fr\) auto 24px 13px\}/, "…and a head carrying an action reserves a COLUMN for it, so the counts end before the glyph begins");
   assert.match(stateSource, /localStorage\.setItem\("am-prod-live-only", JSON\.stringify\(\[\.\.\.uiState\.liveOnly\]\)\);/, "…and `persist` actually writes it — a filter a reader must set again every reload is one they stop using");

@@ -2079,9 +2079,13 @@ function centerTasks() {
   const shown = recordState.shownTaskRows || [];
   const target = taskCenterTarget(shown);
   if (!target) return false;
-  if (!uiState.navCards.has("tasks")) { uiState.navCards.add("tasks"); persist(); renderNavigator(); }
-  setDrawerOpen("tasks", 1); // #139: give the tasks drawer the room to be looked at
-  if (!uiState.navigatorOpen) toggleNavigator(true);
+  // #226, the owner, after a click left the column in a state no gesture would produce — the Tasks
+  // card sitting ON the Turns list: "The control should not change drawer positions, only the items
+  // in the pane." It used to turn the pane on, force its drawer fully open (#139) and open the
+  // whole column. The middle one is what broke the stack: one drawer set to fully open takes no
+  // room from the others, so the column exceeds its viewport and the sticky cards ride over one
+  // another. The control scrolls the pane and does nothing else; on a shut drawer there is nothing
+  // to scroll and nothing happens, which is the honest answer rather than acting at a distance.
   const row = document.querySelectorAll("#navigatorWork .work-task")[target.index];
   if (!row) return false;
   const pane = paneScroller(row);

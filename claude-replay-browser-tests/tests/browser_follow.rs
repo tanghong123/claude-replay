@@ -3657,8 +3657,48 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
         "…and answers a click at its own centre: {glyph}"
     );
 
+    // #226: the column's shape is the reader's, not the control's. The owner photographed the Tasks
+    // card sitting ON the Turns list after a click, because the control forced its own drawer fully
+    // open (#139) and one drawer opened without taking room from the others overruns the column and
+    // the sticky cards ride over one another. Every pane's openness and every gap between cards is
+    // recorded before the click and must be the same after it.
+    let shape = r#"(function(){
+        var nav = document.querySelector('.session-navigator');
+        var cards = [...nav.querySelectorAll(':scope > .outline-card:not(.pane-off)')];
+        var boxes = cards.map(function (c) { var b = c.querySelector(':scope > .outline-card-body'); var r = c.getBoundingClientRect(); return { key: c.dataset.navCard, body: Math.round(b ? b.getBoundingClientRect().height : -1), top: Math.round(r.top), bottom: Math.round(r.bottom) }; });
+        var gaps = [];
+        for (var i = 1; i < boxes.length; i++) gaps.push(boxes[i].top - boxes[i - 1].bottom);
+        return { bodies: boxes.map(function (b) { return b.key + ':' + b.body; }), gaps: gaps, minGap: gaps.length ? Math.min.apply(null, gaps) : 99, open: nav.closest('.workspace') ? !nav.closest('.workspace').classList.contains('navigator-off') : null };
+    })()"#;
+    // The rule stated directly: shut the Tasks drawer by its own toggle, then press the control.
+    // The reader put the column where it is; the control's business is the rows inside a pane, not
+    // which panes are open. The old code called `setDrawerOpen("tasks", 1)` here, which both
+    // overrode that choice and — one drawer opened without taking room from the others — overran
+    // the column, which is the overlap the owner photographed.
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'",
+    );
+    harness::until_drawers_settle(&tab);
+    let before_shape = harness::probe(&tab, shape);
+    assert_eq!(
+        before_shape["bodies"][1],
+        serde_json::json!("tasks:0"),
+        "the reader has shut the tasks drawer: {before_shape}"
+    );
+
     harness::eval(&tab, "document.getElementById('tasksCenter').click(); 'ok'");
     std::thread::sleep(std::time::Duration::from_millis(400));
+    let after_shape = harness::probe(&tab, shape);
+    assert_eq!(
+        after_shape["bodies"], before_shape["bodies"],
+        "the click moves rows, not drawers: every pane's openness is what the reader left it at: \
+         {before_shape} -> {after_shape}"
+    );
+    assert!(
+        after_shape["minGap"].as_f64().unwrap_or(-1.0) >= 4.0,
+        "…so no card comes to rest on the card above it: {before_shape} -> {after_shape}"
+    );
     let aimed = harness::probe(&tab, middle);
     // Under the filter the running run sits at the TOP of the pane, so "centre" on it is a scroll
     // the pane cannot make and the honest outcome is that nothing moves. What the fix changes is
