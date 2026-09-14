@@ -3071,6 +3071,55 @@ fn the_app_shell_filters_a_pane_to_what_is_live_from_the_outline_menu() {
     drop(monitor);
 }
 
+/// #221: what the page says while a session is being read, and that it stops saying it.
+///
+/// A first open with no cache waits on the server folding and highlighting the whole transcript —
+/// measured at 86 s for 400 MB against 0.4 s warm, with syntax highlighting three quarters of it.
+/// The page is not blank during that (`reset` puts up "Loading session…"), which is the correction
+/// to what this task was filed on; what it did not say is that the wait is a ONE-OFF, and
+/// "Loading session…" held for ninety seconds reads as a hang. After a second and a bit with
+/// nothing arrived, the message becomes one that says so.
+///
+/// The long branch is pinned by the node contract, because making a fold take over a second from a
+/// browser case means a fixture big enough to make the case slow and the threshold flaky. What is
+/// held here is the part every reader sees: the message is up while the session loads, it is not an
+/// error, and it goes when the records land.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_says_what_it_is_doing_while_a_session_loads() {
+    let _serial = serial();
+    let base = base("appshell-221-first-open");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000221".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V2, 2922, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0",
+        "the transcript to render",
+        std::time::Duration::from_secs(30),
+        "(document.querySelector('.transcript .monitor-empty') || {}).textContent",
+    );
+    let after = harness::probe(
+        &tab,
+        "(function(){ var e = document.querySelector('.transcript .monitor-empty'); return { hidden: !e || e.hidden, error: !!e && e.classList.contains('monitor-error'), units: document.querySelector('.virtual-window').children.length }; })()",
+    );
+    assert_eq!(
+        after["hidden"], true,
+        "whatever the page said while it loaded, it stops saying it once the records are there: {after}"
+    );
+    assert_eq!(
+        after["error"], false,
+        "…and never left the error styling behind: {after}"
+    );
+    drop(monitor);
+}
+
 /// The outline pane's measured width, the reference a reflow is waited on against (#212).
 const NAV_W: &str =
     "Math.round(document.querySelector('.session-navigator').getBoundingClientRect().width)";

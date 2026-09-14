@@ -244,6 +244,13 @@ const sessionIndex = new SessionIndexStore({
 const recordStore = new RecordStore({
   reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
+  // #221: a first open with no cache waits on the server folding the whole transcript. Say so,
+  // rather than leaving a blank page a reader cannot tell from a hang, and say that it is a
+  // one-off — the same session opens in a couple of seconds afterwards.
+  waiting: () => viewport.showEmpty(
+    "Reading this session for the first time",
+    "The whole transcript is being folded and cached. A long one takes a while; every open after this is immediate.",
+  ),
   error: (error, hasRecords) => hasRecords ? toast(`${error.message}；retrying`) : viewport.showEmpty("Cannot read this session", `${error.message}；The monitor will retry.`, true)
 });
 

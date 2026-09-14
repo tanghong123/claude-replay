@@ -960,6 +960,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // rows the filters left, so on any real session it landed on the wrong row or past the end. And
   // it still carried `data-slot="2"`, the outer position reserved for the live-only dot that left
   // in #215, which parked it in the middle of the counts.
+  // #221: a first open with no cache waits on the server folding and highlighting the whole
+  // transcript — 86 s for 400 MB, measured, against 0.4 s warm. The page was never blank ("Loading
+  // session…" goes up on reset), but that message held for a minute and a half reads as a hang.
+  // After a second and a bit with nothing arrived it becomes one that says the wait is a one-off.
+  // Pinned here rather than in a browser case: making a fold take that long needs a fixture big
+  // enough to make the case slow and the threshold flaky.
+  const storeSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/record-store.js", import.meta.url), "utf8");
+  assert.match(storeSource, /const WAITING_AFTER_MS = 1200;/, "the page waits a beat before explaining itself (#221)");
+  assert.match(storeSource, /if \(!this\.records\.length\) \{\n\s*waited = setTimeout\(/, "…only on a FIRST pull, so a warm open never flashes a message");
+  assert.match(storeSource, /if \(generation === this\.generation && !this\.records\.length\) this\.handlers\.waiting\?\.\(\);/, "…and only if nothing has arrived by then");
+  assert.match(storeSource, /\} finally \{\n\s*clearTimeout\(waited\);/, "…cancelled however the pull ends, including by throwing");
+  assert.match(appSource, /waiting: \(\) => viewport\.showEmpty\(\n\s*"Reading this session for the first time",/, "…and the page says which wait this is");
+  assert.match(appSource, /every open after this is immediate/, "…and that it is a one-off, which is what stops it reading as broken");
   assert.match(appSource, /recordState\.shownTaskRows = taskShown\.flatMap\(group => group\.rows\);/, "the pane records the rows it rendered (#225)");
   assert.match(appSource, /const shown = recordState\.shownTaskRows \|\| \[\];\n\s*const target = taskCenterTarget\(shown\);/, "…and the centring control aims at those, not at the board behind them");
   assert.doesNotMatch(appSource, /tasksCenter\.dataset\.slot/, "…from the only action slot there is, now that the dot is gone");

@@ -2,6 +2,11 @@
 // keeps its timer, its array and its handlers, and applies the plan the reducer returns.
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "./shared/record-stream.js";
 
+/** How long a first pull may take before the page says what it is doing (#221). Long enough that
+ *  a warm open — under a second, measured — never shows it; short enough that a cold one does not
+ *  look hung. */
+const WAITING_AFTER_MS = 1200;
+
 export class RecordStore {
   constructor(handlers) {
     this.handlers = handlers;
@@ -35,6 +40,17 @@ export class RecordStore {
 
   async poll(generation) {
     if (generation !== this.generation || !this.session) return;
+    // #221: the FIRST pull on a session with no cache blocks for as long as the server takes to
+    // fold and highlight the whole transcript — measured at 86 s for 400 MB, against 0.4 s once
+    // the cache is warm. The page had nothing on it for all of that, which a reader cannot tell
+    // from a hang. Say what is happening, but only once the wait is long enough to be a wait: a
+    // warm open answers in under a second and must not flash a message.
+    let waited = 0;
+    if (!this.records.length) {
+      waited = setTimeout(() => {
+        if (generation === this.generation && !this.records.length) this.handlers.waiting?.();
+      }, WAITING_AFTER_MS);
+    }
     try {
       const response = await fetch(`/pull?${pullQuery(this.session, this.cursor)}`, { cache: "no-store" });
       if (!response.ok) throw new Error(`pull HTTP ${response.status}`);
@@ -54,6 +70,7 @@ export class RecordStore {
     } catch (error) {
       if (generation === this.generation) this.handlers.error?.(error, this.records.length > 0);
     } finally {
+      clearTimeout(waited);
       if (generation === this.generation) this.timer = setTimeout(() => this.poll(generation), 1000);
     }
   }
