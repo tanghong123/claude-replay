@@ -1900,7 +1900,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // from a handle on its own edge, with the width remembered and clamped.
 {
   assert.match(productionCss, /\.side-head\{height:auto;min-height:72px;flex-wrap:wrap/, "the head wraps instead of clipping what does not fit");
-  assert.match(productionCss, /\.side-head>\.head-actions\{flex:none\}/, "…the controls keep their size; the brand is what yields");
+  // #223, the owner: "the title classic clips with theme glyph … explicitly make the top area of
+  // the left bar to be two lines." The brand takes the whole first line, so the controls are never
+  // beside it and the shell switch (a WORD, not a glyph) can never meet the theme button. The
+  // controls take the whole second line and wrap within it, because at the 232px minimum even they
+  // do not fit on one; and the tight state's 30px glyph width is not applied to the switch, which
+  // is what was shaving the label there.
+  assert.match(productionCss, /\.side-head>\.brand\{flex:0 0 100%/, "the brand takes the first line, so the head is two lines by construction (#223)");
+  assert.match(productionCss, /\.side-head>\.head-actions\{flex:0 1 100%;flex-wrap:wrap;justify-content:flex-end\}/, "…the controls take the second and wrap within it");
+  assert.match(productionCss, /#app\.sidebar-tight \.side-head \.iconbtn\.shell-toggle\{width:auto;flex:none;padding:0 6px\}/, "…and the switch keeps its content width when the glyphs are squeezed");
   assert.match(productionCss, /@media\(min-width:761px\)\{\s*\.app\{--sidebar:var\(--sidebar-user,300px\)\}/, "the viewer's width reaches the grid only above the mobile breakpoint");
   assert.match(productionCss, /\.app\.sidebar-off \.sidebar-resizer\{display:none\}/, "…and the rail has nothing to drag");
   assert.match(appSource, /const SIDEBAR_MIN = 232, SIDEBAR_MAX = 520, SIDEBAR_DEFAULT = 300;/, "the width is clamped at both ends");

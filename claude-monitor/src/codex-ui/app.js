@@ -936,9 +936,16 @@ function renderNavigator() {
     : `<button class="outline-epoch" type="button" data-turn-record="${r.at}" title="${escapeText(r.tick.title)}${r.tick.sizes ? ` · ${escapeText(r.tick.sizes)}` : ""} — jump to the compaction" aria-label="${escapeText(r.tick.title)}${r.tick.sizes ? `, ${escapeText(r.tick.sizes)}` : ""}"><span class="outline-epoch-line" aria-hidden="true"></span><span class="outline-epoch-glyph" aria-hidden="true">${r.tick.glyph}</span>${r.tick.sizes ? `<span class="outline-epoch-sizes">${escapeText(r.tick.sizes)}</span>` : ""}<span class="outline-epoch-line" aria-hidden="true"></span></button>`
   ).join("") || '<div class="activity-empty">No turns</div>';
   const tasks = recordState.meta?.tasks || [];
-  const runningTasks = tasks.filter(task => taskStatus(task.status) === "in_progress").length;
-  const doneTasks = tasks.filter(task => taskStatus(task.status) === "completed").length;
-  byId("navigatorWorkCount").innerHTML = outlineSummary(runningTasks, doneTasks, tasks.length);
+  // #224, the owner: the head counts what the pane SHOWS. A task the session recorded no title for
+  // is not listed under any setting (#217), so counting it leaves the reader with "7 active" over a
+  // pane showing fewer and no way to reconcile the two. Counted on a COPY: the rows carry their
+  // index into `tasks` itself, and `data-task-open` hands that index straight back to the popover.
+  // The reader's own state filter (#218) is deliberately NOT applied here — that is a view they
+  // chose and can undo, and the head saying what exists behind it is useful.
+  const counted = tasks.filter(task => task.subject || task.title);
+  const runningTasks = counted.filter(task => taskStatus(task.status) === "in_progress").length;
+  const doneTasks = counted.filter(task => taskStatus(task.status) === "completed").length;
+  byId("navigatorWorkCount").innerHTML = outlineSummary(runningTasks, doneTasks, counted.length);
   outlineCurrent = null; // the rows were rebuilt: mark and reveal the current one afresh
   updateOutlineFocus();
   byId("outlineTaskDot").hidden = !runningTasks;

@@ -341,10 +341,20 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    theme toggle cut in half and collapse-all, expand-all and the sidebar collapse entirely off
    screen). The head WRAPS instead of clipping: the controls keep their size and take their own
    row when the brand leaves no room, so each is on screen at every width the sidebar can be
-   dragged to, and they return to one row when there is room again. */
+   dragged to.
+   #223, the owner: "the title classic clips with theme glyph. I'd suggest we explicitly make the
+   top area of the left bar to be two lines." They no longer come back up beside the brand when the
+   sidebar is wide. The shell switch is a TEXT label, not a glyph, so sharing a row with the brand
+   put a word beside a word and the two met at some widths; a full-width brand settles it by
+   construction rather than by hoping the row does not fit. The tight state below 272px is then
+   about fitting six controls on their OWN line, which is the simpler problem. */
 .side-head{height:auto;min-height:72px;flex-wrap:wrap;align-content:center;row-gap:1px;padding-bottom:5px;overflow:visible}
-.side-head>.brand{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.side-head>.head-actions{flex:none}
+.side-head>.brand{flex:0 0 100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* …and the controls take the whole of that second line, wrapping WITHIN it when even they do
+   not fit: at the 232px minimum the shell switch is a word beside five glyphs, and measured
+   there it was clipped (scrollWidth past clientWidth) even with the brand out of the way.
+   Wrapping puts the switch on a line of its own instead of shaving it (#223). */
+.side-head>.head-actions{flex:0 1 100%;flex-wrap:wrap;justify-content:flex-end}
 /* #96: the session list's own resize handle, on the sidebar's right edge. `--sidebar-user`
    reaches the grid only above the mobile breakpoint, where the sidebar is a full-width sheet
    and a drag makes no sense; the rail has no width to drag either. */
@@ -701,7 +711,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #app.sidebar-tight .side-head{padding-left:10px;padding-right:10px}
 #app.sidebar-tight .head-actions{gap:0}
 #app.sidebar-tight .side-head .iconbtn{width:30px;height:30px;border-radius:8px}
-#app.sidebar-tight .side-head .iconbtn.shell-toggle{padding:0 6px}
+/* The shell switch is a WORD, so the tight state's 30px glyph width is not for it — that rule
+   was shaving the label (#223: measured clipped at the 232px minimum, scrollWidth past
+   clientWidth, which is exactly the clash the owner saw). It keeps its content width and
+   takes its own line when the row cannot hold it. */
+#app.sidebar-tight .side-head .iconbtn.shell-toggle{width:auto;flex:none;padding:0 6px}
 #app.sidebar-tight .side-head .iconbtn .icon{width:15px;height:15px}
 
 /* #215: a head's action sits ON the head, so it has to outrank it. `.outline-card-action` was

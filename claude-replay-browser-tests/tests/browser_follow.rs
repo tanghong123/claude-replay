@@ -2990,6 +2990,23 @@ fn the_app_shell_filters_a_pane_to_what_is_live_from_the_outline_menu() {
 
     // 3. It filters the pane, both ways.
     let rows = "(function(){ var titles = [...document.querySelectorAll('#navigatorWork .work-task strong')].map(function (e) { return e.textContent.trim(); }); return { tasks: titles.length, untitled: titles.filter(function (t) { return /no title recorded/.test(t); }).length, agents: document.querySelectorAll('#navigatorAgents .outline-agent').length }; })()";
+    // #224: the head counts what the pane SHOWS. Five titled tasks here (three done, one running,
+    // one pending) and two the session recorded no title for, one of them running — so a head that
+    // counted the board would say two active over a pane listing one.
+    let head = harness::probe(
+        &tab,
+        "(document.getElementById('navigatorWorkCount') || {}).textContent || ''",
+    );
+    let head_text = head.as_str().unwrap_or("").replace(char::is_whitespace, "");
+    assert!(
+        head_text.contains("1active"),
+        "the head counts the running task the pane lists, not the untitled one it hides: {head}"
+    );
+    assert!(
+        head_text.contains("3/5"),
+        "…and totals the titled tasks, not the board: {head}"
+    );
+
     let live = harness::probe(&tab, rows);
     assert_eq!(
         live["tasks"], 2,
@@ -4923,7 +4940,7 @@ fn the_app_shell_resizes_the_session_list() {
         std::time::Duration::from_secs(30),
         "document.body.innerText.slice(0, 120)",
     );
-    let state = "(function(){ var side = document.querySelector('.sidebar'), head = document.querySelector('.side-head'); var handle = document.getElementById('sidebarResizer'); var hr = handle ? handle.getBoundingClientRect() : null; var sr = side.getBoundingClientRect(); var brand = head.querySelector('.brand').getBoundingClientRect(), acts = head.querySelector('.head-actions').getBoundingClientRect(); return { width: Math.round(sr.width), handle: hr ? [Math.round(hr.right - sr.right), Math.round(hr.width)] : null, sameRow: Math.abs(acts.top - brand.top) <= 10, actionsInside: acts.right <= sr.right + 0.5, controls: [].slice.call(head.querySelector('.head-actions').children).map(function (e) { var b = e.getBoundingClientRect(); var mid = document.elementFromPoint(Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)); return { id: e.id || '?', inside: b.left >= sr.left - 0.5 && b.right <= sr.right + 0.5, hit: mid === e || e.contains(mid) }; }), tight: document.getElementById('app').classList.contains('sidebar-tight'), stored: localStorage.getItem('am-sidebar-width'), role: handle ? handle.getAttribute('role') : '' }; })()";
+    let state = "(function(){ var side = document.querySelector('.sidebar'), head = document.querySelector('.side-head'); var handle = document.getElementById('sidebarResizer'); var hr = handle ? handle.getBoundingClientRect() : null; var sr = side.getBoundingClientRect(); var brand = head.querySelector('.brand').getBoundingClientRect(), acts = head.querySelector('.head-actions').getBoundingClientRect(); return { width: Math.round(sr.width), handle: hr ? [Math.round(hr.right - sr.right), Math.round(hr.width)] : null, sameRow: Math.abs(acts.top - brand.top) <= 10, actionsInside: acts.right <= sr.right + 0.5, brandClear: (function(){ var t = head.querySelector('.shell-toggle'); if (!t) return null; var tr = t.getBoundingClientRect(); return tr.top >= brand.bottom - 0.5 || tr.left >= brand.right - 0.5; })(), switchWhole: (function(){ var t = head.querySelector('.shell-toggle'); return t ? t.scrollWidth <= t.clientWidth + 1 : null; })(), switchClearOfTheme: (function(){ var t = head.querySelector('.shell-toggle'), th = document.getElementById('themeBtn'); if (!t || !th) return null; var a = t.getBoundingClientRect(), b = th.getBoundingClientRect(); return a.right <= b.left + 0.5 || b.right <= a.left + 0.5 || a.bottom <= b.top + 0.5 || b.bottom <= a.top + 0.5; })(), controls: [].slice.call(head.querySelector('.head-actions').children).map(function (e) { var b = e.getBoundingClientRect(); var mid = document.elementFromPoint(Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)); return { id: e.id || '?', inside: b.left >= sr.left - 0.5 && b.right <= sr.right + 0.5, hit: mid === e || e.contains(mid) }; }), tight: document.getElementById('app').classList.contains('sidebar-tight'), stored: localStorage.getItem('am-sidebar-width'), role: handle ? handle.getAttribute('role') : '' }; })()";
     let start = harness::probe(&tab, state);
     assert_eq!(
         start["width"], 300,
@@ -4948,6 +4965,21 @@ fn the_app_shell_resizes_the_session_list() {
         start["actionsInside"], true,
         "…and every one of them is inside the sidebar: {start}"
     );
+    // #223, the bug the owner photographed: the shell switch is a word, not a glyph, and it met
+    // the theme glyph. Measured three ways rather than eyeballed — the switch sits clear of the
+    // brand, it is not clipped, and it does not overlap the theme button.
+    let clear = |label: &str, v: &serde_json::Value| {
+        assert_eq!(
+            v["brandClear"], true,
+            "{label}: the shell switch is clear of the brand: {v}"
+        );
+        assert_eq!(v["switchWhole"], true, "…and not clipped: {v}");
+        assert_eq!(
+            v["switchClearOfTheme"], true,
+            "…and clear of the theme glyph: {v}"
+        );
+    };
+    clear("at the default width", &start);
     let drag = |x: i32| {
         format!("(function(){{ var r = document.getElementById('sidebarResizer'); var rect = r.getBoundingClientRect(); r.dispatchEvent(new PointerEvent('pointerdown', {{ clientX: rect.left + 3, clientY: 300, bubbles: true, pointerId: 1 }})); dispatchEvent(new PointerEvent('pointermove', {{ clientX: {x}, clientY: 300, bubbles: true, pointerId: 1 }})); dispatchEvent(new PointerEvent('pointerup', {{ clientX: {x}, clientY: 300, bubbles: true, pointerId: 1 }})); return 'ok'; }})()")
     };
@@ -4961,9 +4993,16 @@ fn the_app_shell_resizes_the_session_list() {
     );
     let wide = harness::probe(&tab, state);
     assert_eq!(wide["stored"], "480", "the width is the viewer's: {wide}");
+    clear("at 480px", &wide);
+    // #223, a stated reversal of what this line used to assert. The controls used to come back up
+    // beside the brand once the sidebar was wide; they no longer do, at any width. The shell switch
+    // is a text label rather than a glyph, so sharing the brand's row put two words next to each
+    // other and they met — the owner photographed "Classic" clipping into the theme glyph. Two
+    // lines by construction is what they asked for, and it costs nothing a wide sidebar needs.
     assert_eq!(
-        wide["sameRow"], true,
-        "the head's controls come back up beside the brand once there is room: {wide}"
+        wide["sameRow"], false,
+        "the head is two lines at every width, so a wide sidebar does not put the shell switch \
+         beside the brand: {wide}"
     );
     // Clamped at both ends — a drag off the left edge cannot leave a sliver, nor eat the page.
     harness::eval(&tab, &drag(60));
@@ -4980,6 +5019,7 @@ fn the_app_shell_resizes_the_session_list() {
     // it. At the minimum every control is inside the sidebar AND answers a click at its own centre
     // (the two are different questions: a control can be inside and covered).
     let tight = harness::probe(&tab, state);
+    clear("at the 232px minimum", &tight);
     assert_eq!(
         tight["width"], 232,
         "the drag clamped to the minimum: {tight}"
