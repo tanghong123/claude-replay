@@ -2596,11 +2596,15 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
 /// time the event arrived the gap was 0, so it classified as "already following" and the 2400px
 /// they moved was never seen at all.
 ///
-/// `known_red_213` until the engine stops acting on a follow flag the reader has already
-/// contradicted. The classic page runs the same engine and should get this case with the fix.
+/// Fixed by #213: a transaction now confirms `following` against the offset before acting on it,
+/// and unfollows when the offset is not where the engine left it. The test is the engine's BELIEF
+/// rather than the gap, because a gap alone would unfollow on every growth — growth adds content
+/// below without moving the offset. The classic page runs the same engine and the same rule; what
+/// holds it there is `classic_page_holds_through_growth_above_the_reader`, which had been red on
+/// this machine for the same reason and is green with the fix.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn the_app_shell_known_red_213_holds_a_scroll_a_transaction_arrives_on_top_of() {
+fn the_app_shell_holds_a_scroll_a_transaction_arrives_on_top_of() {
     let _serial = serial();
     let base = base("appshell-213-window");
     let stores = Stores::new(&base);

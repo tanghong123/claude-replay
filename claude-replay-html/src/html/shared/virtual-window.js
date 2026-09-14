@@ -787,6 +787,34 @@ class VirtualWindow {
     return this.wrote != null && typeof this.wrote === "object";
   }
 
+  /** Confirm `following` against the offset before a transaction acts on it (#213).
+   *
+   *  Follow is released in the SCROLL handler, so between the reader's wheel and the browser
+   *  delivering that event the engine still believes they are at the tail — and places there.
+   *  Measured at the wheel's own clock, the handover is bimodal: 6, 4, 1018, 1019, 939, 7 ms. The
+   *  engine is never late; the event is, and under load it can be most of a second. Anything that
+   *  transacts inside that window puts the reader back at the bottom, and by the time the event
+   *  arrives the gap is 0, so it classifies as "already following" and the scroll they made is
+   *  never seen at all. The owner settled the rule: check the offset, not only the flag.
+   *
+   *  The test is the ENGINE'S BELIEF, not the gap — a gap alone would unfollow on every growth,
+   *  which adds content below without moving the offset. An offset that is not where the engine
+   *  left it was moved by the reader, and that is the one move the engine does not make. It is
+   *  then classified exactly as the late event would have been, so nothing decides differently
+   *  here than there; only sooner. The browser clamping the offset when content shrinks lands at
+   *  the bottom, where the verdict is "none" and follow stands. */
+  confirmFollow(top) {
+    if (!this.following || this.dragging || this.inFlight()) return;
+    const belief = this.topBelief();
+    if (belief == null || Math.abs(top - belief) <= 1) return;
+    const gap = this.gapToBottom();
+    const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal);
+    this.trace("follow:unheard", { verdict, belief, top: Math.round(top), gap: Math.round(gap) });
+    if (verdict !== "unfollow") return;
+    this.following = false;
+    this.followChanged();
+  }
+
   /** Is a scroll event at `top` the engine's own? An instant write is one offset; a smooth one is
    *  the path from where it started to where it goes, walked monotonically — an event that leaves
    *  the path, or moves away from `to`, is the reader's (the browser cancels the animation on
@@ -1215,6 +1243,8 @@ class VirtualWindow {
     const following0 = this.following;
     try {
       const startTop = this.frame.scrollTop();
+      // Before the flag is read: the reader may have taken the view without the event arriving yet.
+      this.confirmFollow(startTop);
       const p0 = this.positionFor(options);
       // The reader's scroll since `P` was read — everything the offset moved between the last
       // transaction and this one's start (see `place`). Zero after a re-read, and for a page's own
