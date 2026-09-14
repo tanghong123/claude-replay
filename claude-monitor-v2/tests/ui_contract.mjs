@@ -927,6 +927,17 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /taskShown\.map\(group => `<div class="work-group" data-task-group="\$\{group\.key\}">/, "the pane renders the groups with a boundary");
   const stateSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
   assert.match(stateSource, /liveOnly: new Set\(json\("am-prod-live-only", \["tasks", "agents"\]\)\),/, "…live-only is ON for both panes by default (#186), and remembered per viewer like the other outline choices");
+  // #215, the owner: the control moved out of the card head and into the outline's drop-down. It
+  // was unfindable there (a faint dot beside the decorative dots the counts wear) and, once found,
+  // unclickable — the head outranked it, so the pointer toggled the drawer instead.
+  assert.doesNotMatch(appSource, /button\.id = `\$\{key\}LiveOnly`;/, "the dot on the card head is gone (#215)");
+  assert.match(appSource, /const LIVE_ONLY_PANES = \{ tasks: "running and pending tasks", agents: "running sub-agents" \};/, "…the panes that carry the filter are named once");
+  assert.match(appSource, /if \(!LIVE_ONLY_PANES\[key\] \|\| !on\) return row;/, "…each gets a sub-row under its pane, and only while that pane is shown");
+  assert.match(appSource, /data-live-only="\$\{escapeText\(key\)\}"/, "…as a checkbox row in the menu");
+  assert.match(appSource, /const live = event\.target\.closest\("\[data-live-only\]"\);/, "…handled before the pane toggle, since it sits inside that row's menu");
+  assert.match(appSource, /recordState\.hiddenByFilter = \{ tasks: liveTasksOnly \? hiddenTasks : 0, agents: liveAgentsOnly \? hiddenAgents : 0 \};/, "…and the row says how much the filter is holding back, which the head's counts cannot");
+  const navCss215 = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(navCss215, /\.session-navigator>\.outline-card>\.outline-card-action\{z-index:3\}/, "a head's action outranks the head it sits on, or it answers no click at all (#215)");
   assert.match(stateSource, /localStorage\.setItem\("am-prod-live-only", JSON\.stringify\(\[\.\.\.uiState\.liveOnly\]\)\);/, "…and `persist` actually writes it — a filter a reader must set again every reload is one they stop using");
   console.log("#56 task order cases passed");
 }

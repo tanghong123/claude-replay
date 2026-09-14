@@ -235,6 +235,13 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   resting 37px inside the body of the pane above it. The gaps are rigid at every openness AND at
   every offset, which makes a slot's step the card's SHUT height rather than its head's.
   `design/outline-drawers.md` has the model.
+  **Each pane's live-only filter is a row in the outline's drop-down** (#186, moved there by #215):
+  the panes menu under the word "Outline" carries an "Active only" checkbox indented beneath Tasks
+  and beneath Agents, on by default, remembered, and saying how many rows it is holding back. It
+  used to be a dot on the card's head, where it was both unfindable and unclickable — a head action
+  is absolutely positioned over a head that outranked it, so it reported a perfect 24×24 rectangle
+  and answered no click at all; `.outline-card-action` is `z-index:3` now, which is what makes the
+  Tasks centring control work as well. `harness::show_every_pane_row` drives the menu.
   **A case that reads the session TREE must say so**: the builders stamp a fixture in a fixed past
   hour, so it lands in the Idle bucket and the app shell's default filter (Active recently +
   Blocked, #202) leaves it out — `harness::show_every_session(&tab, url)` writes the shell's own

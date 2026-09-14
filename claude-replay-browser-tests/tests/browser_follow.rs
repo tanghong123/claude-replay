@@ -2850,6 +2850,191 @@ fn the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing() {
     drop(monitor);
 }
 
+/// #215: the live-only filter is a row in the outline's drop-down, and a control that sits on a
+/// card's head can actually be clicked.
+///
+/// The owner went looking for a way to see only the running tasks and sub-agents and concluded
+/// there was none. There was — #186 put one on each card's head, on by default — but it was a faint
+/// dot among the decorative dots the counts already wear, and when they finally found it: "when
+/// clicked, it folds/unfolds the pane instead of toggle the active filter". The stylesheet says
+/// why: `.outline-card-action` was `z-index:1` under a head at `z-index:2`, so every head action
+/// reported a perfect 24x24 rectangle and answered no click at all — the pointer landed on the head
+/// and toggled the drawer. `tasksCenter` had the same fault and its own case never saw it, because
+/// a synthetic `.click()` does not hit-test. This one hit-tests.
+///
+/// And the control moved where the owner asked for it: "I think it makes sense to move the control
+/// to the outline drop down filter as it is not a frequent operation" — the panes menu, under the
+/// pane it belongs to.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_filters_a_pane_to_what_is_live_from_the_outline_menu() {
+    let _serial = serial();
+    let base = base("appshell-215-liveonly");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000217".to_string();
+    let mut transcript = harness::long_session(12, harness::Shape::default());
+    for i in 1..=4 {
+        transcript += &harness::agent_spawn(&format!("call_b{i}"), "Explore", 10 + i);
+        transcript += &harness::agent_result(
+            &format!("call_b{i}"),
+            &format!("aExplore-b{i}"),
+            "Explore",
+            10 + i,
+        );
+    }
+    // Two of the four are finished, so the filter has something to hold back.
+    transcript += &harness::agent_finished("aExplore-b1", "the first one", 30);
+    transcript += &harness::agent_finished("aExplore-b2", "the second one", 31);
+    stores.claude_session(&sid, &transcript);
+    for i in 1..=4 {
+        stores.claude_child(
+            &sid,
+            &format!("aExplore-b{i}"),
+            &harness::long_session(2, harness::Shape::default()),
+        );
+    }
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, done", "completed"),
+            ("3", "three, done", "completed"),
+            ("4", "four, running", "in_progress"),
+            ("5", "five, pending", "pending"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V2, 2921, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('[data-nav-card=\"tasks\"]')",
+        "the tasks card",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ for (const k of ['tasks', 'agents']) { var c = document.querySelector('[data-nav-card=\"' + k + '\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"' + k + '\"]').click(); } return 'ok'; })()",
+    );
+    harness::until_drawers_settle(&tab);
+
+    // 1. The dot is gone from the heads, and what is left there answers a click at its own centre.
+    let hittable = r#"function (el) { if (!el) return null; var r = el.getBoundingClientRect(); if (r.width < 4 || r.height < 4) return false; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(hit && (hit === el || el.contains(hit) || hit.contains(el))); }"#;
+    let heads = harness::probe(
+        &tab,
+        &format!("(function(){{ var hittable = {hittable}; return {{ dots: document.querySelectorAll('#tasksLiveOnly, #agentsLiveOnly').length, centerThere: !!document.getElementById('tasksCenter'), centerHit: hittable(document.getElementById('tasksCenter')) }}; }})()"),
+    );
+    assert_eq!(
+        heads["dots"], 0,
+        "the live-only dot has left the card heads: {heads}"
+    );
+    assert_eq!(
+        heads["centerThere"], true,
+        "…the centring control is still on the tasks head: {heads}"
+    );
+    assert_eq!(
+        heads["centerHit"], true,
+        "…and it answers a click at its own centre, which it could not while the head outranked it: {heads}"
+    );
+
+    // 2. The filter is in the outline's drop-down, under the pane it belongs to, and reachable.
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorPanesTrigger').dispatchEvent(new PointerEvent('pointerenter', { bubbles: true })); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var m = document.getElementById('navigatorPanesMenu'); if (!m) return false; var c = getComputedStyle(m); return c.visibility === 'visible' && c.opacity === '1'; })()",
+        "the outline's drop-down to finish opening",
+        std::time::Duration::from_secs(5),
+        "(function(){ var m = document.getElementById('navigatorPanesMenu'); var c = getComputedStyle(m); return JSON.stringify({ open: m.classList.contains('open'), visibility: c.visibility, opacity: c.opacity, transform: c.transform }); })()",
+    );
+    let menu = harness::probe(
+        &tab,
+        &format!("(function(){{ var hittable = {hittable}; var m = document.getElementById('navigatorPanesMenu'); var rows = [...m.querySelectorAll('[data-live-only]')]; var t = m.querySelector('[data-live-only=\"tasks\"]'); var pane = m.querySelector('[data-pane-toggle=\"tasks\"]'); return {{ open: m.classList.contains('open'), keys: rows.map(function (r) {{ return r.dataset.liveOnly; }}), checked: t && t.getAttribute('aria-checked'), hit: hittable(t), hitTag: (function(){{ if (!t) return null; var r = t.getBoundingClientRect(); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return h ? h.tagName + '.' + (h.className || '').toString().split(' ')[0] : null; }})(), hidden: t ? (t.querySelector('small') || {{}}).textContent || null : null, underItsPane: !!(pane && pane.nextElementSibling === t) }}; }})()"),
+    );
+    assert_eq!(menu["open"], true, "the outline's drop-down opens: {menu}");
+    assert_eq!(
+        menu["keys"],
+        serde_json::json!(["tasks", "agents"]),
+        "…with a row for each pane that has such a filter, and no others: {menu}"
+    );
+    assert_eq!(
+        menu["underItsPane"], true,
+        "…each one directly under the pane it belongs to: {menu}"
+    );
+    assert_eq!(
+        menu["checked"], "true",
+        "…on by default, as it has been since #186: {menu}"
+    );
+    assert_eq!(
+        menu["hit"], true,
+        "…and clickable, which the dot it replaces was not: {menu}"
+    );
+    assert_eq!(
+        menu["hidden"], "3 hidden",
+        "…saying what it is holding back, which the head's counts cannot: {menu}"
+    );
+
+    // 3. It filters the pane, both ways.
+    let rows = "(function(){ return { tasks: document.querySelectorAll('#navigatorWork .work-task').length, agents: document.querySelectorAll('#navigatorAgents .outline-agent').length }; })()";
+    let live = harness::probe(&tab, rows);
+    assert_eq!(
+        live["tasks"], 2,
+        "the pane starts filtered: the running one and the pending one, not the three finished: {live}"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorPanesMenu [data-live-only=\"tasks\"]').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(260));
+    let every = harness::probe(&tab, rows);
+    assert_eq!(
+        every["tasks"], 5,
+        "unchecking it shows every task: {live} -> {every}"
+    );
+    assert_eq!(
+        every["agents"], live["agents"],
+        "…and leaves the other pane's filter alone, which is why they are two rows: {live} -> {every}"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorPanesMenu [data-live-only=\"tasks\"]').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(260));
+    let back = harness::probe(&tab, rows);
+    assert_eq!(back["tasks"], 2, "…and checking it filters again: {back}");
+
+    // 4. It is remembered, like the choice it replaces.
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorPanesMenu [data-live-only=\"tasks\"]').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('[data-nav-card=\"tasks\"]')",
+        "the tasks card after the reload",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); return 'ok'; })()",
+    );
+    harness::until_drawers_settle(&tab);
+    let remembered = harness::probe(&tab, rows);
+    assert_eq!(
+        remembered["tasks"], 5,
+        "the choice survives a reload: {remembered}"
+    );
+    drop(monitor);
+}
+
 /// The outline pane's measured width, the reference a reflow is waited on against (#212).
 const NAV_W: &str =
     "Math.round(document.querySelector('.session-navigator').getBoundingClientRect().width)";
@@ -6340,15 +6525,17 @@ fn the_app_shell_panes_open_on_what_is_live() {
         harness::until(tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
         // Both panes have to EXIST and be open before anything can be counted in them.
         harness::eval(tab, "for (const key of ['tasks', 'agents']) { var c = document.querySelector('[data-nav-card=\"' + key + '\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"' + key + '\"]').click(); } 'ok'");
+        // The control moved into the outline's drop-down (#215); what the case reads is the
+        // remembered choice, which is where it is durable and what the reload leg is about.
         harness::until(
             tab,
-            "!!document.getElementById('tasksLiveOnly') && !!document.getElementById('agentsLiveOnly')",
-            "both live-only controls to be built",
+            "!!document.getElementById('navigatorPanesTrigger')",
+            "the outline's drop-down trigger to be built",
             std::time::Duration::from_secs(10),
             "document.querySelector('.session-navigator').innerText.slice(0, 200)",
         );
     };
-    let state = "(function(){ var q = function (s) { return [...document.querySelectorAll(s)].map(function (e) { return e.textContent.trim(); }); }; return { tasks: q('#navigatorWork .work-task strong'), groups: q('#navigatorWork .work-group span:first-child'), agents: q('#navigatorAgents .outline-agent-copy strong'), taskCount: document.getElementById('navigatorWorkCount').textContent.replace(/\\s+/g, ' ').trim(), agentCount: document.getElementById('navigatorAgentCount').textContent.replace(/\\s+/g, ' ').trim(), tasksOn: document.getElementById('tasksLiveOnly').getAttribute('aria-pressed'), agentsOn: document.getElementById('agentsLiveOnly').getAttribute('aria-pressed'), agentsEmpty: (document.querySelector('#navigatorAgents .activity-empty') || {}).textContent || '' }; })()";
+    let state = "(function(){ var q = function (s) { return [...document.querySelectorAll(s)].map(function (e) { return e.textContent.trim(); }); }; return { tasks: q('#navigatorWork .work-task strong'), groups: q('#navigatorWork .work-group span:first-child'), agents: q('#navigatorAgents .outline-agent-copy strong'), taskCount: document.getElementById('navigatorWorkCount').textContent.replace(/\\s+/g, ' ').trim(), agentCount: document.getElementById('navigatorAgentCount').textContent.replace(/\\s+/g, ' ').trim(), tasksOn: String(JSON.parse(localStorage.getItem('am-prod-live-only') || '[]').includes('tasks')), agentsOn: String(JSON.parse(localStorage.getItem('am-prod-live-only') || '[]').includes('agents')), agentsEmpty: (document.querySelector('#navigatorAgents .activity-empty') || {}).textContent || '' }; })()";
 
     open(&tab);
     let live = harness::probe(&tab, state);
@@ -6384,7 +6571,7 @@ fn the_app_shell_panes_open_on_what_is_live() {
     );
 
     // …and the rest is one click away.
-    harness::eval(&tab, "document.getElementById('tasksLiveOnly').click(); document.getElementById('agentsLiveOnly').click(); 'ok'");
+    harness::show_every_pane_row(&tab);
     let all = harness::probe(&tab, state);
     assert_eq!(all["tasksOn"], "false", "the control flips: {all}");
     assert_eq!(

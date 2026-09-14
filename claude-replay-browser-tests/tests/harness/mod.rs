@@ -378,10 +378,14 @@ pub fn agent_result(call_id: &str, agent_id: &str, subagent_type: &str, s: u32) 
 /// alternative is a default nobody sees in the suite, which is how a default stops being tested.
 /// A no-op where the control is absent (the classic page has no such pane) or already off.
 pub fn show_every_pane_row(tab: &headless_chrome::Tab) {
+    // The control lives in the panes menu now (#215), which opens on the caption trigger's
+    // `pointerenter`. Each click re-renders the menu, so the rows are re-queried by key rather
+    // than held from one NodeList.
     eval(
         tab,
-        "(function(){ for (const id of ['tasksLiveOnly', 'agentsLiveOnly']) { const b = document.getElementById(id); if (b && b.getAttribute('aria-pressed') === 'true') b.click(); } return 'ok'; })()",
+        "(function(){ var t = document.getElementById('navigatorPanesTrigger'); if (!t) return 'absent'; t.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true })); var n = 0; for (const key of ['tasks', 'agents']) { const b = document.querySelector('#navigatorPanesMenu [data-live-only=\"' + key + '\"]'); if (b && b.getAttribute('aria-checked') === 'true') { b.click(); n++; } } t.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true })); return n; })()",
     );
+    std::thread::sleep(Duration::from_millis(260));
 }
 
 /// The notification that CLOSES a spawn (#26): Claude records an async agent's completion as a

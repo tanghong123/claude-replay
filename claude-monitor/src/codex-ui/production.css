@@ -634,6 +634,16 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 }
 .panes-menu .pane-option.on { color: var(--ink); }
 .panes-menu .pane-option.on .pane-check { background: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+/* #215: the pane's own filter, indented under it. The same row in the same type — it is a choice
+   of the same kind — set in one step from the pane it belongs to, with the check where the pane's
+   check is so the two read as a column. */
+.panes-menu .pane-option.pane-suboption {
+  margin-left: 14px; width: calc(100% - 14px); height: 26px;
+  color: var(--faint); font-size: 11px;
+}
+.panes-menu .pane-option.pane-suboption.on { color: var(--sub); }
+.panes-menu .pane-option.pane-suboption { grid-template-columns: 13px minmax(0, 1fr) auto; }
+.panes-menu .pane-option.pane-suboption small { color: var(--faint); font: 9px var(--mono); }
 .panes-menu .pane-option.on .pane-check:after {
   content: ""; position: absolute; left: 4px; top: 1.5px; width: 3.5px; height: 7px;
   border: solid var(--primary-soft); border-width: 0 1.6px 1.6px 0; transform: rotate(42deg);
@@ -693,3 +703,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #app.sidebar-tight .side-head .iconbtn{width:30px;height:30px;border-radius:8px}
 #app.sidebar-tight .side-head .iconbtn.shell-toggle{padding:0 6px}
 #app.sidebar-tight .side-head .iconbtn .icon{width:15px;height:15px}
+
+/* #215: a head's action sits ON the head, so it has to outrank it. `.outline-card-action` was
+   `z-index:1` under a head at `z-index:2`, so every one of them reported a perfect 24x24 rectangle
+   and answered no click at all — the pointer landed on the head and toggled the drawer. The owner
+   found it on the live-only dot ("when clicked, it folds/unfolds the pane instead"); the Tasks
+   centring control had the same fault, and its case never saw it because a synthetic `.click()`
+   does not hit-test. */
+.session-navigator>.outline-card>.outline-card-action{z-index:3}

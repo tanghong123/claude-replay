@@ -988,16 +988,10 @@ function renderNavigator() {
     const spawn = target == null ? "" : `<button class="outline-agent-spawn" type="button" data-agent-record="${target}" title="Jump to where the parent launched this agent" aria-label="Jump to where the parent launched ${escapeText(agent.title || agent.id)}"><span aria-hidden="true">↳</span></button>`;
     return `<div class="outline-agent-row"><button class="outline-agent" type="button" data-child-outline="${escapeText(agent.id)}" title="Open the sub-agent's transcript"><span class="agent-state ${agent.running ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(agent.title || agent.description || agent.id)}</strong><small>${escapeText(agent.type || agent.agent_type || "agent")}</small></span><span class="outline-agent-tail"></span></button>${spawn}</div>`;
   }).join("") || noAgents;
-  for (const [key, on, hidden] of [["tasks", liveTasksOnly, hiddenTasks], ["agents", liveAgentsOnly, hiddenAgents]]) {
-    const button = byId(`${key}LiveOnly`);
-    if (!button) continue;
-    button.setAttribute("aria-pressed", String(on));
-    const what = key === "tasks" ? "finished tasks" : "finished agents";
-    button.title = on
-      ? `Showing only what is live${hidden ? ` — ${hidden} ${what} hidden` : ""}  ·  click to show everything`
-      : `Showing everything  ·  click to show only what is live`;
-    button.setAttribute("aria-label", button.title);
-  }
+  // What the filter is holding back, for the menu row that controls it to say so (#215). The head
+  // reads "25 active · 253/308 done" either way, so without this the reader has no way to tell a
+  // pane that is filtered from a pane that is simply short.
+  recordState.hiddenByFilter = { tasks: liveTasksOnly ? hiddenTasks : 0, agents: liveAgentsOnly ? hiddenAgents : 0 };
   renderSessionInfo(turns.length, agents.length);
   document.querySelectorAll("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   stackOutlineHeads();
@@ -1758,6 +1752,8 @@ function toggleNavigator(open) { uiState.navigatorOpen = open; persist(); render
 // the trigger, hovered, exactly as the session title opens the copy menu — same surface, same
 // pointer bridge across the gap, same 120ms grace so the pointer can travel into it. Production
 // -only chrome layered on at runtime, because `reference-shell.html` is extracted from the demo.
+/** The panes whose rows carry an "Active only" sub-row, and what that row is filtering (#215). */
+const LIVE_ONLY_PANES = { tasks: "running and pending tasks", agents: "running sub-agents" };
 const panesTrigger = document.createElement("button");
 panesTrigger.id = "navigatorPanesTrigger";
 panesTrigger.type = "button";
@@ -1779,7 +1775,19 @@ function renderPanesMenu() {
     const key = card.dataset.navCard;
     const label = card.querySelector(":scope > .outline-card-head strong")?.textContent?.trim() || key;
     const on = uiState.navPanes.has(key);
-    return `<button class="pane-option ${on ? "on" : ""}" type="button" role="menuitemcheckbox" aria-checked="${on}" data-pane-toggle="${escapeText(key)}"><span class="pane-check" aria-hidden="true"></span><span>${escapeText(label)}</span></button>`;
+    const row = `<button class="pane-option ${on ? "on" : ""}" type="button" role="menuitemcheckbox" aria-checked="${on}" data-pane-toggle="${escapeText(key)}"><span class="pane-check" aria-hidden="true"></span><span>${escapeText(label)}</span></button>`;
+    // #215, the owner: "an active only checkbox besides Tasks and Agents in the outline drop down
+    // filter … it is not a frequent operation". A pane row is one full-width button, so the second
+    // choice cannot nest inside it; it is an indented sub-row under the pane it belongs to, and
+    // only while that pane is on — a filter for a pane nobody is showing is noise.
+    if (!LIVE_ONLY_PANES[key] || !on) return row;
+    const live = uiState.liveOnly.has(key);
+    const hidden = (recordState.hiddenByFilter || {})[key] || 0;
+    const count = live && hidden ? `<small>${hidden} hidden</small>` : "";
+    const title = live
+      ? `Showing only ${LIVE_ONLY_PANES[key]}${hidden ? ` — ${hidden} hidden` : ""}`
+      : `Show only ${LIVE_ONLY_PANES[key]}`;
+    return `${row}<button class="pane-option pane-suboption ${live ? "on" : ""}" type="button" role="menuitemcheckbox" aria-checked="${live}" data-live-only="${escapeText(key)}" title="${escapeText(title)}"><span class="pane-check" aria-hidden="true"></span><span>Active only</span>${count}</button>`;
   });
   panesMenu.innerHTML = `<div class="panes-caption">Panes</div>${rows.join("")}`;
 }
@@ -1797,6 +1805,17 @@ function schedulePanesClose() {
   }, 120);
 }
 panesMenu.onclick = event => {
+  // The sub-row first: it sits inside the same menu and names its own pane (#215).
+  const live = event.target.closest("[data-live-only]");
+  if (live) {
+    const key = live.dataset.liveOnly;
+    if (uiState.liveOnly.has(key)) uiState.liveOnly.delete(key);
+    else uiState.liveOnly.add(key);
+    persist();
+    renderNavigator();
+    renderPanesMenu();
+    return;
+  }
   const toggle = event.target.closest("[data-pane-toggle]");
   if (!toggle) return;
   const key = toggle.dataset.paneToggle;
@@ -1968,31 +1987,12 @@ tasksCenter.setAttribute("aria-label", tasksCenter.title);
 tasksCenter.dataset.slot = "2"; // #186 put the live-only filter in the outer slot, in both panes
 document.querySelector('[data-nav-card="tasks"] .outline-card-head').insertAdjacentElement("afterend", tasksCenter);
 
-// #186: show only what is LIVE — running tasks and pending ones, running sub-agents — with the
-// finished work one click away. On by default: the owner's report was that a pane listing
-// everything "renders it useless". Runtime chrome on the card's head, like the centring control
-// above, so the generated shell stays exact.
-for (const [key, what] of [["tasks", "tasks"], ["agents", "agents"]]) {
-  const head = document.querySelector(`[data-nav-card="${key}"] .outline-card-head`);
-  if (!head) continue;
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "outline-card-action";
-  button.id = `${key}LiveOnly`;
-  button.dataset.liveOnly = key;
-  // The same dot the rows wear for their own state, so the control looks like what it selects.
-  button.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="3.2" fill="currentColor" stroke="none"/><path d="M8 1.4a6.6 6.6 0 0 1 0 13.2"/><path d="M8 1.4a6.6 6.6 0 0 0 0 13.2" stroke-dasharray="2 2.4"/></svg>';
-  button.title = `Show only live ${what}`;
-  button.setAttribute("aria-label", button.title);
-  button.setAttribute("aria-pressed", String(uiState.liveOnly.has(key)));
-  button.onclick = () => {
-    if (uiState.liveOnly.has(key)) uiState.liveOnly.delete(key);
-    else uiState.liveOnly.add(key);
-    persist();
-    renderNavigator();
-  };
-  head.insertAdjacentElement("afterend", button);
-}
+// #186's live-only control USED to be a dot on each card's head. It moved into the panes menu in
+// #215, on the owner's report: the dot was indistinguishable from the decorative dots the counts
+// wear, and where it sat it could not be clicked at all — the head is `z-index:2` and painted over
+// it, so a real pointer toggled the drawer instead. The choice itself (`uiState.liveOnly`) is
+// unchanged and still on by default; only its control moved, to a place that suits how rarely it
+// is used.
 function paneScroller(el) {
   for (let node = el.parentElement; node; node = node.parentElement) {
     const o = getComputedStyle(node).overflowY;
