@@ -16,7 +16,7 @@ import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/rea
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, parseScope, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt } from "./shared/search.js";
-import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskOrder, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
+import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
@@ -1022,6 +1022,11 @@ function renderNavigator() {
   recordState.hiddenByFilter = { tasks: liveTasksOnly ? hiddenTasks : 0, agents: liveAgentsOnly ? hiddenAgents : 0 };
   // How many tasks each state holds, for the menu's rows to show what a box is worth (#218).
   recordState.taskGroupCounts = Object.fromEntries(taskGroups(tasks).map(g => [g.key, g.rows.length]));
+  // The rows the pane ACTUALLY rendered, in order, for anything that wants to aim at one (#225).
+  // The centring control used to index `taskOrder(tasks)` — the whole board — into a DOM holding
+  // only what survived the live filter (#186), the state filter (#218) and the untitled rule
+  // (#217), so on any real session its target was past the end and the click did nothing at all.
+  recordState.shownTaskRows = taskShown.flatMap(group => group.rows);
   renderSessionInfo(turns.length, agents.length);
   document.querySelectorAll("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   stackOutlineHeads();
@@ -2047,7 +2052,6 @@ tasksCenter.id = "tasksCenter";
 tasksCenter.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none"/><path d="M8 0.8v2.4M8 12.8v2.4M0.8 8h2.4M12.8 8h2.4"/></svg>';
 tasksCenter.title = `Center the pane on the running tasks — or on the boundary between done and pending  ( ${hintFor("tasks-center")} )`;
 tasksCenter.setAttribute("aria-label", tasksCenter.title);
-tasksCenter.dataset.slot = "2"; // #186 put the live-only filter in the outer slot, in both panes
 document.querySelector('[data-nav-card="tasks"] .outline-card-head').insertAdjacentElement("afterend", tasksCenter);
 
 // #186's live-only control USED to be a dot on each card's head. It moved into the panes menu in
@@ -2064,8 +2068,9 @@ function paneScroller(el) {
   return null;
 }
 function centerTasks() {
-  const tasks = recordState.meta?.tasks || [];
-  const target = taskCenterTarget(taskOrder(tasks));
+  // Aimed at the rows on screen, not at the board behind them (#225).
+  const shown = recordState.shownTaskRows || [];
+  const target = taskCenterTarget(shown);
   if (!target) return false;
   if (!uiState.navCards.has("tasks")) { uiState.navCards.add("tasks"); persist(); renderNavigator(); }
   setDrawerOpen("tasks", 1); // #139: give the tasks drawer the room to be looked at

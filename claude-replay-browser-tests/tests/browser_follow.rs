@@ -3547,6 +3547,81 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
     harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    // #225, and FIRST, because it is the state a reader is actually in: the pane opens filtered
+    // (#186/#217/#218), so the rows on screen are a subset of the board. The control used to aim
+    // `taskCenterTarget` at the whole board and index that into the filtered DOM, which on any real
+    // session lands on the wrong row or past the end — the owner's "does not work". Asserting the
+    // row it landed on is RUNNING is what catches that; asserting it merely scrolled does not,
+    // because the old code scrolled to a pending row and reported success all the same.
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 19",
+        "the filtered pane: three running and sixteen pending, the fourteen done held back",
+        std::time::Duration::from_secs(20),
+        "document.querySelectorAll('#navigatorWork .work-task').length",
+    );
+    let middle = r#"(function(){
+        var list = document.getElementById('navigatorWork');
+        var pane = list;
+        for (var n = list; n; n = n.parentElement) { var o = getComputedStyle(n).overflowY; if ((o === 'auto' || o === 'scroll') && n.scrollHeight > n.clientHeight) { pane = n; break; } }
+        var pr = pane.getBoundingClientRect(), mid = pr.top + pr.height / 2, best = null, bd = 1e9;
+        for (var row of document.querySelectorAll('#navigatorWork .work-task')) {
+            var r = row.getBoundingClientRect(), d = Math.abs((r.top + r.bottom) / 2 - mid);
+            if (d < bd) { bd = d; best = row; }
+        }
+        var dot = best && best.querySelector('.task-state');
+        var vis = [...document.querySelectorAll('#navigatorWork .work-task')].filter(function (row) {
+            var r = row.getBoundingClientRect();
+            return r.bottom > pr.top + 1 && r.top < pr.bottom - 1 && !!row.querySelector('.task-state.running');
+        }).length;
+        return { state: dot ? dot.className.replace('task-state', '').trim() : null, running_visible: vis > 0, running_in_view: vis, off: Math.round(bd), scrolled: Math.round(pane.scrollTop) };
+    })()"#;
+    // …and the glyph itself, which the owner photographed sitting between the done figure and the
+    // word "done". It is absolutely positioned over a head that is a BUTTON, so it cannot be a
+    // child of that grid; the head reserves a column for it instead, and these are the things that
+    // have to hold whatever the numbers are (#225).
+    let glyph = harness::probe(
+        &tab,
+        r#"(function(){
+            var a = document.getElementById('tasksCenter'), stat = document.getElementById('navigatorWorkCount');
+            var head = a.closest('.outline-card').querySelector(':scope > .outline-card-head');
+            var ch = head.querySelector('.outline-card-chevron');
+            var box = function (e) { var r = e.getBoundingClientRect(); return [r.left, r.right, r.top, r.bottom]; };
+            var clear = function (p, q) { return p[1] <= q[0] + 0.5 || q[1] <= p[0] + 0.5 || p[3] <= q[2] + 0.5 || q[3] <= p[2] + 0.5; };
+            var ar = a.getBoundingClientRect(), hr = head.getBoundingClientRect();
+            var hit = document.elementFromPoint(ar.left + ar.width / 2, ar.top + ar.height / 2);
+            var num = function (e) { var r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right)]; };
+            return { rects: { card: num(a.closest('.outline-card')), head: num(head), stat: num(stat), action: num(a), chevron: ch ? num(ch) : null },
+                     offCounts: clear(box(a), box(stat)), offChevron: ch ? clear(box(a), box(ch)) : null,
+                     inHead: ar.top >= hr.top - 0.5 && ar.bottom <= hr.bottom + 0.5,
+                     hit: !!(hit && (hit === a || a.contains(hit) || hit.contains(a))) };
+        })()"#,
+    );
+    assert_eq!(
+        glyph["offCounts"], true,
+        "the centring glyph does not sit on the counts: {glyph}"
+    );
+    assert_eq!(glyph["offChevron"], true, "…nor on the chevron: {glyph}");
+    assert_eq!(glyph["inHead"], true, "…and stays within the head: {glyph}");
+    assert_eq!(
+        glyph["hit"], true,
+        "…and answers a click at its own centre: {glyph}"
+    );
+
+    harness::eval(&tab, "document.getElementById('tasksCenter').click(); 'ok'");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let aimed = harness::probe(&tab, middle);
+    // Under the filter the running run sits at the TOP of the pane, so "centre" on it is a scroll
+    // the pane cannot make and the honest outcome is that nothing moves. What the fix changes is
+    // that the click no longer aims somewhere else: the old code took index 15 of the 33-row board
+    // into a 19-row DOM, landed on a pending row far down, and scrolled the running work off
+    // screen. So the claim is that the running work is still THERE afterwards.
+    assert!(
+        aimed["running_visible"].as_bool().unwrap_or(false),
+        "filtered, the click leaves the running work in view — it aims at the rows on screen, not \
+         at the board behind them: {aimed}"
+    );
+
     // #186: this case is about the whole board, which is what the live-only filter hides.
     harness::show_every_pane_row(&tab);
     harness::until(

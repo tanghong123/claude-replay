@@ -955,6 +955,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /recordState\.hiddenByFilter = \{ tasks: liveTasksOnly \? hiddenTasks : 0, agents: liveAgentsOnly \? hiddenAgents : 0 \};/, "…and the row says how much the filter is holding back, which the head's counts cannot");
   const navCss215 = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(navCss215, /\.session-navigator>\.outline-card>\.outline-card-action\{z-index:3\}/, "a head's action outranks the head it sits on, or it answers no click at all (#215)");
+  // #225, the owner: "the center on running tasks icon look weird and does not work." Two faults.
+  // It aimed `taskCenterTarget` at the whole board and indexed that into a DOM holding only the
+  // rows the filters left, so on any real session it landed on the wrong row or past the end. And
+  // it still carried `data-slot="2"`, the outer position reserved for the live-only dot that left
+  // in #215, which parked it in the middle of the counts.
+  assert.match(appSource, /recordState\.shownTaskRows = taskShown\.flatMap\(group => group\.rows\);/, "the pane records the rows it rendered (#225)");
+  assert.match(appSource, /const shown = recordState\.shownTaskRows \|\| \[\];\n\s*const target = taskCenterTarget\(shown\);/, "…and the centring control aims at those, not at the board behind them");
+  assert.doesNotMatch(appSource, /tasksCenter\.dataset\.slot/, "…from the only action slot there is, now that the dot is gone");
+  assert.doesNotMatch(navCss215, /outline-card-action\[data-slot="2"\]/, "…so the second slot's rule goes with it");
+  assert.match(navCss215, /\.outline-card:has\(>\.outline-card-action\)>\.outline-card-head\{grid-template-columns:18px minmax\(0,1fr\) auto 24px 13px\}/, "…and a head carrying an action reserves a COLUMN for it, so the counts end before the glyph begins");
   assert.match(stateSource, /localStorage\.setItem\("am-prod-live-only", JSON\.stringify\(\[\.\.\.uiState\.liveOnly\]\)\);/, "…and `persist` actually writes it — a filter a reader must set again every reload is one they stop using");
   console.log("#56 task order cases passed");
 }
