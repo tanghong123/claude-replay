@@ -489,9 +489,6 @@ impl<S: BlockStore> SessionAccumulator<S> {
         rec.resume = Some(crate::engine::meta_stream::Resume {
             id: self.committed.len(),
             replay_from: e.offset,
-            // The window CRC is the persistence layer's to compute — it owns the source bytes.
-            // Zero here means "unset"; the writer fills it before the record lands on disk.
-            window: 0,
             prev_ts: e.prev_ts,
             pending_ts: e.pending_ts,
             pre: e.pre.clone(),

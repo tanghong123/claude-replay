@@ -254,9 +254,6 @@ pub struct Resume {
     pub id: usize,
     /// The partition offset: bytes below it authored only committed blocks.
     pub replay_from: ByteOffset,
-    /// CRC32 of the 64 KiB ending at `replay_from` — everything restored derives from bytes
-    /// below it, so that is the only region a rewrite can silently corrupt.
-    pub window: u32,
     /// The thinking clock's zero — a `Thinking`'s duration measures from the previous event
     /// line, so without this the first re-read line renders `None` where a cold fold gives
     /// `Some`.
@@ -569,7 +566,6 @@ mod tests {
             resume: Some(Resume {
                 id,
                 replay_from: id as u64 * 10,
-                window: 0,
                 prev_ts: None,
                 pending_ts: None,
                 pre: Value::Null,

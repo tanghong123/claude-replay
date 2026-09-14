@@ -248,10 +248,6 @@ pub(crate) fn recover(
     if len < a.resume.replay_from {
         return Err(ColdReason::SourceRewritten);
     }
-    let win = window_at(src, a.resume.replay_from).map_err(|_| ColdReason::SourceRewritten)?;
-    if win != a.resume.window {
-        return Err(ColdReason::SourceRewritten);
-    }
     Ok(Some(a))
 }
 
@@ -291,8 +287,8 @@ pub fn writer_for(
 ) -> std::io::Result<MetaWriter> {
     match how {
         Rewind::Fresh => MetaWriter::create(dir, src, versions),
-        Rewind::Keep(keep) => MetaWriter::open_append(dir, src, keep),
-        Rewind::All => MetaWriter::reattach(dir, src),
+        Rewind::Keep(keep) => MetaWriter::open_append(dir, keep),
+        Rewind::All => MetaWriter::reattach(dir),
     }
 }
 
@@ -400,7 +396,6 @@ mod tests {
                 resume: Some(Resume {
                     id: i,
                     replay_from: (i * 10) as u64,
-                    window: 0,
                     prev_ts: None,
                     pending_ts: None,
                     pre: serde_json::Value::Null,

@@ -42,7 +42,6 @@ pub fn anchor_of(src: &Path) -> std::io::Result<u32> {
 /// An append-only writer over one session's meta stream.
 pub struct MetaWriter {
     file: File,
-    src: PathBuf,
 }
 
 impl MetaWriter {
@@ -60,10 +59,7 @@ impl MetaWriter {
             versions,
         };
         writeln!(file, "{}", serde_json::to_string(&header)?)?;
-        Ok(Self {
-            file,
-            src: src.to_path_buf(),
-        })
+        Ok(Self { file })
     }
 
     /// Re-open an existing stream for appending, cut to the first `keep` records.
@@ -73,7 +69,7 @@ impl MetaWriter {
     /// alignment point would then be folded a second time, and the reader's turn/tool/token
     /// totals would come out high. The content stream is cut for the same reason — this is the
     /// other half, and it is easy to forget precisely because blocks stay correct without it.
-    pub fn open_append(dir: &Path, src: &Path, keep: usize) -> std::io::Result<Self> {
+    pub fn open_append(dir: &Path, keep: usize) -> std::io::Result<Self> {
         let path = meta_path(dir);
         let raw = std::fs::read(&path)?;
         // Header + `keep` records, counted in framing newlines.
@@ -91,10 +87,7 @@ impl MetaWriter {
                 .set_len(end as u64)?;
         }
         let file = OpenOptions::new().append(true).open(&path)?;
-        Ok(Self {
-            file,
-            src: src.to_path_buf(),
-        })
+        Ok(Self { file })
     }
 
     /// Re-open an existing stream for appending, cutting **nothing**.
@@ -103,12 +96,9 @@ impl MetaWriter {
     /// re-author. A *retained* entry (#109) re-authors nothing — its fold never stopped where the
     /// stream stops, it simply stopped writing — so the same cut would discard real history and
     /// the next reader would resume further back than it needs to.
-    pub fn reattach(dir: &Path, src: &Path) -> std::io::Result<Self> {
+    pub fn reattach(dir: &Path) -> std::io::Result<Self> {
         let file = OpenOptions::new().append(true).open(meta_path(dir))?;
-        Ok(Self {
-            file,
-            src: src.to_path_buf(),
-        })
+        Ok(Self { file })
     }
 
     /// Append one record, filling the resume window the engine deliberately left unset.
@@ -117,11 +107,13 @@ impl MetaWriter {
     /// bytes**, which the persistence layer owns. Filling it here keeps the engine free of file
     /// access, which is what lets its alignment stay a pure function.
     pub fn append(&mut self, rec: &MetaRecord) -> std::io::Result<()> {
-        let mut rec = rec.clone();
-        if let Some(r) = rec.resume.as_mut() {
-            r.window = window_at(&self.src, r.replay_from)?;
-        }
-        writeln!(self.file, "{}", serde_json::to_string(&rec)?)?;
+        // #222, the owner: "don't pay a tax that seems to have zero cost to eliminate." This used
+        // to reopen the source, seek back and CRC the 64 KiB below the resume offset, on EVERY
+        // record — 1745 of them and 109 MB of re-reads on a 400 MB session — so that recovery could
+        // verify ONE of them. What recovery actually needs is identity, and `anchor_of` already
+        // gives it once per stream from the transcript's first line, with the length check beside
+        // it for a truncate. The clone went with the mutation.
+        writeln!(self.file, "{}", serde_json::to_string(rec)?)?;
         Ok(())
     }
 
@@ -241,7 +233,6 @@ mod tests {
             resume: Some(Resume {
                 id,
                 replay_from,
-                window: 0,
                 prev_ts: None,
                 pending_ts: None,
                 pre: serde_json::Value::Null,
@@ -271,10 +262,12 @@ mod tests {
         assert_eq!(got[2].resume.as_ref().unwrap().id, 3);
     }
 
-    /// The writer fills the window the engine left unset — the engine cannot, since the CRC
-    /// covers source bytes it deliberately never touches.
+    /// #222: the writer no longer fills a per-record window, and appending costs no read of the
+    /// source at all. What guards identity is `anchor_of` — the transcript's first line, checked
+    /// once per recovery — with the length check beside it; a per-record CRC verified one of its
+    /// number and charged for all of them.
     #[test]
-    fn the_writer_fills_the_resume_window() {
+    fn appending_reads_nothing_from_the_source() {
         let d = tmp("win");
         let src = d.join("t.jsonl");
         std::fs::write(&src, "x".repeat(500)).unwrap();
@@ -282,11 +275,14 @@ mod tests {
         w.append(&rec(1, 400)).unwrap();
         w.flush().unwrap();
 
-        let got = MetaReader::open(&d).unwrap().unwrap().1.next().unwrap();
-        let win = got.resume.unwrap().window;
-        assert_ne!(win, 0, "the writer must fill it");
-        assert_eq!(win, window_at(&src, 400).unwrap());
-        assert_ne!(win, window_at(&src, 300).unwrap(), "offset-specific");
+        // The source can go away entirely between the create and the append: nothing reads it.
+        std::fs::remove_file(&src).unwrap();
+        w.append(&rec(2, 450)).unwrap();
+        w.flush().unwrap();
+
+        let got: Vec<_> = MetaReader::open(&d).unwrap().unwrap().1.collect();
+        assert_eq!(got.len(), 2, "both records landed: {got:?}");
+        assert_eq!(got[1].resume.as_ref().unwrap().replay_from, 450);
     }
 
     /// A crash mid-append leaves half a line. It must be DROPPED, never misread — and the
