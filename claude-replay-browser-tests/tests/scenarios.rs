@@ -23,8 +23,8 @@ use harness::{
     last_mounted_turn, long_session, named_tool_at, now_minus, open_last_fold, open_turn_session,
     probe, queued_at, queued_text, read_tool_at, scroll_by, selection_text, serial,
     session_id_chip, stub_clipboard, tap_console, thinking_at, tool_open_at, tool_result_at,
-    tool_result_lines, tool_result_text, turn_at_top, until, user_at, view_anchor_index,
-    write_tool_at, Kind, LiveGrowth, Monitor, Shape, Stores, Surface,
+    tool_result_lines, tool_result_text, turn_at_top, until, until_reader_owns_the_view, user_at,
+    view_anchor_index, write_tool_at, Kind, LiveGrowth, Monitor, Shape, Stores, Surface,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -2201,6 +2201,56 @@ fn expand_open_turn(tab: &headless_chrome::Tab, surface: Surface) -> String {
     eval(tab, js).as_str().unwrap_or("").to_string()
 }
 
+/// The reader's anchor once the page is done moving: the engine idle, then two reads a beat
+/// apart that agree.
+///
+/// The engine's own books come FIRST and do the real work; the two agreeing samples are only a
+/// backstop for paint landing after the last transaction. Stillness alone is not enough — see
+/// `until_engine_quiet` for the plateau that fooled two rounds of this — and neither half reads
+/// where the view IS, so a broken engine settles in the wrong place and the caller's assertion
+/// still fails. Used for the baseline as well as the result, because a case that measures a
+/// change has to start from a page that has stopped.
+fn until_anchor_at_rest(tab: &headless_chrome::Tab, surface: Surface) -> (i64, f64) {
+    until_engine_quiet(tab);
+    let t0 = std::time::Instant::now();
+    let mut last = view_anchor_index(tab, surface);
+    while t0.elapsed() < Duration::from_secs(12) {
+        std::thread::sleep(Duration::from_millis(250));
+        let now = view_anchor_index(tab, surface);
+        if now.0 == last.0 && (now.1 - last.1).abs() <= 0.5 {
+            return now;
+        }
+        last = now;
+    }
+    last
+}
+
+/// Wait until the engine has no queued work AND has stopped transacting.
+///
+/// A PAUSE is not the end (#227). The engine answers a height change in two movements: the
+/// layout reaction at once, and then the estimator, which by design takes a new estimate only
+/// once the reader is at rest (#194) — so between them the view sits still on a plateau that
+/// two samples a quarter-second apart happily agree about. Measured: a case that stopped on
+/// that plateau read the top record as 282 and called the view moved, while the reader's own
+/// record had not budged from -12 and landed back at -12 a moment later. What separates a
+/// plateau from the end is the engine's own books: `pending` names work it still owes, and a
+/// states count that stops growing means it has stopped working. Neither reads the view's
+/// POSITION, so a broken engine still comes to rest in the wrong place and the caller's
+/// assertion still fails.
+fn until_engine_quiet(tab: &headless_chrome::Tab) {
+    let count = "(function(){ var h = window.__viewportHistory; if (!h || !h.states || !h.states.length) return -1; var s = h.states[h.states.length - 1]; return s.pending ? -1 : h.states.length; })()";
+    let t0 = std::time::Instant::now();
+    let mut last = -1i64;
+    while t0.elapsed() < Duration::from_secs(15) {
+        let now = eval(tab, count).as_i64().unwrap_or(-1);
+        if now > 0 && now == last {
+            return;
+        }
+        last = now;
+        std::thread::sleep(Duration::from_millis(400));
+    }
+}
+
 /// Twelve finished turns, then an open turn of 160 tool calls (many screens on either page).
 fn open_turn_fixture(name: &str) -> Fixture {
     let base = base(name);
@@ -2233,7 +2283,15 @@ fn scenario_growth_above_the_reader_in_the_same_turn_holds(
     settle();
     scroll_by(tab, surface, -1800);
     settle();
-    let before = view_anchor_index(tab, surface);
+    // Read the BEFORE only once the page has stopped moving (#227). Two rounds of evidence put
+    // the fragility here rather than after the growth: repairing only the trailing wait moved
+    // nothing (2 of 8, 1 of 8), and the `before` of one failing run was the `after` of the
+    // previous one to the pixel — the setup's jump, expand and 1800px scroll were still
+    // converging, the growth landed on a moving page, and the case blamed the growth for the
+    // motion it inherited. Follow first, because until the engine hands the view to the reader
+    // it places at the tail and is right to.
+    until_reader_owns_the_view(tab);
+    let before = until_anchor_at_rest(tab, surface);
     // Twelve finished turns take the first 36 records; the reader is inside the open turn.
     assert!(
         before.0 >= 40,
@@ -2244,14 +2302,52 @@ fn scenario_growth_above_the_reader_in_the_same_turn_holds(
         Surface::Classic => format!("(function(){{ var e = document.querySelector('#stream [data-idx=\"{target}\"]'); if (!e) return 'missing'; e.style.paddingBottom = '300px'; return 'grown'; }})()"),
         Surface::AppShell => format!("(function(){{ var e = document.querySelector('.virtual-window [data-block-index=\"{target}\"]'); if (!e) return 'missing'; e.style.paddingBottom = '300px'; return 'grown'; }})()"),
     };
+    let scroller = surface.scroller();
+    let tall = format!("(function(){{ var s = {scroller}; return s ? s.scrollHeight : 0; }})()");
+    let before_height = eval(tab, &tall).as_f64().unwrap_or(0.0);
+    let before_probe = if std::env::var("CR_DUMP").is_ok() {
+        let p = match surface {
+            Surface::Classic => format!("(function(){{ var e=document.querySelector('#stream [data-idx=\"{}\"]'); var h=window.__viewportHistory, s=h&&h.states[h.states.length-1]; return JSON.stringify({{readerRecordTop: e?Math.round(e.getBoundingClientRect().top):null, scrollTop: Math.round(document.scrollingElement.scrollTop), anchor: s&&s.position, belief: s&&Math.round(s.top), pads: s&&s.pads, est: s&&s.estimate}}); }})()", before.0),
+            Surface::AppShell => format!("(function(){{ var t=document.querySelector('.transcript'); var e=document.querySelector('.virtual-window [data-block-index=\"{}\"]'); var h=window.__viewportHistory, s=h&&h.states[h.states.length-1]; return JSON.stringify({{readerRecordTop: e?Math.round(e.getBoundingClientRect().top-t.getBoundingClientRect().top):null, scrollTop: Math.round(t.scrollTop), anchor: s&&s.position, belief: s&&Math.round(s.top), pads: s&&s.pads, est: s&&s.estimate}}); }})()", before.0),
+        };
+        eval(tab, &p).to_string()
+    } else {
+        String::new()
+    };
     assert_eq!(
         eval(tab, &grow),
         "grown",
         "the record four above the reader is mounted"
     );
-    std::thread::sleep(Duration::from_millis(1500));
-    let after = view_anchor_index(tab, surface);
-    assert!(after.0 == before.0 && (after.1 - before.1).abs() <= 4.0, "the view held through a 300px growth above it in the same turn: before {before:?}, after {after:?}");
+    // Three things have to happen before the view can be read: the 300px reaches layout, the
+    // engine is told, and its correction is written. A fixed sleep guessed at all three at once
+    // and on a loaded machine guessed wrong — 2 of 6 and 3 of 6 here, while CI's run of this very
+    // case was green (#227). The two waits below are ADDITIVE, and neither can be satisfied by
+    // the view being RIGHT: the first says the stimulus landed, the second says the engine
+    // stopped moving. Where it came to rest is the assertion's business, below.
+    until(
+        tab,
+        &format!(
+            "(function(){{ var s = {scroller}; return !!s && s.scrollHeight >= {}; }})()",
+            before_height + 250.0
+        ),
+        "the 300px growth to reach layout",
+        Duration::from_secs(10),
+        &tall,
+    );
+    let after = until_anchor_at_rest(tab, surface);
+    let dump = if std::env::var("CR_DUMP").is_ok() {
+        // The one question the geometry above cannot answer: did the record the reader was ON
+        // move, or did it hold while "the first visible record" picked a different element?
+        let probe = match surface {
+            Surface::Classic => format!("(function(){{ var e=document.querySelector('#stream [data-idx=\"{}\"]'); var g=document.querySelector('#stream [data-idx=\"{target}\"]'); var h=window.__viewportHistory, s=h&&h.states[h.states.length-1]; return JSON.stringify({{readerRecordTop: e?Math.round(e.getBoundingClientRect().top):null, grownTop: g?Math.round(g.getBoundingClientRect().top):null, grownH: g?Math.round(g.getBoundingClientRect().height):null, scrollTop: Math.round(document.scrollingElement.scrollTop), anchor: s&&s.position, belief: s&&Math.round(s.top), pads: s&&s.pads, est: s&&s.estimate}}); }})()", before.0),
+            Surface::AppShell => format!("(function(){{ var t=document.querySelector('.transcript'); var e=document.querySelector('.virtual-window [data-block-index=\"{}\"]'); var g=document.querySelector('.virtual-window [data-block-index=\"{target}\"]'); var h=window.__viewportHistory, s=h&&h.states[h.states.length-1]; return JSON.stringify({{readerRecordTop: e?Math.round(e.getBoundingClientRect().top-t.getBoundingClientRect().top):null, grownTop: g?Math.round(g.getBoundingClientRect().top-t.getBoundingClientRect().top):null, grownH: g?Math.round(g.getBoundingClientRect().height):null, scrollTop: Math.round(t.scrollTop), anchor: s&&s.position, belief: s&&Math.round(s.top), pads: s&&s.pads, est: s&&s.estimate}}); }})()", before.0),
+        };
+        eval(tab, &probe).to_string()
+    } else {
+        String::new()
+    };
+    assert!(after.0 == before.0 && (after.1 - before.1).abs() <= 4.0, "the view held through a 300px growth above it in the same turn: before {before:?}, after {after:?}\n  BEFORE {before_probe}\n  AFTER  {dump}");
 }
 
 #[test]
