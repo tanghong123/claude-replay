@@ -76,13 +76,15 @@ function toolHead(head) {
 function stateLabel(th) {
   if (th.state === "failed") {
     const word = th.status || "failed";
-    const named = th.exit != null && th.exit !== 0 ? `${word} · exit ${th.exit}` : word;
-    // …and how much it returned, which a failure needs as much as a success does (#232). This
-    // used to stop at the failure word and drop the size chip with it, so a failed call read
-    // `Bash echo … failed` on the app shell against `Bash echo … 1 lines failed` on the classic
-    // page: the reader could not tell an error that said something from one that said nothing.
-    // The parity audit found it; no case had compared a FAILED result's head before.
-    return th.lines != null ? `${named} · ${th.lines} lines` : named;
+    // The failure word and its exit, and nothing else. #232 briefly appended the line count here,
+    // because the parity audit saw a failed Bash read `… 1 lines failed` on the classic page and
+    // `… failed` on the shell. That rule was wrong in the other direction: on the fixture behind
+    // `tool_heads_carry_state_exit_and_duration` the classic chip is `exit 1 · 2.50s` with no
+    // count at all, so appending one made the shell say MORE than the page it was being matched
+    // to. The real gap is narrower — the shell replaces the chip text wholesale on failure
+    // instead of keeping what the chips carry — and wants a chip-faithful rule, not a
+    // lines-shaped one. Queued rather than guessed at again.
+    return th.exit != null && th.exit !== 0 ? `${word} · exit ${th.exit}` : word;
   }
   return th.text;
 }
