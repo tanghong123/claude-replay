@@ -204,6 +204,15 @@ pub fn pasted_image_sized(text: &str, ts: &str, b64: &str) -> String {
 }
 
 /// A tool result carrying an embedded image (what a Read of a PNG records).
+/// The same, with the payload named — a case that zooms needs an image big enough to OUTGROW
+/// its stage, which a 1×1 never is at any scale.
+pub fn image_result_sized(call_id: &str, ts: &str, b64: &str) -> String {
+    let b64 = b64.trim();
+    format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":[{{\"type\":\"image\",\"source\":{{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"{b64}\"}}}}]}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
 pub fn image_result_at(call_id: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":[{{\"type\":\"image\",\"source\":{{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"{TINY_PNG_B64}\"}}}}]}}]}},\"timestamp\":\"{ts}\"}}\n"

@@ -2084,6 +2084,30 @@ fn app_shell_renders_an_embedded_image() {
 }
 
 /// Twelve turns, then a Read of a PNG whose result embeds the image.
+/// The image fixture with a REAL screenshot's payload (360×360) instead of the 1×1.
+///
+/// Zoom is only observable on an image that can outgrow its stage: the 1×1 sits at 100% fit and
+/// is still 8px wide at the 800% ceiling, so "did it become pannable" has no answer there. This
+/// is the same session shape, with bytes that have a size.
+fn big_image_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("question 12: read the screenshot", &now_minus(40));
+    transcript += &assistant_at("answer 12a: let me look at it", &now_minus(39));
+    transcript += &harness::tool_open_at("t-pre", &now_minus(38));
+    transcript += &harness::tool_result_at("t-pre", &now_minus(37));
+    transcript += &read_tool_at("t-img", "/tmp/shot.png", &now_minus(36));
+    transcript += &harness::image_result_sized("t-img", &now_minus(32), harness::BIG_PNG_B64);
+    transcript += &assistant_at("answer 12: the screenshot shows the deck", &now_minus(28));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
 fn image_fixture(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
@@ -10156,4 +10180,225 @@ fn app_shell_a_delivered_file_is_offered_like_any_path() {
     let fx = delivered_file_fixture("scenario-delivered-app");
     let page = open(Surface::AppShell, &fx, 2982);
     scenario_a_delivered_file_is_offered_like_any_path(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: an image is ONE click away, and enlarging it zooms and pans (#228) ───────────
+
+/// The owner: "currently it takes two clicks to see the image, which is one click too many."
+///
+/// The two were the record's fold and the "Show image" toggle inside it. An attachment record
+/// starts open now, so the toggle is the FIRST thing a reader can press. The second half of the
+/// rule is what must not change: the bytes stay behind that press, because the owner's reason
+/// for choosing this shape over "unfolding shows the image" was "when user clicks expand all,
+/// that would lead to all images being downloaded". So this asserts both — one click to the
+/// image, and nothing fetched before it.
+fn scenario_an_image_is_one_click_away(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    if surface == Surface::Classic {
+        // The classic page never had the problem: the bytes are already in the payload, so it
+        // draws the image inline and one click enlarges it. It is the reference for the shell.
+        until(tab, "(function(){ var i = document.querySelector('.amark img'); return !!i && i.naturalWidth >= 1 && i.getBoundingClientRect().height > 0; })()", "the classic page to show the image with no clicks at all", Duration::from_secs(20), "document.querySelectorAll('.amark').length + ' attachment blocks'");
+        return;
+    }
+    until(
+        tab,
+        "!!document.querySelector('[data-image-toggle]')",
+        "the image row to render inside the process",
+        Duration::from_secs(20),
+        "document.querySelectorAll('.renderer-note, .renderer-image').length + ' attachment views'",
+    );
+    // No click yet: the record is open on its own, and its toggle is really visible — a rect is
+    // not visibility, so the control is hit-tested where it claims to be (the rect-is-not-
+    // visibility memory; a clipped control still measures 34×34).
+    let ready = eval(tab, "(function(){ var t = document.querySelector('[data-image-toggle]'); var r = t.closest('.renderer'); var b = t.getBoundingClientRect(); var hit = document.elementFromPoint(Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)); return JSON.stringify({ closed: r.classList.contains('closed'), height: Math.round(b.height), reachable: !!hit && (hit === t || t.contains(hit)) }); })()");
+    let ready: serde_json::Value =
+        serde_json::from_str(ready.as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        ready["closed"],
+        serde_json::json!(false),
+        "the attachment record starts open, so its one affordance needs no click to reach: {ready}"
+    );
+    assert!(
+        ready["height"].as_f64().unwrap_or(0.0) > 0.0,
+        "the toggle is drawn: {ready}"
+    );
+    assert_eq!(
+        ready["reachable"],
+        serde_json::json!(true),
+        "the toggle answers a click where it is painted: {ready}"
+    );
+    // …and nothing has been fetched for it.
+    assert_eq!(
+        eval(
+            tab,
+            "document.querySelectorAll('.renderer-image img').length"
+        ),
+        0,
+        "an open record has loaded no image bytes"
+    );
+    // The performance property the owner chose this shape FOR: expand everything, and still no
+    // image is fetched. This is the assertion that would fail had the fix been "unfolding shows
+    // the image" instead.
+    eval(tab, "(function(){ var b = document.getElementById('sessionFoldAll'); if (b) b.click(); return 'ok'; })()");
+    settle();
+    assert_eq!(
+        eval(
+            tab,
+            "document.querySelectorAll('.renderer-image img').length"
+        ),
+        0,
+        "expand-all fetches no images: the bytes stay behind the per-image click"
+    );
+    // One click, and the image is there.
+    eval(
+        tab,
+        "document.querySelector('[data-image-toggle]').click(); 'ok'",
+    );
+    until(tab, "(function(){ var i = document.querySelector('.renderer-image-thumb img'); return !!i && i.naturalWidth >= 1; })()", "one click to show the image", Duration::from_secs(10), "(function(){ var i = document.querySelector('.renderer-image-thumb img'); return i ? 'natural ' + i.naturalWidth : 'no img'; })()");
+}
+
+/// The owner: "when see the enlarged image, all me to have zoom control and move control (when
+/// the image is too big to fit). By default, zoom to fit on screen."
+///
+/// One shared engine drives every viewer (html/shared/image-view.js), so both pages are asked
+/// the same three questions: does it open fitted, does zooming in change the scale, and does an
+/// image larger than its stage become pannable when it could not pan before.
+fn scenario_the_enlarged_image_zooms(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    let (open_it, stage) = match surface {
+        Surface::Classic => (
+            "(function(){ var i = document.querySelector('.amark img'); if (!i) return 'no inline image'; i.click(); return 'ok'; })()",
+            ".lightbox .lb-stage",
+        ),
+        Surface::AppShell => (
+            "(function(){ var t = document.querySelector('[data-image-toggle]'); if (!t) return 'no toggle'; t.click(); return 'ok'; })()",
+            ".image-lightbox .image-lightbox-stage",
+        ),
+    };
+    if surface == Surface::AppShell {
+        until(
+            tab,
+            "!!document.querySelector('[data-image-toggle]')",
+            "the image row",
+            Duration::from_secs(20),
+            "'no toggle'",
+        );
+        assert_eq!(eval(tab, open_it), "ok", "the image shows");
+        until(tab, "(function(){ var i = document.querySelector('.renderer-image-thumb img'); return !!i && i.naturalWidth >= 1; })()", "the thumbnail", Duration::from_secs(10), "'no thumb'");
+        eval(
+            tab,
+            "document.querySelector('.renderer-image-thumb').click(); 'ok'",
+        );
+    } else {
+        until(tab, "(function(){ var i = document.querySelector('.amark img'); return !!i && i.naturalWidth >= 1; })()", "the inline image", Duration::from_secs(20), "'no inline image'");
+        assert_eq!(eval(tab, open_it), "ok", "the image enlarges");
+    }
+    until(
+        tab,
+        &format!("(function(){{ var s = document.querySelector('{stage}'); return !!s && s.dataset.zoom != null; }})()"),
+        "the enlarged image to report a zoom level",
+        Duration::from_secs(10),
+        &format!("(function(){{ var s = document.querySelector('{stage}'); return s ? JSON.stringify(s.dataset) : 'no stage'; }})()"),
+    );
+    let fitted = eval(tab, &format!("(function(){{ var s = document.querySelector('{stage}'); var i = s.querySelector('img'); var b = s.getBoundingClientRect(); var r = i.getBoundingClientRect(); return JSON.stringify({{ zoom: Number(s.dataset.zoom), pannable: s.dataset.pannable, fitsW: r.width <= b.width + 1, fitsH: r.height <= b.height + 1 }}); }})()"));
+    let fitted: serde_json::Value =
+        serde_json::from_str(fitted.as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null);
+    // Fit means the whole image is inside the stage, and an image that fits cannot pan — the
+    // grab cursor is never offered for a move that would do nothing.
+    assert_eq!(
+        fitted["fitsW"],
+        serde_json::json!(true),
+        "it opens fitted across: {fitted}"
+    );
+    assert_eq!(
+        fitted["fitsH"],
+        serde_json::json!(true),
+        "it opens fitted down: {fitted}"
+    );
+    assert_eq!(
+        fitted["pannable"],
+        serde_json::json!("no"),
+        "an image that fits is not draggable: {fitted}"
+    );
+    let before = fitted["zoom"].as_f64().unwrap_or(0.0);
+    assert!(before > 0.0, "the stage reports a zoom level: {fitted}");
+    // Zoom in far enough that the image must exceed the stage, and it becomes pannable.
+    eval(tab, &format!("(function(){{ var s = document.querySelector('{stage}'); for (var n = 0; n < 8; n++) {{ var b = s.querySelector('[data-zoom=\"in\"], .lb-zoom-btn'); }} return 'ok'; }})()"));
+    for _ in 0..8 {
+        eval(tab, &format!("(function(){{ var s = document.querySelector('{stage}'); var btns = s.querySelectorAll('button'); for (var b of btns) {{ if (b.title && b.title.indexOf('Zoom in') === 0) {{ b.click(); return 'ok'; }} }} return 'no zoom-in button'; }})()"));
+    }
+    let zoomed = eval(tab, &format!("(function(){{ var s = document.querySelector('{stage}'); var i = s.querySelector('img'); var b = s.getBoundingClientRect(); var r = i.getBoundingClientRect(); return JSON.stringify({{ zoom: Number(s.dataset.zoom), pannable: s.dataset.pannable, wider: r.width > b.width + 1 || r.height > b.height + 1 }}); }})()"));
+    let zoomed: serde_json::Value =
+        serde_json::from_str(zoomed.as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null);
+    assert!(
+        zoomed["zoom"].as_f64().unwrap_or(0.0) > before,
+        "zooming in raises the scale: {before} -> {zoomed}"
+    );
+    assert_eq!(
+        zoomed["wider"],
+        serde_json::json!(true),
+        "the zoomed image outgrows its stage: {zoomed}"
+    );
+    assert_eq!(
+        zoomed["pannable"],
+        serde_json::json!("yes"),
+        "an image too big to fit can be moved — the owner's 'move control': {zoomed}"
+    );
+    // And the way back is one press: fit returns the default the viewer opened at.
+    eval(tab, &format!("(function(){{ var s = document.querySelector('{stage}'); var btns = s.querySelectorAll('button'); for (var b of btns) {{ if (b.title && b.title.indexOf('Fit') === 0) {{ b.click(); return 'ok'; }} }} return 'no fit button'; }})()"));
+    let refit = eval(tab, &format!("(function(){{ var s = document.querySelector('{stage}'); return JSON.stringify({{ zoom: Number(s.dataset.zoom), pannable: s.dataset.pannable }}); }})()"));
+    let refit: serde_json::Value =
+        serde_json::from_str(refit.as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        refit["zoom"].as_f64().unwrap_or(-1.0),
+        before,
+        "Fit returns to the scale it opened at: {refit}"
+    );
+    assert_eq!(
+        refit["pannable"],
+        serde_json::json!("no"),
+        "and a fitted image is once again not draggable: {refit}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_an_image_is_one_click_away() {
+    let _serial = serial();
+    let fx = image_fixture("scenario-oneclick-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_an_image_is_one_click_away(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_an_image_is_one_click_away() {
+    let _serial = serial();
+    let fx = image_fixture("scenario-oneclick-app");
+    let page = open(Surface::AppShell, &fx, 2983);
+    scenario_an_image_is_one_click_away(&page.tab, Surface::AppShell, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_the_enlarged_image_zooms() {
+    let _serial = serial();
+    let fx = big_image_fixture("scenario-zoom-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_the_enlarged_image_zooms(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_enlarged_image_zooms() {
+    let _serial = serial();
+    let fx = big_image_fixture("scenario-zoom-app");
+    let page = open(Surface::AppShell, &fx, 2984);
+    scenario_the_enlarged_image_zooms(&page.tab, Surface::AppShell, &fx);
 }

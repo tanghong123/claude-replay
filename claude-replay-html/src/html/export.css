@@ -566,6 +566,36 @@ body.selecting #toolmenu, body.selecting #agentmenu {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 10px; padding: 24px; background: rgba(0, 0, 0, 0.82);
 }
+/* #228 — the image lives in a stage that CLIPS it, which is what makes panning mean anything:
+   a magnified screenshot stays inside its box instead of covering the caption and the way out.
+   The transform is the shared module's (html/shared/image-view.js); nothing here reflows while
+   zooming, and the cursor follows `data-pannable` so no grab hand is offered on an image that
+   already fits. */
+.lb-stage {
+  position: relative; overflow: hidden; touch-action: none; cursor: default;
+  width: 100%; max-height: calc(100% - 28px); flex: 1 1 auto;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 4px; background: #fff;
+}
+.lb-stage > img {
+  transform-origin: center center; will-change: transform;
+  max-width: none; max-height: none; border-radius: 0; background: #fff;
+}
+.lb-stage[data-pannable="yes"] { cursor: grab; }
+.lb-stage[data-pannable="yes"].dragging { cursor: grabbing; }
+.lb-zoom {
+  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px;
+  background: rgba(18, 22, 30, 0.82); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28); z-index: 2;
+}
+.lb-zoom-btn, .lb-zoom-level {
+  border: 0; background: transparent; color: #e8ecf2; cursor: pointer; border-radius: 999px;
+  font: 12px/1 var(--mono);
+}
+.lb-zoom-btn { width: 28px; height: 26px; font-size: 15px; }
+.lb-zoom-actual { width: auto; padding: 0 9px; font-size: 11px; }
+.lb-zoom-level { min-width: 52px; height: 26px; font-variant-numeric: tabular-nums; }
+.lb-zoom-btn:hover, .lb-zoom-level:hover { background: rgba(255, 255, 255, 0.14); }
 .lightbox img {
   max-width: 100%; max-height: calc(100% - 28px); object-fit: contain;
   cursor: default; border-radius: 4px; background: #fff;

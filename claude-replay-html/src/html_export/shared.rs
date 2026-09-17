@@ -54,6 +54,7 @@ pub const SHARED: &[(&str, &str)] = &[
     ),
     ("task-card", include_str!("../html/shared/task-card.js")),
     ("ids", include_str!("../html/shared/ids.js")),
+    ("image-view", include_str!("../html/shared/image-view.js")),
 ];
 
 /// The source of one shared module, for serving it as a module.

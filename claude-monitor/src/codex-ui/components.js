@@ -129,7 +129,18 @@ export function fleetHtml(run, state) {
   return `<div class="fleet" data-fleet="${escapeText(run)}">${rows}</div>`;
 }
 
-export const rendererStartsClosed = view => !view.running && !view.interaction && view.renderer !== "queue";
+// An attachment record starts OPEN (#228). Its body is nothing but ONE affordance — "Show
+// image", Download, Open preview, Reveal — and a fold over a single button costs the reader a
+// click that reveals no content, only the way to ask for it. The owner: "currently it takes two
+// clicks to see the image, which is one click too many."
+//
+// This is the cheap half of the choice. The expensive half would be rendering the image itself
+// on unfold, and the owner ruled that out for the right reason: "when user clicks expand all,
+// that would lead to all images being downloaded." The `src` is still emitted only for an id in
+// `state.openImages`, so an opened record shows a button and fetches nothing; expand-all over a
+// hundred screenshots is still a hundred buttons and zero bytes.
+export const rendererStartsClosed = view =>
+  !view.running && !view.interaction && !view.attachment && view.renderer !== "queue";
 
 function renderProcess(unit, state) {
   const key = unit.key;

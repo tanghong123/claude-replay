@@ -1,6 +1,7 @@
 import { escapeText } from "./view-model.js";
 import { uiState } from "./state.js";
 import { sandboxDocument } from "./sandbox.js";
+import { createImageView } from "./shared/image-view.js";
 
 const byId = id => document.getElementById(id);
 const SESSION_CACHE_LIMIT = 6;
@@ -118,7 +119,17 @@ export class Preview {
     // One object URL at a time: a tab reopened per session switch minted a new blob and never
     // released the last, so the page held every image it had ever previewed.
     if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = ""; }
-    if (data) { this.objectUrl = data.startsWith("blob:") ? data : ""; body.innerHTML = `<div class="artifact-surface"><img class="artifact-image" alt="${escapeText(item.name)}"></div>`; body.querySelector("img").src = data; return; }
+    // A previewed image zooms and pans like the enlarged one (#228): this panel is narrow, so it
+    // is exactly where a screenshot is "too big to fit". Same shared engine, same gestures.
+    if (this.imageView) { this.imageView.destroy(); this.imageView = null; }
+    if (data) {
+      this.objectUrl = data.startsWith("blob:") ? data : "";
+      body.innerHTML = `<div class="artifact-surface artifact-stage"><img class="artifact-image" alt="${escapeText(item.name)}"></div>`;
+      const stage = body.querySelector(".artifact-stage"), img = stage.querySelector("img");
+      this.imageView = createImageView(stage, img);
+      img.src = data;
+      return;
+    }
     const html = /\.html?$/i.test(item.name || "");
     if (html && document.body.dataset.paired === "true") { body.innerHTML = '<iframe class="artifact-html-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; body.querySelector("iframe").srcdoc = sandboxDocument(text || ""); return; }
     body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div>${item.path && item.sig ? '<div class="artifact-actions"><button class="smallbtn" type="button" data-preview-reveal>Reveal in file manager</button></div>' : ""}</div><div class="artifact-surface"><pre class="artifact-text"></pre></div>`;

@@ -2528,3 +2528,38 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(decodeURIComponent(inline), served, "…and it is the rail's own mark: one source, two shells, both binaries");
   console.log("#203 favicon cases passed");
 }
+
+// ── #228: an image is one click away, and the enlarged view zooms ───────────────────────────
+{
+  // The owner: "currently it takes two clicks to see the image, which is one click too many."
+  // An attachment record starts OPEN, because its body is a single affordance and a fold over
+  // one button hides no content — only the way to ask for it.
+  assert.equal(rendererStartsClosed({ renderer: "read", running: false, interaction: null, attachment: { att_kind: "image" } }), false, "an image attachment record starts open");
+  assert.equal(rendererStartsClosed({ renderer: "read", running: false, interaction: null, attachment: { att_kind: "file", att_path: "/tmp/x.bin" } }), false, "…and so does a non-image one: same shape, same single button");
+  // The rest of the fold rule is untouched: this is a new exemption, not a new default.
+  assert.equal(rendererStartsClosed({ renderer: "bash", running: false, interaction: null }), true, "an ordinary record still starts closed");
+
+  const components = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  // The half that must NOT change. The owner chose "record open, image still behind a click"
+  // over "unfolding shows the image" for a stated reason — "when user clicks expand all, that
+  // would lead to all images being downloaded" — so the src stays gated on the reader's own
+  // per-image choice. If this ever renders an <img> for a closed image, expand-all becomes a
+  // hundred downloads.
+  assert.match(components, /const open = !!state\?\.openImages\?\.has\(view\.id\);/, "the thumbnail is still gated on openImages");
+  assert.match(components, /\$\{open \? `<figure class="renderer-image-figure">/, "…and the <img> is emitted only when that is true");
+
+  // The enlarged view's zoom/pan is ONE implementation, shared by every viewer that shows an
+  // image over the page (seam 0), not a copy per shell.
+  const imageView = readFileSync(new URL("../../claude-replay-html/src/html/shared/image-view.js", import.meta.url), "utf8");
+  assert.match(imageView, /export \{ createImageView \};$/m, "the shared module publishes one entry point");
+  assert.doesNotMatch(imageView, /^import /m, "…and imports nothing, as the inliner requires");
+  const viewer = readFileSync(new URL("../../claude-monitor/src/codex-ui/attachment-viewer.js", import.meta.url), "utf8");
+  assert.match(viewer, /import \{ createImageView \} from "\.\/shared\/image-view\.js";/, "the app shell's lightbox uses the shared engine");
+  const exportJs = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(exportJs, /shared\.createImageView\(stage, img,/, "the classic page uses the same engine through window.__shared");
+  // Both classic viewers go through one stage builder, so the lightbox and the file view cannot
+  // drift apart the way they would with two copies.
+  assert.equal((exportJs.match(/^\s+(?:var shown = |shown = )imageStage\(box,/gm) || []).length, 2, "the classic lightbox and file view both go through the one stage builder");
+  assert.equal((exportJs.match(/^\s+function imageStage\(/gm) || []).length, 1, "…of which there is exactly one");
+  console.log("#228 image cases passed");
+}

@@ -800,24 +800,61 @@
 
   // #139: show an image at full size over the page. Built on demand and torn down on
   // close, so a session with hundreds of screenshots carries no standing DOM for them.
-  function lightbox(src, alt) {
-    var box = el("div", "lightbox");
+  // #228 — the enlarged image zooms and pans, fitted to the screen on open. The behaviour is
+  // the shared module's (html/shared/image-view.js), so this page, its file view and the app
+  // shell's lightbox all answer the same gestures. The stage is a box INSIDE the backdrop:
+  // clicks on the backdrop still close, and the stage clips a magnified image instead of
+  // letting it cover the caption and the close affordance.
+  function imageStage(box, src, alt) {
+    var stage = el("div", "lb-stage");
     var img = el("img");
     img.src = src;
     img.alt = alt || "";
-    box.appendChild(img);
+    stage.appendChild(img);
+    var bar = el("div", "lb-zoom");
+    function button(cls, label, title, fn) {
+      var b = el("button", cls, label);
+      b.type = "button";
+      b.title = title;
+      b.onclick = function (ev) { ev.stopPropagation(); fn(); };
+      bar.appendChild(b);
+      return b;
+    }
+    // The bar is built BEFORE the view, because `createImageView` fits the image — and so calls
+    // `onChange` — synchronously while constructing. Building it after left `level` undefined at
+    // that first call and threw, which took the click handler down with it and opened nothing.
+    var view = null;
+    button("lb-zoom-btn", "\u2212", "Zoom out (\u2212)", function () { view.zoomBy(1 / 1.25); });
+    var level = button("lb-zoom-level", "100%", "Fit to screen (0)", function () { view.fit(); });
+    button("lb-zoom-btn", "+", "Zoom in (+)", function () { view.zoomBy(1.25); });
+    button("lb-zoom-btn lb-zoom-actual", "1:1", "Actual size (1)", function () { view.actual(); });
+    view = shared.createImageView(stage, img, {
+      onChange: function (st) { level.textContent = st.percent + "%"; },
+    });
+    stage.appendChild(bar);
+    box.appendChild(stage);
+    return { stage: stage, img: img, view: view };
+  }
+
+  function lightbox(src, alt) {
+    var box = el("div", "lightbox");
+    var shown = imageStage(box, src, alt);
     var cap = el("div", "lb-cap", alt || "");
     box.appendChild(cap);
     function close() {
+      shown.view.destroy();
       box.remove();
       document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", onResize);
     }
     function onKey(ev) {
       if (ev.key === "Escape") { ev.stopPropagation(); close(); }
     }
-    // Anywhere outside the image closes; the image itself is a safe place to click.
-    box.addEventListener("click", function (ev) { if (ev.target !== img) close(); });
+    function onResize() { shown.view.sync(); }
+    // Anywhere outside the stage closes; the stage is where the reader works.
+    box.addEventListener("click", function (ev) { if (!ev.target.closest(".lb-stage")) close(); });
     document.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", onResize);
     document.body.appendChild(box);
   }
 
@@ -838,15 +875,17 @@
   function fileview(path, imgUrl, text, reveal) {
     var box = el("div", "lightbox");
     var panel;
+    var shown = null;
     if (imgUrl != null) {
-      panel = el("img");
-      panel.src = imgUrl;
-      panel.alt = path;
+      // #228: an image file view is the same zoomable, pannable stage as the lightbox's, so a
+      // screenshot opened from a path behaves exactly like one opened from the transcript.
+      shown = imageStage(box, imgUrl, path);
+      panel = shown.stage;
     } else {
       panel = el("pre", "lb-text");
       panel.textContent = text;
+      box.appendChild(panel);
     }
-    box.appendChild(panel);
     var cap = el("div", "lb-cap");
     cap.appendChild(el("span", null, path));
     var rev = el("button", "lb-act", "Reveal in file manager");
@@ -859,10 +898,13 @@
     cap.appendChild(rev);
     box.appendChild(cap);
     function close() {
+      if (shown) shown.view.destroy();
       box.remove();
       document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", onResize);
       if (imgUrl != null) setTimeout(function () { URL.revokeObjectURL(imgUrl); }, 0);
     }
+    function onResize() { if (shown) shown.view.sync(); }
     function onKey(ev) {
       if (ev.key === "Escape") { ev.stopPropagation(); close(); }
     }
@@ -871,6 +913,7 @@
       if (!panel.contains(ev.target) && ev.target !== panel && !cap.contains(ev.target)) close();
     });
     document.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", onResize);
     document.body.appendChild(box);
   }
 
