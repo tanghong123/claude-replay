@@ -10328,6 +10328,18 @@ fn scenario_the_enlarged_image_zooms(tab: &headless_chrome::Tab, surface: Surfac
     );
     let before = fitted["zoom"].as_f64().unwrap_or(0.0);
     assert!(before > 0.0, "the stage reports a zoom level: {fitted}");
+    // FIT CENTRES (#230). The owner: "the fit did not center the image." It did not, because the
+    // stage centred by LAYOUT and a centred grid/flex item larger than its box is aligned to
+    // start instead under overflow:hidden. Assert where the image actually IS, not what the
+    // engine believes: its centre against the stage's, in pixels.
+    let centred = eval(tab, &format!("(function(){{ var s = document.querySelector('{stage}'); var i = s.querySelector('img'); var b = s.getBoundingClientRect(); var r = i.getBoundingClientRect(); return JSON.stringify({{ dx: Math.round((r.left + r.width / 2) - (b.left + s.clientLeft + s.clientWidth / 2)), dy: Math.round((r.top + r.height / 2) - (b.top + s.clientTop + s.clientHeight / 2)) }}); }})()"));
+    let centred: serde_json::Value =
+        serde_json::from_str(centred.as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null);
+    assert!(
+        centred["dx"].as_f64().unwrap_or(999.0).abs() <= 2.0
+            && centred["dy"].as_f64().unwrap_or(999.0).abs() <= 2.0,
+        "at fit the image sits in the middle of its stage: {centred}"
+    );
     // Zoom in far enough that the image must exceed the stage, and it becomes pannable.
     eval(tab, &format!("(function(){{ var s = document.querySelector('{stage}'); for (var n = 0; n < 8; n++) {{ var b = s.querySelector('[data-zoom=\"in\"], .lb-zoom-btn'); }} return 'ok'; }})()"));
     for _ in 0..8 {
@@ -10350,6 +10362,30 @@ fn scenario_the_enlarged_image_zooms(tab: &headless_chrome::Tab, surface: Surfac
         serde_json::json!("yes"),
         "an image too big to fit can be moved — the owner's 'move control': {zoomed}"
     );
+    // PANNING ACTUALLY MOVES IT (#230). The owner: "there is no way to move the image." The old
+    // case asserted `dataset.pannable === "yes"` — a flag this code sets itself, which stayed
+    // true while dragging did nothing. Drag for real and measure the image's rect: a flag is not
+    // evidence, pixels are.
+    let moved = eval(tab, &format!("(function(){{         var s = document.querySelector('{stage}'); var i = s.querySelector('img');         var b = s.getBoundingClientRect();         var x = Math.round(b.left + s.clientLeft + s.clientWidth / 2), y = Math.round(b.top + s.clientTop + s.clientHeight / 2);         var before = i.getBoundingClientRect().left;         function ev(type, px, py) {{ s.dispatchEvent(new PointerEvent(type, {{ pointerId: 7, clientX: px, clientY: py, button: 0, buttons: 1, bubbles: true, cancelable: true }})); }}         ev('pointerdown', x, y); ev('pointermove', x - 60, y); ev('pointermove', x - 120, y); ev('pointerup', x - 120, y);         return JSON.stringify({{ shift: Math.round(i.getBoundingClientRect().left - before) }});       }})()"));
+    let moved: serde_json::Value =
+        serde_json::from_str(moved.as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null);
+    assert!(
+        moved["shift"].as_f64().unwrap_or(0.0) <= -100.0,
+        "a drag of 120px moves the zoomed image with the pointer: {moved}"
+    );
+
+    // ZOOM TRACKS THE CURSOR (#230). The owner: "make sure the pinch zoom use the mouse position
+    // as the center for zoom." Pick a point well away from the centre, note what sits under it in
+    // IMAGE coordinates, wheel-zoom there, and require the same image point to still be under it.
+    let tracked = eval(tab, &format!("(function(){{         var s = document.querySelector('{stage}'); var i = s.querySelector('img');         var b = s.getBoundingClientRect();         var px = Math.round(b.left + s.clientLeft + s.clientWidth * 0.28), py = Math.round(b.top + s.clientTop + s.clientHeight * 0.32);         function atPoint() {{ var r = i.getBoundingClientRect(); return {{ u: (px - r.left) / r.width, v: (py - r.top) / r.height }}; }}         var before = atPoint();         s.dispatchEvent(new WheelEvent('wheel', {{ deltaY: -240, clientX: px, clientY: py, bubbles: true, cancelable: true }}));         var after = atPoint();         return JSON.stringify({{ du: Math.round((after.u - before.u) * 1000) / 1000, dv: Math.round((after.v - before.v) * 1000) / 1000, u: Math.round(before.u * 100) / 100 }});       }})()"));
+    let tracked: serde_json::Value =
+        serde_json::from_str(tracked.as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null);
+    assert!(
+        tracked["du"].as_f64().unwrap_or(1.0).abs() <= 0.02
+            && tracked["dv"].as_f64().unwrap_or(1.0).abs() <= 0.02,
+        "the image point under the cursor stays under the cursor through a wheel zoom: {tracked}"
+    );
+
     // And the way back is one press: fit returns the default the viewer opened at.
     eval(tab, &format!("(function(){{ var s = document.querySelector('{stage}'); var btns = s.querySelectorAll('button'); for (var b of btns) {{ if (b.title && b.title.indexOf('Fit') === 0) {{ b.click(); return 'ok'; }} }} return 'no fit button'; }})()"));
     let refit = eval(tab, &format!("(function(){{ var s = document.querySelector('{stage}'); return JSON.stringify({{ zoom: Number(s.dataset.zoom), pannable: s.dataset.pannable }}); }})()"));

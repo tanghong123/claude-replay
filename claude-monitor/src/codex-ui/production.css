@@ -755,7 +755,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    rather than escaping the card. The cursor follows `data-pannable`, which the module sets per
    frame, so an image that fits shows no grab hand it cannot honour. */
 .image-lightbox-stage{overflow:hidden;position:relative;touch-action:none}
-.image-lightbox-stage>img{transform-origin:center center;will-change:transform;max-width:none;max-height:none}
+/* Anchored at the stage centre, not laid out by it (#230): the stage is `place-items:center`, and
+   a centred grid item LARGER than its box is aligned to START instead under overflow:hidden, so a
+   big image sat top-left while the engine believed it was centred. `left/top:50%` plus the
+   translate(-50%,-50%) the module writes makes centring exact at any size. */
+.image-lightbox-stage>img{position:absolute;left:50%;top:50%;transform-origin:center center;will-change:transform;max-width:none;max-height:none}
 .image-lightbox-stage[data-pannable="yes"]{cursor:grab}
 .image-lightbox-stage[data-pannable="yes"].dragging{cursor:grabbing}
 .image-zoom{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:2px;padding:3px;border-radius:999px;background:rgba(18,22,30,.82);backdrop-filter:blur(10px);box-shadow:0 6px 20px rgba(0,0,0,.28);z-index:2}
@@ -769,7 +773,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 @media(prefers-reduced-motion:reduce){.image-zoom-btn,.image-zoom-level{transition:none}}
 /* #228 — the preview pane's image is the same zoomable stage. The panel is the narrowest place
    an image is shown, so "too big to fit" is its normal condition rather than an edge case. */
-.artifact-stage{overflow:hidden;position:relative;touch-action:none;display:flex;align-items:center;justify-content:center}
-.artifact-stage>img.artifact-image{transform-origin:center center;will-change:transform;max-width:none;max-height:none;margin:0}
+.artifact-stage{overflow:hidden;position:relative;touch-action:none}
+.artifact-stage>img.artifact-image{position:absolute;left:50%;top:50%;transform-origin:center center;will-change:transform;max-width:none;max-height:none;margin:0}
 .artifact-stage[data-pannable="yes"]{cursor:grab}
 .artifact-stage[data-pannable="yes"].dragging{cursor:grabbing}

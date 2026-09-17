@@ -51,15 +51,22 @@ function createImageView(stage, img, options = {}) {
 
   /** The scale at which the whole image is visible, never magnifying past 1:1. */
   function fitScale() {
-    const box = stage.getBoundingClientRect();
+    const box = viewport();
     const w = img.naturalWidth, h = img.naturalHeight;
     if (!w || !h || !box.width || !box.height) return 1;
     return Math.min(1, Math.min(box.width / w, box.height / h));
   }
 
   /** How far the image may travel on each axis: half its overflow, or nothing when it fits. */
+  /** The visible box is what `overflow:hidden` clips at — the PADDING box, which is what
+   *  `clientWidth`/`clientHeight` report. The stage carries padding (18px in the app shell), so
+   *  measuring the border box would let the image travel that much too far on each side. */
+  function viewport() {
+    return { width: stage.clientWidth, height: stage.clientHeight };
+  }
+
   function bounds() {
-    const box = stage.getBoundingClientRect();
+    const box = viewport();
     const w = img.naturalWidth * state.scale, h = img.naturalHeight * state.scale;
     return { x: Math.max(0, (w - box.width) / 2), y: Math.max(0, (h - box.height) / 2) };
   }
@@ -68,7 +75,14 @@ function createImageView(stage, img, options = {}) {
     const limit = bounds();
     state.x = clamp(state.x, -limit.x, limit.x);
     state.y = clamp(state.y, -limit.y, limit.y);
-    img.style.transform = `translate(${state.x}px, ${state.y}px) scale(${state.scale})`;
+    // The image is anchored at the stage's CENTRE (`position:absolute; left:50%; top:50%`) and
+    // pulled back by half its own size, so `translate(0,0)` is exactly centred whatever the image
+    // measures. The layout is not asked to centre anything, which is the whole point: a centred
+    // grid/flex item LARGER than its box hits the unsafe-alignment fallback and is aligned to
+    // START instead, so a big image laid out top-left while this code believed it was centred.
+    // Fit looked off-centre because it was, and panning clamped to bounds measured from a centre
+    // the image never occupied. Owning the position outright removes the assumption.
+    img.style.transform = `translate(-50%, -50%) translate(${state.x}px, ${state.y}px) scale(${state.scale})`;
     const movable = limit.x > 0.5 || limit.y > 0.5;
     stage.dataset.pannable = movable ? "yes" : "no";
     stage.dataset.zoom = String(Math.round(state.scale * 100));
@@ -78,11 +92,17 @@ function createImageView(stage, img, options = {}) {
 
   /** Zoom about a point in stage coordinates, so what is under the cursor stays under it. */
   function zoomAt(next, clientX, clientY) {
-    const box = stage.getBoundingClientRect();
+    const rect = stage.getBoundingClientRect();
     const scale = clamp(next, state.fit * MIN_FIT_FRACTION, MAX_SCALE);
     if (scale === state.scale) return;
-    const cx = (clientX == null ? box.left + box.width / 2 : clientX) - box.left - box.width / 2;
-    const cy = (clientY == null ? box.top + box.height / 2 : clientY) - box.top - box.height / 2;
+    // The cursor, in stage coordinates measured from the stage's centre — the same origin the
+    // transform uses, so "keep what is under the pointer under the pointer" is exact rather than
+    // approximately right. `clientLeft`/`clientTop` step over any border; the padding box is what
+    // the image is centred in.
+    const originX = rect.left + stage.clientLeft + stage.clientWidth / 2;
+    const originY = rect.top + stage.clientTop + stage.clientHeight / 2;
+    const cx = (clientX == null ? originX : clientX) - originX;
+    const cy = (clientY == null ? originY : clientY) - originY;
     const ratio = scale / state.scale;
     // The point under the cursor is (c - offset)/scale in image space; hold it still.
     state.x = cx - (cx - state.x) * ratio;
@@ -134,7 +154,17 @@ function createImageView(stage, img, options = {}) {
     try { stage.releasePointerCapture(event.pointerId); } catch (_) {}
     if (moved) stage.addEventListener("click", swallow, { capture: true, once: true });
   }
-  function swallow(event) { event.stopPropagation(); event.preventDefault(); }
+  /** Eat the click that ends a drag — but never a click on a CONTROL.
+   *
+   *  The swallower exists so releasing a dragged image does not read as a click on the backdrop
+   *  and close the viewer. It sits on the stage, and the zoom bar is inside the stage, so a
+   *  blanket version also ate the first press of Fit / + / − after any drag: the reader dragged,
+   *  reached for Fit, and nothing happened. Controls are exactly the clicks that were meant. */
+  function swallow(event) {
+    if (event.target.closest("button, a, [data-zoom]")) return;
+    event.stopPropagation();
+    event.preventDefault();
+  }
 
   function onDoubleClick(event) {
     event.preventDefault();
@@ -197,6 +227,7 @@ function createImageView(stage, img, options = {}) {
       stage.removeEventListener("dblclick", onDoubleClick);
       img.removeEventListener("load", onLoad);
       keyHost.removeEventListener("keydown", onKey);
+      stage.removeEventListener("click", swallow, { capture: true });
       img.style.transform = "";
       delete stage.dataset.pannable;
       delete stage.dataset.zoom;

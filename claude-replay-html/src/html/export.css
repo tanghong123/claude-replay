@@ -574,10 +574,13 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 .lb-stage {
   position: relative; overflow: hidden; touch-action: none; cursor: default;
   width: 100%; max-height: calc(100% - 28px); flex: 1 1 auto;
-  display: flex; align-items: center; justify-content: center;
   border-radius: 4px; background: #fff;
 }
+/* Anchored, not laid out (#230): a centred flex item larger than its box aligns to START under
+   overflow:hidden, which put a big image top-left while the engine assumed it was centred —
+   off-centre fit, and pan bounds measured around a centre the image never had. */
 .lb-stage > img {
+  position: absolute; left: 50%; top: 50%;
   transform-origin: center center; will-change: transform;
   max-width: none; max-height: none; border-radius: 0; background: #fff;
 }
