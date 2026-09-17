@@ -91,13 +91,20 @@ function rendererBody(view, state) {
   return bodyHtml(view, state) || "";
 }
 
-function renderRenderer(view, index, state) {
-  const children = view.children?.length ? `<div class="renderer-children">${view.children.map((child, childIndex) => renderRenderer(child, `${index}.${childIndex}`, state)).join("")}</div>` : "";
+function renderRenderer(view, index, state, inherited) {
+  const children = view.children?.length ? `<div class="renderer-children">${view.children.map((child, childIndex) => renderRenderer(child, `${index}.${childIndex}`, state, inherited)).join("")}</div>` : "";
   const key = view.id || String(index);
   // Process surfaces stay open, while their completed details start as compact rows. Native
   // input requests and queued/running work remain open because they need immediate attention.
   const defaultClosed = rendererStartsClosed(view);
-  const closed = state.folds.has(key) ? state.folds.get(key) : defaultClosed;
+  // The reader's own choice for THIS record wins. Failing that, a standing "expand this section"
+  // decides — which is what makes the intent reach records that did not exist when it was
+  // pressed (#233). Only then does the record's own default apply.
+  const closed = state.folds.has(key)
+    ? state.folds.get(key)
+    : inherited != null
+      ? !inherited
+      : defaultClosed;
   // A head is interactive when there is something under it. Asked of the BODY THAT WILL RENDER
   // rather than of `view.html`, because a record can have parts and no html, or html and a body
   // that renders to nothing — and #168 made the empty case really empty, so the two questions
@@ -166,7 +173,7 @@ function renderProcess(unit, state) {
   const events = unit.views.map(({ index, view }, position) => {
     const content = view.t === "assistant"
       ? `<div class="turn assistant process-commentary" data-kind="assistant" data-record-kind="assistant" data-phase="commentary" data-block-index="${index}"><span class="process-commentary-mark"></span><span class="process-commentary-label">Progress</span><div class="process-commentary-copy markdown">${view.html}</div></div>`
-      : renderRenderer(view, index, state);
+      : renderRenderer(view, index, state, state.processBulk?.get(key));
     return `<div class="process-event ${position >= visibleLimit && !expanded ? "progressive-hidden" : ""}" data-progressive="${position >= visibleLimit}">${content}</div>`;
   }).join("");
   const hidden = Math.max(0, unit.views.length - visibleLimit);
@@ -380,9 +387,23 @@ export function bindComponentEvents(root, state, actions) {
       actions.rerender(); return;
     }
     if (process && event.target.closest("[data-process-bulk]")) {
+      const key = process.dataset.processKey;
       const renderers = process.querySelectorAll("[data-renderer]:not(.noninteractive)");
       const open = [...renderers].some(renderer => renderer.classList.contains("closed"));
-      renderers.forEach(renderer => state.folds.set(renderer.dataset.recordId, !open));
+      // A STANDING intent on the section, not a sweep of what is on screen (#233). The owner:
+      // "I selected 'expand all folds' for an agent process block, but future messages are still
+      // coming folded… expand the meaning of 'unfold all' for the open turn to apply to all
+      // future messages." An open turn keeps producing records, and stamping only the ones that
+      // existed at the click left every later arrival to fall back to its own folded default.
+      state.processBulk.set(key, open);
+      // "Expand all" means EVERYTHING, so it lifts the "Show N more" cap first (#233). The owner:
+      // "Expand all means first show xxx more, and then expand everything." Expanding details the
+      // reader still cannot see is a control that only half works.
+      if (open) state.processExpanded.add(key);
+      else state.processExpanded.delete(key);
+      // Per-record choices inside the section are cleared, so the intent governs uniformly and
+      // the next press can flip the whole section back rather than fighting leftovers.
+      renderers.forEach(renderer => state.folds.delete(renderer.dataset.recordId));
       actions.rerender(); return;
     }
     const renderer = event.target.closest("[data-renderer]");

@@ -10,7 +10,7 @@ export const viewMemoryKey = session => `am-view:${session}`;
 // images they opened, which turns they read raw, which caps they expanded — keyed by record
 // id or unit key, both stable across reloads — so a reload or a switch away and back shows
 // the session as they left it, not as the server authored it.
-const VIEW_FIELDS = ["folds", "processFolds", "processExpanded", "promptExpanded", "rawTurns", "capOpen", "openImages"];
+const VIEW_FIELDS = ["folds", "processFolds", "processExpanded", "promptExpanded", "rawTurns", "capOpen", "openImages", "processBulk"];
 
 /** The reader state → a plain object (Maps as objects, Sets as arrays); empty ones omitted. */
 export function viewChoices(state) {

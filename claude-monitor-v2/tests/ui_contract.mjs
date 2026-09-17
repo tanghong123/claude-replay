@@ -2570,3 +2570,48 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal((exportJs.match(/^\s+function imageStage\(/gm) || []).length, 1, "…of which there is exactly one");
   console.log("#228 image cases passed");
 }
+
+// ── #233: an incremental rebuild must agree with a full one ─────────────────────────────────
+{
+  // The owner: "when I click 'show xxx more', future messages would then form a separate agent
+  // process block (of the same turn), instead of joining the same agent process block. And if I
+  // refresh the page, then it becomes one agent process block."
+  //
+  // The refresh is the tell. A reload rebuilds from zero and coalesces correctly; the live path
+  // rebuilds incrementally, and on a PURE APPEND every existing unit was kept and the new records
+  // were built from `last.to + 1` — so a record that belonged in the trailing Agent Process
+  // started a second one instead. The click only made it visible.
+  //
+  // So the property, stated once: for any split point, rebuilding incrementally is the same as
+  // rebuilding whole. Anything else means what the reader sees depends on when the bytes arrived.
+  const turn = [
+    { kind: "user", id: "u1", turn: 1, label: "go", body: [{ p: "md", h: "<p>go</p>" }] },
+    { kind: "assistant", id: "a1", body: [{ p: "md", h: "<p>working</p>" }] },
+    { kind: "bash", id: "b1", head: { name: "Bash", target: "echo 1" }, body: [{ p: "pre", x: "1" }] },
+    { kind: "read", id: "r1", head: { name: "Read", target: "/x.rs" }, body: [{ p: "pre", x: "fn" }] },
+    { kind: "bash", id: "b2", head: { name: "Bash", target: "echo 2" }, body: [{ p: "pre", x: "2" }] },
+    { kind: "bash", id: "b3", head: { name: "Bash", target: "echo 3" }, body: [{ p: "pre", x: "3" }] },
+  ];
+  const shape = units => units.map(u => `${u.type}:${u.turn}:${u.from}-${u.to}`);
+
+  const whole = new Projection();
+  whole.rebuild(turn, 0);
+  const expected = shape(whole.units);
+  // One Agent Process for the turn, not several.
+  assert.equal(
+    expected.filter(s => s.startsWith("process:")).length, 1,
+    `a turn's activity is one Agent Process when built whole: ${expected}`
+  );
+
+  for (let split = 2; split < turn.length; split++) {
+    const live = new Projection();
+    live.rebuild(turn.slice(0, split), 0);
+    live.rebuild(turn, split); // the append, exactly as a live pull delivers it
+    assert.deepEqual(
+      shape(live.units), expected,
+      `appending from ${split} must land the same units as a full rebuild — a record that belongs ` +
+      `to the open turn's Agent Process joins it rather than starting a second one`
+    );
+  }
+  console.log("#233 projection cases passed");
+}

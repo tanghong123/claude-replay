@@ -28,6 +28,11 @@ export const recordState = {
   session: "", records: [], meta: null, units: [], generation: 0,
   cursor: { epoch: 0, committed: 0, gen: 0, index: 0 },
   heights: new Map(), folds: new Map(), processFolds: new Map(), processExpanded: new Set(), promptExpanded: new Set(),
+  // "Expand every detail in this section" as a STANDING INTENT for that process, not a one-off
+  // sweep of the records that happened to exist when it was pressed (#233). An open turn keeps
+  // producing records; the reader asked for the turn to be open, so what arrives next is open
+  // too. Key → true (expand) / false (collapse); absent means each record keeps its own default.
+  processBulk: new Map(),
   // The heads whose TARGET is shown in full (#129): a long command is one clipped line until
   // the reader asks for it, and asking is the third step of the head's click cycle.
   fullTargets: new Set(),

@@ -11161,3 +11161,396 @@ fn both_shells_render_the_same_prose_structures() {
         );
     }
 }
+
+// ── does a reader's unfold survive the turn growing under it? (#233) ────────────────────────
+
+/// A live turn that keeps producing activity, as the owner described: "the agent is running a
+/// long turn and producing a sequence of activities. User unfolds the tailing turn, but they
+/// observe the turn would re-fold when new messages arrive."
+fn growing_turn_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(10, Shape::default());
+    t += &user_at("question live: keep working for a while", &now_minus(120));
+    t += &assistant_at("Starting the long stretch.", &now_minus(118));
+    t += &tool_open_at("g-1", &now_minus(116));
+    t += &tool_result_lines("g-1", 8, &now_minus(115));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 11,
+    }
+}
+
+/// More activity arriving in the SAME open turn — appends, the ordinary live case.
+fn growing_turn_script() -> Vec<String> {
+    (0..5u64)
+        .flat_map(|k| {
+            vec![
+                tool_open_at(&format!("g-live-{k}"), &now_minus(40 - k * 6)),
+                tool_result_lines(&format!("g-live-{k}"), 6, &now_minus(37 - k * 6)),
+            ]
+        })
+        .collect()
+}
+
+fn scenario_an_unfold_survives_the_turn_growing(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // Unfold the LAST record of the tail turn, the way a reader watching work does.
+    let opened = match surface {
+        Surface::Classic => eval(tab, "(function(){ var f = [...document.querySelectorAll('#stream .fold')].pop(); if (!f) return 'none'; if (f.dataset.open === '0') f.querySelector('.fold-h').click(); return f.id || f.dataset.kind || 'ok'; })()"),
+        Surface::AppShell => eval(tab, "(function(){ var r = [...document.querySelectorAll('.renderer[data-renderer]')].pop(); if (!r) return 'none'; if (r.classList.contains('closed')) r.querySelector('button.renderer-head').click(); return r.dataset.recordId || 'ok'; })()"),
+    };
+    let opened = opened.as_str().unwrap_or("none").to_string();
+    assert_ne!(
+        opened, "none",
+        "{surface:?}: the tail has a record to unfold"
+    );
+    settle();
+    let state_of = format!(
+        "(function(){{ {} }})()",
+        match surface {
+            Surface::Classic => format!("var f = document.getElementById('{opened}') || [...document.querySelectorAll('#stream .fold')].pop(); return f ? f.dataset.open : 'gone';"),
+            Surface::AppShell => format!("var r = document.querySelector('[data-record-id=\"{opened}\"]') || [...document.querySelectorAll('.renderer[data-renderer]')].pop(); return r ? (r.classList.contains('closed') ? '0' : '1') : 'gone';"),
+        }
+    );
+    let before = eval(tab, &state_of).as_str().unwrap_or("").to_string();
+    assert_eq!(
+        before, "1",
+        "{surface:?}: the reader's unfold took effect before any growth"
+    );
+
+    // …and now the turn grows under it, as a working agent makes it grow.
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        growing_turn_script(),
+        Duration::from_millis(1400),
+    );
+    assert_eq!(
+        growth.finish(Duration::from_secs(60)),
+        10,
+        "the driver appended the whole script"
+    );
+    settle();
+    settle();
+    let after = eval(tab, &state_of).as_str().unwrap_or("").to_string();
+    assert_eq!(
+        after, "1",
+        "{surface:?}: a record the reader opened stays open while the turn grows — it was `{before}` \
+         before the growth and `{after}` after. A fold is the reader's choice; new records arriving \
+         is not a reason to undo it."
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_an_unfold_survives_the_turn_growing() {
+    let _serial = serial();
+    let fx = growing_turn_fixture("grow-fold-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_an_unfold_survives_the_turn_growing(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_an_unfold_survives_the_turn_growing() {
+    let _serial = serial();
+    let fx = growing_turn_fixture("grow-fold-app");
+    let page = open(Surface::AppShell, &fx, 2991);
+    scenario_an_unfold_survives_the_turn_growing(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Diagnostic for #233: what happens to the reader's fold choices across live growth.
+#[test]
+#[ignore = "probe: cargo test --test scenarios fold_growth_probe -- --ignored --exact --nocapture"]
+fn fold_growth_probe() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = growing_turn_fixture(match surface {
+            Surface::Classic => "grow-probe-classic",
+            Surface::AppShell => "grow-probe-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 2992 };
+        let page = open(surface, &fx, port);
+        let tab = &page.tab;
+        jump_to_end(tab, surface);
+        await_tail(tab, surface, "a fresh open to land at the tail");
+        settle();
+        // Open EVERY record in the tail turn, and remember exactly which ids the reader opened.
+        let list = match surface {
+            Surface::Classic => "(function(){ return JSON.stringify([...document.querySelectorAll('#stream .fold')].slice(-6).map(function (f) { return f.id || ''; })); })()",
+            Surface::AppShell => "(function(){ return JSON.stringify([...document.querySelectorAll('.renderer[data-renderer]')].slice(-6).map(function (r) { return r.dataset.recordId || ''; })); })()",
+        };
+        let ids: Vec<String> =
+            serde_json::from_str(eval(tab, list).as_str().unwrap_or("[]")).unwrap_or_default();
+        for id in &ids {
+            let js = match surface {
+                Surface::Classic => format!("(function(){{ var f = document.getElementById('{id}'); if (!f) return 'gone'; if (f.dataset.open === '0') f.querySelector('.fold-h').click(); return 'ok'; }})()"),
+                Surface::AppShell => format!("(function(){{ var r = document.querySelector('[data-record-id=\"{id}\"]'); if (!r) return 'gone'; if (r.classList.contains('closed')) {{ var h = r.querySelector('button.renderer-head'); if (h) h.click(); }} return 'ok'; }})()"),
+            };
+            eval(tab, &js);
+            settle();
+        }
+        settle();
+        let snapshot = |tab: &headless_chrome::Tab| {
+            match surface {
+            Surface::Classic => eval(tab, "(function(){ var o = {}; document.querySelectorAll('#stream .fold').forEach(function (f) { o[f.id || '?'] = f.dataset.open; }); return JSON.stringify(o); })()"),
+            Surface::AppShell => eval(tab, "(function(){ var o = {}; document.querySelectorAll('.renderer[data-renderer]').forEach(function (r) { o[r.dataset.recordId || '?'] = r.classList.contains('closed') ? '0' : '1'; }); return JSON.stringify(o); })()"),
+        }
+        };
+        let before: serde_json::Value =
+            serde_json::from_str(snapshot(tab).as_str().unwrap_or("{}")).unwrap_or_default();
+        let growth = LiveGrowth::start(
+            fx.path.clone(),
+            growing_turn_script(),
+            Duration::from_millis(1400),
+        );
+        let appended = growth.finish(Duration::from_secs(60));
+        settle();
+        settle();
+        let after: serde_json::Value =
+            serde_json::from_str(snapshot(tab).as_str().unwrap_or("{}")).unwrap_or_default();
+        println!("\n=== {surface:?} (appended {appended})");
+        println!("  reader opened: {ids:?}");
+        let empty = serde_json::Map::new();
+        let b = before.as_object().unwrap_or(&empty);
+        let a = after.as_object().unwrap_or(&empty);
+        for id in &ids {
+            let was = b.get(id).and_then(|v| v.as_str()).unwrap_or("absent");
+            let now = a.get(id).and_then(|v| v.as_str()).unwrap_or("ABSENT");
+            let verdict = if was == "1" && now == "0" {
+                "  <-- RE-FOLDED"
+            } else if now == "ABSENT" {
+                "  <-- id gone"
+            } else {
+                ""
+            };
+            println!("    {id}: {was} -> {now}{verdict}");
+        }
+        println!("  rows before {} / after {}", b.len(), a.len());
+    }
+}
+
+/// #233: the reader's folds across a REWRITE, not an append.
+///
+/// `design`/CLAUDE.md names the one thing that routinely rewrites a live stream: a queued prompt
+/// being picked up. The marker for it disappears and every marker behind it shifts up a slot, and
+/// record ids are `b{n}` from a positional counter — so after the rewrite the same id names a
+/// different record. Fold state is keyed by that id (`state.folds`, `view.id`), which is exactly
+/// the shape of the owner's report: the reader opens something, work arrives, and it is shut
+/// again — or worse, something else is open instead.
+fn queue_rewrite_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(10, Shape::default());
+    t += &user_at("question q: start the long job", &now_minus(120));
+    t += &assistant_at("Working on it.", &now_minus(118));
+    t += &tool_open_at("q-1", &now_minus(116));
+    t += &tool_result_lines("q-1", 8, &now_minus(115));
+    t += &assistant_at("Still working.", &now_minus(112));
+    t += &tool_open_at("q-2", &now_minus(110));
+    t += &tool_result_lines("q-2", 8, &now_minus(109));
+    // Two prompts queued behind the work, as a reader types while the agent runs.
+    t += &queued_at("second thing to do", &now_minus(105));
+    t += &queued_at("third thing to do", &now_minus(104));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 11,
+    }
+}
+
+/// The pickup: the queued prompt becomes a real user turn, so the marker for it goes and
+/// everything behind it moves.
+fn queue_pickup_script() -> Vec<String> {
+    vec![
+        user_at("second thing to do", &now_minus(100)),
+        assistant_at("Picking that up now.", &now_minus(98)),
+        tool_open_at("q-3", &now_minus(96)),
+        tool_result_lines("q-3", 6, &now_minus(95)),
+    ]
+}
+
+fn scenario_folds_survive_a_queue_pickup(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // Open the tail records one at a time — each toggle re-renders, so a batch of clicks
+    // collected up front would land on detached nodes and silently do nothing.
+    let list = match surface {
+        Surface::Classic => "(function(){ return JSON.stringify([...document.querySelectorAll('#stream .fold')].slice(-4).map(function (f) { return f.id || ''; })); })()",
+        Surface::AppShell => "(function(){ return JSON.stringify([...document.querySelectorAll('.renderer[data-renderer]')].slice(-4).map(function (r) { return r.dataset.recordId || ''; })); })()",
+    };
+    let ids: Vec<String> =
+        serde_json::from_str(eval(tab, list).as_str().unwrap_or("[]")).unwrap_or_default();
+    assert!(!ids.is_empty(), "{surface:?}: the tail has records to open");
+    for id in &ids {
+        let js = match surface {
+            Surface::Classic => format!("(function(){{ var f = document.getElementById('{id}'); if (!f) return 'gone'; if (f.dataset.open === '0') f.querySelector('.fold-h').click(); return 'ok'; }})()"),
+            Surface::AppShell => format!("(function(){{ var r = document.querySelector('[data-record-id=\"{id}\"]'); if (!r) return 'gone'; if (r.classList.contains('closed')) {{ var h = r.querySelector('button.renderer-head'); if (h) h.click(); }} return 'ok'; }})()"),
+        };
+        eval(tab, &js);
+        settle();
+    }
+    // What the reader can SEE open, by the text of each open record — identity that survives a
+    // re-numbering, which an id by construction does not.
+    let open_texts = match surface {
+        Surface::Classic => "(function(){ return JSON.stringify([...document.querySelectorAll('#stream .fold')].filter(function (f) { return f.dataset.open === '1'; }).map(function (f) { var h = f.querySelector('.fold-h'); return (h ? h.textContent : '').replace(/\\s+/g, ' ').replace(/#$/, '').trim(); })); })()",
+        Surface::AppShell => "(function(){ return JSON.stringify([...document.querySelectorAll('.renderer[data-renderer]')].filter(function (r) { return !r.classList.contains('closed'); }).map(function (r) { var h = r.querySelector('.renderer-head'); return (h ? h.textContent : '').replace(/\\s+/g, ' ').trim(); })); })()",
+    };
+    let before: Vec<String> =
+        serde_json::from_str(eval(tab, open_texts).as_str().unwrap_or("[]")).unwrap_or_default();
+    assert!(
+        !before.is_empty(),
+        "{surface:?}: the reader has something open before the pickup"
+    );
+
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        queue_pickup_script(),
+        Duration::from_millis(1500),
+    );
+    assert_eq!(
+        growth.finish(Duration::from_secs(60)),
+        4,
+        "the driver appended the whole pickup"
+    );
+    settle();
+    settle();
+    let after: Vec<String> =
+        serde_json::from_str(eval(tab, open_texts).as_str().unwrap_or("[]")).unwrap_or_default();
+    // PROVE THE REWRITE HAPPENED. A case that asserts folds survived a renumbering, on a stream
+    // that was only appended to, proves nothing at all — so the queue marker must actually be
+    // gone and the ids must actually have moved.
+    let shape = r#"(function(){ var q = document.querySelectorAll('#stream .qmarker, .renderer[data-renderer-kind="queue"]').length; var ids = [...document.querySelectorAll('#stream .fold, .renderer[data-renderer]')].map(function (e) { return e.id || e.dataset.recordId || ''; }); return JSON.stringify({ queues: q, ids: ids }); })()"#;
+    let shape_after: serde_json::Value =
+        serde_json::from_str(eval(tab, shape).as_str().unwrap_or("{}")).unwrap_or_default();
+    assert_eq!(
+        shape_after["queues"].as_i64().unwrap_or(-1),
+        1,
+        "{surface:?}: one of the two queued prompts was picked up, so exactly one marker is left          — without that this case is asserting against a plain append: {shape_after}"
+    );
+    // Everything the reader opened is still open. New records may be open or shut by their own
+    // default — that is not the reader's choice being undone.
+    let lost: Vec<&String> = before.iter().filter(|t| !after.contains(t)).collect();
+    assert!(
+        lost.is_empty(),
+        "{surface:?}: a queued prompt being picked up rewrites the stream and renumbers records, \
+         but it must not shut what the reader opened. Closed by the rewrite: {lost:?}\n  before \
+         {before:?}\n  after  {after:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_folds_survive_a_queue_pickup() {
+    let _serial = serial();
+    let fx = queue_rewrite_fixture("queue-fold-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_folds_survive_a_queue_pickup(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_folds_survive_a_queue_pickup() {
+    let _serial = serial();
+    let fx = queue_rewrite_fixture("queue-fold-app");
+    let page = open(Surface::AppShell, &fx, 2993);
+    scenario_folds_survive_a_queue_pickup(&page.tab, Surface::AppShell, &fx);
+}
+
+/// #233: "expand all" on an open turn means the turn, not the records that happen to be on
+/// screen when it is pressed.
+///
+/// The owner: "I selected 'expand all folds' for an agent process block, but future messages are
+/// still coming folded. It feels more logical to expand the meaning of 'unfold all' for the open
+/// turn to apply to all future messages" — and, clarifying, "to apply to all future messages
+/// still for the same turn."
+///
+/// The control used to sweep `[data-renderer]` under the section and write a fold entry for each
+/// one it found. A record that arrived afterwards had no entry, so it fell back to its own
+/// folded default — and the reader, who had asked for this turn to be open, watched work arrive
+/// shut. The intent is now held on the section and inherited by whatever the turn produces next.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_expand_all_reaches_what_the_turn_produces_next() {
+    let _serial = serial();
+    let fx = growing_turn_fixture("bulk-live-app");
+    let page = open(Surface::AppShell, &fx, 2994);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    // Press "expand every detail" on the last agent-process section, as a reader watching work.
+    let pressed = eval(tab, "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); if (!p) return 'none'; var b = p.querySelector('[data-process-bulk]'); if (!b) return 'no control'; b.click(); return p.dataset.processKey || 'ok'; })()");
+    assert!(
+        pressed
+            .as_str()
+            .map(|s| s != "none" && s != "no control")
+            .unwrap_or(false),
+        "the tail has an agent-process section with an expand-all control: {pressed}"
+    );
+    settle();
+    let shut = "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); if (!p) return -1; return p.querySelectorAll('[data-renderer].closed').length; })()";
+    assert_eq!(
+        eval(tab, shut).as_i64().unwrap_or(-1),
+        0,
+        "pressing it opens everything already in the section"
+    );
+
+    // …and now the turn keeps working.
+    let growth = LiveGrowth::start(
+        fx.path.clone(),
+        growing_turn_script(),
+        Duration::from_millis(1400),
+    );
+    assert_eq!(
+        growth.finish(Duration::from_secs(60)),
+        10,
+        "the driver appended the whole script"
+    );
+    settle();
+    settle();
+    // ONE block, not two. The owner: "future messages would then form a separate agent process
+    // block (of the same turn), instead of joining the same agent process block. And if I refresh
+    // the page, then it becomes one agent process block." A reload rebuilt from zero and
+    // coalesced correctly, so the incremental append was the thing that was wrong.
+    let blocks_after = eval(tab, "(function(){ return JSON.stringify([...document.querySelectorAll('[data-process-surface]')].map(function (p) { return p.dataset.turn; })); })()");
+    let blocks_after: Vec<String> =
+        serde_json::from_str(blocks_after.as_str().unwrap_or("[]")).unwrap_or_default();
+    let tail_turn = blocks_after.last().cloned().unwrap_or_default();
+    let same_turn = blocks_after.iter().filter(|t| **t == tail_turn).count();
+    assert_eq!(
+        same_turn, 1,
+        "the records a turn produces join its existing Agent Process rather than starting a          second one for the same turn: blocks {blocks_after:?}"
+    );
+    // …and the key survived that rebuild, which is what lets the standing intent still apply.
+    assert_eq!(
+        pressed.as_str().unwrap_or(""),
+        eval(tab, "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); return p ? p.dataset.processKey : ''; })()").as_str().unwrap_or(""),
+        "the section keeps its identity across the append, or the reader's choice would be          keyed to a section that no longer exists"
+    );
+    let grew = eval(tab, "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); if (!p) return -1; return p.querySelectorAll('[data-renderer]').length; })()");
+    assert!(
+        grew.as_i64().unwrap_or(0) > 0,
+        "the section still holds records after the growth: {grew}"
+    );
+    assert_eq!(
+        eval(tab, shut).as_i64().unwrap_or(-1),
+        0,
+        "…and what the turn produced next is open too: the reader asked for this section, not for \
+         the records that happened to be in it at the time"
+    );
+}

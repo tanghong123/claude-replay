@@ -350,7 +350,21 @@ export class Projection {
     let keep = 0;
     while (keep < this.units.length && this.units[keep].to < changedFrom) keep++;
     if (keep < this.units.length) changedFrom = this.units[keep].from;
-    else if (this.units.length) changedFrom = this.units.at(-1).to + 1;
+    else if (this.units.length) {
+      // A pure append lands here with every unit kept, and rebuilding from `to + 1` makes the
+      // new records a SECOND Agent Process beside the one they belong to (#233). The owner saw
+      // it as "future messages would then form a separate agent process block (of the same
+      // turn)… if I refresh the page, then it becomes one" — a reload rebuilds from zero and
+      // coalesces correctly, which is the tell that the incremental path, not the fold, was
+      // wrong. Rewind into the trailing process so the append EXTENDS it.
+      const last = this.units.at(-1);
+      if (last.type === "process") {
+        keep -= 1;
+        changedFrom = last.from;
+      } else {
+        changedFrom = last.to + 1;
+      }
+    }
     const prefix = this.units.slice(0, keep);
     const units = buildUnits(records, changedFrom, prefix.at(-1)?.turn || 0);
     this.units = prefix.concat(units);
