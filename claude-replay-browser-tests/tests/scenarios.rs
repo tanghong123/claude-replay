@@ -165,6 +165,12 @@ struct Opened {
 }
 
 fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
+    open_with(surface, fx, port, "")
+}
+
+/// `open`, with extra query parameters — `mountall=1` for the parity audit, which needs every
+/// record in the DOM on BOTH pages before it can compare them record by record (#232).
+fn open_with(surface: Surface, fx: &Fixture, port: u16, extra: &str) -> Opened {
     let browser = harness::chrome();
     let tab = browser.new_tab().unwrap();
     match surface {
@@ -186,6 +192,15 @@ fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
             let server =
                 start_server(&args, std::slice::from_ref(&fx.path)).expect("server starts");
             let url = server.url_for_root(0).expect("hosted");
+            let url = if extra.is_empty() {
+                url
+            } else {
+                format!(
+                    "{url}{}{}",
+                    if url.contains('?') { "&" } else { "?" },
+                    extra
+                )
+            };
             tab.navigate_to(&url).unwrap();
             tab.wait_until_navigated().unwrap();
             // The classic page windows its DOM too (#50): ready means tall enough to scroll
@@ -212,7 +227,16 @@ fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
             monitor.pair(&tab);
             monitor.open(
                 &tab,
-                &format!("?ui=app&session={}{}", sid_of(fx), trace_query()),
+                &format!(
+                    "?ui=app&session={}{}{}",
+                    sid_of(fx),
+                    trace_query(),
+                    if extra.is_empty() {
+                        String::new()
+                    } else {
+                        format!("&{extra}")
+                    }
+                ),
             );
             harness::until(
                 &tab,
@@ -10543,4 +10567,441 @@ fn app_shell_command_output_is_readable_in_both_themes() {
     let fx = caps_fixture("scenario-contrast-app");
     let page = open(Surface::AppShell, &fx, 2985);
     scenario_command_output_is_readable_in_both_themes(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── the information-parity probe (#231): what each page SAYS about the same record ──────────
+
+/// A session whose records each carry a distinct, checkable fact: a path, a command, a name.
+fn parity_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("question p: do the work", &now_minus(200));
+    transcript += &assistant_at("Reading the file first.", &now_minus(195));
+    transcript += &read_tool_at(
+        "p-read",
+        "/Users/demo/project/src/engine/reducer.rs",
+        &now_minus(190),
+    );
+    transcript += &tool_result_lines("p-read", 12, &now_minus(185));
+    transcript += &assistant_at("Reading a slice of another file.", &now_minus(184));
+    transcript += &harness::read_tool_ranged_at(
+        "p-read2",
+        "/Users/demo/project/src/engine/window.rs",
+        1560,
+        80,
+        &now_minus(183),
+    );
+    transcript += &tool_result_lines("p-read2", 9, &now_minus(182));
+    transcript += &assistant_at("Now the shell.", &now_minus(180));
+    transcript += &tool_open_at("p-bash", &now_minus(175));
+    transcript += &tool_result_lines("p-bash", 6, &now_minus(170));
+    transcript += &assistant_at("And an edit.", &now_minus(165));
+    transcript += &write_tool_at(
+        "p-write",
+        "/Users/demo/project/src/engine/out.py",
+        8,
+        &now_minus(160),
+    );
+    transcript += &tool_result_at("p-write", &now_minus(155));
+    transcript += &assistant_at("answer p: done", &now_minus(150));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 7,
+    }
+}
+
+/// Dump, per record, every string the page puts on screen for it — the head's own words and the
+/// first line of its body. Compared between the pages, the difference IS the parity gap.
+fn rendered_facts(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
+    let js = match surface {
+        Surface::Classic => "(function(){ var out = []; document.querySelectorAll('#stream .fold').forEach(function (f) { var h = f.querySelector('.fold-h'); if (!h) return; out.push({ kind: f.dataset.kind || '', head: (h.textContent || '').replace(/\\s+/g, ' ').trim() }); }); return JSON.stringify(out); })()",
+        Surface::AppShell => "(function(){ var out = []; document.querySelectorAll('.renderer[data-renderer]').forEach(function (r) { var h = r.querySelector('.renderer-head'); if (!h) return; out.push({ kind: r.dataset.rendererKind || '', head: (h.textContent || '').replace(/\\s+/g, ' ').trim() }); }); return JSON.stringify(out); })()",
+    };
+    serde_json::from_str(eval(tab, &js).as_str().unwrap_or("[]")).unwrap_or(serde_json::Value::Null)
+}
+
+/// A throwaway reporter: prints what each page says about the same records, side by side.
+#[test]
+#[ignore = "probe: CR_PARITY=1 cargo test --test scenarios parity_probe -- --ignored --exact --nocapture"]
+fn parity_probe() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = parity_fixture(match surface {
+            Surface::Classic => "parity-probe-classic",
+            Surface::AppShell => "parity-probe-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 2986 };
+        let page = open(surface, &fx, port);
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        // Open everything, so a fact hidden behind a fold still counts as rendered.
+        for _ in 0..8 {
+            let js = match surface {
+                Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(function (x) { return x.dataset.open === '0'; }); if (!f) return 'done'; f.querySelector('.fold-h').click(); return 'clicked'; })()",
+                Surface::AppShell => "(function(){ var r = [...document.querySelectorAll('.renderer.closed')].shift(); if (!r) return 'done'; var h = r.querySelector('button.renderer-head'); if (!h) return 'done'; h.click(); return 'clicked'; })()",
+            };
+            if eval(&page.tab, js).as_str() == Some("done") {
+                break;
+            }
+            settle();
+        }
+        println!("=== {surface:?}");
+        for row in rendered_facts(&page.tab, surface)
+            .as_array()
+            .unwrap_or(&vec![])
+        {
+            println!(
+                "  [{}] {}",
+                row["kind"].as_str().unwrap_or(""),
+                row["head"].as_str().unwrap_or("")
+            );
+        }
+        // Is the path TRUNCATED, and if so at which end? A deep path outruns any column; what
+        // matters is whether the file NAME survives the clip.
+        let sel = match surface {
+            Surface::Classic => ".fold[data-kind=\"read\"] .fold-h",
+            Surface::AppShell => ".renderer[data-renderer-kind=\"read\"] .renderer-target",
+        };
+        for width in [1400.0_f64, 1000.0, 760.0] {
+            let _ = page.tab.set_bounds(headless_chrome::types::Bounds::Normal {
+                left: None,
+                top: None,
+                width: Some(width),
+                height: Some(900.0),
+            });
+            settle();
+            let seen = eval(&page.tab, &format!("(function(){{ var e = document.querySelector('{sel}'); if (!e) return JSON.stringify({{ miss: true }}); var cs = getComputedStyle(e); return JSON.stringify({{ w: Math.round(e.getBoundingClientRect().width), clipped: e.scrollWidth > e.clientWidth + 1, dir: cs.direction, text: (e.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 70) }}); }})()"));
+            println!("    width {width}: {seen}");
+        }
+    }
+}
+
+/// Row of the information-parity audit (#231): a Read says WHICH FILE it read, on both pages, at
+/// every width a reader might use.
+///
+/// The owner: "the read message does not have the file path it is reading (classic view has)."
+/// Measured before the fix, on an ordinary absolute path at a 1000px window: the app shell gave
+/// the target 67px and clipped it; the classic page showed the path whole at every width.
+///
+/// The assertion is that the FILE NAME is on screen — not that the text is present in the DOM
+/// (it always was) and not that nothing is clipped (a deep path outruns any column). Which end
+/// gets clipped is the whole question, and `textContent` cannot answer it: a Range measured
+/// against the element's own box can.
+fn scenario_a_read_says_which_file(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // A tool call sits inside an activity fold, so open everything first — a head with no width
+    // is a head nobody is looking at, and measuring it answers a question the case is not asking.
+    for _ in 0..10 {
+        let js = match surface {
+            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(function (x) { return x.dataset.open === '0'; }); if (!f) return 'done'; f.querySelector('.fold-h').click(); return 'clicked'; })()",
+            Surface::AppShell => "(function(){ var r = [...document.querySelectorAll('.renderer.closed')].shift(); if (!r) return 'done'; var h = r.querySelector('button.renderer-head'); if (!h) return 'done'; h.click(); return 'clicked'; })()",
+        };
+        if eval(tab, js).as_str() == Some("done") {
+            break;
+        }
+        settle();
+    }
+    let sel = match surface {
+        Surface::Classic => ".fold[data-kind=\"read\"] .fold-h",
+        Surface::AppShell => ".renderer[data-renderer-kind=\"read\"] .renderer-target",
+    };
+    // The visible span of the LAST characters of the path — the file name — against the box that
+    // clips them. Rendered outside it, the reader cannot see what was read.
+    let probe = format!(
+        "(function(){{ \
+           var e = document.querySelector('{sel}'); if (!e) return JSON.stringify({{ miss: true }}); \
+           var text = (e.textContent || ''); var name = 'reducer.rs'; \
+           var at = text.lastIndexOf(name); if (at < 0) return JSON.stringify({{ absent: true, text: text.slice(0, 80) }}); \
+           var walker = document.createTreeWalker(e, NodeFilter.SHOW_TEXT), node, seen = 0, range = document.createRange(), done = false; \
+           while ((node = walker.nextNode())) {{ \
+             var len = node.nodeValue.length; \
+             if (!done && seen + len >= at + name.length) {{ \
+               range.setStart(node, Math.max(0, at - seen)); range.setEnd(node, Math.min(len, at - seen + name.length)); done = true; break; \
+             }} \
+             seen += len; \
+           }} \
+           if (!done) return JSON.stringify({{ unmeasurable: true }}); \
+           var r = range.getBoundingClientRect(), b = e.getBoundingClientRect(); \
+           return JSON.stringify({{ visible: r.width > 0 && r.left >= b.left - 1 && r.right <= b.right + 1, nameLeft: Math.round(r.left - b.left), boxW: Math.round(b.width) }}); \
+         }})()"
+    );
+    for width in [1400.0_f64, 1100.0, 900.0] {
+        let _ = tab.set_bounds(headless_chrome::types::Bounds::Normal {
+            left: None,
+            top: None,
+            width: Some(width),
+            height: Some(900.0),
+        });
+        settle();
+        let seen = eval(tab, &probe);
+        let seen: serde_json::Value =
+            serde_json::from_str(seen.as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null);
+        assert!(
+            seen["miss"].is_null() && seen["absent"].is_null(),
+            "{surface:?} at {width}px: the Read head names no file: {seen}"
+        );
+        assert_eq!(
+            seen["visible"],
+            serde_json::json!(true),
+            "{surface:?} at {width}px: the file NAME must be on screen — a deep path may lose its \
+             prefix, never its tail: {seen}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_read_says_which_file() {
+    let _serial = serial();
+    let fx = parity_fixture("parity-read-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_read_says_which_file(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_read_says_which_file() {
+    let _serial = serial();
+    let fx = parity_fixture("parity-read-app");
+    let page = open(Surface::AppShell, &fx, 2987);
+    scenario_a_read_says_which_file(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Information parity (#231): a record NAMES ITS TARGET whether or not it has a body to unfold.
+///
+/// The owner's screenshots: the classic page showed `Read /private/tmp/…/scratchpad/pre…` and the
+/// app shell showed a bare `Read` with nothing after it. Every Read in that session read an
+/// IMAGE, so its result became a separate attachment record and the Read itself was left with no
+/// body — `noninteractive`, whose head hard-coded an empty target span while the interactive one
+/// interpolated the summary. What a record is about must not depend on whether it has something
+/// to open.
+fn scenario_a_bodyless_record_still_names_its_target(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    for _ in 0..10 {
+        let js = match surface {
+            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(function (x) { return x.dataset.open === '0'; }); if (!f) return 'done'; f.querySelector('.fold-h').click(); return 'clicked'; })()",
+            Surface::AppShell => "(function(){ var r = [...document.querySelectorAll('.renderer.closed')].shift(); if (!r) return 'done'; var h = r.querySelector('button.renderer-head'); if (!h) return 'done'; h.click(); return 'clicked'; })()",
+        };
+        if eval(tab, js).as_str() == Some("done") {
+            break;
+        }
+        settle();
+    }
+    // The Read that reads an image: on the app shell it has no body of its own, which is exactly
+    // the head variant that used to drop the path.
+    let seen = match surface {
+        Surface::Classic => eval(tab, "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-kind=\"read\"]')].pop(); if (!f) return JSON.stringify({ miss: true }); var h = f.querySelector('.fold-h'); return JSON.stringify({ text: (h.textContent || '').replace(/\\s+/g, ' ').trim() }); })()"),
+        Surface::AppShell => eval(tab, "(function(){ var r = [...document.querySelectorAll('.renderer[data-renderer-kind=\"read\"]')].pop(); if (!r) return JSON.stringify({ miss: true }); var t = r.querySelector('.renderer-target'); return JSON.stringify({ interactive: !!r.querySelector('button.renderer-head'), text: t ? (t.textContent || '').trim() : null }); })()"),
+    };
+    let seen: serde_json::Value =
+        serde_json::from_str(seen.as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null);
+    assert!(
+        seen["miss"].is_null(),
+        "{surface:?}: no Read record found: {seen}"
+    );
+    let text = seen["text"].as_str().unwrap_or("");
+    assert!(
+        text.contains("shot.png"),
+        "{surface:?}: the Read names the file it read, body or no body: {seen}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_bodyless_record_still_names_its_target() {
+    let _serial = serial();
+    let fx = image_fixture("parity-bodyless-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_bodyless_record_still_names_its_target(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_bodyless_record_still_names_its_target() {
+    let _serial = serial();
+    let fx = image_fixture("parity-bodyless-app");
+    let page = open(Surface::AppShell, &fx, 2988);
+    scenario_a_bodyless_record_still_names_its_target(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── the information-parity audit (#232) ─────────────────────────────────────────────────────
+//
+// `rendering_audit.rs` (#174) measures what a CONTROL reaches, in computed style. This measures
+// what the page SAYS at rest: per record, the words a reader can read.
+//
+// The virtual window is not an excuse. The app shell mounts only its window's slice, so a naive
+// comparison reports every unmounted record as a gap and buries the real ones — an early probe
+// read 13 rows on the classic page and 10 on the shell, and all three differences were
+// windowing. Both pages open with `?mountall=1`, the engine's test knob, which forces `renderAll`
+// and mounts the lot. The fixture is deliberately small: that knob is safe only on a session
+// that fits in a tab.
+//
+// The fixture mimics STRUCTURAL PATTERNS rather than any real session — shapes counted from the
+// live transcripts on this machine, by kind, never by content.
+
+/// Every structural pattern the survey found, once each, in one small session.
+fn pattern_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(3, Shape::default());
+    t += &user_at("question: work through every shape", &now_minus(300));
+    // The three dominant single-kind assistant turns.
+    t += &assistant_at("Starting with the file.", &now_minus(295));
+    t += &thinking_at("Considering which file to open first.", &now_minus(294));
+    t += &read_tool_at(
+        "k-read",
+        "/Users/demo/proj/src/engine/reducer.rs",
+        &now_minus(293),
+    );
+    t += &tool_result_lines("k-read", 10, &now_minus(292));
+    // A Read whose result is an IMAGE: the record keeps no body of its own, the shape that lost
+    // its path on the app shell (#231).
+    t += &assistant_at("Now the screenshot.", &now_minus(285));
+    t += &read_tool_at("k-shot", "/Users/demo/proj/shot.png", &now_minus(284));
+    t += &image_result_at("k-shot", &now_minus(283));
+    // A result carrying an image AND text — 309 in the survey, and neither page had a fixture.
+    t += &assistant_at("And one that returns both.", &now_minus(275));
+    t += &named_tool_at(
+        "k-mixed",
+        "Monitor",
+        "/Users/demo/proj/render.log",
+        &now_minus(274),
+    );
+    t += &harness::mixed_result_at("k-mixed", "rendered 3 frames", &now_minus(273));
+    // Text, thinking and a call in ONE assistant message — where a page must choose an order.
+    t += &harness::combined_turn_at(
+        "k-comb",
+        "Checking the other half.",
+        "The second file is the one that matters.",
+        "Read",
+        "/Users/demo/proj/src/engine/window.rs",
+        &now_minus(265),
+    );
+    t += &tool_result_lines("k-comb", 6, &now_minus(264));
+    // A command with real output, an edit, and a write.
+    t += &assistant_at("Running the checks.", &now_minus(255));
+    t += &tool_open_at("k-bash", &now_minus(254));
+    t += &tool_result_lines("k-bash", 24, &now_minus(253));
+    t += &assistant_at("Applying the change.", &now_minus(245));
+    t += &edit_tool_at(
+        "k-edit",
+        "/Users/demo/proj/src/engine/reducer.rs",
+        &now_minus(244),
+    );
+    t += &tool_result_at("k-edit", &now_minus(243));
+    t += &assistant_at("And writing the new one.", &now_minus(235));
+    t += &write_tool_at(
+        "k-write",
+        "/Users/demo/proj/src/engine/out.py",
+        6,
+        &now_minus(234),
+    );
+    t += &tool_result_at("k-write", &now_minus(233));
+    // An MCP tool, whose name outruns any column.
+    t += &assistant_at("Driving the browser.", &now_minus(225));
+    t += &named_tool_at(
+        "k-mcp",
+        "mcp__claude-in-chrome__javascript_tool",
+        "document.querySelectorAll('.row').length",
+        &now_minus(224),
+    );
+    t += &tool_result_text("k-mcp", "42", &now_minus(223));
+    t += &assistant_at("answer: every shape is above", &now_minus(200));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 4,
+    }
+}
+
+/// Per record: its kind, and the words the page shows in its head.
+fn head_facts(tab: &headless_chrome::Tab, surface: Surface) -> Vec<(String, String)> {
+    let js = match surface {
+        Surface::Classic => "(function(){ var out = []; document.querySelectorAll('#stream .fold').forEach(function (f) { var h = f.querySelector('.fold-h'); if (!h) return; out.push([f.dataset.kind || '', (h.textContent || '').replace(/\\s+/g, ' ').replace(/#$/, '').trim()]); }); return JSON.stringify(out); })()",
+        Surface::AppShell => "(function(){ var out = []; document.querySelectorAll('.renderer[data-renderer]').forEach(function (r) { var h = r.querySelector('.renderer-head'); if (!h) return; out.push([r.dataset.rendererKind || '', (h.textContent || '').replace(/\\s+/g, ' ').trim()]); }); return JSON.stringify(out); })()",
+    };
+    let raw: Vec<Vec<String>> =
+        serde_json::from_str(eval(tab, &js).as_str().unwrap_or("[]")).unwrap_or_default();
+    raw.into_iter()
+        .filter_map(|row| Some((row.first()?.clone(), row.get(1)?.clone())))
+        .collect()
+}
+
+/// Open every fold, so nothing is hidden behind one when the page is read.
+fn open_everything(tab: &headless_chrome::Tab, surface: Surface) {
+    for _ in 0..40 {
+        let js = match surface {
+            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(function (x) { return x.dataset.open === '0'; }); if (!f) return 'done'; f.querySelector('.fold-h').click(); return 'clicked'; })()",
+            Surface::AppShell => "(function(){ var r = [...document.querySelectorAll('.renderer.closed')].shift(); if (!r) return 'done'; var h = r.querySelector('button.renderer-head'); if (!h) return 'done'; h.click(); return 'clicked'; })()",
+        };
+        if eval(tab, js).as_str() == Some("done") {
+            break;
+        }
+        settle();
+    }
+}
+
+/// The reporter: prints what each page says about every record, and what only one of them says.
+#[test]
+#[ignore = "audit: cargo test --test scenarios information_parity_audit -- --ignored --exact --nocapture"]
+fn information_parity_audit() {
+    let _serial = serial();
+    let mut seen: Vec<(Surface, Vec<(String, String)>)> = Vec::new();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = pattern_fixture(match surface {
+            Surface::Classic => "parity-audit-classic",
+            Surface::AppShell => "parity-audit-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 2989 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        open_everything(&page.tab, surface);
+        seen.push((surface, head_facts(&page.tab, surface)));
+    }
+    let (_, classic) = &seen[0];
+    let (_, shell) = &seen[1];
+    println!(
+        "\n=== rows: classic {} | app shell {}",
+        classic.len(),
+        shell.len()
+    );
+    println!("\n=== CLASSIC");
+    for (kind, text) in classic {
+        println!("  [{kind}] {text}");
+    }
+    println!("\n=== APP SHELL");
+    for (kind, text) in shell {
+        println!("  [{kind}] {text}");
+    }
+    // What one page names and the other does not, by kind — the gap list.
+    let kinds_of = |rows: &Vec<(String, String)>| {
+        rows.iter()
+            .map(|(k, _)| k.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let ck = kinds_of(classic);
+    let sk = kinds_of(shell);
+    println!(
+        "\n=== KINDS only on classic: {:?}",
+        ck.difference(&sk).collect::<Vec<_>>()
+    );
+    println!(
+        "=== KINDS only on the shell: {:?}",
+        sk.difference(&ck).collect::<Vec<_>>()
+    );
 }

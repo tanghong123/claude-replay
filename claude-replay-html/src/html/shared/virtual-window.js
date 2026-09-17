@@ -1902,4 +1902,27 @@ function elementFrame(scroller) {
   };
 }
 
-export { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, itemHeight, VirtualWindow, elementFrame, documentFrame, traceWanted };
+/**
+ * TEST KNOB — `?mountall=1` mounts every item and turns the virtual window off (#232).
+ *
+ * A parity audit cannot accept "it was not mounted" as an answer: two pages that render the same
+ * session must be comparable record by record, and on the app shell only the window's slice is in
+ * the DOM. Rather than teach the audit to walk and stitch — which measures the WALK as much as the
+ * rendering, and quietly hides a record that only fails when mounted mid-scroll — the page is
+ * asked to render the lot.
+ *
+ * It is a knob and not a mode: mounting a real session's thousands of records means every fold,
+ * every code pane and every image at once, which is how a tab runs out of memory. Only a fixture
+ * small enough to hold whole should ever ask. Off unless the parameter is present, so no reader
+ * reaches it by accident.
+ */
+function mountEverythingRequested(search) {
+  try {
+    const query = search != null ? search : (typeof location !== "undefined" ? location.search : "");
+    return new URLSearchParams(query).get("mountall") === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+export { mountEverythingRequested, prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, itemHeight, VirtualWindow, elementFrame, documentFrame, traceWanted };

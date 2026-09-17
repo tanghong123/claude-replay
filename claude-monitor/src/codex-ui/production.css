@@ -777,3 +777,29 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .artifact-stage>img.artifact-image{position:absolute;left:50%;top:50%;transform-origin:center center;will-change:transform;max-width:none;max-height:none;margin:0}
 .artifact-stage[data-pannable="yes"]{cursor:grab}
 .artifact-stage[data-pannable="yes"].dragging{cursor:grabbing}
+
+/* #231 — the Read path. The owner: "the read message does not have the file path it is reading
+   (classic view has)." Measured on a Read whose target is an ordinary absolute path: at a 1000px
+   window the app shell gave `.renderer-target` 67px and clipped it, while the classic page showed
+   the path whole at every width. Two faults, both here.
+
+   ROOM. The head is `grid-template-columns:11px max-content minmax(0,1fr) 108px`, and that last
+   track is reserved for the state word whether or not there IS one — a completed record's state
+   is empty, so 108px of a narrow head was held for nothing while the path starved beside it. The
+   track now takes only what it holds, and the path gets the rest.
+
+   WHICH END IS CLIPPED. `text-overflow:ellipsis` cuts the TAIL, so a deep path loses its file
+   NAME — the one part the reader is looking for — and keeps a prefix every path on the machine
+   shares. The classic page settled this long ago for its own path line: "A deep path is longer
+   than any viewport; keep the tail (the file name) and clip the head" (export.css, `.lb-cap`).
+   Same technique here, so the two shells clip the same way. */
+.renderer>.renderer-head{grid-template-columns:11px max-content minmax(0,1fr) minmax(0,max-content)}
+/* `direction:rtl` ALONE. The classic page's own path line pairs it with `text-align:left`, but
+   that element clips without an ellipsis; here the two fight — rtl puts the ellipsis at the
+   visual left, and then left-alignment pushes the overflow back out to the right, losing the
+   file name the rule exists to keep. Measured: name starting 230px into a 275px box. */
+.renderer-target{direction:rtl}
+/* NOT `unicode-bidi:plaintext`, which was the first attempt and silently undid the line above:
+   plaintext resolves each run's direction from its first strong character, and a path's first
+   strong character is Latin — so the run went back to LTR and kept clipping the tail. Measured
+   identically before and after adding the rule, which is what gave it away. */

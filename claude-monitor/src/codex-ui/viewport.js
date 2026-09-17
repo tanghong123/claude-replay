@@ -2,7 +2,7 @@ import { renderUnit } from "./components.js";
 // The window's arithmetic — the sums, the search, the ranges, the pads, the anchor correction,
 // the follow rule — is the shared module's (#107, html/shared/virtual-window.js): one set of
 // scroll rules for both pages. What reads layout and what writes the DOM stays here.
-import { VirtualWindow, elementFrame } from "./shared/virtual-window.js";
+import { VirtualWindow, elementFrame, mountEverythingRequested } from "./shared/virtual-window.js";
 
 export function revealNavigationContext(units, index, state, recordIndex, reveal = "record") {
   const unit = units[index];
@@ -85,6 +85,10 @@ export class Viewport extends VirtualWindow {
       // stage 3) — on its instance, never in `state`: a persisted share against a fresh mean would
       // withdraw what was never learned.
       floors: ESTIMATES,
+      // `?mountall=1` (#232): render every record, so a parity audit can compare the two pages
+      // record by record instead of comparing one page against whatever the other happened to
+      // have mounted. Test-only, and only ever safe on a fixture small enough to hold whole.
+      renderAll: () => mountEverythingRequested(),
       defaultKind: "process",
       page: "app",
       version: document.body.dataset.version || null,

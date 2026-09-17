@@ -206,6 +206,33 @@ pub fn pasted_image_sized(text: &str, ts: &str, b64: &str) -> String {
 /// A tool result carrying an embedded image (what a Read of a PNG records).
 /// The same, with the payload named — a case that zooms needs an image big enough to OUTGROW
 /// its stage, which a 1×1 never is at any scale.
+/// A tool result carrying BOTH an image and text — the mixed shape live sessions produce 309
+/// times across the transcripts surveyed, and the one neither page had a fixture for.
+pub fn mixed_result_at(call_id: &str, text: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":[{{\"type\":\"image\",\"source\":{{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"{TINY_PNG_B64}\"}}}},{{\"type\":\"text\",\"text\":\"{text}\"}}]}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
+/// One assistant turn carrying text, thinking AND a tool call together — 44 + 37 occurrences in
+/// the survey. Every other builder writes a turn with a single part kind, so the combined shape,
+/// which is where a page has to decide ORDER, went unexercised.
+pub fn combined_turn_at(
+    id: &str,
+    text: &str,
+    thought: &str,
+    tool: &str,
+    target: &str,
+    ts: &str,
+) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[\
+{{\"type\":\"text\",\"text\":\"{text}\"}},\
+{{\"type\":\"thinking\",\"thinking\":\"{thought}\"}},\
+{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"{tool}\",\"input\":{{\"file_path\":\"{target}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
 pub fn image_result_sized(call_id: &str, ts: &str, b64: &str) -> String {
     let b64 = b64.trim();
     format!(
@@ -272,6 +299,16 @@ pub fn named_tool_at(id: &str, name: &str, target: &str, ts: &str) -> String {
 }
 
 /// A file-acting tool call (`Read` on `path`): the page offers the path with its stamps.
+/// A `Read` as REAL sessions overwhelmingly record it: with `offset` and `limit` beside the
+/// path. Measured across 25 recent transcripts on this machine — 1692 of 3296 Read calls carry
+/// all three keys, 1575 carry the path alone — so a fixture that only ever writes the bare form
+/// is exercising the minority shape.
+pub fn read_tool_ranged_at(id: &str, path: &str, offset: u32, limit: u32, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Read\",\"input\":{{\"file_path\":\"{path}\",\"offset\":{offset},\"limit\":{limit}}}}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
 pub fn read_tool_at(id: &str, path: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Read\",\"input\":{{\"file_path\":\"{path}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"

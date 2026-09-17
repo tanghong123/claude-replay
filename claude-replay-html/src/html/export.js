@@ -2013,7 +2013,9 @@
     // One kind of record on this page, floored at EST_H (#184); the engine keeps the mean.
     floors: { record: EST_H },
     skipAt: isHiddenRec,
-    renderAll: function () { return !!filter && filterFull; },
+    // `?mountall=1` (#232) forces the whole stream, for the parity audit; otherwise a small
+    // filtered set is still rendered whole, as it always was.
+    renderAll: function () { return shared.mountEverythingRequested() || (!!filter && filterFull); },
     page: "classic",
   });
 

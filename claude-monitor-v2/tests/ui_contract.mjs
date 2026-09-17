@@ -1783,7 +1783,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // running mean rather than the answer, because a constant floor is the guess furthest from the
   // truth and that distance is what displaces a reader when a run above them is measured (#180).
   assert.match(vp, /const ESTIMATES = \{ user: 44, assistant: 40, process: 34 \};/);
-  assert.match(vp, /floors: ESTIMATES,\n\s*defaultKind: "process",/, "the floors seed one running mean per unit type — kept by the engine since #196 stage 3, a unit of an unknown type learning as a process");
+  // Both facts, not their adjacency: #232 put the `renderAll` test knob between them, and a
+  // contract that pins where a line SITS breaks on an unrelated insertion while saying nothing
+  // about what it was protecting.
+  assert.match(vp, /floors: ESTIMATES,/, "the floors seed one running mean per unit type — kept by the engine since #196 stage 3");
+  assert.match(vp, /defaultKind: "process",/, "…and a unit of an unknown type learns as a process");
+  // The knob itself: off unless asked for, and read through the shared engine so both pages
+  // answer the same rule.
+  assert.match(vp, /renderAll: \(\) => mountEverythingRequested\(\),/, "the app shell can be asked to mount every record, so a parity audit is not limited to the window (#232)");
   assert.match(vp, /kindOf\(index\) \{ return this\.units\[index\]\?\.type; \}/, "the shell says what kind a unit is; the engine answers the estimate — the APPLIED one (#194)");
   // #132 step 4, reaching the classic page with #140 step 4: a width change RE-GUESSES the
   // remembered heights instead of keeping them (which is what left that page believing in a
@@ -1810,7 +1817,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(cls, /slacks: \{ acquire: PIN_SLACK, hold: BOTTOM_SLACK, heal: BOTTOM_SLACK \},/, "#103's hysteresis, with this page's own numbers");
   assert.match(cls, /clampIndex: false,/, "an offset past the last visible record reads as PAST THE END — what places its bottom pad under a filter");
   assert.match(cls, /skipAt: isHiddenRec,/, "a filter-hidden record is skipped, never given a zero height (`heightOf` would answer with the estimate)");
-  assert.match(cls, /renderAll: function \(\) \{ return !!filter && filterFull; \},/, "a small filtered set is rendered whole, so a one-hit jump cannot land in a pad (#94)");
+  assert.match(cls, /renderAll: function \(\) \{ return shared\.mountEverythingRequested\(\) \|\| \(!!filter && filterFull\); \},/, "a small filtered set is still rendered whole (#94), and `?mountall=1` forces the whole stream for the parity audit (#232)");
   assert.match(cls, /this\._prefix = shared\.prefixSums\(this\.count, this\.heightOf\.bind\(this\)\);/, "the sums stay LAZY here: a live apply pushes one record at a time");
   assert.match(cls, /function P\(\) \{ return vw\.prefix; \}/, "…and every reader of them goes through the engine");
   assert.doesNotMatch(cls, /addEventListener\("scroll"/, "the scroll listener is the engine's now — the same pin the app shell carries");
