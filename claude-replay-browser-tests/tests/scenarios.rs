@@ -10402,3 +10402,109 @@ fn app_shell_the_enlarged_image_zooms() {
     let page = open(Surface::AppShell, &fx, 2984);
     scenario_the_enlarged_image_zooms(&page.tab, Surface::AppShell, &fx);
 }
+
+// ── scenario: command output is READABLE in both themes (#229) ──────────────────────────────
+
+/// The owner: "the output of bash is shown in a light apple green, is it intentional? Feels like
+/// hard to read with light theme."
+///
+/// It was not intentional. The demo's terminal was a near-black slab and its output colour was
+/// picked against that; #150 rethemed the box and left the two text colours behind, so the light
+/// page drew #8fc59f on white — 1.97:1, against the 4.5:1 a paragraph of text needs.
+///
+/// This asserts the PROPERTY, not the hex. A future palette change is free to pick any colour it
+/// likes; what it may not do is make output unreadable again, on either page or in either theme.
+/// Measuring also catches what reading the stylesheet cannot: the colour that actually wins the
+/// cascade, over the background that is actually painted behind it.
+fn scenario_command_output_is_readable_in_both_themes(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // A tool call sits inside an activity fold on both pages and its record starts closed, so
+    // there is nothing to measure until the reader opens it — outermost first, by its head, the
+    // way `scenario_output_caps_expand_and_remember` does it.
+    for _ in 0..6 {
+        let step = match surface {
+            Surface::Classic => eval(tab, "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-kind=\"bash\"]')].pop(); if (!f) return 'none'; var chain = []; for (var e = f; e; e = e.parentElement.closest('.fold')) chain.push(e); var closed = chain.reverse().find(function (x) { return x.dataset.open === '0'; }); if (!closed) return 'open'; closed.querySelector('.fold-h').click(); return 'clicked'; })()"),
+            Surface::AppShell => eval(tab, "(function(){ var t = [...document.querySelectorAll('.renderer-turn[data-tool-name=\"Bash\"] > .renderer')].pop(); if (!t) return 'none'; var chain = []; for (var e = t; e; e = e.parentElement && e.parentElement.closest('.renderer')) chain.push(e); var closed = chain.reverse().find(function (x) { return x.classList.contains('closed'); }); if (!closed) return 'open'; closed.querySelector('button.renderer-head').click(); return 'clicked'; })()"),
+        };
+        settle();
+        let step = step.as_str().unwrap_or("").to_string();
+        if step == "open" || step == "none" {
+            break;
+        }
+    }
+    let output = match surface {
+        Surface::Classic => ".result",
+        Surface::AppShell => ".renderer-terminal .output",
+    };
+    // The contrast of the output's own colour against the first opaque background behind it —
+    // the pair a reader's eye actually resolves, whatever the cascade did to get there.
+    let measure = format!(
+        "(function(){{ \
+           function rgb(s) {{ var m = String(s).match(/[\\d.]+/g); return m ? m.slice(0, 3).map(Number) : null; }} \
+           function lum(c) {{ var a = c.map(function (v) {{ v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }}); return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2]; }} \
+           var els = [...document.querySelectorAll('{output}')].filter(function (e) {{ return e.getBoundingClientRect().height > 0 && e.textContent.trim(); }}); \
+           if (!els.length) return JSON.stringify({{ error: 'no visible output' }}); \
+           var el = els[els.length - 1]; \
+           var fg = rgb(getComputedStyle(el).color); \
+           var bg = null; \
+           for (var p = el; p && p !== document.documentElement; p = p.parentElement) {{ \
+             var c = rgb(getComputedStyle(p).backgroundColor); \
+             var alpha = String(getComputedStyle(p).backgroundColor).match(/[\\d.]+/g); \
+             if (c && (!alpha || alpha.length < 4 || Number(alpha[3]) > 0.95)) {{ bg = c; break; }} \
+           }} \
+           if (!bg) bg = rgb(getComputedStyle(document.body).backgroundColor) || [255, 255, 255]; \
+           var lf = lum(fg), lb = lum(bg); \
+           var ratio = (Math.max(lf, lb) + 0.05) / (Math.min(lf, lb) + 0.05); \
+           return JSON.stringify({{ ratio: Math.round(ratio * 100) / 100, fg: fg, bg: bg }}); \
+         }})()"
+    );
+    for theme in ["light", "dark"] {
+        eval(
+            tab,
+            &format!(
+                "(function(){{ document.documentElement.setAttribute('data-theme', '{theme}'); return 'ok'; }})()"
+            ),
+        );
+        settle();
+        let seen = eval(tab, &measure);
+        let seen: serde_json::Value =
+            serde_json::from_str(seen.as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null);
+        assert!(
+            seen["error"].is_null(),
+            "{surface:?}/{theme}: the case found no command output to measure: {seen}"
+        );
+        let ratio = seen["ratio"].as_f64().unwrap_or(0.0);
+        assert!(
+            ratio >= 4.5,
+            "{surface:?}/{theme}: command output must clear 4.5:1 for body text, measured {ratio}:1 — {seen}"
+        );
+    }
+    eval(
+        tab,
+        "(function(){ document.documentElement.removeAttribute('data-theme'); return 'ok'; })()",
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_command_output_is_readable_in_both_themes() {
+    let _serial = serial();
+    let fx = caps_fixture("scenario-contrast-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_command_output_is_readable_in_both_themes(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_command_output_is_readable_in_both_themes() {
+    let _serial = serial();
+    let fx = caps_fixture("scenario-contrast-app");
+    let page = open(Surface::AppShell, &fx, 2985);
+    scenario_command_output_is_readable_in_both_themes(&page.tab, Surface::AppShell, &fx);
+}

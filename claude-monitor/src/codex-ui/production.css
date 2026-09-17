@@ -583,6 +583,22 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    as output — it is the COLOUR that was wrong, not the idea. */
 .renderer-terminal{background:var(--process-content-bg);color:var(--sub);border-color:var(--process-content-border)}
 .renderer-terminal .command{color:var(--ink)}
+/* …and the TEXT INSIDE it, which #150 missed (#229). The owner: "the output of bash is shown in
+   a light apple green, is it intentional? Feels like hard to read with light theme." It was not
+   intentional. reference.css:164 sets `.output{color:#8fc59f}` and `.error .output{#ef8d86}`,
+   both chosen for the demo's near-black slab (#171a1f) — where they measure 8.87:1 and 7.34:1.
+   #150 rethemed the BOX out from under them and left them behind, so on the light page they sat
+   on white at 1.97:1 and 2.38:1 against the 4.5:1 a paragraph of text needs.
+
+   Reaching for `var(--green)` would not have fixed it: in the light theme that token is #19a34a
+   = 3.29:1. It is sized for chips and dots, not prose.
+
+   So output follows the theme exactly as the box does, which is also what the CLASSIC page has
+   always done — its `.result` is `var(--muted)`, 5.09:1 light and 6.41:1 dark, with no green at
+   all. The two shells now agree, and the reference wins. The command stays brighter than its
+   output, so the hierarchy that colour was carrying is still there, in weight rather than hue. */
+.renderer-terminal .output{color:var(--sub)}
+.renderer-terminal.error .output{color:var(--red)}
 
 /* #142 — the reading control. Reading preferences are not search options, so they get their
    own header button instead of a third section inside the filter funnel. The cluster is the
