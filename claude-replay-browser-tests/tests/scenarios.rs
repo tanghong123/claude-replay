@@ -10931,6 +10931,12 @@ fn pattern_fixture(name: &str) -> Fixture {
     // Markdown is INFORMATION: a table or a code block the reader cannot see on one page is a
     // gap, not a preference. Heading, bullets, table, fence, CJK and a 340-character line.
     t += &harness::markdown_answer_at(&now_minus(210));
+    // BATCH 3 — the records that are not a tool call at all, and that every page draws its own
+    // way: a compaction boundary, a prompt queued while the agent was busy, and an agent asking
+    // the reader a question. 13039 queue operations and 5565 sidechain records in the survey.
+    t += &harness::compaction_at(&now_minus(208));
+    t += &queued_at("and then check the tests", &now_minus(206));
+    t += &harness::input_request_at("k-ask", "Which branch should I use?", &now_minus(204));
     t += &assistant_at("answer: every shape is above", &now_minus(200));
     let path = stores.claude_session(SID, &t);
     Fixture {
@@ -10951,8 +10957,8 @@ fn record_facts(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Val
         Surface::Classic => {
             r#"(function(){
             var out = {};
-            document.querySelectorAll('#stream .fold').forEach(function (f) {
-              var h = f.querySelector('.fold-h'); if (!h) return;
+            document.querySelectorAll('#stream .fold, #stream .qmarker, #stream .amark').forEach(function (f) {
+              var h = f.querySelector('.fold-h') || f;
               var kind = (f.dataset.kind || '').replace(/^act$/, 'activity');
               var head = (h.textContent || '').replace(/\s+/g, ' ').replace(/^[▸▾▴◂]\s*/, '').replace(/#$/, '').trim();
               var body = f.querySelector('.fold-b, .foldbody, .blkbody');
@@ -10989,7 +10995,7 @@ fn record_facts(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Val
 /// Per record: its kind, and the words the page shows in its head.
 fn head_facts(tab: &headless_chrome::Tab, surface: Surface) -> Vec<(String, String)> {
     let js = match surface {
-        Surface::Classic => "(function(){ var out = []; document.querySelectorAll('#stream .fold').forEach(function (f) { var h = f.querySelector('.fold-h'); if (!h) return; out.push([f.dataset.kind || '', (h.textContent || '').replace(/\\s+/g, ' ').replace(/#$/, '').trim()]); }); return JSON.stringify(out); })()",
+        Surface::Classic => "(function(){ var out = []; document.querySelectorAll('#stream .fold, #stream .qmarker, #stream .amark').forEach(function (e) { var h = e.querySelector('.fold-h') || e; var kind = e.dataset.kind || (e.classList.contains('qmarker') ? 'queue' : e.classList.contains('amark') ? 'attachment' : ''); out.push([kind, (h.textContent || '').replace(/\\s+/g, ' ').replace(/#$/, '').trim()]); }); return JSON.stringify(out); })()",
         Surface::AppShell => "(function(){ var out = []; document.querySelectorAll('.renderer[data-renderer]').forEach(function (r) { var h = r.querySelector('.renderer-head'); if (!h) return; out.push([r.dataset.rendererKind || '', (h.textContent || '').replace(/\\s+/g, ' ').trim()]); }); return JSON.stringify(out); })()",
     };
     let raw: Vec<Vec<String>> =
@@ -11030,7 +11036,20 @@ fn information_parity_audit() {
         await_tail(&page.tab, surface, "a fresh open to land at the tail");
         settle();
         open_everything(&page.tab, surface);
+        // Head AND body: a page may carry a fact in either, and only the pair says whether the
+        // reader can see it at all. The queued prompt is the case in point — classic puts its
+        // words in the marker, the shell puts a label in the head and the words underneath.
+        let bodies = record_facts(&page.tab, surface);
         seen.push((surface, head_facts(&page.tab, surface)));
+        println!("\n=== {surface:?} BODIES");
+        if let Some(map) = bodies.as_object() {
+            for (key, v) in map {
+                let body = v["body"].as_str().unwrap_or("");
+                if !body.is_empty() {
+                    println!("  {key} => {}", body.chars().take(90).collect::<String>());
+                }
+            }
+        }
     }
     let (_, classic) = &seen[0];
     let (_, shell) = &seen[1];
