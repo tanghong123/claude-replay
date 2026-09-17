@@ -186,6 +186,10 @@ pub const TINY_PNG_B64: &str =
 /// (the owner's own session: 138 embedded images, median 108 KB, largest 402 KB). The 1×1
 /// [`TINY_PNG_B64`] proves the plumbing; only a real one proves the plumbing at real sizes.
 pub const BIG_PNG_B64: &str = include_str!("big-image.b64");
+/// A WIDE, short image (1200×260) — the shape a screenshot of a transcript actually has, and the
+/// one the square fixtures never exercised. Centring is decided per AXIS, so a shape that fits on
+/// one axis and not the other is where a centring bug hides.
+pub const WIDE_PNG_B64: &str = include_str!("wide-image.b64");
 
 /// A user turn with a PASTED image: text plus an inline base64 image in the SAME message, which
 /// is how a screenshot dropped into the prompt is recorded. The engine surfaces it as an

@@ -2113,6 +2113,28 @@ fn app_shell_renders_an_embedded_image() {
 /// Zoom is only observable on an image that can outgrow its stage: the 1×1 sits at 100% fit and
 /// is still 8px wide at the 800% ceiling, so "did it become pannable" has no answer there. This
 /// is the same session shape, with bytes that have a size.
+/// The same session with a WIDE, short image — the shape the owner's screenshot has. Centring is
+/// decided per axis, so an image that fits on one axis and overflows the other is exactly where a
+/// centring fault hides; every image fixture before this was square.
+fn wide_image_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("question 12: read the screenshot", &now_minus(40));
+    transcript += &assistant_at("answer 12a: let me look at it", &now_minus(39));
+    transcript += &harness::tool_open_at("t-pre", &now_minus(38));
+    transcript += &harness::tool_result_at("t-pre", &now_minus(37));
+    transcript += &read_tool_at("t-img", "/tmp/wide.png", &now_minus(36));
+    transcript += &harness::image_result_sized("t-img", &now_minus(32), harness::WIDE_PNG_B64);
+    transcript += &assistant_at("answer 12: the screenshot shows the deck", &now_minus(28));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
 fn big_image_fixture(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
@@ -10443,6 +10465,24 @@ fn app_shell_an_image_is_one_click_away() {
     let fx = image_fixture("scenario-oneclick-app");
     let page = open(Surface::AppShell, &fx, 2983);
     scenario_an_image_is_one_click_away(&page.tab, Surface::AppShell, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_wide_image_opens_centred() {
+    let _serial = serial();
+    let fx = wide_image_fixture("wide-centre-app");
+    let page = open(Surface::AppShell, &fx, 2995);
+    scenario_the_enlarged_image_zooms(&page.tab, Surface::AppShell, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_wide_image_opens_centred() {
+    let _serial = serial();
+    let fx = wide_image_fixture("wide-centre-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_the_enlarged_image_zooms(&page.tab, Surface::Classic, &fx);
 }
 
 #[test]

@@ -968,6 +968,24 @@ impl Emitter<'_> {
                     // the session `first_cwd` — a mid-session `cd` moved it. Fall back to the
                     // session cwd when the block carries none.
                     let base = if cwd.is_empty() { self.cwd } else { cwd };
+                    // The target is a LABEL, and for a multi-file `SendUserFile` it carries a
+                    // count of the others: `~/dir/first.jpg +2` (the claude family's
+                    // `tool_target`). Resolving that whole string made the reveal ask for a file
+                    // called "first.jpg +2", which exists nowhere — the owner caught it in the
+                    // tooltip, reading `Reveal /Users/…/D-六面总览.jpg +2`. Only the first path is
+                    // a path; the suffix is prose about the rest. Scoped to the tool that
+                    // produces the suffix, so a file genuinely ending in " +2" is still revealed
+                    // correctly everywhere else.
+                    let target: &str = if name == "SendUserFile" {
+                        target
+                            .rsplit_once(" +")
+                            .filter(|(_, count)| {
+                                !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit())
+                            })
+                            .map_or(target.as_str(), |(first, _)| first)
+                    } else {
+                        target.as_str()
+                    };
                     if let Some(abs) = resolve_abs(base, target) {
                         // Stamp it: the routes act only on paths this server OFFERED, so a
                         // token holder cannot name a file the page never showed
@@ -4078,6 +4096,55 @@ mod tests {
     /// owner asked for the delivered path to be "handled like any other file paths". Its kind is
     /// the generic `tool`, so the link is keyed on the name; the stamp is the same one, and a
     /// dump (shared elsewhere) still carries no local path.
+    /// A multi-file delivery's target is a LABEL — `first.jpg +2` — and only the first part of it
+    /// is a path. Resolving the whole string asked the file manager for a file named "… +2",
+    /// which exists nowhere; the owner caught it in the tooltip, reading
+    /// `Reveal /Users/…/D-六面总览.jpg +2`. What is SHOWN keeps the count; what is ACTED ON does
+    /// not.
+    #[test]
+    fn a_multi_file_delivery_reveals_the_file_not_the_label() {
+        let blocks = vec![Block::ToolUse {
+            name: "SendUserFile".into(),
+            target: "video/tour.mp4 +2".into(),
+            diffs: vec![],
+            output: Some("3 files delivered to user.".into()),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+        }];
+        let out = stream(&blocks, &FoldPolicy::none());
+        assert_eq!(
+            out[0]["head"]["path"],
+            json!("/repo/video/tour.mp4"),
+            "the count is prose about the other files, not part of this one's path"
+        );
+        assert_eq!(
+            out[0]["head"]["target"],
+            json!("video/tour.mp4 +2"),
+            "…and the label still says how many others there were"
+        );
+        // A file whose name really does end that way is still revealed as itself: only the tool
+        // that mints the suffix is treated this way, and only when what follows is a count.
+        let odd = vec![Block::ToolUse {
+            name: "Read".into(),
+            target: "notes +2".into(),
+            diffs: vec![],
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+        }];
+        assert_eq!(
+            stream(&odd, &FoldPolicy::none())[0]["head"]["path"],
+            json!("/repo/notes +2"),
+            "another tool's target is a path in full, spaces and all"
+        );
+    }
+
     #[test]
     fn a_delivered_file_gets_the_same_reveal_link_as_a_read() {
         let blocks = vec![
