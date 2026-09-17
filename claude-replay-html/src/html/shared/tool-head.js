@@ -76,7 +76,13 @@ function toolHead(head) {
 function stateLabel(th) {
   if (th.state === "failed") {
     const word = th.status || "failed";
-    return th.exit != null && th.exit !== 0 ? `${word} · exit ${th.exit}` : word;
+    const named = th.exit != null && th.exit !== 0 ? `${word} · exit ${th.exit}` : word;
+    // …and how much it returned, which a failure needs as much as a success does (#232). This
+    // used to stop at the failure word and drop the size chip with it, so a failed call read
+    // `Bash echo … failed` on the app shell against `Bash echo … 1 lines failed` on the classic
+    // page: the reader could not tell an error that said something from one that said nothing.
+    // The parity audit found it; no case had compared a FAILED result's head before.
+    return th.lines != null ? `${named} · ${th.lines} lines` : named;
   }
   return th.text;
 }

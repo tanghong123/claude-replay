@@ -10918,6 +10918,19 @@ fn pattern_fixture(name: &str) -> Fixture {
         &now_minus(224),
     );
     t += &tool_result_text("k-mcp", "42", &now_minus(223));
+    // BATCH 2 — the shapes the deeper survey turned up.
+    // A call that FAILED: 1837 results across the surveyed transcripts carry `is_error`, and a
+    // page has to say the call failed, not merely what it returned.
+    t += &assistant_at("Trying the one that breaks.", &now_minus(219));
+    t += &tool_open_at("k-fail", &now_minus(218));
+    t += &harness::error_result_at(
+        "k-fail",
+        "exit 1: no such file or directory",
+        &now_minus(217),
+    );
+    // Markdown is INFORMATION: a table or a code block the reader cannot see on one page is a
+    // gap, not a preference. Heading, bullets, table, fence, CJK and a 340-character line.
+    t += &harness::markdown_answer_at(&now_minus(210));
     t += &assistant_at("answer: every shape is above", &now_minus(200));
     let path = stores.claude_session(SID, &t);
     Fixture {
@@ -10925,6 +10938,52 @@ fn pattern_fixture(name: &str) -> Fixture {
         path,
         turns: 4,
     }
+}
+
+/// Every FACT a page shows for one record: the words in its head, the words in its body, and the
+/// handful of computed properties that decide whether those words are readable.
+///
+/// Keyed by the record's own identity rather than its position, so the two pages can be compared
+/// even where one of them groups differently. `kind` is normalised across the pages' two spellings
+/// (`act` / `activity`); everything else is what the reader sees.
+fn record_facts(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
+    let js = match surface {
+        Surface::Classic => {
+            r#"(function(){
+            var out = {};
+            document.querySelectorAll('#stream .fold').forEach(function (f) {
+              var h = f.querySelector('.fold-h'); if (!h) return;
+              var kind = (f.dataset.kind || '').replace(/^act$/, 'activity');
+              var head = (h.textContent || '').replace(/\s+/g, ' ').replace(/^[▸▾▴◂]\s*/, '').replace(/#$/, '').trim();
+              var body = f.querySelector('.fold-b, .foldbody, .blkbody');
+              var cs = getComputedStyle(h);
+              var key = kind + '|' + head;
+              out[key] = { kind: kind, head: head,
+                body: body ? (body.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 400) : '',
+                color: cs.color, fontFamily: cs.fontFamily.split(',')[0].replace(/["']/g, '') };
+            });
+            return JSON.stringify(out);
+          })()"#
+        }
+        Surface::AppShell => {
+            r#"(function(){
+            var out = {};
+            document.querySelectorAll('.renderer[data-renderer]').forEach(function (r) {
+              var h = r.querySelector('.renderer-head'); if (!h) return;
+              var kind = (r.dataset.rendererKind || '').replace(/^act$/, 'activity');
+              var head = (h.textContent || '').replace(/\s+/g, ' ').trim();
+              var body = r.querySelector('.renderer-output');
+              var cs = getComputedStyle(h);
+              var key = kind + '|' + head;
+              out[key] = { kind: kind, head: head,
+                body: body ? (body.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 400) : '',
+                color: cs.color, fontFamily: cs.fontFamily.split(',')[0].replace(/["']/g, '') };
+            });
+            return JSON.stringify(out);
+          })()"#
+        }
+    };
+    serde_json::from_str(eval(tab, js).as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null)
 }
 
 /// Per record: its kind, and the words the page shows in its head.
@@ -11004,4 +11063,82 @@ fn information_parity_audit() {
         "=== KINDS only on the shell: {:?}",
         sk.difference(&ck).collect::<Vec<_>>()
     );
+}
+
+/// Markdown is INFORMATION, not decoration: a table rendered as a table on one page and as raw
+/// pipes on the other is a parity gap the reader pays for. Counted across the surveyed
+/// transcripts, an answer carries a heading 1283 times, a bullet list 2294, a fenced block 1238,
+/// a table 1060, CJK 3220, and a line past 300 characters 33763 times.
+///
+/// The structures are counted, not compared as text: each page is free to style them, and free
+/// to differ in whitespace, but not to LOSE one.
+fn prose_structures(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
+    let root = match surface {
+        Surface::Classic => "#stream",
+        Surface::AppShell => ".virtual-window",
+    };
+    let js = format!(
+        "(function(){{ \
+           var r = document.querySelector('{root}'); if (!r) return JSON.stringify({{ miss: true }}); \
+           var t = r.textContent || ''; \
+           return JSON.stringify({{ \
+             headings: r.querySelectorAll('h1,h2,h3,h4,h5,h6,[class^=\"md-h\"],[class*=\" md-h\"]').length, \
+             listItems: r.querySelectorAll('li').length, \
+             tables: r.querySelectorAll('table').length, \
+             cells: r.querySelectorAll('td,th').length, \
+             codeBlocks: r.querySelectorAll('pre code, pre.code, code.block').length, \
+             cjk: (t.match(/[\\u4e00-\\u9fff]/g) || []).length, \
+             longRun: (t.match(/x{{300,}}/g) || []).length \
+           }}); }})()"
+    );
+    serde_json::from_str(eval(tab, &js).as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null)
+}
+
+/// The audit as an ASSERTION: every structure one page renders, the other renders too.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_render_the_same_prose_structures() {
+    let _serial = serial();
+    let mut seen = Vec::new();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = pattern_fixture(match surface {
+            Surface::Classic => "parity-prose-classic",
+            Surface::AppShell => "parity-prose-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 2990 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        open_everything(&page.tab, surface);
+        seen.push(prose_structures(&page.tab, surface));
+    }
+    let (classic, shell) = (&seen[0], &seen[1]);
+    assert!(
+        classic["miss"].is_null() && shell["miss"].is_null(),
+        "both pages have a stream to read: classic {classic}, shell {shell}"
+    );
+    for key in [
+        "headings",
+        "listItems",
+        "tables",
+        "cells",
+        "codeBlocks",
+        "cjk",
+        "longRun",
+    ] {
+        let c = classic[key].as_i64().unwrap_or(-1);
+        let s = shell[key].as_i64().unwrap_or(-1);
+        assert!(
+            c > 0 || s > 0,
+            "the fixture exercises `{key}` on at least one page — a count of zero on both means \
+             the pattern never reached the page and the row proves nothing: classic {classic}, \
+             shell {shell}"
+        );
+        assert_eq!(
+            c, s,
+            "`{key}`: both pages render the same markdown structures — classic {c}, shell {s}\n  \
+             classic {classic}\n  shell   {shell}"
+        );
+    }
 }

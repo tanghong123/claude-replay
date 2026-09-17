@@ -208,6 +208,27 @@ pub fn pasted_image_sized(text: &str, ts: &str, b64: &str) -> String {
 /// its stage, which a 1×1 never is at any scale.
 /// A tool result carrying BOTH an image and text — the mixed shape live sessions produce 309
 /// times across the transcripts surveyed, and the one neither page had a fixture for.
+/// A FAILED tool result — `is_error`, which 1837 results across the surveyed transcripts carry
+/// and no fixture wrote. A page has to say that a call failed, not merely what it returned.
+pub fn error_result_at(call_id: &str, text: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"is_error\":true,\"content\":\"{text}\"}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
+/// Assistant prose carrying the markdown a real answer carries: a heading, a bullet list, a
+/// table, a fenced code block, CJK, and a line past 300 characters. Counted across the surveyed
+/// transcripts: 33763 turns with a line over 300 chars, 3220 with CJK, 2294 bullet lists, 1283
+/// headings, 1238 code fences, 1060 tables. Markdown is INFORMATION — a table the reader cannot
+/// see on one page is a parity gap, not a style preference.
+pub fn markdown_answer_at(ts: &str) -> String {
+    let long_line = "x".repeat(340);
+    let text = format!(
+        "## What changed\\n\\n- first point\\n- second point\\n\\n| column | meaning |\\n| --- | --- |\\n| alpha | the first |\\n| beta | the second |\\n\\n```rust\\nfn main() {{ println!(\\\"hi\\\"); }}\\n```\\n\\n这是一段中文说明，用来检查换行与字体。\\n\\n{long_line}"
+    );
+    assistant_at(&text, ts)
+}
+
 pub fn mixed_result_at(call_id: &str, text: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":[{{\"type\":\"image\",\"source\":{{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"{TINY_PNG_B64}\"}}}},{{\"type\":\"text\",\"text\":\"{text}\"}}]}}]}},\"timestamp\":\"{ts}\"}}\n"
