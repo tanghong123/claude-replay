@@ -1184,6 +1184,23 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 msgs.push(Message::SystemNote { text });
             }
         }
+        // A /loop or cron routine started this turn (#238), and the client's own warnings about
+        // the run changing underneath the reader — an account that changed, a monitor that
+        // disconnected. `notice` stays dropped, being the quieter half of those 165 records.
+        Some("system")
+            if v.get("subtype").and_then(|s| s.as_str()) == Some("scheduled_task_fire")
+                || (v.get("subtype").and_then(|s| s.as_str()) == Some("informational")
+                    && v.get("level").and_then(Value::as_str) == Some("warning")) =>
+        {
+            if let Some(text) = v.get("content").and_then(Value::as_str) {
+                let text = text.trim();
+                if !text.is_empty() {
+                    msgs.push(Message::SystemNote {
+                        text: text.to_string(),
+                    });
+                }
+            }
+        }
 
         Some("user") => {
             let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
@@ -1310,7 +1327,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         });
                     }
                 }
-            } else if let Some(note) = a.and_then(hook_note) {
+            } else if let Some(note) = a.and_then(attachment_note) {
                 // A hook that FAILED or TIMED OUT (#236). Both arrive as attachments, but neither
                 // is an attachment in any useful sense — they are the run telling you a hook did
                 // not do what it was asked. 38 failures and ~8,000 timed-out tool calls were
@@ -1878,6 +1895,19 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     push_user_string(text, &mut out, &mut queue, &mut suppress);
                 }
             }
+            // #238 mirror: a scheduled fire, and the client's warnings about the run.
+            Some("system")
+                if v.get("subtype").and_then(|s| s.as_str()) == Some("scheduled_task_fire")
+                    || (v.get("subtype").and_then(|s| s.as_str()) == Some("informational")
+                        && v.get("level").and_then(Value::as_str) == Some("warning")) =>
+            {
+                if let Some(text) = v.get("content").and_then(Value::as_str) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        out.push(Block::ToolResult(text.to_string()));
+                    }
+                }
+            }
             // #236 mirror: an API call that failed and retried. Composed, not copied — the record
             // carries no `content`.
             Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("api_error") => {
@@ -2102,7 +2132,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             out.push(Block::UserText(p.to_string()));
                         }
                     }
-                } else if let Some(note) = a.and_then(hook_note) {
+                } else if let Some(note) = a.and_then(attachment_note) {
                     // #236 mirror: a hook that failed, or one killed for running long.
                     out.push(Block::ToolResult(note));
                 } else if let Some(att) = a.and_then(attachment_from_event) {
@@ -2185,6 +2215,35 @@ pub(crate) fn parse_main<S: AsRef<str>>(
 /// the one that says `timedOut` is reported, which is one per affected tool call rather than two.
 /// A cancellation that did not time out is the ordinary consequence of something else failing and
 /// says nothing on its own.
+fn attachment_note(a: &Value) -> Option<String> {
+    let s = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or("").trim();
+    match a.get("type").and_then(Value::as_str)? {
+        // The model changed mid-session (#238, 389 records). "Which model wrote this part" is a
+        // real question on a long session and the answer was recorded and thrown away.
+        "model" => {
+            let id = a.pointer("/identity/marketingName").and_then(Value::as_str);
+            let raw = a.pointer("/identity/modelId").and_then(Value::as_str);
+            match (id, raw) {
+                (Some(name), Some(raw)) if name != raw => Some(format!("model: {name} ({raw})")),
+                (Some(name), _) => Some(format!("model: {name}")),
+                (None, Some(raw)) => Some(format!("model: {raw}")),
+                _ => None,
+            }
+        }
+        // The file read on screen was cut short (#238, 56 records). Without this a reader reasons
+        // about a file from a truncated view and never knows.
+        "read_truncation_notice" => {
+            let banner = s("banner");
+            Some(if banner.is_empty() {
+                "the read was truncated".to_string()
+            } else {
+                banner.lines().next().unwrap_or(banner).to_string()
+            })
+        }
+        _ => hook_note(a),
+    }
+}
+
 fn hook_note(a: &Value) -> Option<String> {
     let s = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or("").trim();
     let name = |n: &str| {
@@ -3108,6 +3167,37 @@ mod tests {
             says("Back to work"),
             vec!["assistant"],
             "ordinary prose beside it still reads as the assistant: {blocks:?}"
+        );
+    }
+
+    /// #238: the run's own context — why a turn began, which model wrote it, and what was cut
+    /// short. Small records, each answering a question the transcript could not answer before.
+    #[test]
+    fn the_runs_context_surfaces() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-09-18T01:00:00.000Z","message":{"role":"user","content":"go"}}
+{"type":"system","subtype":"scheduled_task_fire","timestamp":"2026-09-18T01:00:01.000Z","content":"loop fired: check the deploy"}
+{"type":"system","subtype":"informational","level":"warning","timestamp":"2026-09-18T01:00:02.000Z","content":"Remote Control disconnected"}
+{"type":"system","subtype":"informational","level":"notice","timestamp":"2026-09-18T01:00:03.000Z","content":"a quieter notice"}
+{"type":"attachment","timestamp":"2026-09-18T01:00:04.000Z","attachment":{"type":"model","identity":{"modelId":"claude-opus-5[1m]","marketingName":"Opus 5 (1M context)"},"text":"switched"}}
+{"type":"attachment","timestamp":"2026-09-18T01:00:05.000Z","attachment":{"type":"read_truncation_notice","banner":"Showing the first 100 lines of 4000\nuse offset to read more","toolUseID":"t1"}}
+"##;
+        let notes: Vec<String> = parse(jsonl)
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolResult(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            vec![
+                "loop fired: check the deploy".to_string(),
+                "Remote Control disconnected".to_string(),
+                "model: Opus 5 (1M context) (claude-opus-5[1m])".to_string(),
+                "Showing the first 100 lines of 4000".to_string(),
+            ],
+            "a `notice` stays dropped, and a truncation banner is summarised by its first line"
         );
     }
 
@@ -4167,6 +4257,11 @@ mod tests {
 {"type":"system","subtype":"api_error","timestamp":"2026-09-18T01:00:05.000Z","retryAttempt":2,"maxRetries":10,"error":{"message":"overloaded","status":529}}
 {"type":"assistant","isApiErrorMessage":true,"timestamp":"2026-09-18T01:00:06.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"API Error"}]}}
 {"type":"assistant","timestamp":"2026-09-18T01:00:07.000Z","message":{"role":"assistant","content":[{"type":"server_tool_use","id":"srv_1","name":"advisor","input":{}},{"type":"advisor_tool_result","tool_use_id":"srv_1","content":{"type":"advisor_tool_result_error","error_code":"overloaded"}}]}}
+{"type":"system","subtype":"scheduled_task_fire","timestamp":"2026-09-18T01:00:08.000Z","content":"loop fired: check the deploy"}
+{"type":"system","subtype":"informational","level":"warning","timestamp":"2026-09-18T01:00:09.000Z","content":"Remote Control disconnected"}
+{"type":"system","subtype":"informational","level":"notice","timestamp":"2026-09-18T01:00:10.000Z","content":"a quieter notice that stays dropped"}
+{"type":"attachment","timestamp":"2026-09-18T01:00:11.000Z","attachment":{"type":"model","identity":{"modelId":"claude-opus-5[1m]","marketingName":"Opus 5 (1M context)"},"text":"switched"}}
+{"type":"attachment","timestamp":"2026-09-18T01:00:12.000Z","attachment":{"type":"read_truncation_notice","banner":"Showing the first 100 lines of 4000","toolUseID":"t1"}}
 "##,
             // Injected meta / compact-summary are not turns.
             r##"
