@@ -1081,6 +1081,20 @@
       // Without it the token totals look inexplicable beside a short-looking replay.
       if (u.compacted) row("compacted", u.compacted);
       if (usageCost) row("est. cost", usageCost, "total");
+      // #240: what Claude Code itself recorded, beside our estimate rather than instead of it.
+      // Its own figure covers only the window its process was running, so the row carries that
+      // window — see `reportedCostDisplay`, which is shared with the app shell so the two pages
+      // phrase it identically.
+      var reported = shared.reportedCostDisplay(u.reported);
+      if (reported) {
+        var rr = el("div", "urow total reported");
+        rr.appendChild(el("span", null, "client cost"));
+        var rv = el("span", null, reported.label);
+        if (reported.note) rv.appendChild(el("small", "urow-note", reported.note));
+        rr.appendChild(rv);
+        rr.title = reported.title;
+        box.appendChild(rr);
+      }
       // Credits-billed agents (Qoder): zero tokens, no USD — credits are the cost figure.
       if (u.credits) row("credits", u.credits, "total");
     }

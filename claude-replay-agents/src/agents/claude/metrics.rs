@@ -4,7 +4,7 @@
 //! formatting live in [`claude_replay_engine::seam`].
 
 use claude_replay_engine::seam::{
-    credits_cost, parse_ts, total_cost, Metrics, RuntimeInfo, TimeSpan, TokenCounts,
+    credits_cost, parse_ts, total_cost, Metrics, ReportedCost, RuntimeInfo, TimeSpan, TokenCounts,
 };
 use serde_json::Value;
 
@@ -48,6 +48,15 @@ pub(crate) struct MetricsAcc {
     /// is declared by the adapter that builds this fold ([`MetricsAcc::recording`]), since the
     /// same fold serves the Qoder family, whose format carries a different set.
     runtime: RuntimeInfo,
+    /// The client's own `cost-state` tallies, keyed by `startTime` — ONE EPOCH PER CLI PROCESS.
+    /// The value is that epoch's highest `totalCostUSD`, since the figure climbs within an
+    /// epoch and resets across one. Summing the values is the session tally; taking the last
+    /// record is the 31x understatement described on `ReportedCost`.
+    reported: std::collections::BTreeMap<i64, f64>,
+    /// `startTime + totalDuration` of the latest tally seen: when the client stopped counting.
+    reported_through: Option<i64>,
+    /// The client flagged a model it could not price itself.
+    reported_unknown_model: bool,
 }
 
 impl MetricsAcc {
@@ -102,6 +111,32 @@ impl MetricsAcc {
                     "compact_dropped",
                     field(m, "preTokens").saturating_sub(field(m, "postTokens")),
                 );
+            }
+        }
+        // The client's own cost tally (#240). Keyed by `startTime` because each CLI PROCESS
+        // gets its own epoch and `totalCostUSD` RESETS across one — so the per-epoch MAXIMUM
+        // is that process's final figure and the sum over epochs is the session's. These
+        // records carry no `timestamp`, so when the client stopped counting has to be derived
+        // as `startTime + totalDuration`.
+        if v.get("type").and_then(Value::as_str) == Some("cost-state") {
+            if let (Some(start), Some(cost)) = (
+                v.get("startTime").and_then(Value::as_i64),
+                v.get("totalCostUSD").and_then(Value::as_f64),
+            ) {
+                let slot = self.reported.entry(start).or_insert(cost);
+                if cost > *slot {
+                    *slot = cost;
+                }
+                let end = start + v.get("totalDuration").and_then(Value::as_i64).unwrap_or(0);
+                if self.reported_through.is_none_or(|t| end > t) {
+                    self.reported_through = Some(end);
+                }
+                if v.get("hasUnknownModelCost")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    self.reported_unknown_model = true;
+                }
             }
         }
         // The model THIS message ran on — not `self.model`, which is only the last seen.
@@ -212,6 +247,10 @@ impl MetricsAcc {
             "last_usage_model": self.last_usage_model,
             "credited": self.credited,
             "runtime": self.runtime,
+            "reported": self.reported.iter().map(|(k, v)| (k.to_string(), *v))
+                .collect::<std::collections::BTreeMap<String, f64>>(),
+            "reported_through": self.reported_through,
+            "reported_unknown_model": self.reported_unknown_model,
         })
     }
 
@@ -251,6 +290,20 @@ impl MetricsAcc {
             runtime.recorded = std::mem::take(&mut self.runtime.recorded);
             self.runtime = runtime;
         }
+        // The epoch map is keyed by i64 but JSON objects key by string, so it round-trips as
+        // strings. A key that will not parse is dropped rather than failing the restore: a
+        // cursor is a cache, and the fold re-reads the record on the next pass anyway.
+        if let Some(map) = state.get("reported").and_then(Value::as_object) {
+            self.reported = map
+                .iter()
+                .filter_map(|(k, v)| Some((k.parse::<i64>().ok()?, v.as_f64()?)))
+                .collect();
+        }
+        self.reported_through = state.get("reported_through").and_then(Value::as_i64);
+        self.reported_unknown_model = state
+            .get("reported_unknown_model")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
     }
 
     /// Re-seed a resumed accumulator (#96 §7).
@@ -298,6 +351,30 @@ impl MetricsAcc {
         m.extra = self.extra;
         m.per_model = self.per_model;
         m.runtime = self.runtime;
+        // The client's own tally (#240). Summed over epochs, never the last record — see
+        // `ReportedCost`. Nothing here feeds `cost_usd`: our own per-call sum is the figure
+        // that covers the WHOLE transcript, and this one is a prefix of it. Measured, the two
+        // agree to ~3% where they overlap, which is what makes it worth showing beside ours.
+        // The window is COMPLETE only if it reaches both ends of the session's own span. The
+        // span is in seconds and the client's figures in milliseconds; a minute of slack at
+        // each end keeps a tally written moments before the last record from reading as
+        // partial, which would be a distinction without a difference to a reader.
+        const SLACK_MS: i64 = 60_000;
+        let from_ms = self.reported.keys().next().copied();
+        let complete = match (self.span.endpoints(), from_ms, self.reported_through) {
+            (Some((start, end)), Some(from), Some(through)) => {
+                from <= start * 1000 + SLACK_MS && through + SLACK_MS >= end * 1000
+            }
+            _ => false,
+        };
+        m.reported_cost = (!self.reported.is_empty()).then(|| ReportedCost {
+            usd: self.reported.values().sum(),
+            epochs: self.reported.len() as u32,
+            from_ms,
+            through_ms: self.reported_through,
+            complete,
+            unknown_model: self.reported_unknown_model,
+        });
         m
     }
 }
@@ -492,6 +569,182 @@ mod tests {
     /// default path with Claude's accumulator.
     fn parse_reader(jsonl: &str) -> Metrics {
         parse_reader_with(&crate::adapters::ClaudeAdapter, std::io::Cursor::new(jsonl))
+    }
+
+    /// One `cost-state` record: the client's running tally for ONE CLI process.
+    fn cost_state(start: i64, usd: f64, duration_ms: i64) -> String {
+        format!(
+            r#"{{"type":"cost-state","sessionId":"s","startTime":{start},
+               "totalCostUSD":{usd},"totalDuration":{duration_ms},
+               "hasUnknownModelCost":false}}"#
+        )
+        .replace('\n', " ")
+    }
+
+    /// The 31x understatement this whole mechanism exists to avoid. Session 530339ac carries
+    /// twelve records climbing to $729.06 under one `startTime` and two that RESTART at $24.08
+    /// under the next; the last record is a subtotal, not a total.
+    #[test]
+    fn a_resumed_session_sums_its_process_epochs_instead_of_taking_the_last() {
+        let jsonl = [
+            cost_state(1_787_803_976_810, 298.40, 237_228_970),
+            cost_state(1_787_803_976_810, 604.38, 527_385_241),
+            cost_state(1_787_803_976_810, 729.06, 641_377_062),
+            cost_state(1_788_446_363_335, 24.078, 3_947_078),
+        ]
+        .join("\n");
+        let r = parse_reader(&jsonl).reported_cost.expect("a tally");
+        assert_eq!(r.epochs, 2, "two CLI processes wrote tallies");
+        assert!(
+            (r.usd - 753.138).abs() < 0.01,
+            "the session is the SUM of each epoch's highest, not the last record: {}",
+            r.usd
+        );
+        assert_eq!(
+            r.through_ms,
+            Some(1_788_446_363_335 + 3_947_078),
+            "the client stopped counting at the end of its last epoch"
+        );
+    }
+
+    /// An assistant line at a given wall-clock time, so a test can place calls inside and
+    /// outside the client's counting window.
+    fn msg_at(id: &str, ts: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","requestId":"{id}","message":{{"role":"assistant",
+               "id":"{id}","model":"claude-opus-4-8","usage":{{"input_tokens":2,
+               "output_tokens":10,"cache_creation_input_tokens":0,
+               "cache_read_input_tokens":100}}}},"timestamp":"{ts}"}}"#
+        )
+        .replace('\n', " ")
+    }
+
+    /// The tally is a WINDOW, not a prefix: the client counts only from the process it started
+    /// in until that process ends, so a session can have calls on BOTH sides of it. Session
+    /// 5ac56125 is exactly this — calls from 06-12, one epoch covering 08-27 to 09-03, and the
+    /// session still running on 09-18.
+    #[test]
+    fn a_tally_that_covers_only_part_of_the_span_is_not_complete() {
+        // 2026-08-27T00:00:00Z .. +2 days, with session traffic well outside it both ways.
+        let start = 1_787_788_800_000_i64;
+        let jsonl = [
+            msg_at("early", "2026-06-12T14:09:00Z"),
+            msg_at("inside", "2026-08-27T10:00:00Z"),
+            cost_state(start, 5.0, 172_800_000),
+            msg_at("late", "2026-09-18T11:02:00Z"),
+        ]
+        .join("\n");
+        let r = parse_reader(&jsonl).reported_cost.expect("a tally");
+        assert!(
+            !r.complete,
+            "the session ran from June and into September; the window is two days of it"
+        );
+        assert_eq!(r.from_ms, Some(start));
+        assert_eq!(r.through_ms, Some(start + 172_800_000));
+    }
+
+    /// A session the client counted from end to end has nothing to disclaim.
+    #[test]
+    fn a_tally_spanning_the_whole_session_is_complete() {
+        let start = 1_787_788_800_000_i64; // 2026-08-27T00:00:00Z
+        let jsonl = [
+            msg_at("a", "2026-08-27T00:10:00Z"),
+            msg_at("b", "2026-08-27T01:00:00Z"),
+            cost_state(start, 5.0, 7_200_000), // two hours, covering both
+        ]
+        .join("\n");
+        let r = parse_reader(&jsonl).reported_cost.expect("a tally");
+        assert!(
+            r.complete,
+            "from {:?} through {:?}",
+            r.from_ms, r.through_ms
+        );
+    }
+
+    /// Nothing about this touches our own figure — it is a cross-check beside it, never a
+    /// replacement, because ours covers the whole transcript and this covers a prefix.
+    #[test]
+    fn the_clients_tally_does_not_displace_our_own_cost() {
+        let jsonl = [
+            msg_line("m0", "r0", 10, 100).to_string(),
+            cost_state(1_000, 999.0, 60_000),
+        ]
+        .join("\n");
+        let m = parse_reader(&jsonl);
+        let ours = m.cost_usd.expect("we price this model");
+        assert!(ours < 1.0, "our own estimate stands unchanged: {ours}");
+        assert_eq!(m.reported_cost.map(|r| r.usd), Some(999.0));
+    }
+
+    /// A transcript with no `cost-state` (every agent but Claude Code, and older Claude
+    /// Code) reports nothing rather than a zero that would render as "$0.00".
+    #[test]
+    fn a_transcript_without_a_tally_reports_none() {
+        let jsonl = msg_line("m0", "r0", 10, 100).to_string();
+        assert!(parse_reader(&jsonl).reported_cost.is_none());
+    }
+
+    /// The tally has to cross a resumed cursor, like every other counter in this fold.
+    #[test]
+    fn a_tally_survives_state_and_restore() {
+        let mut a = MetricsAcc::default();
+        for line in [
+            msg_line("m0", "r0", 10, 100).to_string(),
+            cost_state(1_000, 5.0, 60_000),
+            // A second process, starting after the first one's window closed.
+            cost_state(100_000, 7.0, 30_000),
+        ] {
+            a.push(&serde_json::from_str::<Value>(&line).unwrap());
+        }
+        let parked = a.state();
+        let mut b = MetricsAcc::default();
+        b.restore(&parked);
+        let r = b.finish().reported_cost.expect("a tally");
+        assert_eq!(r.epochs, 2);
+        assert!(
+            (r.usd - 12.0).abs() < 1e-9,
+            "5 + 7 across two epochs: {}",
+            r.usd
+        );
+        assert_eq!(
+            r.through_ms,
+            Some(130_000),
+            "the end of the LATER epoch's window"
+        );
+        assert_eq!(r.from_ms, Some(1_000), "the start of the EARLIER epoch");
+    }
+
+    /// `complete` is computed in `finish` by comparing the client's MILLISECOND window against
+    /// the span's SECONDS, and the span is reseeded from a parked cursor rather than re-observed.
+    /// So the resume path is exactly where a unit slip would hide, and nothing above reaches it:
+    /// the case parks mid-session, restores, and pushes a call inside the restored window.
+    #[test]
+    fn a_restored_fold_still_judges_the_window_against_the_session() {
+        const START: i64 = 1_787_788_800_000; // 2026-08-27T00:00:00Z
+        let mut a = MetricsAcc::default();
+        for line in [
+            msg_at("before", "2026-08-27T00:10:00Z"),
+            cost_state(START, 5.0, 7_200_000), // two hours
+        ] {
+            a.push(&serde_json::from_str::<Value>(&line).unwrap());
+        }
+        let parked = a.state();
+        let mut b = MetricsAcc::default();
+        b.restore(&parked);
+        // A call the resumed fold observes for itself, still inside the client's window.
+        b.push(&serde_json::from_str::<Value>(&msg_at("after", "2026-08-27T01:00:00Z")).unwrap());
+        let r = b.finish().reported_cost.expect("a tally");
+        assert!(
+            (r.usd - 5.0).abs() < 1e-9,
+            "the figure survives the resume: {}",
+            r.usd
+        );
+        assert!(
+            r.complete,
+            "the window still covers the span after a resume — a seconds/milliseconds slip here \
+             would silently mark every resumed session partial. from {:?} through {:?}",
+            r.from_ms, r.through_ms
+        );
     }
 
     /// The agent-specific extension seam: `bump` accumulates by key and `finish` emits the bag.

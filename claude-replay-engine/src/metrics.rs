@@ -50,6 +50,46 @@ pub struct RuntimeInfo {
     pub recorded: Vec<String>,
 }
 
+/// The agent CLIENT's own cost tally, when the transcript records one.
+///
+/// **This is not a session total, and must never be presented as one.** Claude Code writes
+/// `cost-state` records keyed by `startTime` — one epoch per CLI PROCESS — and `totalCostUSD`
+/// climbs within an epoch but RESETS when the session is resumed in a new process. Session
+/// 530339ac carries twelve records climbing to $729.06 under one `startTime` and two more that
+/// restart at $24.08 under the next: reading the last record understates that session 31x.
+/// So the tally here is the sum over epochs of each epoch's highest figure.
+///
+/// It is also a SNAPSHOT that stops, and it does not reach back to the session's start either.
+/// The client counts only from the process it was started in until that process ends, while the
+/// transcript spans everything: session 5ac56125 holds calls from 06-12 onward, and its one
+/// epoch covers 08-27 to 09-03. So the tally is a WINDOW, carried here as
+/// [`from_ms`](Self::from_ms)..[`through_ms`](Self::through_ms), and a presenter that shows the
+/// figure without that window is showing a stale partial number as a current total.
+///
+/// Where the two overlap they AGREE: sliced to the client's own windows, our per-call sums come
+/// to 0.97x and 1.00x of its `cacheReadInputTokens` and 0.90x-0.96x of its `outputTokens`. That
+/// is what makes this worth carrying — it is an independent check on our own pricing, not a
+/// replacement for it.
+#[derive(Debug, Default, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ReportedCost {
+    /// Sum over process epochs of each epoch's highest `totalCostUSD`.
+    pub usd: UsdCost,
+    /// How many process epochs contributed — 1 for a session never resumed.
+    pub epochs: u32,
+    /// Start of the earliest epoch the client counted, in epoch MILLIseconds. Calls the session
+    /// made before this are in no epoch and are not in [`usd`](Self::usd).
+    pub from_ms: Option<i64>,
+    /// Wall-clock end of the last epoch the client covered, in epoch MILLIseconds
+    /// (`startTime + totalDuration`; the records carry no `timestamp` of their own).
+    pub through_ms: Option<i64>,
+    /// Whether the window reaches both ends of the session's own span — false whenever the
+    /// figure is a partial one, which is the common case for any resumed session.
+    pub complete: bool,
+    /// The client itself flagged a model it could not price (`hasUnknownModelCost`), so even
+    /// within its window its figure is a lower bound.
+    pub unknown_model: bool,
+}
+
 /// A session's token/cost tally.
 ///
 /// **Two-way compatible by design.** The parse side is liberal: each accumulator pulls only
@@ -108,6 +148,11 @@ pub struct Metrics {
     pub cost_partial: bool,
     /// Latest context, settings, and limits snapshot carried by the transcript.
     pub runtime: RuntimeInfo,
+    /// The agent client's OWN cost tally, when its transcript records one — see
+    /// [`ReportedCost`], which explains why this is a prefix of the session and not a total.
+    /// `None` for a format that records nothing (every agent but Claude Code today).
+    #[serde(default)]
+    pub reported_cost: Option<ReportedCost>,
 }
 
 /// One model's share of a session's tokens. The four typed counters of [`Metrics`], split out

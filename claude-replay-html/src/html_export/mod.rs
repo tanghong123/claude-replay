@@ -2024,6 +2024,21 @@ fn usage_json(m: &crate::metrics::Metrics, with_duration: bool) -> Value {
     if let Some(c) = m.credits() {
         u["credits"] = json!(format!("~{c:.2}"));
     }
+    // The client's OWN tally (#240), beside ours rather than instead of it. `cost` above stays
+    // our per-call sum over the whole transcript; this one is what Claude Code recorded, which
+    // is a PREFIX of the session — it stops when the CLI process does. `coverage` is what lets
+    // the page say so instead of showing a stale figure as a current one. Key omitted when the
+    // transcript records no tally, so every other agent's wire record is unchanged.
+    if let Some(r) = m.reported_cost.as_ref() {
+        u["reported"] = json!({
+            "cost": format!("${:.2}", r.usd),
+            "complete": r.complete,
+            "epochs": r.epochs,
+            "from": r.from_ms,
+            "through": r.through_ms,
+            "unknown_model": r.unknown_model,
+        });
+    }
     if m.runtime != crate::metrics::RuntimeInfo::default() {
         let limits = m.runtime.rate_limits.as_ref();
         u["runtime"] = json!({

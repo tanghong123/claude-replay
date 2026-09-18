@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
 import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
-import { costDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
+import { costDisplay, reportedCostDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-html/src/html/shared/runtime.js";
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { recordTextSize, LIVE_SEARCH_LIMIT, recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, countOcc, wholeAt, directMask, CLASS_BIT } from "../../claude-monitor/src/codex-ui/shared/search.js";
@@ -2614,4 +2614,53 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     );
   }
   console.log("#233 projection cases passed");
+}
+
+// #240 — the client's OWN recorded cost. Claude Code writes `cost-state` per CLI PROCESS, so
+// its figure is a WINDOW, not a session total: on session 530339ac twelve records climb to
+// $729.06 under one `startTime` and two more RESTART at $24.08 under the next. The formatter's
+// whole job is that a partial figure can never be shown bare, so that is what is pinned here.
+{
+  assert.equal(reportedCostDisplay(null), null, "no tally renders nothing");
+  assert.equal(reportedCostDisplay({}), null, "a tally with no figure renders nothing");
+
+  const partial = reportedCostDisplay({
+    cost: "$753.14", complete: false, epochs: 2,
+    from: 1787803955439, through: 1788421030087,
+  });
+  assert.equal(partial.label, "$753.14", "the client's figure is shown verbatim");
+  assert.match(
+    partial.note, /counted .+ – .+/,
+    "a partial figure ALWAYS carries the window it covers — a bare number would read as the " +
+    "session total, which is the 31x understatement this whole mechanism exists to prevent"
+  );
+  assert.match(partial.title, /part of the session/, "the hover says it is partial");
+  assert.match(partial.title, /over 2 runs/, "and how many CLI runs it spans");
+
+  const whole = reportedCostDisplay({
+    cost: "$5.00", complete: true, epochs: 1, from: 1787803955439, through: 1787804955439,
+  });
+  assert.equal(whole.note, null, "a tally covering the whole session needs no qualifier");
+
+  // Timestamps are the only thing that can say WHICH part is covered, so a tally without them
+  // must still refuse to look whole rather than falling back to a bare figure.
+  const undated = reportedCostDisplay({ cost: "$1.00", complete: false, epochs: 1, from: null, through: null });
+  assert.equal(undated.note, "partial", "no window still means a qualifier");
+
+  // `hasUnknownModelCost` means the client could not price a model it used, so even inside its
+  // own window the figure is a floor. Marked `≥`, the same convention our own partial estimate
+  // uses, so the reader learns one meaning for the symbol rather than two.
+  const floored = reportedCostDisplay({
+    cost: "$12.00", complete: true, epochs: 1, unknown_model: true,
+    from: 1787803955439, through: 1787804955439,
+  });
+  assert.equal(floored.label, "≥$12.00", "an unpriceable model makes the client's figure a floor");
+  assert.match(floored.title, /could not price/, "and the hover says why");
+  const exact = reportedCostDisplay({
+    cost: "$12.00", complete: true, epochs: 1, unknown_model: false,
+    from: 1787803955439, through: 1787804955439,
+  });
+  assert.equal(exact.label, "$12.00", "a fully-priced tally carries no qualifier");
+
+  console.log("#240 client-cost cases passed");
 }

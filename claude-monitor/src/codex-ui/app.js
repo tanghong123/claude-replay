@@ -2,7 +2,7 @@ import { agentLogo, svg } from "./icons.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
-import { costDisplay } from "./shared/cost-display.js";
+import { costDisplay, reportedCostDisplay } from "./shared/cost-display.js";
 import { chainWalk } from "./shared/filter.js";
 import { taskCardHtml, taskRowMeta, TASK_NO_TITLE } from "./shared/task-card.js";
 import { ControlStore } from "./control-store.js";
@@ -1065,6 +1065,14 @@ const footerCost = outlineFooter.querySelector(".outline-footer-cost");
 const footerContext = outlineFooter.querySelector(".outline-footer-context");
 const footerInfo = outlineFooter.querySelector(".outline-footer-info");
 const usageCostLabel = usage => usage && (usage.cost || (usage.cost_partial ? "unpriced" : null));
+// #240: Claude Code's OWN recorded cost, as zero or one extra row beside our estimate. The
+// window travels with the figure because the client records cost only while its process runs —
+// `reportedCostDisplay` is shared with the classic page so both phrase it the same way.
+const reportedCostRow = reported => {
+  const r = reportedCostDisplay(reported);
+  if (!r) return [];
+  return [["client cost", r.note ? `${r.label} (${r.note})` : r.label, r.title]];
+};
 function paintOutlineFooter(row, usage) {
   const display = costDisplay(row);
   const short = costDisplay(row, true);
@@ -1106,14 +1114,17 @@ function renderSessionInfo(turns, agents) {
   const group = (label, rows) => {
     const key = label.toLowerCase();
     const folded = uiState.infoFolds.has(key);
-    const body = folded ? "" : rows.map(([name, value]) => `<div class="session-info-row"><span>${escapeText(name)}</span><strong>${escapeText(value ?? "—")}</strong></div>`).join("");
+    // A row may carry a THIRD element: the hover that explains it. The classic page's usage
+    // panel puts one on the client-cost row, and an explanation the other shell does not carry
+    // is an information gap between the two — the thing the parity work exists to catch.
+    const body = folded ? "" : rows.map(([name, value, title]) => `<div class="session-info-row"${title ? ` title="${escapeText(title)}"` : ""}><span>${escapeText(name)}</span><strong>${escapeText(value ?? "—")}</strong></div>`).join("");
     return `<div class="session-info-group${folded ? " folded" : ""}" data-info-group="${escapeText(key)}"><button class="session-info-label" type="button" data-info-fold="${escapeText(key)}" aria-expanded="${!folded}"><span class="session-info-chevron" aria-hidden="true">${folded ? "▸" : "▾"}</span>${escapeText(label)}</button>${body}</div>`;
   };
   // #170: the SESSION group is gone rather than relocated. All three rows are already ambient
   // within 40px of here — status is the topbar `#statusChip` (with its dot and "inferred"
   // detail) and the sidebar row chip, turns is `#navigatorTurnCount` on the Turns head,
   // children is `#navigatorAgentCount` on the Agents head. Info's copy was duplication.
-  byId("navigatorSession").innerHTML = `<div class="session-info">${group("Usage", [["model", usage.model], ["input", usage.input || usage.input_tokens], ["output", usage.output || usage.output_tokens], ["cache read", usage.cache_read], ...(usage.compacted ? [["compacted", usage.compacted]] : []), ["est. cost", usageCostLabel(usage) || "—"]])}${group("Runtime", [["cwd", meta.cwd || row._group?.secondary], ...runtimeRows(usage.runtime).filter(r => r.state !== "absent" || RUNTIME_ALWAYS.includes(r.key)).map(r => [r.label, runtimeText(r, agentName(row.agent))])])}</div>`;
+  byId("navigatorSession").innerHTML = `<div class="session-info">${group("Usage", [["model", usage.model], ["input", usage.input || usage.input_tokens], ["output", usage.output || usage.output_tokens], ["cache read", usage.cache_read], ...(usage.compacted ? [["compacted", usage.compacted]] : []), ["est. cost", usageCostLabel(usage) || "—"], ...reportedCostRow(usage.reported)])}${group("Runtime", [["cwd", meta.cwd || row._group?.secondary], ...runtimeRows(usage.runtime).filter(r => r.state !== "absent" || RUNTIME_ALWAYS.includes(r.key)).map(r => [r.label, runtimeText(r, agentName(row.agent))])])}</div>`;
 }
 
 // #170: the info content MOVED out of this column into the footer popover, so the delegation

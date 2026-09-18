@@ -11249,6 +11249,132 @@ fn both_shells_render_a_context_report_and_keep_going() {
     }
 }
 
+/// A session the agent CLIENT recorded its own cost for (#240). Claude Code writes `cost-state`
+/// per CLI PROCESS, so the two epochs here are what a resumed session looks like: one run that
+/// reached $7.50 and a second that RESTARTED its counter at $2.25. The session's own traffic
+/// runs on either side of both windows, which is what makes the tally a partial figure — and
+/// the whole point of the feature is that a partial figure is never shown bare.
+fn client_cost_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    // Tall enough to scroll: the page is not "rendered" until it exceeds three viewports, and
+    // a short fixture times out in the opener rather than failing on the assertion.
+    let mut t = long_session(12, Shape::default());
+    // Traffic BEFORE the client ever started counting.
+    t += &user_at("question: what did this cost", &now_minus(600));
+    t += &assistant_at("answer: let me total it up", &now_minus(599));
+    // 2026-08-27T00:00:00Z for two hours, then a second run a day later for one hour. Fixed
+    // instants, not `now_minus`: the assertion is about the DATES the page prints.
+    const RUN_ONE: i64 = 1_787_788_800_000;
+    const RUN_TWO: i64 = 1_787_788_800_000 + 86_400_000;
+    for (start, usd, dur) in [
+        (RUN_ONE, 3.10_f64, 3_600_000_i64),
+        (RUN_ONE, 7.50, 7_200_000),
+        (RUN_TWO, 2.25, 3_600_000),
+    ] {
+        t += &format!(
+            "{{\"type\":\"cost-state\",\"sessionId\":\"{SID}\",\"startTime\":{start},\
+             \"totalCostUSD\":{usd},\"totalDuration\":{dur},\"hasUnknownModelCost\":false}}\n"
+        );
+    }
+    // ...and traffic AFTER it stopped, so the window cannot cover the session.
+    t += &assistant_at("answer: and here is the rest of the work", &now_minus(30));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// Read the client-cost row off whichever page is in front of us. Classic writes it into the
+/// usage box as its own row; the shell puts it in the session-info group. Both must show the
+/// figure AND the window it covers.
+fn client_cost_row(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
+    // No regex in the probe: the escaping layers between this Rust string and the page eat a
+    // backslash, so a `\s` written here arrives as a literal-backslash match and the eval
+    // returns nothing at all. Whitespace is flattened in Rust below, where it is visible. The
+    // page JSON-stringifies its own answer for the same reason.
+    let js = match surface {
+        Surface::Classic => "(function(){ var r = document.querySelector('#usage .urow.reported'); if (!r) return JSON.stringify({ found: false, box: (document.getElementById('usage')||{}).innerText || '' }); return JSON.stringify({ found: true, text: r.innerText, title: r.title || '' }); })()",
+        // `textContent`, not `innerText`: the shell's info group can be rendered while folded,
+        // and innerText answers "" for a row that is not laid out — which reads exactly like a
+        // row that rendered blank.
+        _ => "(function(){ var out = null; document.querySelectorAll('#navigatorSession .session-info-row').forEach(function(r){ var k = r.querySelector('span'), v = r.querySelector('strong'); if (k && k.textContent.trim() === 'client cost') out = { found: true, text: k.textContent + ' ' + (v ? v.textContent : ''), title: r.title || '' }; }); return JSON.stringify(out || { found: false, box: (document.getElementById('navigatorSession')||{}).textContent || '' }); })()",
+    };
+    let raw = eval(tab, js);
+    let mut v: serde_json::Value = raw
+        .as_str()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    if let Some(flat) = v
+        .get("text")
+        .and_then(|t| t.as_str())
+        .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+    {
+        v["text"] = serde_json::Value::String(flat);
+    }
+    v
+}
+
+/// #240 — BOTH pages show what the client recorded, and neither shows it bare. The figure is
+/// the SUM over process epochs of each epoch's highest reading ($7.50 + $2.25), never the last
+/// record ($2.25): on a real session that difference was 31x.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_show_the_clients_own_cost_with_the_window_it_covers() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 2992)] {
+        let fx = client_cost_fixture(match surface {
+            Surface::Classic => "client-cost-classic",
+            _ => "client-cost-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        if surface != Surface::Classic {
+            // The shell keeps the rows behind the session card; open it and wait for a render.
+            harness::eval(&page.tab, "var c = document.querySelector('[data-nav-card=\"session\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"session\"]').click(); 'ok'");
+            harness::until(
+                &page.tab,
+                "document.querySelectorAll('#navigatorSession .session-info-row').length > 0",
+                "the session-info rows to render",
+                std::time::Duration::from_secs(10),
+                "document.getElementById('navigatorSession').innerText.slice(0, 200)",
+            );
+        }
+        let row = client_cost_row(&page.tab, surface);
+        assert_eq!(
+            row["found"],
+            serde_json::Value::Bool(true),
+            "{surface:?} shows the client's own recorded cost: {row}"
+        );
+        let text = row["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("$9.75"),
+            "{surface:?} sums the PER-EPOCH MAXIMA ($7.50 + $2.25 = $9.75). $2.25 alone means it \
+             took the last record, which is one CLI run's subtotal; $12.85 means it summed every \
+             record instead of each epoch's highest. Got: {text:?}"
+        );
+        // The dates are formatted in the VIEWER's locale, so the assertion reads the day
+        // numbers and our own word rather than "Aug" — this Chrome renders "8月27日".
+        // Both pages must also carry the EXPLANATION, not just the dates — an explanation one
+        // shell has and the other does not is an information gap between them.
+        let title = row["title"].as_str().unwrap_or("");
+        assert!(
+            title.contains("part of the session"),
+            "{surface:?} explains on hover why the figure is partial. Got: {title:?}"
+        );
+        assert!(
+            text.contains("counted") && text.contains("27") && text.contains("28"),
+            "{surface:?} prints the WINDOW beside the figure — a bare number reads as the session \
+             total, and this one covers two runs (Aug 27 and Aug 28) out of a longer session. \
+             Got: {text:?}"
+        );
+    }
+}
+
 /// The audit as an ASSERTION: every structure one page renders, the other renders too.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]

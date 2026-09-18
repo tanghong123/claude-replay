@@ -475,6 +475,11 @@ body[data-shell] #newbadge { left: calc(50% + var(--host-inset, 0px) / 2); }
    the span; it does not align text inside it once wrapped. */
 .urow span:last-child { text-align: right; }
 .urow.total { padding-top: 4px; border-top: 1px dashed var(--border); color: var(--fg); }
+/* #240: the client's own tally sits under our estimate without a second rule between them —
+   they are two readings of one thing, not two separate totals. The window is a second line in
+   the value cell, because a figure that covers part of the session must never appear bare. */
+.urow.reported { border-top: 0; padding-top: 2px; }
+.urow.reported .urow-note { display: block; color: var(--faint); font-size: 0.85em; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px; font-size: 10.5px; color: var(--faint); }
 .legend .key { border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
 .legend .what { align-self: center; }
