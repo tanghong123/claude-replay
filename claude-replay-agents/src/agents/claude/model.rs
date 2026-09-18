@@ -1184,6 +1184,26 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 msgs.push(Message::SystemNote { text });
             }
         }
+        // The turn's own recap (#239). Verified against a real pair rather than assumed: the
+        // summary reads "all queued tasks are done and released through v1.7.1… Next: your
+        // decision on task #17", and the turn it follows is exactly that work. So it describes
+        // THAT TURN, addressed to a reader who stepped away — 1,728 of them here, median 236
+        // characters, never repeated. On a long session it is a free outline.
+        Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("away_summary") => {
+            if let Some(text) = v.get("content").and_then(Value::as_str) {
+                // "(disable recaps in /config)" is a hint for the terminal that wrote it, not
+                // part of the recap — 305 of the 1,728 carry it.
+                let text = text
+                    .trim()
+                    .trim_end_matches("(disable recaps in /config)")
+                    .trim();
+                if !text.is_empty() {
+                    msgs.push(Message::SystemNote {
+                        text: text.to_string(),
+                    });
+                }
+            }
+        }
         // A /loop or cron routine started this turn (#238), and the client's own warnings about
         // the run changing underneath the reader — an account that changed, a monitor that
         // disconnected. `notice` stays dropped, being the quieter half of those 165 records.
@@ -1893,6 +1913,18 @@ pub(crate) fn parse_main<S: AsRef<str>>(
             {
                 if let Some(text) = v.get("content").and_then(Value::as_str) {
                     push_user_string(text, &mut out, &mut queue, &mut suppress);
+                }
+            }
+            // #239 mirror: the turn's own recap.
+            Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("away_summary") => {
+                if let Some(text) = v.get("content").and_then(Value::as_str) {
+                    let text = text
+                        .trim()
+                        .trim_end_matches("(disable recaps in /config)")
+                        .trim();
+                    if !text.is_empty() {
+                        out.push(Block::ToolResult(text.to_string()));
+                    }
                 }
             }
             // #238 mirror: a scheduled fire, and the client's warnings about the run.
@@ -3170,6 +3202,29 @@ mod tests {
         );
     }
 
+    /// #239: the recap the client writes for a reader who stepped away — verified to describe the
+    /// TURN it follows, not the session, by reading one against its turn before building on it.
+    #[test]
+    fn a_turns_recap_surfaces_without_its_terminal_hint() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-09-18T01:00:00.000Z","message":{"role":"user","content":"go"}}
+{"type":"system","subtype":"away_summary","timestamp":"2026-09-18T01:00:01.000Z","content":"Drained the queue and cut v1.7.1. Next: your call on #17. (disable recaps in /config)"}
+"##;
+        let notes: Vec<String> = parse(jsonl)
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolResult(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            vec!["Drained the queue and cut v1.7.1. Next: your call on #17.".to_string()],
+            "the recap surfaces, and the terminal's own \"(disable recaps in /config)\" hint — on \
+             305 of the 1,728 in this store — is not part of it"
+        );
+    }
+
     /// #238: the run's own context — why a turn began, which model wrote it, and what was cut
     /// short. Small records, each answering a question the transcript could not answer before.
     #[test]
@@ -4258,6 +4313,7 @@ mod tests {
 {"type":"assistant","isApiErrorMessage":true,"timestamp":"2026-09-18T01:00:06.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"API Error"}]}}
 {"type":"assistant","timestamp":"2026-09-18T01:00:07.000Z","message":{"role":"assistant","content":[{"type":"server_tool_use","id":"srv_1","name":"advisor","input":{}},{"type":"advisor_tool_result","tool_use_id":"srv_1","content":{"type":"advisor_tool_result_error","error_code":"overloaded"}}]}}
 {"type":"system","subtype":"scheduled_task_fire","timestamp":"2026-09-18T01:00:08.000Z","content":"loop fired: check the deploy"}
+{"type":"system","subtype":"away_summary","timestamp":"2026-09-18T01:00:08.500Z","content":"Drained the queue and cut v1.7.1. Next: your call on #17. (disable recaps in /config)"}
 {"type":"system","subtype":"informational","level":"warning","timestamp":"2026-09-18T01:00:09.000Z","content":"Remote Control disconnected"}
 {"type":"system","subtype":"informational","level":"notice","timestamp":"2026-09-18T01:00:10.000Z","content":"a quieter notice that stays dropped"}
 {"type":"attachment","timestamp":"2026-09-18T01:00:11.000Z","attachment":{"type":"model","identity":{"modelId":"claude-opus-5[1m]","marketingName":"Opus 5 (1M context)"},"text":"switched"}}
