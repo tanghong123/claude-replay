@@ -413,6 +413,55 @@ fn proposed_plan_body(text: &str) -> Option<&str> {
     (!inner.is_empty()).then_some(inner)
 }
 
+/// `AskUserQuestion`'s answer, lifted into the same interaction shape Codex's
+/// `request_user_input` already renders (#237).
+///
+/// The client writes the outcome as one sentence — `Your questions have been answered:
+/// "<question>"="<choice>".` — so the pairs are parsed out of it. What is NOT here is the OPTIONS
+/// the reader was offered: those live in the call's `input`, and `Block::ToolUse` carries no raw
+/// input, so they never reach this crate. Carrying them wants the same treatment `published` got
+/// (an adapter-lifted `Option<Box<…>>` on the variant) and is filed separately rather than
+/// bolted on: it touches every construction site of the variant.
+fn ask_user_question_projection(output: &str) -> Option<Value> {
+    let body = output.split_once("answered:")?.1;
+    // Walk the `"<question>"="<answer>"` pairs. Splitting on a separator was tried and let the
+    // sentence that follows the last pair ("You can now continue…") run into the answer: the
+    // quote that CLOSES a value is the only reliable end, so each side is read between quotes.
+    let mut rows: Vec<Value> = Vec::new();
+    let chars: Vec<char> = body.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '"' {
+            i += 1;
+            continue;
+        }
+        let q_start = i + 1;
+        let Some(q_end) = (q_start..chars.len()).find(|&k| chars[k] == '"') else {
+            break;
+        };
+        // The pair's hinge: `"="` and nothing else joins a question to its answer.
+        if chars.get(q_end + 1) != Some(&'=') || chars.get(q_end + 2) != Some(&'"') {
+            i = q_end + 1;
+            continue;
+        }
+        let a_start = q_end + 3;
+        let Some(a_end) = (a_start..chars.len()).find(|&k| chars[k] == '"') else {
+            break;
+        };
+        let question: String = chars[q_start..q_end].iter().collect();
+        let answer: String = chars[a_start..a_end].iter().collect();
+        if !question.trim().is_empty() && !answer.trim().is_empty() {
+            rows.push(json!({ "id": question.trim(), "label": answer.trim() }));
+        }
+        i = a_end + 1;
+    }
+    Some(json!({
+        "kind": "request_user_input",
+        "resolved": !rows.is_empty(),
+        "answers": rows,
+    }))
+}
+
 fn request_user_input_projection(output: &str) -> Option<Value> {
     let value: Value = serde_json::from_str(output.trim()).ok()?;
     let answers = value.get("answers")?.as_object()?;
@@ -1049,7 +1098,12 @@ impl Emitter<'_> {
                 }
                 head.insert("name".into(), json!(display_name(name)));
                 head.insert("target".into(), json!(target));
-                if name.eq_ignore_ascii_case("request_user_input") {
+                // #237: an AskUserQuestion is an interaction too — the same card Codex's
+                // `request_user_input` gets, rather than a bare head whose first question was
+                // lifted into the target and whose options were dropped.
+                if name.eq_ignore_ascii_case("request_user_input")
+                    || name.eq_ignore_ascii_case("AskUserQuestion")
+                {
                     head.insert(
                         "interaction".into(),
                         json!({
@@ -1211,10 +1265,18 @@ impl Emitter<'_> {
                         if let Some(out) = output {
                             let n = out.lines().count();
                             head.insert("chips".into(), json!([chip(format!("{n} lines"))]));
-                            if name.eq_ignore_ascii_case("request_user_input") {
-                                if let Some(interaction) = request_user_input_projection(out) {
-                                    head.insert("interaction".into(), interaction);
-                                }
+                            // Each agent words its answer differently — Codex returns JSON,
+                            // Claude returns one sentence — so the projection is per tool and the
+                            // interaction shape is shared (#237).
+                            let answered = if name.eq_ignore_ascii_case("request_user_input") {
+                                request_user_input_projection(out)
+                            } else if name.eq_ignore_ascii_case("AskUserQuestion") {
+                                ask_user_question_projection(out)
+                            } else {
+                                None
+                            };
+                            if let Some(interaction) = answered {
+                                head.insert("interaction".into(), interaction);
                             }
                             body.push(pre_part(out));
                         }
@@ -4211,6 +4273,46 @@ mod tests {
     /// which exists nowhere; the owner caught it in the tooltip, reading
     /// `Reveal /Users/…/D-六面总览.jpg +2`. What is SHOWN keeps the count; what is ACTED ON does
     /// not.
+    /// #237: an `AskUserQuestion` answer becomes the same interaction the Codex path renders.
+    /// Claude words it as one sentence rather than JSON, which is why the projection is per tool.
+    #[test]
+    fn an_ask_user_question_answer_becomes_an_interaction() {
+        let one = ask_user_question_projection(
+            "Your questions have been answered: \"How should the repo be created?\"=\"Private\". You can now continue.",
+        )
+        .expect("a projection");
+        assert_eq!(
+            one["kind"],
+            json!("request_user_input"),
+            "the shared card's shape"
+        );
+        assert_eq!(one["resolved"], json!(true));
+        assert_eq!(
+            one["answers"][0]["id"],
+            json!("How should the repo be created?")
+        );
+        assert_eq!(one["answers"][0]["label"], json!("Private"));
+
+        // Two questions in one call — the pairs are separated by `", "` between the quotes.
+        let two = ask_user_question_projection(
+            "Your questions have been answered: \"Which library?\"=\"serde\", \"Which edition?\"=\"2021\".",
+        )
+        .expect("a projection");
+        let answers = two["answers"].as_array().expect("answers");
+        assert_eq!(answers.len(), 2, "both pairs: {two}");
+        assert_eq!(answers[1]["id"], json!("Which edition?"));
+        assert_eq!(answers[1]["label"], json!("2021"));
+
+        // An output this does not recognise yields NO projection, so no card is drawn at all —
+        // better than an empty one asserting the reader was asked something.
+        assert!(ask_user_question_projection("something else entirely").is_none());
+        // …and a recognised preamble with no pairs in it resolves to unanswered rather than
+        // inventing an answer.
+        let empty = ask_user_question_projection("Your questions have been answered: none yet")
+            .expect("a projection");
+        assert_eq!(empty["resolved"], json!(false), "{empty}");
+    }
+
     /// #235: `/context` is parsed into a report, from the terminal output as it is actually
     /// written — a grid of block glyphs on the left and the facts beside it on the right, wrapped
     /// in ANSI colour. The grid is a picture of the same numbers the facts state, so only the

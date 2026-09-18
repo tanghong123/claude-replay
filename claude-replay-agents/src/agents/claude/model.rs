@@ -1064,6 +1064,58 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                             ts: ev_ts,
                         });
                     }
+                    // A server-side tool the model consulted mid-turn (#237). Every one in this
+                    // store is the advisor, and its call carries an EMPTY input — the advisor takes
+                    // no parameters; it is handed the conversation. So a consult is a call with a
+                    // name and nothing else, which is still far better than the hole it was: the
+                    // turn appeared to stop and resume with no cause, 691 times here.
+                    Some("server_tool_use") => {
+                        let name = blk.get("name").and_then(Value::as_str).unwrap_or("tool");
+                        let id = blk.get("id").and_then(Value::as_str).unwrap_or("");
+                        msgs.push(Message::ToolUse {
+                            id: id.to_string(),
+                            name: name.to_string(),
+                            input: blk.get("input").cloned().unwrap_or(Value::Null),
+                            cwd: String::new(),
+                        });
+                    }
+                    // …and its reply. The advice itself is REDACTED by the transcript format
+                    // (`advisor_redacted_result`, 596 of 605 here, a 4.7 KB `encrypted_content`
+                    // blob), so there is nothing to render and saying so is the honest result.
+                    // The 9 that FAILED are the ones worth surfacing — overloaded, unavailable,
+                    // too_many_requests — and they were invisible.
+                    Some("advisor_tool_result") => {
+                        let tid = blk
+                            .get("tool_use_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let body = blk.get("content");
+                        let kind = body
+                            .and_then(|c| c.get("type"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        let code = body
+                            .and_then(|c| c.get("error_code"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        let failed = kind == "advisor_tool_result_error" || !code.is_empty();
+                        let text = if failed {
+                            if code.is_empty() {
+                                "the consult failed".to_string()
+                            } else {
+                                format!("the consult failed: {code}")
+                            }
+                        } else {
+                            "advice returned — the transcript redacts its text".to_string()
+                        };
+                        msgs.push(Message::ToolResult {
+                            tool_use_id: tid,
+                            text,
+                            tur: Value::Null,
+                            is_error: Some(failed),
+                        });
+                    }
                     Some("tool_use") => {
                         let name = blk.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
                         let input = blk.get("input").cloned().unwrap_or(Value::Null);
@@ -1690,6 +1742,64 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     duration_secs,
                                     tools: Vec::new(),
                                 });
+                            }
+                        }
+                        // #237 mirror: a server-side consult is a call, and its outcome is
+                        // worth having even though the format redacts the advice itself.
+                        Some("server_tool_use") => {
+                            let name = blk.get("name").and_then(Value::as_str).unwrap_or("tool");
+                            let id = blk.get("id").and_then(Value::as_str).unwrap_or("");
+                            tool_slot.insert(id.to_string(), out.len());
+                            out.push(Block::ToolUse {
+                                name: name.to_string(),
+                                target: String::new(),
+                                diffs: vec![],
+                                output: None,
+                                patch: None,
+                                read_lines: None,
+                                cwd: String::new(),
+                                execution: None,
+                                published: None,
+                            });
+                        }
+                        Some("advisor_tool_result") => {
+                            let tid = blk.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
+                            let body = blk.get("content");
+                            let kind = body
+                                .and_then(|c| c.get("type"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            let code = body
+                                .and_then(|c| c.get("error_code"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            let failed = kind == "advisor_tool_result_error" || !code.is_empty();
+                            let text = if failed {
+                                if code.is_empty() {
+                                    "the consult failed".to_string()
+                                } else {
+                                    format!("the consult failed: {code}")
+                                }
+                            } else {
+                                "advice returned \u{2014} the transcript redacts its text"
+                                    .to_string()
+                            };
+                            if let Some(&idx) = tool_slot.get(tid) {
+                                if let Block::ToolUse {
+                                    output, execution, ..
+                                } = &mut out[idx]
+                                {
+                                    *output = Some(text);
+                                    // A failed consult carries the failure on the call, exactly as
+                                    // the streaming path does through `ToolResult { is_error }`.
+                                    if failed {
+                                        *execution = Some(ToolExecution {
+                                            status: Some(ToolStatus::Failed),
+                                            exit_code: None,
+                                            duration: None,
+                                        });
+                                    }
+                                }
                             }
                         }
                         Some("tool_use") => {
@@ -3001,6 +3111,41 @@ mod tests {
         );
     }
 
+    /// #237: an advisor consult is a tool call, and its outcome is worth having even though its
+    /// advice is not available.
+    ///
+    /// The format REDACTS the advice — `advisor_redacted_result` wrapping a 4.7 KB
+    /// `encrypted_content` blob, 596 of the 605 results in this store — so there is nothing to
+    /// render and saying so plainly is the honest result. The 9 that FAILED are the ones that were
+    /// worth surfacing all along, and they were invisible: the turn simply stopped and resumed.
+    #[test]
+    fn an_advisor_consult_is_a_call_with_an_outcome() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-09-18T01:00:00.000Z","message":{"role":"user","content":"go"}}
+{"type":"assistant","timestamp":"2026-09-18T01:00:01.000Z","message":{"role":"assistant","content":[{"type":"server_tool_use","id":"srv_1","name":"advisor","input":{}},{"type":"advisor_tool_result","tool_use_id":"srv_1","content":{"type":"advisor_redacted_result","encrypted_content":"AAAA"}}]}}
+{"type":"assistant","timestamp":"2026-09-18T01:00:02.000Z","message":{"role":"assistant","content":[{"type":"server_tool_use","id":"srv_2","name":"advisor","input":{}},{"type":"advisor_tool_result","tool_use_id":"srv_2","content":{"type":"advisor_tool_result_error","error_code":"overloaded"}}]}}
+"##;
+        let calls: Vec<(String, String)> = parse(jsonl)
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolUse { name, output, .. } => {
+                    Some((name.clone(), output.clone().unwrap_or_default()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls.len(), 2, "both consults are calls: {calls:?}");
+        assert_eq!(calls[0].0, "advisor");
+        assert!(
+            calls[0].1.contains("redacts"),
+            "a successful consult says the advice is redacted rather than pretending to show it: {calls:?}"
+        );
+        assert_eq!(
+            calls[1].1, "the consult failed: overloaded",
+            "a failed consult names why: {calls:?}"
+        );
+    }
+
     /// #236: the failures the transcript records and the viewer used to drop — a hook that failed,
     /// a hook the client killed for running long, and an API call that failed and retried.
     ///
@@ -4021,6 +4166,7 @@ mod tests {
 {"type":"attachment","timestamp":"2026-09-18T01:00:04.000Z","attachment":{"type":"hook_cancelled","hookName":"slow","toolUseID":"c1","timedOut":true,"durationMs":15023,"timeoutMs":15000}}
 {"type":"system","subtype":"api_error","timestamp":"2026-09-18T01:00:05.000Z","retryAttempt":2,"maxRetries":10,"error":{"message":"overloaded","status":529}}
 {"type":"assistant","isApiErrorMessage":true,"timestamp":"2026-09-18T01:00:06.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"API Error"}]}}
+{"type":"assistant","timestamp":"2026-09-18T01:00:07.000Z","message":{"role":"assistant","content":[{"type":"server_tool_use","id":"srv_1","name":"advisor","input":{}},{"type":"advisor_tool_result","tool_use_id":"srv_1","content":{"type":"advisor_tool_result_error","error_code":"overloaded"}}]}}
 "##,
             // Injected meta / compact-summary are not turns.
             r##"
