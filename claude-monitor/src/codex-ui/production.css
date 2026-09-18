@@ -803,3 +803,14 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    plaintext resolves each run's direction from its first strong character, and a path's first
    strong character is Latin — so the run went back to LTR and kept clipping the tail. Measured
    identically before and after adding the rule, which is what gave it away. */
+
+/* #235 — `/context` as a report. The TUI draws the proportions with block glyphs; a page can draw
+   the bar itself, which is the freedom the owner pointed at. Numbers are tabular so the columns
+   line up, and each share is the width the client reported rather than one recomputed here. */
+.ctx-report{margin:4px 0 2px;padding:11px 13px;border:1px solid var(--process-content-border,var(--line));border-radius:8px;background:var(--process-content-bg,var(--panel))}
+.ctx-head{margin-bottom:8px;color:var(--sub);font:11px/1.5 var(--mono)}
+.ctx-table{width:100%;border-collapse:collapse;font:11.5px/1.7 var(--mono)}
+.ctx-table th{text-align:left;font-weight:500;color:var(--ink);padding:1px 10px 1px 0;white-space:nowrap}
+.ctx-num{color:var(--sub);text-align:right;padding:1px 10px 1px 0;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ctx-track{width:40%;min-width:70px}
+.ctx-track>span{display:block;height:6px;border-radius:999px;background:var(--blue);opacity:.75}

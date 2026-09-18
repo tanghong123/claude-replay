@@ -97,6 +97,7 @@
   var CLASSIC_ROWS = { row: "nrow", gut: "gut", mark: "mark", code: "code", add: "add", del: "del" };
   var CLASSIC_MARKS = { add: "+", del: "−", ctx: " " };
   var CLASSIC_RESULT = { result: "result", lead: "lead", box: "resultbox" };
+  var CLASSIC_CTX = { root: "ctx-report", head: "ctx-head", table: "ctx-table", num: "ctx-num", track: "ctx-track" };
   var CLASSIC_INTERACTION = { card: "irq", icon: "irq-icon", copy: "irq-copy", meta: "irq-meta", answers: "irq-answers", answer: "irq-answer" };
   var CLASSIC_TASK = { card: "tcard", head: "tcard-head", glyph: "tcard-glyph", id: "tcard-id", title: "tcard-title", chips: "tcard-chips", chip: "tchip", dates: "tcard-dates", gap: "tcard-gap", section: "tcard-sec", label: "tcard-label", body: "tcard-body", item: "tcard-item", outcome: "tcard-out", log: "tcard-log", logTime: "tcard-lt", logMsg: "tcard-lm", logBy: "tcard-lb" };
 
@@ -145,6 +146,14 @@
       note.appendChild(el("span", null, shared.RESULT_MARK));
       note.appendChild(el("span", null, p.x));
       into.appendChild(note);
+      return;
+    }
+    // `/context` renders as a report, from the shape the server parsed (#235) — the same shared
+    // renderer the app shell uses, so the two pages cannot drift.
+    if (p.p === "ctx") {
+      var ctx = el("div", null);
+      ctx.innerHTML = shared.contextReportHtml(p, CLASSIC_CTX);
+      host.appendChild(ctx.firstElementChild);
       return;
     }
     if (p.p === "pre") {

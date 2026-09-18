@@ -139,9 +139,10 @@ pub const CLAIMS: &[KindClaim] = &[
     },
     KindClaim {
         kind: "command",
-        parts: &["md", "pre"],
+        parts: &["md", "pre", "ctx"],
         why: "the `Command` arm pushes the args as `md` and each `local-command-stdout` chunk \
-              through `pre_part`",
+              through `pre_part` — except `/context`, whose output is parsed into a `ctx` report \
+              instead, selected by the command NAME rather than by the shape of its body (#235)",
     },
     KindClaim {
         kind: "compaction",
@@ -272,11 +273,28 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
                 result: Some("Every cell is covered or declared.".into()),
             },
         ],
-        Command => vec![Block::Command {
-            name: "/audit".into(),
-            args: "renderings --all".into(),
-            output: vec!["15 kinds x 8 parts".into()],
-        }],
+        Command => vec![
+            Block::Command {
+                name: "/audit".into(),
+                args: "renderings --all".into(),
+                output: vec!["15 kinds x 8 parts".into()],
+            },
+            // `/context` is the one command whose output becomes a REPORT rather than `pre`
+            // (#235), so the corpus must carry one or the audit's quantifier stops covering the
+            // `ctx` part the emitter can write.
+            Block::Command {
+                name: "/context".into(),
+                args: String::new(),
+                output: vec![concat!(
+                    " Context Usage\n",
+                    "\u{26c1} \u{26f6}   Opus 5 (1M context)\n",
+                    "\u{26f6} \u{26f6}   99.2k/1m tokens (10%)\n",
+                    "\u{26f6} \u{26f6}   \u{26c1} Messages: 69.7k tokens (7.0%)\n",
+                    "\u{26f6} \u{26f6}   \u{26f6} Free space: 867.1k (86.7%)"
+                )
+                .into()],
+            },
+        ],
         Bash => vec![tool_use(
             "Bash",
             "cargo test -p claude-replay-html",
@@ -483,6 +501,17 @@ pub fn audit_jsonl() -> String {
         "message":{"role":"user","content":"<command-message>audit</command-message>\n<command-name>/audit</command-name>\n<command-args>--all</command-args>"}}));
     push(json!({"type":"user","cwd":"/w","timestamp":stamp(),
         "message":{"role":"user","content":"<local-command-stdout>23 cells covered, 0 uncovered</local-command-stdout>"}}));
+    // command / ctx (#235) — `/context` is parsed into a report rather than shown as terminal
+    // art, so the corpus has to carry one or the audit's quantifier stops covering it. Written on
+    // a `system/local_command` record, which is how the client records a slash command today.
+    push(
+        json!({"type":"system","subtype":"local_command","cwd":"/w","timestamp":stamp(),
+        "content":"<command-name>/context</command-name>\n<command-message>context</command-message>\n<command-args></command-args>"}),
+    );
+    push(
+        json!({"type":"system","subtype":"local_command","cwd":"/w","timestamp":stamp(),
+        "content":"<local-command-stdout> Context Usage\n\u{26c1} \u{26f6}   Opus 5 (1M context)\n\u{26f6} \u{26f6}   99.2k/1m tokens (10%)\n\u{26f6} \u{26f6}   \u{26c1} Messages: 69.7k tokens (7.0%)\n\u{26f6} \u{26f6}   \u{26f6} Free space: 867.1k (86.7%)</local-command-stdout>"}),
+    );
     // compaction / md — the continuation summary; the token counts are head fields.
     push(
         json!({"type":"system","subtype":"compact_boundary","timestamp":stamp(),

@@ -1,6 +1,6 @@
 // Row caps are the shared module's (html/shared/parts.js, #108): the split, the label, the row
 // markup and the expansion memory — one implementation with the classic page.
-import { capSplit, capLabel, preLines, toLineOf, numRowsHtml, diffRowsHtml, capOpenHas } from "./shared/parts.js";
+import { capSplit, capLabel, preLines, toLineOf, numRowsHtml, diffRowsHtml, capOpenHas, contextReportHtml } from "./shared/parts.js";
 import { recordText, stripTags } from "./shared/search.js";
 // A head's state is the shared module's reading of its chips (#117, shared/tool-head.js): the
 // display name, failed / running / completed from the words the server writes, and the exit
@@ -10,6 +10,8 @@ import { displayName, toolHead, stateLabel } from "./shared/tool-head.js";
 export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 // A record's searchable text is what a reader can see of it (#111, shared/search.js): heads and
 // body parts, nested records included — not its JSON, whose field names matched every record.
+const APP_CTX = { root: "ctx-report", head: "ctx-head", table: "ctx-table", num: "ctx-num", track: "ctx-track" };
+
 export const plainText = record => recordText(record, stripTags).replace(/\s+/g, " ").trim();
 
 /** The user-turn index the reader is AT: the last user turn at or before the unit `atKey`
@@ -308,6 +310,8 @@ export function partsHtml(parts = [], recordId = "", state = null) {
       return cut.shown + cut.hidden + cut.button;
     }
     if (part.p === "pre" || part.p === "raw") return `<pre>${escapeText(part.x || "")}</pre>`;
+    // `/context` renders as a report, from the shape the server parsed (#235).
+    if (part.p === "ctx") return contextReportHtml(part, APP_CTX);
     if (part.p === "note") return `<div class="renderer-note"><p>${escapeText(part.x || "")}</p></div>`;
     if (part.p === "num" || part.p === "diff") return codeRows(part, capped, recordId, state);
     if (part.p === "blocks") return "";

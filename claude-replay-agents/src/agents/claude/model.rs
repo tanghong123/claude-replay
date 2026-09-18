@@ -1079,13 +1079,29 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 }
             }
         }
-        // The only `system` record the viewer surfaces: a context-compaction boundary (#108).
-        // Every other subtype stays dropped — they are agent bookkeeping with no reader value.
+        // A context-compaction boundary (#108).
         Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") => {
             if let Some(m) = compact_boundary(&v) {
                 msgs.push(m);
             }
         }
+        // A slash command the client ran locally (#235). The same `<command-name>` /
+        // `<local-command-stdout>` pair `classify_user_string` already understands, but written on
+        // a `system` record instead of a `user` one — and the viewer dropped every `system`
+        // subtype but the boundary above, calling them "agent bookkeeping with no reader value".
+        // That was true of the subtypes that existed when it was written and is not true of this
+        // one: measured across the 40 most recent transcripts on this machine, 113 slash-command
+        // invocations ride `system/local_command` against 302 on `user`, BOTH shapes emitted by
+        // the same client version — so this is not a migration to wait out. `/context`, `/model`,
+        // `/loop` and `/remote-control` were invisible.
+        Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("local_command") => {
+            if let Some(text) = v.get("content").and_then(Value::as_str) {
+                if let Some(m) = classify_user_string(text, injection_of(&v)) {
+                    msgs.push(m);
+                }
+            }
+        }
+        // Every other `system` subtype stays dropped.
         Some("user") => {
             let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
             let injected = injection_of(&v);
@@ -1652,6 +1668,18 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                         }
                         _ => {}
                     }
+                }
+            }
+            // #235 mirror: a slash command the client recorded on a `system` record rather than a
+            // `user` one. This reference is pinned bit-identical to the streaming path by
+            // `replay_tokenize_matches_parse_main`, so an arm added there has to be added here —
+            // and the pin can only SEE the difference if a fixture carries such a record, which
+            // is why one was added alongside this.
+            Some("system")
+                if v.get("subtype").and_then(|s| s.as_str()) == Some("local_command") =>
+            {
+                if let Some(text) = v.get("content").and_then(Value::as_str) {
+                    push_user_string(text, &mut out, &mut queue, &mut suppress);
                 }
             }
             // #108 mirror: the compaction boundary opens a summary-less divider, which the
@@ -2781,12 +2809,42 @@ mod tests {
     /// narrow, and a missing/empty `compactMetadata` yields no divider at all rather
     /// than one claiming `0 → 0`.
     #[test]
-    fn only_compact_boundary_system_records_surface() {
+    fn only_the_named_system_subtypes_surface() {
+        // A subtype nobody has claimed stays dropped, and a boundary with no metadata still opens
+        // nothing on its own. `local_command` is claimed (#235) and is covered separately.
         let jsonl = r##"
 {"type":"system","subtype":"hook_result","timestamp":"2026-06-30T03:00:00.000Z","content":"hook ran"}
 {"type":"system","subtype":"compact_boundary","timestamp":"2026-06-30T03:00:01.000Z","content":"no metadata here"}
 "##;
         assert!(parse(jsonl).is_empty(), "{:?}", parse(jsonl));
+    }
+
+    /// #235: a slash command the client wrote on a `system/local_command` record surfaces exactly
+    /// as it does from a `user` record — and, because `parse_main` is pinned bit-identical to the
+    /// streaming path, this fixture is what lets that pin SEE the two disagree. Without a fixture
+    /// carrying this shape the equivalence gate was blind to the arm being added to one and not
+    /// the other, which is how it was first added to only one.
+    #[test]
+    fn a_slash_command_on_a_system_record_surfaces() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-09-18T01:00:00.000Z","message":{"role":"user","content":"look"}}
+{"type":"system","subtype":"local_command","timestamp":"2026-09-18T01:00:01.000Z","content":"<command-name>/context</command-name>\n<command-message>context</command-message>\n<command-args></command-args>"}
+{"type":"system","subtype":"local_command","timestamp":"2026-09-18T01:00:02.000Z","content":"<local-command-stdout>99.2k/1m tokens (10%)</local-command-stdout>"}
+"##;
+        let blocks = parse(jsonl);
+        let command = blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::Command { name, output, .. } => Some((name.clone(), output.clone())),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("a /context command, got {blocks:?}"));
+        assert_eq!(command.0, "/context");
+        assert_eq!(
+            command.1,
+            vec!["99.2k/1m tokens (10%)".to_string()],
+            "its stdout attaches to it, as a standalone stdout does after a user-record command"
+        );
     }
 
     /// #95: QoderWork's synchronous spawn result (`{kind:"agent-result",

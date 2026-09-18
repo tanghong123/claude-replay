@@ -1298,9 +1298,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // #108: row caps are the shared module's, on both pages.
 {
   const parts = readFileSync(new URL("../../claude-replay-html/src/html/shared/parts.js", import.meta.url), "utf8");
-  assert.match(parts, /^export \{ MAX_BUFFER_LINES, RESULT_MARK, resultBodyHtml, capLabel, capSplit, preLines, toLineOf, numRowsHtml, diffRowsHtml, capKey, rememberCap, capOpenHas, hiddenLines \};\s*$/m, "the module's export line");
+  assert.match(parts, /^export \{ contextReportHtml, MAX_BUFFER_LINES, RESULT_MARK, resultBodyHtml, capLabel, capSplit, preLines, toLineOf, numRowsHtml, diffRowsHtml, capKey, rememberCap, capOpenHas, hiddenLines \};\s*$/m, "the module's export line, now carrying the /context report renderer (#235)");
   const vm = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
-  assert.match(vm, /import \{ capSplit, capLabel, preLines, toLineOf, numRowsHtml, diffRowsHtml, capOpenHas \} from "\.\/shared\/parts\.js";/, "the app shell imports the shared rules");
+  assert.match(vm, /import \{ capSplit, capLabel, preLines, toLineOf, numRowsHtml, diffRowsHtml, capOpenHas, contextReportHtml \} from "\.\/shared\/parts\.js";/, "the app shell imports the shared rules");
   assert.match(vm, /export function partsHtml\(parts = \[\], recordId = "", state = null\) \{/, "parts render with the record id and the reader state");
   assert.match(vm, /class="cap-more-btn" data-cap-more=/, "the expander control");
   assert.match(vm, /parts: \(record\.body \|\| \[\]\)\.filter\(p => p\.p !== "blocks"\),/, "a tool view keeps its raw parts for render-time caps");

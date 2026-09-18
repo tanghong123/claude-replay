@@ -97,4 +97,29 @@ function hiddenLines(button, hidden, rowClass) {
   return (hidden.textContent || "").split("\n").length;
 }
 
-export { MAX_BUFFER_LINES, RESULT_MARK, resultBodyHtml, capLabel, capSplit, preLines, toLineOf, numRowsHtml, diffRowsHtml, capKey, rememberCap, capOpenHas, hiddenLines };
+
+/**
+ * `/context` as a report rather than terminal art (#235).
+ *
+ * The server hands over the parsed shape — model, totals, one row per category — precisely so no
+ * page has to read the ANSI block-art or re-parse a markdown table. A bar carries the proportion
+ * the TUI drew with glyphs; the rows carry the numbers. Each row's share is drawn from its own
+ * stated percentage, never recomputed, so what is SHOWN is what the client reported.
+ */
+function contextReportHtml(part, classes) {
+  const c = classes || {};
+  const rows = Array.isArray(part.rows) ? part.rows : [];
+  const pct = value => {
+    const m = /(\d+(?:\.\d+)?)\s*%/.exec(String(value || ""));
+    return m ? Math.max(0, Math.min(100, Number(m[1]))) : null;
+  };
+  const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+  const head = [part.model, part.totals].filter(Boolean).map(esc).join(" · ");
+  const bars = rows.map(r => {
+    const share = pct(r.percent);
+    return `<tr><th scope="row">${esc(r.label)}</th><td class="${esc(c.num || "ctx-num")}">${esc(r.tokens)}</td><td class="${esc(c.num || "ctx-num")}">${esc(r.percent)}</td><td class="${esc(c.track || "ctx-track")}">${share == null ? "" : `<span style="width:${share}%"></span>`}</td></tr>`;
+  }).join("");
+  return `<div class="${esc(c.root || "ctx-report")}">${head ? `<div class="${esc(c.head || "ctx-head")}">${head}</div>` : ""}${rows.length ? `<table class="${esc(c.table || "ctx-table")}"><tbody>${bars}</tbody></table>` : ""}</div>`;
+}
+
+export { contextReportHtml, MAX_BUFFER_LINES, RESULT_MARK, resultBodyHtml, capLabel, capSplit, preLines, toLineOf, numRowsHtml, diffRowsHtml, capKey, rememberCap, capOpenHas, hiddenLines };

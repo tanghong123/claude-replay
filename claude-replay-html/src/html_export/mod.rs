@@ -491,6 +491,102 @@ fn push_chip(head: &mut Map<String, Value>, value: Value) {
 }
 
 /// Split `text` into `{p:"pre"}` (bounded preview + hidden tail) body parts.
+/// Strip ANSI SGR escapes. `/context`'s stdout is terminal art, and the escapes are noise in
+/// every surface that is not a terminal.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // CSI … final byte in @-~; anything shorter is malformed and dropped with it.
+            for f in chars.by_ref() {
+                if ('\x40'..='\x7e').contains(&f) {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `/context`'s output as STRUCTURE: the model, the totals, and one row per category.
+///
+/// The terminal draws a grid of block glyphs on the left and the facts beside it on the right,
+/// so each line is `<grid…>   <fact>` — the grid is a picture of the same numbers the facts
+/// state, and only the facts survive here. A page can draw its own bar, which is the point.
+///
+/// Returns `None` when nothing recognisable is found, so an output shape this does not know
+/// falls back to being shown verbatim. A client that changes this report should degrade to
+/// "unstyled", never to "missing".
+fn context_report(output: &[String]) -> Option<Value> {
+    /// The block glyphs the grid is drawn from — dropped wherever they lead a line.
+    const GRID: [char; 4] = ['\u{26c1}', '\u{26c0}', '\u{26f6}', '\u{26dd}'];
+    let text = output
+        .iter()
+        .map(|c| strip_ansi(c))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut model = String::new();
+    let mut totals = String::new();
+    let mut rows: Vec<Value> = Vec::new();
+    let mut extras: Vec<Value> = Vec::new();
+    for raw in text.lines() {
+        // Drop the grid: a leading run of block glyphs and the spaces between them.
+        let fact = raw
+            .trim_start_matches(|c: char| GRID.contains(&c) || c == ' ')
+            .trim();
+        if fact.is_empty() {
+            continue;
+        }
+        // `99.2k/1m tokens (10%)` — the one line that states the whole budget.
+        if totals.is_empty() && fact.contains('/') && fact.contains("tokens") && fact.contains('%')
+        {
+            totals = fact.to_string();
+            continue;
+        }
+        // The markdown twin, when that is what was captured instead.
+        if let Some(rest) = fact.strip_prefix("**Tokens:**") {
+            totals = rest.trim().to_string();
+            continue;
+        }
+        if let Some(rest) = fact.strip_prefix("**Model:**") {
+            model = rest.trim().to_string();
+            continue;
+        }
+        // `System prompt: 4.9k tokens (0.5%)`, and `Free space: 867.1k (86.7%)` without the word.
+        if let Some((label, value)) = fact.split_once(": ") {
+            let value = value.trim();
+            if value.ends_with(')') && value.contains('(') {
+                if let Some((amount, pct)) = value.rsplit_once('(') {
+                    let amount = amount.trim().trim_end_matches("tokens").trim();
+                    let pct = pct.trim_end_matches(')').trim();
+                    if !amount.is_empty() && pct.ends_with('%') {
+                        rows.push(
+                            json!({ "label": label.trim(), "tokens": amount, "percent": pct }),
+                        );
+                        continue;
+                    }
+                }
+            }
+            // `Auto-compact window: 1m tokens` and friends: a fact with no share of the bar.
+            if !value.is_empty() && !label.starts_with('/') {
+                extras.push(json!({ "label": label.trim(), "value": value }));
+                continue;
+            }
+        }
+        // The model is the first line naming a context window, before any category.
+        if model.is_empty() && rows.is_empty() && fact.contains("context)") {
+            model = fact.to_string();
+        }
+    }
+    if totals.is_empty() && rows.is_empty() {
+        return None;
+    }
+    Some(json!({ "p": "ctx", "model": model, "totals": totals, "rows": rows, "extras": extras }))
+}
+
 fn pre_part(text: &str) -> Value {
     json!({ "p": "pre", "x": text, "cap": OUTPUT_PREVIEW })
 }
@@ -854,8 +950,22 @@ impl Emitter<'_> {
                 if !args.trim().is_empty() {
                     body.push(json!({ "p": "md", "h": md_html(args) }));
                 }
-                for chunk in output {
-                    body.push(pre_part(chunk));
+                // `/context` is a REPORT, not a wall of terminal output (#235). Its stdout is
+                // ANSI block-art and its markdown twin is a table; both render as an unreadable
+                // `<pre>` if treated as plain output. The command NAME is what selects this — the
+                // owner's bar was that guessing from the body's shape does not count as a
+                // reliable indicator, and the name is carried verbatim in `<command-name>`.
+                let structured = if name == "/context" {
+                    context_report(output)
+                } else {
+                    None
+                };
+                if let Some(report) = structured {
+                    body.push(report);
+                } else {
+                    for chunk in output {
+                        body.push(pre_part(chunk));
+                    }
                 }
             }
             // A context-compaction divider (kind "compaction") — a hairline seam whose
@@ -4101,6 +4211,55 @@ mod tests {
     /// which exists nowhere; the owner caught it in the tooltip, reading
     /// `Reveal /Users/…/D-六面总览.jpg +2`. What is SHOWN keeps the count; what is ACTED ON does
     /// not.
+    /// #235: `/context` is parsed into a report, from the terminal output as it is actually
+    /// written — a grid of block glyphs on the left and the facts beside it on the right, wrapped
+    /// in ANSI colour. The grid is a picture of the same numbers the facts state, so only the
+    /// facts are kept and the page draws its own bar.
+    #[test]
+    fn a_context_command_becomes_a_report() {
+        // Two categories, one of them a SINGLE WORD — the first cut of this rejected those and
+        // silently dropped Skills and Messages, which is exactly the kind of hole a fixture with
+        // only two-word labels would never show.
+        let out = vec![String::from(
+            "\u{1b}[1m Context Usage\u{1b}[22m\n\
+             \u{26c1} \u{26c1} \u{26f6}   Opus 5 (1M context)\n\
+             \u{26f6} \u{26f6} \u{26f6}   99.2k/1m tokens (10%)\n\
+             \u{26f6} \u{26f6} \u{26f6}   \u{26c1} System prompt: 4.9k tokens (0.5%)\n\
+             \u{26f6} \u{26f6} \u{26f6}   \u{26c1} Skills: 5.1k tokens (0.5%)\n\
+             \u{26f6} \u{26f6} \u{26f6}   \u{26f6} Free space: 867.1k (86.7%)\n\
+             Auto-compact window: 1m tokens",
+        )];
+        let report = context_report(&out).expect("a report");
+        assert_eq!(report["p"], json!("ctx"));
+        assert_eq!(report["model"], json!("Opus 5 (1M context)"));
+        assert_eq!(report["totals"], json!("99.2k/1m tokens (10%)"));
+        let rows = report["rows"].as_array().expect("rows");
+        assert_eq!(
+            rows.iter()
+                .map(|r| r["label"].as_str().unwrap_or(""))
+                .collect::<Vec<_>>(),
+            vec!["System prompt", "Skills", "Free space"],
+            "every category, single-word labels included"
+        );
+        assert_eq!(
+            rows[1]["tokens"],
+            json!("5.1k"),
+            "the word `tokens` is not part of the amount"
+        );
+        assert_eq!(
+            rows[2]["tokens"],
+            json!("867.1k"),
+            "…and a row that omits it parses the same"
+        );
+        assert_eq!(
+            report["extras"][0],
+            json!({ "label": "Auto-compact window", "value": "1m tokens" }),
+            "a fact with no share of the bar is kept beside the rows"
+        );
+        // An output this does not recognise is shown verbatim rather than as an empty report.
+        assert!(context_report(&[String::from("nothing familiar here")]).is_none());
+    }
+
     #[test]
     fn a_multi_file_delivery_reveals_the_file_not_the_label() {
         let blocks = vec![Block::ToolUse {

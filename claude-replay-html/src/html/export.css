@@ -1033,3 +1033,12 @@ body.following #livechip { opacity: 0.85; }
 .fleet-name { color: inherit; text-decoration: none; border-bottom: 1px solid transparent; }
 .fleet-name:hover { border-bottom-color: currentColor; }
 .fleet-id { color: var(--dim); font: 11.5px/1.4 var(--mono); }
+
+/* #235 — `/context` as a report, the same shape the app shell draws (shared/parts.js). */
+.ctx-report { margin: 4px 0 2px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.ctx-head { margin-bottom: 8px; color: var(--muted); font: 11px/1.5 var(--mono); }
+.ctx-table { width: 100%; border-collapse: collapse; font: 11.5px/1.7 var(--mono); }
+.ctx-table th { text-align: left; font-weight: 500; color: var(--fg); padding: 1px 10px 1px 0; white-space: nowrap; }
+.ctx-num { color: var(--muted); text-align: right; padding: 1px 10px 1px 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ctx-track { width: 40%; min-width: 70px; }
+.ctx-track > span { display: block; height: 6px; border-radius: 999px; background: var(--accent, #3978d1); opacity: 0.75; }
