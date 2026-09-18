@@ -11153,6 +11153,102 @@ fn prose_structures(tab: &headless_chrome::Tab, surface: Surface) -> serde_json:
     serde_json::from_str(eval(tab, &js).as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null)
 }
 
+/// A session that ran `/context` (#235). The client records a slash command on a
+/// `system`/`local_command` record and its stdout on the next one; the server parses that stdout
+/// into a `ctx` report. Written as the client writes it, so the parse path is the real one.
+fn context_report_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question: how full is the context", &now_minus(60));
+    t += "{\"type\":\"system\",\"subtype\":\"local_command\",\"cwd\":\"/w\",\"timestamp\":\"2026-09-18T01:00:01.000Z\",\"content\":\"<command-name>/context</command-name>\\n<command-message>context</command-message>\\n<command-args></command-args>\"}\n";
+    // Real glyphs, not `\\u{...}`: JSON has no such escape, and an unparseable line is a DROPPED
+    // record — which looks exactly like the bug this case exists to catch.
+    t += concat!(
+        "{\"type\":\"system\",\"subtype\":\"local_command\",\"cwd\":\"/w\",",
+        "\"timestamp\":\"2026-09-18T01:00:02.000Z\",\"content\":\"<local-command-stdout> Context Usage",
+        "\\n⛁ ⛶   Opus 5 (1M context)",
+        "\\n⛶ ⛶   99.2k/1m tokens (10%)",
+        "\\n⛶ ⛶   ⛁ Messages: 69.7k tokens (7.0%)",
+        "\\n⛶ ⛶   ⛶ Free space: 867.1k (86.7%)</local-command-stdout>\"}\n"
+    );
+    // Work AFTER the report: the #245 regression was invisible from the report itself — the
+    // throw took the eleven records that FOLLOWED it off the page, and this is what sees that.
+    t += &assistant_at("answer: plenty of room left", &now_minus(40));
+    t += &read_tool_at("ctx-read", "/Users/demo/proj/src/main.rs", &now_minus(38));
+    t += &tool_result_lines("ctx-read", 6, &now_minus(37));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 14,
+    }
+}
+
+/// #235/#245 — BOTH pages draw `/context` as a report, AND keep rendering afterwards.
+///
+/// The second half is the point. #235 shipped this rendering with no browser case, and the
+/// classic branch called `host.appendChild` where every sibling branch uses `into`; `var host`
+/// is declared by the `pre` branch further down and `var` hoists, so the name existed, was
+/// `undefined`, and threw a TypeError mid-render. The report itself looked fine in the places
+/// anyone checked — what vanished was the ELEVEN RECORDS AFTER IT, which is why this case
+/// asserts on what follows the report rather than on the report alone.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_render_a_context_report_and_keep_going() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 2994)] {
+        let fx = context_report_fixture(match surface {
+            Surface::Classic => "ctx-report-classic",
+            _ => "ctx-report-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        // A command card is collapsed by default on the shell (`button.command-head`,
+        // aria-expanded=false) and `open_everything` only reaches `.renderer.closed`, so the
+        // output has to be asked for the way a reader would ask for it.
+        for _ in 0..10 {
+            let clicked = eval(
+                &page.tab,
+                "(function(){ var b = [...document.querySelectorAll('[data-prompt-toggle]')].find(function (x) { return x.getAttribute('aria-expanded') === 'false'; }); if (!b) return 'done'; b.click(); return 'clicked'; })()",
+            );
+            if clicked.as_str() == Some("done") {
+                break;
+            }
+            settle();
+        }
+        let js = "(function(){ var r = document.querySelector('.ctx-report'); \
+             return JSON.stringify({ report: !!r, \
+               rows: document.querySelectorAll('.ctx-table tr').length, \
+               reads: document.body.textContent.indexOf('main.rs') >= 0, \
+               text: r ? r.textContent.slice(0, 200) : '' }); })()";
+        let got: serde_json::Value = eval(&page.tab, js)
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        assert_eq!(
+            got["report"],
+            serde_json::Value::Bool(true),
+            "{surface:?} draws /context as a report rather than terminal art: {got}"
+        );
+        assert!(
+            got["text"].as_str().unwrap_or("").contains("Messages"),
+            "{surface:?} shows the categories the client reported: {got}"
+        );
+        assert_eq!(
+            got["reads"],
+            serde_json::Value::Bool(true),
+            "{surface:?} KEEPS RENDERING after the report — the #245 regression threw here and \
+             silently dropped every record that followed, so the Read below it is the assertion \
+             that matters: {got}"
+        );
+    }
+}
+
 /// The audit as an ASSERTION: every structure one page renders, the other renders too.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]

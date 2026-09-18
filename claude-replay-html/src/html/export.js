@@ -153,7 +153,11 @@
     if (p.p === "ctx") {
       var ctx = el("div", null);
       ctx.innerHTML = shared.contextReportHtml(p, CLASSIC_CTX);
-      host.appendChild(ctx.firstElementChild);
+      // `into`, like every other branch here. It read `host` until #245: `var host` is declared
+      // by the `pre` branch BELOW, and `var` hoists to the top of the function, so the name
+      // existed and was `undefined` — no ReferenceError, just a TypeError deep in the render
+      // that took eleven records off the page with it.
+      into.appendChild(ctx.firstElementChild);
       return;
     }
     if (p.p === "pre") {

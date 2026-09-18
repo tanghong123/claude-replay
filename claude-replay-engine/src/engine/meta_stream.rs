@@ -769,7 +769,7 @@ pub enum AlignError {
     CheckpointMismatch,
 }
 
-/// How many bytes below an offset the [`Resume::window`] CRC covers. Small enough to hash on
+/// How many bytes below an offset the [`window_at`] CRC covers. Small enough to hash on
 /// every admission, large enough that "the same offset in a different file" cannot collide by
 /// luck on real transcripts.
 pub const WINDOW_BYTES: u64 = 64 * 1024;
