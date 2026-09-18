@@ -1001,6 +1001,29 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
             let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
                 return;
             };
+            // An API failure is not the model speaking (#236). The client writes it as an ordinary
+            // assistant message — "API Error", "Please run /login", "Login expired", "Prompt is too
+            // long" — and flags the RECORD `isApiErrorMessage`. Nothing read that flag, so the
+            // viewer attributed a login failure to the assistant: 175 such records across 39 of
+            // the transcripts on this machine, unfilterable and uncountable because nothing could
+            // tell them apart from prose. The flag is the transcript's own statement of what the
+            // message is, so it is read here, ahead of any phase or content inspection.
+            if v.get("isApiErrorMessage")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                for blk in content {
+                    if let Some(t) = blk.get("text").and_then(Value::as_str) {
+                        let t = t.trim();
+                        if !t.is_empty() {
+                            msgs.push(Message::SystemNote {
+                                text: t.to_string(),
+                            });
+                        }
+                    }
+                }
+                return;
+            }
             let phase = assistant_phase(&v, content);
             for blk in content {
                 match blk.get("type").and_then(|t| t.as_str()) {
@@ -1101,7 +1124,15 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 }
             }
         }
-        // Every other `system` subtype stays dropped.
+        // An API call that failed and was retried (#236). It carries no `content` — the story is
+        // in `error` and `retryAttempt`, so the note is composed rather than copied. This is the
+        // only record that explains a turn which appears to stall.
+        Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("api_error") => {
+            if let Some(text) = api_error_note(&v) {
+                msgs.push(Message::SystemNote { text });
+            }
+        }
+
         Some("user") => {
             let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
             let injected = injection_of(&v);
@@ -1227,12 +1258,52 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         });
                     }
                 }
+            } else if let Some(note) = a.and_then(hook_note) {
+                // A hook that FAILED or TIMED OUT (#236). Both arrive as attachments, but neither
+                // is an attachment in any useful sense — they are the run telling you a hook did
+                // not do what it was asked. 38 failures and ~8,000 timed-out tool calls were
+                // invisible before this.
+                msgs.push(Message::SystemNote { text: note });
             } else if let Some(att) = a.and_then(attachment_from_event) {
                 msgs.push(Message::Attachment(att));
             }
         }
         _ => {}
     }
+}
+
+/// The note an `api_error` record composes to — one function, so the streaming path and the
+/// golden reference cannot word it differently (#236).
+fn api_error_note(v: &Value) -> Option<String> {
+    if v.get("subtype").and_then(Value::as_str) != Some("api_error") {
+        return None;
+    }
+    let e = v.get("error");
+    let msg = e
+        .and_then(|e| e.get("message"))
+        .and_then(Value::as_str)
+        .or_else(|| e.and_then(|e| e.get("formatted")).and_then(Value::as_str))
+        .unwrap_or("API error")
+        .trim();
+    let mut text = format!("API error: {}", msg.lines().next().unwrap_or(msg));
+    if let Some(status) = e.and_then(|e| e.get("status")).and_then(Value::as_i64) {
+        text.push_str(&format!(" (HTTP {status})"));
+    }
+    match (
+        v.get("retryAttempt").and_then(Value::as_i64),
+        v.get("maxRetries").and_then(Value::as_i64),
+    ) {
+        (Some(n), Some(max)) => text.push_str(&format!(" \u{2014} retry {n} of {max}")),
+        (Some(n), None) => text.push_str(&format!(" \u{2014} retry {n}")),
+        _ => {}
+    }
+    if e.and_then(|e| e.get("isNetworkDown"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        text.push_str(", network down");
+    }
+    Some(text)
 }
 
 fn claude_keep_orphan(t: &str) -> bool {
@@ -1568,6 +1639,21 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
                     continue;
                 };
+                // #236 mirror: an API failure is the client's, not the model's.
+                if v.get("isApiErrorMessage")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    for blk in content {
+                        if let Some(t) = blk.get("text").and_then(Value::as_str) {
+                            let t = t.trim();
+                            if !t.is_empty() {
+                                out.push(Block::ToolResult(t.to_string()));
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let phase = assistant_phase(&v, content);
                 for blk in content {
                     match blk.get("type").and_then(|t| t.as_str()) {
@@ -1680,6 +1766,13 @@ pub(crate) fn parse_main<S: AsRef<str>>(
             {
                 if let Some(text) = v.get("content").and_then(Value::as_str) {
                     push_user_string(text, &mut out, &mut queue, &mut suppress);
+                }
+            }
+            // #236 mirror: an API call that failed and retried. Composed, not copied — the record
+            // carries no `content`.
+            Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("api_error") => {
+                if let Some(text) = api_error_note(&v) {
+                    out.push(Block::ToolResult(text));
                 }
             }
             // #108 mirror: the compaction boundary opens a summary-less divider, which the
@@ -1899,6 +1992,9 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             out.push(Block::UserText(p.to_string()));
                         }
                     }
+                } else if let Some(note) = a.and_then(hook_note) {
+                    // #236 mirror: a hook that failed, or one killed for running long.
+                    out.push(Block::ToolResult(note));
                 } else if let Some(att) = a.and_then(attachment_from_event) {
                     // A file/plan/edited/compact attachment — surface it so the reader
                     // can download the embedded content or reveal the path (see
@@ -1971,6 +2067,56 @@ pub(crate) fn parse_main<S: AsRef<str>>(
 /// (`edited_text_file`/`compact_file_reference`) get [`AttachmentContent::None`] (reveal). The
 /// `at`/`index` in `Deferred` are placeholders (0); `SessionAccumulator::advance_at` stamps the
 /// real byte offset one level up (where it's known).
+/// A hook that failed, or one the client killed for running too long (#236).
+///
+/// `hook_non_blocking_error` is the plain failure: `exitCode` 1 in every one measured, with the
+/// command's `stderr`. `hook_cancelled` is the timeout, and it is written TWICE for one event —
+/// once when the pre-hook is cut off and once when the post-hook is cancelled with it — so only
+/// the one that says `timedOut` is reported, which is one per affected tool call rather than two.
+/// A cancellation that did not time out is the ordinary consequence of something else failing and
+/// says nothing on its own.
+fn hook_note(a: &Value) -> Option<String> {
+    let s = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or("").trim();
+    let name = |n: &str| {
+        if n.is_empty() {
+            "a hook".to_string()
+        } else {
+            n.to_string()
+        }
+    };
+    match a.get("type").and_then(Value::as_str)? {
+        "hook_non_blocking_error" => {
+            let mut out = format!("{} failed", name(s("hookName")));
+            if let Some(code) = a.get("exitCode").and_then(Value::as_i64) {
+                out.push_str(&format!(" (exit {code})"));
+            }
+            let detail = if s("stderr").is_empty() {
+                s("stdout")
+            } else {
+                s("stderr")
+            };
+            if !detail.is_empty() {
+                out.push_str(": ");
+                out.push_str(detail.lines().next().unwrap_or(detail));
+            }
+            Some(out)
+        }
+        "hook_cancelled" if a.get("timedOut").and_then(Value::as_bool).unwrap_or(false) => {
+            let mut out = format!("{} timed out", name(s("hookName")));
+            match (
+                a.get("durationMs").and_then(Value::as_i64),
+                a.get("timeoutMs").and_then(Value::as_i64),
+            ) {
+                (Some(ran), Some(cap)) => out.push_str(&format!(" after {ran}ms (limit {cap}ms)")),
+                (Some(ran), None) => out.push_str(&format!(" after {ran}ms")),
+                _ => {}
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
 fn attachment_from_event(a: &Value) -> Option<Attachment> {
     fn basename(p: &str) -> String {
         p.rsplit('/').next().unwrap_or(p).to_string()
@@ -2817,6 +2963,87 @@ mod tests {
 {"type":"system","subtype":"compact_boundary","timestamp":"2026-06-30T03:00:01.000Z","content":"no metadata here"}
 "##;
         assert!(parse(jsonl).is_empty(), "{:?}", parse(jsonl));
+    }
+
+    /// #236: an API failure is the CLIENT's, not the model's. The record is an ordinary assistant
+    /// message flagged `isApiErrorMessage`, and the flag is read ahead of any phase or content
+    /// inspection — the transcript's own statement of what a message IS beats a sniff of its text.
+    #[test]
+    fn an_api_error_is_not_attributed_to_the_assistant() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-09-18T01:00:00.000Z","message":{"role":"user","content":"go"}}
+{"type":"assistant","isApiErrorMessage":true,"timestamp":"2026-09-18T01:00:01.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Please run /login \u00b7 API Error"}]}}
+{"type":"assistant","timestamp":"2026-09-18T01:00:02.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Back to work."}]}}
+"##;
+        let blocks = parse(jsonl);
+        let says = |needle: &str| -> Vec<&'static str> {
+            blocks
+                .iter()
+                .filter_map(|b| match b {
+                    Block::ToolResult(t) if t.contains(needle) => Some("note"),
+                    Block::AssistantText(t) if t.contains(needle) => Some("assistant"),
+                    Block::AssistantMessage { text, .. } if text.contains(needle) => {
+                        Some("assistant")
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            says("API Error"),
+            vec!["note"],
+            "the failure is a note about the run, and NOT one of the assistant's messages: {blocks:?}"
+        );
+        assert_eq!(
+            says("Back to work"),
+            vec!["assistant"],
+            "ordinary prose beside it still reads as the assistant: {blocks:?}"
+        );
+    }
+
+    /// #236: the failures the transcript records and the viewer used to drop — a hook that failed,
+    /// a hook the client killed for running long, and an API call that failed and retried.
+    ///
+    /// `hook_cancelled` is written TWICE for one timeout (the pre-hook cut off, the post-hook
+    /// cancelled with it), so the case carries both and asserts ONE note: at ~8,000 affected tool
+    /// calls in this store, one row per record would be twice the noise for the same event.
+    #[test]
+    fn hook_failures_and_api_errors_surface_once_each() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-09-18T01:00:00.000Z","message":{"role":"user","content":"go"}}
+{"type":"attachment","timestamp":"2026-09-18T01:00:01.000Z","attachment":{"type":"hook_non_blocking_error","hookName":"guard","hookEvent":"PreToolUse","command":"./guard.sh","exitCode":1,"stderr":"refused: dirty tree\nsecond line","durationMs":12}}
+{"type":"attachment","timestamp":"2026-09-18T01:00:02.000Z","attachment":{"type":"hook_cancelled","hookName":"slow","hookEvent":"PreToolUse","toolUseID":"call_1","timedOut":true,"durationMs":15023,"timeoutMs":15000}}
+{"type":"attachment","timestamp":"2026-09-18T01:00:03.000Z","attachment":{"type":"hook_cancelled","hookName":"slow","hookEvent":"PostToolUse","toolUseID":"call_1","timedOut":false,"durationMs":3}}
+{"type":"system","subtype":"api_error","timestamp":"2026-09-18T01:00:04.000Z","retryAttempt":2,"maxRetries":10,"error":{"message":"overloaded","status":529,"isNetworkDown":false}}
+"##;
+        let notes: Vec<String> = parse(jsonl)
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolResult(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes.len(),
+            3,
+            "one note per EVENT — the second `hook_cancelled` is the same timeout, not a new one: {notes:?}"
+        );
+        assert!(
+            notes[0].starts_with("guard failed (exit 1): refused: dirty tree"),
+            "{notes:?}"
+        );
+        assert!(
+            !notes[0].contains("second line"),
+            "the first line of stderr is the summary, not the whole stream: {notes:?}"
+        );
+        assert_eq!(
+            notes[1], "slow timed out after 15023ms (limit 15000ms)",
+            "{notes:?}"
+        );
+        assert_eq!(
+            notes[2], "API error: overloaded (HTTP 529) — retry 2 of 10",
+            "{notes:?}"
+        );
     }
 
     /// #235: a slash command the client wrote on a `system/local_command` record surfaces exactly
@@ -3781,6 +4008,20 @@ mod tests {
         }
 
         let corpus: &[&str] = &[
+            // #235/#236: the record shapes the two paths must agree on, and could not be held to
+            // before — a slash command on a `system` record, a hook failure, a hook timeout, an
+            // API error, and an assistant message flagged as one. An arm added to one path and
+            // not the other is invisible to this pin unless a fixture carries the shape, which is
+            // exactly how it went unnoticed twice.
+            r##"
+{"type":"user","timestamp":"2026-09-18T01:00:00.000Z","message":{"role":"user","content":"go"}}
+{"type":"system","subtype":"local_command","timestamp":"2026-09-18T01:00:01.000Z","content":"<command-name>/context</command-name>\n<command-args></command-args>"}
+{"type":"system","subtype":"local_command","timestamp":"2026-09-18T01:00:02.000Z","content":"<local-command-stdout>99.2k/1m tokens (10%)</local-command-stdout>"}
+{"type":"attachment","timestamp":"2026-09-18T01:00:03.000Z","attachment":{"type":"hook_non_blocking_error","hookName":"guard","hookEvent":"PreToolUse","exitCode":1,"stderr":"refused"}}
+{"type":"attachment","timestamp":"2026-09-18T01:00:04.000Z","attachment":{"type":"hook_cancelled","hookName":"slow","toolUseID":"c1","timedOut":true,"durationMs":15023,"timeoutMs":15000}}
+{"type":"system","subtype":"api_error","timestamp":"2026-09-18T01:00:05.000Z","retryAttempt":2,"maxRetries":10,"error":{"message":"overloaded","status":529}}
+{"type":"assistant","isApiErrorMessage":true,"timestamp":"2026-09-18T01:00:06.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"API Error"}]}}
+"##,
             // Injected meta / compact-summary are not turns.
             r##"
 {"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real question"}}
