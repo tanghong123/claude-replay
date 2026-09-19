@@ -1087,11 +1087,50 @@ fn tail_pulse_reads_the_claude_tail() {
     let p = tail_pulse(&ClaudeAdapter, &ended);
     assert_eq!(p.last, TailLast::AssistantEnded);
     assert!(p.last_tool_error, "the failed result is visible (#23)");
+    assert!(
+        !p.last_failure,
+        "a failed TOOL is not a failed TURN (#249): this turn ran a tool that failed and then          ended normally, which is `Error`, not `Failed`"
+    );
     assert!(p.final_text.as_deref().unwrap_or("").contains("retry"));
     let a: &dyn claude_replay_engine::adapter::TranscriptAdapter = &ClaudeAdapter;
     assert!(
         a.ends_with_question(p.final_text.as_deref().unwrap()),
         "the generic question default fires on the closing offer"
+    );
+
+    // #249 — the API killed the turn. Claude Code flags the record `isApiErrorMessage`, and
+    // before this the adapter turned it into a plain note that no signal could see, so the
+    // session read `Done`: it said the turn finished when it had died.
+    let died = tmp1(concat!(
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-14T10:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","isApiErrorMessage":true,"message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"API Error: Connection error."}]},"timestamp":"2026-08-14T10:00:05Z"}"#,
+        "\n",
+    ));
+    let p = tail_pulse(&ClaudeAdapter, &died);
+    assert!(
+        p.last_failure,
+        "the record's own `isApiErrorMessage` flag reaches the state signals"
+    );
+    assert!(
+        !p.last_tool_error,
+        "…and it is NOT reported as a tool failure — no tool ran"
+    );
+
+    // A turn that hit an API error and RECOVERED is not a failed turn: Claude Code retries, and
+    // prose after the error means work carried on. The flag tracks the last word, not "ever".
+    let recovered = tmp1(concat!(
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-14T10:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","isApiErrorMessage":true,"message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"API Error: overloaded"}]},"timestamp":"2026-08-14T10:00:05Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"Retried and finished."}]},"timestamp":"2026-08-14T10:00:09Z"}"#,
+        "\n",
+    ));
+    let p = tail_pulse(&ClaudeAdapter, &recovered);
+    assert!(
+        !p.last_failure,
+        "the retry carried the turn to a real ending, so it did not fail"
     );
 
     let queued = tmp1(concat!(

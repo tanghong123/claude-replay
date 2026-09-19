@@ -256,8 +256,26 @@ in exactly one bucket, keyed by the reason it displays:
 | Bucket | Tracker vocabulary | Reader's action |
 |---|---|---|
 | **active** | busy: `thinking`, `tool`, `starting`, `queued-prompt` | None. |
-| **blocked** (= needs attention) | a `wait` state — `permission`, `question`, `plan-approval` — or an idle reason that cut the agent's work short: `ended-question`, `error`, `stalled`, `exited-mid-work` | Act: answer, grant, approve, read the failure. |
+| **blocked** (= needs attention) | a `wait` state — `permission`, `question`, `plan-approval` — or an idle reason that cut the agent's work short: `ended-question`, `error`, `failed`, `stalled`, `exited-mid-work` | Act: answer, grant, approve, read the failure. |
 | **idle** | `done` (the turn ended with an answer), `exited` (no process) | Nothing owed. |
+
+**`failed` vs `error` (#249).** Two failures that mean different things, so they are two
+reasons and two words. `error` is a turn that ran a TOOL that failed and then ended anyway —
+"Tool failed". `failed` is a turn that DIED: the API errored, or the agent reported the turn
+itself failed, and it stopped there — "Turn failed". The distinction matters because before it
+existed there was no signal for the second at all: `last_tool_error` reads a failed tool result,
+an API error is not one, and the verdict fell through to `done`. A session that had been killed
+mid-work reported that it had finished cleanly, in the IDLE bucket. Measured over 50 real
+sessions on 2026-09-19: 21 contain an API-error message and 2 END on one. The carrier is
+`Message::SystemNote`'s `NoteKind` — the notes all render through one path and read as one blob
+of injected text, so anything that must treat one differently needs the kind rather than a guess
+at its wording. Codex's `task_complete`-with-error takes the same kind and so gets the same
+verdict.
+
+Note the kind rides the MESSAGE layer, which is the streaming path's; `parse_main` builds
+`Block::ToolResult` directly and both paths still produce the same block, which is why the
+equivalence pin stays green. It also means the RENDERER cannot yet tell one note from another —
+that wants a block-level carrier, and is the #236 follow-up rather than this.
 
 `needsPerson(row)` is `sessionBucket(row) === "blocked"` and nothing else; the app shell's
 attention count is the number of blocked rows that are not hidden, and both of its tooltips

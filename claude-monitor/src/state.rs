@@ -84,6 +84,8 @@ struct ContentFacts {
     final_text: Option<String>,
     queued_prompt: bool,
     last_tool_error: bool,
+    /// The turn's last word was a failure note (#249) — see `StateSignals::last_failure`.
+    last_failure: bool,
     ends_with_question: bool,
 }
 
@@ -155,6 +157,7 @@ impl StateTracker {
                     ends_with_question: content.ends_with_question,
                     final_line: content.final_text.as_deref().map(first_line_snippet),
                     last_tool_error: content.last_tool_error,
+                    last_failure: content.last_failure,
                 };
                 derive_state(&signals)
             };
@@ -261,6 +264,7 @@ impl StateTracker {
                     final_text: pulse.final_text,
                     queued_prompt: pulse.queued_prompt,
                     last_tool_error: pulse.last_tool_error,
+                    last_failure: pulse.last_failure,
                     ends_with_question,
                 },
             );

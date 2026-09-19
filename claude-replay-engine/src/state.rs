@@ -52,6 +52,11 @@ pub enum StateReason {
     EndedQuestion,
     /// idle — the turn ended right after a failed tool result.
     Error,
+    /// idle — the TURN ITSELF failed and stopped there: the API errored, or the agent reported
+    /// the turn failed (#249). Distinct from [`Error`](Self::Error), which is a turn that ran a
+    /// tool that failed and then ended anyway. This one did not finish; it died, and it needs
+    /// a person, so it buckets as blocked rather than idle.
+    Failed,
     /// idle — the turn ended cleanly.
     Done,
     /// busy — a user prompt is in, nothing observable yet (API call in flight).
@@ -74,6 +79,7 @@ impl StateReason {
             Self::Permission => "permission",
             Self::EndedQuestion => "ended-question",
             Self::Error => "error",
+            Self::Failed => "failed",
             Self::Done => "done",
             Self::Starting => "starting",
             Self::Stalled => "stalled",
@@ -160,6 +166,11 @@ pub struct StateSignals {
     pub final_line: Option<String>,
     /// The last tool result in the tail reported failure (#23).
     pub last_tool_error: bool,
+    /// The turn's last word was a FAILURE — the API failed, or the agent said the turn did
+    /// (#249). A turn that ends this way DIED; without this signal it reads as `Done`, because
+    /// an API error is not a tool result and nothing else in this struct can see it. Measured:
+    /// 21 of 50 real sessions contain one and 2 END on one.
+    pub last_failure: bool,
 }
 
 /// Rule 5's quiet threshold: a pending non-interactive tool with no live child reads
@@ -227,7 +238,11 @@ pub fn derive_state(s: &StateSignals) -> Verdict {
     // 6. Nothing open, turn ended: idle — the context is what the ending SAID.
     if s.last == TailLast::AssistantEnded {
         let detail = s.final_line.clone().unwrap_or_default();
-        return if s.ends_with_question {
+        return if s.last_failure {
+            // BEFORE the question and tool-error arms: a turn that died did not end by asking
+            // anything, and its final prose is the error text rather than an answer (#249).
+            Verdict::observed(Idle, StateReason::Failed, detail)
+        } else if s.ends_with_question {
             Verdict::observed(Idle, StateReason::EndedQuestion, detail)
         } else if s.last_tool_error {
             Verdict::observed(Idle, StateReason::Error, detail)
@@ -314,6 +329,10 @@ pub struct TailPulse {
     pub final_text: Option<String>,
     pub queued_prompt: bool,
     pub last_tool_error: bool,
+    /// The turn's last word was a FAILURE note — the API failed, or the agent reported the turn
+    /// itself failed (#249). Distinct from `last_tool_error`, which is a failed tool INSIDE a
+    /// turn that then carried on and ended normally.
+    pub last_failure: bool,
 }
 
 /// How many tail bytes [`tail_pulse`] decodes. Smaller than the liveness in-flight
@@ -383,11 +402,21 @@ pub fn tail_pulse(adapter: &dyn TranscriptAdapter, path: &Path) -> TailPulse {
                 last_user = false;
                 saw_conversation = true;
                 pulse.final_text = Some(t.clone());
+                // Prose after a failure means the turn RECOVERED — Claude Code retries an API
+                // error and carries on — so the flag tracks the last word, not "ever happened".
+                pulse.last_failure = false;
             }
             Message::AssistantMessage { text, .. } => {
                 last_user = false;
                 saw_conversation = true;
                 pulse.final_text = Some(text.clone());
+                pulse.last_failure = false;
+            }
+            Message::SystemNote {
+                kind: crate::engine::message::NoteKind::Failure,
+                ..
+            } => {
+                pulse.last_failure = true;
             }
             Message::ToolResult { is_error, .. } => {
                 pulse.last_tool_error = *is_error == Some(true);
@@ -517,6 +546,38 @@ mod tests {
         s.ends_with_question = false;
         s.last_tool_error = true;
         assert_eq!(derive_state(&s).reason, StateReason::Error);
+    }
+
+    /// #249 — a turn the API killed is not a turn that finished. Before this, an API error was
+    /// a `SystemNote` and nothing in the signals could see it: `last_tool_error` covers a failed
+    /// TOOL result, so the verdict fell through to `Done` and the session said it had finished
+    /// cleanly. Measured over 50 real sessions: 21 contain an API error and 2 END on one.
+    #[test]
+    fn a_turn_that_died_is_not_a_turn_that_finished() {
+        let mut s = base();
+        s.last = TailLast::AssistantEnded;
+        s.final_line = Some("API error: overloaded (HTTP 529)".into());
+        assert_eq!(
+            derive_state(&s).reason,
+            StateReason::Done,
+            "the shape of the bug: with no failure signal this reads as a clean finish"
+        );
+        s.last_failure = true;
+        let v = derive_state(&s);
+        assert_eq!(
+            (v.state, v.reason),
+            (AgentState::Idle, StateReason::Failed),
+            "…and with it, the turn is reported as having failed"
+        );
+
+        // It wins over the other two endings. A dying turn does not end by ASKING anything —
+        // its final prose is the error text, which `ends_with_question` can misread — and a
+        // tool that failed earlier is not the reason this turn stopped.
+        s.ends_with_question = true;
+        assert_eq!(derive_state(&s).reason, StateReason::Failed);
+        s.ends_with_question = false;
+        s.last_tool_error = true;
+        assert_eq!(derive_state(&s).reason, StateReason::Failed);
     }
 
     /// Rule 7 + fallback: a fresh prompt is busy; the same state aged past the stall

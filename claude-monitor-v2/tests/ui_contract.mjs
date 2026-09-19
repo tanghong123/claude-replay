@@ -421,7 +421,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // Seam (f) (#44): one state-label table. Every reason claude-replay-engine's StateReason
 // emits is worded once; the app shell's chip/status and the rail's tooltip read that word.
 {
-  const engineReasons = ["exited", "exited-mid-work", "question", "plan-approval", "queued-prompt", "tool", "thinking", "permission", "ended-question", "error", "done", "starting", "stalled"];
+  // `failed` joined in #249: a turn the API killed, as against `error`, a turn that ran a tool
+  // that failed and then ended anyway.
+  const engineReasons = ["exited", "exited-mid-work", "question", "plan-approval", "queued-prompt", "tool", "thinking", "permission", "ended-question", "error", "failed", "done", "starting", "stalled"];
   assert.deepEqual([...REASONS].sort(), [...engineReasons].sort(), "the table lists exactly the engine's reasons (StateReason::as_str)");
   for (const reason of engineReasons) {
     const { label } = displayState({ agentState: "idle", stateReason: reason });
@@ -433,6 +435,18 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(needsPerson({ agentState: "wait", stateReason: "permission" }), true);
   assert.equal(needsPerson({ agentState: "idle", stateReason: "stalled" }), true);
   assert.equal(needsPerson({ agentState: "busy", stateReason: "tool" }), false);
+  // #249 — a turn the API killed DIED; it did not finish, so it needs a person. Before the
+  // signal existed it fell through to `done` and sat in the idle bucket saying it had finished.
+  assert.equal(needsPerson({ agentState: "idle", stateReason: "failed" }), true);
+  assert.equal(sessionBucket({ agentState: "idle", stateReason: "failed" }), "blocked");
+  assert.equal(sessionBucket({ agentState: "idle", stateReason: "done" }), "idle", "…and a turn that really finished is still idle");
+  // Two different failures, two different words: `error` is a turn that ran a tool that failed
+  // and ended anyway; `failed` is a turn that stopped because it died.
+  assert.notEqual(
+    displayState({ agentState: "idle", stateReason: "failed" }).label,
+    displayState({ agentState: "idle", stateReason: "error" }).label,
+    "a failed TURN and a failed TOOL must not read the same"
+  );
   assert.deepEqual(denoteState({ agentState: "busy", stateReason: "tool" }), { label: "Running", tone: "busy" });
   assert.deepEqual(denoteState({ agentState: "wait", stateReason: "question", stateConfidence: "inferred" }), { label: "Awaiting an answer", tone: "wait inferred" });
   assert.deepEqual(denoteState({ agentState: "idle", stateReason: "ended-question" }), { label: "Awaiting reply", tone: "attention" });
@@ -467,7 +481,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     assert.equal(sessionBucket({ agentState: "idle", stateReason: reason }), bucket, `${reason} sorts by its reason`);
     assert.equal(needsPerson({ agentState: "idle", stateReason: reason }), bucket === "blocked", `${reason}: needs attention iff blocked`);
   }
-  assert.deepEqual(REASONS.filter(r => REASON_BUCKETS[r] === "blocked").sort(), ["ended-question", "error", "exited-mid-work", "permission", "plan-approval", "question", "stalled"], "blocked = the wait reasons and the idle reasons that cut the agent's work short");
+  assert.deepEqual(REASONS.filter(r => REASON_BUCKETS[r] === "blocked").sort(), ["ended-question", "error", "exited-mid-work", "failed", "permission", "plan-approval", "question", "stalled"], "blocked = the wait reasons and the idle reasons that cut the agent's work short");
   assert.deepEqual(REASONS.filter(r => REASON_BUCKETS[r] === "idle").sort(), ["done", "exited"], "idle = finished with nothing owed — a turn that ended with an answer is idle, not blocked");
   assert.deepEqual(REASONS.filter(r => REASON_BUCKETS[r] === "active").sort(), ["queued-prompt", "starting", "thinking", "tool"], "active = busy");
   assert.equal(sessionBucket({ agentState: "wait", stateReason: "never-heard-of" }), "blocked", "an unknown wait reason still blocks");

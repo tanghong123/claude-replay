@@ -1,8 +1,8 @@
 use claude_replay_engine::seam::{
     epoch_secs, parse_marker, parse_path_timed_for, relativize, AgentStatus, AssistantPhase,
     Attachment, AttachmentContent, AttachmentKind, Block, CompactTrigger, LinePreprocessor,
-    LoadedAttachment, Message, Metrics, PreprocessedLine, Shaping, SpanHint, SubAgent, TaskOp,
-    Todo, ToolDuration, ToolExecution, ToolStatus, UsdCost,
+    LoadedAttachment, Message, Metrics, NoteKind, PreprocessedLine, Shaping, SpanHint, SubAgent,
+    TaskOp, Todo, ToolDuration, ToolExecution, ToolStatus, UsdCost,
 };
 #[cfg(test)]
 use claude_replay_engine::seam::{
@@ -1315,11 +1315,15 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         Some("interrupted") | None => "Turn interrupted.".to_string(),
                         Some(reason) => format!("Turn aborted: {reason}"),
                     },
+                    kind: NoteKind::Plain,
                 }),
                 Some("task_complete") => {
                     if let Some(error) = payload.get("error").and_then(codex_error_text) {
                         msgs.push(Message::SystemNote {
                             text: format!("Turn failed: {error}"),
+                            // The turn DIED (#249) — the same meaning Claude's api_error
+                            // carries, so Codex gets the same state verdict for free.
+                            kind: NoteKind::Failure,
                         });
                     }
                 }

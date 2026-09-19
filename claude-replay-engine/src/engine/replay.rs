@@ -278,7 +278,7 @@ impl<'a> Replayer<'a> {
                     }
                     self.out.push(Block::UserText(text.clone()));
                 }
-                Message::SystemNote { text } => {
+                Message::SystemNote { text, .. } => {
                     self.out.push(Block::ToolResult(text.clone()));
                 }
                 Message::CompactBoundary {

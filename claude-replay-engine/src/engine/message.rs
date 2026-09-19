@@ -31,6 +31,27 @@ pub enum QueueOpKind {
     Dequeue,
 }
 
+/// What a [`Message::SystemNote`] IS — the notes all render through one path and read as one
+/// blob of injected text, so anything that has to treat one differently needs this rather than
+/// a guess at its wording (#249).
+///
+/// `Plain` is every note that carries no special meaning, and is the `Default`, so a call site
+/// that has nothing to say writes `NoteKind::default()` and behaves exactly as it did before.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NoteKind {
+    /// Ordinary injected content: an `isMeta` body, a compact summary, a task notification.
+    #[default]
+    Plain,
+    /// The TURN ITSELF failed, as opposed to a tool inside it. A turn that ends on one DIED; it
+    /// did not finish, and telling those apart is what #249 is about — `last_tool_error` already
+    /// covers a failed tool result, and nothing covered this.
+    ///
+    /// What qualifies today: Claude's `isApiErrorMessage` records and its `system`/`api_error`
+    /// records (#236), and Codex's `task_complete` carrying an error. Named for the meaning
+    /// rather than for the API, so an agent whose turns fail some other way fits here too.
+    Failure,
+}
+
 /// One entry in the canonical message log. Ordered exactly as the transcript's lines
 /// (and, within a line, its content items) appear.
 #[derive(Debug, Clone)]
@@ -87,7 +108,13 @@ pub enum Message {
     /// Injected/system content that isn't a human turn — a caveat-stripped `isMeta` body, a
     /// `/compact` summary, a task-notification's one-line summary, or an orphan skill body.
     /// Becomes a foldable `ToolResult` block. L1 has already reduced it to its final text.
-    SystemNote { text: String },
+    ///
+    /// `kind` says what the note IS, because two consumers need to tell one note from another
+    /// and neither can do it from the text (#249): the state machine, which must not read a
+    /// turn killed by an API error as a clean finish, and the renderer, which folds every note
+    /// into the same result gutter (the #236 follow-up). Defaults to [`NoteKind::Plain`], so a
+    /// note nobody has classified behaves exactly as it did before.
+    SystemNote { text: String, kind: NoteKind },
     /// A loaded skill's instruction body (L1-detected). The fold nests it into the most
     /// recent `Skill` tool block; if there is none, it falls back to `fallback` as a
     /// `SystemNote`-style result block. Only L1 knows the raw format; the fold only places it.

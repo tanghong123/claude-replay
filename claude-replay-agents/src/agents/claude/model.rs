@@ -118,6 +118,7 @@ fn classify_user_string(s: &str, injected: Injected) -> Option<Message> {
         let cleaned = cleaned.trim();
         return (!cleaned.is_empty()).then(|| Message::SystemNote {
             text: cleaned.to_string(),
+            kind: NoteKind::Plain,
         });
     }
     // A background-execution `<task-notification>`: collapse to its one-line summary/status.
@@ -127,6 +128,7 @@ fn classify_user_string(s: &str, injected: Injected) -> Option<Message> {
             if !line.is_empty() {
                 return Some(Message::SystemNote {
                     text: line.to_string(),
+                    kind: NoteKind::Plain,
                 });
             }
         }
@@ -164,7 +166,10 @@ fn classify_user_string(s: &str, injected: Injected) -> Option<Message> {
         .any(|c| !c.is_whitespace() && !c.is_control());
     if has_visible {
         if is_skill_body(&cleaned) {
-            return Some(Message::SystemNote { text: cleaned });
+            return Some(Message::SystemNote {
+                text: cleaned,
+                kind: NoteKind::Plain,
+            });
         }
         return Some(Message::UserText { text: cleaned });
     }
@@ -186,6 +191,7 @@ fn classify_user_array_text(text: &str, injected: Injected) -> Option<Message> {
     } else if injected.is_injected() {
         Message::SystemNote {
             text: text.to_string(),
+            kind: NoteKind::Plain,
         }
     } else {
         Message::UserText {
@@ -1045,6 +1051,9 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         if !t.is_empty() {
                             msgs.push(Message::SystemNote {
                                 text: t.to_string(),
+                                // The turn DIED here (#249). Without this the state machine
+                                // sees no failed TOOL result and calls the turn `Done`.
+                                kind: NoteKind::Failure,
                             });
                         }
                     }
@@ -1208,7 +1217,11 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
         // only record that explains a turn which appears to stall.
         Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("api_error") => {
             if let Some(text) = api_error_note(&v) {
-                msgs.push(Message::SystemNote { text });
+                // Same as the flagged-record arm above: this turn failed, it did not finish.
+                msgs.push(Message::SystemNote {
+                    text,
+                    kind: NoteKind::Failure,
+                });
             }
         }
         // The turn's own recap (#239). Verified against a real pair rather than assumed: the
@@ -1227,6 +1240,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 if !text.is_empty() {
                     msgs.push(Message::SystemNote {
                         text: text.to_string(),
+                        kind: NoteKind::Plain,
                     });
                 }
             }
@@ -1244,6 +1258,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 if !text.is_empty() {
                     msgs.push(Message::SystemNote {
                         text: text.to_string(),
+                        kind: NoteKind::Plain,
                     });
                 }
             }
@@ -1379,7 +1394,10 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 // is an attachment in any useful sense — they are the run telling you a hook did
                 // not do what it was asked. 38 failures and ~8,000 timed-out tool calls were
                 // invisible before this.
-                msgs.push(Message::SystemNote { text: note });
+                msgs.push(Message::SystemNote {
+                    text: note,
+                    kind: NoteKind::Plain,
+                });
             } else if let Some(att) = a.and_then(attachment_from_event) {
                 msgs.push(Message::Attachment(att));
             }

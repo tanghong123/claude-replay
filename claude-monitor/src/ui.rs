@@ -459,6 +459,7 @@ mod state_label_tests {
             Permission,
             EndedQuestion,
             Error,
+            Failed,
             Done,
             Starting,
             Stalled,
@@ -468,7 +469,8 @@ mod state_label_tests {
             // Exhaustive by construction: a new variant fails to compile here until listed.
             match reason {
                 Exited | ExitedMidWork | Question | PlanApproval | QueuedPrompt | Tool
-                | Thinking | Permission | EndedQuestion | Error | Done | Starting | Stalled => (),
+                | Thinking | Permission | EndedQuestion | Error | Failed | Done | Starting
+                | Stalled => (),
             }
             let key = StateReason::as_str(reason);
             let quoted = format!("\"{key}\":");
