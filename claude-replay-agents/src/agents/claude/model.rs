@@ -1536,8 +1536,64 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
             cwd: cwd.to_string(),
             execution: None,
             published: publish.map(Box::new),
+            asked: asked_from_input(name, input).map(Box::new),
         }
     }
+}
+
+/// #255: the questions an `AskUserQuestion` call put to the reader, lifted from its INPUT.
+///
+/// The transcript records every question with its header, its multi-select flag and every
+/// option's label AND description; the block used to keep only `target`, which is the FIRST
+/// question's text (`tool_target`). So a two-question call offering three options each showed 2
+/// of the 8 things the asker wrote, and the reader could not see what was declined.
+///
+/// `None` for every other tool, and for a malformed input — a call with no `questions` array is
+/// not an ask, and inventing an empty one would draw an empty card.
+fn asked_from_input(name: &str, input: &Value) -> Option<Asked> {
+    if name != "AskUserQuestion" {
+        return None;
+    }
+    let questions: Vec<AskedQuestion> = input
+        .get("questions")?
+        .as_array()?
+        .iter()
+        .filter_map(|q| {
+            let text = q.get("question").and_then(Value::as_str)?;
+            Some(AskedQuestion {
+                header: q
+                    .get("header")
+                    .and_then(Value::as_str)
+                    .map(decode_entities)
+                    .unwrap_or_default(),
+                question: decode_entities(text),
+                multi_select: q
+                    .get("multiSelect")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                options: q
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .map(|os| {
+                        os.iter()
+                            .filter_map(|o| {
+                                let label = o.get("label").and_then(Value::as_str)?;
+                                Some(AskedOption {
+                                    label: decode_entities(label),
+                                    description: o
+                                        .get("description")
+                                        .and_then(Value::as_str)
+                                        .map(decode_entities)
+                                        .unwrap_or_default(),
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
+        })
+        .collect();
+    (!questions.is_empty()).then_some(Asked { questions })
 }
 
 /// The half of an `Artifact` publish that the CALL knows: what to call it, what it is, and the
@@ -1862,6 +1918,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 cwd: String::new(),
                                 execution: None,
                                 published: None,
+                                asked: None,
                             });
                         }
                         Some("advisor_tool_result") => {
@@ -1950,6 +2007,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     cwd: cwd.clone(),
                                     execution: None,
                                     published: None,
+                                    asked: None,
                                 });
                             }
                             let idx = out.len() - 1;
@@ -3162,6 +3220,71 @@ mod tests {
             still.is_empty(),
             "the re-enqueued item is the only thing left to pop: {after:?}"
         );
+    }
+
+    /// #255: an `AskUserQuestion` call carries every question it put and every option it
+    /// offered — header, multi-select flag, and each option's label AND description. The block
+    /// used to keep only `target`, which is the FIRST question's text, so a two-question call
+    /// offering three options each surfaced 2 of the 8 things the asker wrote.
+    #[test]
+    fn an_ask_carries_every_question_and_every_option() {
+        let jsonl = r##"
+{"type":"assistant","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":[{"type":"tool_use","id":"a1","name":"AskUserQuestion","input":{"questions":[{"header":"Release","question":"Cut it now, or hold?","multiSelect":false,"options":[{"label":"Cut now","description":"Tag and push both remotes."},{"label":"Hold","description":"Leave it on main."}]},{"header":"Scope","question":"Which crates?","multiSelect":true,"options":[{"label":"engine"},{"label":"html","description":"the page too"}]}]}}]}}
+"##;
+        let blocks = parse(jsonl);
+        let Some(Block::ToolUse { asked, target, .. }) = blocks
+            .iter()
+            .find(|b| matches!(b, Block::ToolUse { name, .. } if name == "AskUserQuestion"))
+        else {
+            panic!("the call is there: {blocks:?}")
+        };
+        assert_eq!(
+            target, "Cut it now, or hold? +1",
+            "the head is unchanged: the first question, and `+1` for the one it does not show \
+             — which is how a reader knew there was more, and all they knew"
+        );
+        let a = asked
+            .as_deref()
+            .expect("…and the rest is no longer thrown away");
+        assert_eq!(a.questions.len(), 2);
+        assert_eq!(a.questions[0].header, "Release");
+        assert!(!a.questions[0].multi_select);
+        assert_eq!(
+            a.questions[0]
+                .options
+                .iter()
+                .map(|o| (o.label.as_str(), o.description.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Cut now", "Tag and push both remotes."),
+                ("Hold", "Leave it on main."),
+            ],
+            "every option, with the description where the trade-off is written"
+        );
+        assert!(a.questions[1].multi_select, "the flag survives");
+        assert_eq!(
+            a.questions[1].options[0].description, "",
+            "an option with no description carries an empty one rather than vanishing"
+        );
+    }
+
+    /// …and no other tool grows the payload, nor does a malformed ask: an empty card is worse
+    /// than none.
+    #[test]
+    fn only_an_ask_carries_questions() {
+        let jsonl = r##"
+{"type":"assistant","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls","questions":[{"question":"not an ask"}]}}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:01.000Z","message":{"content":[{"type":"tool_use","id":"a2","name":"AskUserQuestion","input":{"questions":[]}}]}}
+"##;
+        for b in parse(jsonl) {
+            if let Block::ToolUse { name, asked, .. } = b {
+                assert!(
+                    asked.is_none(),
+                    "{name} must carry no questions: a non-ask tool that happens to have a \
+                     `questions` key is not an ask, and an ask with none is not one either"
+                );
+            }
+        }
     }
 
     /// #242(a): a `queue-operation` carries its `reason` onto the message. This is DATA only —

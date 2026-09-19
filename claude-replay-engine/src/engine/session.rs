@@ -522,6 +522,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let blocks = vec![
             Block::UserText("hi".into()), // turn 1

@@ -293,6 +293,7 @@ mod tests {
                 }),
             }),
             published: None,
+            asked: None,
         };
         let mut o = Map::new();
         block_fields(&b, &mut o);

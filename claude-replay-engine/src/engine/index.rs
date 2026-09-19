@@ -178,6 +178,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         }
     }
 

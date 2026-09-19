@@ -12550,3 +12550,94 @@ fn both_shells_say_how_long_a_turn_took_and_stay_silent_when_unrecorded() {
         );
     }
 }
+
+/// An `AskUserQuestion` call and the answers that came back (#255).
+fn ask_question_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: ask me about the release", &now_minus(200));
+    t += &harness::ask_question_at("ask1", &now_minus(198));
+    t += &harness::ask_question_answer("ask1", &now_minus(150));
+    t += &assistant_at("Holding, with engine and tui.", &now_minus(140));
+    let path = stores.claude_session(name, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #255 — the card shows every question that was put and every option that was offered, with
+/// the pick marked, on BOTH pages.
+///
+/// The owner: "does the transcript carry all the questions as well as corresponding choices
+/// being offered to the user? I don't see them in the agent-monitor." It did carry all of it.
+/// The card showed the state, the first question's text and the labels that came back — so on
+/// this two-question call, 2 of the 8 things the asker wrote, and none of the options that were
+/// DECLINED, which is where the trade-off is written.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_show_every_question_and_every_option_that_was_offered() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3010)] {
+        let fx = ask_question_fixture(match surface {
+            Surface::Classic => "ask-opts-classic",
+            _ => "ask-opts-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        // Read the CARD, not the page text: the raw result prose also contains the answers, and
+        // the card sits inside a fold whose text `innerText` would skip entirely.
+        let (card, chip) = match surface {
+            Surface::Classic => (".irq", ".irq-answer"),
+            Surface::AppShell => (".input-request", ".input-answer"),
+        };
+        let js = format!(
+            "(function(){{ var c = document.querySelector('{card}'); if (!c) return JSON.stringify({{ miss: 'no card' }}); \
+               var t = c.textContent; \
+               return JSON.stringify({{ \
+                 headers: ['Release','Crates'].filter(function (h) {{ return t.indexOf(h) >= 0; }}), \
+                 options: ['Cut now','Hold','engine','html','tui'].filter(function (o) {{ return t.indexOf(o) >= 0; }}), \
+                 descriptions: ['Tag and push both remotes.','Leave it unreleased.','the terminal.'].filter(function (d) {{ return t.indexOf(d) >= 0; }}), \
+                 ticked: [...c.querySelectorAll('{chip}')].filter(function (e) {{ return e.textContent.indexOf('✓') >= 0; }}).length }}); }})()"
+        );
+        let seen: serde_json::Value = eval(&page.tab, &js)
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let got = |k: &str| -> Vec<String> {
+            seen[k]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        };
+        assert_eq!(
+            got("headers").len(),
+            2,
+            "{surface:?}: BOTH questions are named, not just the first: {seen}"
+        );
+        assert_eq!(
+            got("options").len(),
+            5,
+            "{surface:?}: every option is shown, including the ones declined: {seen}"
+        );
+        assert_eq!(
+            got("descriptions").len(),
+            3,
+            "{surface:?}: an option's description comes with it — that is where the asker wrote \
+             the trade-off: {seen}"
+        );
+        assert_eq!(
+            seen["ticked"].as_i64(),
+            Some(3),
+            "{surface:?}: exactly the three chosen options are ticked — Hold, engine and tui — \
+             so a multi-select answer marks both of its picks and the single-select marks one: \
+             {seen}"
+        );
+    }
+}

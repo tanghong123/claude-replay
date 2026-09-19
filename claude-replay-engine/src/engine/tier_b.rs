@@ -276,6 +276,7 @@ mod tests {
                     cwd: String::new(),
                     execution: None,
                     published: None,
+                    asked: None,
                 }],
             },
             Block::ToolUse {
@@ -288,6 +289,7 @@ mod tests {
                 cwd: String::new(),
                 execution: None,
                 published: None,
+                asked: None,
             },
             Block::SubAgent(SubAgent {
                 agent_id: "aXYZ".into(),

@@ -443,6 +443,46 @@ pub fn input_request_answer(id: &str, field: &str, label: &str, ts: &str) -> Str
     )
 }
 
+/// #255: Claude's own `AskUserQuestion` — two questions, one single-select and one
+/// multi-select, each with options carrying descriptions. This is the shape the transcript
+/// records and the viewer used to throw away. Built with `serde_json` rather than by hand:
+/// a malformed line is silently DROPPED by the parser, which reads as a missing feature.
+pub fn ask_question_at(id: &str, ts: &str) -> String {
+    let line = serde_json::json!({
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {"role": "assistant", "content": [{
+            "type": "tool_use", "id": id, "name": "AskUserQuestion",
+            "input": {"questions": [
+                {"header": "Release", "question": "Cut it now, or hold on main?", "multiSelect": false,
+                 "options": [
+                    {"label": "Cut now", "description": "Tag and push both remotes."},
+                    {"label": "Hold", "description": "Leave it unreleased."}]},
+                {"header": "Crates", "question": "Which crates go in?", "multiSelect": true,
+                 "options": [
+                    {"label": "engine", "description": "the fold."},
+                    {"label": "html", "description": "the page."},
+                    {"label": "tui", "description": "the terminal."}]}]}}]},
+    });
+    format!("{line}\n")
+}
+
+/// The answers, in the prose shape Claude's client writes them: `"question"="answer"` pairs,
+/// the question TRUNCATED and a multi-select answer comma-joined — both of which the
+/// projection has to cope with (#255).
+pub fn ask_question_answer(id: &str, ts: &str) -> String {
+    // The client's real sentence — the projection keys off "answered:", so a fixture without
+    // it parses to no answers at all and the card silently shows an unanswered question.
+    let prose = "Your questions have been answered: \"Cut it now, or hold\"=\"Hold\" \"Which crates go in\"=\"engine, tui\". You can now continue.";
+    let line = serde_json::json!({
+        "type": "user",
+        "timestamp": ts,
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": id, "content": prose}]},
+    });
+    format!("{line}\n")
+}
+
 /// A sub-agent spawn: the `Agent` tool call the parent makes (the spawn chip).
 pub fn agent_spawn(call_id: &str, subagent_type: &str, s: u32) -> String {
     format!(

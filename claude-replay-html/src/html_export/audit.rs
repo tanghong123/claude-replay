@@ -425,6 +425,7 @@ fn tool_use(
         cwd: String::new(),
         execution: None,
         published: None,
+        asked: None,
     }
 }
 

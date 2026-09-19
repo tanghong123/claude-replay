@@ -1051,6 +1051,7 @@ fn codex_build_tool(id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block
         cwd: cwd.to_string(),
         execution,
         published: None,
+        asked: None,
     }
 }
 
@@ -1814,6 +1815,7 @@ fn parse_lines<S: AsRef<str>>(
                             cwd: cwd.clone(),
                             execution: None,
                             published: None,
+                            asked: None,
                         });
                         let index = out.len() - 1;
                         if !call_id.is_empty() {
@@ -2151,6 +2153,7 @@ fn apply_output(block: &mut Block, output: String) {
                     cwd: String::new(),
                     execution: None,
                     published: None,
+                    asked: None,
                 };
             }
         }

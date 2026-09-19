@@ -60,6 +60,47 @@ pub struct Published {
     pub icon: String,
 }
 
+/// The questions a call put to the reader, with every option it offered (#255).
+///
+/// The transcript records all of it — each question's header, whether it took more than one
+/// answer, and every option's label AND description — while the viewer used to show the first
+/// question's text and the labels that came back. On a two-question call offering three options
+/// each, that is 2 of the 8 things the asker wrote.
+///
+/// Carried as a fact ABOUT the call for the same reason [`Published`] is: the questions are the
+/// call's own input, and a block of their own would break the turn into pieces that are not
+/// what happened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Asked {
+    /// The questions, in the order they were put.
+    pub questions: Vec<AskedQuestion>,
+}
+
+/// One question of an [`Asked`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskedQuestion {
+    /// The short chip the asker labelled it with ("Project space", "Release").
+    pub header: String,
+    /// The question itself.
+    pub question: String,
+    /// Whether more than one option could be chosen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi_select: bool,
+    /// Every option offered — label and description both, because the description is where the
+    /// trade-off was written.
+    pub options: Vec<AskedOption>,
+}
+
+/// One option of an [`AskedQuestion`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskedOption {
+    /// What the option was called — the text an answer comes back as.
+    pub label: String,
+    /// What it meant; empty when the asker wrote none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
 impl Published {
     /// How the artifact reads in a tool header: `🧭 rowt-deck`, or just the name when the
     /// call chose no emoji.
@@ -201,6 +242,10 @@ pub enum Block {
         /// [`Published`]). `None` for every ordinary tool — which is all of them but one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         published: Option<Box<Published>>,
+        /// What this call ASKED, when it put a choice to the reader (see [`Asked`]). `None` for
+        /// every tool but `AskUserQuestion` (#255).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        asked: Option<Box<Asked>>,
     },
     /// A tool result with no matching tool_use (rare).
     ToolResult(String),
@@ -793,6 +838,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let blocks = vec![
             Block::Thinking {
@@ -837,6 +883,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let img = || {
             Block::Attachment(Attachment {
@@ -943,6 +990,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         assert_eq!(fold_key(&mk("Read")), "read");
         assert_eq!(fold_key(&mk("Grep")), "read");
@@ -978,6 +1026,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let bare = Block::Thinking {
             text: "x".into(),

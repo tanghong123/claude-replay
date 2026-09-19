@@ -1315,6 +1315,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let lines = render_one(&b, 200, Hl::Styled);
         let t = texts(&lines);
@@ -1407,6 +1408,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1454,6 +1456,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let e = texts(&render_one(&block, 100, Hl::Styled));
         let all = e.join("\n");
@@ -1490,6 +1493,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
 
         // Collapsed → 10-line preview + "… +15 lines".
@@ -1580,6 +1584,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let t = texts(&lines);
@@ -1630,6 +1635,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1679,6 +1685,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         }
     }
 
@@ -1707,6 +1714,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let rt = texts(&render_collapsed(&read)).join("\n");
         assert!(
@@ -2082,6 +2090,7 @@ mod tests {
                 cwd: String::new(),
                 execution: None,
                 published: None,
+                asked: None,
             },
             Block::ToolUse {
                 name: "Read".into(),
@@ -2093,6 +2102,7 @@ mod tests {
                 cwd: String::new(),
                 execution: None,
                 published: None,
+                asked: None,
             },
         ];
         let turn = Block::Thinking {
@@ -2133,6 +2143,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines

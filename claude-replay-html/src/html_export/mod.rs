@@ -417,11 +417,11 @@ fn proposed_plan_body(text: &str) -> Option<&str> {
 /// `request_user_input` already renders (#237).
 ///
 /// The client writes the outcome as one sentence — `Your questions have been answered:
-/// "<question>"="<choice>".` — so the pairs are parsed out of it. What is NOT here is the OPTIONS
-/// the reader was offered: those live in the call's `input`, and `Block::ToolUse` carries no raw
-/// input, so they never reach this crate. Carrying them wants the same treatment `published` got
-/// (an adapter-lifted `Option<Box<…>>` on the variant) and is filed separately rather than
-/// bolted on: it touches every construction site of the variant.
+/// "<question>"="<choice>".` — so the pairs are parsed out of it.
+///
+/// The OPTIONS the reader was offered are no longer missing (#255): they live in the call's
+/// `input`, and the variant now carries them as `asked`, lifted by the adapter exactly the way
+/// `published` is. `asked_section` folds them in beside these answers, with the pick marked.
 fn ask_user_question_projection(output: &str) -> Option<Value> {
     let body = output.split_once("answered:")?.1;
     // Walk the `"<question>"="<answer>"` pairs. Splitting on a separator was tried and let the
@@ -460,6 +460,64 @@ fn ask_user_question_projection(output: &str) -> Option<Value> {
         "resolved": !rows.is_empty(),
         "answers": rows,
     }))
+}
+
+/// #255: what the call OFFERED, folded into the interaction card beside what came back.
+///
+/// The transcript records every question with its header, its multi-select flag and every
+/// option's label AND description; the card used to show the first question's text and the
+/// labels that were eventually picked. On a two-question call offering three options each, that
+/// is 2 of the 8 things the asker wrote, and the options that were DECLINED — where the
+/// trade-off is written — never reached the reader at all.
+///
+/// `chosen` is matched per QUESTION, and two things about the recorded answer make that less
+/// obvious than it looks (both measured on a real four-question call):
+///
+///   - the answer row's `id` is the question text as the RESULT prose carried it, which is
+///     TRUNCATED — so a row belongs to the question it is a prefix of, not one that equals it;
+///   - a multi-select answer comes back COMMA-JOINED ("okr, dms-mcp-server"), so an option is
+///     chosen when it matches the whole answer or any comma-separated part of it.
+///
+/// Matching per question rather than against every answer also stops an option ticking because
+/// a DIFFERENT question happened to be answered with the same word.
+fn asked_section(asked: &crate::model::Asked, answers: &[Value]) -> Value {
+    let row_for = |question: &str| -> Vec<String> {
+        answers
+            .iter()
+            .find(|a| {
+                a.get("id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .is_some_and(|id| !id.is_empty() && question.starts_with(id))
+            })
+            .and_then(|a| a.get("label").and_then(Value::as_str))
+            .map(|label| {
+                let mut parts: Vec<String> =
+                    label.split(", ").map(|p| p.trim().to_string()).collect();
+                parts.push(label.trim().to_string());
+                parts
+            })
+            .unwrap_or_default()
+    };
+    Value::Array(
+        asked
+            .questions
+            .iter()
+            .map(|q| {
+                let picked = row_for(&q.question);
+                json!({
+                    "header": q.header,
+                    "question": q.question,
+                    "multi": q.multi_select,
+                    "options": q.options.iter().map(|o| json!({
+                        "label": o.label,
+                        "description": o.description,
+                        "chosen": picked.iter().any(|p| p == &o.label),
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn request_user_input_projection(output: &str) -> Option<Value> {
@@ -1080,6 +1138,7 @@ impl Emitter<'_> {
                 cwd,
                 execution,
                 published,
+                asked,
                 ..
             } => {
                 o.insert("id".into(), json!(self.block_id()));
@@ -1105,14 +1164,20 @@ impl Emitter<'_> {
                 if name.eq_ignore_ascii_case("request_user_input")
                     || name.eq_ignore_ascii_case("AskUserQuestion")
                 {
-                    head.insert(
-                        "interaction".into(),
-                        json!({
-                            "kind": "request_user_input",
-                            "resolved": false,
-                            "answers": [],
-                        }),
-                    );
+                    // #255: the questions and options go on HERE, where every call gets them —
+                    // answered or not. The result-driven projection below replaces this card
+                    // when an answer exists, and re-attaches the same section with the picks
+                    // marked. Putting them only there would have missed a call still waiting,
+                    // which is exactly when seeing the choice is most use.
+                    let mut card = json!({
+                        "kind": "request_user_input",
+                        "resolved": false,
+                        "answers": [],
+                    });
+                    if let (Some(a), Some(obj)) = (asked, card.as_object_mut()) {
+                        obj.insert("asked".into(), asked_section(a, &[]));
+                    }
+                    head.insert("interaction".into(), card);
                 }
                 head.insert(
                     "dot".into(),
@@ -1276,10 +1341,35 @@ impl Emitter<'_> {
                             } else {
                                 None
                             };
-                            if let Some(interaction) = answered {
+                            if let Some(mut interaction) = answered {
+                                // #255: the questions and their options ride along, with the
+                                // pick marked — so the card shows what was on offer, not just
+                                // what was taken.
+                                if let (Some(a), Some(obj)) = (asked, interaction.as_object_mut()) {
+                                    let rows = obj
+                                        .get("answers")
+                                        .and_then(Value::as_array)
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    obj.insert("asked".into(), asked_section(a, &rows));
+                                }
                                 head.insert("interaction".into(), interaction);
                             }
                             body.push(pre_part(out));
+                        } else if let Some(a) = asked {
+                            // #255: nothing has come back yet — this is a question the reader
+                            // is being asked RIGHT NOW. Showing the options while they are live
+                            // is the whole point of surfacing them; waiting for the answer to
+                            // draw the choice would be too late to be useful.
+                            head.insert(
+                                "interaction".into(),
+                                json!({
+                                    "kind": "request_user_input",
+                                    "resolved": false,
+                                    "answers": [],
+                                    "asked": asked_section(a, &[]),
+                                }),
+                            );
                         }
                     }
                 }
@@ -2298,6 +2388,72 @@ impl AssetSink {
 
 #[cfg(test)]
 mod tests {
+    /// #255: which option a question's answer picked, and the two things about the recorded
+    /// answer that make it less obvious than it looks. Both were measured on one real
+    /// four-question call before the rule was written.
+    #[test]
+    fn an_answer_ticks_its_own_question_s_option_however_it_was_recorded() {
+        use crate::model::{Asked, AskedOption, AskedQuestion};
+        let q = |header: &str, question: &str, multi: bool, opts: &[&str]| AskedQuestion {
+            header: header.into(),
+            question: question.into(),
+            multi_select: multi,
+            options: opts
+                .iter()
+                .map(|l| AskedOption {
+                    label: (*l).into(),
+                    description: String::new(),
+                })
+                .collect(),
+        };
+        let asked = Asked {
+            questions: vec![
+                q("MCP", "Which MCP servers?", true, &["okr", "dms", "none"]),
+                q(
+                    "Release",
+                    "Cut it now, or hold?",
+                    false,
+                    &["Cut now", "Hold"],
+                ),
+                // Its option shares a label with the first question's — a naive match against
+                // every answer would tick it.
+                q("Extras", "Anything else?", false, &["okr", "nothing"]),
+            ],
+        };
+        // The row ids are the question text as the RESULT prose carried it — TRUNCATED.
+        let answers = vec![
+            serde_json::json!({ "id": "Which MCP serv", "label": "okr, dms" }),
+            serde_json::json!({ "id": "Cut it now, or", "label": "Hold" }),
+            serde_json::json!({ "id": "Anything else?", "label": "nothing" }),
+        ];
+        let out = asked_section(&asked, &answers);
+        let chosen = |i: usize| -> Vec<String> {
+            out[i]["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|o| o["chosen"] == serde_json::json!(true))
+                .map(|o| o["label"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(
+            chosen(0),
+            vec!["okr".to_string(), "dms".to_string()],
+            "a multi-select answer comes back COMMA-JOINED, so both of its options tick"
+        );
+        assert_eq!(
+            chosen(1),
+            vec!["Hold".to_string()],
+            "a truncated row id still finds the question it is a prefix of"
+        );
+        assert_eq!(
+            chosen(2),
+            vec!["nothing".to_string()],
+            "and matching is per QUESTION: the `okr` here is NOT ticked by the first \
+             question's answer"
+        );
+    }
+
     use super::{preformatted_runs, user_body_parts};
 
     /// Helper: the `p` tag of each body part a user turn emits.
@@ -2572,6 +2728,7 @@ mod tests {
                 cwd: String::new(),
                 execution: None,
                 published: None,
+                asked: None,
             },
             Block::UserText("second question".into()),
             Block::AssistantText("done".into()),
@@ -2667,6 +2824,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let blocks = vec![
             Block::UserText("first".into()),
@@ -2768,6 +2926,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         }
     }
 
@@ -3331,6 +3490,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         }
     }
 
@@ -3421,6 +3581,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         }
     }
 
@@ -3979,6 +4140,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         assert_eq!(out[0]["head"]["interaction"]["kind"], "request_user_input");
@@ -4022,6 +4184,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         let diff = out[0]["body"]
@@ -4139,6 +4302,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         let num = out[0]["body"]
@@ -4197,6 +4361,7 @@ mod tests {
                 cwd: String::new(),
                 execution: None,
                 published: None,
+                asked: None,
             };
             stream(&[block], &FoldPolicy::none())[0]["head"]["chips"].clone()
         };
@@ -4314,6 +4479,7 @@ mod tests {
                 cwd: String::new(),
                 execution: None,
                 published: None,
+                asked: None,
             },
             bash("ls -la", "out"),
         ];
@@ -4434,6 +4600,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         }];
         let out = stream(&blocks, &FoldPolicy::none());
         assert_eq!(
@@ -4458,6 +4625,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         }];
         assert_eq!(
             stream(&odd, &FoldPolicy::none())[0]["head"]["path"],
@@ -4479,6 +4647,7 @@ mod tests {
                 cwd: String::new(),
                 execution: None,
                 published: None,
+                asked: None,
             },
             bash("ls -la", "out"),
         ];
@@ -4507,6 +4676,7 @@ mod tests {
             cwd: String::new(),
             execution: None,
             published: None,
+            asked: None,
         };
         // reveal = false (the `--dump-html` shape): the header still names the file
         // but carries no absolute `path` for the browser to link/reveal.
