@@ -710,8 +710,14 @@ pub(crate) fn is_activity_tool(name: &str) -> bool {
 /// and the task-bookkeeping tools (TaskUpdate & co — CC renders them
 /// invisibly but they still split the span; we keep their blocks visible). The one
 /// exception: `Attachment` blocks are span-transparent — CC doesn't render them and
-/// its spans demonstrably carry across one — so they emit in place without flushing
-/// (the span's summary then lands after the attachment, at the span's true end).
+/// its spans demonstrably carry across one — so they never flush the run.
+///
+/// They are HELD until the run flushes, and emitted directly after it (#256). They used to go
+/// straight to `out`, which the comment here called "in place" — but the run has not been
+/// written yet at that moment, so in practice every attachment was emitted AHEAD of the whole
+/// span. A screenshot taken twenty calls into a turn came to rest against the user's prompt,
+/// which is what #256 reported. Holding them keeps the run un-split (#90) and puts them back
+/// on the side of the run they actually happened on.
 /// Thinking texts join blank-line separated; durations sum; even a LONE activity
 /// tool folds (CC never leaves one expanded).
 pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
@@ -719,19 +725,23 @@ pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
         texts: &mut Vec<String>,
         dur: &mut Option<u64>,
         tools: &mut Vec<Block>,
+        held: &mut Vec<Block>,
         out: &mut Vec<Block>,
     ) {
-        if texts.is_empty() && tools.is_empty() {
-            return;
+        if !texts.is_empty() || !tools.is_empty() {
+            out.push(Block::Thinking {
+                text: std::mem::take(texts).join("\n\n"),
+                duration_secs: dur.take(),
+                tools: std::mem::take(tools),
+            });
         }
-        out.push(Block::Thinking {
-            text: std::mem::take(texts).join("\n\n"),
-            duration_secs: dur.take(),
-            tools: std::mem::take(tools),
-        });
+        // Whatever the run produced follows it, in the order it happened.
+        out.append(held);
     }
     let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
     let (mut texts, mut dur, mut tools) = (Vec::new(), None::<u64>, Vec::new());
+    // Attachments seen since the run opened; emitted by `flush`, after the run's own block.
+    let mut held: Vec<Block> = Vec::new();
     for b in blocks {
         match b {
             Block::Thinking {
@@ -749,14 +759,18 @@ pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
                 }
             }
             Block::ToolUse { ref name, .. } if is_activity_tool(name) => tools.push(b),
+            // #256: inside an open run it waits for the run; with no run open there is nothing
+            // to wait for, and it emits exactly where it is. That second case is a pasted image
+            // in a prompt, and it was always right.
+            Block::Attachment(_) if !texts.is_empty() || !tools.is_empty() => held.push(b),
             Block::Attachment(_) => out.push(b),
             other => {
-                flush(&mut texts, &mut dur, &mut tools, &mut out);
+                flush(&mut texts, &mut dur, &mut tools, &mut held, &mut out);
                 out.push(other);
             }
         }
     }
-    flush(&mut texts, &mut dur, &mut tools, &mut out);
+    flush(&mut texts, &mut dur, &mut tools, &mut held, &mut out);
     out
 }
 
@@ -800,6 +814,99 @@ mod tests {
         assert!(
             matches!(&out[0], Block::Thinking { tools, duration_secs: Some(5), .. } if tools.len() == 2),
             "{out:?}"
+        );
+    }
+
+    /// #256: an attachment produced INSIDE an activity run follows the run, and does not lead it.
+    ///
+    /// It used to go straight to `out` while the run was still buffered, so it was written ahead
+    /// of the whole span — a screenshot taken twenty calls into a turn came to rest against the
+    /// user's prompt. Holding it until the flush keeps the run un-split (#90, the reason it is
+    /// span-transparent at all) while putting it on the side of the run it happened on. An
+    /// attachment with no run open still emits exactly where it is: that is a pasted image in a
+    /// prompt, and it was always correct.
+    #[test]
+    fn an_attachment_from_a_run_follows_it_and_one_outside_a_run_stays_put() {
+        let t = |name: &str| Block::ToolUse {
+            name: name.into(),
+            target: String::new(),
+            diffs: Vec::new(),
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+        };
+        let img = || {
+            Block::Attachment(Attachment {
+                kind: AttachmentKind::Image,
+                name: "shot.png".into(),
+                path: None,
+                content: AttachmentContent::None,
+            })
+        };
+
+        // (a) Inside a run: the run stays ONE block and the image follows it.
+        let out = coalesce_spans(vec![
+            Block::UserText("go".into()),
+            t("Bash"),
+            t("mcp__claude-in-chrome__computer"),
+            img(),
+            t("Bash"),
+            Block::AssistantText("done".into()),
+        ]);
+        assert!(
+            matches!(out[0], Block::UserText(_))
+                && matches!(&out[1], Block::Thinking { tools, .. } if tools.len() == 3)
+                && matches!(out[2], Block::Attachment(_))
+                && matches!(out[3], Block::AssistantText(_)),
+            "one run of three calls, then the image it produced: {out:?}"
+        );
+        assert_eq!(
+            out.len(),
+            4,
+            "the attachment did not split the run: {out:?}"
+        );
+
+        // (b) Outside any run — a pasted image in a prompt — stays exactly where it is, and is
+        // NOT swallowed by the run that follows it.
+        let out = coalesce_spans(vec![
+            Block::UserText("see this".into()),
+            img(),
+            t("Bash"),
+            Block::AssistantText("done".into()),
+        ]);
+        assert!(
+            matches!(out[0], Block::UserText(_))
+                && matches!(out[1], Block::Attachment(_))
+                && matches!(out[2], Block::Thinking { .. }),
+            "a pasted image leads the run it precedes: {out:?}"
+        );
+
+        // (c) Two runs, one image each: each image follows ITS OWN run, so a turn with several
+        // runs still reads in order rather than collecting its images at the end.
+        let out = coalesce_spans(vec![
+            t("Bash"),
+            img(),
+            Block::AssistantText("between".into()),
+            t("Bash"),
+            img(),
+            Block::AssistantText("after".into()),
+        ]);
+        let kinds: Vec<&str> = out
+            .iter()
+            .map(|b| match b {
+                Block::Thinking { .. } => "run",
+                Block::Attachment(_) => "img",
+                Block::AssistantText(_) => "text",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["run", "img", "text", "run", "img", "text"],
+            "each run keeps its own image: {out:?}"
         );
     }
 

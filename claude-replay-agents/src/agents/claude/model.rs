@@ -3990,15 +3990,17 @@ mod tests {
 {"type":"user","timestamp":"2026-06-30T03:04:00.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b2","content":"src"}]}}
 "#;
         let blocks = parse(jsonl);
-        // Span 1 carries across the attachment (which renders in place, un-split);
-        // the TaskUpdate splits "after text" from the lone trailing Bash, which still
-        // folds into a tools-only span.
+        // Span 1 carries across the attachment, un-split — and since #256 the attachment is
+        // HELD until the span flushes, so it lands just after the run that produced it instead
+        // of ahead of the whole thing. That is the only difference here; the span-transparency
+        // rule this case is about is unchanged. The TaskUpdate still splits "after text" from
+        // the lone trailing Bash, which still folds into a tools-only span.
         assert_eq!(
             kinds(&blocks),
             vec![
                 "user",
-                "attachment",
                 "thinking",
+                "attachment",
                 "assistant",
                 "thinking",
                 "tool",
@@ -4010,7 +4012,7 @@ mod tests {
             text,
             duration_secs,
             tools,
-        } = &blocks[2]
+        } = &blocks[1]
         else {
             panic!("span 1 missing: {blocks:?}");
         };

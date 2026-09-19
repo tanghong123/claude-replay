@@ -12391,3 +12391,90 @@ fn app_shell_expand_all_reaches_what_the_turn_produces_next() {
          the records that happened to be in it at the time"
     );
 }
+
+/// A screenshot taken in the MIDDLE of an activity run — the shape #256 reported.
+fn image_in_a_run_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at(
+        "look at the page and tell me what is wrong",
+        &now_minus(200),
+    );
+    t += &harness::named_tool_at("r1", "Bash", "ls", &now_minus(198));
+    t += &harness::tool_result_text("r1", "src", &now_minus(196));
+    t += &harness::named_tool_at(
+        "r2",
+        "mcp__claude-in-chrome__computer",
+        "screenshot",
+        &now_minus(194),
+    );
+    t += &harness::image_result_at("r2", &now_minus(192));
+    t += &harness::named_tool_at("r3", "Bash", "pwd", &now_minus(190));
+    t += &harness::tool_result_text("r3", "/w", &now_minus(188));
+    t += &assistant_at("The header is misaligned.", &now_minus(186));
+    let path = stores.claude_session(name, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #256 — an image a TOOL produced renders where it happened, inside the run, and not hoisted
+/// to the front of it.
+///
+/// The owner saw two screenshots parked directly under their prompt while Claude Code had shown
+/// them in the middle of the work. The cause was in the shared fold, so both pages had it: a
+/// coalesced span buffers its calls and flushes them at the end, and an attachment went straight
+/// out — "in place", except the span had not been written yet, so it landed ahead of the whole
+/// run. The further into a turn a screenshot was taken, the further back it was thrown.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_put_an_images_where_the_tool_took_it_not_under_the_prompt() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3006)] {
+        let fx = image_in_a_run_fixture(match surface {
+            Surface::Classic => "img-run-classic",
+            _ => "img-run-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        // An attachment is NOT foldable (`model::foldable`), so on the classic page it carries
+        // no `data-kind` — its marker is `.amark`. Ask each surface for its records in document
+        // order and normalise to one kind vocabulary.
+        let js = match surface {
+            Surface::Classic => "(function(){ var rs = [...document.querySelectorAll('#stream .fold[data-kind], #stream .amark')];                var kinds = rs.map(function (e) { return e.dataset.kind || 'attachment'; });                var at = kinds.lastIndexOf('attachment');                return JSON.stringify({ kinds: kinds, at: at,                  before: at > 0 ? kinds.slice(0, at) : [] }); })()",
+            Surface::AppShell => "(function(){ var rs = [...document.querySelectorAll('.virtual-window [data-record-kind]')];                var kinds = rs.map(function (e) { return e.dataset.recordKind || ''; });                var at = kinds.lastIndexOf('attachment');                return JSON.stringify({ kinds: kinds, at: at,                  before: at > 0 ? kinds.slice(0, at).filter(function (k) { return k; }) : [] }); })()",
+        };
+        let seen: serde_json::Value = eval(&page.tab, js)
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let at = seen["at"].as_i64().unwrap_or(-1);
+        assert!(
+            at >= 0,
+            "{surface:?} draws the screenshot at all — if this fails the image was swallowed \
+             rather than moved, which is worse than the bug: {seen}"
+        );
+        let before: Vec<String> = seen["before"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        let last_user = before.iter().rposition(|k| k == "user");
+        let tool_between = before
+            .iter()
+            .skip(last_user.map(|i| i + 1).unwrap_or(0))
+            .any(|k| k == "bash" || k == "tool" || k == "act");
+        assert!(
+            tool_between,
+            "{surface:?}: at least one CALL stands between the prompt and the image — the image \
+             was taken by the third tool of the run, so nothing between them means it was \
+             hoisted to the front of the run again (#256): {before:?}"
+        );
+    }
+}
