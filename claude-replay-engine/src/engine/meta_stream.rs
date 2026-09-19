@@ -219,6 +219,13 @@ pub struct MetaRecord {
     /// vector (that would be O(turns²) over a session).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_times: Vec<Option<EpochSeconds>>,
+    /// How long each of those turns took (#257), aligned one-for-one with `user_times`. A turn's
+    /// duration always arrives before the NEXT turn's head, so it is set before the turn it
+    /// belongs to is committed, and the delta stays append-only like everything else here.
+    /// `serde(default)` is what lets a cache written before #257 still load: it reads as no
+    /// durations recorded, which is also what 19% of turns genuinely have.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turn_durations: Vec<Option<u64>>,
     /// Per-model token increments (#104). Summed per key on fold.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tokens: BTreeMap<Model, TokenCounts>,
@@ -316,6 +323,7 @@ pub struct MaterializedMeta {
     /// names whichever the agent emitted).
     pub agent_ids: HashMap<String, (AgentId, String)>,
     pub user_times: Vec<Option<EpochSeconds>>,
+    pub turn_durations: Vec<Option<u64>>,
     pub tokens: BTreeMap<Model, TokenCounts>,
     pub extra: BTreeMap<String, u64>,
     /// Ops **applied** as they arrive — carries the list and the unjoined creates, so
@@ -380,6 +388,10 @@ impl MaterializedMeta {
             }
         }
         self.user_times.extend(r.user_times.iter().copied());
+        self.turn_durations.extend(r.turn_durations.iter().copied());
+        // An older record carries no durations at all; keep the two the same length so the
+        // renderer can index either by turn ordinal.
+        self.turn_durations.resize(self.user_times.len(), None);
         for (m, c) in &r.tokens {
             *self.tokens.entry(m.clone()).or_default() += *c;
         }

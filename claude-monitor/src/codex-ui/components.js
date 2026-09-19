@@ -7,7 +7,7 @@ import { escapeText, partsHtml } from "./view-model.js";
 import { rememberCap, resultBodyHtml } from "./shared/parts.js";
 import { interactionHtml } from "./shared/interaction.js";
 import { headStepOf, headStepState, nextHeadStep } from "./shared/tool-head.js";
-import { fmtTime } from "./shared/time.js";
+import { fmtTime, fmtDur } from "./shared/time.js";
 
 const element = html => {
   const template = document.createElement("template");
@@ -236,7 +236,13 @@ export function rawFor(unit, state) {
  *  a clock time today, the date on older turns. */
 function turnTime(unit) {
   const ts = unit.view?.source?.ts;
-  return typeof ts === "number" && ts > 0 ? `<span class="turn-time" title="When this turn was sent">${escapeText(fmtTime(ts))}</span>` : "";
+  const when = typeof ts === "number" && ts > 0 ? `<span class="turn-time" title="When this turn was sent">${escapeText(fmtTime(ts))}</span>` : "";
+  // #257: how long the turn took, when the transcript recorded it — 19% of turns have no
+  // duration, and those show nothing rather than a zero. Same class as the time, so the chip
+  // needs no rule in the GENERATED stylesheet.
+  const secs = unit.view?.source?.dur;
+  const took = typeof secs === "number" && secs > 0 ? `<span class="turn-time" title="How long this turn took">${escapeText(fmtDur(secs))}</span>` : "";
+  return when + took;
 }
 
 export function renderUnit(unit, state) {

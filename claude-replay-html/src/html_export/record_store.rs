@@ -157,11 +157,13 @@ impl BlockStore for RecordStore {
         b: Block,
         _at: BlockIndex,
         user_times: &[Option<EpochSeconds>],
+        turn_durations: &[Option<u64>],
     ) -> RecordLocator {
         let cx = &self.cx;
         let lines = render_blocks(
             &[b],
             user_times,
+            turn_durations,
             &cx.fold,
             &cx.cwd,
             true,

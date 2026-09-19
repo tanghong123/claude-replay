@@ -155,6 +155,12 @@ pub enum Message {
     /// *lifecycle* (marker emit, FIFO pop, immediate-pickup suppression) but no longer
     /// parses the content: `prose` is L1's classification of whether this enqueue should
     /// render as a visible `⧗ queued` marker (vs. a silent bookkeeping entry).
+    /// How long the turn that just ENDED took, from Claude's `system`/`turn_duration` record
+    /// (#257). It closes a turn rather than opening one, so the fold back-patches it onto the
+    /// turn head already stamped. `at` is the record's own timestamp, which the fold needs to
+    /// tell a real duration from a burst: 6 records in 3,444 are written within a millisecond or
+    /// two of a turn head, and a turn that took a minute cannot have opened 10 ms ago.
+    TurnDuration { secs: u64, at: Option<EpochSeconds> },
     QueueOp {
         op: QueueOpKind,
         content: Option<String>,

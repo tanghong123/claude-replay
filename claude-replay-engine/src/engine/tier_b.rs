@@ -167,6 +167,7 @@ impl BlockStore for TierBStore {
         b: Block,
         _at: BlockIndex,
         _user_times: &[Option<crate::model::EpochSeconds>],
+        _turn_durations: &[Option<u64>],
     ) -> Deferred {
         // `serde_json` over the `Block` model (see the model's serde derives). Serialization is
         // total for the block vocabulary (only Strings/ints/Options/Vecs/plain enums), so this never
@@ -347,7 +348,7 @@ mod tests {
         let locs: Vec<Deferred> = blocks
             .iter()
             .enumerate()
-            .map(|(at, b)| store.put(b.clone(), at, &[]))
+            .map(|(at, b)| store.put(b.clone(), at, &[], &[]))
             .collect();
         for (d, b) in locs.iter().zip(&blocks) {
             assert_eq!(&*store.get(d), b, "file round-trip");
@@ -361,7 +362,7 @@ mod tests {
         store.reset();
         assert!(store.is_empty());
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "truncated");
-        let d = store.put(blocks[0].clone(), 0, &[]);
+        let d = store.put(blocks[0].clone(), 0, &[], &[]);
         assert_eq!(d.offset, 0, "offsets restart after reset");
         assert_eq!(&*store.get(&d), &blocks[0]);
         let _ = std::fs::remove_file(&path);
@@ -374,7 +375,7 @@ mod tests {
         let locators: Vec<Deferred> = blocks
             .iter()
             .enumerate()
-            .map(|(at, b)| store.put(b.clone(), at, &[]))
+            .map(|(at, b)| store.put(b.clone(), at, &[], &[]))
             .collect();
         let backing = store.into_backing();
 
@@ -393,6 +394,7 @@ mod tests {
             committed: locators,
             provisional: vec![],
             user_times: vec![],
+            turn_durations: vec![],
             metrics: Default::default(),
             index: Default::default(),
             sub_agents: Default::default(),

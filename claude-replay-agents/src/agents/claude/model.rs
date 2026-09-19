@@ -1215,6 +1215,17 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
         // An API call that failed and was retried (#236). It carries no `content` — the story is
         // in `error` and `retryAttempt`, so the note is composed rather than copied. This is the
         // only record that explains a turn which appears to stall.
+        // #257: the turn's own wall time, which CLOSES a turn rather than opening one. The ms
+        // FLOOR to seconds — the reader is shown whole seconds, and rounding 59.6s up to a
+        // minute would be a claim the record does not make.
+        Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("turn_duration") => {
+            if let Some(ms) = v.get("durationMs").and_then(Value::as_u64) {
+                msgs.push(Message::TurnDuration {
+                    secs: ms / 1000,
+                    at: ev_ts,
+                });
+            }
+        }
         Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("api_error") => {
             if let Some(text) = api_error_note(&v) {
                 // Same as the flagged-record arm above: this turn failed, it did not finish.

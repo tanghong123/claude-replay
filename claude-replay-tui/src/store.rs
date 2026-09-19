@@ -193,6 +193,7 @@ impl BlockStore for ArcLog {
         b: Block,
         _at: BlockIndex,
         _user_times: &[Option<EpochSeconds>],
+        _turn_durations: &[Option<u64>],
     ) -> Arc<Block> {
         if let Some(f) = &mut self.file {
             if let Ok(mut rec) = serde_json::to_vec(&b) {
@@ -272,7 +273,7 @@ mod tests {
         let p = tmp("rt.jsonl");
         let mut s = ArcLog::create(&p).unwrap();
         for t in ["a", "b", "c"] {
-            s.put(blk(t), 0, &[]);
+            s.put(blk(t), 0, &[], &[]);
         }
         let mut r = ArcLog::open_append(&p).unwrap();
         let got = r.load().unwrap();
@@ -288,7 +289,7 @@ mod tests {
         let p = tmp("torn.jsonl");
         let mut s = ArcLog::create(&p).unwrap();
         for t in ["a", "b"] {
-            s.put(blk(t), 0, &[]);
+            s.put(blk(t), 0, &[], &[]);
         }
         let raw = std::fs::read(&p).unwrap();
         std::fs::write(&p, &raw[..raw.len() - 4]).unwrap(); // chop mid-record
@@ -304,7 +305,7 @@ mod tests {
         );
 
         // The next append lands on a clean boundary, not on the fragment.
-        r.put(blk("z"), 0, &[]);
+        r.put(blk("z"), 0, &[], &[]);
         let mut r2 = ArcLog::open_append(&p).unwrap();
         let got = r2.load().unwrap();
         assert_eq!(got.len(), 2);
@@ -317,7 +318,7 @@ mod tests {
         let p = tmp("cut.jsonl");
         let mut s = ArcLog::create(&p).unwrap();
         for t in ["a", "b", "c", "d"] {
-            s.put(blk(t), 0, &[]);
+            s.put(blk(t), 0, &[], &[]);
         }
         s.truncate_to(2).unwrap();
         let mut r = ArcLog::open_append(&p).unwrap();
@@ -338,11 +339,11 @@ mod tests {
         let p = tmp("mid.jsonl");
         let mut s = ArcLog::create(&p).unwrap();
         for t in ["a", "b"] {
-            s.put(blk(t), 0, &[]);
+            s.put(blk(t), 0, &[], &[]);
         }
         let at = s.backing_len(); // the boundary after two records
         for t in ["c", "d"] {
-            s.put(blk(t), 0, &[]);
+            s.put(blk(t), 0, &[], &[]);
         }
 
         let mut r = ArcLog::open_append(&p).unwrap();
@@ -373,7 +374,7 @@ mod tests {
         let p = tmp("mid-record.jsonl");
         let mut s = ArcLog::create(&p).unwrap();
         for t in ["a", "b", "c", "d"] {
-            s.put(blk(t), 0, &[]);
+            s.put(blk(t), 0, &[], &[]);
         }
         let full = std::fs::metadata(&p).unwrap().len();
 

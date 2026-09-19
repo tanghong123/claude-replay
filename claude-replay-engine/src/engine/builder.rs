@@ -113,6 +113,8 @@ pub struct StreamRead {
     pub provisional: Vec<Block>,
     /// The whole session's per-turn timestamps (the renderer indexes into it by turn).
     pub user_times: Vec<Option<EpochSeconds>>,
+    /// Its #257 companion: how long each of those turns took, same length, same cursor.
+    pub turn_durations: Vec<Option<u64>>,
     /// The current folded metrics.
     pub metrics: Metrics,
     /// The full live header — committed meta + the open turn folded on top (matches the tail).
@@ -226,6 +228,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         acc.replayer.reseed(
             mm.agent_ids.clone(),
             mm.user_times.clone(),
+            mm.turn_durations.clone(),
             resume.prev_ts,
             resume.pending_ts,
         );
@@ -288,6 +291,13 @@ impl<S: BlockStore> SessionAccumulator<S> {
         crate::engine::meta_stream::MaterializedMeta {
             session_meta: self.committed_meta.clone(),
             agent_ids: self.committed_agents.clone(),
+            turn_durations: self
+                .replayer
+                .turn_durations()
+                .iter()
+                .take(self.committed_meta.turns)
+                .copied()
+                .collect(),
             user_times: self
                 .replayer
                 .user_times()
@@ -420,15 +430,24 @@ impl<S: BlockStore> SessionAccumulator<S> {
                 }
             }
             let times = self.replayer.user_times().to_vec();
+            let durs = self.replayer.turn_durations().to_vec();
+            let durs_for_put: &[Option<u64>] = &durs;
             for b in drained {
                 self.committed_meta.push(&b);
                 let at = self.committed.len();
-                let bv = self.store.put(b, at, &times);
+                let bv = self.store.put(b, at, &times, durs_for_put);
                 self.committed.push(bv);
             }
             // `user_times` cannot come from the blocks: the stamps live in the replayer,
             // indexed by TURN. Slice by the turn count this drain added.
             rec.user_times = times[turns0..self.committed_meta.turns].to_vec();
+            // Aligned with the slice above: a turn's duration arrives before the NEXT turn's
+            // head, so it is already set by the time that turn commits here.
+            let durs = self.replayer.turn_durations();
+            rec.turn_durations = durs
+                .get(turns0..self.committed_meta.turns)
+                .map(<[Option<u64>]>::to_vec)
+                .unwrap_or_default();
             rec.task_ops = self.task_fold.drain_recorded();
             self.boundary.retain(|e| e.logical >= self.replayer.base());
             self.author_resume(&mut rec);
@@ -671,10 +690,13 @@ impl<S: BlockStore> SessionAccumulator<S> {
         for b in &provisional {
             meta.push(b);
         }
+        let mut turn_durations = self.replayer.turn_durations().to_vec();
+        turn_durations.resize(user_times.len(), None);
         StreamRead {
             committed_delta: Vec::new(),
             provisional,
             user_times,
+            turn_durations,
             metrics: self.metrics.finish(),
             meta,
             n_committed: self.committed.len(),
@@ -764,12 +786,17 @@ impl<S: BlockStore> SessionAccumulator<S> {
         let index = SessionIndex::build(&view, &user_times);
         let sub_agents = crate::engine::session::build_sub_agents(&view);
         drop(view);
+        // The open snapshot may have stamped turns the replayer has not, so the companion is
+        // padded to match rather than assumed equal (#257).
+        let mut turn_durations = self.replayer.turn_durations().to_vec();
+        turn_durations.resize(user_times.len(), None);
         Session {
             agent: self.agent,
             cwd: None,
             committed: std::mem::take(&mut self.committed),
             provisional: open,
             user_times,
+            turn_durations,
             metrics: self.metrics.finish(),
             index,
             sub_agents,
@@ -794,12 +821,15 @@ impl<S: BlockStore> SessionAccumulator<S> {
         // `Block`s), so the store stays committed-only.
         let base = self.committed.len();
         let provisional: Vec<Block> = blocks[base..].to_vec();
+        let mut turn_durations = self.replayer.turn_durations().to_vec();
+        turn_durations.resize(user_times.len(), None);
         Session {
             agent: self.agent,
             cwd: None,
             committed: self.committed.clone(),
             provisional,
             user_times,
+            turn_durations,
             metrics,
             index,
             sub_agents,

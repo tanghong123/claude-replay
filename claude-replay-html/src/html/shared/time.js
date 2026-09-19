@@ -25,9 +25,12 @@ function fmtTime(ts, now = new Date()) {
   } catch (_) { return ""; }
 }
 
-/** A duration in seconds → "Xh Ym" or "Ym"; nothing for none. */
+/** A duration in seconds → "Xh Ym", "Ym" or "Ns"; nothing for none.
+ *  Under a minute it reads in SECONDS: 16% of turns are shorter than that (#257), and rounding
+ *  a 19-second turn to "0m" says nothing while claiming to. */
 function fmtDur(s) {
   if (!s || s < 0) return "";
+  if (s < 60) return Math.round(s) + "s";
   const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
   return h ? h + "h " + m + "m" : m + "m";
 }

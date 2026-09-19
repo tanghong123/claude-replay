@@ -35,12 +35,14 @@ pub trait BlockStore {
     /// per committed block as the accumulator drains it from the replayer. `user_times` is the
     /// session's per-turn timestamps so far (one per user turn, committed turns final) — a
     /// PROJECTION store rendering its presentation form at put time (#74) indexes into it; the
-    /// lossless stores ignore it.
+    /// lossless stores ignore it. `turn_durations` is its #257 companion, aligned one-for-one,
+    /// and is indexed by the same cursor.
     fn put(
         &mut self,
         b: Block,
         at: BlockIndex,
         user_times: &[Option<crate::model::EpochSeconds>],
+        turn_durations: &[Option<u64>],
     ) -> Self::Bv;
     /// Discard everything stored — called when the accumulator rebuilds from scratch (a source
     /// truncation/rewrite), so an append-only backing doesn't accrete dead content across resets.
@@ -70,6 +72,7 @@ impl BlockStore for InMemoryStore {
         b: Block,
         _at: BlockIndex,
         _user_times: &[Option<crate::model::EpochSeconds>],
+        _turn_durations: &[Option<u64>],
     ) -> Block {
         b
     }
@@ -100,6 +103,7 @@ impl BlockStore for ArcStore {
         b: Block,
         _at: BlockIndex,
         _user_times: &[Option<crate::model::EpochSeconds>],
+        _turn_durations: &[Option<u64>],
     ) -> std::sync::Arc<Block> {
         std::sync::Arc::new(b)
     }
@@ -154,6 +158,10 @@ pub struct Session<BV = Block> {
     /// One timestamp per user turn, in order. Mirrored onto `index.turns[*].time`; kept as
     /// a field until consumers migrate off it.
     pub user_times: Vec<Option<EpochSeconds>>,
+    /// How long each turn took, aligned with `user_times` (#257). `None` where the transcript
+    /// recorded nothing — measured at 19% of turns, so a reader of this must degrade to showing
+    /// nothing rather than a zero.
+    pub turn_durations: Vec<Option<u64>>,
     /// Token / cost tally for the session.
     pub metrics: Metrics,
     /// Derived within-session indices — turns / tools / attachments (§7).

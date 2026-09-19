@@ -62,6 +62,8 @@ pub struct PullDelta {
     pub provisional: Vec<Block>,
     /// The WHOLE session's per-turn timestamps (the renderer indexes into them by turn).
     pub user_times: Vec<Option<EpochSeconds>>,
+    /// Its #257 companion: how long each turn took, same length, same cursor.
+    pub turn_durations: Vec<Option<u64>>,
     pub metrics: Metrics,
     /// The maintained live header (turns / tools / children) — matches `committed ++ provisional`.
     pub meta: SessionMeta,
@@ -396,6 +398,7 @@ impl<S: BlockStore> SharedSession<S> {
             committed_delta: r.committed_delta,
             provisional: r.provisional,
             user_times: r.user_times,
+            turn_durations: r.turn_durations,
             metrics: r.metrics,
             meta: r.meta,
             tasks: r.tasks,
@@ -422,6 +425,7 @@ impl<S: BlockStore> SharedSession<S> {
             committed_delta: Vec::new(),
             provisional: r.provisional,
             user_times: r.user_times,
+            turn_durations: r.turn_durations,
             metrics: r.metrics,
             meta: r.meta,
             tasks: r.tasks,

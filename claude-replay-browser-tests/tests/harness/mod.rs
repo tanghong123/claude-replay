@@ -274,6 +274,15 @@ pub fn image_result_sized(call_id: &str, ts: &str, b64: &str) -> String {
     )
 }
 
+/// Claude's `system`/`turn_duration` record (#257): how long the turn that just ended took. It
+/// CLOSES a turn, so it belongs after that turn's last assistant message and before the next
+/// prompt.
+pub fn turn_duration_at(ms: u64, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"system\",\"subtype\":\"turn_duration\",\"durationMs\":{ms},\"messageCount\":4,\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
 pub fn image_result_at(call_id: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":[{{\"type\":\"image\",\"source\":{{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"{TINY_PNG_B64}\"}}}}]}}]}},\"timestamp\":\"{ts}\"}}\n"

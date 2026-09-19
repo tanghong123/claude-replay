@@ -203,6 +203,14 @@
     }
   }
 
+  // #257: how long the turn took, beside when it was sent. Same chip class as the time, so it
+  // needs no stylesheet of its own; the title says which of the two it is.
+  function turnDur(secs) {
+    var s = el("span", "ts", fmtDur(secs));
+    s.title = "How long this turn took";
+    return s;
+  }
+
   // Global preference unless this turn carries its own override.
   function rawFor(b) {
     var one = rawOne[b.id];
@@ -553,6 +561,7 @@
       ub.appendChild(md);
       card.appendChild(ub);
       if (b.ts) card.appendChild(el("span", "ts", fmtTime(b.ts)));
+      if (b.dur) card.appendChild(turnDur(b.dur));
       if (typeof b.src === "string") card.appendChild(rawToggle(b));
       card.appendChild(anchor(b.id));
       return card;
@@ -699,6 +708,7 @@
       h.appendChild(el("span", "cmd-preview", head.preview || ""));
       chips(head, h);
       if (b.ts) h.appendChild(el("span", "ts", fmtTime(b.ts)));
+      if (b.dur) h.appendChild(turnDur(b.dur));
     } else if (head.summary) {
       h.appendChild(el("span", "summary", head.summary));
       chips(head, h);

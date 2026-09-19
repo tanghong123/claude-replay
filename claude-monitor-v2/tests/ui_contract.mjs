@@ -1411,9 +1411,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.ok(/Mar/.test(fmtTime(thisYear, now)) && !/2026/.test(fmtTime(thisYear, now)), "this year: month and day, no year");
   assert.ok(/2025/.test(fmtTime(otherYear, now)), "another year: the year too");
   assert.equal(fmtDur(3725), "1h 2m"); assert.equal(fmtDur(90), "2m"); assert.equal(fmtDur(0), "");
+  // #257: under a minute it reads in SECONDS. 16% of turns are shorter than that, and the old
+  // rule rounded a 19-second turn to "0m" — a number that says nothing while claiming to.
+  assert.equal(fmtDur(19), "19s"); assert.equal(fmtDur(59), "59s"); assert.equal(fmtDur(60), "1m");
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
-  assert.match(comp, /import \{ fmtTime \} from "\.\/shared\/time\.js";/, "the app shell imports the rule");
+  assert.match(comp, /import \{ fmtTime, fmtDur \} from "\.\/shared\/time\.js";/, "the app shell imports the rule");
   assert.match(comp, /\$\{turnTime\(unit\)\}\$\{spot\}\$\{rawToggle\}/, "…and shows it beside the user bubble");
+  // …and the turn's own duration rides the same chip, from the same shared formatter, so the
+  // two pages cannot word it differently (#257).
+  assert.match(comp, /source\?\.dur/, "the app shell reads the turn's duration off the record");
+  assert.match(comp, /How long this turn took/, "…and says which of the two chips it is");
   console.log("#112 time cases passed");
 }
 

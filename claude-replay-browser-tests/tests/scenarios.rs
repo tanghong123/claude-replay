@@ -12478,3 +12478,75 @@ fn both_shells_put_an_images_where_the_tool_took_it_not_under_the_prompt() {
         );
     }
 }
+
+/// A turn that recorded how long it took, and one that did not (#257).
+fn turn_duration_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    // A turn the transcript timed: two and a half minutes.
+    t += &user_at("question 13: how long did that take?", &now_minus(300));
+    t += &harness::named_tool_at("d1", "Bash", "cargo build", &now_minus(298));
+    t += &harness::tool_result_text("d1", "Finished", &now_minus(296));
+    t += &assistant_at("Built it.", &now_minus(200));
+    t += &harness::turn_duration_at(151_000, &now_minus(199));
+    // …and a turn it did not, which must show nothing rather than a zero.
+    t += &user_at("question 14: and this one?", &now_minus(150));
+    t += &assistant_at("No record of this turn's length.", &now_minus(140));
+    let path = stores.claude_session(name, &t);
+    Fixture {
+        base,
+        path,
+        turns: 14,
+    }
+}
+
+/// #257 — a turn says how long it took, on BOTH pages, from the one shared formatter.
+///
+/// The record closes a turn rather than opening one, so the engine back-patches it onto the head
+/// already stamped. 19% of real turns carry no such record, so the other half of the rule is
+/// that an untimed turn shows nothing at all: a chip reading "0m" would be a number that says
+/// nothing while claiming to.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_say_how_long_a_turn_took_and_stay_silent_when_unrecorded() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3008)] {
+        let fx = turn_duration_fixture(match surface {
+            Surface::Classic => "turn-dur-classic",
+            _ => "turn-dur-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        let js = match surface {
+            Surface::Classic => "(function(){ var c = [...document.querySelectorAll('.ts')].filter(function (e) { return e.title === 'How long this turn took'; }); \
+               return JSON.stringify({ chips: c.length, texts: c.map(function (e) { return e.textContent.trim(); }) }); })()",
+            Surface::AppShell => "(function(){ var c = [...document.querySelectorAll('.turn-time')].filter(function (e) { return e.title === 'How long this turn took'; }); \
+               return JSON.stringify({ chips: c.length, texts: c.map(function (e) { return e.textContent.trim(); }) }); })()",
+        };
+        let seen: serde_json::Value = eval(&page.tab, js)
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let texts: Vec<String> = seen["texts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        assert_eq!(
+            seen["chips"].as_i64(),
+            Some(1),
+            "{surface:?}: exactly ONE turn was timed, so exactly one chip — an untimed turn \
+             shows nothing rather than a zero: {seen}"
+        );
+        assert_eq!(
+            texts,
+            vec!["3m".to_string()],
+            "{surface:?}: 151s reads as minutes through the shared formatter, so the two pages \
+             cannot word it differently: {seen}"
+        );
+    }
+}

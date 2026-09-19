@@ -608,6 +608,7 @@ pub fn audit_records(blocks: &[Block]) -> Vec<Value> {
     super::render_blocks(
         blocks,
         &[],
+        &[],
         &FoldPolicy::default(),
         "",
         false,

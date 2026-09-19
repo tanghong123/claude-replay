@@ -2290,3 +2290,102 @@ fn tail_pulse_clears_the_queue_on_pop_all() {
         "popAll empties the queue — nothing is pending, so the session is not waiting on one"
     );
 }
+
+/// #257: a turn says how long it took. The record CLOSES a turn — it is written after the last
+/// assistant message — so the fold back-patches it onto the head already stamped, and the
+/// duration rides a slice parallel to `user_times` rather than a richer element, because that
+/// element is persisted and changing its shape would stop old caches loading.
+///
+/// The guard is the interesting half. Six records in 3,444 arrive within a millisecond or two of
+/// a turn head, in the burst the client writes when a queued prompt is picked up, and they carry
+/// the OUTGOING turn's duration (measured: 19s to 149s against a head 2-16ms old). A turn cannot
+/// have taken a minute if it opened 10 ms ago, so those are dropped: a missing chip is honest,
+/// one attributed to the wrong turn is not.
+#[test]
+fn a_turn_duration_lands_on_the_turn_it_closes_and_a_burst_is_refused() {
+    let user = |t: &str, ts: &str| {
+        format!(
+            "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}]}},\"timestamp\":\"{ts}\"}}"
+        )
+    };
+    let asst = |t: &str, ts: &str| {
+        format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{t}\"}}]}},\"timestamp\":\"{ts}\"}}"
+        )
+    };
+    let dur = |ms: u64, ts: &str| {
+        format!("{{\"type\":\"system\",\"subtype\":\"turn_duration\",\"durationMs\":{ms},\"messageCount\":3,\"timestamp\":\"{ts}\"}}")
+    };
+    let drive = |lines: &[String]| {
+        let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+        let mut off: claude_replay_engine::model::ByteOffset = 0;
+        for l in lines {
+            acc.advance_at(off, l);
+            off += l.len() as u64 + 1;
+        }
+        acc
+    };
+
+    // Two turns, each closed by its own duration record.
+    let mut a = drive(&[
+        user("first", "2026-08-14T10:00:00Z"),
+        asst("done one", "2026-08-14T10:01:00Z"),
+        dur(63_400, "2026-08-14T10:01:03Z"),
+        user("second", "2026-08-14T10:02:00Z"),
+        asst("done two", "2026-08-14T10:05:00Z"),
+        dur(181_900, "2026-08-14T10:05:02Z"),
+    ]);
+    assert_eq!(
+        a.snapshot().turn_durations,
+        vec![Some(63), Some(181)],
+        "each duration lands on the turn it closed, FLOORED to whole seconds — 63.4s is 63, not \
+         63.4 and not 64"
+    );
+
+    // A turn the transcript said nothing about keeps `None`: 19% of real turns have no record,
+    // and the renderer must show nothing rather than a zero.
+    let mut b = drive(&[
+        user("first", "2026-08-14T10:00:00Z"),
+        asst("done one", "2026-08-14T10:01:00Z"),
+        user("second", "2026-08-14T10:02:00Z"),
+        asst("done two", "2026-08-14T10:05:00Z"),
+        dur(181_000, "2026-08-14T10:05:02Z"),
+    ]);
+    assert_eq!(
+        b.snapshot().turn_durations,
+        vec![None, Some(181)],
+        "an unrecorded turn stays unknown rather than borrowing its neighbour's"
+    );
+
+    // THE BURST: the duration is written 10 ms after a turn head, and describes 149s of work
+    // that plainly happened before that head existed. It is refused.
+    let mut c = drive(&[
+        user("first", "2026-08-14T10:00:00Z"),
+        asst("done one", "2026-08-14T10:02:29Z"),
+        user("second", "2026-08-14T10:02:30.000Z"),
+        dur(148_548, "2026-08-14T10:02:30.010Z"),
+    ]);
+    assert_eq!(
+        c.snapshot().turn_durations,
+        vec![None, None],
+        "a 149s duration cannot belong to a turn that opened 10 ms earlier, so it is dropped \
+         rather than shown against the wrong one"
+    );
+}
+
+/// #257: a cache written before the durations existed must still load. That is the whole reason
+/// the carrier is a companion field with `serde(default)` rather than a richer `user_times`
+/// element — `MetaRecord` is persisted, and turning a scalar into an object would have made
+/// every older cache unreadable.
+#[test]
+fn a_meta_record_without_durations_still_deserializes() {
+    use claude_replay_engine::engine::meta_stream::MetaRecord;
+    let old = r#"{"turns":2,"user_times":[1.0,2.0]}"#;
+    let rec: MetaRecord = serde_json::from_str(old).expect("a pre-#257 record still loads");
+    assert_eq!(rec.user_times.len(), 2);
+    assert!(
+        rec.turn_durations.is_empty(),
+        "an old record reads as no durations recorded, which is also what a turn with no \
+         record genuinely has"
+    );
+}

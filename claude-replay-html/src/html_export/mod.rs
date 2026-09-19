@@ -785,7 +785,7 @@ impl Emitter<'_> {
     }
 
     /// One block → its JSON object, recursing into a turn's absorbed tool calls.
-    fn block(&mut self, b: &Block, ts: Option<f64>) -> Value {
+    fn block(&mut self, b: &Block, ts: Option<f64>, turn_secs: Option<u64>) -> Value {
         let kind = html_kind(b);
         let mut o = Map::new();
         o.insert("t".into(), json!("block"));
@@ -1057,7 +1057,8 @@ impl Emitter<'_> {
                 let summary = thinking_summary(text, *duration_secs, tools);
                 head.insert("summary".into(), json!(format!("✻ {summary}")));
                 if !tools.is_empty() {
-                    let items: Vec<Value> = tools.iter().map(|t| self.block(t, None)).collect();
+                    let items: Vec<Value> =
+                        tools.iter().map(|t| self.block(t, None, None)).collect();
                     body.push(json!({ "p": "blocks", "items": items }));
                 }
                 if !text.trim().is_empty() {
@@ -1301,6 +1302,11 @@ impl Emitter<'_> {
         if let Some(ts) = ts {
             o.insert("ts".into(), json!(ts));
         }
+        // #257: how long this turn took, in whole seconds. Absent for 19% of turns, which is
+        // why it is written only when known — a reader must show nothing rather than a zero.
+        if let Some(secs) = turn_secs {
+            o.insert("dur".into(), json!(secs));
+        }
         if !head.is_empty() {
             o.insert("head".into(), Value::Object(head));
         }
@@ -1318,6 +1324,7 @@ impl Emitter<'_> {
 fn build_jsonl(
     blocks: &[Block],
     user_times: &[Option<f64>],
+    turn_durations: &[Option<u64>],
     fold: &FoldPolicy,
     cwd: &str,
     reveal: bool,
@@ -1326,7 +1333,16 @@ fn build_jsonl(
     meta: Value,
 ) -> (String, Vec<SideEntry>) {
     build_jsonl_inner(
-        blocks, user_times, fold, cwd, reveal, linked, None, transcript, meta,
+        blocks,
+        user_times,
+        turn_durations,
+        fold,
+        cwd,
+        reveal,
+        linked,
+        None,
+        transcript,
+        meta,
     )
 }
 
@@ -1371,6 +1387,7 @@ impl EmitState {
 pub(super) fn render_blocks(
     blocks: &[Block],
     user_times: &[Option<f64>],
+    turn_durations: &[Option<u64>],
     fold: &FoldPolicy,
     cwd: &str,
     reveal: bool,
@@ -1393,14 +1410,17 @@ pub(super) fn render_blocks(
     let mut lines = Vec::with_capacity(blocks.len());
     for b in blocks {
         // `user_times[i]` is the ith user turn's timestamp (see `model::parse_main`).
-        let ts = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
+        let (ts, dur) = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
             let t = user_times.get(st.seen_turns).copied().flatten();
+            // The same cursor: `turn_durations` is the whole session's, aligned one-for-one
+            // with `user_times` (#257).
+            let d = turn_durations.get(st.seen_turns).copied().flatten();
             st.seen_turns += 1;
-            t
+            (t, d)
         } else {
-            None
+            (None, None)
         };
-        lines.push(em.block(b, ts).to_string());
+        lines.push(em.block(b, ts, dur).to_string());
     }
     st.next_block = em.next_block;
     st.turn = em.turn;
@@ -1412,6 +1432,7 @@ pub(super) fn render_blocks(
 fn build_jsonl_inner(
     blocks: &[Block],
     user_times: &[Option<f64>],
+    turn_durations: &[Option<u64>],
     fold: &FoldPolicy,
     cwd: &str,
     reveal: bool,
@@ -1422,7 +1443,16 @@ fn build_jsonl_inner(
 ) -> (String, Vec<SideEntry>) {
     let mut st = EmitState::default();
     let lines = render_blocks(
-        blocks, user_times, fold, cwd, reveal, linked, assets, transcript, &mut st,
+        blocks,
+        user_times,
+        turn_durations,
+        fold,
+        cwd,
+        reveal,
+        linked,
+        assets,
+        transcript,
+        &mut st,
     );
     let mut out = Vec::with_capacity(lines.len() + 1);
     out.push(meta.to_string());
@@ -1769,6 +1799,7 @@ pub(super) fn render_snapshot(
     path: &Path,
     blocks: &[Block],
     user_times: &[Option<f64>],
+    turn_durations: &[Option<u64>],
     m: &crate::metrics::Metrics,
     cwd: &str,
     fold: &FoldPolicy,
@@ -1796,6 +1827,7 @@ pub(super) fn render_snapshot(
     build_jsonl(
         blocks,
         user_times,
+        turn_durations,
         fold,
         cwd,
         reveal,
@@ -1940,6 +1972,7 @@ pub(super) fn render_agent_stream(
     info: &AgentInfo,
     blocks: &[Block],
     user_times: &[Option<f64>],
+    turn_durations: &[Option<u64>],
     m: &crate::metrics::Metrics,
     tasks: &crate::engine::TaskList,
     assets: Option<&mut AssetSink>,
@@ -1950,6 +1983,7 @@ pub(super) fn render_agent_stream(
     let (jsonl, _) = build_jsonl_inner(
         blocks,
         user_times,
+        turn_durations,
         fold,
         cwd,
         reveal,
@@ -2385,6 +2419,7 @@ mod tests {
         let lines = render_blocks(
             &blocks,
             &[Some(1.0)],
+            &[],
             &FoldPolicy::default(),
             "",
             false,
@@ -2544,7 +2579,7 @@ mod tests {
         let times = vec![Some(1.0), Some(2.0)];
         let fold = FoldPolicy::default();
         let r = |bs: &[Block], st: &mut EmitState| {
-            render_blocks(bs, &times, &fold, "", false, false, None, None, st)
+            render_blocks(bs, &times, &[], &fold, "", false, false, None, None, st)
         };
 
         let mut whole_st = EmitState::default();
@@ -2584,6 +2619,7 @@ mod tests {
         let (jsonl, _turns) = build_jsonl(
             blocks,
             &times,
+            &[],
             fold,
             "/repo",
             true,
@@ -2771,6 +2807,7 @@ mod tests {
         let (j, _) = build_jsonl(
             &blocks,
             &times,
+            &[],
             &FoldPolicy::none(),
             "/r",
             false,
@@ -2787,6 +2824,7 @@ mod tests {
         let (j2, _) = build_jsonl(
             &blocks,
             &times,
+            &[],
             &FoldPolicy::none(),
             "/r",
             false,
@@ -3867,6 +3905,7 @@ mod tests {
         let (jsonl, _) = build_jsonl(
             std::slice::from_ref(&file),
             &times,
+            &[],
             &FoldPolicy::none(),
             "/w",
             false,
@@ -4008,6 +4047,7 @@ mod tests {
         let (jsonl, turns) = build_jsonl(
             &blocks,
             &times,
+            &[],
             &FoldPolicy::none(),
             "/repo",
             true,
@@ -4048,6 +4088,7 @@ mod tests {
         let (jsonl, turns) = build_jsonl(
             &blocks,
             &[Some(1000.0), Some(2000.0)],
+            &[],
             &FoldPolicy::default(),
             "/repo",
             true,
@@ -4238,6 +4279,7 @@ mod tests {
         let mut sink = AssetSink::new(&base).unwrap();
         let (jsonl, _) = build_jsonl_inner(
             std::slice::from_ref(&img),
+            &[],
             &[],
             &FoldPolicy::none(),
             "/w",
@@ -4472,6 +4514,7 @@ mod tests {
         let (jsonl, _) = build_jsonl(
             std::slice::from_ref(&edit),
             &times,
+            &[],
             &FoldPolicy::none(),
             "/repo",
             false,

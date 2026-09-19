@@ -862,6 +862,7 @@ impl SessionService {
             let lines = render_blocks(
                 &d.provisional,
                 &d.user_times,
+                &d.turn_durations,
                 &self.fold,
                 &cwd,
                 true,
@@ -3279,7 +3280,7 @@ mod tests {
         let locs: Vec<_> = blocks
             .iter()
             .enumerate()
-            .map(|(at, b)| store.put(b.clone(), at, &[]))
+            .map(|(at, b)| store.put(b.clone(), at, &[], &[]))
             .collect();
         assert_eq!(locs.len(), 3);
         // Read from record 1 to EOF → records 1 and 2 only, each valid JSON with its text.

@@ -102,6 +102,12 @@ pub struct Replayer<'a> {
     /// open split never cuts a turn.
     base: usize,
     user_times: Vec<Option<EpochSeconds>>,
+    /// #257: how long each turn took, parallel to `user_times` and kept the same length. A
+    /// separate slice rather than a richer `user_times` element because that element is
+    /// PERSISTED (`meta_stream::MetaRecord`): changing its shape from a scalar to an object
+    /// would stop every cache written before this from loading, while a companion field with
+    /// `serde(default)` reads an old record as "no durations recorded".
+    turn_durations: Vec<Option<u64>>,
     pending_ts: Option<EpochSeconds>,
     stamped: usize,
     tool_slot: HashMap<String, BlockIndex>,
@@ -157,6 +163,7 @@ impl<'a> Replayer<'a> {
             durable: Vec::new(),
             base: 0,
             user_times: Vec::new(),
+            turn_durations: Vec::new(),
             pending_ts: None,
             stamped: 0,
             tool_slot: HashMap::new(),
@@ -187,6 +194,8 @@ impl<'a> Replayer<'a> {
                     // Stamp over the resident window; `stamped` is logical, so translate by `base`.
                     let mut ws = self.window_stamped();
                     stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
+                    self.turn_durations.resize(self.user_times.len(), None);
+                    self.turn_durations.resize(self.user_times.len(), None);
                     self.stamped = self.base + ws;
                     // The outgoing `pending_ts` is the previous line's — the thinking clock's zero.
                     if self.pending_ts.is_some() {
@@ -452,6 +461,27 @@ impl<'a> Replayer<'a> {
                         result: result.clone(),
                     });
                 }
+                Message::TurnDuration { secs, at } => {
+                    // It CLOSES the turn it describes, so it lands on the head already stamped.
+                    // `user_times` is whole-session and never truncated by the window, so the
+                    // last entry is that head however much has already been committed.
+                    //
+                    // Unless the head was written a moment ago: 6 records in 3,444 arrive within
+                    // a millisecond or two of a turn head, in the burst the client writes when a
+                    // queued prompt is picked up, and they carry the OUTGOING turn's duration
+                    // (measured: 19s to 149s against a head 2-16ms old). A turn cannot have
+                    // taken a minute if it opened 10 ms ago, so those are dropped rather than
+                    // shown against the wrong turn — a missing chip is honest, a wrong one lies.
+                    let fresh = match (at, self.user_times.last().copied().flatten()) {
+                        (Some(at), Some(head)) => at - head < 1.0 && *secs > 1,
+                        _ => false,
+                    };
+                    if !fresh {
+                        if let Some(slot) = self.turn_durations.last_mut() {
+                            *slot = Some(*secs);
+                        }
+                    }
+                }
                 Message::QueueOp {
                     op, content, prose, ..
                 } => match op {
@@ -554,6 +584,7 @@ impl<'a> Replayer<'a> {
         // panic, #56). Uses `pending_ts` — exactly the value the next LineStart would stamp with.
         let mut ws = self.window_stamped();
         stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
+        self.turn_durations.resize(self.user_times.len(), None);
         self.stamped = self.base + ws;
         // Drain the completed raw blocks [0..k) from the window front.
         let drained: Vec<Block> = self.out.drain(0..k).collect();
@@ -691,10 +722,13 @@ impl<'a> Replayer<'a> {
         &mut self,
         agent_ids: HashMap<String, (String, String)>,
         user_times: Vec<Option<EpochSeconds>>,
+        turn_durations: Vec<Option<u64>>,
         prev_ts: Option<EpochSeconds>,
         pending_ts: Option<EpochSeconds>,
     ) {
         self.agent_ids = agent_ids;
+        self.turn_durations = turn_durations;
+        self.turn_durations.resize(user_times.len(), None);
         self.user_times = user_times;
         self.prev_ts = prev_ts;
         self.pending_ts = pending_ts;
@@ -728,6 +762,10 @@ impl<'a> Replayer<'a> {
         &self.user_times
     }
 
+    pub(crate) fn turn_durations(&self) -> &[Option<u64>] {
+        &self.turn_durations
+    }
+
     pub(crate) fn open_snapshot(&self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let open = self.out.clone();
         let mut user_times = self.user_times.clone();
@@ -745,6 +783,7 @@ impl<'a> Replayer<'a> {
     pub fn into_blocks(mut self) -> (Vec<Block>, Vec<Option<EpochSeconds>>) {
         let mut ws = self.window_stamped();
         stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
+        self.turn_durations.resize(self.user_times.len(), None);
         self.stamped = self.base + ws;
         let open = std::mem::take(&mut self.out);
         let blocks = self.assemble(open);
