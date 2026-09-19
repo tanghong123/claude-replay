@@ -11676,6 +11676,170 @@ fn growing_turn_fixture(name: &str) -> Fixture {
     }
 }
 
+/// A session whose tail turn ALREADY holds more events than the cap when the page opens — the
+/// historical case (#250). Nothing here grew under the reader, so nothing may be stamped.
+fn settled_big_turn_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(10, Shape::default());
+    t += &user_at("question: do a long stretch of work", &now_minus(400));
+    t += &assistant_at("Working through it.", &now_minus(398));
+    // WRITES, not Bash: consecutive Bash/Read/thinking calls COALESCE into a single activity
+    // event, so ten of them render as one and sit far under the cap — the assertion would then
+    // pass for the wrong reason. Edit/Write/Skill stand alone, which is what gives ten events.
+    for k in 0..10u64 {
+        t += &write_tool_at(
+            &format!("s-{k}"),
+            &format!("/w/src/mod_{k}.py"),
+            5,
+            &now_minus(396 - k * 4),
+        );
+        t += &tool_result_lines(&format!("s-{k}"), 2, &now_minus(395 - k * 4));
+    }
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 11,
+    }
+}
+
+/// #250 — the tail turn is LIST-ALL while it is live, and stays that way; a turn that was
+/// already finished when the page opened is CONCISE.
+///
+/// The reader's intention to watch is not a control and not a preference: it is the turn being
+/// live in front of them. So a block that GROWS while the page is open shows every top-level
+/// message, with no "Show N more" and no click — and keeps it once the turn ends, because the
+/// stamp is sticky. A block that was complete before the page opened never grew under the
+/// reader and is left alone, which is what bounds the whole thing to how long they watched.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_live_turn_lists_everything_and_a_settled_one_does_not() {
+    let _serial = serial();
+    // (1) The historical half: a big turn that was over before the page opened stays concise.
+    let settled = settled_big_turn_fixture("live-mode-settled");
+    // `mountall=1`: the shell virtualizes, and the block under test is one of many — without
+    // this the probe reads whichever surfaces happened to be mounted and proves nothing.
+    let page = open_with(Surface::AppShell, &settled, 3002, "mountall=1");
+    jump_to_end(&page.tab, Surface::AppShell);
+    await_tail(
+        &page.tab,
+        Surface::AppShell,
+        "a fresh open to land at the tail",
+    );
+    settle();
+    // The BIGGEST block is the one built above; the padding turns each hold a single call.
+    let cold = eval(&page.tab, "(function(){ var ps = [...document.querySelectorAll('[data-process-surface]')]; \
+         if (!ps.length) return JSON.stringify({miss:'none'}); \
+         var p = ps.reduce(function (a, b) { return b.querySelectorAll('.process-event').length > a.querySelectorAll('.process-event').length ? b : a; }); \
+         return JSON.stringify({ events: p.querySelectorAll('.process-event').length, \
+           hiddenEvents: p.querySelectorAll('.process-event.progressive-hidden').length, \
+           more: p.querySelectorAll('[data-process-more]').length }); })()");
+    let cold: serde_json::Value = cold
+        .as_str()
+        .and_then(|x| serde_json::from_str(x).ok())
+        .unwrap_or(serde_json::Value::Null);
+    assert!(
+        cold["events"].as_i64().unwrap_or(0) > 7,
+        "the fixture's big turn is past the cap, or this proves nothing: {cold}"
+    );
+    assert_eq!(
+        cold["more"].as_i64(),
+        Some(1),
+        "a turn that was already finished when the page opened renders CONCISE — it never grew \
+         under the reader, so nothing stamped it and its cap stands: {cold}"
+    );
+    assert!(
+        cold["hiddenEvents"].as_i64().unwrap_or(0) > 0,
+        "…with the messages past the cap actually hidden: {cold}"
+    );
+    drop(page);
+
+    // (2) The live half: a turn that grows under the reader lists everything, with no click.
+    let fx = growing_turn_fixture("live-mode-growing");
+    let page = open(Surface::AppShell, &fx, 3003);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    // Writes again, for the same reason: Bash calls would coalesce into one event and the turn
+    // would never pass the cap, so the rule would have nothing to demonstrate.
+    let script: Vec<String> = (0..9u64)
+        .flat_map(|k| {
+            vec![
+                write_tool_at(
+                    &format!("g-live-{k}"),
+                    &format!("/w/src/live_{k}.py"),
+                    4,
+                    &now_minus(40 - k * 3),
+                ),
+                tool_result_lines(&format!("g-live-{k}"), 2, &now_minus(39 - k * 3)),
+            ]
+        })
+        .collect();
+    let n = script.len();
+    let growth = LiveGrowth::start(fx.path.clone(), script, Duration::from_millis(700));
+    assert_eq!(
+        growth.finish(Duration::from_secs(90)),
+        n,
+        "the driver appended the whole script"
+    );
+    settle();
+    settle();
+    let live: serde_json::Value = eval(
+        tab,
+        "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); \
+           if (!p) return JSON.stringify({miss:'no section'}); \
+           return JSON.stringify({ events: p.querySelectorAll('.process-event').length, \
+             hiddenEvents: p.querySelectorAll('.process-event.progressive-hidden').length, \
+             more: p.querySelectorAll('[data-process-more]').length }); })()",
+    )
+    .as_str()
+    .and_then(|s| serde_json::from_str(s).ok())
+    .unwrap_or(serde_json::Value::Null);
+    assert!(
+        live["events"].as_i64().unwrap_or(0) > 7,
+        "the turn grew past the cap, so there is something for the rule to do: {live}"
+    );
+    assert_eq!(
+        live["hiddenEvents"].as_i64(),
+        Some(0),
+        "a LIVE turn hides no top-level message — that is list-all, and it happens with no \
+         click at all: {live}"
+    );
+
+    // (3) …and the reader's own word beats the rule. Collapse it, then let more work arrive:
+    // it must STAY collapsed, or a block could never be made to stay shut while a turn runs.
+    let pressed = eval(tab, "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); var b = p.querySelector('[data-process-more]'); if (!b) return 'no cap control'; b.click(); return 'ok'; })()");
+    assert_eq!(
+        pressed.as_str(),
+        Some("ok"),
+        "the expanded block still offers the cap control, to fold it back: {pressed}"
+    );
+    settle();
+    let more = LiveGrowth::start(
+        fx.path.clone(),
+        vec![
+            tool_open_at("g-after", &now_minus(4)),
+            tool_result_lines("g-after", 5, &now_minus(3)),
+        ],
+        Duration::from_millis(900),
+    );
+    assert_eq!(
+        more.finish(Duration::from_secs(40)),
+        2,
+        "the second batch landed"
+    );
+    settle();
+    settle();
+    let after = eval(tab, "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); return p.querySelectorAll('.process-event.progressive-hidden').length; })()");
+    assert!(
+        after.as_i64().unwrap_or(0) > 0,
+        "the reader folded this block back, so the records that arrived afterwards are hidden \
+         behind the cap again — the rule never overrides a choice the reader made: {after}"
+    );
+}
+
 /// More activity arriving in the SAME open turn — appends, the ordinary live case.
 fn growing_turn_script() -> Vec<String> {
     (0..5u64)

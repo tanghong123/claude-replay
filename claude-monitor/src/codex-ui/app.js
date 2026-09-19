@@ -242,7 +242,7 @@ const sessionIndex = new SessionIndexStore({
   error: () => toast("Session scan failed — retrying")
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   // #221: a first open with no cache waits on the server folding the whole transcript. Say so,
   // rather than leaving a blank page a reader cannot tell from a hang, and say that it is a
@@ -554,6 +554,28 @@ function updateRecords({ records, meta, changedFrom }) {
   const delta = Math.max(0, records.length - before);
   const opening = lastRecordCount < 0;
   lastRecordCount = records.length;
+  // #250: a block that GREW while the reader had the page open is one they are watching, and
+  // it renders LIST-ALL — every top-level message, no "Show N more". Not a control and not a
+  // preference: the reader's intention to watch is expressed by the turn being live in front
+  // of them.
+  //
+  // `opening` is what makes this bounded. The first apply after a reset is the session's own
+  // history, not growth, so a session opened cold stamps nothing and every block renders
+  // concise — the accumulation is how long the reader watched, never the transcript's length.
+  //
+  // The stamp is STICKY on purpose. `processExpanded` is never cleared at a turn boundary, so
+  // a block keeps list-all once the turn ends: no demotion, no timer, and no "it collapsed
+  // while I was reading it".
+  if (!opening && delta > 0) {
+    for (const unit of recordState.units) {
+      // `to >= before` means at least one of the records that just arrived is in this block.
+      if (unit.type !== "process" || unit.to < before) continue;
+      // The reader's own word on a block is final — otherwise collapsing the live turn would
+      // be undone by the very next record to arrive, and it could never be made to stay shut.
+      if (recordState.processChosen.has(unit.key)) continue;
+      recordState.processExpanded.add(unit.key);
+    }
+  }
   if (!wasFollowing && delta && !opening) recordState.newRecords += delta;
   paintJump(); renderHeader(); renderNavigator(); refreshFilterHits(); updateSearch(false);
 }

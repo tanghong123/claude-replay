@@ -28,6 +28,11 @@ export const recordState = {
   session: "", records: [], meta: null, units: [], generation: 0,
   cursor: { epoch: 0, committed: 0, gen: 0, index: 0 },
   heights: new Map(), folds: new Map(), processFolds: new Map(), processExpanded: new Set(), promptExpanded: new Set(),
+  // Which process blocks the READER has spoken about (#250). `processExpanded` alone cannot say
+  // whether a block is open because the reader opened it or because the page did, and the two
+  // must behave differently: the page may revise its own decision, it may never revise theirs.
+  // A block in here is never touched by the live-turn rule again.
+  processChosen: new Set(),
   // "Expand every detail in this section" as a STANDING INTENT for that process, not a one-off
   // sweep of the records that happened to exist when it was pressed (#233). An open turn keeps
   // producing records; the reader asked for the turn to be open, so what arrives next is open

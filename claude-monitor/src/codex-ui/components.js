@@ -385,11 +385,13 @@ export function bindComponentEvents(root, state, actions) {
       const key = process.dataset.processKey;
       state.processFolds.set(key, !process.classList.contains("closed"));
       actions.note?.("fold", { key, open: process.classList.contains("closed") });
+      state.processChosen.add(key); // the reader's word on this block (#250)
       actions.rerender(); return;
     }
     if (process && event.target.closest("[data-process-more]")) {
       const key = process.dataset.processKey;
       state.processExpanded.has(key) ? state.processExpanded.delete(key) : state.processExpanded.add(key);
+      state.processChosen.add(key); // the reader's word on this block (#250)
       actions.rerender(); return;
     }
     if (process && event.target.closest("[data-process-bulk]")) {
@@ -402,6 +404,7 @@ export function bindComponentEvents(root, state, actions) {
       // future messages." An open turn keeps producing records, and stamping only the ones that
       // existed at the click left every later arrival to fall back to its own folded default.
       state.processBulk.set(key, open);
+      state.processChosen.add(key); // the reader's word on this block (#250)
       // "Expand all" means EVERYTHING, so it lifts the "Show N more" cap first (#233). The owner:
       // "Expand all means first show xxx more, and then expand everything." Expanding details the
       // reader still cannot see is a control that only half works.
