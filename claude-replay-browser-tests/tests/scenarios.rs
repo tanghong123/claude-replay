@@ -1219,8 +1219,14 @@ fn scenario_the_turn_bar_names_and_returns(
     // Scroll in until the reader is inside turn 7.
     let mut named = None;
     for _ in 0..40 {
+        let was = scroll_now(tab, surface);
         scroll_by(tab, surface, 320);
         settle();
+        // The loop STOPS at the first reading of `turn >= 7` and then asserts it is exactly 7,
+        // so a single early sample that reports 8 fails the case outright — there is no second
+        // chance. Measured 4 failures in 20 runs, all here rather than at the click below. The
+        // bar must therefore be read from a view that has finished placing, not merely stopped.
+        until_move_settles(tab, surface, was);
         if let Some((turn, text)) = harness::sticky_turn(tab, surface) {
             if turn >= 7 {
                 named = Some((turn, text));
@@ -1247,16 +1253,34 @@ fn scenario_the_turn_bar_names_and_returns(
         scroll_by(tab, surface, 700);
     }
     settle();
+    // The bar is a spy on a view that is still placing after three wheels; reading it early
+    // names a turn the reader has already left (#209, #227). Additive to the settle above.
+    until_engine_quiet(tab);
     let (later, later_text) =
         harness::sticky_turn(tab, surface).expect("the bar still names the turn being read");
     assert!(
         later > turn,
         "reading on moves the bar forward: {turn} -> {later} ({later_text})"
     );
+    let before_click = scroll_now(tab, surface);
     harness::click_sticky_turn(tab, surface);
     settle();
-    settle();
+    // The click COMMANDS a move, so waiting for the engine to go quiet is not enough: the move
+    // may not have started when the sleep elapses, and a scroller that has not begun moving
+    // reads as one that has finished. Measured 4 failures in 10 runs with only settles, and
+    // still 3 in 10 with a quiet-check alone — always reading the turn the reader had scrolled
+    // to rather than the one the click was returning to.
+    until_move_settles(tab, surface, before_click);
     let landed = turn_at_top(tab, surface);
+    if (landed - later).abs() > 1 {
+        let after = scroll_now(tab, surface);
+        let bar_now = harness::sticky_turn(tab, surface);
+        eprintln!(
+            "TURNBAR bar named {later} ({later_text}); scroll {before_click} -> {after}; \
+             turn_at_top {landed}; bar now {bar_now:?}"
+        );
+        history_tail(tab, "after clicking the sticky turn", 12);
+    }
     assert!(
         (landed - later).abs() <= 1,
         "the click returns to the turn the bar named: {later}, landed on {landed}"
@@ -1449,6 +1473,11 @@ fn scenario_deep_jump_then_page_and_step(
     // hop the first-header reading cannot see. (Space pages only on the app shell here; the
     // classic page scrolls natively on Space, which a synthetic key does not drive.)
     let named = |what: &str| -> i64 {
+        // Both readings must come from the SAME resting view. Paging leaves the engine still
+        // placing, and a view that has stopped moving is not one that has finished (#227), so
+        // without this the pane and the bar are sampled at two different moments and disagree
+        // by a turn or two — measured 3 failures in 6 runs, always as a small off-by-N.
+        until_engine_quiet(tab);
         let pane = harness::pane_focus_turn(tab, surface);
         let bar = harness::sticky_turn(tab, surface)
             .map(|b| b.0)
@@ -2307,6 +2336,46 @@ fn until_anchor_at_rest(tab: &headless_chrome::Tab, surface: Surface) -> (i64, f
 /// states count that stops growing means it has stopped working. Neither reads the view's
 /// POSITION, so a broken engine still comes to rest in the wrong place and the caller's
 /// assertion still fails.
+/// Wait for a COMMANDED move to finish: first for it to START, then for it to stop.
+///
+/// `until_engine_quiet` is not enough for a click or a jump. A commanded move may be smooth, and
+/// a fixed sleep — or a quiet-check taken too early — can both elapse before the browser has
+/// begun animating, at which point the scroller is still sitting at its old offset and reads as
+/// "at rest". That is the trap the memory note names: two equal samples miss a transition that
+/// has not started. So this takes the offset BEFORE the command, waits for it to move off that
+/// value, and only then waits for it to settle. A move that never starts (the command was a
+/// no-op because the target was already in view) falls through the start-wait on its deadline
+/// and the settle-wait then returns immediately, so it is safe to call unconditionally.
+fn until_move_settles(tab: &headless_chrome::Tab, surface: Surface, was: f64) {
+    let read = format!("{}.scrollTop", surface.scroller());
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < Duration::from_secs(3) {
+        let now = eval(tab, &read).as_f64().unwrap_or(was);
+        if (now - was).abs() > 1.0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(60));
+    }
+    let mut last = f64::NAN;
+    let t1 = std::time::Instant::now();
+    while t1.elapsed() < Duration::from_secs(10) {
+        let now = eval(tab, &read).as_f64().unwrap_or(f64::NAN);
+        if now == last {
+            break;
+        }
+        last = now;
+        std::thread::sleep(Duration::from_millis(120));
+    }
+    until_engine_quiet(tab);
+}
+
+/// The scroller's current offset — the `was` a [`until_move_settles`] call is measured against.
+fn scroll_now(tab: &headless_chrome::Tab, surface: Surface) -> f64 {
+    eval(tab, &format!("{}.scrollTop", surface.scroller()))
+        .as_f64()
+        .unwrap_or(f64::NAN)
+}
+
 fn until_engine_quiet(tab: &headless_chrome::Tab) {
     let count = "(function(){ var h = window.__viewportHistory; if (!h || !h.states || !h.states.length) return -1; var s = h.states[h.states.length - 1]; return s.pending ? -1 : h.states.length; })()";
     let t0 = std::time::Instant::now();
@@ -7016,6 +7085,31 @@ fn trace_on(tab: &headless_chrome::Tab, surface: Surface) {
     settle();
 }
 
+/// The always-on history (#197) at a failing step, env-gated like `trace_tail`. The TRACE needs
+/// `?trace=viewport` and most cases do not pass it; the HISTORY is always recorded, so this is
+/// what an intermittent viewport case can actually dump at the moment it goes wrong.
+fn history_tail(tab: &headless_chrome::Tab, label: &str, n: usize) {
+    if std::env::var_os("SCENARIO_TRACE").is_none() {
+        return;
+    }
+    let js = format!(
+        "(function(){{ var h = window.__viewportHistory || {{}}; var take = function (a) {{ \
+           return (a || []).slice(-{n}); }}; \
+         return {{ states: take(h.states), deltas: take(h.deltas), actions: take(h.actions), \
+                  violations: take(h.violations) }}; }})()"
+    );
+    eprintln!("HISTORY {label}:");
+    let seen = harness::probe(tab, &js);
+    for key in ["actions", "deltas", "states", "violations"] {
+        if let Some(rows) = seen[key].as_array() {
+            eprintln!("  -- {key} ({})", rows.len());
+            for r in rows {
+                eprintln!("     {r}");
+            }
+        }
+    }
+}
+
 fn trace_tail(tab: &headless_chrome::Tab, label: &str, n: usize) {
     if std::env::var_os("SCENARIO_TRACE").is_none() {
         return;
@@ -9507,6 +9601,13 @@ fn scenario_a_smooth_step_yields_to_the_readers_wheel(
     );
     settle();
     settle();
+    // The wheel interrupted a smooth step, and a view that has stopped MOVING is not one that
+    // has FINISHED (#227). Until the engine is at rest both reads below are a stale spy (#209)
+    // and the growth lands mid-transition, where its compensation is lost — which is the whole
+    // of this case's flakiness: it failed 11 of 12 runs without this wait and passed 6 of 6 when
+    // an unrelated probe happened to delay the same spot. Additive, never a replacement for the
+    // settles above.
+    until_engine_quiet(tab);
     let top1 = top_of(tab, surface, &key);
     let head = eval(
         tab,
@@ -9533,7 +9634,17 @@ fn scenario_a_smooth_step_yields_to_the_readers_wheel(
     );
     settle();
     settle();
+    // Symmetric with the wait before the growth: the compensation is a transaction like any
+    // other, and reading its result before it lands measures the transition, not the outcome.
+    until_engine_quiet(tab);
     let top2 = top_of(tab, surface, &key);
+    if (top2 - top1).abs() > 4.0 {
+        history_tail(
+            tab,
+            "growth above after the reader's wheel interrupted a smooth step",
+            14,
+        );
+    }
     // Four pixels: measured 1.7px and 2.7px across runs — a placement writes an integer offset
     // against fractional rects, once for the measure that heard the growth and once for the
     // estimates it moved — against a failure of 200px (the growth lost) or 400px (re-landed).
