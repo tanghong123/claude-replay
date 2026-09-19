@@ -407,6 +407,16 @@ export function bindComponentEvents(root, state, actions) {
       // reader still cannot see is a control that only half works.
       if (open) state.processExpanded.add(key);
       else state.processExpanded.delete(key);
+      // …and the same reasoning one level out (#251). A COLLAPSED section hides its whole body
+      // (`.process-surface.closed .process-surface-body{display:none}`), so pressing this while
+      // the section was shut expanded every record inside and showed the reader nothing at all —
+      // worse, it left the state out of step, since the next press then COLLAPSED them, also
+      // invisibly. Expanding opens the section it is expanding.
+      //
+      // The collapsing direction deliberately does NOT close the section: "collapse every detail"
+      // and "hide the whole section" are different intentions, and the chevron beside this button
+      // already does the second.
+      if (open) state.processFolds.set(key, false);
       // Per-record choices inside the section are cleared, so the intent governs uniformly and
       // the next press can flip the whole section back rather than fighting leftovers.
       renderers.forEach(renderer => state.folds.delete(renderer.dataset.recordId));

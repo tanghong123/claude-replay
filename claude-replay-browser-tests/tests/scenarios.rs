@@ -11972,6 +11972,77 @@ fn app_shell_folds_survive_a_queue_pickup() {
 /// turn to apply to all future messages" — and, clarifying, "to apply to all future messages
 /// still for the same turn."
 ///
+/// #251 — the same control, pressed on a section that is CLOSED. A collapsed section hides its
+/// whole body (`.process-surface.closed .process-surface-body{display:none}`), and the handler
+/// used to expand every record inside while leaving `processFolds` alone — so the reader saw
+/// nothing happen, and the state silently desynced: a second press then COLLAPSED them, also
+/// invisibly. Expanding now opens the section it is expanding.
+///
+/// A case that presses this on an already-OPEN section cannot see the bug at all, which is why
+/// it survived #233.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_expand_all_opens_the_section_it_expands() {
+    let _serial = serial();
+    let fx = growing_turn_fixture("bulk-closed-app");
+    let page = open(Surface::AppShell, &fx, 2998);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    // Collapse the last agent-process section first — the state this bug lives in.
+    let shut = eval(tab, "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); if (!p) return 'none'; var t = p.querySelector('[data-process-toggle]'); if (!t) return 'no toggle'; if (!p.classList.contains('closed')) t.click(); return 'ok'; })()");
+    assert_eq!(
+        shut.as_str(),
+        Some("ok"),
+        "the tail has a collapsible agent-process section: {shut}"
+    );
+    settle();
+    let closed = eval(tab, "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); return !!(p && p.classList.contains('closed')); })()");
+    assert_eq!(
+        closed,
+        serde_json::Value::Bool(true),
+        "…and it is actually closed before the press: {closed}"
+    );
+    // Now press "expand every detail in this section".
+    eval(tab, "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); p.querySelector('[data-process-bulk]').click(); return 'ok'; })()");
+    settle();
+    let seen: serde_json::Value = eval(
+        tab,
+        "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); \
+           if (!p) return JSON.stringify({miss:'no section'}); \
+           var rs = [...p.querySelectorAll('[data-renderer]:not(.noninteractive)')]; \
+           var body = p.querySelector('.process-surface-body'); \
+           return JSON.stringify({ closed: p.classList.contains('closed'), \
+             bodyShown: !!(body && getComputedStyle(body).display !== 'none'), \
+             renderers: rs.length, shut: rs.filter(function (r) { return r.classList.contains('closed'); }).length, \
+             more: p.querySelectorAll('[data-process-more][aria-expanded=\"false\"]').length }); })()",
+    )
+    .as_str()
+    .and_then(|s| serde_json::from_str(s).ok())
+    .unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        seen["closed"],
+        serde_json::Value::Bool(false),
+        "expanding OPENS the section — otherwise every record inside expands where the reader \
+         cannot see any of it: {seen}"
+    );
+    assert_eq!(
+        seen["bodyShown"],
+        serde_json::Value::Bool(true),
+        "…and the body is actually displayed, not merely un-classed: {seen}"
+    );
+    assert!(
+        seen["renderers"].as_i64().unwrap_or(0) > 0 && seen["shut"].as_i64().unwrap_or(-1) == 0,
+        "…with every record inside expanded: {seen}"
+    );
+    assert_eq!(
+        seen["more"].as_i64().unwrap_or(-1),
+        0,
+        "…and the `Show N more` cap lifted, as #233 requires of this control: {seen}"
+    );
+}
+
 /// The control used to sweep `[data-renderer]` under the section and write a fold entry for each
 /// one it found. A record that arrived afterwards had no entry, so it fell back to its own
 /// folded default — and the reader, who had asked for this turn to be open, watched work arrive
