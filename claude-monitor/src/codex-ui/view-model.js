@@ -1,3 +1,4 @@
+import { isPointerAttachment } from "./shared/capabilities.js";
 // Row caps are the shared module's (html/shared/parts.js, #108): the split, the label, the row
 // markup and the expansion memory — one implementation with the classic page.
 import { capSplit, capLabel, preLines, toLineOf, numRowsHtml, diffRowsHtml, capOpenHas, contextReportHtml } from "./shared/parts.js";
@@ -233,7 +234,20 @@ export function viewRecord(record) {
   if (record.kind === "act") return rendererRecord(record, "activity", "Activity");
   if (record.kind === "agent") return rendererRecord(record, "agent", head.name || head.badge || "Agent");
   if (record.kind === "queue") return rendererRecord(record, "queue", "Queued input");
-  if (record.kind === "attachment") return rendererRecord(record, "attachment", head.att_name || "Attachment");
+  if (record.kind === "attachment") {
+    // #254: a pointer's one line reads `ref  packages/core/test/renames.test.ts` — the KIND as
+    // the title (the reason the transcript recorded, which the classic page has always shown)
+    // and the path as the target, which `targetHtml` renders clickable. A real attachment keeps
+    // its filename title and its card.
+    const pointer = isPointerAttachment(head);
+    const title = pointer ? head.att_kind || "file" : head.att_name || "Attachment";
+    const view = rendererRecord(record, "attachment", title);
+    // `att_name` first: the adapter already puts the DISPLAY path there for a `ref`
+    // (`displayPath`), which is what a reader wants to see, and the absolute path is the
+    // fallback only when there is no name at all.
+    if (pointer) view.summary = head.att_name || head.att_path || "";
+    return view;
+  }
   if (record.kind === "compaction") return rendererRecord(record, "context", "Context compacted");
   // A slash command is the user speaking (#113, the classic page's turn card): a user view with
   // the command's badge, its argument preview and the `N lines` chip as the head module reads it.

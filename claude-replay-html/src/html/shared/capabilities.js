@@ -44,4 +44,56 @@ const revealQuery = ({ path, sig }) => `/__reveal?path=${encodeURIComponent(path
  *  form both `/__reveal` and `/file` read (the classic page prefixes the route itself). */
 const stampQuery = ({ path, sig }) => `path=${encodeURIComponent(path || "")}${sig ? `&sig=${encodeURIComponent(sig)}` : ""}`;
 
-export { attachmentCapability, referenceAction, revealQuery, stampQuery };
+/** The attachment kinds that are POINTERS rather than content (#254).
+ *
+ *  `ref` and `file` are what a compaction leaves behind — the files that were in context when
+ *  it happened — and `edited` is an in-editor file whose inline snippet is truncated. None of
+ *  them carries anything to read, so the page has only a path to show.
+ *
+ *  They are worth naming because of how they LOOK, not how they behave: drawn with the same
+ *  furniture as a real record — a bold filename, a chevron, a card, two buttons — four of them
+ *  in a row after a compaction read as four updates that have been stripped of their content.
+ *  The owner reported exactly that. A pointer should look like a pointer. */
+const POINTER_KINDS = new Set(["ref", "file", "edited"]);
+
+/** Is this attachment head a bare pointer — a known pointer kind with nothing to render?
+ *
+ *  Content is what disqualifies it: a `file` that DID keep its bytes or text is a real record
+ *  and keeps its card. So the test is the kind AND the absence of anything to show. */
+function isPointerAttachment(head = {}) {
+  if (!POINTER_KINDS.has(String(head.att_kind || ""))) return false;
+  return head.att_text == null && head.att_datauri == null;
+}
+
+/** Fold consecutive POINTER attachments into runs, leaving everything else alone (#254).
+ *
+ *  They arrive as a group and mean one thing — "these files were in context when the
+ *  compaction happened" — so a reader wants one line saying that, not five cards to scroll
+ *  past. Measured on the session that prompted this: 28 pointers in runs of 5, 2, 3, 2, 2, 5.
+ *
+ *  `headOf` reads an item's attachment head, because the two pages hold an item differently.
+ *  Returns `[{ run: true, items } | { run: false, item }]` in the original order; a LONE
+ *  pointer comes back as `run: false`, because one light line is already clear and wrapping it
+ *  in a summary would be more furniture rather than less — the opposite of the point.
+ *
+ *  Order is never changed and nothing is dropped: every input item appears exactly once. */
+function groupPointerRuns(items, headOf) {
+  const out = [];
+  let run = null;
+  for (const item of items || []) {
+    if (isPointerAttachment(headOf(item) || {})) {
+      if (!run) {
+        run = [];
+        out.push({ run: true, items: run });
+      }
+      run.push(item);
+      continue;
+    }
+    run = null;
+    out.push({ run: false, item });
+  }
+  // A run of one is not a run.
+  return out.map(g => (g.run && g.items.length === 1 ? { run: false, item: g.items[0] } : g));
+}
+
+export { attachmentCapability, groupPointerRuns, isPointerAttachment, POINTER_KINDS, referenceAction, revealQuery, stampQuery };

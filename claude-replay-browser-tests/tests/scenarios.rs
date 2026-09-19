@@ -11392,6 +11392,107 @@ fn prose_structures(tab: &headless_chrome::Tab, surface: Surface) -> serde_json:
     serde_json::from_str(eval(tab, &js).as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null)
 }
 
+/// A compaction that carried five files over, then one that carried a single file (#254).
+fn carried_files_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question: keep going after the compaction", &now_minus(200));
+    t += &harness::compaction_at(&now_minus(198));
+    for (i, f) in [
+        "packages/core/test/renames.test.ts",
+        "packages/core/src/renames.ts",
+        "packages/web/src/strings.zh-Hans.ts",
+        "packages/web/test/app.test.tsx",
+        "packages/web/test/i18n.test.ts",
+    ]
+    .iter()
+    .enumerate()
+    {
+        t += &harness::carried_file_at(&format!("/w/{f}"), f, &now_minus(196 - i as u64));
+    }
+    t += &assistant_at("Carrying on from the summary.", &now_minus(188));
+    // …and a LONE one, which must stay a plain line rather than become a run of one.
+    t += &harness::carried_file_at(
+        "/w/packages/cli/src/bin.ts",
+        "packages/cli/src/bin.ts",
+        &now_minus(186),
+    );
+    t += &assistant_at("And the last of it.", &now_minus(184));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #254 — a file carried over by a compaction is a POINTER, and must not be dressed as a record
+/// with something inside. The owner saw four of them after a compaction and read them as four
+/// updates stripped of their content: each wore a bold filename, a chevron, a card and two
+/// buttons, and carried nothing at all.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_carried_files_collapse_and_wear_no_card() {
+    let _serial = serial();
+    let fx = carried_files_fixture("carried-files-app");
+    let page = open_with(Surface::AppShell, &fx, 3004, "mountall=1");
+    jump_to_end(&page.tab, Surface::AppShell);
+    await_tail(
+        &page.tab,
+        Surface::AppShell,
+        "a fresh open to land at the tail",
+    );
+    settle();
+    let seen: serde_json::Value = eval(
+        &page.tab,
+        "(function(){ var runs = [...document.querySelectorAll('.pointer-run')]; \
+           return JSON.stringify({ \
+             runs: runs.length, \
+             counted: runs.map(function (r) { return Number(r.dataset.pointerRun || 0); }), \
+             files: runs.map(function (r) { return r.querySelectorAll('.pointer-run-file').length; }), \
+             lead: runs.length ? runs[0].querySelector('.pointer-run-lead').textContent : '', \
+             cards: document.querySelectorAll('[data-renderer-kind=\"attachment\"] .renderer-note').length, \
+             loneLines: [...document.querySelectorAll('[data-renderer-kind=\"attachment\"]')].filter(function (r) { return r.classList.contains('noninteractive'); }).length \
+           }); })()",
+    )
+    .as_str()
+    .and_then(|s| serde_json::from_str(s).ok())
+    .unwrap_or(serde_json::Value::Null);
+
+    assert_eq!(
+        seen["runs"].as_i64(),
+        Some(1),
+        "the five files the compaction carried collapse into ONE line, and the lone one that \
+         follows does NOT become a run of one — wrapping a single light line in a summary would \
+         be more furniture, not less: {seen}"
+    );
+    assert_eq!(
+        seen["counted"][0].as_i64(),
+        Some(5),
+        "…and the line says how many: {seen}"
+    );
+    assert_eq!(
+        seen["files"][0].as_i64(),
+        Some(5),
+        "…while still naming every one of them, so nothing is hidden by the collapse: {seen}"
+    );
+    assert!(
+        seen["lead"].as_str().unwrap_or("").contains("carried"),
+        "…and says WHY they are there: {seen:?}"
+    );
+    assert_eq!(
+        seen["cards"].as_i64(),
+        Some(0),
+        "no pointer wears a card with a heading and buttons — that furniture is what made these \
+         read as emptied-out updates: {seen}"
+    );
+    assert!(
+        seen["loneLines"].as_i64().unwrap_or(0) >= 1,
+        "the lone carried file still renders, as a single head-only line: {seen}"
+    );
+}
+
 /// A session that ran `/context` (#235). The client records a slash command on a
 /// `system`/`local_command` record and its stdout on the next one; the server parses that stdout
 /// into a `ctx` report. Written as the client writes it, so the parse path is the real one.

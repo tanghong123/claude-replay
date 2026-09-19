@@ -1,6 +1,6 @@
 // The two-stamp file rule — what a clicked attachment or path may DO — is the shared module's
 // (html/shared/capabilities.js, #46), read here and by the classic page alike.
-import { attachmentCapability, referenceAction, revealQuery } from "./shared/capabilities.js";
+import { attachmentCapability, groupPointerRuns, isPointerAttachment, referenceAction, revealQuery } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 import { fleetGroups } from "./shared/fleet.js";
 import { escapeText, partsHtml } from "./view-model.js";
@@ -82,6 +82,13 @@ function rendererBody(view, state) {
       const attrs = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="image" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
       return `<div class="renderer-image ${open ? "open" : ""}" data-image-block="${escapeText(view.id || "")}"><button type="button" class="renderer-image-toggle" data-image-toggle="${escapeText(view.id || "")}" aria-expanded="${open}">${open ? "Hide" : "Show"} image · ${escapeText(name)}</button>${open ? `<figure class="renderer-image-figure"><button type="button" class="renderer-image-thumb" ${attrs} title="Open ${escapeText(name)} at full size"><img src="${escapeText(source)}" alt="${escapeText(name)}" decoding="async"></button><figcaption>${escapeText(name)} · click for full size</figcaption></figure>` : ""}</div>`;
     }
+    // #254: a POINTER carries nothing to read — `ref`/`file` are what a compaction leaves
+    // behind and `edited` is a truncated in-editor snippet. Rendering it as a card with a
+    // heading and two buttons made four of them in a row after a compaction read as four
+    // updates stripped of their content, which is what the owner reported. With no body the
+    // renderer is `noninteractive` (see above) and draws as ONE head line — the kind, the
+    // path, and the path itself clickable through `targetHtml`. A pointer looks like a pointer.
+    if (isPointerAttachment(h)) return "";
     return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button>${capability.action !== "reveal" && h.att_path && h.att_sig ? `<button class="artifact-link artifact-link-secondary" data-attachment="${escapeText(view.id || "")}" data-attachment-action="reveal" data-path="${escapeText(h.att_path)}" data-sig="${escapeText(h.att_sig)}">Reveal in file manager</button>` : ""}</div>`;
   }
   if (view.renderer === "bash") return `<div class="renderer-terminal ${view.error ? "error" : ""}"><span class="output">${bodyHtml(view, state) || "No output recorded"}</span></div>`;
@@ -176,13 +183,34 @@ function renderProcess(unit, state) {
   const updates = unit.views.filter(({ view }) => view.t === "assistant").length;
   const labels = unit.views.slice(0, 4).map(({ view }) => view.t === "assistant" ? `Progress · ${strip(view.html).slice(0, 42)}` : view.name || view.t);
   const preview = labels.join(" · ") + (unit.views.length > 4 ? ` · +${unit.views.length - 4}` : "");
-  const events = unit.views.map(({ index, view }, position) => {
+  // #254: a RUN of carried-over pointers is one thing that happened, not five. They arrive
+  // together after a compaction — "these files were in context" — so they collapse to a single
+  // compact line naming the count, with every path still there and still clickable. A run
+  // counts as ONE event against the cap below, which is the point: five pointers must not eat
+  // five of the seven visible slots that real work needs.
+  const groups = groupPointerRuns(unit.views, item => item.view?.attachment);
+  const events = groups.map((group, position) => {
+    const hidden = position >= visibleLimit && !expanded;
+    const frame = inner => `<div class="process-event ${hidden ? "progressive-hidden" : ""}" data-progressive="${position >= visibleLimit}">${inner}</div>`;
+    if (group.run) {
+      const links = group.items.map(({ view }) => {
+        const h = view.attachment || {};
+        const name = h.att_name || h.att_path || "file";
+        return h.att_path && (h.att_fsig || h.att_sig)
+          ? `<span class="pointer-run-file" data-reference-path="${escapeText(h.att_path)}" data-reference-fsig="${escapeText(h.att_fsig || "")}" data-reference-sig="${escapeText(h.att_sig || "")}" title="${escapeText(h.att_path)}">${escapeText(name)}</span>`
+          : `<span class="pointer-run-file" title="${escapeText(h.att_path || name)}">${escapeText(name)}</span>`;
+      }).join("");
+      return frame(`<div class="pointer-run" data-pointer-run="${group.items.length}"><span class="pointer-run-lead">${group.items.length} files carried into the context</span>${links}</div>`);
+    }
+    const { index, view } = group.item;
     const content = view.t === "assistant"
       ? `<div class="turn assistant process-commentary" data-kind="assistant" data-record-kind="assistant" data-phase="commentary" data-block-index="${index}"><span class="process-commentary-mark"></span><span class="process-commentary-label">Progress</span><div class="process-commentary-copy markdown">${view.html}</div></div>`
       : renderRenderer(view, index, state, state.processBulk?.get(key));
-    return `<div class="process-event ${position >= visibleLimit && !expanded ? "progressive-hidden" : ""}" data-progressive="${position >= visibleLimit}">${content}</div>`;
+    return frame(content);
   }).join("");
-  const hidden = Math.max(0, unit.views.length - visibleLimit);
+  // Counted over GROUPS, not raw views (#254): a collapsed run is one event on screen, so
+  // "Show N more" must agree with what the reader would actually reveal.
+  const hidden = Math.max(0, groups.length - visibleLimit);
   return `<section class="process-surface process-${tone} ${closed ? "closed" : ""}" data-process-surface data-process-key="${escapeText(key)}" data-process-state="${tone}" data-turn="${escapeText(unit.turn)}" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}" aria-label="Agent process"><div class="process-surface-headbar"><div class="process-surface-summary"><button class="process-section-toggle" type="button" data-process-toggle aria-expanded="${!closed}" title="${closed ? "Expand" : "Collapse"} this section">${svg("chev")}</button><span class="process-surface-label" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}">Agent process</span><span class="process-surface-preview">${escapeText(preview)}</span><span class="process-surface-count">${unit.views.length} events${updates ? ` · ${updates} updates` : ""}</span><button class="process-bulk-toggle" type="button" data-process-bulk aria-pressed="false" title="Expand every detail in this section">${svg("expandStack")}</button></div></div><div class="process-surface-body">${events}${hidden ? `<button class="process-more" type="button" data-process-more aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span>${svg("chev")}</button>` : ""}</div></section>`;
 }
 

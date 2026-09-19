@@ -818,3 +818,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    rows rather than a frame around them. */
 .fleet-phase{margin:6px 0 2px;color:var(--sub);font-size:.85em;letter-spacing:.04em;text-transform:uppercase}
 .fleet-phase:first-child{margin-top:0}
+
+/* #254: a POINTER is not a record with something inside, and must not be dressed as one. A run
+   of them collapses to one line — the count, then every path, each still clickable. No card, no
+   chevron, no buttons: the furniture is what made four of these read as four stripped updates. */
+.pointer-run{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;padding:3px 2px;color:var(--faint);font-size:11px}
+.pointer-run-lead{color:var(--sub);font-variant-numeric:tabular-nums}
+.pointer-run-file{font:11px/1.5 var(--mono);color:var(--faint);border-bottom:1px dotted var(--line)}
+.pointer-run-file[data-reference-path]{cursor:pointer}
+.pointer-run-file[data-reference-path]:hover{color:var(--ink);border-bottom-color:currentColor}
+/* A LONE pointer keeps its own line — `noninteractive` already draws head-only — but the kind
+   reads as a quiet label rather than a title competing with real records. */
+.renderer[data-renderer-kind="attachment"].noninteractive .renderer-title{color:var(--faint);font-weight:400}

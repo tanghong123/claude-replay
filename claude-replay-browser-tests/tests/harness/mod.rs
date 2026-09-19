@@ -179,6 +179,15 @@ pub fn edited_file_at(path: &str, ts: &str) -> String {
         "{{\"type\":\"attachment\",\"timestamp\":\"{ts}\",\"attachment\":{{\"type\":\"edited_text_file\",\"filename\":\"{path}\",\"snippet\":\"1\\tintro\"}}}}\n"
     )
 }
+/// A file that was IN CONTEXT when a compaction happened — `compact_file_reference`, the record
+/// Claude Code leaves behind naming what it carried over (#254). Pure pointer: no bytes, no
+/// text, just a path, and they arrive in runs of several right after the boundary.
+pub fn carried_file_at(path: &str, display: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"attachment\",\"timestamp\":\"{ts}\",\"attachment\":{{\"type\":\"compact_file_reference\",\"filename\":\"{path}\",\"displayPath\":\"{display}\"}}}}\n"
+    )
+}
+
 /// A one-pixel PNG, base64 — enough for a browser to decode to real dimensions.
 pub const TINY_PNG_B64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
