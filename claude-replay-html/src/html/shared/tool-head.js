@@ -74,19 +74,22 @@ function toolHead(head) {
  *  cancelled — "failed" when only a non-zero exit says so) and names its exit code; anything
  *  else shows the chips' text. */
 function stateLabel(th) {
-  if (th.state === "failed") {
-    const word = th.status || "failed";
-    // The failure word and its exit, and nothing else. #232 briefly appended the line count here,
-    // because the parity audit saw a failed Bash read `… 1 lines failed` on the classic page and
-    // `… failed` on the shell. That rule was wrong in the other direction: on the fixture behind
-    // `tool_heads_carry_state_exit_and_duration` the classic chip is `exit 1 · 2.50s` with no
-    // count at all, so appending one made the shell say MORE than the page it was being matched
-    // to. The real gap is narrower — the shell replaces the chip text wholesale on failure
-    // instead of keeping what the chips carry — and wants a chip-faithful rule, not a
-    // lines-shaped one. Queued rather than guessed at again.
-    return th.exit != null && th.exit !== 0 ? `${word} · exit ${th.exit}` : word;
-  }
-  return th.text;
+  if (th.state !== "failed") return th.text;
+  const word = th.status || "failed";
+  const text = th.text || "";
+  // CHIP-FAITHFUL (#234). A failure used to DISCARD `th.text` and rebuild the pill from two
+  // fields, so whatever else the chips carried was lost — the parity audit caught a failed Bash
+  // reading `1 lines failed` on the classic page and bare `failed` on the shell.
+  //
+  // The first fix appended `th.lines`, and it was wrong in the other direction: on the fixture
+  // behind `tool_heads_carry_state_exit_and_duration` the classic chip is `exit 1 · 2.50s` with
+  // no count at all, so the shell then said MORE than the page it was matched to. Two fixtures,
+  // two chip sets, and a rule keyed on one field is right for one and wrong for the other — the
+  // tell that the rule had the wrong shape. That attempt shipped in v1.274.0 and was reverted.
+  //
+  // So: show what the chips say, and add the failure word only when they do not already say it.
+  // Nothing is invented and nothing is dropped, and neither fixture is special.
+  return text.split(" · ").includes(word) ? text : text ? `${word} · ${text}` : word;
 }
 
 /* ── the head's click cycle (#129) ────────────────────────────────────────

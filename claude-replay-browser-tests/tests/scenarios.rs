@@ -5936,10 +5936,18 @@ fn scenario_tool_heads_carry_state_exit_and_duration(
             );
         }
         Surface::AppShell => {
+            // RE-PINNED by #234, as a decision rather than a drift. The pill used to be built
+            // from two fields (`failed · exit 1`) and DISCARDED everything else the chips
+            // carried — on this fixture the classic chip is `exit 1 · 2.50s`, so the duration
+            // was reaching one page and not the other. The pill is now chip-faithful, which
+            // means it gains the duration here and the two pages finally say the same thing.
+            // The old claim still holds: it names the failure and its exit.
             assert_eq!(
                 (failed["state"].as_str(), failed["pill"].as_str()),
-                (Some("failed"), Some("failed · exit 1")),
-                "a failed call's pill names the failure and its exit"
+                (Some("failed"), Some("failed · 1 lines · exit 1 · 2.50s")),
+                "a failed call's pill names the failure and everything its chips carry — this \
+                 fixture's classic head shows a `1 lines` chip AND an `exit 1 · 2.50s` chip, and \
+                 the shell now carries both; the word leads because these chips never say it"
             );
             assert_eq!(long["state"].as_str(), Some("completed"));
             assert!(
@@ -5949,9 +5957,12 @@ fn scenario_tool_heads_carry_state_exit_and_duration(
                     .ends_with("exit 0 · 1m 5s"),
                 "a long call's pill shows its duration: {long:?}"
             );
+            // Re-pinned with the above: the classic chip is `declined · 42ms`, and the shell
+            // said only `declined`. The failure word is already IN the chips here, so the pill
+            // is the chip text unchanged — no word is said twice.
             assert_eq!(
                 (declined["state"].as_str(), declined["pill"].as_str()),
-                (Some("failed"), Some("declined"))
+                (Some("failed"), Some("declined · 42ms"))
             );
             assert_eq!(
                 (update["state"].as_str(), update["pill"].as_str()),

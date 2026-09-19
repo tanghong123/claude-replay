@@ -1529,9 +1529,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(displayName("Bash"), "Bash");
   const failed = toolHead({ name: "Bash", target: "cargo test", chips: [{ c: "fail", x: "exit 1 · 2.50s" }] });
   assert.deepEqual([failed.state, failed.exit, failed.duration, failed.failed], ["failed", 1, "2.50s", true]);
-  assert.equal(stateLabel(failed), "failed · exit 1", "a failure names its word and its exit");
+  // RE-PINNED by #234, deliberately. The pill was rebuilt from two fields and DISCARDED the rest
+  // of the chips, so a duration the classic page showed never reached the shell. It is now
+  // chip-faithful: say what the chips say, and add the failure word only when they do not
+  // already say it. `failed` is not in these chips, so it leads; the duration now survives.
+  assert.equal(stateLabel(failed), "failed · exit 1 · 2.50s", "a failure names its word and everything its chips carry");
   const declined = toolHead({ chips: [{ c: "fail", x: "declined · 42ms" }] });
-  assert.deepEqual([declined.state, declined.status, declined.duration, stateLabel(declined)], ["failed", "declined", "42ms", "declined"]);
+  // Here the word IS in the chips, so the pill is the chip text unchanged — never said twice.
+  assert.deepEqual([declined.state, declined.status, declined.duration, stateLabel(declined)], ["failed", "declined", "42ms", "declined · 42ms"]);
   const long = toolHead({ chips: [{ x: "exit 0 · 1m 5s" }] });
   assert.deepEqual([long.state, long.exit, long.duration, stateLabel(long)], ["completed", 0, "1m 5s", "exit 0 · 1m 5s"]);
   const read = toolHead({ name: "Read", chips: [{ x: "12 lines" }] });
@@ -1549,7 +1554,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(stateLabel(toolHead({ chips: [{ c: "fail", x: "failed" }] })), "failed", "Claude's format has no exit code");
   // The view model consumes it — no regex over chip text remains — and the pill shows its label.
   const view = viewRecord({ kind: "bash", id: "b1", head: { name: "Bash", target: "cargo test", chips: [{ c: "fail", x: "exit 1 · 2.50s" }] }, body: [{ p: "pre", x: "error" }] });
-  assert.deepEqual([view.state, view.error, view.exit, view.duration, view.pill], ["failed", true, 1, "2.50s", "failed · exit 1"]);
+  assert.deepEqual([view.state, view.error, view.exit, view.duration, view.pill], ["failed", true, 1, "2.50s", "failed · exit 1 · 2.50s"]);
   const edit = viewRecord({ kind: "edit", id: "e1", head: { name: "Edit", target: "README.md", chips: [{ c: "add", x: "+1" }, { c: "del", x: "−1" }] }, body: [] });
   assert.deepEqual([edit.name, edit.state, edit.pill], ["Update", "completed", "+1 · −1"]);
   assert.equal(viewRecord({ kind: "think", id: "t1", head: {}, body: [{ p: "md", x: "hm" }] }).state, null);
