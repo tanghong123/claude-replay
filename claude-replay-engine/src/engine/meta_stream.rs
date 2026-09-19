@@ -163,7 +163,22 @@ pub const COMPACT_AFTER: usize = 256;
 /// v27: a Claude `AskUserQuestion` block's target is the question put to the person (the
 /// first, plus a count), where a v26 stream holds an empty target — the folded view then
 /// named the tool and nothing else, while Codex's equivalent showed its question.
-pub const FOLD_VERSION: u16 = 27;
+///
+/// v28: THREE block-output changes shipped across v1.282.0-v1.284.0 without a bump, and the
+/// owner saw the consequence — a session cached before the upgrade kept serving its old shape
+/// while everything folded after it got the new one, inside one session, because a matching
+/// `fold` lets the stream RESUME instead of rebuilding:
+///   - #256: an attachment produced inside an activity run is emitted AFTER the run rather than
+///     ahead of it. A v27 stream has the images leading the run, which the app shell then hangs
+///     off the preceding prompt — exactly the misplacement #256 set out to fix.
+///   - #255: a Claude `AskUserQuestion` block carries `asked` — every question and option. A
+///     v27 stream has none, so the card shows the state and the answers alone.
+///   - #257: the per-turn durations ride the meta beside `user_times`. A v27 record carries no
+///     durations, so no turn shows how long it took.
+///
+/// Any one of these is block output changing; the rule this constant exists for is that such a
+/// change must not be resumable across.
+pub const FOLD_VERSION: u16 = 28;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
