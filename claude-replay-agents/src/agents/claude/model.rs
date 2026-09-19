@@ -1344,6 +1344,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 Some("enqueue") => Some(QueueOpKind::Enqueue),
                 Some("remove") => Some(QueueOpKind::Remove),
                 Some("dequeue") => Some(QueueOpKind::Dequeue),
+                Some("popAll") => Some(QueueOpKind::PopAll),
                 _ => None,
             };
             if let Some(op) = op {
@@ -1371,7 +1372,13 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                     }
                 }
                 let prose = content.as_deref().map(is_queue_prose).unwrap_or(false);
-                msgs.push(Message::QueueOp { op, content, prose });
+                let reason = v.get("reason").and_then(|r| r.as_str()).map(str::to_string);
+                msgs.push(Message::QueueOp {
+                    op,
+                    content,
+                    prose,
+                    reason,
+                });
             }
         }
         Some("attachment") => {
@@ -2173,6 +2180,15 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                         // #52: a popped prompt's marker ALWAYS collapses — delivered (dequeue)
                         // or withdrawn (remove), Claude Code shows only the one message.
                         if let Some(item) = popped {
+                            if let Some(mi) = item.marker_idx {
+                                suppress.push(mi);
+                            }
+                        }
+                    }
+                    // #242: `popAll` EMPTIES the queue. Mirrors the production fold in
+                    // `replay.rs` — drop every outstanding marker, not just the named one.
+                    Some("popAll") => {
+                        for item in std::mem::take(&mut queue) {
                             if let Some(mi) = item.marker_idx {
                                 suppress.push(mi);
                             }
@@ -3087,6 +3103,90 @@ mod tests {
             })
             .collect();
         assert_eq!(users, vec!["real turn", "delivered sans op"], "{blocks:?}");
+    }
+
+    /// #242: `popAll` EMPTIES the queue — it is what an EDIT of a queued message looks like
+    /// (the client drops everything pending, then re-enqueues the corrected text). Its
+    /// `content` names only the item the reader was acting on, NOT the set it removed, so
+    /// folding it as a `Remove` (which takes one item BY CONTENT) would drop the named marker
+    /// and strand every other one on the page as though it were still pending.
+    ///
+    /// The fixture deliberately has TWO items outstanding when the `popAll` fires. With one
+    /// item, the correct rule and the `Remove` guess produce identical output — which is
+    /// exactly how this would have shipped wrong.
+    #[test]
+    fn pop_all_empties_the_queue_rather_than_removing_the_item_it_names() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"real turn"}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:01.000Z","content":"first thought"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:02.000Z","content":"second thought"}
+{"type":"queue-operation","operation":"popAll","timestamp":"2026-06-30T03:00:03.000Z","content":"second thought"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-30T03:00:04.000Z","content":"second thought, revised"}
+"##;
+        let blocks = parse(jsonl);
+        let markers: Vec<&str> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::QueueEvent { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        // Both pre-`popAll` markers are gone — including "first thought", which the record
+        // never named. A `Remove` fold would have left it here.
+        assert_eq!(markers, vec!["second thought, revised"], "{blocks:?}");
+        // And the queue is genuinely EMPTY afterwards, not merely one item shorter: a later
+        // content-less `dequeue` has nothing to pop, so the surviving marker stays put.
+        let after = parse(&format!(
+            "{jsonl}{}\n",
+            r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-30T03:00:05.000Z"}"#
+        ));
+        let still: Vec<&str> = after
+            .iter()
+            .filter_map(|b| match b {
+                Block::QueueEvent { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            still.is_empty(),
+            "the re-enqueued item is the only thing left to pop: {after:?}"
+        );
+    }
+
+    /// #242(a): a `queue-operation` carries its `reason` onto the message. This is DATA only —
+    /// nothing renders it, and the field's doc comment says why: measured over 3,093 prose
+    /// removes in real transcripts, 99.4% are followed by the delivery of that same text, so
+    /// the page already answers "where did my queued message go?" by showing the message.
+    #[test]
+    fn a_queue_operation_carries_its_reason_and_pop_all_decodes() {
+        let mut cwd = String::new();
+        let mut msgs: Vec<Message> = Vec::new();
+        decode_line(
+            r#"{"type":"queue-operation","operation":"remove","content":"x","reason":"absorbed_mid_turn"}"#,
+            &mut cwd,
+            &mut msgs,
+        );
+        decode_line(
+            r#"{"type":"queue-operation","operation":"popAll","content":"y"}"#,
+            &mut cwd,
+            &mut msgs,
+        );
+        let got: Vec<(QueueOpKind, Option<&str>)> = msgs
+            .iter()
+            .filter_map(|m| match m {
+                Message::QueueOp { op, reason, .. } => Some((*op, reason.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (QueueOpKind::Remove, Some("absorbed_mid_turn")),
+                // `popAll` is decoded rather than dropped, and says nothing about why.
+                (QueueOpKind::PopAll, None),
+            ],
+            "{msgs:?}"
+        );
     }
 
     /// A mid-turn prompt is usually recorded ONLY as a `queued_command` attachment at

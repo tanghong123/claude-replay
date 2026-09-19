@@ -29,6 +29,15 @@ pub enum QueueOpKind {
     Enqueue,
     Remove,
     Dequeue,
+    /// The queue was **emptied** (`popAll`) — what an EDIT of a queued message looks like: the
+    /// client drops everything pending and immediately re-enqueues the corrected text.
+    ///
+    /// Its `content` names only the item the reader was acting on (typically the last one), **not**
+    /// the set it removed — measured on a session where two items were pending and the record named
+    /// one of them. So this can never be folded as a [`Remove`](Self::Remove), which takes a single
+    /// item BY CONTENT: that would drop the named marker and leave every other one rendering as
+    /// though it were still pending, while the client had already emptied the queue (#242).
+    PopAll,
 }
 
 /// What a [`Message::SystemNote`] IS — the notes all render through one path and read as one
@@ -150,6 +159,15 @@ pub enum Message {
         op: QueueOpKind,
         content: Option<String>,
         prose: bool,
+        /// Why the client performed this op, verbatim from the record (`absorbed_mid_turn` on
+        /// nearly every `remove`, `delivered_to_agent` twice in the whole corpus), or `None`
+        /// when it said nothing. Carried as DATA and deliberately not rendered: measured over
+        /// 3,093 prose removes in the owner's transcripts, 99.4% are followed by the delivery
+        /// of that same text, so the page already answers "where did my queued message go?" by
+        /// showing the message. Kept because it is the only machine-readable statement of
+        /// intent on the record, and a consumer that needs it should not have to re-parse the
+        /// line (#242).
+        reason: Option<String>,
     },
     /// An agent/task **completion** — the structured form of Claude's `<task-notification>`,
     /// parsed by L1 so the fold never sees the raw format. The fold emits an `AgentDone`

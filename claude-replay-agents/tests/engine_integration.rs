@@ -2198,3 +2198,95 @@ fn a_codex_desktop_envelope_lands_on_the_same_vocabulary_as_a_claude_reference()
     assert_eq!(users(&codex), 1);
     assert_eq!(users(&claude), 1);
 }
+
+/// #242, the STREAMING twin of `pop_all_empties_the_queue_rather_than_removing_the_item_it_names`.
+///
+/// Two prose prompts are pending when a `popAll` lands, and the record names only the second.
+/// Both markers must go — a `Remove` fold would strand the first, which would then render as
+/// pending for the rest of the session. And a LIVE reader has to be told: `changed_from` must
+/// fall at or below the FIRST marker's index, or a windowed consumer keeps a cached prefix that
+/// still contains a block the engine has dropped. That is the #165 hazard verbatim — after the
+/// rewrite the same record id names a different record — and it is a streaming property that no
+/// static fixture can see.
+#[test]
+fn pop_all_on_a_live_tail_drops_every_marker_and_moves_changed_from_to_the_first() {
+    let enq = |t: &str| {
+        format!("{{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"{t}\"}}\n")
+    };
+    let user = "{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"go\"}]},\"timestamp\":\"2026-07-26T10:00:00Z\"}\n".to_string();
+    let asst = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"working\"}]},\"timestamp\":\"2026-07-26T10:00:03Z\"}\n".to_string();
+    let pop_all =
+        "{\"type\":\"queue-operation\",\"operation\":\"popAll\",\"content\":\"second thought\"}\n"
+            .to_string();
+
+    let path = tmp1("");
+    let mut fp = FollowParser::open(&ClaudeAdapter, &path);
+    let mut written = String::new();
+    let mut before: Vec<Block> = Vec::new();
+    for chunk in [user, enq("first thought"), enq("second thought"), asst] {
+        written.push_str(&chunk);
+        std::fs::write(&path, written.as_bytes()).unwrap();
+        before = fp.poll_delta().unwrap().expect("advanced").0;
+    }
+    let first_marker = before
+        .iter()
+        .position(|b| matches!(b, Block::QueueEvent { .. }))
+        .expect("both prompts are pending, so both markers are on the page");
+    assert_eq!(
+        before
+            .iter()
+            .filter(|b| matches!(b, Block::QueueEvent { .. }))
+            .count(),
+        2,
+        "two markers pending before the popAll: {before:?}"
+    );
+
+    written.push_str(&pop_all);
+    std::fs::write(&path, written.as_bytes()).unwrap();
+    let (after, _t, _m, changed_from) = fp.poll_delta().unwrap().expect("the popAll advances");
+    assert_eq!(
+        after
+            .iter()
+            .filter(|b| matches!(b, Block::QueueEvent { .. }))
+            .count(),
+        0,
+        "popAll EMPTIES the queue — the unnamed 'first thought' goes too: {after:?}"
+    );
+    assert!(
+        changed_from <= first_marker,
+        "a consumer keeping [..{changed_from}] would still be holding the marker at \
+         {first_marker} that the engine just dropped"
+    );
+    // And the prefix it is allowed to keep really is unchanged.
+    assert_eq!(&before[..changed_from], &after[..changed_from]);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// #242: `popAll` EMPTIES the queue, so the session is no longer holding a prompt. This arm
+/// did not exist when the variant was added and the op fell to the catch-all, which left
+/// `queued_prompt` true for the rest of the session — reporting a session as waiting on a
+/// prompt the client had already dropped.
+#[test]
+fn tail_pulse_clears_the_queue_on_pop_all() {
+    use claude_replay_engine::state::tail_pulse;
+    let two_pending = concat!(
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":null,"content":[{"type":"text","text":"working"}]},"timestamp":"2026-08-14T10:00:05Z"}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"enqueue","content":"first thought","timestamp":"2026-08-14T10:00:06Z"}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"enqueue","content":"second thought","timestamp":"2026-08-14T10:00:07Z"}"#,
+        "\n",
+    );
+    assert!(
+        tail_pulse(&ClaudeAdapter, &tmp1(two_pending)).queued_prompt,
+        "two prompts are pending"
+    );
+    let emptied = format!(
+        "{two_pending}{}\n",
+        r#"{"type":"queue-operation","operation":"popAll","content":"second thought","timestamp":"2026-08-14T10:00:08Z"}"#
+    );
+    assert!(
+        !tail_pulse(&ClaudeAdapter, &tmp1(&emptied)).queued_prompt,
+        "popAll empties the queue — nothing is pending, so the session is not waiting on one"
+    );
+}

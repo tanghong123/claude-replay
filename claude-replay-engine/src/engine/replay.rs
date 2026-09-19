@@ -452,7 +452,9 @@ impl<'a> Replayer<'a> {
                         result: result.clone(),
                     });
                 }
-                Message::QueueOp { op, content, prose } => match op {
+                Message::QueueOp {
+                    op, content, prose, ..
+                } => match op {
                     QueueOpKind::Enqueue => {
                         if let Some(c) = content {
                             let marker_idx = if *prose {
@@ -485,6 +487,21 @@ impl<'a> Replayer<'a> {
                         // means the user withdrew it (Claude Code drops the bubble). Either way
                         // the pending marker has nothing left to mark.
                         if let Some(item) = popped {
+                            if let Some(mi) = item.marker_idx {
+                                self.suppress.push(mi);
+                            }
+                        }
+                    }
+                    QueueOpKind::PopAll => {
+                        // The queue was EMPTIED, not popped (#242): drop EVERY outstanding marker,
+                        // not just the one `content` names. The record names a single item — the
+                        // one being edited — while removing all of them, so folding it as a
+                        // `Remove` would leave the others marked pending for the rest of the
+                        // session. Suppression stays safe for N markers at once because
+                        // `poll_delta` derives `changed_from` from a common-prefix diff over the
+                        // provisional region, not from a single patch index, and a turn holding a
+                        // live marker is kept resident until its marker is resolved.
+                        for item in std::mem::take(&mut self.queue) {
                             if let Some(mi) = item.marker_idx {
                                 self.suppress.push(mi);
                             }

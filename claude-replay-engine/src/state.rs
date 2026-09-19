@@ -446,6 +446,10 @@ pub fn tail_pulse(adapter: &dyn TranscriptAdapter, path: &Path) -> TailPulse {
             Message::QueueOp { op, prose, .. } => match op {
                 QueueOpKind::Enqueue if *prose => queue_len += 1,
                 QueueOpKind::Dequeue | QueueOpKind::Remove => queue_len -= 1,
+                // #242: `popAll` EMPTIES the queue — nothing is pending, not one fewer item.
+                // Left to the `_` arm this reads as "still queued" for the rest of the session,
+                // and the session reports as waiting on a prompt it no longer holds.
+                QueueOpKind::PopAll => queue_len = 0,
                 _ => {}
             },
             _ => {}
