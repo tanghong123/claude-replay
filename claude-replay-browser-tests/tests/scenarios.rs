@@ -5069,9 +5069,17 @@ fn scenario_a_long_jump_lands_on_content(tab: &headless_chrome::Tab, surface: Su
         }
     };
     let tail = probe(tab, state);
+    let before = scroll_now(tab, surface);
     scroll_by(tab, surface, dy);
     settle();
     settle();
+    // A jump is a COMMANDED move and may animate, so two fixed sleeps can elapse before the
+    // browser has begun — leaving the scroller at its old offset, reading as "at rest" (#247).
+    // Without this the pair below compares "two settles" against "four settles" and a move
+    // still in flight is indistinguishable from the engine moving the reader; observed failing
+    // once as `rested.top != landed.top`. Waiting first makes the claim the one it states:
+    // once the reader is AT REST, nothing moves them.
+    until_move_settles(tab, surface, before);
     let landed = probe(tab, state);
     settle();
     settle();
