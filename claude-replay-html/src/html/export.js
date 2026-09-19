@@ -1186,14 +1186,20 @@
       host.appendChild(box);
     }
     box.textContent = "";
-    members.forEach(function (m) {
-      var row = el("div", "fleet-row");
-      row.appendChild(el("span", "fleet-dot" + (m.running ? " on" : ""), m.running ? "◍" : "◉"));
-      var a = el("a", "fleet-name", m.title || m.id);
-      a.href = "?session=" + encodeURIComponent(m.id);
-      row.appendChild(a);
-      row.appendChild(el("span", "fleet-id", m.id));
-      box.appendChild(row);
+    // #241: a run that declared phases reads as its phases. `fleetGroups` is shared with the app
+    // shell so the two pages cannot group it differently; a run that named none comes back as a
+    // single unnamed group and draws exactly the flat list it always did.
+    shared.fleetGroups(members).forEach(function (g) {
+      if (g.phase) box.appendChild(el("div", "fleet-phase", g.phase));
+      g.members.forEach(function (m) {
+        var row = el("div", "fleet-row");
+        row.appendChild(el("span", "fleet-dot" + (m.running ? " on" : ""), m.running ? "◍" : "◉"));
+        var a = el("a", "fleet-name", m.title || m.id);
+        a.href = "?session=" + encodeURIComponent(m.id);
+        row.appendChild(a);
+        row.appendChild(el("span", "fleet-id", m.id));
+        box.appendChild(row);
+      });
     });
   }
 

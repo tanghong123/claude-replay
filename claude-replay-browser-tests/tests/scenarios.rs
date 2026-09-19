@@ -70,6 +70,115 @@ fn sid_of(fx: &Fixture) -> String {
     fx.path.file_stem().unwrap().to_string_lossy().to_string()
 }
 
+/// A run whose journal NAMES its members (#241): two phases in launch order plus one agent that
+/// ran outside any `phase()` block. Measured across the 68 real runs, 9 record phases and 59 do
+/// not, and 742 agents carry none — so the unphased member is not an edge case, it is the bulk.
+fn fixture_workflow_phased(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(20, Shape::default());
+    transcript += &user_at("question 20: fan the work out", &now_minus(90));
+    transcript += &harness::workflow_call_at("wf1", RUN, &now_minus(88));
+    transcript += &assistant_at("answer 20: the fleet is on it", &now_minus(80));
+    let path = stores.claude_session(SID, &transcript);
+    // `Verify` is launched BETWEEN the two `Find` agents on purpose: the grouping must key on
+    // the phase, not on adjacency, and must keep first-launch order rather than sorting.
+    stores.claude_workflow_run_named(
+        SID,
+        RUN,
+        &[
+            (
+                "afind1",
+                "find:owned-path-plain",
+                "Find",
+                "Found the plain path.",
+            ),
+            ("averify", "verify:residency", "Verify", "Confirmed."),
+            ("afind2", "find:residency-accounting", "Find", ""),
+            ("aloose", "", "", "An agent outside any phase."),
+        ],
+    );
+    for member in ["afind1", "averify", "afind2", "aloose"] {
+        stores.claude_session(member, &long_session(2, Shape::default()));
+    }
+    Fixture {
+        base,
+        path,
+        turns: 21,
+    }
+}
+
+/// #241 — BOTH pages render a run's phases as groups, in launch order, with each member under
+/// the phase it actually ran in and the unphased remainder under the run itself.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_group_a_workflow_fleet_by_its_phases() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 2996)] {
+        let fx = fixture_workflow_phased(match surface {
+            Surface::Classic => "wf-phased-classic",
+            _ => "wf-phased-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        harness::until(
+            &page.tab,
+            "document.querySelectorAll('.fleet-row').length >= 4",
+            "the fleet roster to arrive on the meta",
+            std::time::Duration::from_secs(15),
+            "document.querySelectorAll('.fleet-row').length",
+        );
+        let seen: serde_json::Value = eval(
+            &page.tab,
+            "(function(){ var box = document.querySelector('.fleet'); if (!box) return JSON.stringify({miss:'no fleet'}); \
+               return JSON.stringify({ order: [...box.children].map(function (e) { \
+                 return e.classList.contains('fleet-phase') ? 'PHASE:' + e.textContent.trim() \
+                   : 'row:' + (e.querySelector('.fleet-name') || {}).textContent; }) }); })()",
+        )
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+        let order: Vec<String> = seen["order"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        assert!(!order.is_empty(), "{surface:?} draws the fleet: {seen}");
+        let phases: Vec<&String> = order.iter().filter(|s| s.starts_with("PHASE:")).collect();
+        assert_eq!(
+            phases,
+            ["PHASE:Find", "PHASE:Verify"].iter().collect::<Vec<_>>(),
+            "{surface:?} names the phases in LAUNCH order — sorting them would scramble a \
+             workflow's own sequence: {order:?}"
+        );
+        let find_at = order.iter().position(|s| s == "PHASE:Find").unwrap();
+        let verify_at = order.iter().position(|s| s == "PHASE:Verify").unwrap();
+        let both_finds: Vec<usize> = order
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.contains("find:"))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            both_finds.iter().all(|i| *i > find_at && *i < verify_at),
+            "{surface:?} groups by PHASE, not by adjacency — `verify:residency` was launched \
+             between the two Find agents and must not split them: {order:?}"
+        );
+        let loose = order
+            .iter()
+            .position(|s| s.contains("aloose") || s.contains("outside any phase"))
+            .or_else(|| order.iter().rposition(|s| s.starts_with("row:")));
+        assert!(
+            loose.unwrap_or(0) > verify_at,
+            "{surface:?} puts an agent that ran outside any phase() under the RUN, last — never \
+             filed under a phase it did not run in: {order:?}"
+        );
+    }
+}
+
 /// A fixture whose session launched a workflow run: the `Workflow` call that names the run, the
 /// run's journal (one member finished and titled by its result, one still running), and a real
 /// session for each member so the roster's links resolve on both surfaces.

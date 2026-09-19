@@ -1047,3 +1047,7 @@ body.following #livechip { opacity: 0.85; }
 .ctx-num { color: var(--muted); text-align: right; padding: 1px 10px 1px 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ctx-track { width: 40%; min-width: 70px; }
 .ctx-track > span { display: block; height: 6px; border-radius: 999px; background: var(--accent, #3978d1); opacity: 0.75; }
+/* #241: a workflow run's phases. A heading between rows, not a box — the fleet is already
+   inside the launching call's block, and a second frame there reads as a second object. */
+.fleet-phase { margin: 6px 0 2px; color: var(--faint); font-size: 0.85em; letter-spacing: 0.04em; text-transform: uppercase; }
+.fleet-phase:first-child { margin-top: 0; }

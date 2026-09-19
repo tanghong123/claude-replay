@@ -1240,6 +1240,7 @@ mod tests {
             agent_id: "a7436efe".into(),
             tool_use_id: "toolu_A".into(),
             agent_type: "general-purpose".into(),
+            phase: None,
             description: "Design the engine".into(),
             prompt: "go".into(),
             status: AgentStatus::Completed, // back-patched, but must NOT show as "done"

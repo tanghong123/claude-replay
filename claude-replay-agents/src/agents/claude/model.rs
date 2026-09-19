@@ -636,9 +636,11 @@ fn subagents_dir(path: &std::path::Path) -> Option<std::path::PathBuf> {
 //   agent-<id>.meta.json    {"agentType":"workflow-subagent","spawnDepth":1}
 //   journal.jsonl           {"type":"started"|"result","agentId":…,"result":…}
 //
-// The journal is the roster, and it is append-only while the run proceeds. It carries no label
-// for a member — only ids and, once an agent returns, its result — so a member is titled from
-// the first line of that result and, until then, by its position in the run.
+// The journal is the roster, and it is append-only while the run proceeds. NEWER runs name each
+// member: a `started` record carries `label` (the workflow's own, e.g. "find:owned-path-plain")
+// and `phase` (the phase() group it ran under). Measured across the 68 runs on this machine,
+// 9 carry them and 59 do not — 260 records of 1,947 — so both shapes are live and a member
+// without a label is titled from the first line of its result, and until then by its position.
 
 /// The run id a `Workflow` call launched, read from the result text the block already carries.
 /// The trailing component of the recorded `Transcript dir:` — matching on the id rather than the
@@ -694,6 +696,9 @@ fn roster_from_journal(journal: &std::path::Path) -> Vec<SubAgent> {
         return Vec::new();
     };
     let mut members: Vec<SubAgent> = Vec::new();
+    // Which members the journal NAMED. Local rather than a field on the member: it exists only
+    // to stop a later `result` from overwriting the run's own name with a line of prose.
+    let mut labelled: std::collections::HashSet<String> = std::collections::HashSet::new();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -706,11 +711,31 @@ fn roster_from_journal(journal: &std::path::Path) -> Vec<SubAgent> {
                 if members.iter().any(|m| m.agent_id == id) {
                     continue;
                 }
+                // The workflow's own name for this agent beats anything derivable: a label reads
+                // "find:owned-path-plain" where a result's first line reads like prose and a
+                // launch position reads like nothing. Empty strings are treated as absent.
+                let label = v
+                    .get("label")
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty());
+                let phase = v
+                    .get("phase")
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string);
+                if label.is_some() {
+                    labelled.insert(id.to_string());
+                }
                 members.push(SubAgent {
                     agent_id: id.to_string(),
                     tool_use_id: String::new(),
                     agent_type: "workflow".into(),
-                    description: format!("agent {}", members.len() + 1),
+                    phase,
+                    description: label
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("agent {}", members.len() + 1)),
                     prompt: String::new(),
                     status: AgentStatus::Running,
                     result: None,
@@ -733,7 +758,9 @@ fn roster_from_journal(journal: &std::path::Path) -> Vec<SubAgent> {
                 if let Some(m) = members.iter_mut().find(|m| m.agent_id == id) {
                     m.status = AgentStatus::Completed;
                     m.result = result;
-                    if let Some(title) = title {
+                    // A label is the run's OWN name for this agent, so a result never overwrites
+                    // one — the result title exists to give a name to a member that has none.
+                    if let (Some(title), false) = (title, labelled.contains(id)) {
                         m.description = title;
                     }
                 }
@@ -1426,6 +1453,8 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
             agent_id: String::new(),
             tool_use_id: id.to_string(),
             agent_type,
+            // An ordinary spawn belongs to no workflow phase (#241).
+            phase: None,
             description: s("description"),
             prompt: s("prompt"),
             status: AgentStatus::Running,
@@ -1865,6 +1894,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     agent_id: String::new(),
                                     tool_use_id: id.to_string(),
                                     agent_type,
+                                    phase: None,
                                     description: s("description"),
                                     prompt: s("prompt"),
                                     status: AgentStatus::Running,
@@ -2773,6 +2803,80 @@ mod tests {
         );
     }
     use super::*;
+
+    /// #241 — a NEWER workflow journal names each member. 9 of the 68 runs measured on this
+    /// machine do; the label is the run's own word for the agent and beats anything derivable.
+    #[test]
+    fn a_journal_that_names_its_members_titles_them_by_label_and_keeps_the_phase() {
+        let dir = std::env::temp_dir().join("cr-journal-labelled");
+        std::fs::create_dir_all(&dir).unwrap();
+        let j = dir.join("journal.jsonl");
+        std::fs::write(
+            &j,
+            concat!(
+                r#"{"type":"launched"}"#,
+                "\n",
+                r#"{"type":"started","agentId":"a1","label":"find:owned-path-plain","phase":"Find"}"#,
+                "\n",
+                r#"{"type":"started","agentId":"a2","label":"verify:residency","phase":"Verify"}"#,
+                "\n",
+                r#"{"type":"result","agentId":"a1","result":"A totally different sentence."}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let m = roster_from_journal(&j);
+        assert_eq!(m.len(), 2);
+        assert_eq!(
+            (m[0].description.as_str(), m[0].phase.as_deref()),
+            ("find:owned-path-plain", Some("Find")),
+            "the label titles the member and the phase rides with it"
+        );
+        assert_eq!(
+            m[1].phase.as_deref(),
+            Some("Verify"),
+            "a second phase is carried too"
+        );
+        assert_eq!(
+            m[0].description, "find:owned-path-plain",
+            "a RESULT never overwrites the run's own name — the result title exists to name a \
+             member that has none"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// …and the 59 runs whose journal names nothing keep exactly the behaviour they had: titled
+    /// from the first line of the result, and by launch position until one arrives.
+    #[test]
+    fn a_journal_without_labels_is_unchanged() {
+        let dir = std::env::temp_dir().join("cr-journal-bare");
+        std::fs::create_dir_all(&dir).unwrap();
+        let j = dir.join("journal.jsonl");
+        std::fs::write(
+            &j,
+            concat!(
+                r#"{"type":"started","agentId":"a1"}"#,
+                "\n",
+                r#"{"type":"started","agentId":"a2"}"#,
+                "\n",
+                r#"{"type":"result","agentId":"a1","result":"Found the leak in the residency map."}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let m = roster_from_journal(&j);
+        assert_eq!(m.len(), 2);
+        assert!(m.iter().all(|x| x.phase.is_none()), "no phase is invented");
+        assert_eq!(
+            m[0].description, "Found the leak in the residency map.",
+            "a member with no label is still titled from its result"
+        );
+        assert_eq!(
+            m[1].description, "agent 2",
+            "and by its launch position until one arrives"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     fn kinds(blocks: &[Block]) -> Vec<&'static str> {
         blocks.iter().map(fold_key).collect()

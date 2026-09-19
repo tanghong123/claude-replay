@@ -7,6 +7,7 @@ import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
 import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
+import { fleetGroups } from "../../claude-replay-html/src/html/shared/fleet.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-html/src/html/shared/runtime.js";
 import { snipId } from "../../claude-replay-html/src/html/shared/ids.js";
 import { recordTextSize, LIVE_SEARCH_LIMIT, recordText, recordTextParts, parseScope, scopeLetters, activeLetters, scopeMask, stripTags, countOcc, wholeAt, directMask, CLASS_BIT } from "../../claude-monitor/src/codex-ui/shared/search.js";
@@ -2668,4 +2669,35 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(exact.label, "$12.00", "a fully-priced tally carries no qualifier");
 
   console.log("#240 client-cost cases passed");
+}
+
+// #241 — a workflow run's roster, grouped by the phase() its script declared. Measured across
+// the 68 runs on this machine, 9 record a phase and 59 do not, so the FLAT case is the common
+// one and must stay byte-for-byte what it was.
+{
+  assert.deepEqual(fleetGroups([]), [], "no members, no groups");
+  const flat = [{ id: "a1" }, { id: "a2" }];
+  assert.deepEqual(
+    fleetGroups(flat), [{ phase: null, members: flat }],
+    "a run that declared no phase is ONE unnamed group — the flat list the pages always drew. " +
+    "Inventing a heading here would add information the journal never had."
+  );
+
+  const mixed = [
+    { id: "a1", phase: "Find" },
+    { id: "a2", phase: "Verify" },
+    { id: "a3", phase: "Find" },
+    { id: "a4" },
+  ];
+  const groups = fleetGroups(mixed);
+  assert.deepEqual(groups.map(g => g.phase), ["Find", "Verify", null],
+    "phases in LAUNCH order, not alphabetical — a workflow's phases are a sequence, and sorting " +
+    "them scrambles the story; the unphased remainder sits last");
+  assert.deepEqual(groups[0].members.map(m => m.id), ["a1", "a3"], "a phase collects its own");
+  assert.deepEqual(groups[2].members.map(m => m.id), ["a4"],
+    "an agent outside any phase() block is shown under the run, never filed under a phase it " +
+    "did not run in (742 of the measured agents have none)");
+
+  assert.deepEqual(fleetGroups(null), [], "a missing roster is not an error");
+  console.log("#241 fleet-grouping cases passed");
 }

@@ -814,3 +814,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .ctx-num{color:var(--sub);text-align:right;padding:1px 10px 1px 0;font-variant-numeric:tabular-nums;white-space:nowrap}
 .ctx-track{width:40%;min-width:70px}
 .ctx-track>span{display:block;height:6px;border-radius:999px;background:var(--blue);opacity:.75}
+/* #241: a workflow run's phases, matching the classic page's treatment — a heading between the
+   rows rather than a frame around them. */
+.fleet-phase{margin:6px 0 2px;color:var(--sub);font-size:.85em;letter-spacing:.04em;text-transform:uppercase}
+.fleet-phase:first-child{margin-top:0}

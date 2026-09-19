@@ -2611,6 +2611,7 @@ mod tests {
                 agent_id: id.into(),
                 tool_use_id: format!("t_{id}"),
                 agent_type: "gp".into(),
+                phase: None,
                 description: format!("do {id}"),
                 prompt: "go".into(),
                 status,
@@ -2740,6 +2741,7 @@ mod tests {
             agent_id: id.into(),
             tool_use_id: format!("t_{id}"),
             agent_type: "gp".into(),
+            phase: None,
             description: format!("do {id}"),
             prompt: "go".into(),
             status: AgentStatus::Completed,
@@ -3305,6 +3307,7 @@ mod tests {
             agent_id: "a1".into(),
             tool_use_id: "t".into(),
             agent_type: "general-purpose".into(),
+            phase: None,
             description: "Design the engine".into(),
             prompt: "go".into(),
             status: AgentStatus::Completed, // back-patched; must NOT surface as "done"

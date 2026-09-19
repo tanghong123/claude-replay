@@ -292,6 +292,7 @@ mod tests {
                 agent_id: "aXYZ".into(),
                 tool_use_id: "toolu_1".into(),
                 agent_type: "code-reviewer".into(),
+                phase: None,
                 description: "review it".into(),
                 prompt: "please review".into(),
                 status: AgentStatus::AsyncLaunched,

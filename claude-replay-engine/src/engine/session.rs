@@ -289,6 +289,7 @@ pub fn merged_children(
             id: m.agent_id.clone(),
             description: m.description.clone(),
             agent_type: m.agent_type.clone(),
+            phase: m.phase.clone(),
             running: !m.status.is_terminal(),
         });
     }
@@ -301,6 +302,11 @@ pub struct ChildMeta {
     pub id: AgentId,
     pub description: String,
     pub agent_type: String,
+    /// The workflow phase this member ran under (#241), when its run recorded one — carried so
+    /// a fleet can be GROUPED by the phases the script declared instead of listed flat. `None`
+    /// for every ordinary spawn, which is almost all of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
     /// `!spawn_status.is_terminal()`, cleared when a matching [`Block::AgentDone`] folds.
     pub running: bool,
 }
@@ -322,6 +328,7 @@ impl SessionMeta {
                 id: sa.agent_id.clone(),
                 description: sa.description.clone(),
                 agent_type: sa.agent_type.clone(),
+                phase: sa.phase.clone(),
                 running: !sa.status.is_terminal(),
             }),
             Block::AgentDone { agent_id, .. } if !agent_id.is_empty() => {
@@ -376,6 +383,7 @@ mod tests {
                 agent_id: id.into(),
                 tool_use_id: format!("t_{id}"),
                 agent_type: "gp".into(),
+                phase: None,
                 description: format!("do {id}"),
                 prompt: "go".into(),
                 status,
@@ -436,6 +444,7 @@ mod tests {
                 agent_id: id.into(),
                 tool_use_id: format!("t_{id}"),
                 agent_type: "gp".into(),
+                phase: None,
                 description: format!("do {id}"),
                 prompt: "go".into(),
                 status,
@@ -485,6 +494,7 @@ mod tests {
                 agent_id: id.into(),
                 tool_use_id: format!("t_{id}"),
                 agent_type: "gp".into(),
+                phase: None,
                 description: format!("do {id}"),
                 prompt: "go".into(),
                 status,

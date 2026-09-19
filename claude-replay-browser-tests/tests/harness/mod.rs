@@ -636,6 +636,48 @@ impl Stores {
         path
     }
 
+    /// A journal whose `started` records NAME their members (#241): `(id, label, phase, result)`.
+    /// An empty label or phase is omitted from the record, so one call covers the labelled, the
+    /// phased, and the bare shapes — 9 of the 68 runs measured carry labels and 59 do not, and a
+    /// case has to be able to build both.
+    pub fn claude_workflow_run_named(
+        &self,
+        sid: &str,
+        run: &str,
+        members: &[(&str, &str, &str, &str)],
+    ) -> PathBuf {
+        let dir = self
+            .root
+            .join("claude")
+            .join("-r")
+            .join(sid)
+            .join("subagents")
+            .join("workflows")
+            .join(run);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut journal = String::from("{\"type\":\"launched\"}\n");
+        for (id, label, phase, _) in members {
+            let mut rec = format!("{{\"type\":\"started\",\"agentId\":\"{id}\"");
+            if !label.is_empty() {
+                rec += &format!(",\"label\":\"{label}\"");
+            }
+            if !phase.is_empty() {
+                rec += &format!(",\"phase\":\"{phase}\"");
+            }
+            journal += &format!("{rec}}}\n");
+        }
+        for (id, _, _, result) in members {
+            if !result.is_empty() {
+                journal += &format!(
+                    "{{\"type\":\"result\",\"agentId\":\"{id}\",\"result\":\"{result}\"}}\n"
+                );
+            }
+        }
+        let path = dir.join("journal.jsonl");
+        std::fs::write(&path, journal).unwrap();
+        path
+    }
+
     /// One workflow run's journal beside a Claude session — `<session>/subagents/workflows/
     /// <run>/journal.jsonl`, the file the roster is read from. Each member is `(id, result)`:
     /// a member with a result is finished and titled by its first line, one without is still

@@ -280,6 +280,10 @@ mod tests {
                 claude_replay_html::shared_source("cost-display").unwrap(),
             ),
             (
+                "shared/fleet.js",
+                claude_replay_html::shared_source("fleet").unwrap(),
+            ),
+            (
                 "shared/state-labels.js",
                 claude_replay_html::shared_source("state-labels").unwrap(),
             ),

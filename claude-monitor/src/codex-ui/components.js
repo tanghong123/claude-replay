@@ -2,6 +2,7 @@
 // (html/shared/capabilities.js, #46), read here and by the classic page alike.
 import { attachmentCapability, referenceAction, revealQuery } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
+import { fleetGroups } from "./shared/fleet.js";
 import { escapeText, partsHtml } from "./view-model.js";
 import { rememberCap, resultBodyHtml } from "./shared/parts.js";
 import { interactionHtml } from "./shared/interaction.js";
@@ -138,10 +139,15 @@ function renderRenderer(view, index, state, inherited) {
 export function fleetHtml(run, state) {
   const members = (state?.meta?.runs || []).find(entry => String(entry.run) === String(run))?.members || [];
   if (!members.length) return "";
-  const rows = members.map(member => {
+  const row = member => {
     const name = member.title || member.id;
     return `<div class="fleet-row"><span class="fleet-dot${member.running ? " on" : ""}" aria-hidden="true">${member.running ? "◍" : "◉"}</span><a class="fleet-name" href="?session=${encodeURIComponent(member.id)}" data-child-session="${escapeText(member.id)}" title="Open ${escapeText(name)}">${escapeText(name)}</a><span class="fleet-id">${escapeText(member.id)}</span></div>`;
-  }).join("");
+  };
+  // #241: phases as groups, from the SHARED grouping the classic page uses — a run that declared
+  // none comes back as one unnamed group and draws the flat list unchanged.
+  const rows = fleetGroups(members).map(g =>
+    (g.phase ? `<div class="fleet-phase">${escapeText(g.phase)}</div>` : "") + g.members.map(row).join("")
+  ).join("");
   return `<div class="fleet" data-fleet="${escapeText(run)}">${rows}</div>`;
 }
 

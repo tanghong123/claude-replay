@@ -157,6 +157,7 @@ mod tests {
             agent_id: id.into(),
             tool_use_id: format!("t_{id}"),
             agent_type: "gp".into(),
+            phase: None,
             description: format!("do {id}"),
             prompt: "go".into(),
             status,

@@ -3754,6 +3754,7 @@ mod tests {
             agent_id: "aXYZ".into(),
             tool_use_id: "t".into(),
             agent_type: "gp".into(),
+            phase: None,
             description: "d".into(),
             prompt: "p".into(),
             status: AgentStatus::Completed,
@@ -3828,6 +3829,7 @@ mod tests {
             agent_id: "aLIVE".into(),
             tool_use_id: "t".into(),
             agent_type: "gp".into(),
+            phase: None,
             description: "d".into(),
             prompt: "p".into(),
             status: AgentStatus::AsyncLaunched, // running, not terminal
@@ -3970,6 +3972,7 @@ mod tests {
                 agent_id: id.into(),
                 tool_use_id: "t".into(),
                 agent_type: "gp".into(),
+                phase: None,
                 description: "d".into(),
                 prompt: "p".into(),
                 status,

@@ -1026,6 +1026,8 @@ fn codex_build_tool(id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block
             agent_id: String::new(),
             tool_use_id: id.to_string(),
             agent_type: "agent".to_string(),
+            // Codex has no workflow phases (#241).
+            phase: None,
             description,
             prompt: field("message"),
             status: AgentStatus::Running,

@@ -357,6 +357,9 @@ impl MaterializedMeta {
                             id: s.agent_id.clone(),
                             description: s.description.clone(),
                             agent_type: s.agent_type.clone(),
+                            // A Spawn is a transcript-recorded spawn; workflow members reach
+                            // the meta through `merged_children`, not through this event (#241).
+                            phase: None,
                             running: !s.status.is_terminal(),
                         });
                     }

@@ -257,6 +257,8 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
                 agent_id: "a1b2c3".into(),
                 tool_use_id: "toolu_audit_1".into(),
                 agent_type: "general-purpose".into(),
+                // The audit's spawn is an ordinary one, not a workflow member (#241).
+                phase: None,
                 description: "audit the renderings".into(),
                 prompt: "Derive the corpus from the closed sets.".into(),
                 status: AgentStatus::Completed,

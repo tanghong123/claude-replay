@@ -911,6 +911,10 @@ impl SessionService {
                         "id": m.agent_id,
                         "title": if m.description.is_empty() { &m.agent_type } else { &m.description },
                         "running": !m.status.is_terminal(),
+                        // The phase() group the script declared, when the run recorded one
+                        // (#241). Absent for an ordinary spawn and for the older runs whose
+                        // journal names none, so the page groups only where the run said so.
+                        "phase": m.phase,
                     })).collect::<Vec<_>>(),
                 }))
                 .collect::<Vec<_>>());

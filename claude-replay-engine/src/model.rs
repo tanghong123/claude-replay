@@ -430,6 +430,12 @@ pub struct SubAgent {
     /// The spawn `Agent` tool_use id — the primary join key to the completion event.
     pub tool_use_id: String,
     pub agent_type: String,
+    /// The workflow PHASE this member ran under, when its run recorded one (#241) — the
+    /// `phase()` group from the script, e.g. "Find" or "Verify". `None` for every ordinary
+    /// spawn and for the older workflow runs whose journal names no phase (59 of 68 measured),
+    /// so a presenter groups by it only where the run actually said so.
+    #[serde(default)]
+    pub phase: Option<String>,
     pub description: String,
     /// The spawn prompt (the child's first user message, byte-equal).
     pub prompt: String,

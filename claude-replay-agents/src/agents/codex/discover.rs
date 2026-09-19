@@ -1070,6 +1070,7 @@ mod tests {
                 agent_id: id.to_string(),
                 tool_use_id: format!("spawn-{id}"),
                 agent_type: "agent".to_string(),
+                phase: None,
                 description: id.to_string(),
                 prompt: "work".to_string(),
                 status: AgentStatus::Running,

@@ -23,6 +23,7 @@ pub const SHARED: &[(&str, &str)] = &[
         "cost-display",
         include_str!("../html/shared/cost-display.js"),
     ),
+    ("fleet", include_str!("../html/shared/fleet.js")),
     (
         "state-labels",
         include_str!("../html/shared/state-labels.js"),
