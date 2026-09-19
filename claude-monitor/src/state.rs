@@ -146,6 +146,25 @@ impl StateTracker {
                 } else {
                     None
                 };
+                // #252, gathered the same way `tool_children` is: only when it could change
+                // the verdict. A session that is growing, or has a tool pending, is already
+                // busy or already waiting — the fleet question only matters for one that would
+                // otherwise read idle. `spawn_rosters` short-circuits on an `is_dir` probe, so
+                // the sessions that never ran a workflow (42 of 53 measured here) pay one stat.
+                // `f.pid.is_some()` matters for CORRECTNESS, not just cost: a workflow's agents
+                // run INSIDE the parent process, so if that process is gone the run is gone
+                // too — and its journal is frozen with members that never recorded a result,
+                // which would otherwise read as a live fleet forever. A dead process reaches
+                // the `Exited` rule before the fleet rule anyway; this stops us paying for the
+                // probe, and stops the signal being a lie.
+                let fleet_running = f.pid.is_some()
+                    && !f.growing
+                    && content.pending.is_empty()
+                    && adapter(f.agent)
+                        .spawn_rosters(&f.path)
+                        .iter()
+                        .flat_map(|r| &r.members)
+                        .any(|m| !m.status.is_terminal());
                 let signals = StateSignals {
                     process_alive: f.pid.is_some(),
                     tool_children,
@@ -158,6 +177,7 @@ impl StateTracker {
                     final_line: content.final_text.as_deref().map(first_line_snippet),
                     last_tool_error: content.last_tool_error,
                     last_failure: content.last_failure,
+                    fleet_running,
                 };
                 derive_state(&signals)
             };
@@ -414,6 +434,92 @@ mod tests {
             confirmed: false,
             tree_mtime: std::fs::metadata(path).and_then(|m| m.modified()).ok(),
         }
+    }
+
+    /// #252 end to end — a session whose workflow fleet is still running is BUSY, read off
+    /// the real journal on disk rather than a synthesised signal. The launching turn has ENDED
+    /// and nothing is pending, which is exactly the shape that used to read `Done`.
+    #[test]
+    fn a_live_fleet_keeps_the_session_busy() {
+        let root = scratch("fleet");
+        let t = root.join("s1.jsonl");
+        std::fs::write(&t, concat!(
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"fan it out"}]},"timestamp":"2026-08-14T10:00:00Z"}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"Launched the run."}]},"timestamp":"2026-08-14T10:00:05Z"}"#, "\n",
+        )).unwrap();
+
+        // No journal yet: the launching turn ended and nothing is pending, so this is `Done`.
+        // `current.json` is the full picture every tick; `events.jsonl` only records CHANGES,
+        // so the snapshot is what a state assertion should read.
+        let verdict = |root: &Path| -> (String, String) {
+            let cur: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(root.join("state/current.json")).unwrap(),
+            )
+            .unwrap();
+            (
+                cur["sessions"][0]["state"].as_str().unwrap_or("?").into(),
+                cur["sessions"][0]["reason"].as_str().unwrap_or("?").into(),
+            )
+        };
+
+        let mut tr = StateTracker::default();
+        tr.tick(&root, &[facts("s1", &t, Some(7371), 5)]);
+        tr.tick(&root, &[facts("s1", &t, Some(7371), 6)]);
+        assert_eq!(
+            verdict(&root),
+            ("idle".to_string(), "done".to_string()),
+            "the shape of the bug: a launched fleet leaves the parent looking finished"
+        );
+
+        // Now the run's journal says two members STARTED and neither has returned.
+        let runs = root.join("s1/subagents/workflows/wf_1");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(
+            runs.join("journal.jsonl"),
+            concat!(
+                r#"{"type":"launched"}"#,
+                "\n",
+                r#"{"type":"started","agentId":"a1","label":"find:one","phase":"Find"}"#,
+                "\n",
+                r#"{"type":"started","agentId":"a2","label":"find:two","phase":"Find"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        tr.tick(&root, &[facts("s1", &t, Some(7371), 900)]);
+        tr.tick(&root, &[facts("s1", &t, Some(7371), 901)]);
+        assert_eq!(
+            verdict(&root),
+            ("busy".to_string(), "fleet".to_string()),
+            "…and with members running it is busy — note the 900s of quiet, which without this \
+             would have aged the session into `Stalled`, i.e. into the BLOCKED bucket"
+        );
+
+        // A member returning ends it: the run is over and the session is idle again.
+        std::fs::write(
+            runs.join("journal.jsonl"),
+            concat!(
+                r#"{"type":"launched"}"#,
+                "\n",
+                r#"{"type":"started","agentId":"a1","label":"find:one","phase":"Find"}"#,
+                "\n",
+                r#"{"type":"started","agentId":"a2","label":"find:two","phase":"Find"}"#,
+                "\n",
+                r#"{"type":"result","agentId":"a1","result":"done one"}"#,
+                "\n",
+                r#"{"type":"result","agentId":"a2","result":"done two"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        tr.tick(&root, &[facts("s1", &t, Some(7371), 902)]);
+        tr.tick(&root, &[facts("s1", &t, Some(7371), 903)]);
+        assert_eq!(
+            verdict(&root).1,
+            "done",
+            "every member returned, so the fleet no longer holds the session busy"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The end-to-end pass on a real (fixture) transcript: a pending AskUserQuestion

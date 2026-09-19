@@ -463,6 +463,7 @@ mod state_label_tests {
             Done,
             Starting,
             Stalled,
+            Fleet,
         ];
         let table = claude_replay_html::shared_source("state-labels").expect("registered");
         for reason in all {
@@ -470,7 +471,7 @@ mod state_label_tests {
             match reason {
                 Exited | ExitedMidWork | Question | PlanApproval | QueuedPrompt | Tool
                 | Thinking | Permission | EndedQuestion | Error | Failed | Done | Starting
-                | Stalled => (),
+                | Stalled | Fleet => (),
             }
             let key = StateReason::as_str(reason);
             let quoted = format!("\"{key}\":");

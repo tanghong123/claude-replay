@@ -61,6 +61,10 @@ pub enum StateReason {
     Done,
     /// busy — a user prompt is in, nothing observable yet (API call in flight).
     Starting,
+    /// busy — a workflow fleet this session launched still has members running (#252). The
+    /// session's own transcript is quiet because the `Workflow` call already returned and the
+    /// members write to their own files; the work is real and nobody is waiting on a person.
+    Fleet,
     /// idle — rule 7/fallback aged out: a prompt or mid-turn state with no progress
     /// for `STALL_AFTER_SECS` and no running tool child. Needs attention to unblock.
     Stalled,
@@ -82,6 +86,7 @@ impl StateReason {
             Self::Failed => "failed",
             Self::Done => "done",
             Self::Starting => "starting",
+            Self::Fleet => "fleet",
             Self::Stalled => "stalled",
         }
     }
@@ -166,6 +171,14 @@ pub struct StateSignals {
     pub final_line: Option<String>,
     /// The last tool result in the tail reported failure (#23).
     pub last_tool_error: bool,
+    /// A workflow fleet this session launched still has members RUNNING (#252). A `Workflow`
+    /// call returns immediately, so it leaves no pending tool, and the members write to their
+    /// own files — so nothing else in this struct can see that the session is doing work. The
+    /// largest run measured holds 92 agents.
+    ///
+    /// Gathered CONDITIONALLY by the caller, like `tool_children`: it only changes the verdict
+    /// for a session that would otherwise read idle.
+    pub fleet_running: bool,
     /// The turn's last word was a FAILURE — the API failed, or the agent said the turn did
     /// (#249). A turn that ends this way DIED; without this signal it reads as `Done`, because
     /// an API error is not a tool result and nothing else in this struct can see it. Measured:
@@ -234,6 +247,15 @@ pub fn derive_state(s: &StateSignals) -> Verdict {
             },
             _ => Verdict::observed(Busy, StateReason::Tool, t.name.clone()),
         };
+    }
+    // 5b. A workflow fleet is still running (#252). This sits AFTER the wait/pending arms —
+    // a question still needs answering while a fleet works — and BEFORE every idle arm below,
+    // because a session with live agents is not idle however quiet its own transcript is. The
+    // `Workflow` call returned long ago and the members write elsewhere, so without this the
+    // session reads `Done`, or `Stalled` once it ages, and `Stalled` is the BLOCKED bucket:
+    // a healthy fleet would cry wolf in the one bucket that has to stay trustworthy.
+    if s.fleet_running {
+        return Verdict::observed(Busy, StateReason::Fleet, "");
     }
     // 6. Nothing open, turn ended: idle — the context is what the ending SAID.
     if s.last == TailLast::AssistantEnded {
@@ -578,6 +600,52 @@ mod tests {
         s.ends_with_question = false;
         s.last_tool_error = true;
         assert_eq!(derive_state(&s).reason, StateReason::Failed);
+    }
+
+    /// #252 — a session whose workflow fleet is still running is BUSY, however quiet its own
+    /// transcript is. A `Workflow` call returns at once, so it leaves no pending tool, and the
+    /// members write to their own files — so every other signal here says "nothing happening".
+    #[test]
+    fn a_running_fleet_keeps_the_session_busy() {
+        let mut s = base();
+        s.last = TailLast::AssistantEnded;
+        s.final_line = Some("Fanned the work out.".into());
+        assert_eq!(
+            derive_state(&s).reason,
+            StateReason::Done,
+            "the shape of the bug: the launching turn ended, so the session reads finished"
+        );
+        s.fleet_running = true;
+        let v = derive_state(&s);
+        assert_eq!(
+            (v.state, v.reason),
+            (AgentState::Busy, StateReason::Fleet),
+            "…and with a live fleet it is busy instead"
+        );
+
+        // It must not age into `Stalled`, which is the BLOCKED bucket — a healthy fleet crying
+        // wolf there is worse than the original wrong answer.
+        s.quiet_secs = STALL_AFTER_SECS * 4;
+        s.last = TailLast::User;
+        assert_eq!(
+            derive_state(&s).reason,
+            StateReason::Fleet,
+            "however long the parent transcript stays quiet, the fleet is why"
+        );
+
+        // But it does NOT outrank someone being asked something: a question still needs a
+        // person while the fleet works.
+        s.pending = vec![PendingTool {
+            interactive: true,
+            id: "t1".into(),
+            name: "AskUserQuestion".into(),
+        }];
+        s.process_alive = true;
+        assert_eq!(
+            derive_state(&s).reason,
+            StateReason::Question,
+            "a pending question outranks the fleet — the reader is still being waited on"
+        );
     }
 
     /// Rule 7 + fallback: a fresh prompt is busy; the same state aged past the stall

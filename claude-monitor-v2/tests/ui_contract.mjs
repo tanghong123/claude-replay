@@ -423,7 +423,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   // `failed` joined in #249: a turn the API killed, as against `error`, a turn that ran a tool
   // that failed and then ended anyway.
-  const engineReasons = ["exited", "exited-mid-work", "question", "plan-approval", "queued-prompt", "tool", "thinking", "permission", "ended-question", "error", "failed", "done", "starting", "stalled"];
+  const engineReasons = ["exited", "exited-mid-work", "question", "plan-approval", "queued-prompt", "tool", "thinking", "permission", "ended-question", "error", "failed", "done", "starting", "stalled", "fleet"];
   assert.deepEqual([...REASONS].sort(), [...engineReasons].sort(), "the table lists exactly the engine's reasons (StateReason::as_str)");
   for (const reason of engineReasons) {
     const { label } = displayState({ agentState: "idle", stateReason: reason });
@@ -438,6 +438,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // #249 — a turn the API killed DIED; it did not finish, so it needs a person. Before the
   // signal existed it fell through to `done` and sat in the idle bucket saying it had finished.
   assert.equal(needsPerson({ agentState: "idle", stateReason: "failed" }), true);
+  // #252 — a session whose workflow fleet is still running is ACTIVE, not idle and certainly
+  // not blocked: nothing is waiting on a person, the work is happening in the members' own
+  // transcripts. Before the signal existed this read `done`, or `stalled` once it aged — and
+  // `stalled` is the blocked bucket, so a healthy fleet would have cried wolf there.
+  assert.equal(sessionBucket({ agentState: "busy", stateReason: "fleet" }), "active");
+  assert.equal(needsPerson({ agentState: "busy", stateReason: "fleet" }), false);
   assert.equal(sessionBucket({ agentState: "idle", stateReason: "failed" }), "blocked");
   assert.equal(sessionBucket({ agentState: "idle", stateReason: "done" }), "idle", "…and a turn that really finished is still idle");
   // Two different failures, two different words: `error` is a turn that ran a tool that failed
@@ -483,7 +489,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   }
   assert.deepEqual(REASONS.filter(r => REASON_BUCKETS[r] === "blocked").sort(), ["ended-question", "error", "exited-mid-work", "failed", "permission", "plan-approval", "question", "stalled"], "blocked = the wait reasons and the idle reasons that cut the agent's work short");
   assert.deepEqual(REASONS.filter(r => REASON_BUCKETS[r] === "idle").sort(), ["done", "exited"], "idle = finished with nothing owed — a turn that ended with an answer is idle, not blocked");
-  assert.deepEqual(REASONS.filter(r => REASON_BUCKETS[r] === "active").sort(), ["queued-prompt", "starting", "thinking", "tool"], "active = busy");
+  assert.deepEqual(REASONS.filter(r => REASON_BUCKETS[r] === "active").sort(), ["fleet", "queued-prompt", "starting", "thinking", "tool"], "active = busy");
   assert.equal(sessionBucket({ agentState: "wait", stateReason: "never-heard-of" }), "blocked", "an unknown wait reason still blocks");
   assert.equal(sessionBucket({ agentState: "busy", stateReason: "never-heard-of" }), "active");
   assert.equal(sessionBucket({ state: "growing" }), "active", "legacy growing is active");

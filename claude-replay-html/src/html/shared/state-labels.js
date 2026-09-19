@@ -31,6 +31,7 @@ const REASON_LABELS = {
   "exited-mid-work": "Exited abnormally",
   thinking: "Thinking",
   tool: "Running a tool",
+  fleet: "Running a fleet",
   starting: "Starting"
 };
 
@@ -76,6 +77,7 @@ const REASON_BUCKETS = {
   "queued-prompt": "active",
   thinking: "active",
   tool: "active",
+  fleet: "active",
   starting: "active",
   done: "idle",
   exited: "idle"
