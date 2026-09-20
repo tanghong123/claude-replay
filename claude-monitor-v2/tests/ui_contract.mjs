@@ -1015,7 +1015,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // toggles its own pane only, and nothing is shared between panes.
 {
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
-  assert.match(css, /\.session-navigator\{display:flex;flex-direction:column;min-height:0;overflow-y:auto;/, "the column scrolls as a whole");
+  // #260: the column is NOT user-scrollable. A push is a budget spent closing drawers, and the
+  // column's own offset moves only with what is left once they are shut — so a scrollbar drag or
+  // a native wheel would be an offset the chain never sold, and the sticky heads slide out of
+  // order over the body above. The chain still writes `scrollTop` programmatically; `hidden`
+  // keeps that and takes away every other writer a user has.
+  assert.match(css, /\.session-navigator\{display:flex;flex-direction:column;min-height:0;overflow-y:hidden\}/, "the column is moved by the chain, never by the reader scrolling it");
+  assert.match(css, /\.session-navigator\.heads-tight\{padding-bottom:0\}/, "…and at a window too short for the shut chain the breathing room goes, because the heads fitting is the model's one requirement");
+  assert.match(appSource, /function chainOffsetLimit\(nav\) \{/, "…with the ceiling enforced against the writers the chain cannot see — `scrollIntoView`, a focus ring, a drag");
+  assert.match(appSource, /byId\("sessionNavigator"\)\.addEventListener\("scroll", holdColumnToTheChain\);/, "…on every scroll, not only after a wheel");
+  assert.match(appSource, /nav\.classList\.toggle\("heads-tight", top \+ shut \+ tail > nav\.clientHeight\);/, "…and the short window is decided against the padding the stylesheet wants at THIS width, read with the class off");
   assert.match(css, /\.session-navigator>\*\{flex:0 0 auto\}/, "every pane sits at its own height — nothing is shared");
   assert.match(css, /\.session-navigator>\.outline-caption\{position:sticky;top:0;/, "the caption sticks at the top");
   assert.match(css, /\.session-navigator>\.outline-card>\.outline-card-head\{position:relative;z-index:2;/, "a head sits above its own body…");

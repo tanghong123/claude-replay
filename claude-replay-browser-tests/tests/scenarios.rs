@@ -12641,3 +12641,156 @@ fn both_shells_show_every_question_and_every_option_that_was_offered() {
         );
     }
 }
+
+/// #260 — the outline column holds only the offset the CHAIN sold it.
+///
+/// The owner saw it in a recording and could not reproduce it: "the tasks drawer overlaps with
+/// the turns drawer … This should never happen."
+///
+/// The drawer model says a push is not a scroll: it is a budget spent closing drawers from the
+/// top, and the column's own `scrollTop` moves only with whatever is left once they are shut — by
+/// which point the content is heads and gaps, and there is nothing left to reveal. So under the
+/// model the column never rests scrolled, and that is exactly what keeps the sticky heads
+/// (z-index rising downward) in order.
+///
+/// `scrollTop` has writers the chain never sees, though: `scrollIntoView` on a card or a row, a
+/// focus ring following a click, a scrollbar drag. The demo tape framed each pane with
+/// `scrollIntoView`, the column took an offset no drawer had paid for, Turns caught its slot and
+/// held while Tasks kept coming — and Tasks came to rest 106px INSIDE the Turns body, cutting a
+/// turn row in half. The trackpad goes through the chain, which never sells that offset, which is
+/// why the owner's own window looked right.
+///
+/// So this asserts the model rather than a layout: the offset is given back, the gaps survive it,
+/// a full push leaves the column at rest with every head reachable, and the short-window case
+/// where the breathing room has to go stays a CORNER — off at every ordinary size.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
+    let _serial = serial();
+    let fx = fixture_workflow_phased("outline-offset");
+    let page = open_with(Surface::AppShell, &fx, 3012, "mountall=1");
+    harness::show_every_session(&page.tab, &page.tab.get_url());
+    await_tail(
+        &page.tab,
+        Surface::AppShell,
+        "a fresh open to land at the tail",
+    );
+    settle();
+    // The column, as the model talks about it: where it rests, whether any card has come to sit
+    // inside the body above it, and whether every head is still reachable.
+    const COLUMN: &str = "(function(){var n=document.getElementById('sessionNavigator'); \
+         if(!n) return JSON.stringify({miss:1}); var v=n.getBoundingClientRect(); \
+         var cards=[...n.querySelectorAll('.outline-card')]; var gaps=[]; \
+         for(var i=1;i<cards.length;i++) gaps.push(Math.round(cards[i].getBoundingClientRect().top-cards[i-1].getBoundingClientRect().bottom)); \
+         var heads=cards.map(function(c){var h=c.querySelector(':scope > .outline-card-head').getBoundingClientRect(); \
+           return h.top>=v.top-1 && h.bottom<=v.bottom+1;}); \
+         return JSON.stringify({scroll:Math.round(n.scrollTop), gaps:gaps, \
+           minGap:gaps.length?Math.min.apply(null,gaps):999, cards:cards.length, \
+           open:n.querySelectorAll('.outline-card.open').length, \
+           headsReachable:heads.every(Boolean), tight:n.classList.contains('heads-tight')});})()";
+    let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        eval(tab, COLUMN)
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let open_every_pane = |tab: &headless_chrome::Tab| {
+        eval(
+            tab,
+            "(function(){[...document.querySelectorAll('.outline-card:not(.open) > .outline-card-head')].forEach(function(h){h.click();});return 'ok';})()",
+        );
+        harness::until_drawers_settle(tab);
+        settle();
+    };
+    // Ordinary windows and one no reader would choose. 1366x768 is SHORTER than 1280x800, so the
+    // sweep is by height as much as by width; 950x520 is the corner where the breathing room has
+    // to go for the shut chain to fit at all.
+    for (w, h, corner) in [
+        (1680.0, 1050.0, false),
+        (1440.0, 900.0, false),
+        (1366.0, 768.0, false),
+        (1280.0, 800.0, false),
+        (1152.0, 720.0, false),
+        (1024.0, 640.0, false),
+        (950.0, 520.0, true),
+    ] {
+        harness::resize(&page.tab, w, h);
+        harness::until_preview_parked(&page.tab);
+        settle();
+        open_every_pane(&page.tab);
+
+        // 1. What the tape did: frame a card with `scrollIntoView`. The column takes the offset
+        //    for an instant and hands it straight back, because no drawer paid for it.
+        eval(
+            &page.tab,
+            "(function(){var c=document.querySelectorAll('.outline-card'); if(c.length) c[c.length-1].scrollIntoView({block:'center'}); return 'ok';})()",
+        );
+        settle();
+        let seen = read(&page.tab);
+        assert!(
+            seen["cards"].as_i64().unwrap_or(0) >= 3 && seen["open"].as_i64().unwrap_or(0) >= 3,
+            "the case needs every pane open to be about anything: {seen}"
+        );
+        assert_eq!(
+            seen["scroll"].as_i64(),
+            Some(0),
+            "at {w}x{h} `scrollIntoView` on a card buys no offset — the chain never sold it: \
+             {seen}"
+        );
+        assert!(
+            seen["minGap"].as_i64().unwrap_or(-1) >= 0,
+            "at {w}x{h} no card has come to rest inside the body above it: {seen}"
+        );
+
+        // 2. And a bare write, which is the same hole with the politeness removed.
+        eval(
+            &page.tab,
+            "(function(){document.getElementById('sessionNavigator').scrollTop=200;return 'ok';})()",
+        );
+        settle();
+        let seen = read(&page.tab);
+        assert_eq!(
+            seen["scroll"].as_i64(),
+            Some(0),
+            "at {w}x{h} a bare `scrollTop` write is given back too: {seen}"
+        );
+        assert!(
+            seen["minGap"].as_i64().unwrap_or(-1) >= 0,
+            "at {w}x{h} …and the gaps survive it: {seen}"
+        );
+
+        // 3. The chain itself still works, and ends where the model says it ends: every drawer
+        //    shut, the column at rest, every head reachable. This is the requirement the owner
+        //    stated — "the column needs to fit all the header portion of the panes + some gap
+        //    space between them" — observed rather than computed.
+        eval(
+            &page.tab,
+            "(function(){var n=document.getElementById('sessionNavigator'); \
+               n.dispatchEvent(new WheelEvent('wheel',{deltaY:6000,bubbles:true,cancelable:true})); return 'ok';})()",
+        );
+        harness::until_drawers_settle(&page.tab);
+        settle();
+        let seen = read(&page.tab);
+        assert_eq!(
+            seen["scroll"].as_i64(),
+            Some(0),
+            "at {w}x{h} a push that spends the whole budget leaves the column at rest: {seen}"
+        );
+        assert_eq!(
+            seen["headsReachable"],
+            serde_json::json!(true),
+            "at {w}x{h} every head is inside the column once the chain has spent everything: \
+             {seen}"
+        );
+        assert!(
+            seen["minGap"].as_i64().unwrap_or(-1) >= 0,
+            "at {w}x{h} …with the gaps intact: {seen}"
+        );
+        assert_eq!(
+            seen["tight"],
+            serde_json::json!(corner),
+            "at {w}x{h} the breathing room goes only where the shut chain needs it — this is a \
+             corner case and stays one: {seen}"
+        );
+    }
+}

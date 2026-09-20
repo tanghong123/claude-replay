@@ -709,7 +709,33 @@ function stackOutlineHeads() {
     slot += shut + (parseFloat(getComputedStyle(card).marginBottom) || 0);
     drawerOpenOf(card.dataset.navCard); // seed it before anything measures the column
   }
+  holdTheHeadsInTheColumn(nav, slot);
   paintDrawers();
+}
+
+/** The one requirement the model makes of the column (owner, #260): "the column needs to fit all
+ *  the header portion of the panes + some gap space between them". Everything else follows from
+ *  it — a chain that has spent its whole budget is heads and gaps, so if THOSE fit, the column
+ *  never rests scrolled, and a column that never rests scrolled can never slide a sticky head
+ *  over the body above it.
+ *
+ *  The column ends with 90px of breathing room, and at a short window that padding is the whole
+ *  difference between the requirement holding and not. It reveals nothing (#214), and the heads
+ *  are the thing that must never be unreachable, so at that window the breathing room goes. This
+ *  is a CORNER CASE and stays one (owner: "fine with me to make the model also work with very
+ *  short window, but that should be a corner case"): the class is off at every ordinary size, and
+ *  nothing else in the model consults it.
+ *
+ *  `shut` is what `stackOutlineHeads` has just summed on its way down: the caption, every card at
+ *  its shut height, and the gaps. The natural tail is read with the class OFF so the decision is
+ *  made against the padding the stylesheet actually wants at this width — it is 90px at the
+ *  default and 30px under 900px, and hard-coding either would mis-decide at the other. */
+function holdTheHeadsInTheColumn(nav, shut) {
+  nav.classList.remove("heads-tight");
+  const style = getComputedStyle(nav);
+  const top = parseFloat(style.paddingTop) || 0;
+  const tail = parseFloat(style.paddingBottom) || 0;
+  nav.classList.toggle("heads-tight", top + shut + tail > nav.clientHeight);
 }
 /** A pane's openness, seeded on FIRST READ from the boolean the reader left behind. An accessor
  *  rather than an initialiser, because a gesture can land before the column has ever been
@@ -829,6 +855,40 @@ function reclaimColumnScroll() {
   const empty = -cardTailOffset();
   if (empty > 0) nav.scrollTop = Math.max(0, nav.scrollTop - empty);
 }
+/** The largest offset the CHAIN could ever have sold, which is the only offset the column may
+ *  hold (#260).
+ *
+ *  A push is not a scroll: it is a budget spent closing drawers from the top, and the column's
+ *  own `scrollTop` moves only with what is left once every drawer is shut — by which point the
+ *  content is heads and gaps and there is nothing left to reveal. So the ceiling is the overflow
+ *  of the SHUT column, and it is invariant under openness: open a body by δ and the tail moves
+ *  down by δ too, so the two cancel.
+ *
+ *  It has to be enforced rather than assumed, because `scrollTop` has writers the chain never
+ *  sees — `scrollIntoView` on a row or a card, the focus ring following a click, a scrollbar
+ *  drag. That is where #260 came from: the demo tape framed each pane with `scrollIntoView`, the
+ *  column took an offset no drawer had paid for, and the sticky heads (z-index rising downward)
+ *  slid out of order — Turns caught its slot and held while Tasks kept coming and came to rest
+ *  106px INSIDE the Turns body, cutting a turn row in half. The owner could not reproduce it on
+ *  a trackpad because the trackpad goes through the chain, and the chain never sells that offset. */
+function chainOffsetLimit(nav) {
+  const cards = drawerCards();
+  if (!cards.length) return 0;
+  const bodies = cards.reduce((n, c) => {
+    const body = c.querySelector(":scope > .outline-card-body");
+    return n + (body ? body.getBoundingClientRect().height : 0);
+  }, 0);
+  return Math.max(0, nav.scrollTop + cardTailOffset() - bodies);
+}
+/** Give back any offset the chain did not sell. Idempotent, so the chain's own write survives it
+ *  and a correction cannot start a loop: the second pass finds the offset already at the limit. */
+function holdColumnToTheChain() {
+  const nav = byId("sessionNavigator");
+  if (nav.scrollTop <= 0) return;
+  const limit = chainOffsetLimit(nav);
+  if (nav.scrollTop > limit) nav.scrollTop = limit;
+}
+byId("sessionNavigator").addEventListener("scroll", holdColumnToTheChain);
 /** A wheel delta in PIXELS, whatever units the device reports it in. */
 function wheelPixels(event) {
   const nav = byId("sessionNavigator");

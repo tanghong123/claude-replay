@@ -202,12 +202,20 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .work-group[data-task-group="in_progress"]{color:var(--amber,var(--sub))}
 /* #58 / #59 / #74: the outline is a plain column. Every pane sits at its own height — a long
    list scrolls ITSELF under a max-height, so one pane cannot push the others out of reach —
-   the panes stack top to bottom, and when they exceed the space the column scrolls as a whole
-   (the space between the session list and the panes), the transcript still the document's one
-   scroller. The "Outline" caption sticks at the top and every head sticks in a stack under it
-   (shifted into its slot on scroll by app.js: the caption plus the heads above it). Folded means the head
-   alone. Opening or folding a pane changes nothing about the others. */
-.workspace:not(.navigator-off) .session-navigator{display:flex;flex-direction:column;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--sub) 45%,transparent) transparent}
+   and the panes stack top to bottom, the transcript still the document's one scroller. The
+   "Outline" caption sticks at the top and every head sticks in a stack under it (shifted into
+   its slot by app.js: the caption plus the heads above it). Folded means the head alone.
+   Opening or folding a pane changes nothing about the others.
+   The column itself is NOT a scroller (#260): a push over it is a budget spent closing drawers
+   from the top (#157), and `scrollTop` moves only with what is left once they are shut — by
+   which point the content is heads and gaps. An offset the chain did not sell rides every head
+   up until it catches its slot, so the one below comes to rest INSIDE the body above it, which
+   is the overlap the owner photographed. `hidden` takes the offset away from the reader and
+   leaves it to the chain, which writes it programmatically; `heads-tight` gives up the column's
+   90px of breathing room at a window too short to stack the shut cards, since the heads fitting
+   is the model's one requirement. */
+.workspace:not(.navigator-off) .session-navigator{display:flex;flex-direction:column;min-height:0;overflow-y:hidden}
+.workspace:not(.navigator-off) .session-navigator.heads-tight{padding-bottom:0}
 .workspace:not(.navigator-off) .session-navigator>*{flex:0 0 auto}
 /* The caption's stacking context has to OUTRANK the card stack, not tie with it: app.js gives
    each visible card a rising inline z-index (1, 2, 3 …), and the pane selector (#159) lives

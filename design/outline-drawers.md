@@ -625,3 +625,73 @@ in a short window, thirty pushes with the gap measured at **every step** — an 
 exactly what the owner saw — ending with the panes shut from the top, the offset given back, and the
 last card wholly in view. The node contract pins the two clamps, the slot's step, and that the floor
 box is still gone.
+
+## #260: the column holds only the offset the chain sold it (owner, 2026-09-20)
+
+The owner watched a recording of the demo, saw the Tasks card resting on the Turns list, and said
+the two panes were overlapping. Then: *"I am not able to reproduce it with my window."* And, when
+it was measured: *"This should never happen."*
+
+**The non-reproduction was the whole clue, and it took a wrong turn to see it.** The first reading
+was that three open panes at `min(48vh,560px)` ask for ~144vh of a 100vh column, so the column
+overflows and #214's mechanism does the rest. A share was built: the open panes divided the column
+max-min fair so it could never overflow. It made the owner's screenshot impossible and broke the
+model — six of the drawer cases went red at once, and they were right to. If the bodies always
+fit, the chain has nothing to close: a push does nothing, and toggling one drawer silently resizes
+the others, which #159 forbids in as many words. The owner's correction is the model, restated:
+
+> Each pane is like a drawer and can be fully closed, so the minimum size should just be the
+> header (when the drawer is fully shut). If anything, each drawer should have a maximum size.
+> When displaying the panes, we just stack them from the top to bottom. The only requirement is
+> that the column needs to fit all the header portion of the panes + some gap space between them.
+
+And: *"The three panes are a chain of drawers with different frictions when pulling or pushing."*
+
+### What the model already guarantees
+
+A push is not a scroll. It is a budget spent closing drawers from the top, and the column's own
+`scrollTop` moves only with whatever is left **once every drawer is shut** — by which point the
+content is heads and gaps. So the owner's one requirement is also the model's own invariant:
+
+> If the heads and the gaps fit, the column never rests scrolled.
+
+That is what keeps the sticky heads in order. They are sticky at slots with a z-index rising
+downward, so Tasks paints over Turns — harmless at offset zero, and at any other offset each head
+rises until it catches its slot, whereupon it holds while the next one keeps coming. Give the
+column an offset it did not earn and the lower card lands *inside* the upper card's body. That is
+the photograph, and the trackpad cannot produce it: a wheel goes through the chain, and the chain
+sells that offset only when there is nothing left to cover.
+
+### The actual defect
+
+`scrollTop` has writers the chain never sees — `scrollIntoView` on a card or a row, a focus ring
+following a click, a scrollbar drag. The demo tape framed each pane for the camera with
+`element.scrollIntoView({block:"center"})` and a bare `col.scrollTop +=` (`tape.mjs:527`, `591`).
+Measured on the pre-fix build at 1680×1050: one `scrollIntoView` on the last card left the column
+at `scrollTop 66` with a gap of **−58px** — Tasks 58px inside the Turns body — and at
+`scrollTop 120`, 106px of cover, which is the row cut in half that the owner photographed.
+
+So the fix is a rule, not a layout:
+
+| | |
+|---|---|
+| **the ceiling** | the largest offset the chain could ever have sold = the overflow of the SHUT column (`chainOffsetLimit`). It is invariant under openness: open a body by δ and the tail moves down by δ, so the two cancel |
+| **enforced** | on every `scroll` event, not only after a wheel — that is the point, since the writers this is about are the ones the wheel handler never hears from. Idempotent, so the chain's own write survives it |
+| **and removed** | the column is `overflow-y:hidden`: no scrollbar to drag, no native wheel. The chain still writes `scrollTop` programmatically, which is the only writer the model recognises |
+
+### The corner case, kept a corner
+
+The column ends with 90px of breathing room, and at a very short window that padding is the whole
+difference between the heads fitting and not. It reveals nothing (#214), so it goes when the shut
+chain needs the room — `.heads-tight`. The owner: *"fine with me to make the model also work with
+very short window, but that should be a corner case and don't break the model because of that
+case."* It is off at every ordinary size, nothing else in the model consults it, and the natural
+tail is read with the class OFF so the decision is made against the padding the stylesheet
+actually wants at that width (90px by default, 30px under 900px).
+
+**Held by** `app_shell_the_outline_column_holds_only_the_offset_the_chain_sold`, at seven window
+sizes from 1680×1050 down to 950×520. At each: a `scrollIntoView` on a card buys no offset and the
+gaps survive it; a bare `scrollTop` write is given back; a push that spends the whole budget leaves
+the column at rest with every head inside it; and `.heads-tight` is on only at the corner. It is
+red on the pre-fix build at the first size, with the owner's symptom in the failure message. The
+node contract pins the ceiling, the scroll listener, the `overflow-y:hidden` and the tight rule.

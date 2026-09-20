@@ -237,7 +237,22 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   has caught its slot holds still while the next keeps coming, and the owner photographed a pane
   resting 37px inside the body of the pane above it. The gaps are rigid at every openness AND at
   every offset, which makes a slot's step the card's SHUT height rather than its head's.
-  `design/outline-drawers.md` has the model.
+  **The column holds only the offset the CHAIN sold it** (#260). A push is not a scroll: it is a
+budget spent closing drawers from the top, and `nav.scrollTop` moves only with what is left once
+they are shut — so the owner's one requirement ("the column needs to fit all the header portion of
+the panes + some gap space between them") is the model's own invariant: if the heads fit, the column
+never rests scrolled, and a column that never rests scrolled cannot slide a sticky head over the body
+above it. `scrollTop` has writers the chain never sees, though — `scrollIntoView`, a focus ring, a
+scrollbar drag — and that is where #260 came from: the demo tape framed each pane with
+`scrollIntoView` and the column took an offset no drawer had paid for (measured: `scrollTop 66`, a
+−58px gap, Tasks inside the Turns body). So `chainOffsetLimit` is the overflow of the SHUT column
+(invariant under openness) and `holdColumnToTheChain` gives back anything above it on EVERY scroll,
+the column is `overflow-y:hidden` so no reader can write the offset directly, and `.heads-tight`
+drops the 90px of breathing room at a window too short for the shut chain — a corner case that stays
+one (owner). What does NOT work: making the open panes share the column so it can never overflow —
+if the bodies always fit, the chain has nothing to close, a push does nothing and toggling one drawer
+resizes the others (#159). Six drawer cases catch that in one run.
+`design/outline-drawers.md` has the model.
   **Each pane's filter is a row in the outline's drop-down** (#186, moved there by #215): the panes
   menu under the word "Outline" carries the choices indented beneath the pane they belong to, on by
   default, remembered, and saying how much they hold back. Tasks has one row per STATE — Running,
