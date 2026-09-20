@@ -187,9 +187,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// `ToolUse::patch` with each `Hunk` naming its own file, so a v29 stream has no diff at all on
 /// any of those calls — 975 of them across the owner's sessions.
 ///
+/// v31: #265 — a `fallback` content block (the run changed model mid-session because the first
+/// was unavailable) becomes a visible note naming both models. A v30 stream drops it entirely,
+/// so a resumed session would show the change on the turns folded after the upgrade and not on
+/// the ones before it.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across.
-pub const FOLD_VERSION: u16 = 30;
+pub const FOLD_VERSION: u16 = 31;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

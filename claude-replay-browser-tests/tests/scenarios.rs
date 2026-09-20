@@ -13143,3 +13143,77 @@ fn scenario_a_bash_command_that_edits_shows_its_diff() {
         );
     }
 }
+
+/// A session whose run changed model half way through.
+fn model_fallback_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: keep going", &now_minus(200));
+    t += &assistant_at("Starting on it.", &now_minus(198));
+    t += &format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[\
+{{\"type\":\"fallback\",\"from\":{{\"model\":\"claude-fable-5\"}},\"to\":{{\"model\":\"claude-opus-4-8\"}}}}]}},\"timestamp\":\"{}\"}}\n",
+        now_minus(196)
+    );
+    t += &assistant_at("Carrying on.", &now_minus(194));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #265 — a run that changed model says so.
+///
+/// Found by #264's unknown-shape log the first time it was pointed at the largest sessions: a
+/// `fallback` content block, five of them across three sessions and four client versions,
+/// arriving unnoticed since at least 2.1.220 and rendered nowhere. It matters because the page
+/// names ONE model for a session, and after a fallback that answer is wrong for every turn
+/// that follows — which also changes what the cost means.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_model_fallback_is_named_on_the_page() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = model_fallback_fixture(match surface {
+            Surface::Classic => "model-fallback-classic",
+            Surface::AppShell => "model-fallback-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3020 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        let seen: serde_json::Value = eval(
+            &page.tab,
+            "(function(){ var t = document.body.innerText; \
+               return JSON.stringify({ \
+                 named: t.indexOf('Model fallback') >= 0, \
+                 from: t.indexOf('claude-fable-5') >= 0, \
+                 to: t.indexOf('claude-opus-4-8') >= 0 }); })()",
+        )
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+        assert_eq!(
+            seen["named"],
+            serde_json::json!(true),
+            "{surface:?}: the page says the run changed model: {seen}"
+        );
+        assert_eq!(
+            seen["from"],
+            serde_json::json!(true),
+            "{surface:?}: …naming the model it left: {seen}"
+        );
+        assert_eq!(
+            seen["to"],
+            serde_json::json!(true),
+            "{surface:?}: …and the one it went to, which is what every turn after this ran on: \
+             {seen}"
+        );
+    }
+}

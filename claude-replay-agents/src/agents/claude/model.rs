@@ -1566,6 +1566,33 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                             msgs.push(Message::Attachment(a));
                         }
                     }
+                    // The run CHANGED MODEL mid-session because the first was unavailable
+                    // (#265). `{"type":"fallback","from":{"model":…},"to":{"model":…}}` — two
+                    // names and nothing else. Found by #264's log the first time it was run
+                    // against the largest sessions, having arrived unnoticed since at least
+                    // client 2.1.220.
+                    //
+                    // A NOTE rather than a Block variant, deliberately. `Compaction` earns a
+                    // variant because it carries structured numbers the pages draw as a
+                    // divider with figures, and because it is central; this is two strings and
+                    // five occurrences across every session on this machine. The note path
+                    // (#236) already makes API errors and hook failures visible on both pages,
+                    // which is exactly the weight this deserves — and it matters at all
+                    // because the session card names ONE model, and after a fallback that
+                    // answer is wrong for every turn that follows.
+                    Some("fallback") => {
+                        let model = |k: &str| {
+                            blk.get(k)
+                                .and_then(|m| m.get("model"))
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("unknown")
+                                .to_string()
+                        };
+                        msgs.push(Message::SystemNote {
+                            text: format!("Model fallback: {} → {}", model("from"), model("to")),
+                            kind: NoteKind::Plain,
+                        });
+                    }
                     // #264: an ASSISTANT content block of a kind no arm handles. The user arm
                     // has the same guard — a new message part can arrive on either side, and
                     // the one that is never watched is the one it arrives on.
@@ -4309,6 +4336,35 @@ mod tests {
             "a key the adapter READS or has already met says nothing — 125 keys appear in the \
              corpus and 117 are deliberately unread, so reporting those is the noise that \
              makes a log unreadable: {seen:?}"
+        );
+    }
+
+    /// #265 — the run changed model mid-session, and the reader is told. Found by #264's log
+    /// on its first run against the largest sessions: five of these had arrived unnoticed
+    /// since client 2.1.220, and the session card names ONE model, so after a fallback that
+    /// answer is wrong for every turn after it.
+    #[test]
+    fn a_model_fallback_names_both_models() {
+        let jsonl = r##"
+{"type":"assistant","version":"2.1.226","message":{"content":[{"type":"text","text":"Starting."}]}}
+{"type":"assistant","version":"2.1.226","message":{"content":[{"type":"fallback","from":{"model":"claude-fable-5"},"to":{"model":"claude-opus-4-8"}}]}}
+{"type":"assistant","version":"2.1.226","message":{"content":[{"type":"fallback","to":{"model":"claude-opus-5"}}]}}
+"##;
+        let notes: Vec<String> = parse(jsonl)
+            .into_iter()
+            .filter_map(|b| match b {
+                Block::ToolResult(t) if t.starts_with("Model fallback") => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            vec![
+                "Model fallback: claude-fable-5 → claude-opus-4-8".to_string(),
+                // A half-recorded one still says what it can rather than vanishing.
+                "Model fallback: unknown → claude-opus-5".to_string(),
+            ],
+            "both models, in the order the run moved between them"
         );
     }
 
