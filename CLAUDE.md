@@ -301,6 +301,32 @@ resizes the others (#159). Six drawer cases catch that in one run.
   from the shared classification, per-TURN timestamps, tool `status`/`exit`/`ms` — the
   content half of the shell-out vocabulary (`--paths --all` is the discovery half).
 
+## When the transcript format moves
+**`agent-replay --unknown` is the ten-second check** (#264). It parses transcripts and prints
+every shape the adapters did not recognise — a top-level record `type`, a `message.content[]`
+type, or a key inside `toolUseResult` — one row per shape with a count, the client version that
+wrote the first one and a session to open. Silence is the good answer.
+
+It exists because the format moved and we found out by eye, a week late: Claude Code began
+recording `toolUseResult.bashEditDiff` on 2026-09-13 (client 2.1.270) — a real unified diff for
+every file-editing Bash command — and `git log -S bashEditDiff` was empty, so 975 records across
+thirteen sessions carried a diff the page dropped in silence (#263).
+
+**The reporting rule is an ALLOW-LIST, and that is the whole design.** A census of the twelve
+largest sessions found **125 distinct top-level `toolUseResult` keys**; the Claude adapter reads
+eight. "Report any key no code reads" would have fired on 117 on its first run — `isImage` 80,791
+times — and a log nobody can read is a log nobody reads. So `TOOL_RESULT_READ` and
+`TOOL_RESULT_KNOWN_IGNORED` (`agents/claude/model.rs`) are a snapshot of the vocabulary as of
+2026-09-20, and only a key outside both is reported. **Adding a key to the ignored list is a
+deliberate act** — it says "looked at it, it carries nothing we render" — and belongs in the same
+commit as the look that decided so, never in a sweep to quieten the output.
+
+The channel is `claude-replay-engine/src/unknown.rs`, re-exported through `engine/seam.rs` as
+`note_unknown`/`UnknownAt` so all three families and any third-party adapter report the same way.
+It costs nothing when nothing is new: a recognised shape never reaches it, because the adapter's
+own `match` answers first. It never holds content — a kind, a name, a count, a version and one
+locator, safe to paste into an issue.
+
 ## Test scratch
 Tests build their scratch under `std::env::temp_dir()` — ~100 call sites across the
 crates — and `.cargo/config.toml` points `TMPDIR` at the workspace's own `target/`,

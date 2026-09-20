@@ -24,6 +24,7 @@ pub mod metrics_fold;
 pub mod model;
 pub mod state;
 pub mod summary;
+pub mod unknown;
 
 pub use agent::Agent;
 pub use engine::index::{AttachmentEntry, ToolCount, ToolEntry, TurnEntry};

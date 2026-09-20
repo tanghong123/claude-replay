@@ -2158,6 +2158,7 @@ fn ps_field(pid: u32, field: &str) -> Option<String> {
 /// viewer is the same crate); it takes over the terminal and exits the process.
 fn follow_viewer(path: &Path) -> Result<()> {
     let args = crate::Args {
+        unknown: false,
         target: Some(path.to_string_lossy().to_string()),
         agent: None,
         latest: false,

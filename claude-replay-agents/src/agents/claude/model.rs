@@ -487,6 +487,289 @@ fn is_boilerplate(s: &str) -> bool {
         || s.starts_with("File created successfully at")
 }
 
+/// Top-level record `type`s met in the corpus (census, 2026-09-20, twelve largest sessions:
+/// 22 of them). The adapter's `match` handles a handful and skips the rest — `custom-title`,
+/// `pr-link`, `cost-state` and the other bookkeeping rows are not records a reader wants. A
+/// type outside this list is Claude Code writing something it did not write before (#264).
+const RECORD_TYPES_KNOWN: &[&str] = &[
+    "agent-name",
+    "ai-title",
+    "artifact-autoreact-ledger",
+    "artifact-comment-monitor",
+    "assistant",
+    "atis-latch",
+    "attachment",
+    "bridge-session",
+    "continued-in",
+    "cost-state",
+    "custom-title",
+    "file-history-delta",
+    "file-history-snapshot",
+    "frame-link",
+    "history-suppression",
+    "last-prompt",
+    "mode",
+    "permission-mode",
+    "pr-link",
+    "queue-operation",
+    "system",
+    "user",
+];
+
+/// `system` subtypes met in the corpus (census, 2026-09-20: 11).
+const SYSTEM_SUBTYPES_KNOWN: &[&str] = &[
+    "api_error",
+    "away_summary",
+    "bridge_status",
+    "compact_boundary",
+    "informational",
+    "local_command",
+    "model_consent_fallback",
+    "model_refusal_fallback",
+    "scheduled_task_fire",
+    "stop_hook_summary",
+    "turn_duration",
+];
+
+/// `attachment.type`s met in the corpus (census, 2026-09-20: 39). Most are bookkeeping —
+/// `total_tokens_reminder` alone occurs 1,515 times in one session — and the handful that
+/// carry something a reader wants are handled above.
+const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
+    "advisor_tool",
+    "agent_listing_delta",
+    "auto_mode",
+    "bash_output_audience_note",
+    "batching_reminder_sent",
+    "command_permissions",
+    "compact_file_reference",
+    "date",
+    "date_change",
+    "deferred_tools_delta",
+    "deferred_tools_record",
+    "edited_text_file",
+    "environment",
+    "file",
+    "hook_cancelled",
+    "hook_non_blocking_error",
+    "hook_system_message",
+    "instructions",
+    "invoked_skills",
+    "mcp_instructions_delta",
+    "model",
+    "nested_memory",
+    "plan_file_reference",
+    "plan_mode",
+    "plan_mode_exit",
+    "prompt_snapshot",
+    "queued_command",
+    "read_truncation_notice",
+    "remote_session_change",
+    "session_context",
+    "silent_turn_reminder",
+    "skill_listing",
+    "task_reminder",
+    "task_status",
+    "thinking_drop",
+    "thinking_stripped",
+    "total_tokens_reminder",
+    "ultra_effort_enter",
+    "ultra_effort_exit",
+];
+
+/// `message.content[]` block types met in the corpus. Short by design: this is the message
+/// vocabulary itself, and a new entry here is a new kind of thing an agent can say.
+const CONTENT_TYPES_KNOWN: &[&str] = &[
+    "text",
+    "thinking",
+    "redacted_thinking",
+    "tool_use",
+    "tool_result",
+    "image",
+    "document",
+    "server_tool_use",
+    "web_search_tool_result",
+];
+
+/// Report a record shape outside the known vocabulary (#264). One place, so the three
+/// categories cannot drift in how they describe themselves.
+fn note_unknown_shape(v: &Value, at: UnknownAt, name: Option<&str>, known: &[&str]) {
+    let name = name.unwrap_or("(absent)");
+    if known.contains(&name) {
+        return;
+    }
+    note_unknown(
+        "claude",
+        at,
+        name,
+        v.get("version").and_then(|x| x.as_str()),
+        v.get("sessionId").and_then(|x| x.as_str()),
+    );
+}
+
+/// The `toolUseResult` keys this adapter READS. Everything it does with a tool result comes
+/// from one of these eight.
+const TOOL_RESULT_READ: &[&str] = &[
+    "agentId",
+    "bashEditDiff",
+    "outputFile",
+    "state",
+    "stderr",
+    "stdout",
+    "structuredPatch",
+    "workflowName",
+];
+
+/// The `toolUseResult` keys this adapter has SEEN and deliberately does not read (#264).
+///
+/// A census of the twelve largest sessions on 2026-09-20 found **125 distinct top-level keys**;
+/// the eight above are read and these 117 are not. Writing them down is the whole mechanism:
+/// "report any key no code reads" would have fired on all 117 on its first run — `isImage`
+/// 80,791 times, `noOutputExpected` 80,791, `userModified` 10,051 — and a log nobody can read
+/// is a log nobody reads. Against this list, the only thing reported is a key that did not
+/// exist when the list was taken, which is exactly the question worth asking: has the format
+/// moved since we last looked?
+///
+/// `bashEditDiff` is the proof. It first appears on 2026-09-13 (client 2.1.270) and we found
+/// out a week later from a screenshot (#263); against a snapshot taken before that date it
+/// would have raised its hand the first time a session was parsed.
+///
+/// **Adding a key here is a deliberate act.** It says "seen it, it carries nothing we render" —
+/// so it belongs in the same commit as the look that decided so, not in a sweep to make a test
+/// pass. `every_tool_result_key_in_the_corpus_is_accounted_for` is the test that notices.
+const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
+    "afkTimeoutMs",
+    "agentType",
+    "annotations",
+    "answers",
+    "artifactRead",
+    "artifact_id",
+    "artifacts",
+    "attachments",
+    "audience",
+    "backgroundCwdHint",
+    "backgroundTaskId",
+    "backgroundedByUser",
+    "bytes",
+    "canEdit",
+    "canReadOutputFile",
+    "cancelledWakeups",
+    "capabilities",
+    "caption",
+    "clampedDelaySeconds",
+    "code",
+    "codeText",
+    "command",
+    "commandName",
+    "content",
+    "contentType",
+    "contract",
+    "dangerouslyDisableSandbox",
+    "description",
+    "disabledReason",
+    "display",
+    "durationMs",
+    "durationSeconds",
+    "error",
+    "file",
+    "filePath",
+    "firstPage",
+    "gitOperation",
+    "interrupted",
+    "isAgent",
+    "isAsync",
+    "isBase64",
+    "isImage",
+    "listing",
+    "liveSubscription",
+    "localSent",
+    "matches",
+    "memdirStamped",
+    "message",
+    "method",
+    "name",
+    "newString",
+    "noOutputExpected",
+    "notifications",
+    "oldString",
+    "originalFile",
+    "path",
+    "paths",
+    "persistedOutputPath",
+    "persistedOutputSize",
+    "persistent",
+    "pin",
+    "plan",
+    "projectId",
+    "projects",
+    "prompt",
+    "pushSent",
+    "query",
+    "questions",
+    "read",
+    "remaining",
+    "replaceAll",
+    "resolvedModel",
+    "result",
+    "results",
+    "resumedAgentId",
+    "retrieval_status",
+    "returnCodeInterpretation",
+    "runId",
+    "scheduledFor",
+    "scope",
+    "scriptPath",
+    "searchCount",
+    "sentAt",
+    "seq",
+    "staleReadFileStateHint",
+    "staleRecovered",
+    "status",
+    "statusChange",
+    "stopped",
+    "stored",
+    "success",
+    "summary",
+    "task",
+    "taskId",
+    "taskType",
+    "task_id",
+    "task_type",
+    "tasks",
+    "threads",
+    "timedOutAfterMs",
+    "timeoutMs",
+    "title",
+    "toolStats",
+    "totalDurationMs",
+    "totalTokens",
+    "totalToolUseCount",
+    "total_deferred_tools",
+    "transcriptDir",
+    "truncated",
+    "type",
+    "updated",
+    "updatedFields",
+    "url",
+    "usage",
+    "userModified",
+    "version",
+    "wasClamped",
+];
+
+/// Report any `toolUseResult` key this adapter neither reads nor has already met (#264).
+fn note_unknown_tool_result_keys(tur: &Value, version: Option<&str>, at: Option<&str>) {
+    let Some(obj) = tur.as_object() else {
+        return;
+    };
+    for key in obj.keys() {
+        let k = key.as_str();
+        if TOOL_RESULT_READ.contains(&k) || TOOL_RESULT_KNOWN_IGNORED.contains(&k) {
+            continue;
+        }
+        note_unknown("claude", UnknownAt::ToolResultKey, k, version, at);
+    }
+}
+
 /// Parse `toolUseResult.bashEditDiff` into the same hunks an Edit produces (#263).
 ///
 /// Claude Code began recording this on 2026-09-13 (client 2.1.270): every Bash command that
@@ -1283,7 +1566,12 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                             msgs.push(Message::Attachment(a));
                         }
                     }
-                    _ => {}
+                    // #264: an ASSISTANT content block of a kind no arm handles. The user arm
+                    // has the same guard — a new message part can arrive on either side, and
+                    // the one that is never watched is the one it arrives on.
+                    other => {
+                        note_unknown_shape(&v, UnknownAt::ContentType, other, CONTENT_TYPES_KNOWN)
+                    }
                 }
             }
         }
@@ -1374,6 +1662,13 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
 
         Some("user") => {
             let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
+            // #264: anything in here we neither read nor have already met is the format
+            // moving under us — the only way we learn that without a screenshot.
+            note_unknown_tool_result_keys(
+                &tur,
+                v.get("version").and_then(|x| x.as_str()),
+                v.get("sessionId").and_then(|x| x.as_str()),
+            );
             let injected = injection_of(&v);
             let Some(content) = v.pointer("/message/content") else {
                 return;
@@ -1438,7 +1733,14 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                 }
                             }
                         }
-                        _ => {}
+                        // #264: a content block of a kind no arm above handles. Reported, not
+                        // dropped in silence — this is where a new message part would arrive.
+                        other => note_unknown_shape(
+                            &v,
+                            UnknownAt::ContentType,
+                            other,
+                            CONTENT_TYPES_KNOWN,
+                        ),
                     }
                 }
             }
@@ -1515,9 +1817,33 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 });
             } else if let Some(att) = a.and_then(attachment_from_event) {
                 msgs.push(Message::Attachment(att));
+            } else {
+                // #264: an attachment of a type nothing above claimed. Most attachment types
+                // ARE bookkeeping and say nothing here; this is one the vocabulary has never
+                // seen.
+                note_unknown_shape(
+                    &v,
+                    UnknownAt::AttachmentType,
+                    a.and_then(|a| a.get("type")).and_then(|t| t.as_str()),
+                    ATTACHMENT_TYPES_KNOWN,
+                );
             }
         }
-        _ => {}
+        // #264: a top-level record type no arm matched — Claude Code writing a row it did not
+        // write before. A `system` record says which subtype, since that is the name that
+        // moves.
+        other => {
+            if other == Some("system") {
+                note_unknown_shape(
+                    &v,
+                    UnknownAt::SystemSubtype,
+                    v.get("subtype").and_then(|x| x.as_str()),
+                    SYSTEM_SUBTYPES_KNOWN,
+                );
+            } else {
+                note_unknown_shape(&v, UnknownAt::RecordType, other, RECORD_TYPES_KNOWN);
+            }
+        }
     }
 }
 
@@ -2190,6 +2516,13 @@ pub(crate) fn parse_main<S: AsRef<str>>(
             Some("user") => {
                 // The message-level toolUseResult metadata (shared by its result blocks).
                 let tur = v.get("toolUseResult").cloned().unwrap_or(Value::Null);
+                // #264: anything in here we neither read nor have already met is the format
+                // moving under us — the only way we learn that without a screenshot.
+                note_unknown_tool_result_keys(
+                    &tur,
+                    v.get("version").and_then(|x| x.as_str()),
+                    v.get("sessionId").and_then(|x| x.as_str()),
+                );
                 // `isMeta` events are injected system content, not human turns — route their
                 // prose to a folded system block so it never gets a turn/sidebar/sticky entry
                 // (see `push_injected`); `isCompactSummary` fills the divider above instead.
@@ -3935,6 +4268,101 @@ mod tests {
         assert_eq!(
             nth_loaded_attachment(file_line, 0),
             Some(LoadedAttachment::Text("# Backlog\nitem".into()))
+        );
+    }
+
+    /// #264 — a `toolUseResult` key the adapter neither reads nor has met before is REPORTED,
+    /// and the ones it has met are not. This is the instrument that would have caught #263 on
+    /// the day it appeared instead of a week later from a screenshot.
+    ///
+    /// The snapshot is process-global and the suite runs in parallel, so this asserts about
+    /// the names it introduced rather than about the whole table.
+    #[test]
+    fn an_unrecognised_tool_result_key_is_reported_and_a_known_one_is_not() {
+        let jsonl = r##"
+{"type":"assistant","version":"2.1.400","sessionId":"s-264","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"true"}}]}}
+{"type":"user","version":"2.1.400","sessionId":"s-264","toolUseResult":{"stdout":"ok","isImage":false,"aFieldFromTheFuture":{"x":1}},"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}
+{"type":"assistant","version":"2.1.400","sessionId":"s-264","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"true"}}]}}
+{"type":"user","version":"2.1.400","sessionId":"s-264","toolUseResult":{"stdout":"ok","aFieldFromTheFuture":{"x":2}},"message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"ok"}]}}
+"##;
+        let _ = parse(jsonl);
+        let seen = unknown_shapes();
+        let mine: Vec<_> = seen
+            .iter()
+            .filter(|s| s.name == "aFieldFromTheFuture")
+            .collect();
+        assert_eq!(
+            mine.len(),
+            1,
+            "one shape, however many times it occurs: {seen:?}"
+        );
+        assert_eq!(mine[0].count, 2, "…counted every time: {mine:?}");
+        assert_eq!(
+            (mine[0].version.as_deref(), mine[0].example.as_deref()),
+            (Some("2.1.400"), Some("s-264")),
+            "…carrying the client that wrote it and a session to open: {mine:?}"
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|s| s.name == "isImage" || s.name == "stdout"),
+            "a key the adapter READS or has already met says nothing — 125 keys appear in the \
+             corpus and 117 are deliberately unread, so reporting those is the noise that \
+             makes a log unreadable: {seen:?}"
+        );
+    }
+
+    /// #264, the acceptance the owner asked for: a made-up record type, a made-up system
+    /// subtype, a made-up attachment type, a made-up content type and a made-up
+    /// `toolUseResult` key produce exactly five reports — and the KNOWN vocabulary beside them
+    /// produces none. A log that cannot tell "new" from "deliberately ignored" is the noise
+    /// that makes it unreadable, and this is the test that keeps that true.
+    #[test]
+    fn every_category_reports_what_is_new_and_nothing_that_is_known() {
+        let jsonl = r##"
+{"type":"cost-state","version":"2.1.400","sessionId":"s-cat","cost":1}
+{"type":"a-row-from-the-future","version":"2.1.400","sessionId":"s-cat"}
+{"type":"system","subtype":"turn_duration","version":"2.1.400","sessionId":"s-cat","content":"7s"}
+{"type":"system","subtype":"a_subtype_from_the_future","version":"2.1.400","sessionId":"s-cat","content":"x"}
+{"type":"attachment","version":"2.1.400","sessionId":"s-cat","attachment":{"type":"total_tokens_reminder","text":"<total_tokens>1</total_tokens>"}}
+{"type":"attachment","version":"2.1.400","sessionId":"s-cat","attachment":{"type":"an_attachment_from_the_future","note":"x"}}
+{"type":"assistant","version":"2.1.400","sessionId":"s-cat","message":{"content":[{"type":"text","text":"hi"},{"type":"a_block_from_the_future","x":1}]}}
+{"type":"assistant","version":"2.1.400","sessionId":"s-cat","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"true"}}]}}
+{"type":"user","version":"2.1.400","sessionId":"s-cat","toolUseResult":{"stdout":"ok","isImage":false,"a_key_from_the_future":1},"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}
+"##;
+        let _ = parse(jsonl);
+        let mut mine: Vec<(String, String)> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.name.contains("from_the_future") || s.name.contains("from-the-future"))
+            .map(|s| (s.at.as_str().to_string(), s.name))
+            .collect();
+        mine.sort();
+        assert_eq!(
+            mine,
+            vec![
+                (
+                    "attachment.type".to_string(),
+                    "an_attachment_from_the_future".to_string()
+                ),
+                (
+                    "content.type".to_string(),
+                    "a_block_from_the_future".to_string()
+                ),
+                (
+                    "record.type".to_string(),
+                    "a-row-from-the-future".to_string()
+                ),
+                (
+                    "system.subtype".to_string(),
+                    "a_subtype_from_the_future".to_string()
+                ),
+                (
+                    "toolUseResult.key".to_string(),
+                    "a_key_from_the_future".to_string()
+                ),
+            ],
+            "one report per category, and the known `cost-state`, `turn_duration`, \
+             `total_tokens_reminder`, `text` and `isImage` beside them say nothing"
         );
     }
 

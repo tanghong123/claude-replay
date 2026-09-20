@@ -35,6 +35,11 @@ pub fn run_viewer() -> Result<()> {
     if args.paths {
         return print_session_paths(&args);
     }
+    // `--unknown`: parse and report what the adapters dropped because they did not know about
+    // it (#264), then exit. Also not a viewer.
+    if args.unknown {
+        return print_unknown_shapes(&args);
+    }
     // `--html`: open a browser instead of the TUI, but with the SAME session
     // selection as the terminal viewer — an explicit id/path or `--latest` resolves
     // directly (cwd-scoped for `--latest`); otherwise show the picker (like a bare
@@ -130,6 +135,57 @@ fn dump_json(args: &Args, path: &std::path::Path) -> Result<()> {
             eprintln!("wrote {stem}.json ({} blocks)", session.blocks().len());
             println!("{stem}"); // last stdout line = the stem, for scripting
         }
+    }
+    Ok(())
+}
+
+/// `--unknown` (#264): parse transcripts and print every shape the adapters did not recognise.
+///
+/// Silence is the good answer — it means the format has not moved since the adapters' known
+/// vocabulary was last taken. Anything printed is new, and each row says how often it has been
+/// seen, which client version wrote the first one and which session to open.
+///
+/// With an explicit target, that session alone; otherwise the newest transcripts across every
+/// agent's store. Parsing is the whole point — the reports come out of the adapters as they
+/// work, so this is the same code path a reader exercises, not a second parser that could
+/// disagree with it.
+fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
+    let limit = 200usize;
+    let paths: Vec<std::path::PathBuf> = if args.target.is_some() || args.latest {
+        vec![discover::resolve_any(
+            args.agent,
+            args.target.as_deref(),
+            args.latest,
+        )?]
+    } else {
+        let mut all = discover::candidates_all(None);
+        all.sort_by_key(|c| std::cmp::Reverse(c.mtime));
+        all.into_iter().take(limit).map(|c| c.path).collect()
+    };
+    eprintln!("scanning {} transcript(s)…", paths.len());
+    for path in &paths {
+        // A transcript that will not parse says nothing about the FORMAT moving, and one bad
+        // file must not stop the sweep that would have found the thing we are looking for.
+        let _ = claude_replay_core::parse_session(path);
+    }
+    let seen = claude_replay_core::unknown::snapshot();
+    if seen.is_empty() {
+        println!("nothing unrecognised in {} transcript(s).", paths.len());
+        return Ok(());
+    }
+    println!(
+        "{:>8}  {:<18} {:<28} {:<10} example",
+        "count", "where", "name", "version"
+    );
+    for s in &seen {
+        println!(
+            "{:>8}  {:<18} {:<28} {:<10} {}",
+            s.count,
+            s.at.as_str(),
+            s.name,
+            s.version.as_deref().unwrap_or("-"),
+            s.example.as_deref().unwrap_or("-")
+        );
     }
     Ok(())
 }

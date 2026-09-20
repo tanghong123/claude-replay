@@ -63,4 +63,7 @@ pub use crate::metrics::{
 #[doc(hidden)]
 pub use crate::model::attach_skill_body;
 pub use crate::model::*;
+/// What an adapter dropped because it did not KNOW about it (#264) — the one channel every
+/// family reports through, so a third-party adapter inherits it with the rest of the seam.
+pub use crate::unknown::{note as note_unknown, snapshot as unknown_shapes, Where as UnknownAt};
 pub use crate::Agent;

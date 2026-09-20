@@ -128,6 +128,21 @@ pub struct Args {
     #[cfg_attr(feature = "cli", arg(long))]
     pub paths: bool,
 
+    /// Parse transcripts and print what the adapters DROPPED because they did not know about
+    /// it (#264), then exit — no viewer. One row per unrecognised shape, most frequent first,
+    /// with the client version that wrote the first one and a session to go and look at.
+    ///
+    /// This is the answer to "has the transcript format moved?", and it exists because the
+    /// last time it moved we found out from a screenshot a week later: Claude Code began
+    /// recording a real diff for every file-editing Bash command on 2026-09-13 and nothing in
+    /// this tool read it (#263). A shape the adapters KNOW and ignore is never reported —
+    /// `attachment` alone has twenty types and most are bookkeeping — so anything printed here
+    /// is genuinely new since the vocabulary was last taken.
+    ///
+    /// With no target it sweeps every agent's store, newest first, up to `--limit`.
+    #[cfg_attr(feature = "cli", arg(long))]
+    pub unknown: bool,
+
     /// With `--paths`: sweep **every agent's store** instead of resolving one session, and
     /// print a JSON ARRAY — one object per transcript on this machine, each carrying the
     /// same directory facts plus `agent`, `mtime` and the canonical `session_key`. This is
