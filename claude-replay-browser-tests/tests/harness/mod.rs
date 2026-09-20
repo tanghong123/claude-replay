@@ -203,6 +203,28 @@ pub fn restored_file_at(path: &str, display: &str, lines: u32, ts: &str) -> Stri
     )
 }
 
+/// A Bash call whose COMMAND is far wider than any head, with `needle` buried deep inside it,
+/// and a result that carries the needle once more (#262). The head renders its target as one
+/// `nowrap` line with `overflow-x:hidden` — measured 571px of box over a 44,784px string — so a
+/// match in the middle of the command is thousands of pixels outside a box that has no
+/// scrollbar and whose `scrollLeft` nobody writes. Counted, marked, and unreachable.
+pub fn long_command_at(needle: &str, call_id: &str, ts: &str) -> String {
+    let filler = |from: usize, to: usize| {
+        (from..to)
+            .map(|i| format!(" && echo filler-{i:04}"))
+            .collect::<String>()
+    };
+    let command = format!(
+        "echo start{} && echo {needle}{}",
+        filler(0, 150),
+        filler(150, 300)
+    );
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[\
+{{\"type\":\"tool_use\",\"id\":\"{call_id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"{command}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
 /// A one-pixel PNG, base64 — enough for a browser to decode to real dimensions.
 pub const TINY_PNG_B64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";

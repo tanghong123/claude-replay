@@ -12923,3 +12923,117 @@ fn scenario_a_restored_file_names_itself_and_stays_in_its_box() {
         }
     }
 }
+
+/// A Bash call whose command is far wider than any head, with the needle deep inside the
+/// clipped part and once more in the output.
+fn clipped_target_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: run the long one", &now_minus(200));
+    t += &harness::long_command_at(NEEDLE_262, "call-262", &now_minus(198));
+    t += &format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"call-262\",\"content\":\"start\\n{NEEDLE_262}\\ndone\"}}]}},\"timestamp\":\"{}\"}}\n",
+        now_minus(196)
+    );
+    t += &assistant_at("That is the long one.", &now_minus(194));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// A word that occurs nowhere else in a fixture, so a count is a fact about this case alone.
+const NEEDLE_262: &str = "NEEDLE-IN-THE-HEAD";
+
+/// #262 — every hit the counter claims can actually be SEEN.
+///
+/// The owner searched a real session for "WIDTH ONLY", got 4 hits, and could not find one of
+/// them. It was not scrolled off: it sat inside the record head's one-line target — `nowrap`
+/// with `overflow-x:hidden`, measured 571px of box over a 44,784px command — about 9,000px
+/// outside a box with no scrollbar whose `scrollLeft` nobody writes. Counted, marked, and
+/// unreachable by anything the reader could do. BOTH pages had it, so the classic page is not
+/// the reference here.
+///
+/// Asserted with `elementFromPoint` at the mark's centre, never with a bounding rect: a clipped
+/// mark still measures a perfectly good rectangle inside the viewport, which is exactly why
+/// this went unnoticed (the repo has a memory about it — "rect is not visibility").
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_every_counted_search_hit_can_be_seen() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = clipped_target_fixture(match surface {
+            Surface::Classic => "clipped-target-classic",
+            Surface::AppShell => "clipped-target-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3016 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        let hits = harness::search(&page.tab, surface, NEEDLE_262);
+        assert_eq!(
+            hits, 2,
+            "{surface:?}: the needle is in the command and in the output, and the page counts \
+             both — the case is about what those two counts are WORTH"
+        );
+        // The current hit, hit-tested rather than measured. `clip` names an ancestor that both
+        // clips AND has the mark outside its box — the page itself overflows by 4px and would
+        // otherwise be reported as the culprit — so a regression says WHAT hid the hit rather
+        // than just "not visible".
+        let js = match surface {
+            Surface::Classic => "mark.hl.cur",
+            Surface::AppShell => "mark.search-mark.current",
+        };
+        let look = format!(
+            "(function(){{ var m = document.querySelector('{js}'); \
+               if (!m) return JSON.stringify({{ none: true }}); \
+               var r = m.getBoundingClientRect(); \
+               var e = document.elementFromPoint(Math.round(r.left + 2), Math.round(r.top + r.height / 2)); \
+               var clip = null; \
+               for (var p = m.parentElement; p && p !== document.body; p = p.parentElement) {{ \
+                 var cs = getComputedStyle(p); \
+                 if ((cs.overflowX === 'hidden' || cs.overflowX === 'clip') && p.scrollWidth > p.clientWidth + 1) {{ \
+                   var pb = p.getBoundingClientRect(); \
+                   if (r.right <= pb.left + 1 || r.left >= pb.right - 1) {{ \
+                     clip = p.tagName + '.' + String(p.className).slice(0, 24) + ' ' + p.clientWidth + '/' + p.scrollWidth; break; }} }} }} \
+               return JSON.stringify({{ left: Math.round(r.left), top: Math.round(r.top), \
+                 seen: !!e && (e === m || m.contains(e) || e.contains(m)), clip: clip }}); }})()"
+        );
+        // Land on the first hit the way a reader does: typing MARKS the hits, stepping is what
+        // takes you to one. The classic page has no current mark until then.
+        harness::search_next(&page.tab, surface);
+        settle();
+        // Every hit in turn, and once more round: the FIRST landing is its own path on the
+        // classic page (it rebuilds the block and throws away the reveal), and it was the one
+        // that stayed hidden after the stepping path had already been fixed.
+        for step in 0..=2 {
+            let seen: serde_json::Value = eval(&page.tab, &look)
+                .as_str()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            assert!(
+                seen["none"].as_bool() != Some(true),
+                "{surface:?} step {step}: a counted hit has a current mark to land on: {seen}"
+            );
+            assert_eq!(
+                seen["clip"],
+                serde_json::Value::Null,
+                "{surface:?} step {step}: nothing is clipping the hit the reader was sent to — \
+                 the head's target opens out to show it, the way its own third click step \
+                 would: {seen}"
+            );
+            assert_eq!(
+                seen["seen"],
+                serde_json::json!(true),
+                "{surface:?} step {step}: the hit is REALLY there — hit-tested, because a \
+                 clipped mark still reports a fine rectangle: {seen}"
+            );
+            harness::search_next(&page.tab, surface);
+            settle();
+        }
+    }
+}

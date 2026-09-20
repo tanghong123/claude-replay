@@ -1030,6 +1030,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const viewModelSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
   assert.match(viewModelSrc, /const view = rendererRecord\(record, "attachment", head\.att_kind \|\| "file"\);/, "…and every attachment takes the KIND as its title, not only a pointer (#254 did half of it, #261 the rest)");
   assert.match(appSource, /function chainOffsetLimit\(nav\) \{/, "…with the ceiling enforced against the writers the chain cannot see — `scrollIntoView`, a focus ring, a drag");
+  // #262: a hit inside a head's one-line target is unreachable — the span is `nowrap` with
+  // `overflow-x:hidden`, measured 572px over a 44,782px command, and nothing writes its
+  // scrollLeft. The reveal is UNCONDITIONAL on purpose: measuring "is it clipped" at that
+  // moment reads the target before its collapsed style is applied and answers no.
+  assert.match(appSource, /function revealTargetHolding\(mark\) \{/, "a search hit inside a head's target opens that target out");
+  assert.doesNotMatch(appSource, /const target = mark\.closest\("\.renderer-target"\);\n  if \(!target \|\| target\.scrollWidth/, "…without asking whether it measures clipped, which it does not yet at that moment");
   assert.match(appSource, /byId\("sessionNavigator"\)\.addEventListener\("scroll", holdColumnToTheChain\);/, "…on every scroll, not only after a wheel");
   assert.match(appSource, /nav\.classList\.toggle\("heads-tight", top \+ shut \+ tail > nav\.clientHeight\);/, "…and the short window is decided against the padding the stylesheet wants at THIS width, read with the class off");
   assert.match(css, /\.session-navigator>\*\{flex:0 0 auto\}/, "every pane sits at its own height — nothing is shared");

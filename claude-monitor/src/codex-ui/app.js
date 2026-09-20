@@ -1358,10 +1358,42 @@ function stepSearch(delta) {
   markSearch();
   landOnCurrentMark();
 }
+/** A hit inside a head's one-line TARGET is unreachable until the target is shown in full
+ *  (#262). The span is `nowrap` with `overflow-x:hidden` — measured 572px wide over a 44,782px
+ *  command — so a match deep in the command sits thousands of pixels outside the box, and
+ *  nothing the reader can do brings it in: there is no scrollbar and nobody writes its
+ *  scrollLeft. The owner: "show 4 hits, but one of them I cannot see."
+ *
+ *  Full is the state the head's own third click step gives the target (#129), so a hit reveals
+ *  it the way the reader would rather than inventing a fourth state. `headSteps` is left alone
+ *  deliberately: the click handler derives its starting step from the CURRENT open/full pair
+ *  when the map has no entry, so it stays coherent by itself.
+ *
+ *  Returns whether anything changed, because the caller has to re-render and re-mark before it
+ *  can trust a rect. */
+function revealTargetHolding(mark) {
+  // No "is it clipped" test: the same reveal on the classic page measured the target BEFORE
+  // its collapsed style had been applied, found it unclipped, and left the first hit of every
+  // search 22,895px off screen. A target that needed no opening out looks the same either way.
+  const target = mark.closest(".renderer-target");
+  if (!target) return false;
+  const id = target.closest("[data-record-id]")?.dataset.recordId;
+  if (!id || !recordState.fullTargets || recordState.fullTargets.has(id)) return false;
+  recordState.fullTargets.add(id);
+  return true;
+}
 /** After a jump, put the current mark on screen if the record's head left it below the fold. */
 function landOnCurrentMark() {
-  const mark = viewport.window.querySelector("mark.search-mark.current");
+  let mark = viewport.window.querySelector("mark.search-mark.current");
   if (!mark) return;
+  // Before any rect is read: a clipped target has to be opened out first, or the measurement
+  // describes a box the mark is nowhere near.
+  if (revealTargetHolding(mark)) {
+    viewport.rerender();
+    markSearch();
+    mark = viewport.window.querySelector("mark.search-mark.current");
+    if (!mark) return;
+  }
   const box = mark.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
   if (box.top >= view.top && box.bottom <= view.bottom) return;
   viewport.reveal(mark, { top: Math.min(120, view.height / 3) });

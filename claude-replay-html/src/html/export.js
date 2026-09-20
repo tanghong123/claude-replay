@@ -363,7 +363,16 @@
       // the filter's `.filter-cur`.
       if (curHit && +e.dataset.idx === curHit.rec) {
         var ms = e.querySelectorAll("mark.hl");
-        if (ms[curHit.mark]) ms[curHit.mark].classList.add("cur");
+        if (ms[curHit.mark]) {
+          ms[curHit.mark].classList.add("cur");
+          // …and whatever was HIDING it has to be opened again with it (#262). This is the
+          // path a fresh query takes and the path a re-materialized record takes, and both
+          // rebuild the block — which throws away the inline `pre-wrap` that made a hit
+          // inside a clipped head target reachable. Stepping onto the hit called
+          // `revealMark`; landing on it never did, so the first hit of a search could be
+          // the one the reader could not see.
+          revealMark(ms[curHit.mark]);
+        }
       }
     }
   }
@@ -3321,6 +3330,22 @@
           p.style.maxHeight = "";
           cb.textContent = "▲ show less";
         }
+      }
+      // #262: a hit inside the head's one-line TARGET. The span is `nowrap` + `overflow:hidden`
+      // — measured 571px wide over a 44,784px command — so the mark sits thousands of pixels
+      // outside it and NOTHING the reader can scroll brings it in: the box has no scrollbar and
+      // nobody writes its scrollLeft. The count said 4 and three were reachable. Showing the
+      // target in full is the state the head's own third click step gives it (#129), so this
+      // reveals it the way the reader would, rather than inventing a fourth state.
+      if (p.classList.contains("tool-target") || p.classList.contains("tool-path")) {
+        // Unconditionally, NOT `if it measures clipped`: at this moment the block has just been
+        // rendered and the collapsed target style has not been applied yet, so the span still
+        // WRAPS and reports scrollWidth === clientWidth. Measured — `revealMark` ran on the
+        // right node with the right parent and the clip test said "nothing to reveal", then
+        // `setFoldOpen` made it `nowrap` and the hit went 22,895px off screen. A target that
+        // did not need opening out is unchanged by `pre-wrap` anyway, so the test bought
+        // nothing and cost the first hit of every search.
+        setTargetFull(p.closest(".fold"), true);
       }
     }
   }
