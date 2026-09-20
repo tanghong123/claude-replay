@@ -1178,6 +1178,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         if role == "user" {
                             for (name, path) in declared_files {
                                 msgs.push(Message::Attachment(Attachment {
+                                    lines: None,
                                     kind: AttachmentKind::Ref,
                                     name,
                                     path: Some(path),
@@ -1529,6 +1530,7 @@ fn input_image_attachment(item: &Value) -> Option<Attachment> {
         return Some(a);
     }
     (!url.trim().is_empty()).then(|| Attachment {
+        lines: None,
         kind: AttachmentKind::Image,
         name: "remote-image".to_string(),
         path: None,
@@ -1586,6 +1588,7 @@ fn deferred_image(mime: &str) -> Attachment {
         _ => "png",
     };
     Attachment {
+        lines: None,
         kind: AttachmentKind::Image,
         name: format!("image.{ext}"),
         path: None,
@@ -1907,6 +1910,7 @@ fn push_message(payload: &Value, out: &mut Vec<Block>) {
     if role == "user" {
         out.extend(declared_files.into_iter().map(|(name, path)| {
             Block::Attachment(Attachment {
+                lines: None,
                 kind: AttachmentKind::Ref,
                 name,
                 path: Some(path),
@@ -3199,7 +3203,7 @@ not json
         assert!(matches!(&blocks[0], Block::UserText(text) if text == "Please inspect this"));
         assert!(matches!(
             &blocks[1],
-            Block::Attachment(Attachment { kind: AttachmentKind::Image, name, path: Some(path), .. })
+            Block::Attachment(Attachment { lines: None, kind: AttachmentKind::Image, name, path: Some(path), .. })
                 if name == "shot.png" && path == "/tmp/shot.png"
         ));
         assert_eq!(
@@ -3236,7 +3240,7 @@ not json
         assert!(matches!(&blocks[0], Block::UserText(text) if text == "Summarize it"));
         assert!(matches!(
             &blocks[1],
-            Block::Attachment(Attachment {
+            Block::Attachment(Attachment { lines: None,
                 kind: AttachmentKind::Ref,
                 name,
                 path: Some(path),

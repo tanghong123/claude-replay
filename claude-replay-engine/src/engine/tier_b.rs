@@ -312,6 +312,7 @@ mod tests {
                 result: Some("two gaps".into()),
             },
             Block::Attachment(Attachment {
+                lines: None,
                 kind: AttachmentKind::Image,
                 name: "shot.png".into(),
                 path: Some("/t/shot.png".into()),

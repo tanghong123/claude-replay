@@ -176,9 +176,15 @@ pub const COMPACT_AFTER: usize = 256;
 ///   - #257: the per-turn durations ride the meta beside `user_times`. A v27 record carries no
 ///     durations, so no turn shows how long it took.
 ///
+/// v29: #261 — an `Attachment` carries the line count the transcript recorded
+/// (`content.file.numLines`), and the head emits it as a `lines` chip. A v28 stream has no
+/// count on any attachment, so a file a compaction put back into context shows no size at all —
+/// and since the head is what changed, a resumed stream would show the size on the records
+/// folded after the upgrade and not on the ones before it, inside one session.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across.
-pub const FOLD_VERSION: u16 = 28;
+pub const FOLD_VERSION: u16 = 29;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

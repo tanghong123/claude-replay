@@ -247,6 +247,7 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
         // Path-only, so nothing is loaded or embedded — and either way this arm emits no body.
         // `use BlockKind::*` shadows the struct's name here, hence the full path.
         Attachment => vec![Block::Attachment(crate::model::Attachment {
+            lines: None,
             kind: AttachmentKind::File,
             name: "notes.md".into(),
             path: Some("/tmp/audit-corpus/notes.md".into()),

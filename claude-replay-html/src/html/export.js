@@ -612,6 +612,13 @@
             };
         }
         ac.appendChild(an);
+        // #261: the size the transcript recorded, beside the name. It rides the same `chips`
+        // the tool heads use, so the two pages read it from one place — and both show it, which
+        // is what the rendering audit compares them on. A file a compaction put back into
+        // context used to be a word and a path, with nothing to tell a nine-line job output
+        // from a thousand-line source file.
+        var achips = (h.chips || []).map(function (c) { return typeof c === "string" ? c : (c && c.x) || ""; }).filter(Boolean);
+        if (achips.length) ac.appendChild(el("span", "asize", "  " + achips.join(" · ")));
         // #16: a PLAN's body renders inline, expandable — served pages embed the text
         // (att_text); an offline bundle fetches its materialized assets/ file on first
         // toggle. A portable single-file export stays name-only by design.

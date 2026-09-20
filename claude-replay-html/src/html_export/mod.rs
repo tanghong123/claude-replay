@@ -989,6 +989,12 @@ impl Emitter<'_> {
                 head.insert("att_kind".into(), json!(a.kind.as_str()));
                 head.insert("att_name".into(), json!(a.name.clone()));
                 head.insert("att_dl".into(), json!(downloadable));
+                // #261: the size the transcript recorded, as the same `chips` the tool heads
+                // use — so both pages show it through the head module they already share
+                // rather than each growing a rule for attachments.
+                if let Some(n) = a.lines {
+                    head.insert("chips".into(), json!([chip(format!("{n} lines"))]));
+                }
                 // Only a served page (`--html`, `reveal == true`) gets the payload/path
                 // to act on; a portable `--dump-html` export shows the name alone. The
                 // JS downloads embedded content via a Blob (text) or a `data:` URI
@@ -4042,6 +4048,7 @@ mod tests {
         let tpath = att_transcript(line);
         let src = Transcript::open(crate::Agent::CLAUDE, &tpath);
         let file = Block::Attachment(crate::model::Attachment {
+            lines: None,
             kind: crate::model::AttachmentKind::File,
             name: "notes.md".into(),
             path: Some("/w/notes.md".into()),
@@ -4432,6 +4439,7 @@ mod tests {
         let tpath = att_transcript(line);
         let src = Transcript::open(crate::Agent::CLAUDE, &tpath);
         let img = Block::Attachment(crate::model::Attachment {
+            lines: None,
             kind: crate::model::AttachmentKind::Image,
             name: "image.png".into(),
             path: None,

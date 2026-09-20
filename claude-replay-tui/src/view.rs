@@ -3740,6 +3740,7 @@ mod tests {
         let blocks = vec![
             Block::UserText("go".into()),
             Block::Attachment(Attachment {
+                lines: None,
                 kind: crate::model::AttachmentKind::Ref,
                 name: "src/lib.rs".into(),
                 path: Some("/w/src/lib.rs".into()),
@@ -4097,6 +4098,7 @@ mod tests {
 
         let off_img = (l0.len() + 1) as u64;
         let text = Attachment {
+            lines: None,
             kind: crate::model::AttachmentKind::File,
             name: "notes.md".into(),
             path: Some("/w/notes.md".into()),
@@ -4115,6 +4117,7 @@ mod tests {
 
         // A base64 image decodes to bytes; the extension comes from the loaded MIME type.
         let img = Attachment {
+            lines: None,
             kind: crate::model::AttachmentKind::Image,
             name: "shot".into(),
             path: None,

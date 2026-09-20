@@ -837,4 +837,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .pointer-run-file[data-reference-path]:hover{color:var(--ink);border-bottom-color:currentColor}
 /* A LONE pointer keeps its own line — `noninteractive` already draws head-only — but the kind
    reads as a quiet label rather than a title competing with real records. */
-.renderer[data-renderer-kind="attachment"].noninteractive .renderer-title{color:var(--faint);font-weight:400}
+.renderer[data-renderer-kind="attachment"].noninteractive .renderer-title{color:var(--faint);font-weight:400;min-width:0;overflow-wrap:anywhere}
+/* #261: nothing in a head may be wider than the head. A file a compaction put back into
+   context took the PATH as its title, and a path is one unbroken token — measured 92px
+   past the record's own right edge, the text running out over the page's ground. The
+   title wraps at any character and the head itself refuses to grow, so the longest path
+   in a transcript still lands inside the box that is drawn for it. */
+.renderer-head{max-width:100%;min-width:0}

@@ -188,6 +188,21 @@ pub fn carried_file_at(path: &str, display: &str, ts: &str) -> String {
     )
 }
 
+/// A file a compaction put BACK INTO CONTEXT, with its bytes (#261). Distinct from
+/// [`carried_file_at`], which is the pointer Claude Code leaves naming what it carried: this one
+/// is the `file` attachment that kept its content, and it is the shape the owner photographed —
+/// five in a row after a boundary. `numLines` is what the transcript states was put into the
+/// context, and it is the "(9 lines)" Claude Code's own TUI prints beside the path.
+pub fn restored_file_at(path: &str, display: &str, lines: u32, ts: &str) -> String {
+    let body: String = (1..=lines)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\\n");
+    format!(
+        "{{\"type\":\"attachment\",\"timestamp\":\"{ts}\",\"attachment\":{{\"type\":\"file\",\"filename\":\"{path}\",\"displayPath\":\"{display}\",\"content\":{{\"type\":\"text\",\"file\":{{\"filePath\":\"{path}\",\"content\":\"{body}\",\"numLines\":{lines},\"startLine\":1,\"totalLines\":{lines}}}}}}}}}\n"
+    )
+}
+
 /// A one-pixel PNG, base64 — enough for a browser to decode to real dimensions.
 pub const TINY_PNG_B64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";

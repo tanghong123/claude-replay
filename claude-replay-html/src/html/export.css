@@ -547,6 +547,7 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 }
 .acaret { flex: none; color: var(--tool); }
 .akind { flex: none; color: var(--tool); font: 12px var(--mono); }
+.asize{color:var(--faint,#888);font-size:11px}
 .aname { min-width: 0; color: var(--fg); }
 .aname.adl { color: var(--link); text-decoration: underline; cursor: pointer; }
 .aname.adl:hover { opacity: 0.85; }

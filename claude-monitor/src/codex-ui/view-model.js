@@ -1,4 +1,3 @@
-import { isPointerAttachment } from "./shared/capabilities.js";
 // Row caps are the shared module's (html/shared/parts.js, #108): the split, the label, the row
 // markup and the expansion memory — one implementation with the classic page.
 import { capSplit, capLabel, preLines, toLineOf, numRowsHtml, diffRowsHtml, capOpenHas, contextReportHtml } from "./shared/parts.js";
@@ -239,13 +238,17 @@ export function viewRecord(record) {
     // the title (the reason the transcript recorded, which the classic page has always shown)
     // and the path as the target, which `targetHtml` renders clickable. A real attachment keeps
     // its filename title and its card.
-    const pointer = isPointerAttachment(head);
-    const title = pointer ? head.att_kind || "file" : head.att_name || "Attachment";
-    const view = rendererRecord(record, "attachment", title);
-    // `att_name` first: the adapter already puts the DISPLAY path there for a `ref`
-    // (`displayPath`), which is what a reader wants to see, and the absolute path is the
-    // fallback only when there is no name at all.
-    if (pointer) view.summary = head.att_name || head.att_path || "";
+    // #254 gave a POINTER the shape a reader can read — the kind as the title, the path as the
+    // target, which `targetHtml` renders clickable. #261 found the other half still broken: an
+    // attachment that KEPT its bytes took the FILENAME as its title and left the target empty,
+    // so the files a compaction puts back into context drew as five naked paths with no word
+    // saying what they were, each measured 92px wider than the card it sat in. The head is the
+    // same either way — what a record IS does not depend on whether it kept its content — and
+    // only the body still turns on `isPointerAttachment` (components.js).
+    const view = rendererRecord(record, "attachment", head.att_kind || "file");
+    // `att_name` first: the adapter already puts the DISPLAY path there (`displayPath`), which
+    // is what a reader wants to see; the absolute path is the fallback when there is no name.
+    view.summary = head.att_name || head.att_path || "";
     return view;
   }
   if (record.kind === "compaction") return rendererRecord(record, "context", "Context compacted");

@@ -408,11 +408,18 @@ fn render_diff(
 fn attachment_line(a: &Attachment) -> Line<'static> {
     let mark = theme::tool();
     let name = mark.add_modifier(Modifier::UNDERLINED);
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled("▤ ", mark),
         Span::styled(format!("{} ", a.kind), mark),
         Span::styled(a.name.clone(), name),
-    ])
+    ];
+    // The size the transcript recorded (#261): a file put back into context after a compaction
+    // used to render as the word `file` and a path and nothing else, so the reader could not
+    // tell a nine-line job output from a thousand-line source file.
+    if let Some(n) = a.lines {
+        spans.push(Span::styled(format!("  {n} lines"), mark));
+    }
+    Line::from(spans)
 }
 
 /// Render a single block's content lines (no trailing blank separator). `width`

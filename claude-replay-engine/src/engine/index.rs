@@ -192,6 +192,7 @@ mod tests {
             sub("a1", AgentStatus::Running),
             sub("a2", AgentStatus::Completed),
             Block::Attachment(Attachment {
+                lines: None,
                 kind: AttachmentKind::Image,
                 name: "img.png".into(),
                 path: None,
@@ -249,6 +250,7 @@ mod tests {
             tool("Bash"),
             sub("a1", AgentStatus::Running),
             Block::Attachment(Attachment {
+                lines: None,
                 kind: AttachmentKind::Plan,
                 name: "plan.md".into(),
                 path: None,

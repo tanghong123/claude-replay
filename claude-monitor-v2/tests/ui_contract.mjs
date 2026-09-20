@@ -1022,6 +1022,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // keeps that and takes away every other writer a user has.
   assert.match(css, /\.session-navigator\{display:flex;flex-direction:column;min-height:0;overflow-y:hidden\}/, "the column is moved by the chain, never by the reader scrolling it");
   assert.match(css, /\.session-navigator\.heads-tight\{padding-bottom:0\}/, "…and at a window too short for the shut chain the breathing room goes, because the heads fitting is the model's one requirement");
+  // #261: nothing in a head may be wider than the head. A file a compaction put back into
+  // context took the PATH as its title, and a path is one unbroken token — measured 92px past
+  // the record's own right edge, the text running out over the page's ground.
+  assert.match(css, /\.renderer-title\{color:var\(--faint\);font-weight:400;min-width:0;overflow-wrap:anywhere\}/, "a head's title wraps at any character, so a path cannot outgrow it");
+  assert.match(css, /\.renderer-head\{max-width:100%;min-width:0\}/, "…and the head itself refuses to grow past the record it belongs to");
+  const viewModelSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
+  assert.match(viewModelSrc, /const view = rendererRecord\(record, "attachment", head\.att_kind \|\| "file"\);/, "…and every attachment takes the KIND as its title, not only a pointer (#254 did half of it, #261 the rest)");
   assert.match(appSource, /function chainOffsetLimit\(nav\) \{/, "…with the ceiling enforced against the writers the chain cannot see — `scrollIntoView`, a focus ring, a drag");
   assert.match(appSource, /byId\("sessionNavigator"\)\.addEventListener\("scroll", holdColumnToTheChain\);/, "…on every scroll, not only after a wheel");
   assert.match(appSource, /nav\.classList\.toggle\("heads-tight", top \+ shut \+ tail > nav\.clientHeight\);/, "…and the short window is decided against the padding the stylesheet wants at THIS width, read with the class off");

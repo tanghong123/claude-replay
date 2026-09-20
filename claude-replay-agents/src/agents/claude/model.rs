@@ -2468,7 +2468,16 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
             let name = s("displayPath")
                 .map(str::to_string)
                 .or_else(|| path.map(basename))?;
+            // The size the transcript recorded (#261). `numLines` is what was put into the
+            // context — a Read of a slice records fewer than the file has — so it is the honest
+            // one to show, and `totalLines` only stands in when the slice is not stated.
+            let lines = f
+                .get("numLines")
+                .or_else(|| f.get("totalLines"))
+                .and_then(|n| n.as_u64())
+                .and_then(|n| u32::try_from(n).ok());
             Some(Attachment {
+                lines,
                 kind: AttachmentKind::File,
                 name,
                 path: path.map(str::to_string),
@@ -2491,6 +2500,7 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
                 mime: None,
             });
             Some(Attachment {
+                lines: None,
                 kind: AttachmentKind::Plan,
                 name: path.map(basename).unwrap_or_else(|| "plan.md".to_string()),
                 path: path.map(str::to_string),
@@ -2505,6 +2515,7 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
         "edited_text_file" => {
             let path = s("filename")?;
             Some(Attachment {
+                lines: None,
                 kind: AttachmentKind::Edited,
                 name: basename(path),
                 path: Some(path.to_string()),
@@ -2518,6 +2529,7 @@ fn attachment_from_event(a: &Value) -> Option<Attachment> {
                 .map(str::to_string)
                 .unwrap_or_else(|| basename(path));
             Some(Attachment {
+                lines: None,
                 kind: AttachmentKind::Ref,
                 name,
                 path: Some(path.to_string()),
@@ -2570,6 +2582,7 @@ fn image_attachment(blk: &Value) -> Option<Attachment> {
             mime: Some(mime.clone()),
         });
     Some(Attachment {
+        lines: None,
         kind: AttachmentKind::Image,
         name: format!("image.{ext}"),
         path: None,
@@ -2702,6 +2715,7 @@ fn exit_plan_attachment(blk: &Value) -> Option<Attachment> {
         return None;
     }
     Some(Attachment {
+        lines: None,
         kind: AttachmentKind::Plan,
         name: "plan.md".to_string(),
         path: None,
@@ -3824,6 +3838,36 @@ mod tests {
         assert_eq!(
             nth_loaded_attachment(file_line, 0),
             Some(LoadedAttachment::Text("# Backlog\nitem".into()))
+        );
+    }
+
+    /// #261 — the size the transcript recorded reaches the model. A file a compaction puts back
+    /// into context states `numLines`, which is the "(9 lines)" Claude Code's own TUI prints
+    /// beside the path; we used to drop it, so no frontend could show a size and five restored
+    /// files read as five naked paths. `totalLines` stands in only when the slice is unstated.
+    #[test]
+    fn a_file_attachment_carries_the_line_count_the_transcript_recorded() {
+        let jsonl = r##"
+{"type":"attachment","timestamp":"2026-06-30T03:00:00.000Z","attachment":{"type":"file","filename":"/w/a.md","displayPath":"a.md","content":{"type":"text","file":{"filePath":"/w/a.md","content":"one\ntwo","numLines":9,"startLine":1,"totalLines":40}}}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:01.000Z","attachment":{"type":"file","filename":"/w/b.md","displayPath":"b.md","content":{"type":"text","file":{"filePath":"/w/b.md","content":"one","totalLines":40}}}}
+{"type":"attachment","timestamp":"2026-06-30T03:00:02.000Z","attachment":{"type":"file","filename":"/w/c.md","displayPath":"c.md","content":{"type":"text","file":{"filePath":"/w/c.md","content":"one"}}}}
+"##;
+        let seen: Vec<(String, Option<u32>)> = parse(jsonl)
+            .iter()
+            .filter_map(|b| match b {
+                Block::Attachment(a) => Some((a.name.clone(), a.lines)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("a.md".to_string(), Some(9)),
+                ("b.md".to_string(), Some(40)),
+                ("c.md".to_string(), None),
+            ],
+            "numLines wins over totalLines, totalLines stands in, and a file that states \
+             neither carries no count rather than a made-up one"
         );
     }
 

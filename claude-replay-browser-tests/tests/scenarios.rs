@@ -12794,3 +12794,132 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         );
     }
 }
+
+/// A compaction that put five files BACK INTO CONTEXT, each with its bytes and its line count.
+fn restored_files_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at(
+        "question 13: keep going after the compaction",
+        &now_minus(200),
+    );
+    t += &harness::compaction_at(&now_minus(198));
+    // The shape the owner photographed: a run of them, and a display path long enough that a
+    // head which does not contain it runs out over the page's own ground.
+    for (i, stem) in [
+        "btfg1gosc",
+        "ba413r7ny",
+        "bxnz7o3q6",
+        "bykgu2o75",
+        "b4pbkjf4i",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let path = format!("/private/tmp/agent-502/-w-demo/39c9c62e-e288-406a-923e-424ff29d6abd/tasks/{stem}.output");
+        let display = format!("../../../../private/tmp/agent-502/-w-demo/39c9c62e-e288-406a-923e-424ff29d6abd/tasks/{stem}.output");
+        t += &harness::restored_file_at(&path, &display, 9 + i as u32, &now_minus(196 - i as u64));
+    }
+    t += &assistant_at("All five are back in context.", &now_minus(188));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #261 — a file a compaction put back into context says WHAT it is and HOW BIG, and its path
+/// stays inside the box drawn for it.
+///
+/// The owner compared the two, screenshot to screenshot: Claude Code's own TUI prints
+/// `Read …/btfg1gosc.output (9 lines)`, and agent-monitor drew five bold paths with no word at
+/// all beside them — "bare file names with no verb. Additionally, the path goes out of the
+/// boxes." Measured before the fix, at 1440x900: the head's title WAS the path, its target was
+/// empty, and the head ran 92px past its own record's right edge.
+///
+/// Two claims, and the second is the one a stylesheet can quietly break again: every row names
+/// its kind and its line count, and NOTHING inside a row is wider than the row. Both are
+/// asserted at two widths, because a head that fits at 1440 is not a head that fits.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_restored_file_names_itself_and_stays_in_its_box() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = restored_files_fixture(match surface {
+            Surface::Classic => "restored-files-classic",
+            Surface::AppShell => "restored-files-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3014 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        open_everything(&page.tab, surface);
+        // Each page holds the row differently — the classic page draws one `.amark` line, the
+        // shell a record whose head is a title and a target — so the QUESTION is the same and
+        // only the selector differs: what word names the row, what size does it state, and does
+        // anything inside it stick out of it.
+        let js = match surface {
+            Surface::Classic => "(function(){ var rows = [...document.querySelectorAll('.amark')]; \
+                 return JSON.stringify({ n: rows.length, rows: rows.map(function(r){ \
+                   var rb = r.getBoundingClientRect(); \
+                   var out = [...r.querySelectorAll('*')].filter(function(e){ var b = e.getBoundingClientRect(); \
+                     return b.width > 0 && (b.right > rb.right + 1 || b.left < rb.left - 1); }).length; \
+                   var k = r.querySelector('.akind'), s = r.querySelector('.asize'); \
+                   return { kind: k ? k.textContent.trim() : '', size: s ? s.textContent.trim() : '', \
+                     text: r.textContent.trim(), outside: out }; }) }); })()",
+            Surface::AppShell => "(function(){ var rows = [...document.querySelectorAll('[data-record-kind=\"attachment\"]')]; \
+                 return JSON.stringify({ n: rows.length, rows: rows.map(function(r){ \
+                   var rb = r.getBoundingClientRect(); \
+                   var out = [...r.querySelectorAll('*')].filter(function(e){ var b = e.getBoundingClientRect(); \
+                     return b.width > 0 && (b.right > rb.right + 1 || b.left < rb.left - 1); }).length; \
+                   var k = r.querySelector('.renderer-title'), s = r.querySelector('.renderer-state'); \
+                   return { kind: k ? k.textContent.trim() : '', size: s ? s.textContent.trim() : '', \
+                     text: r.textContent.trim(), outside: out }; }) }); })()",
+        };
+        for width in [1440.0, 1024.0] {
+            harness::resize(&page.tab, width, 900.0);
+            if surface == Surface::AppShell {
+                harness::until_preview_parked(&page.tab);
+            }
+            settle();
+            let seen: serde_json::Value = eval(&page.tab, js)
+                .as_str()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let rows = seen["rows"].as_array().cloned().unwrap_or_default();
+            assert!(
+                rows.len() >= 5,
+                "{surface:?} at {width}: the five restored files are all drawn: {seen}"
+            );
+            for (i, row) in rows.iter().take(5).enumerate() {
+                let kind = row["kind"].as_str().unwrap_or("");
+                let size = row["size"].as_str().unwrap_or("");
+                let text = row["text"].as_str().unwrap_or("");
+                assert!(
+                    !kind.is_empty() && !kind.contains('/'),
+                    "{surface:?} at {width}: row {i} names what it IS rather than leading with \
+                     the path: {row}"
+                );
+                assert!(
+                    text.contains(&format!("{} lines", 9 + i)),
+                    "{surface:?} at {width}: row {i} states the size the transcript recorded \
+                     ({} lines) — the count Claude Code prints and we used to drop: {row}",
+                    9 + i
+                );
+                assert!(
+                    !size.is_empty() || text.contains("lines"),
+                    "{surface:?} at {width}: the size is somewhere a reader can see: {row}"
+                );
+                assert_eq!(
+                    row["outside"].as_i64(),
+                    Some(0),
+                    "{surface:?} at {width}: nothing inside row {i} is wider than the row — the \
+                     path used to run 92px past the record's own right edge: {row}"
+                );
+            }
+        }
+    }
+}

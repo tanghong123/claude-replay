@@ -399,6 +399,16 @@ pub struct Attachment {
     pub path: Option<String>,
     /// A **locator** for the content — never the bytes. See [`AttachmentContent`].
     pub content: AttachmentContent,
+    /// How many lines the transcript recorded for this file, when it said (#261). Claude Code's
+    /// own TUI prints it — "Read …/btfg1gosc.output (9 lines)" — and the record carries it as
+    /// `content.file.numLines`; we used to drop it on the floor, so no frontend could show a
+    /// size for a file a compaction had put back into context.
+    ///
+    /// `#[serde(default)]` because this type rides the PERSISTED meta stream: a cache written
+    /// before the field existed must still load. A change to what a block OUTPUTS also needs
+    /// `FOLD_VERSION` bumped, or a cached session is resumed from records that predate it.
+    #[serde(default)]
+    pub lines: Option<u32>,
 }
 
 /// A **locator** for an attachment's content — never the bytes. A resident
@@ -887,6 +897,7 @@ mod tests {
         };
         let img = || {
             Block::Attachment(Attachment {
+                lines: None,
                 kind: AttachmentKind::Image,
                 name: "shot.png".into(),
                 path: None,
