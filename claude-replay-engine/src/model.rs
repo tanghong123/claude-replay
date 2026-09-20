@@ -161,6 +161,18 @@ pub struct Hunk {
     pub new_start: usize,
     /// Patch lines; each begins with ' ' (context), '+' (added), or '-' (removed).
     pub lines: Vec<String>,
+    /// Which file this hunk belongs to, when the source says (#263). An Edit's
+    /// `structuredPatch` is one file and the call's own target names it, so this stays `None`
+    /// there and nothing about an Edit's rendering changes. A Bash command that edited files
+    /// records `bashEditDiff`, which is several files at once and whose call target is the
+    /// COMMAND — so each hunk has to carry its own name or the reader cannot tell which file
+    /// they are looking at. A file the transcript named but recorded no hunks for (a binary,
+    /// or a change past the five-file cap) arrives as one hunk with empty `lines`: the name
+    /// is the whole of what is known.
+    ///
+    /// `#[serde(default)]` because `Hunk` rides the persisted meta stream.
+    #[serde(default)]
+    pub file: Option<String>,
 }
 
 /// One render block — the agent-neutral unit of a parsed transcript. A [`Session`](crate::Session)'s

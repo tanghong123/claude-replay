@@ -487,6 +487,99 @@ fn is_boilerplate(s: &str) -> bool {
         || s.starts_with("File created successfully at")
 }
 
+/// Parse `toolUseResult.bashEditDiff` into the same hunks an Edit produces (#263).
+///
+/// Claude Code began recording this on 2026-09-13 (client 2.1.270): every Bash command that
+/// edits a file carries a real unified diff beside its stdout, and we rendered none of it —
+/// 975 records across the owner's sessions, and the only reason it was noticed was a
+/// screenshot. The shape, measured over all 975 rather than read off one:
+///
+/// - `files[]` is CAPPED AT FIVE and `moreFiles` counts the rest (every one of the 102 records
+///   with `moreFiles > 0` has exactly five files). The names past the cap are still in
+///   `changedFiles`, so nothing is lost by naming them.
+/// - a file holds 1..23 hunks, so a file is several groups exactly like a multi-hunk Edit.
+/// - `unavailable: true` (12 records) means no diff could be produced.
+/// - a file that changed but cannot be diffed — a tarball, say — has no hunks at all; one
+///   record here changed sixteen of them.
+///
+/// So every file the record names becomes at least one hunk: a real one where there is a diff,
+/// and an EMPTY one (no lines) where the name is all that is known. The renderers draw the
+/// name either way, and a file with no rows says "this changed and there is nothing to show"
+/// rather than vanishing.
+fn parse_bash_edit_diff(tur: &Value) -> Option<Vec<Hunk>> {
+    let diff = tur.get("bashEditDiff")?.as_object()?;
+    let mut out: Vec<Hunk> = Vec::new();
+    let mut named: Vec<String> = Vec::new();
+    for file in diff
+        .get("files")
+        .and_then(|f| f.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let path = file
+            .get("filePath")
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_string();
+        named.push(path.clone());
+        let hunks: Vec<&Value> = file
+            .get("hunks")
+            .and_then(|h| h.as_array())
+            .into_iter()
+            .flatten()
+            .collect();
+        if hunks.is_empty() {
+            out.push(Hunk {
+                old_start: 0,
+                new_start: 0,
+                lines: Vec::new(),
+                file: Some(path),
+            });
+            continue;
+        }
+        for h in hunks {
+            let new_start = h.get("newStart").and_then(|n| n.as_u64()).unwrap_or(1) as usize;
+            let old_start = h
+                .get("oldStart")
+                .and_then(|n| n.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(new_start);
+            let lines = h
+                .get("lines")
+                .and_then(|l| l.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|l| l.as_str().map(String::from))
+                .collect();
+            out.push(Hunk {
+                old_start,
+                new_start,
+                lines,
+                file: Some(path.clone()),
+            });
+        }
+    }
+    // The files past the five-file cap: named from `changedFiles`, which lists them all. Their
+    // content is not in the transcript, so a name with no rows is the honest whole of it.
+    for path in diff
+        .get("changedFiles")
+        .and_then(|c| c.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.as_str())
+    {
+        if !named.iter().any(|n| n == path) {
+            out.push(Hunk {
+                old_start: 0,
+                new_start: 0,
+                lines: Vec::new(),
+                file: Some(path.to_string()),
+            });
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 /// Parse `toolUseResult.structuredPatch` into hunks (real line numbers).
 fn parse_patch(tur: &Value) -> Option<Vec<Hunk>> {
     let arr = tur.get("structuredPatch")?.as_array()?;
@@ -509,6 +602,8 @@ fn parse_patch(tur: &Value) -> Option<Vec<Hunk>> {
                 old_start,
                 new_start,
                 lines,
+                // An Edit is one file and the call's target already names it.
+                file: None,
             })
         })
         .collect();
@@ -897,7 +992,9 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
             if name != "StructuredOutput" {
                 *output = tool_output(name, Some(tur), txt);
             }
-            *patch = parse_patch(tur);
+            // An Edit's own patch first; a Bash command that edited files carries its diff
+            // under a different key and never has a `structuredPatch` (#263).
+            *patch = parse_patch(tur).or_else(|| parse_bash_edit_diff(tur));
             *read_lines = tur
                 .pointer("/file/numLines")
                 .and_then(|n| n.as_u64())
@@ -3838,6 +3935,67 @@ mod tests {
         assert_eq!(
             nth_loaded_attachment(file_line, 0),
             Some(LoadedAttachment::Text("# Backlog\nitem".into()))
+        );
+    }
+
+    /// #263 — a Bash command that edited files renders its diff, with every file the record
+    /// names accounted for. The shape is the measured one: `files[]` capped at five with
+    /// `moreFiles` counting the rest, several hunks per file, and files that changed but carry
+    /// no hunks at all.
+    #[test]
+    fn a_bash_edit_diff_becomes_hunks_that_name_their_files() {
+        let jsonl = r##"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"./edit.sh"}}]}}
+{"type":"user","toolUseResult":{"stdout":"done","bashEditDiff":{"files":[{"filePath":"/w/a.md","hunks":[{"oldStart":9,"oldLines":2,"newStart":9,"newLines":3,"lines":[" ctx","-gone","+new","+also"]},{"oldStart":40,"newStart":41,"lines":[" tail","-x"]}]},{"filePath":"/w/bin.tar.gz","hunks":[]}],"moreFiles":1,"changedFiles":["/w/a.md","/w/bin.tar.gz","/w/past-the-cap.txt"]}},"message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"done"}]}}
+"##;
+        // The call coalesces into an activity span, so the ToolUse is nested in `tools`.
+        fn find_patch(blocks: &[Block]) -> Option<Vec<Hunk>> {
+            blocks.iter().find_map(|b| match b {
+                Block::ToolUse { patch, .. } => patch.clone(),
+                Block::Thinking { tools, .. } => find_patch(tools),
+                _ => None,
+            })
+        }
+        let patch = find_patch(&parse(jsonl)).expect("the Bash call carries the diff as a patch");
+        let seen: Vec<(Option<String>, usize, usize)> = patch
+            .iter()
+            .map(|h| (h.file.clone(), h.old_start, h.lines.len()))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (Some("/w/a.md".into()), 9, 4),
+                (Some("/w/a.md".into()), 40, 2),
+                // Changed, not diffable: the name is the whole of what is known.
+                (Some("/w/bin.tar.gz".into()), 0, 0),
+                // Past `files[]`'s five-file cap, recovered from `changedFiles` so that
+                // `moreFiles` is a fact the reader can see rather than a number.
+                (Some("/w/past-the-cap.txt".into()), 0, 0),
+            ],
+            "every file the record names becomes at least one hunk, and each hunk says which \
+             file it belongs to — a Bash call's header names the COMMAND, so nothing else does"
+        );
+    }
+
+    /// An Edit is unchanged by #263: one file, named by the call's own target, so its hunks
+    /// carry no file and render exactly as they did.
+    #[test]
+    fn an_edit_patch_still_names_no_file() {
+        let jsonl = r##"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/w/x.rs"}}]}}
+{"type":"user","toolUseResult":{"filePath":"/w/x.rs","structuredPatch":[{"oldStart":10,"newStart":12,"lines":[" c","-a","+b"]}]},"message":{"content":[{"type":"tool_result","tool_use_id":"e1","content":"The file /w/x.rs has been updated successfully."}]}}
+"##;
+        fn find_patch(blocks: &[Block]) -> Option<Vec<Hunk>> {
+            blocks.iter().find_map(|b| match b {
+                Block::ToolUse { patch, .. } => patch.clone(),
+                Block::Thinking { tools, .. } => find_patch(tools),
+                _ => None,
+            })
+        }
+        let patch = find_patch(&parse(jsonl)).expect("the Edit carries its structuredPatch");
+        assert!(
+            patch.iter().all(|h| h.file.is_none()),
+            "an Edit's hunks name no file: {patch:?}"
         );
     }
 

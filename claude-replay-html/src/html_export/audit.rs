@@ -314,6 +314,7 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
                 None,
                 vec![("let cells = 0;\n".into(), "let cells = 120;\n".into())],
                 Some(vec![Hunk {
+                    file: None,
                     old_start: 12,
                     new_start: 12,
                     lines: vec![
@@ -355,6 +356,7 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
                 None,
                 vec![("cells = 0\n".into(), "cells = 120\n".into())],
                 Some(vec![Hunk {
+                    file: None,
                     old_start: 1,
                     new_start: 1,
                     lines: vec!["-cells = 0".into(), "+cells = 120".into()],

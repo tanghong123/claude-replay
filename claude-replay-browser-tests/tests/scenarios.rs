@@ -13037,3 +13037,109 @@ fn scenario_every_counted_search_hit_can_be_seen() {
         }
     }
 }
+
+/// A Bash command that edited files, with the diff the transcript records for it.
+fn bash_edit_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: make the edit", &now_minus(200));
+    t += &harness::bash_call_at("python3 rewrite.py", "bash-263", &now_minus(198));
+    t += &harness::bash_edit_diff_at("bash-263", &now_minus(196));
+    t += &assistant_at("Rewritten.", &now_minus(194));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #263 — a Bash command that edits files shows the diff the transcript recorded for it.
+///
+/// The owner, comparing Claude Code's own TUI with agent-monitor on the same turn: "why the
+/// diff were not rendered in agent-monitor? That seems a huge regression?" It was not a
+/// regression — `git log -S bashEditDiff` is empty, so no line of this codebase had ever read
+/// the field. Claude Code began writing it on 2026-09-13 and 975 records across the owner's
+/// sessions were carrying a diff the page dropped in silence.
+///
+/// What this holds is the SHAPE, measured over all 975 rather than read off one example: a
+/// file with several hunks, a file that changed but cannot be diffed, and a file named only
+/// because `files[]` is capped at five. Every file the record names is accounted for, because
+/// a Bash call's head names the COMMAND and nothing else would say which file a row belongs to.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_bash_command_that_edits_shows_its_diff() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = bash_edit_fixture(match surface {
+            Surface::Classic => "bash-edit-classic",
+            Surface::AppShell => "bash-edit-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3018 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        let seen: serde_json::Value = eval(
+            &page.tab,
+            "(function(){ var t = document.body.innerText; \
+               var add = [...document.querySelectorAll('.add')].map(function(e){ return e.textContent.trim(); }); \
+               var del = [...document.querySelectorAll('.del')].map(function(e){ return e.textContent.trim(); }); \
+               return JSON.stringify({ \
+                 edited: t.indexOf('CHANGELOG.md · Added 2 lines, removed 2 lines') >= 0, \
+                 binary: t.indexOf('bundle.tar.gz · changed') >= 0, \
+                 capped: t.indexOf('past-the-cap.txt · changed') >= 0, \
+                 fresh: add.some(function(r){ return r.indexOf('fresh line') >= 0; }), \
+                 removed: del.some(function(r){ return r.indexOf('gone line') >= 0; }), \
+                 tail: del.some(function(r){ return r.indexOf('removed tail') >= 0; }), \
+                 numbered: add.some(function(r){ return /^\\s*10\\s*\\+/.test(r); }), \
+                 adds: add.length, dels: del.length }); })()",
+        )
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+        assert_eq!(
+            seen["edited"],
+            serde_json::json!(true),
+            "{surface:?}: the edited file names ITSELF and its counts — the head names the \
+             command, so nothing else would: {seen}"
+        );
+        assert_eq!(
+            seen["fresh"],
+            serde_json::json!(true),
+            "{surface:?}: an added line is drawn as an addition: {seen}"
+        );
+        assert_eq!(
+            seen["removed"],
+            serde_json::json!(true),
+            "{surface:?}: …and a removed line as a removal: {seen}"
+        );
+        assert_eq!(
+            seen["tail"],
+            serde_json::json!(true),
+            "{surface:?}: the file's SECOND hunk is drawn too — a file is several groups, as an \
+             Edit's is (measured: 1..23 hunks per file across the corpus): {seen}"
+        );
+        assert_eq!(
+            seen["numbered"],
+            serde_json::json!(true),
+            "{surface:?}: the rows carry the transcript's real line numbers, not a local count: \
+             {seen}"
+        );
+        assert_eq!(
+            seen["binary"],
+            serde_json::json!(true),
+            "{surface:?}: a file that changed but cannot be diffed is NAMED — the record knows \
+             it changed and that is worth saying: {seen}"
+        );
+        assert_eq!(
+            seen["capped"],
+            serde_json::json!(true),
+            "{surface:?}: and so is a file past `files[]`'s five-file cap, recovered from \
+             `changedFiles` so `moreFiles` is a name rather than a number: {seen}"
+        );
+    }
+}

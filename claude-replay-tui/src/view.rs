@@ -3419,6 +3419,7 @@ mod tests {
             diffs: vec![("a".into(), "b".into())],
             output: None,
             patch: Some(vec![Hunk {
+                file: None,
                 old_start: 1,
                 new_start: 1,
                 lines: vec!["+let a = 2;".into()],
@@ -3657,6 +3658,7 @@ mod tests {
             diffs: vec![("a".into(), "b".into())],
             output: None,
             patch: Some(vec![Hunk {
+                file: None,
                 old_start: 1,
                 new_start: 1,
                 lines: vec![" let x = 0;".into(), "+let a = 2;".into()],

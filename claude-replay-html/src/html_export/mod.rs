@@ -749,6 +749,58 @@ fn diff_part(b: &Block) -> Option<(Value, usize, usize)> {
     ))
 }
 
+/// The same rows, for ONE FILE of a Bash command's edit diff (#263). `diff_part` reads the
+/// whole patch off the block, which is right for an Edit (one file) and wrong for a
+/// `bashEditDiff` (up to five, plus the names of any beyond the cap). A file the transcript
+/// named but recorded no hunks for comes back `None` — there is nothing to draw but the name,
+/// which the note beside it carries.
+fn diff_part_of(hunks: &[crate::model::Hunk]) -> Option<(Value, usize, usize)> {
+    let mut rows: Vec<Value> = Vec::new();
+    let (mut adds, mut dels) = (0usize, 0usize);
+    for row in diff_row_groups(&[], Some(hunks))
+        .into_iter()
+        .flat_map(|g| g.rows)
+    {
+        let tag = match row.kind {
+            DiffKind::Ctx => "ctx",
+            DiffKind::Add => {
+                adds += 1;
+                "add"
+            }
+            DiffKind::Del => {
+                dels += 1;
+                "del"
+            }
+        };
+        rows.push(json!([tag, row.num, row.text]));
+    }
+    if rows.is_empty() {
+        return None;
+    }
+    Some((
+        json!({ "p": "diff", "rows": rows, "cap": DIFF_PREVIEW }),
+        adds,
+        dels,
+    ))
+}
+
+/// Split hunks into runs that share a file (#263) — `bashEditDiff` emits them file by file, so
+/// a run is contiguous, and an Edit's hunks all carry `None` and come back as one run.
+fn hunks_by_file(hunks: &[crate::model::Hunk]) -> Vec<&[crate::model::Hunk]> {
+    let mut runs: Vec<&[crate::model::Hunk]> = Vec::new();
+    let mut start = 0;
+    for i in 1..hunks.len() {
+        if hunks[i].file != hunks[start].file {
+            runs.push(&hunks[start..i]);
+            start = i;
+        }
+    }
+    if !hunks.is_empty() {
+        runs.push(&hunks[start..]);
+    }
+    runs
+}
+
 /// Resolve a tool target to an absolute path the way the TUI's
 /// `resolve_target_path` does (`~/` → `$HOME`, relative → joined onto `cwd` — the block's
 /// own recorded cwd, #173), for the header's `file://` "open" link. `None` when it can't be
@@ -1376,6 +1428,28 @@ impl Emitter<'_> {
                                     "asked": asked_section(a, &[]),
                                 }),
                             );
+                        }
+                        // A Bash command that EDITED files records its diff beside the output
+                        // (#263). Not an Edit — the head names the COMMAND — so each file
+                        // names itself in a note above its rows, and a file the transcript
+                        // could not diff (a tarball, or one past `bashEditDiff`'s five-file
+                        // cap) is named with nothing under it, which is all the record knows.
+                        if let Block::ToolUse { patch: Some(h), .. } = b {
+                            for group in hunks_by_file(h) {
+                                let Some(file) = group[0].file.as_deref() else {
+                                    continue;
+                                };
+                                let part = diff_part_of(group);
+                                let (adds, dels) =
+                                    part.as_ref().map_or((0, 0), |(_, a, d)| (*a, *d));
+                                body.push(json!({
+                                    "p": "note",
+                                    "x": crate::present::file_edit_summary(file, adds, dels),
+                                }));
+                                if let Some((rows, _, _)) = part {
+                                    body.push(rows);
+                                }
+                            }
                         }
                     }
                 }
@@ -3574,6 +3648,7 @@ mod tests {
             diffs: vec![],
             output: None,
             patch: Some(vec![Hunk {
+                file: None,
                 old_start: 10,
                 new_start: 10,
                 lines: vec![

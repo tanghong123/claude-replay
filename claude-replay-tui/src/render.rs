@@ -5,8 +5,8 @@ use crate::diff::{diff_row_groups, line_diff, DiffKind, LineOp};
 use crate::highlight::{self, Hl};
 use crate::model::{AssistantPhase, Attachment, Block};
 use crate::present::{
-    display_name, edit_summary, spawn_chip, thinking_summary, tool_execution_failed,
-    tool_execution_summary, turn_summary, write_content, WRITE_PREVIEW,
+    display_name, edit_summary, file_edit_summary, spawn_chip, thinking_summary,
+    tool_execution_failed, tool_execution_summary, turn_summary, write_content, WRITE_PREVIEW,
 };
 use crate::tui::{markdown, theme};
 use ratatui::style::{Color, Modifier, Style};
@@ -363,6 +363,24 @@ fn diff_rendered_len(old: &str, new: &str) -> usize {
 }
 
 /// Added/removed counts straight from a `structuredPatch`'s hunk lines (a Write
+/// Split hunks into runs that share a file (#263). `bashEditDiff` emits them file by file, so
+/// a run is contiguous; an Edit's hunks all carry `None` and come back as a single run, which
+/// is what keeps an Edit's rendering byte-identical.
+fn hunks_by_file(hunks: &[crate::model::Hunk]) -> Vec<&[crate::model::Hunk]> {
+    let mut runs = Vec::new();
+    let mut start = 0;
+    for i in 1..hunks.len() {
+        if hunks[i].file != hunks[start].file {
+            runs.push(&hunks[start..i]);
+            start = i;
+        }
+    }
+    if !hunks.is_empty() {
+        runs.push(&hunks[start..]);
+    }
+    runs
+}
+
 /// overwrite has no old/new string pair to line-diff — the patch IS the diff).
 fn patch_counts(hunks: &[crate::model::Hunk]) -> (usize, usize) {
     let adds = hunks
@@ -658,6 +676,29 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 out.extend(headers);
                 if let Some(o) = output {
                     push_capped_output(o, bg, theme::shell_fg(), &mut out);
+                }
+                // A Bash command that EDITED files records its diff beside the output (#263).
+                // It is not an Edit — the header names the COMMAND — so each file names
+                // itself, and a file the transcript could not diff is named with nothing
+                // under it, which is the whole of what the record knows about it.
+                if let Some(hunks) = patch.as_deref().filter(|h| !h.is_empty()) {
+                    for group in hunks_by_file(hunks) {
+                        let file = group[0].file.as_deref().unwrap_or(target);
+                        let (adds, dels) = patch_counts(group);
+                        out.push(Line::styled(
+                            format!("  ⎿ \u{a0}{}", file_edit_summary(file, adds, dels)),
+                            theme::result(),
+                        ));
+                        if group.iter().any(|h| !h.lines.is_empty()) {
+                            render_diff(
+                                &[],
+                                Some(group),
+                                highlight::token_for_target(file),
+                                hl,
+                                &mut out,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1455,6 +1496,7 @@ mod tests {
             diffs: vec![(String::new(), "b\nc\n".into())],
             output: None,
             patch: Some(vec![crate::model::Hunk {
+                file: None,
                 old_start: 1,
                 new_start: 1,
                 lines: vec!["-a".into(), "+b".into(), " c".into()],
@@ -1630,6 +1672,7 @@ mod tests {
             diffs: vec![("let a = 1;".into(), "let a = 2;".into())],
             output: None,
             patch: Some(vec![Hunk {
+                file: None,
                 old_start: 49,
                 new_start: 49,
                 lines: vec![
@@ -2142,6 +2185,7 @@ mod tests {
             diffs: vec![(String::new(), "# Title".into())],
             output: None,
             patch: Some(vec![Hunk {
+                file: None,
                 old_start: 1,
                 new_start: 1,
                 lines: vec!["+# Title".into()],

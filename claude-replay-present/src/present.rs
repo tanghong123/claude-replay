@@ -78,6 +78,19 @@ pub fn edit_summary(adds: usize, dels: usize) -> String {
     }
 }
 
+/// The same, for ONE FILE of a Bash command's edit diff (#263). A Bash call's header names the
+/// COMMAND, so the file has to name itself: `CHANGELOG.md · Added 3 lines, removed 2 lines`. A
+/// file the transcript named but recorded no hunks for — a tarball, or one past the five-file
+/// cap `bashEditDiff` applies — says only that it changed, because that is all that is known.
+pub fn file_edit_summary(file: &str, adds: usize, dels: usize) -> String {
+    let name = file.rsplit('/').next().unwrap_or(file);
+    if adds == 0 && dels == 0 {
+        format!("{name} · changed")
+    } else {
+        format!("{name} · {}", edit_summary(adds, dels))
+    }
+}
+
 /// The display name Claude Code shows for a tool — it labels Edit/MultiEdit as
 /// `Update`; everything else keeps its tool name.
 pub fn display_name(name: &str) -> &str {

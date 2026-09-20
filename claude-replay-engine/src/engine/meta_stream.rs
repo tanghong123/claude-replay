@@ -182,9 +182,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// and since the head is what changed, a resumed stream would show the size on the records
 /// folded after the upgrade and not on the ones before it, inside one session.
 ///
+/// v30: #263 — a Bash command that EDITS files records a real unified diff in
+/// `toolUseResult.bashEditDiff`, which no line of this codebase had ever read. It now becomes
+/// `ToolUse::patch` with each `Hunk` naming its own file, so a v29 stream has no diff at all on
+/// any of those calls — 975 of them across the owner's sessions.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across.
-pub const FOLD_VERSION: u16 = 29;
+pub const FOLD_VERSION: u16 = 30;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

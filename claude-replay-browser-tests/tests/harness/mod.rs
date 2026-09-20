@@ -225,6 +225,31 @@ pub fn long_command_at(needle: &str, call_id: &str, ts: &str) -> String {
     )
 }
 
+/// A Bash call's result carrying `bashEditDiff` — the diff Claude Code records for a command
+/// that EDITED files (#263). The shape is the measured one: a file with two hunks, a file that
+/// changed but cannot be diffed (a tarball), and a third named only in `changedFiles` because
+/// `files[]` is capped at five and `moreFiles` counts the rest.
+pub fn bash_edit_diff_at(call_id: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"user\",\"toolUseResult\":{{\"stdout\":\"done\",\"bashEditDiff\":{{\
+\"files\":[\
+{{\"filePath\":\"/w/CHANGELOG.md\",\"hunks\":[\
+{{\"oldStart\":9,\"oldLines\":2,\"newStart\":9,\"newLines\":3,\"lines\":[\" ### Added\",\"-gone line\",\"+fresh line\",\"+second fresh line\"]}},\
+{{\"oldStart\":40,\"newStart\":41,\"lines\":[\" tail context\",\"-removed tail\"]}}]}},\
+{{\"filePath\":\"/w/dist/bundle.tar.gz\",\"hunks\":[]}}],\
+\"moreFiles\":1,\"changedFiles\":[\"/w/CHANGELOG.md\",\"/w/dist/bundle.tar.gz\",\"/w/past-the-cap.txt\"]}}}},\
+\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":\"done\"}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
+/// A Bash call with a short command — the companion to [`bash_edit_diff_at`].
+pub fn bash_call_at(command: &str, call_id: &str, ts: &str) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[\
+{{\"type\":\"tool_use\",\"id\":\"{call_id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"{command}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
+    )
+}
+
 /// A one-pixel PNG, base64 — enough for a browser to decode to real dimensions.
 pub const TINY_PNG_B64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
