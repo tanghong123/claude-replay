@@ -886,8 +886,19 @@ body.wrap-code [data-code] { padding-bottom: 0; }
 [data-code] * { font: inherit; white-space: inherit; }
 
 .nrow { display: flex; }
-.gut { flex: none; width: 42px; text-align: right; padding-right: 10px; color: var(--gut); user-select: none; }
-.mark { flex: none; width: 16px; color: var(--gut); user-select: none; }
+/* #266: the rail sizes to the number it holds, with 42px as the floor, and never breaks it.
+   It was a fixed 42px — four digits and the padding — so a diff deep in a big file (13145)
+   had nowhere for the fifth, and the wrap the page applies to code snapped it across two
+   lines: measured 19px tall becoming 38px, with wrap ON BY DEFAULT here, so this page did
+   it out of the box. Wrap is for long lines of code; a line number has no break worth
+   taking. */
+.gut { flex: none; min-width: 42px; text-align: right; padding-right: 10px; color: var(--gut); user-select: none;
+       white-space: pre; overflow-wrap: normal; word-break: normal; }
+/* The +/− column is the other half of the rail (#266): one character, drawn by the renderer,
+   and no more wrappable than the number beside it. Exempting the gutter alone left this
+   still breaking under the wrap rule — the rendering audit found the half I had missed. */
+.mark { flex: none; width: 16px; color: var(--gut); user-select: none;
+        white-space: pre; overflow-wrap: normal; word-break: normal; }
 /* Whitespace and breaking come from the container above (the wrap control's domain). */
 .code { flex: 1; padding-right: 10px; }
 .diff .nrow { color: var(--muted); }

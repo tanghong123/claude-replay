@@ -197,7 +197,13 @@ const AUDIT_JS: &str = r##"(function () {
           cls: (typeof el.className === "string" ? el.className : "").split(/\s+/).slice(0, 3).join("."),
           code: !!el.closest("[data-code]"),
           pre: el.tagName === "PRE",
-          mono: /mono/i.test(fam)
+          mono: /mono/i.test(fam),
+          // A RAIL — the line-number gutter and the +/− marker — as the page itself declares
+          // it, by making it unselectable (#266). Measured style, never a class name, in the
+          // same spirit as `mono`: `user-select:none` is the page saying "this is furniture,
+          // not the text you came to read", which is exactly the line the wrap control should
+          // not cross.
+          rail: cs.userSelect === "none" || cs.webkitUserSelect === "none"
         });
         var kids = el.children;
         for (var j = 0; j < kids.length; j++) {
@@ -220,11 +226,16 @@ const AUDIT_JS: &str = r##"(function () {
   // groups partition the DOM, so "and nothing else moved" is other.changed === 0 — a claim
   // about the complement, which is the half a selector-based check can never make.
   function groupOf(e) {
+    // A rail inside a code pane is its own group (#266): it is drawn BY the renderer, not read
+    // FROM the file, so the reading controls have different business with it — size follows the
+    // code it numbers, wrap must leave it alone. Splitting it out is what lets both be claims
+    // rather than one of them being an unstated exemption inside the other.
+    if (e.code && e.rail) return "code-rail";
     if (e.code) return e.mono ? "code-mono" : "code-other";
     if (e.pre) return "pre";
     return e.mono ? "mono" : "other";
   }
-  var GROUPS = ["code-mono", "code-other", "pre", "mono", "other"];
+  var GROUPS = ["code-mono", "code-other", "code-rail", "pre", "mono", "other"];
   window.__audit = {
     snap: null, sel: null, idAttr: null,
     arm: function (sel, idAttr) {
@@ -719,13 +730,15 @@ fn scenario_size_governs_exactly_the_code(tab: &headless_chrome::Tab, surface: S
         surface,
         "the code-size control (−)",
         "font-size",
-        &["code-mono", "code-other"],
+        // The rail is IN size's domain (#266): a line number that stayed 12px beside 18px code
+        // would be a rail that had stopped belonging to what it numbers.
+        &["code-mono", "code-other", "code-rail"],
         &["mono", "pre", "other"],
     );
 }
 
 /// CLAIM. Pressing `w` changes the computed wrap property of every `<pre>` in the stream AND
-/// every element inside a `[data-code]` container, and of no other element.
+/// every element inside a `[data-code]` container EXCEPT its rails, and of no other element.
 ///
 /// Wrap is deliberately WIDER than code (#173): pasted art in a user turn is verbatim text a
 /// reader wants wrapped even though it never came from a file, and #161 is what happens when the
@@ -746,7 +759,14 @@ fn scenario_wrap_governs_exactly_the_verbatim_text(tab: &headless_chrome::Tab, s
         "the wrap control (w)",
         prop,
         &["code-mono", "code-other", "pre"],
-        &["mono", "other"],
+        // …and OUT of wrap's (#266). The owner photographed a five-digit line number broken
+        // across two lines: `word-break:break-word` on the code container was reaching the
+        // rail, and 13145 came out as "1314" over "5". Wrap is for long lines of code; a
+        // number has no break worth taking. Stating it as the COMPLEMENT rather than quietly
+        // dropping the rail from the domain is the difference between a claim and an
+        // exemption — this way the rail is asserted not to move, and a rule that started
+        // wrapping it again would fail here.
+        &["mono", "other", "code-rail"],
     );
 }
 
@@ -1284,7 +1304,9 @@ fn scenario_the_claims_hold_at_every_width_and_theme(tab: &headless_chrome::Tab,
             surface,
             &format!("the code-size control (−) at {condition}"),
             "font-size",
-            &["code-mono", "code-other"],
+            // The same partition the single-condition claims use (#266): the rail is in size's
+            // domain and out of wrap's, and this case has to say so too or it contradicts them.
+            &["code-mono", "code-other", "code-rail"],
             &["mono", "pre", "other"],
         );
         press(tab, "+"); // …and put it back, so the next iteration is not measuring the floor.
@@ -1300,7 +1322,7 @@ fn scenario_the_claims_hold_at_every_width_and_theme(tab: &headless_chrome::Tab,
             &format!("the wrap control (w) at {condition}"),
             prop,
             &["code-mono", "code-other", "pre"],
-            &["mono", "other"],
+            &["mono", "other", "code-rail"],
         );
         press(tab, "w");
         settle();

@@ -13217,3 +13217,101 @@ fn scenario_a_model_fallback_is_named_on_the_page() {
         );
     }
 }
+
+/// An edit deep in a big file, so every line number in the rail is five digits.
+fn deep_line_numbers_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: edit deep in the big file", &now_minus(200));
+    t += &harness::deep_edit_at("/w/big.rs", 13144, 10, "deep-1", &now_minus(198));
+    t += &assistant_at("Edited.", &now_minus(196));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #266 — the diff's line-number rail holds its number on ONE line.
+///
+/// The owner photographed a diff whose numbers read "1314" over "5". Two causes, and fixing
+/// either alone leaves the bug reachable: the rail was a FIXED four-digit width (38px on the
+/// shell, 42px classic), and the wrap control reached into it — wrap is for long lines of code,
+/// and a line number has no break worth taking. Measured before: the shell's rail went 22px →
+/// 43px with wrap on (97px at code-size 18), and the classic page did it out of the box,
+/// because wrap is its default there.
+///
+/// Asserted against the row's own line height rather than a pixel constant, so a font change
+/// cannot quietly make this pass.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_five_digit_line_number_stays_on_one_line() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = deep_line_numbers_fixture(match surface {
+            Surface::Classic => "deep-lines-classic",
+            Surface::AppShell => "deep-lines-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3022 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        let gut = match surface {
+            Surface::Classic => ".gut",
+            Surface::AppShell => ".ln",
+        };
+        // Wrap ON is the state the owner was in, and the classic page's default. Two code sizes,
+        // because a rail that fits at 12px is not a rail that fits.
+        for size in [12, 18] {
+            eval(
+                &page.tab,
+                &format!(
+                    "(function(){{ var a = document.getElementById('app'); \
+                       if (a) {{ a.classList.add('wrap-code'); a.style.setProperty('--code-size', '{size}px'); }} \
+                       else {{ document.documentElement.style.setProperty('--code-size', '{size}px'); }} \
+                       return 'ok'; }})()"
+                ),
+            );
+            settle();
+            let seen: serde_json::Value = eval(
+                &page.tab,
+                &format!(
+                    "(function(){{ var g = [...document.querySelectorAll('{gut}')].filter(function(e){{ return e.textContent.trim(); }}); \
+                       if (!g.length) return JSON.stringify({{ none: true }}); \
+                       var worst = null; \
+                       g.forEach(function(e){{ var r = e.getBoundingClientRect(); \
+                         var lh = parseFloat(getComputedStyle(e).lineHeight) || 16; \
+                         var ratio = r.height / lh; \
+                         if (!worst || ratio > worst.ratio) worst = {{ text: e.textContent.trim(), \
+                           h: Math.round(r.height), lh: Math.round(lh), w: Math.round(r.width), ratio: ratio }}; }}); \
+                       return JSON.stringify({{ n: g.length, worst: worst }}); }})()"
+                ),
+            )
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null);
+            assert!(
+                seen["n"].as_i64().unwrap_or(0) >= 5,
+                "{surface:?} at {size}px: the diff drew its rail: {seen}"
+            );
+            let worst = &seen["worst"];
+            assert!(
+                worst["text"].as_str().unwrap_or("").len() >= 5,
+                "{surface:?} at {size}px: the fixture's numbers really are five digits — a \
+                 four-digit rail would pass this case for the wrong reason: {seen}"
+            );
+            assert!(
+                worst["ratio"].as_f64().unwrap_or(9.0) < 1.5,
+                "{surface:?} at {size}px: every number sits on ONE line — the tallest cell is \
+                 {} against a {}px line: {seen}",
+                worst["h"],
+                worst["lh"]
+            );
+        }
+    }
+}

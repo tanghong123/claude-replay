@@ -250,6 +250,29 @@ pub fn bash_call_at(command: &str, call_id: &str, ts: &str) -> String {
     )
 }
 
+/// An Edit whose hunk sits DEEP in a big file, so its line numbers are five digits (#266). The
+/// rail was a fixed four-digit width and the wrap control reached into it, so 13145 came out as
+/// "1314" over "5" and every row was twice as tall as it should be. Files of ten thousand lines
+/// are ordinary; this repo has several.
+pub fn deep_edit_at(path: &str, start: usize, added: usize, call_id: &str, ts: &str) -> String {
+    let lines: Vec<String> = std::iter::once(" fn keep() {}".to_string())
+        .chain((1..=added).map(|n| format!("+    let line_{n} = {n};")))
+        .collect();
+    let json_lines = lines
+        .iter()
+        .map(|l| format!("\"{l}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[\
+{{\"type\":\"tool_use\",\"id\":\"{call_id}\",\"name\":\"Edit\",\"input\":{{\"file_path\":\"{path}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n\
+{{\"type\":\"user\",\"toolUseResult\":{{\"filePath\":\"{path}\",\"structuredPatch\":[\
+{{\"oldStart\":{start},\"oldLines\":1,\"newStart\":{start},\"newLines\":{},\"lines\":[{json_lines}]}}]}},\
+\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":\"The file {path} has been updated successfully.\"}}]}},\"timestamp\":\"{ts}\"}}\n",
+        added + 1
+    )
+}
+
 /// A one-pixel PNG, base64 — enough for a browser to decode to real dimensions.
 pub const TINY_PNG_B64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
