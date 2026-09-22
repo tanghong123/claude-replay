@@ -343,7 +343,8 @@ verify_published "$V"
 if [ $upgrade = 1 ]; then
   say "alibrew upgrade (this machine)"
   alibrew upgrade $TOOLS >"$T/upgrade.log" 2>&1
-  grep -E '\->' "$T/upgrade.log" || tail -3 "$T/upgrade.log"
+  # alibrew prints its progress AND a summary; one line per tool is what belongs in the record.
+  grep -E '^alibrew/core/' "$T/upgrade.log" | sort -u || tail -3 "$T/upgrade.log"
 fi
 
 say "CORP TAP $V AT $VERIFIED_SHA"
