@@ -220,7 +220,7 @@ say "  16 of 16 checksums verified"
 # ---------------------------------------------------------------- 3. alibrew/artifacts
 say "artifacts — cone-sparse clone of the 16 new directories"
 W="$work/artifacts$V"; rm -rf "$W"
-git clone -q --filter=blob:none --no-checkout https://code.alibaba-inc.com/alibrew/artifacts.git "$W" 2>/dev/null || stop "artifacts: clone failed"
+git clone -q --filter=blob:none --no-checkout https://code.alibaba-inc.com/alibrew/artifacts.git "$W" 2>"$T/clone.log" || { grep -v "post-quantum\|store now\|openssh.com/pq" "$T/clone.log" >&2; stop "artifacts: clone failed"; }
 [ -d "$W/.git" ] || stop "artifacts: clone produced no repository"
 DIRS=""
 for t in $TOOLS; do for p in $PLATFORMS; do DIRS="$DIRS $t/$V-$p"; done; done
@@ -276,7 +276,7 @@ git -C "$W" commit -q -m "agent-replay / agent-monitor / agent-monitor-fleet / a
 # The repo is SHARED: another tool may have published between the clone and the push.
 git -C "$W" fetch -q origin master || stop "artifacts: fetch before push failed"
 git -C "$W" rebase -q FETCH_HEAD >/dev/null 2>&1 || { git -C "$W" rebase --abort >/dev/null 2>&1; stop "artifacts: cannot rebase onto origin/master — another publish conflicts with ours"; }
-git -C "$W" push -q origin HEAD:master 2>/dev/null || stop "artifacts: push to master failed — nothing has been written to the tap"
+git -C "$W" push -q origin HEAD:master 2>"$T/push-artifacts.log" || { grep -v "post-quantum\|store now\|openssh.com/pq" "$T/push-artifacts.log" >&2; stop "artifacts: push to master failed — nothing has been written to the tap"; }
 # The sha comes from the REMOTE, after the push. A local rev-parse names a commit nobody else has.
 git -C "$W" fetch -q origin master || stop "artifacts: fetch after push failed"
 ART_SHA=$(git -C "$W" rev-parse FETCH_HEAD)
@@ -333,7 +333,7 @@ git commit -q -F "$T/tapmsg" || stop "tap: commit failed"
 [ "$(git log -1 --format='%ae')" = "$EMAIL" ] || stop "tap: the commit is not authored from this tap's own corporate address — the corp remote would reject it"
 git fetch -q origin main || stop "tap: fetch before push failed"
 git rebase -q FETCH_HEAD >/dev/null 2>&1 || { git rebase --abort >/dev/null 2>&1; stop "tap: cannot rebase onto origin/main — someone else has touched our four formulae"; }
-git push -q origin HEAD:main 2>/dev/null || stop "tap: push to main failed — the formula commit is local only, which is exactly the state this script exists to prevent"
+git push -q origin HEAD:main 2>"$T/push-tap.log" || { grep -v "post-quantum\|store now\|openssh.com/pq" "$T/push-tap.log" >&2; stop "tap: push to main failed — the formula commit is local only, which is exactly the state this script exists to prevent"; }
 say "  pushed alibrew/homebrew-core main at $(git rev-parse --short HEAD)"
 
 # ---------------------------------------------------------------- 6. the proof, then this machine
