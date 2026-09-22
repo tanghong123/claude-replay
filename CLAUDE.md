@@ -363,36 +363,57 @@ and the Release workflow refuses a tag that does not name the workspace version,
 cut by hand is still refused where it went wrong before.
 
 **Publish to BOTH taps** (owner, 2026-08-29). The tag push bumps the public Homebrew tap
-(`tanghong123/tap`) on its own; the corp tap is a separate, manual step and does not happen
-by itself:
+(`tanghong123/tap`) on its own; the corp tap is a separate, manual step that does not happen by
+itself — **`scripts/corp-publish.sh <version>`** IS that step, the one mechanical path for it
+(#267). It downloads the release's four tools x four targets, verifies each against its published
+`.sha256`, republishes them into `alibrew/artifacts`, rewrites the four formulae in
+`alibrew/homebrew-core`, and only then prints a success line it has EARNED — by re-reading the
+formulae from the tap's `origin/main` and the artifacts from the pushed commit and asserting they
+name this version and each other. `--verify-only <version>` runs that last check alone and is the
+ten-second answer to "is the corp tap actually current?"; `--dry-run` stops before the first write.
 
-1. Download the release's `agent-replay` / `agent-monitor` / `agent-monitor-fleet` /
-   `agent-jdi` tarballs (four tools — the tap's history publishes all four) for all four
-   targets and **verify each against its published `.sha256`** (`shasum -a 256 -c`) before
-   republishing anything.
-2. Copy them into a clone of `alibrew/artifacts` at `<tool>/<version>-<os>-<arch>/`
-   (`darwin|linux` × `arm64|amd64`), keeping the release's own filename. Clone it
-   `--filter=blob:none --no-checkout`, then `sparse-checkout init --cone` + `set` the sixteen
-   NEW directories and check out `master` — a plain clone pulls every binary ever published.
-   In that clone, never run anything that needs blob SIZES or contents outside the cone —
-   `git lfs ls-files`, `ls-tree -l`, `git show HEAD:<big file>` — each missing blob is lazily
-   fetched over one ssh round-trip (measured: 178 MB / 51 packs in 14 minutes before it was
-   killed). The LFS guard is `grep filter=lfs .gitattributes` plus `git check-attr` on the new
-   files; both read metadata only. The repo is SHARED (other tools publish to it): `git fetch
-   origin master && git rebase origin/master` right before the push, or it is rejected as
-   non-fast-forward — a knack release landed between clone and push on 2026-09-03. **Exactly two levels** — brew writes a single-line cone
-   sparse-checkout pattern and cone mode materializes NOTHING deeper. Never LFS-track that
-   repo. Push to `master` and take the commit sha.
-3. Update `Formula/<tool>.rb` in `alibrew/homebrew-core` (branch `main`) — the installed tap
-   at `$(brew --repository alibrew/core)` IS that clone, already on `main` with the corporate
-   identity set, and `brew audit` reads it — with the new version (it is also inside each
-   `only_path:`) and that sha as `revision:` — a git url takes no `sha256` and no `using: :git`. Verify with
-   `ruby -c`, `brew style --except-cops=FormulaAudit/Urls`, then `brew audit --strict
-   alibrew/core/<name>` (audit takes a NAME, not a path).
+It exists because the step used to be an inline block rewritten from this file each release, and
+on 2026-09-22 that block was found to have published NOTHING for five releases while printing
+success each time: `git -C "$TAP" add Formula/agent-*.rb` ran from the claude-replay root, where
+the glob matches nothing, so zsh killed the line before git saw it; the commit then said "no
+changes added to commit", the push said "Everything up-to-date", and the banner printed anyway.
+The tap served 1.287.0 while this machine ran 1.292.0 — brew installs from the tap clone's WORKING
+TREE, so `alibrew upgrade` kept working and hid it for two days. Hence the script's two rules:
+**nothing globs across directories** (paths are explicit and every staged set is compared against
+the exact list expected, never a count), and **the banner is earned, not printed**.
+
+What it encodes, and what must still be true if it is ever bypassed:
+- Artifacts live at `<tool>/<version>-<os>-<arch>/` (`darwin|linux` x `arm64|amd64`), keeping the
+  release's own filename. Clone `--filter=blob:none --no-checkout`, then `sparse-checkout init
+  --cone` + `set` the sixteen NEW directories and check out `master` — a plain clone pulls every
+  binary ever published. **Exactly two levels** — brew writes a single-line cone sparse-checkout
+  pattern and cone mode materializes NOTHING deeper.
+- In that clone, never run anything that needs blob SIZES or contents outside the cone — `git lfs
+  ls-files`, `ls-tree -l`, `git show HEAD:<big file>` — each missing blob is lazily fetched over
+  one ssh round-trip (measured: 178 MB / 51 packs in 14 minutes before it was killed). The LFS
+  guard is `grep filter=lfs .gitattributes` plus `git check-attr` on the new files; both read
+  metadata only. Never LFS-track that repo. `git ls-tree --name-only` is safe — trees are present
+  after a blob:none clone, and that is how the script proves the sixteen paths are really there.
+- Both corp repos are SHARED (other tools publish to them): `git fetch` + `rebase` right before
+  each push, or it is rejected as non-fast-forward — a knack release landed between clone and push
+  on 2026-09-03. And `agent-metrics` belongs to another team in that same tap: stage our four
+  formulae by explicit path and assert the staged set is exactly those four.
+- The formula (`Formula/<tool>.rb` in `alibrew/homebrew-core`, branch `main` — the installed tap at
+  `$(brew --repository alibrew/core)` IS that clone, which is why `brew audit` reads it) carries
+  the new version inside each `only_path:` as well, and the pushed artifacts sha as `revision:` —
+  a git url takes no `sha256` and no `using: :git`. Rewrite them by PATTERN, never against the old
+  version: a sed keyed on the version that was there silently no-ops on a formula that drifted.
+  Verify with `ruby -c`, `brew style --except-cops=FormulaAudit/Urls`, then `brew audit --strict
+  alibrew/core/<name>` (audit takes a NAME, not a path).
+- Take the artifacts sha from the REMOTE after the push, never from a local `rev-parse` before it:
+  a formula that names a commit nobody else has installs for nobody.
 
 Both corp repos **reject a commit authored from a non-corporate email** — set the owner's
 corporate address repo-locally in those clones only. Do not guess it: read it off the
-existing commits in `alibrew/homebrew-core` (`git log --format='%an <%ae>'`). `a1 staff list
+existing commits in `alibrew/homebrew-core` — and off a formula the tap ALREADY OWNS
+(`git log -1 --format='%an <%ae>' -- Formula/agent-replay.rb`), never the tap's last commit,
+which belongs to whichever team published most recently. `corp-publish.sh` does exactly that,
+at runtime, and never prints it. `a1 staff list
 --query hongtang` does NOT report it — measured 2026-09-03, it returns five other people whose
 nicknames romanize the same way, and `a1 staff get <mr-assignee-id>` is a platform id, not an
 employee id, and names someone else again. It must never appear in THIS repo — not in a commit and not in a file, which

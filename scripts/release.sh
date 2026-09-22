@@ -17,7 +17,7 @@
 #      config (never pass -c commit.gpgsign=false); the commit is verified before the tag;
 #   6. the push: origin main, then the tag (the tag push triggers the Release workflow), then
 #      the mirror (a failure there is printed and retried by hand — the host goes down).
-# --dry-run stops after the gates and reverts the bump. The corp tap publish and
+# --dry-run stops after the gates and reverts the bump. scripts/corp-publish.sh (the corp tap) and
 # scripts/sweep.sh remain the caller's (CLAUDE.md, Releasing). Exit 0 released, 2 stopped.
 set -u
 version=""; subject=""; msgfile=""; dry=0; allow=""; skip=0
@@ -104,5 +104,5 @@ run_timeout() { if command -v timeout >/dev/null 2>&1; then timeout 180 "$@"; el
 if run_timeout git push alibaba main && run_timeout git push alibaba "v$version"; then :; else
   say "MIRROR PUSH FAILED — retry when the host is up: git push alibaba main && git push alibaba v$version"
 fi
-say "released v$version at $(git rev-parse --short HEAD) — next: the corp tap publish (CLAUDE.md, Releasing), then scripts/sweep.sh"
+say "released v$version at $(git rev-parse --short HEAD) — next: sh scripts/corp-publish.sh $version, then scripts/sweep.sh"
 exit 0
