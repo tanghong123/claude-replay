@@ -52,6 +52,25 @@ activity or busy now and overlaps Blocked by design (`sessionFilterBuckets`). It
 Needs attention and Show Hidden controls; the classic rail keeps its All / Active / Idle pills on
 the legacy `state`.
 
+**Which process a session is linked to** (#269, `index.rs` `link()`) decides liveness AND whether
+the compose box appears, and Claude Code 2.1.278 changed the shape it has to read: the session's
+engine runs detached in a `claude --bg-pty-host … -- … --session-id <uuid>` and what sits in the
+tmux pane is a `claude attach <8-char prefix>` CLIENT; `claude daemon run` supervises and INHERITS
+the client's `TMUX_PANE`, and `bg-spare` ptys wait pre-warmed. The rules, each measured: a session
+is named by a whole argv TOKEN (`--session-id`, `--resume <uuid|path>`, `attach <prefix>` when
+exactly one known session starts with it) and never by a substring — a background job's scratchpad
+path carries its session's uuid, and `argv.contains(sid)` once "confirmed" a session onto that
+`bash`, detached, while the agent sat in a pane; among processes naming one session the
+best-HOSTED wins, so the pane's client beats the engine; helpers (`daemon`, `bg-pty-host`,
+`bg-spare`) are never directory candidates and read as detached whatever pane they inherited; and
+**a lone agent process in a session's directory is paired, confirmed** — the owner's rule
+(2026-09-23), amending the probe's "never a cwd guess": with one process there is one pane, and the
+label self-corrects on the next append. Two processes in one directory stay a pick (`ambig`). A
+fork's engine (`--fork-session --resume <parent.jsonl>`) is the only marker of a Claude fork
+anywhere, and `note_forks_from_argv` is how one joins its #142 family. Diagnose against the
+machine, not the API: `term`/`injectable` describe the process the row was LINKED to, so a false
+link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.
+
 `src/codex-ui/{reference.css,reference-shell.html,icons.js}` are **generated**, extracted
 byte-for-byte from `design/agent-monitor-codex-demo.html` by
 `scripts/extract-agent-monitor-demo.mjs` and checked by two tests. Never hand-edit them: change

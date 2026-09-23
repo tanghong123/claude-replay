@@ -729,6 +729,7 @@ impl Index {
         st.sub_costs = aggregate_sub_costs(&st.sub_cost_entries);
 
         self.prove_by_growth(st);
+        self.note_forks_from_argv(st);
 
         let mut facts = Vec::new();
         let mut snapshot = self.assemble(st, &mut facts);
@@ -767,6 +768,31 @@ impl Index {
     /// Deliberately strict: more than one grower, or more than one candidate process, proves
     /// nothing and banks nothing. The record is dropped as soon as the pid is gone or its cwd
     /// has moved, so a reused pid cannot inherit another session's identity.
+    /// #269: a live fork's ENGINE names its parent — `--session-id <child> --fork-session
+    /// --resume <parent.jsonl>` — and nothing else does: the Claude adapter has no
+    /// `fork_origin`, and the fork's transcript mentions its parent only inside file-history
+    /// snapshots of the parent's scratchpad. So while the engine lives, the process table is
+    /// how a Claude fork joins its #142 family, and the edge is kept once seen (a fork's origin
+    /// is fixed at creation). Independent of `fork_probed`, which the transcript probe sets to
+    /// `true` with `None` on the first scan.
+    fn note_forks_from_argv(&self, st: &mut State) {
+        let edges: Vec<(String, String)> = st
+            .procs
+            .iter()
+            .filter_map(|p| fork_parent_from_argv(&p.argv))
+            .collect();
+        for (child, parent) in edges {
+            if child == parent {
+                continue;
+            }
+            if let Some(row) = st.rows.get_mut(&child) {
+                if row.fork_from.is_none() {
+                    row.fork_from = Some(parent);
+                }
+            }
+        }
+    }
+
     fn prove_by_growth(&self, st: &mut State) {
         let mut growers: HashMap<String, Vec<String>> = HashMap::new();
         for (sid, row) in &st.rows {
@@ -784,7 +810,9 @@ impl Index {
                 continue; // two sessions writing in one directory prove nothing
             }
             let mut cands = st.procs.iter().filter(|p| {
-                is_agent_exe(&p.exe_base, &p.argv) && p.cwd.as_deref() == Some(cwd.as_str())
+                is_agent_exe(&p.exe_base, &p.argv)
+                    && !is_helper(&p.argv)
+                    && p.cwd.as_deref() == Some(cwd.as_str())
             });
             let (Some(p), None) = (cands.next(), cands.next()) else {
                 continue; // zero or several candidates — no forced pairing
@@ -890,6 +918,10 @@ impl Index {
                 }
             }
         }
+        // #269: `claude attach <prefix>` names a session by its first characters; a prefix
+        // links only when exactly one known session starts with it.
+        let sids: Vec<&str> = st.rows.keys().map(String::as_str).collect();
+        let prefix_unique = |pf: &str| sids.iter().filter(|s| s.starts_with(pf)).count() == 1;
         let mut groups: HashMap<String, Group> = HashMap::new();
         for (sid, row) in &st.rows {
             // The group key IS the persisted `p:`/`a:` hide key (#27, #113): compute it in ONE
@@ -953,7 +985,16 @@ impl Index {
                     confirmed: true,
                     terminal: Terminal::of(p),
                 })
-                .or_else(|| link(&st.procs, sid, &row.path, row.cwd.as_deref(), heuristic_ok));
+                .or_else(|| {
+                    link(
+                        &st.procs,
+                        sid,
+                        &row.path,
+                        row.cwd.as_deref(),
+                        heuristic_ok,
+                        &prefix_unique,
+                    )
+                });
             let (state, conf) = if growing {
                 ("growing", "")
             } else {
@@ -1520,84 +1561,203 @@ fn fold_counters(dir: &Path) -> Option<Counters> {
 }
 
 /// Resolve which live agent process (if any) is behind session `sid` — the probe's §1
-/// precedence, each mechanism verified there:
-///   1. `sid` in a process's argv (`--resume <uuid>`) — exact.
+/// precedence, re-cut for Claude Code 2.1.278's daemon topology (#269), where the process in
+/// the pane is a `claude attach <prefix>` CLIENT and the session's engine runs detached in a
+/// `--bg-pty-host`. Each mechanism was measured on this machine before it was written down:
+///   1. A process that NAMES `sid` — `session_ref` on its argv: `--session-id <uuid>`, a
+///      `--resume <uuid|path>`, `attach <prefix>` (a prefix links only when exactly one known
+///      session starts with it), or a bare uuid TOKEN. Never a substring: a background job's
+///      scratchpad path carries its session's uuid, and `argv.contains(sid)` once linked a
+///      session to that `bash` — "confirmed", detached — while the agent sat in a tmux pane.
+///      Agent exes only. When several name the same session (the engine by `--session-id`, the
+///      pane's client by prefix) the best-HOSTED wins: tmux/screen, then a tty, then detached —
+///      so the pane, which is where a keystroke can go, beats the engine, which is where the
+///      session merely runs. Exact.
 ///   2. The session's transcript held OPEN by an agent process — exact (Codex holds its
 ///      rollout `.jsonl` open; Claude appends-and-closes, so this never fires for it).
-///   3. An agent-binary process whose cwd matches the session's — the heuristic. Two
-///      exclusions keep it honest: a process whose argv carries a uuid belongs to THAT
-///      session and never heuristically claims another; and `heuristic_ok` is true only for
-///      the NEWEST session of its cwd, without which one process claims every row of its
-///      project.
+///   3. An agent process whose cwd matches the session's and whose argv names no session —
+///      the directory heuristic, for the NEWEST session of that cwd only (`heuristic_ok`),
+///      never a daemon helper. **Confirmed when it is the only such process in the
+///      directory** — the owner's rule (2026-09-23): "when there is only one active claude
+///      process associated with a claude session, we would pair them even if the session id
+///      is not in argv." With one process there is one pane, and that pane is the injection
+///      target whichever session the row is labelled with; the label self-corrects on the
+///      next append, because the driven session becomes the newest. Two or more processes in
+///      one directory stay unconfirmed, and the row reports how many sessions it was choosing
+///      between (#145).
 ///
-/// Step 3 is the COMMON path, not a fallback: launching without a session id is normal
-/// (measured: 5 of 8 live agents here have no uuid in argv), and Claude never holds its
-/// transcript open, so steps 1–2 cannot fire for them.
-///
-/// **"Newest session of the cwd" is a tie-break, not a truth.** `claude --resume` with no id
-/// opens a PICKER, so the user may resume any session in that directory — the newest is
-/// merely the likeliest. Nothing available resolves it: the process holds no fd naming its
-/// session (measured: 0 `.jsonl` fds across every live agent), and its start time does not
-/// separate the candidates either (measured: in the one ambiguous directory on this machine,
-/// BOTH sessions have activity postdating the process). So the link stays `confirmed: false`
-/// and the row reports how many sessions it was choosing between (#145) rather than implying
-/// a certainty the data cannot support.
+/// Step 3 is the COMMON path, not a fallback: `claude --resume` with no id (the picker) is how
+/// most of these sessions were launched (measured: 9 of 12 live agents here), and Claude never
+/// holds its transcript open, so steps 1–2 cannot fire for them.
 fn link(
     procs: &[Proc],
     sid: &str,
     transcript: &Path,
     cwd: Option<&str>,
     heuristic_ok: bool,
+    prefix_unique: &dyn Fn(&str) -> bool,
 ) -> Option<AgentLink> {
     let mk = |p: &Proc, confirmed: bool| AgentLink {
         pid: p.pid,
         confirmed,
-        terminal: Terminal::of(p),
+        // A helper's pane is the one it INHERITED from the client that spawned it, never
+        // where a session's UI is — see `is_helper`.
+        terminal: if is_helper(&p.argv) {
+            Terminal::Detached
+        } else {
+            Terminal::of(p)
+        },
     };
-    if let Some(p) = procs.iter().find(|p| p.argv.contains(sid)) {
-        return Some(mk(p, true));
-    }
-    let t = transcript.to_string_lossy();
+    // Rank by how the process is HOSTED — a multiplexer target beats a bare tty beats
+    // detached, and a helper ranks as detached whatever it inherited — then break ties on pid
+    // so the choice stays a pure function of the data. Taking the FIRST match once meant the
+    // lowest pid, i.e. usually the oldest: a real knack session hosted in a `tmux -L knack`
+    // pane reported "detached" because a stale sibling won.
+    let host = |p: &Proc| {
+        let rank = match Terminal::of(p) {
+            Terminal::Tmux { .. } | Terminal::Screen(_) => 2,
+            Terminal::Tty => 1,
+            Terminal::Detached => 0,
+        };
+        (
+            if is_helper(&p.argv) { 0 } else { rank },
+            std::cmp::Reverse(p.pid),
+        )
+    };
+    let names = |p: &Proc| match session_ref(&p.argv) {
+        Some(SessionRef::Exact(u)) => u == sid,
+        Some(SessionRef::Prefix(pf)) => sid.starts_with(pf.as_str()) && prefix_unique(&pf),
+        None => false,
+    };
     if let Some(p) = procs
         .iter()
-        .find(|p| p.open_jsonl.iter().any(|f| f.as_str() == t))
+        .filter(|p| is_agent_exe(&p.exe_base, &p.argv) && names(p))
+        .max_by_key(|p| host(p))
     {
         return Some(mk(p, true));
     }
+    let t = transcript.to_string_lossy();
+    if let Some(p) = procs.iter().find(|p| {
+        is_agent_exe(&p.exe_base, &p.argv) && p.open_jsonl.iter().any(|f| f.as_str() == t)
+    }) {
+        return Some(mk(p, true));
+    }
     if let Some(cwd) = cwd.filter(|_| heuristic_ok) {
-        // Several agent processes can share a cwd — a leftover from an earlier run, a helper,
-        // and the one the user is actually sitting in front of. Taking the FIRST match meant
-        // taking the lowest pid, i.e. usually the oldest: a real knack session hosted in a
-        // `tmux -L knack` pane reported "detached" because a stale sibling won. Rank by how
-        // the process is HOSTED — a multiplexer target beats a bare tty beats detached — and
-        // break ties on pid so the choice stays a pure function of the data.
-        if let Some(p) = procs
+        let cands: Vec<&Proc> = procs
             .iter()
             .filter(|p| {
                 is_agent_exe(&p.exe_base, &p.argv)
+                    && !is_helper(&p.argv)
                     && p.cwd.as_deref() == Some(cwd)
-                    && !has_uuid(&p.argv)
+                    && session_ref(&p.argv).is_none()
             })
-            .max_by_key(|p| {
-                let host = match Terminal::of(p) {
-                    Terminal::Tmux { .. } | Terminal::Screen(_) => 2,
-                    Terminal::Tty => 1,
-                    Terminal::Detached => 0,
-                };
-                (host, std::cmp::Reverse(p.pid))
-            })
-        {
-            return Some(mk(p, false));
+            .collect();
+        if let Some(p) = cands.iter().copied().max_by_key(|p| host(p)) {
+            return Some(mk(p, cands.len() == 1));
         }
     }
     None
 }
 
-/// Whether `s` contains a UUID (8-4-4-4-12 hex) anywhere — the exclusion that keeps a
-/// resumed-elsewhere process out of the cwd heuristic.
-fn has_uuid(s: &str) -> bool {
-    s.split(|c: char| !(c.is_ascii_hexdigit() || c == '-'))
-        .any(is_uuid)
+/// What a process's argv says about WHICH session it drives (#269) — Claude Code's launch
+/// shapes as of 2.1.278, each measured on this machine:
+///
+/// * `--session-id <uuid>` — the engine: `claude --bg-pty-host … -- <bin> --session-id X
+///   --fork-session --resume <parent.jsonl>`. Exact, and it wins over everything after it,
+///   because under `--fork-session` the `--resume` names the PARENT the fork was copied from.
+/// * `--fork-session` with no `--session-id` — a new id the argv cannot name. `None`.
+/// * `--resume <uuid>` or `--resume <path whose stem is a uuid>` — the same session
+///   continued. Exact. `--resume` followed by anything else (the picker, a flag) names nothing.
+/// * `attach <hex>` — the pane's CLIENT, which names its session by the first eight characters
+///   (`claude attach f7e03d40`). A prefix; exact only when it is the whole uuid.
+/// * a bare uuid token — the legacy shape, whatever flag it followed.
+///
+/// A whole TOKEN, never a substring — see `link`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionRef {
+    Exact(String),
+    Prefix(String),
+}
+
+fn session_ref(argv: &str) -> Option<SessionRef> {
+    let toks: Vec<&str> = argv.split_whitespace().collect();
+    let uuid_of = |t: &str| -> Option<String> {
+        if is_uuid(t) {
+            return Some(t.to_string());
+        }
+        let stem = t.rsplit('/').next().unwrap_or(t);
+        let stem = stem.strip_suffix(".jsonl").unwrap_or(stem);
+        is_uuid(stem).then(|| stem.to_string())
+    };
+    let after = |flag: &str| {
+        toks.iter()
+            .position(|t| *t == flag)
+            .and_then(|i| toks.get(i + 1))
+            .copied()
+    };
+    if let Some(v) = after("--session-id").and_then(uuid_of) {
+        return Some(SessionRef::Exact(v));
+    }
+    if toks.contains(&"--fork-session") {
+        return None;
+    }
+    if let Some(v) = after("--resume").and_then(uuid_of) {
+        return Some(SessionRef::Exact(v));
+    }
+    if toks.get(1) == Some(&"attach") {
+        if let Some(id) = toks.get(2) {
+            if is_uuid(id) {
+                return Some(SessionRef::Exact(id.to_string()));
+            }
+            if id.len() >= 8 && id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
+                return Some(SessionRef::Prefix(id.to_string()));
+            }
+        }
+    }
+    toks.iter()
+        .find(|t| is_uuid(t))
+        .map(|t| SessionRef::Exact(t.to_string()))
+}
+
+/// Claude Code 2.1.27x's daemon topology, as the process table shows it: `claude daemon run`
+/// supervises, `bg-pty-host` (also the app's `claude --bg-pty-host …` form) is the pty a
+/// session's engine runs in, `bg-spare` is a pre-warmed pty waiting to be claimed. None of
+/// them hosts a UI, and the daemon INHERITS `TMUX_PANE` from the client that spawned it —
+/// measured: `claude daemon run --spawned-by {"pid":17630}` read as pane %0 on the knack
+/// server, which is that client's pane, not the daemon's. So a helper is never a candidate for
+/// the directory heuristic, never counts as a process a session could be driven from, and when
+/// one does name a session (the engine, by `--session-id`) it links for LIVENESS only, with a
+/// terminal of Detached — a headless daemon session reading "finished" would be offered a
+/// resume, which forks a session that is in fact running.
+fn is_helper(argv: &str) -> bool {
+    let mut toks = argv.split_whitespace();
+    let _exe = toks.next();
+    matches!(toks.next(), Some("daemon" | "bg-pty-host" | "bg-spare"))
+        || argv
+            .split_whitespace()
+            .any(|t| t == "--bg-pty-host" || t == "--bg-spare")
+}
+
+/// The one marker of a Claude FORK the machine offers (#269): the engine's argv,
+/// `--session-id <child> --fork-session --resume <parent.jsonl>`. Returns `(child, parent)`.
+fn fork_parent_from_argv(argv: &str) -> Option<(String, String)> {
+    let toks: Vec<&str> = argv.split_whitespace().collect();
+    if !toks.contains(&"--fork-session") {
+        return None;
+    }
+    let after = |flag: &str| {
+        toks.iter()
+            .position(|t| *t == flag)
+            .and_then(|i| toks.get(i + 1))
+            .copied()
+    };
+    let child = after("--session-id").filter(|t| is_uuid(t))?.to_string();
+    let parent = after("--resume")
+        .map(|t| t.rsplit('/').next().unwrap_or(t))
+        .map(|st| st.strip_suffix(".jsonl").unwrap_or(st))
+        .filter(|st| is_uuid(st))?
+        .to_string();
+    Some((child, parent))
 }
 
 /// The UUID a row's file STEM ends with — a Codex stem is `rollout-<ts>-<uuid>` and a
@@ -2984,6 +3144,7 @@ mod tests {
             Path::new("/nope.jsonl"),
             None,
             false,
+            &|_| true,
         )
         .expect("argv link");
         assert!(l.confirmed);
@@ -3002,6 +3163,7 @@ mod tests {
             Path::new("/Users/x/.codex/sessions/2026/08/08/rollout-abc.jsonl"),
             None,
             false,
+            &|_| true,
         )
         .expect("fd link");
         assert!(l.confirmed);
@@ -3016,6 +3178,7 @@ mod tests {
             Path::new("/n.jsonl"),
             Some("/Users/x/other"),
             true,
+            &|_| true,
         )
         .expect("cwd link");
         assert!(
@@ -3025,11 +3188,15 @@ mod tests {
                 Path::new("/n.jsonl"),
                 Some("/Users/x/other"),
                 false,
+                &|_| true
             )
             .is_none(),
             "only the NEWEST session of a cwd may claim a process heuristically"
         );
-        assert!(!l.confirmed, "cwd+recency is the hedged match");
+        assert!(
+            l.confirmed,
+            "the owner's rule (#269): a lone agent process in the directory is paired, not hedged"
+        );
         assert_eq!(l.pid, 103);
         assert_eq!(l.terminal.target(), Some("1234.pts-0.host"));
         // 102 (codex, no uuid in argv) heuristically matches its own cwd…
@@ -3039,13 +3206,219 @@ mod tests {
             Path::new("/n.jsonl"),
             Some("/Users/x/code/repo"),
             true,
+            &|_| true,
         )
         .expect("codex cwd heuristic");
-        assert!(!l.confirmed);
+        assert!(l.confirmed, "alone in its cwd (#269)");
         assert_eq!(l.pid, 102);
         // …while 101, which carries ANOTHER session's uuid, is excluded from the heuristic
         // pool entirely (the probe's UNCONFIRMED cross-check as a hard rule).
-        assert!(has_uuid(&procs[0].argv) && !has_uuid(&procs[1].argv));
+        assert!(session_ref(&procs[0].argv).is_some() && session_ref(&procs[1].argv).is_none());
+    }
+
+    /// #269 (a): a process that merely CONTAINS a session's uuid — a background job's
+    /// scratchpad path — never links, and the agent that IS in the pane is found by the
+    /// directory instead: alone there, so paired (the owner's rule), in tmux, injectable.
+    #[test]
+    fn a_script_carrying_the_uuid_never_links_and_the_pane_agent_is_paired() {
+        let sid = "4d5c259b-466e-401c-a9e9-0ab8b3fb7316";
+        let mut procs = parse_ps(&format!(
+            "  14121 bash /tmp/claude-502/-Users-x-crux-web/{sid}/scratchpad/flakehunt.sh /tmp/o\n\
+             21496 claude --dangerously-skip-permissions --resume\n"
+        ));
+        apply_tty(&mut procs, "  14121 ??\n  21496 ttys021\n");
+        apply_env(
+            &mut procs,
+            "  21496 claude TMUX=/private/tmp/tmux-502/crux-web-c0b3b1,5801,0 TMUX_PANE=%0\n",
+        );
+        apply_lsof(&mut procs, "p21496\nfcwd\nn/Users/x/code/crux-web\n");
+        let cwd = Some("/Users/x/code/crux-web");
+        let l = link(&procs, sid, Path::new("/n.jsonl"), cwd, true, &|_| true).expect("link");
+        assert_eq!(
+            l.pid, 21496,
+            "the agent in the pane, never the bash that names the uuid"
+        );
+        assert!(l.confirmed, "alone in its directory: paired");
+        assert_eq!(l.terminal.kind(), "tmux");
+        assert_eq!(l.terminal.target(), Some("%0"));
+        // And when this session is not the directory's newest, nothing links — certainly not
+        // the script, which is what `argv.contains(sid)` used to hand back as "confirmed".
+        assert!(link(&procs, sid, Path::new("/n.jsonl"), cwd, false, &|_| true).is_none());
+    }
+
+    /// #269 (b)(c)(d): `claude attach <8 chars>` names the session by a prefix — linked when
+    /// exactly one known session starts with it, refused when two do, and a hex run inside an
+    /// unrelated token is not a name at all.
+    #[test]
+    fn an_attach_prefix_links_only_when_it_is_unambiguous() {
+        let sid = "f7e03d40-e8c1-4fcb-a60c-31b68cc21817";
+        let mut procs =
+            parse_ps("  20277 claude attach f7e03d40\n  24423 claude attach 6a22e5fb\n");
+        apply_tty(&mut procs, "  20277 ttys018\n  24423 ttys023\n");
+        apply_env(
+            &mut procs,
+            "  20277 claude TMUX=/private/tmp/tmux-502/claude-replay-d36797,5407,0 TMUX_PANE=%0\n\
+             24423 claude TMUX=/private/tmp/tmux-502/mdviewer-28920a,6467,0 TMUX_PANE=%0\n",
+        );
+        let l = link(&procs, sid, Path::new("/n.jsonl"), None, false, &|pf| {
+            pf == "f7e03d40"
+        })
+        .expect("prefix link");
+        assert!(l.confirmed);
+        assert_eq!(l.pid, 20277);
+        assert!(
+            matches!(&l.terminal, Terminal::Tmux { sock: Some(s), .. } if s == "claude-replay-d36797")
+        );
+        // (c) two known sessions share the prefix: a pick, refused.
+        assert!(link(&procs, sid, Path::new("/n.jsonl"), None, false, &|_| false).is_none());
+        // (d) the shapes, one by one.
+        assert_eq!(
+            session_ref("claude attach f7e03d40"),
+            Some(SessionRef::Prefix("f7e03d40".into()))
+        );
+        assert_eq!(
+            session_ref(&format!("claude attach {sid}")),
+            Some(SessionRef::Exact(sid.into()))
+        );
+        assert_eq!(
+            session_ref(&format!("claude --resume {sid}")),
+            Some(SessionRef::Exact(sid.into()))
+        );
+        assert_eq!(
+            session_ref(&format!(
+                "claude --resume /Users/x/.claude/projects/p/{sid}.jsonl"
+            )),
+            Some(SessionRef::Exact(sid.into())),
+            "a path names the session its stem is"
+        );
+        assert_eq!(
+            session_ref(&format!(
+                "claude --bg-pty-host /tmp/cc/pty/f7e03d40.sock 173 46 -- /bin --session-id {sid} --fork-session --resume /p/99999999-1111-2222-3333-444444444444.jsonl"
+            )),
+            Some(SessionRef::Exact(sid.into())),
+            "--session-id wins; under --fork-session the --resume is the PARENT"
+        );
+        assert_eq!(
+            session_ref("claude --fork-session --resume 99999999-1111-2222-3333-444444444444"),
+            None,
+            "a fork with no --session-id has an id the argv cannot name"
+        );
+        for picker in [
+            "claude --dangerously-skip-permissions --resume",
+            "claude --resume",
+            "claude --resume --verbose",
+            "claude",
+            "claude --resume /tmp/f7e03d40-notes.txt",
+        ] {
+            assert_eq!(session_ref(picker), None, "{picker:?} names nothing");
+        }
+    }
+
+    /// #269 (e)(f) and the helpers: one agent process in a directory is paired; two are a
+    /// pick; a `bg-spare` or the daemon in that directory is neither — and the daemon's
+    /// inherited TMUX_PANE is not a pane a session can be reached through.
+    #[test]
+    fn a_lone_agent_is_paired_and_daemon_helpers_never_count() {
+        let cwd = Some("/Users/x/proj");
+        let lone = |ps: &str, lsof: &str| {
+            let mut procs = parse_ps(ps);
+            apply_lsof(&mut procs, lsof);
+            procs
+        };
+        // (e) one process, no id anywhere: paired.
+        let procs = lone("  900 claude\n", "p900\nfcwd\nn/Users/x/proj\n");
+        let l = link(&procs, "s", Path::new("/n.jsonl"), cwd, true, &|_| true).expect("lone");
+        assert!(l.confirmed && l.pid == 900);
+        // (f) two: a pick, unconfirmed (the case the knack test pins from the other side).
+        let procs = lone(
+            "  700 claude\n  900 claude\n",
+            "p700\nfcwd\nn/Users/x/proj\np900\nfcwd\nn/Users/x/proj\n",
+        );
+        assert!(
+            !link(&procs, "s", Path::new("/n.jsonl"), cwd, true, &|_| true)
+                .unwrap()
+                .confirmed
+        );
+        // A pre-warmed spare pty in the same directory does not make it two.
+        let mut procs = lone(
+            "  900 claude\n  19654 claude bg-spare --bg-spare /tmp/cc/spare/d3acb794.claim.sock\n",
+            "p900\nfcwd\nn/Users/x/proj\np19654\nfcwd\nn/Users/x/proj\n",
+        );
+        apply_tty(&mut procs, "  900 ??\n  19654 ttys034\n");
+        let l = link(&procs, "s", Path::new("/n.jsonl"), cwd, true, &|_| true).expect("lone");
+        assert!(
+            l.confirmed && l.pid == 900,
+            "the spare is a helper, not a candidate"
+        );
+        // The daemon inherited the client's pane (measured); it is never a link, and the engine
+        // that names a session links DETACHED — liveness, not a target.
+        let sid = "39c9c62e-e288-406a-923e-424ff29d6abd";
+        let mut procs = lone(
+            &format!(
+                "  52638 /Users/x/.local/bin/claude daemon run --origin transient --spawned-by {{\"pid\":17630}}\n\
+                 15974 /Users/x/ClaudeCode.app/Contents/MacOS/claude --bg-pty-host /tmp/cc/pty/39c9c62e.sock 173 46 -- /bin --session-id {sid} --name knack\n"
+            ),
+            "p52638\nfcwd\nn/Users/x/proj\np15974\nfcwd\nn/Users/x/proj\n",
+        );
+        apply_env(
+            &mut procs,
+            "  52638 claude TMUX=/private/tmp/tmux-502/knack-98db47,5228,0 TMUX_PANE=%0\n",
+        );
+        assert!(is_helper(&procs[0].argv) && is_helper(&procs[1].argv));
+        let l = link(&procs, sid, Path::new("/n.jsonl"), cwd, true, &|_| true).expect("engine");
+        assert_eq!(l.pid, 15974);
+        assert!(l.confirmed, "the engine names its session exactly");
+        assert_eq!(
+            l.terminal.kind(),
+            "detached",
+            "an engine is where a session runs, not where it is typed into"
+        );
+        assert!(
+            link(&procs, "other", Path::new("/n.jsonl"), cwd, true, &|_| true).is_none(),
+            "neither helper is a directory candidate for any other session"
+        );
+    }
+
+    /// #269: a fork's engine names its parent, and that edge reaches the row even though the
+    /// transcript probe already answered `None` — so `knack deve (2)` folds under `knack deve`.
+    #[test]
+    fn a_fork_joins_its_family_from_the_engines_argv() {
+        let child = "39c9c62e-e288-406a-923e-424ff29d6abd";
+        let parent = "b0bb9596-4060-4a9b-9834-a2bc736d2f6c";
+        let engine = format!(
+            "claude --bg-pty-host /tmp/cc/pty/39c9c62e.sock 173 46 -- /bin --session-id {child} --fork-session --resume /Users/x/.claude/projects/p/{parent}.jsonl --name knack"
+        );
+        assert_eq!(
+            fork_parent_from_argv(&engine),
+            Some((child.to_string(), parent.to_string()))
+        );
+        assert_eq!(
+            fork_parent_from_argv(&format!("claude --resume {child}")),
+            None
+        );
+        assert_eq!(
+            fork_parent_from_argv(&format!(
+                "claude --session-id {child} --resume /p/{parent}.jsonl"
+            )),
+            None,
+            "a resume that is not a fork names no parent"
+        );
+
+        let scratch = std::env::temp_dir().join(format!("cm-fork-{}", std::process::id()));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut st = State {
+            procs: parse_ps(&format!("  15974 {engine}\n")),
+            ..State::default()
+        };
+        st.rows
+            .insert(child.into(), growth_row("/Users/x/knack", false));
+        st.rows
+            .insert(parent.into(), growth_row("/Users/x/knack", false));
+        assert!(st.rows[child].fork_probed && st.rows[child].fork_from.is_none());
+        idx.note_forks_from_argv(&mut st);
+        assert_eq!(st.rows[child].fork_from.as_deref(), Some(parent));
+        assert!(st.rows[parent].fork_from.is_none());
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     /// #146: growth is the one signal that says WHICH session a no-id agent is driving —
@@ -3229,9 +3602,14 @@ n/Users/x/proj
             Path::new("/n.jsonl"),
             Some("/Users/hong/code/knack"),
             true,
+            &|_| true,
         )
         .expect("cwd link");
         assert_eq!(l.pid, 900, "the tmux-hosted process, not the first match");
+        assert!(
+            !l.confirmed,
+            "two agent processes in one directory: a pick, not a proof (#269)"
+        );
         assert_eq!(l.terminal.kind(), "tmux");
         assert_eq!(l.terminal.target(), Some("%0"));
         assert!(
@@ -3251,12 +3629,14 @@ n/Users/x/proj
             Path::new("/n.jsonl"),
             Some("/Users/hong/code/knack"),
             true,
+            &|_| true,
         )
         .expect("cwd link");
         assert_eq!(
             l.pid, 700,
             "ties break on pid, whatever order ps listed them"
         );
+        assert!(!l.confirmed, "still two candidates");
     }
 
     #[test]

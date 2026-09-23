@@ -71,6 +71,33 @@ prints `[id UNCONFIRMED]` when a filename matched but the head did not.
 > (#146). The monitor banks that proof so it outlives the growth, and where no proof exists it
 > reports how many sessions it is choosing between rather than implying certainty.
 
+> **Amended by #269 (2026-09-23) — three corrections and one rule.** Measured on a machine
+> running Claude Code 2.1.278, whose process shape had moved under the probe: the session's
+> engine runs detached in `claude --bg-pty-host … -- … --session-id <uuid>`, the pane holds a
+> `claude attach <8-char prefix>` client, `claude daemon run` supervises (and INHERITS the
+> client's `TMUX_PANE`, so it reads as "in tmux" — it is not), and `bg-spare` ptys sit pre-warmed.
+>
+> 1. *"argv in the reliable link"* held only for a whole-token match. `argv.contains(uuid)` over
+>    every process linked a session to a background job's `bash` — its scratchpad PATH carries the
+>    uuid — and to a daemon pty-host, both "confirmed" and both detached, while the agent sat in a
+>    pane. A session is named by a token: `--session-id`, `--resume <uuid|path>`, `attach <prefix>`
+>    (unambiguous among known sessions), or a bare uuid; and only an agent exe names anything.
+>    Among processes naming one session the best-hosted wins, so the pane's client beats the
+>    engine. Under `--fork-session`, the `--resume` names the PARENT — and that argv is the only
+>    marker of a Claude fork the machine offers (the adapter has no `fork_origin`).
+> 2. The attach prefix is eight characters; the link test wanted thirty-six, so the strongest proof
+>    available was thrown away and the row fell to the cwd guess.
+> 3. **The owner's rule:** "when there is only one active claude process associated with a claude
+>    session, we would pair them even if the session id is not in argv." A lone agent process in a
+>    session's directory is paired *confirmed*. The picker risk above is real only when there is
+>    competition: with one process there is one pane, that pane is the injection target whichever
+>    session the row is labelled with, and the label self-corrects on the next append because the
+>    driven session becomes the newest. Two or more processes in a directory remain a pick, and
+>    the row still reports how many sessions it chose between. Helpers never count.
+>
+> Measured effect on the owner's index: 2 of 137 rows injectable before, 11 after, with every
+> in-tmux session the owner named now writable and the fork folded under its parent.
+
 ## 2. Is it attached to a terminal, and which?
 
 `ps -o tty=` gives the controlling terminal (`ttys006`, …; `??` when detached). That alone
