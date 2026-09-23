@@ -47,6 +47,10 @@ function clamp(value, low, high) {
  */
 function createImageView(stage, img, options = {}) {
   const onChange = options.onChange || (() => {});
+  // Whether the viewer is on screen right now. A page can hold a viewer that is not
+  // showing — the app shell builds its lightbox at load and its preview view keeps one
+  // between images — and a viewer that cannot be seen must not own the document's keys.
+  const isActive = options.isActive || (() => true);
   const state = { scale: 1, fit: 1, x: 0, y: 0, dragging: false };
 
   /** The scale at which the whole image is visible, never magnifying past 1:1. */
@@ -175,6 +179,17 @@ function createImageView(stage, img, options = {}) {
 
   function onKey(event) {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
+    // Not on screen → not ours. See `isActive`.
+    if (!isActive()) return;
+    // Typing is typing. The keys this viewer claims (`0` `1` `-` `_` `+` `=`, the arrows) are
+    // also ordinary characters, so it must yield while the focus is in a text control — the same
+    // rule keymap.js states, repeated here because the inliner forbids one shared module from
+    // importing another. Without it, a page that had ever built a lightbox swallowed those keys
+    // from every INPUT/TEXTAREA on it — the compose box, the passcode field, every search box.
+    const t = event.target;
+    if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || "") || t.isContentEditable === true)) {
+      return;
+    }
     const pan = event.shiftKey ? 120 : 48;
     if (event.key === "+" || event.key === "=") { zoomAt(state.scale * 1.25); }
     else if (event.key === "-" || event.key === "_") { zoomAt(state.scale / 1.25); }

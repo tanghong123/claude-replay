@@ -126,7 +126,10 @@ export class Preview {
       this.objectUrl = data.startsWith("blob:") ? data : "";
       body.innerHTML = `<div class="artifact-surface artifact-stage"><img class="artifact-image" alt="${escapeText(item.name)}"></div>`;
       const stage = body.querySelector(".artifact-stage"), img = stage.querySelector("img");
-      this.imageView = createImageView(stage, img);
+      // The preview's zoom keys belong to it only while the pane is open (#268) — the pane
+      // can be collapsed with an image still mounted, and a collapsed pane must not own
+      // `0`/`-`/`+`… against the compose box beside it.
+      this.imageView = createImageView(stage, img, { isActive: () => uiState.preview });
       img.src = data;
       return;
     }

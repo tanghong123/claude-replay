@@ -1544,6 +1544,67 @@ fn app_shell_search_survives_growth() {
     scenario_search_through_growth(&page.tab, Surface::AppShell, &fx);
 }
 
+// ── scenario: a text field keeps the image viewer's zoom keys (#268) ─────────────────────────
+
+/// `0` `1` `-` `=` (and the shifted `_` `+`) are the enlarged image viewer's zoom keys, bound on
+/// the document by the shared engine. They are also ordinary characters, so a reader typing into a
+/// text field must get them. The app shell builds its lightbox at LOAD, so before #268 that
+/// document listener called `preventDefault` on every one of these keys for the whole page — with
+/// no image open at all — and they never reached the compose box, the passcode field or a search
+/// box. The classic page builds its viewer on demand, so it never had the bug and is the green
+/// reference here. Typed with REAL key events (`type_str`): the defect is a `preventDefault` on a
+/// trusted keydown, which a synthetic `dispatchEvent` (what `harness::key` sends) cannot reproduce.
+fn scenario_text_fields_keep_the_zoom_keys(tab: &headless_chrome::Tab, surface: Surface) {
+    let input = match surface {
+        Surface::Classic => "q",
+        Surface::AppShell => "transcriptSearchInput",
+    };
+    // No image is open anywhere. Focus the search box and empty it.
+    let focused = eval(
+        tab,
+        &format!(
+            "(function(){{ var i = document.getElementById({input:?}); if (!i) return false; \
+             i.focus(); i.value = ''; return document.activeElement === i; }})()"
+        ),
+    );
+    assert_eq!(
+        focused,
+        serde_json::json!(true),
+        "the {surface:?} search box took focus"
+    );
+    // The unshifted keys the viewer claims (out/in/fit/actual), each a character the input accepts.
+    tab.type_str("0-1=").unwrap();
+    let value = eval(tab, &format!("document.getElementById({input:?}).value"))
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    for ch in ['0', '-', '1', '='] {
+        assert!(
+            value.contains(ch),
+            "{ch:?} typed into the {surface:?} search box reached it (got {value:?}) — the image \
+             viewer's document key handler must yield to a focused text field (#268)"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_text_fields_keep_the_zoom_keys() {
+    let _serial = serial();
+    let fx = fixture("scenario-zoomkeys-classic", 30);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_text_fields_keep_the_zoom_keys(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_text_fields_keep_the_zoom_keys() {
+    let _serial = serial();
+    let fx = fixture("scenario-zoomkeys-app", 30);
+    let page = open(Surface::AppShell, &fx, 2916);
+    scenario_text_fields_keep_the_zoom_keys(&page.tab, Surface::AppShell);
+}
+
 // ── scenario: a deep jump, then paging and stepping around it ───────────────────────────────
 
 /// Jump to a turn deep in the session through the pane, then page down twice and step with

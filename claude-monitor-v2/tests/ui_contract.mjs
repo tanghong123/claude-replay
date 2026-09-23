@@ -2623,6 +2623,18 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // drift apart the way they would with two copies.
   assert.equal((exportJs.match(/^\s+(?:var shown = |shown = )imageStage\(box,/gm) || []).length, 2, "the classic lightbox and file view both go through the one stage builder");
   assert.equal((exportJs.match(/^\s+function imageStage\(/gm) || []).length, 1, "…of which there is exactly one");
+
+  // #268: the shared viewer binds zoom keys on the document, so it must yield twice — while the
+  // focus is in a text field (typing is typing) and while it is not on screen — or it eats
+  // `0`/`1`/`-`/`=` from every input on a page that has built a lightbox. Source-checked here;
+  // the behaviour is proven end to end by the browser scenarios *_text_fields_keep_the_zoom_keys.
+  assert.match(imageView, /INPUT\|TEXTAREA\|SELECT/, "the viewer yields to a focused text control");
+  assert.match(imageView, /isContentEditable/, "…including contenteditable");
+  assert.match(imageView, /if \(!isActive\(\)\) return;/, "…and yields while it is not on screen");
+  assert.match(viewer, /isActive:\s*\(\)\s*=>\s*!this\.root\.hidden/, "the app shell's lightbox is active only while open");
+  const preview = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
+  assert.match(preview, /createImageView\(stage, img, \{ isActive: \(\) => uiState\.preview \}\)/, "the preview's viewer is active only while the pane is open");
+
   console.log("#228 image cases passed");
 }
 

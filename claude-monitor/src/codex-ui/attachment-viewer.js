@@ -38,6 +38,10 @@ export class AttachmentViewer {
     // and its file view all behave the same way. It is built once and re-fitted per image: the
     // stage outlives the picture shown in it.
     this.view = createImageView(this.root.querySelector(".image-lightbox-stage"), this.image, {
+      // The lightbox owns the zoom keys only while it is open (#268): its root is `hidden`
+      // when closed, and the app shell builds this viewer once at load, so without this the
+      // closed lightbox ate `0`/`-`/`+`… from the compose box the moment the shell started.
+      isActive: () => !this.root.hidden,
       onChange: state => {
         if (this.percent) this.percent.textContent = `${state.percent}%`;
       },
