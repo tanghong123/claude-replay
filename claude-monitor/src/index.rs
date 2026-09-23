@@ -3455,6 +3455,11 @@ mod tests {
     #[test]
     fn subdir_sessions_group_under_their_repo() {
         let scratch = std::env::temp_dir().join(format!("cm-group-{}", std::process::id()));
+        // `assemble` reads the consent store, which resolves `state_dir()` — so this test must
+        // pin it to a scratch (#153), not lean on whatever OTHER concurrent test happened to have
+        // the env set. It was the one assemble-caller without the guard, and it flaked under a
+        // parallel run whose scheduling left no sibling guard live at the moment it called through.
+        let _env = StateEnv::set(scratch.join("state"));
         let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
         let mut st = State::default();
         let mut a = growth_row("/repo/crate-a", false);
