@@ -20,7 +20,8 @@ import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeight
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
 import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
-import { KEYMAP, hintFor, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
+import { KEYMAP, bindKeymap, hintFor, inGuest, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
+import { isMarkdownName } from "../../claude-monitor/src/codex-ui/mdrev-pane.js";
 import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
@@ -376,6 +377,34 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(resolveKey(ev("j"), "view", { tagName: "DIV", isContentEditable: true }), null);
   assert.equal(resolveKey(ev("k", { metaKey: true }), "view"), null, "platform shortcuts pass through");
   assert.ok(isEditable({ tagName: "TEXTAREA" }) && !isEditable({ tagName: "DIV" }));
+  // #270: inside a guest the page mounted (mdrev's viewer, marked `data-guest-keys`), every key is
+  // the guest's — `n` must not step the transcript's search while it steps mdrev's changes, and the
+  // "any" bindings (`/`, `\\`, `o`) are no exception, which is why this is not a context value.
+  const inside = { tagName: "DIV", closest: sel => (sel === "[data-guest-keys]" ? {} : null) };
+  const outside = { tagName: "DIV", closest: () => null };
+  assert.ok(inGuest(inside) && !inGuest(outside) && !inGuest(null) && !inGuest({ tagName: "DIV" }));
+  for (const k of ["n", "[", "]", "j"]) assert.equal(resolveKey(ev(k), "view", inside), null, `${k} inside a guest is the guest's`);
+  assert.equal(resolveKey(ev("/"), "view", inside), null, "…including an \"any\" binding");
+  assert.equal(resolveKey(ev("n"), "view", outside).action, "hit-next", "outside it the shell keeps its keys");
+  // ENGAGEMENT: a click on a guest's prose leaves the focus on <body>, so the keydown's target is
+  // <body> — and the key is still the guest's until the reader clicks elsewhere. bindKeymap tracks
+  // the last mousedown/focusin exactly as mdrev's own key scope does.
+  {
+    const handlers = {};
+    const root = { addEventListener: (type, fn) => { handlers[type] = fn; } };
+    const fired = [];
+    bindKeymap(root, () => "view", action => { fired.push(action); });
+    const body = { tagName: "BODY", closest: () => null };
+    const key = k => { const e = { ...ev(k), target: body, preventDefault() {} }; handlers.keydown(e); };
+    key("\\"); assert.deepEqual(fired, ["sidebar-toggle"], "nothing engaged: the shell's key");
+    handlers.mousedown({ target: { tagName: "P", closest: sel => (sel === "[data-guest-keys]" ? { isConnected: true } : null) } });
+    key("\\"); key("n"); assert.deepEqual(fired, ["sidebar-toggle"], "engaged with the guest: its keys, even on <body>");
+    handlers.mousedown({ target: body });
+    key("n"); assert.deepEqual(fired, ["sidebar-toggle", "hit-next"], "a click elsewhere ends it");
+  }
+  // What the preview pane hands to mdrev: Markdown, by name.
+  for (const name of ["README.md", "notes.MARKDOWN", "a.mdown", "b.mkd"]) assert.ok(isMarkdownName(name), name);
+  for (const name of ["page.html", "md", "README", "x.mdx", "", null]) assert.ok(!isMarkdownName(name), String(name));
   assert.equal(hintFor("hit-prev"), "N"); assert.equal(hintFor("page-up"), "⇧Space"); assert.equal(hintFor("nope"), "");
   assert.match(appSource, /bindKeymap\(document, /, "the shell binds the keymap once, at the document");
   assert.match(appSource, /viewport\.pageBy\(direction, \{ intent: true \}\)/, "key-driven scrolling counts as the reader's own, so following releases instead of snapping back — through the engine, stamped where the old code stamped (#196 stage 4)");

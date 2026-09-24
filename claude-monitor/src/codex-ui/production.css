@@ -860,3 +860,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    title wraps at any character and the head itself refuses to grow, so the longest path
    in a transcript still lands inside the box that is drawn for it. */
 .renderer-head{max-width:100%;min-width:0}
+/* #270 mdrev's viewer fills the preview pane and scrolls itself; the pane stops scrolling around it. */
+.preview-body.mdrev-mounted{overflow:hidden;display:flex;flex-direction:column}
+.mdrev-pane{flex:1;min-height:0;outline:none}

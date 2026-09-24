@@ -500,7 +500,7 @@ impl SessionService {
     /// to someone who can read those files anyway. Containment is the SECOND layer, not the
     /// first; narrowing it further (to the repo root, say) would break the ordinary case of a
     /// session that reads a sibling checkout.
-    fn contained(&self, want: &Path) -> Option<PathBuf> {
+    pub(crate) fn contained(&self, want: &Path) -> Option<PathBuf> {
         self.contained_kind(want, false)
     }
 
@@ -1311,8 +1311,17 @@ impl Request<'_> {
     /// write requires `POST`, a same-origin request, and an authenticated (token-bearing)
     /// client — in that order, so the reply names the first thing that is wrong.
     pub fn deny_write(&self) -> Option<HttpResponse> {
-        if self.method != "POST" {
-            return Some(HttpResponse::method_not_allowed("POST required"));
+        self.deny_mutation("POST")
+    }
+
+    /// `deny_write` for a route whose write is not a POST — mdrev's note routes close a note with
+    /// `PATCH` and remove one with `DELETE` (#270). The same bar in the same order: the method
+    /// the route names, a same-origin request, a paired client.
+    pub fn deny_mutation(&self, method: &str) -> Option<HttpResponse> {
+        if self.method != method {
+            return Some(HttpResponse::method_not_allowed(
+                "wrong method for this route",
+            ));
         }
         if !self.origin_ok {
             return Some(HttpResponse::forbidden("cross-origin request refused"));
@@ -1662,11 +1671,11 @@ fn too_broad(root: &Path) -> bool {
 }
 
 /// in the file manager rather than pulling 200 MB through a viewer.
-const MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
+pub(super) const MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
 
 /// The raster image types `/file` will serve as images. Deliberately no `image/svg+xml`: an
 /// SVG is a script host, and this page's origin holds the monitor's cookie.
-fn raster_type(ext: &str) -> Option<&'static str> {
+pub(super) fn raster_type(ext: &str) -> Option<&'static str> {
     Some(match ext {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
@@ -1682,7 +1691,7 @@ fn raster_type(ext: &str) -> Option<&'static str> {
 /// quotes, backslashes and control characters (CR/LF above all) dropped. A downloaded file is
 /// named by a path the SESSION recorded, not by anything the server chose, so the sanitizing
 /// belongs here rather than in a caller's assumption.
-fn download_name(path: &Path) -> String {
+pub(super) fn download_name(path: &Path) -> String {
     let base = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -1700,11 +1709,21 @@ fn download_name(path: &Path) -> String {
 
 /// Hardening headers for every `/file` reply: never let the browser re-sniff the type we
 /// chose, and run the response under an empty sandbox origin even if one slipped through.
-fn artifact_headers() -> Vec<String> {
+pub(super) fn artifact_headers() -> Vec<String> {
     vec![
         "X-Content-Type-Options: nosniff".to_string(),
         "Content-Security-Policy: sandbox".to_string(),
     ]
+}
+
+/// A request whose body was over its route's bound — refused, never truncated (#270).
+fn too_large() -> HttpResponse {
+    HttpResponse {
+        code: "413 Content Too Large",
+        content_type: "text/plain",
+        body: b"request body too large".to_vec(),
+        headers: Vec::new(),
+    }
 }
 
 /// A refusal the PAGE can act on: the status tells it whether to offer "reveal in Finder"
@@ -1744,13 +1763,22 @@ fn serve_connection(
     let (path_part, query) = target.split_once('?').unwrap_or((target, ""));
     let name = path_part.trim_start_matches('/');
 
-    // The POST body, bounded — a write route (#133) reads its prompt/target from here.
-    let body_len = header_value(&headers, "content-length")
+    // The request body, bounded — a write route (#133) reads its prompt/target from here, and
+    // mdrev's `hold` (#270) a whole document. A body over its route's bound is REFUSED (413), never
+    // cut to size: this used to read the first 64 KB of a larger body and hand the route that,
+    // which for a held document is a corrupted document and for any route is a lie about what
+    // was sent.
+    let limit = if name == "api/mdrev/hold" {
+        super::mdrev::HOLD_BODY_LIMIT
+    } else {
+        MAX_BODY_BYTES
+    };
+    let declared = header_value(&headers, "content-length")
         .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0)
-        .min(MAX_BODY_BYTES);
-    let mut body = vec![0u8; body_len];
-    if body_len > 0 {
+        .unwrap_or(0);
+    let oversized = declared > limit;
+    let mut body = vec![0u8; if oversized { 0 } else { declared }];
+    if !oversized && declared > 0 {
         reader.read_exact(&mut body)?;
     }
 
@@ -1801,6 +1829,7 @@ fn serve_connection(
             None,
             false,
         ),
+        Access::Ok if oversized => (too_large(), None, false),
         Access::Ok => (handler(&req), None, false),
         Access::OkSetCookie => {
             let tok = presented.clone().unwrap_or_default();
@@ -1811,6 +1840,8 @@ fn serve_connection(
             let root_nav = name.is_empty() || name == "index.html" || name == "index";
             if root_nav && !from_cookie {
                 (HttpResponse::ok("text/plain", Vec::new()), Some(tok), true)
+            } else if oversized {
+                (too_large(), Some(tok), false)
             } else {
                 (handler(&req), Some(tok), false)
             }
@@ -1831,18 +1862,34 @@ fn serve_connection(
              Content-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
         )
     } else {
-        let extra: String = r.headers.iter().map(|h| format!("{h}\r\n")).collect();
-        format!(
-            "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{cookie}{extra}\
-             Cache-Control: no-store\r\nConnection: close\r\n\r\n",
-            r.code,
-            r.content_type,
-            r.body.len()
-        )
+        response_head(&r, &cookie)
     };
     stream
         .write_all(head.as_bytes())
         .and_then(|_| stream.write_all(&r.body))
+}
+
+/// The status line and headers for a reply. `no-store` unless the route set its own
+/// `Cache-Control`: two such headers combine, and `no-store` would win over the versioned mdrev
+/// bundle's `immutable` (#270), re-fetching 600 KB of guest on every preview.
+fn response_head(r: &HttpResponse, cookie: &str) -> String {
+    let extra: String = r.headers.iter().map(|h| format!("{h}\r\n")).collect();
+    let own_cache = r
+        .headers
+        .iter()
+        .any(|h| h.to_ascii_lowercase().starts_with("cache-control:"));
+    let cache = if own_cache {
+        ""
+    } else {
+        "Cache-Control: no-store\r\n"
+    };
+    format!(
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{cookie}{extra}\
+         {cache}Connection: close\r\n\r\n",
+        r.code,
+        r.content_type,
+        r.body.len()
+    )
 }
 
 /// Pull the bearer token from a request: `?token=` (query), `Authorization: Bearer`, or the
@@ -1889,6 +1936,10 @@ pub fn service_routes(
     static_dir: &Path,
     req: &Request,
 ) -> HttpResponse {
+    // mdrev's bundle and its contract (#270): `mdrev/<version>/…` and `api/mdrev/…`.
+    if let Some(r) = super::mdrev::route(live, req) {
+        return r;
+    }
     let (name, query) = (req.name, req.query);
     // `/session?id=<sid>[&chrome=embed][&theme=light|dark]` — the complete session view at
     // a URL, exactly as `--html` serves it, with optional host chrome (#98 §6.3).
@@ -2121,6 +2172,68 @@ pub fn service_routes(
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    /// #270: a body over its route's bound is REFUSED, never cut to size. This listener used to
+    /// read the first 64 KB of a larger body and hand the route that — for a held document, a
+    /// corrupted document. The handler below reports the body length it was given; an oversized
+    /// request must never reach it.
+    #[test]
+    fn an_oversized_body_is_refused_not_truncated() {
+        use std::io::{Read, Write};
+        let port = spawn_listener(
+            0,
+            std::sync::Arc::new(|r: &Request| {
+                HttpResponse::ok("text/plain", r.body.len().to_string().into_bytes())
+            }),
+        )
+        .unwrap();
+        let send = |path: &str, len: usize| {
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let head = format!(
+                "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n"
+            );
+            s.write_all(head.as_bytes()).unwrap();
+            // Only a body the server will read is sent in full; an oversized one is declared and
+            // not sent, since the answer must not depend on reading it.
+            if len <= MAX_BODY_BYTES {
+                s.write_all(&vec![b'x'; len]).unwrap();
+            }
+            let mut raw = String::new();
+            let _ = s.read_to_string(&mut raw);
+            raw
+        };
+        let ok = send("/api/send", MAX_BODY_BYTES);
+        assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
+        assert!(
+            ok.ends_with(&MAX_BODY_BYTES.to_string()),
+            "a body at the bound arrives whole"
+        );
+        let over = send("/api/send", MAX_BODY_BYTES + 1);
+        assert!(
+            over.starts_with("HTTP/1.1 413"),
+            "one byte over is refused: {over}"
+        );
+        let held = send("/api/mdrev/hold", super::super::mdrev::HOLD_BODY_LIMIT + 1);
+        assert!(
+            held.starts_with("HTTP/1.1 413"),
+            "hold has its own, larger bound: {held}"
+        );
+    }
+
+    /// #270: a reply is `no-store` unless its route says otherwise — and a route that does gets
+    /// exactly its own header, never a second one the browser would combine with it.
+    #[test]
+    fn a_route_may_set_its_own_cache_header() {
+        let plain = response_head(&HttpResponse::ok("text/plain", b"x".to_vec()), "");
+        assert!(plain.contains("Cache-Control: no-store\r\n"));
+        let mut cached = HttpResponse::ok("text/javascript", b"x".to_vec());
+        cached
+            .headers
+            .push("Cache-Control: public, max-age=31536000, immutable".to_string());
+        let head = response_head(&cached, "");
+        assert_eq!(head.matches("Cache-Control").count(), 1, "{head}");
+        assert!(head.contains("immutable") && !head.contains("no-store"));
+    }
 
     /// #196 D3b: the `/proc/net/tcp` matcher finds the connecting user by the client
     /// socket's row (its `local_address` is the connection's peer end, `rem_address` our

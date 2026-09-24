@@ -2,6 +2,7 @@ import { escapeText } from "./view-model.js";
 import { uiState } from "./state.js";
 import { sandboxDocument } from "./sandbox.js";
 import { createImageView } from "./shared/image-view.js";
+import { isMarkdownName, mdrevVersion, mountMarkdown } from "./mdrev-pane.js";
 
 const byId = id => document.getElementById(id);
 const SESSION_CACHE_LIMIT = 6;
@@ -48,6 +49,7 @@ export class Preview {
       while (this.sessionTabs.size > SESSION_CACHE_LIMIT || cacheBytes() > SESSION_CACHE_BYTES) this.sessionTabs.delete(this.sessionTabs.keys().next().value);
     }
     this.roster = []; this.rosterKey = ""; this.rosterBadge();
+    this.teardownMarkdown();
     this.sessionId = sessionId || "";
     const saved = this.sessionTabs.get(this.sessionId);
     uiState.previewTabs = saved?.tabs.slice() || [];
@@ -89,8 +91,19 @@ export class Preview {
     const roster = !item && this.roster.length > 0;
     const pinned = this.roster.length ? `<button class="preview-tab pinned ${roster ? "on" : ""}" data-preview-tab="${ROSTER_ID}" title="What this session published"><span class="preview-tab-label">Artifacts (${this.roster.length})</span></button>` : "";
     byId("previewTabs").innerHTML = pinned + uiState.previewTabs.map(tab => `<button class="preview-tab ${tab.id === uiState.previewId ? "on" : ""}" data-preview-tab="${escapeText(tab.id)}"><span class="preview-tab-label">${escapeText(tab.name)}</span><span class="preview-tab-close" data-preview-tab-close="${escapeText(tab.id)}">×</span></button>`).join("");
+    // A Markdown tab mdrev is already showing stays as it is: the tab strip and the roster re-render
+    // around it, and a remount would throw away the reader's place, range and open notes. The tab
+    // OBJECT, not its id — an attachment's id is a positional record id two sessions can share.
+    if (item && this.markdownItem === item) return;
+    this.teardownMarkdown();
     if (roster) { this.showRoster(); return; }
     if (!item) { byId("previewBody").innerHTML = '<div class="preview-empty"><div class="preview-empty-icon">◇</div><strong>No file open</strong><span>Open a file, image or HTML page from the transcript.</span></div>'; return; }
+    if (!item.data && isMarkdownName(item.name) && mdrevVersion()) { this.showMarkdown(item, generation); return; }
+    this.showPlain(item, generation);
+  }
+  /** What the pane showed before mdrev (#270), and still shows for everything that is not
+   *  Markdown — and for Markdown when there is no mdrev, or it cannot mount this document. */
+  showPlain(item, generation) {
     if (item.text != null || item.data) { this.show(item, item.text, item.data); return; }
     byId("previewBody").classList.add("production-loading"); byId("previewBody").textContent = "Reading securely…";
     const query = `path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig || "")}`;
@@ -109,6 +122,33 @@ export class Preview {
       };
       body.querySelector("[data-close-preview]").onclick = () => this.closeTab(item.id);
     });
+  }
+  /** Markdown through mdrev's viewer (#270): a reader for text the transcript carries, the whole
+   *  viewer for a file on disk. Any failure — no bundle, a refused route, a mount that throws —
+   *  falls back to `showPlain`, so mdrev can only ever add to what the pane showed. */
+  showMarkdown(item, generation) {
+    const body = byId("previewBody");
+    if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = ""; }
+    if (this.imageView) { this.imageView.destroy(); this.imageView = null; }
+    body.classList.remove("production-loading");
+    body.classList.add("mdrev-mounted");
+    body.innerHTML = '<div class="mdrev-pane"></div>';
+    this.markdownItem = item;
+    const token = {}; this.markdownToken = token;
+    mountMarkdown(body.firstElementChild, item).then(handle => {
+      if (this.markdownToken !== token) { handle?.unmount(); return; }
+      if (!handle) throw new Error("no mdrev");
+      this.markdown = handle;
+    }).catch(() => {
+      if (this.markdownToken !== token) return;
+      this.teardownMarkdown();
+      if (generation === this.renderGeneration) this.showPlain(item, generation);
+    });
+  }
+  teardownMarkdown() {
+    this.markdown?.unmount(); this.markdown = null;
+    this.markdownItem = null; this.markdownToken = null;
+    byId("previewBody").classList.remove("mdrev-mounted");
   }
   showRoster() {
     const body = byId("previewBody"); body.classList.remove("production-loading");

@@ -71,6 +71,26 @@ anywhere, and `note_forks_from_argv` is how one joins its #142 family. Diagnose 
 machine, not the API: `term`/`injectable` describe the process the row was LINKED to, so a false
 link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.
 
+**Markdown in the preview pane is mdrev's viewer, as a guest** (#270,
+`design/mdrev-in-the-preview-pane.md`). The monitor carries none of mdrev: it FINDS one installed
+release at startup (`AGENT_MONITOR_MDREV`, final when set; else the `mdrev`/`mdrev-embed` kegs under
+the brew prefixes), serves its `bundle/` at `/mdrev/<version>/` (immutable, since the prefix names the
+version) and runs that same tree's `mdrev-cli` for notes — bundle and CLI from ONE release, as mdrev's
+guide §11 requires. Older than **1.1.6** counts as none (the `toolbar`/`review`/`annotate` options
+arrived then). Absent, the pane shows Markdown as text, exactly as before; the page learns which from
+`data-mdrev`. Both modes use mdrev's HTTP contract at `api/mdrev/` (`html_export/mdrev.rs`), never its
+in-process `client` (that seam needs renderer internals the release does not export): text a
+transcript CARRIES is handed to the monitor (`POST hold`), kept content-addressed in memory under a
+`Cap::Held` stamp, and mounted as a plain reader with no toolbar; a FILE opens through
+`GET open?path=&sig=`, and every route re-applies `/file`'s four guards with the file's own
+`Cap::File` stamp as mdrev's `cap`, so the viewer reads nothing the page was not offered. Notes are
+`mdrev-cli notes …` behind `deny_mutation` (PATCH/DELETE included), one document at a time.
+`mdrev-cli conform` against a live monitor is the definition of done
+(`mdrev_guest_contract_passes_mdrev_cli_conform`). Keys: `bindKeymap` tracks ENGAGEMENT as mdrev does
+— the last click or focus inside `[data-guest-keys]` — and yields every key while it holds; the host
+element is NOT focusable. The request parser REFUSES (413) a body over its route's bound instead of
+silently cutting it to 64 KB; `hold` gets the artifact cap.
+
 `src/codex-ui/{reference.css,reference-shell.html,icons.js}` are **generated**, extracted
 byte-for-byte from `design/agent-monitor-codex-demo.html` by
 `scripts/extract-agent-monitor-demo.mjs` and checked by two tests. Never hand-edit them: change
@@ -305,6 +325,10 @@ resizes the others (#159). Six drawer cases catch that in one run.
   popover is z-index 48) failed its hit test and read as a control something had painted over
   (#211). Wait for the window to reach the new width first, or the wait answers about the old
   layout.
+  **A CDP key press the page does not `preventDefault` never comes back up** (#270): with this
+  headless Chrome one unhandled `x` became 2,177 trusted keydowns in 300 ms and kept repeating into
+  fields typed later, whatever the keyUp carried and with no page code involved. A case asserting a
+  key did NOTHING calls `harness::quiet_keys` first; a case typing INTO a field asserts `contains`.
   A killed run used to leave its browsers behind — a SIGKILL runs no `Drop` and macOS has no
   PDEATHSIG — and sixty such processes once exhausted the machine and took the session's
   background jobs with them. `chrome()` now names each profile `cr-browser-chrome-<launching

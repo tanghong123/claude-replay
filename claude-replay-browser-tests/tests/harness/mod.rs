@@ -972,6 +972,79 @@ impl Kind {
 /// A monitor binary running on a fixed loopback port over a scratch state dir, reaped on
 /// drop. Missing binary → a PANIC naming the build, never a silent skip: a skipped case
 /// reads as green, and a blank shell has passed as 13/16 that way (#53).
+/// Make CDP key presses behave like a person's (#270). Measured with this headless Chrome and
+/// headless_chrome 1.0.22: a key press the page does NOT `preventDefault` never comes back up — one
+/// unhandled `x` on <body> became 2,177 trusted keydowns in 300 ms and was still repeating into a
+/// text box typed seconds later, with or without `text` on either event and whatever the keyUp
+/// carried. No page code is involved: it happens with nothing on the page listening. A key the page
+/// handles (and prevents) is pressed exactly once.
+///
+/// So a case that presses a key some page may leave unhandled — any case asserting that a key did
+/// NOTHING — installs this first: a capture-phase `preventDefault` on every keydown. It stops no
+/// propagation, and no handler under test reads `defaultPrevented`, so what a case measures (who
+/// acted on the press) is unchanged; only the instrument's stuck key is released. Not for a case
+/// that types INTO a field — the insertion is the default action it would cancel.
+pub fn quiet_keys(tab: &headless_chrome::Tab) {
+    eval(
+        tab,
+        "document.addEventListener('keydown', e => e.preventDefault(), true); 'ok'",
+    );
+}
+
+/// The mdrev release tree a spawned monitor will serve (#270), found the way the monitor finds it:
+/// `AGENT_MONITOR_MDREV`, else the brew kegs. The mdrev cases PANIC without one, naming the fix —
+/// never a silent skip, which is how a missing dependency once read as a pass. CI installs the
+/// public release; a developer has it from `brew install tanghong123/tap/mdrev`.
+pub fn mdrev_release() -> PathBuf {
+    // The monitor's own floor (html_export/mdrev.rs MIN_VERSION): an older guest is no guest.
+    let recent = |t: &Path| {
+        let pkg = std::fs::read_to_string(t.join("package.json")).unwrap_or_default();
+        let v: serde_json::Value = serde_json::from_str(&pkg).unwrap_or_default();
+        let core = v["version"]
+            .as_str()
+            .unwrap_or("")
+            .split(['-', '+'])
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let n: Vec<u64> = core.split('.').filter_map(|p| p.parse().ok()).collect();
+        n.len() == 3 && (n[0], n[1], n[2]) >= (1, 1, 6)
+    };
+    let valid = |t: &Path| t.join("bundle/mdrev.js").is_file() && recent(t);
+    if let Some(t) = std::env::var_os("AGENT_MONITOR_MDREV").map(PathBuf::from) {
+        assert!(
+            valid(&t),
+            "AGENT_MONITOR_MDREV={} is not an mdrev release tree",
+            t.display()
+        );
+        return t;
+    }
+    for prefix in ["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"] {
+        for keg in ["mdrev", "mdrev-embed"] {
+            let t = Path::new(prefix).join("opt").join(keg).join("libexec");
+            if valid(&t) {
+                return t;
+            }
+        }
+    }
+    panic!(
+        "no mdrev release >= 1.1.6 — the mdrev_guest_ cases need the real guest: `alibrew install mdrev` \
+         (or `brew install tanghong123/tap/mdrev` once a 1.1.6+ is public), or set AGENT_MONITOR_MDREV \
+         to an unpacked mdrev-embed tree"
+    );
+}
+
+/// That tree's `mdrev-cli`: the keg's own `bin/` wrapper (which resolves node) when the tree is a
+/// keg's `libexec`, else the tree's launcher — the monitor's own rule.
+pub fn mdrev_cli(tree: &Path) -> PathBuf {
+    let keg = tree
+        .parent()
+        .filter(|_| tree.file_name().is_some_and(|n| n == "libexec"))
+        .map(|p| p.join("bin/mdrev-cli"))
+        .filter(|p| p.is_file());
+    keg.unwrap_or_else(|| tree.join("mdrev-cli"))
+}
+
 pub struct Monitor {
     pub kind: Kind,
     pub port: u16,
@@ -986,6 +1059,20 @@ impl Monitor {
         base: &Path,
         stores: Option<&Stores>,
         paired: bool,
+    ) -> Monitor {
+        Self::spawn_with(kind, port, base, stores, paired, &[])
+    }
+
+    /// [`Monitor::spawn`] with extra environment for the monitor process ONLY — a case that must
+    /// make mdrev absent (`AGENT_MONITOR_MDREV=<nothing>`, #270) sets it on the child rather than
+    /// on this process, where every case running in parallel would inherit it.
+    pub fn spawn_with(
+        kind: Kind,
+        port: u16,
+        base: &Path,
+        stores: Option<&Stores>,
+        paired: bool,
+        env: &[(&str, &str)],
     ) -> Monitor {
         let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1018,6 +1105,9 @@ impl Monitor {
             for (k, v) in stores.envs() {
                 cmd.env(k, v);
             }
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
         }
         let child = Reap(
             cmd.spawn()

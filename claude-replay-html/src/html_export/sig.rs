@@ -295,6 +295,9 @@ pub(crate) enum Cap {
     File,
     /// Open the OS file manager on it (`/__reveal`).
     Reveal,
+    /// Read a document the page handed the server to hold for mdrev (#270): Markdown a transcript
+    /// carries, which is not a file, so it cannot share `File`'s namespace of absolute paths.
+    Held,
 }
 
 impl Cap {
@@ -302,6 +305,7 @@ impl Cap {
         match self {
             Cap::File => "file",
             Cap::Reveal => "reveal",
+            Cap::Held => "held",
         }
     }
 }

@@ -101,7 +101,13 @@ pub fn page(version: &str, paired: bool, default_ui: bool) -> String {
     let head = PAGE_HEAD
         .replace("{{VERSION}}", version)
         .replace("{{PAIRED}}", if paired { "true" } else { "false" })
-        .replace("{{DEFAULT_UI}}", if default_ui { "true" } else { "false" });
+        .replace("{{DEFAULT_UI}}", if default_ui { "true" } else { "false" })
+        // The installed mdrev release the preview pane mounts Markdown with (#270), or "" when this
+        // machine has none — the page then renders Markdown as text, as it always did.
+        .replace(
+            "{{MDREV}}",
+            claude_replay_html::mdrev_version().unwrap_or(""),
+        );
     format!("{head}{REFERENCE_SHELL}{PAGE_TAIL}")
 }
 
@@ -170,6 +176,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
         "monitor-ui/control-store.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/control-store.js").as_slice(),
+        ),
+        "monitor-ui/mdrev-pane.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/mdrev-pane.js").as_slice(),
         ),
         "monitor-ui/preview.js" => (
             "text/javascript; charset=utf-8",
@@ -265,6 +275,7 @@ mod tests {
             ),
             ("icons.js", include_str!("codex-ui/icons.js")),
             ("preview.js", include_str!("codex-ui/preview.js")),
+            ("mdrev-pane.js", include_str!("codex-ui/mdrev-pane.js")),
             ("record-store.js", include_str!("codex-ui/record-store.js")),
             ("sandbox.js", include_str!("codex-ui/sandbox.js")),
             (
@@ -399,6 +410,7 @@ mod tests {
                                 let exported = target.lines().any(|l| {
                                     let l = l.trim_start();
                                     l.starts_with(&format!("export function {local}"))
+                                        || l.starts_with(&format!("export async function {local}"))
                                         || l.starts_with(&format!("export const {local}"))
                                         || l.starts_with(&format!("export class {local}"))
                                         || l.starts_with(&format!("export let {local}"))

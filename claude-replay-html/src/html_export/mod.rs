@@ -32,11 +32,13 @@ use std::path::Path;
 // dump_all_html, serve}` stays the crate's surface.
 pub mod audit; // the derived rendering-audit corpus (#174 P1)
 mod bundle;
+pub(crate) mod mdrev; // mdrev's embedded viewer in the app shell's preview pane (#270)
 mod record_store;
 mod serve;
 pub mod shared;
 pub(crate) mod sig; // capability signatures for the local-file routes
 pub use bundle::{dump_all_html, dump_html};
+pub use mdrev::version as mdrev_version;
 pub use serve::{
     existing_server, get_request, handoff_url, mint_token, query_get, serve, service_routes,
     spawn_listener, spawn_listener_gated, start_server, AuthGate, HttpResponse, LiveServer,
