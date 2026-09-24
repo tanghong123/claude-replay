@@ -1,14 +1,12 @@
 //! mdrev's embedded viewer in the app shell's preview pane (#270), in a real Chrome against the
 //! REAL released guest — `design/mdrev-in-the-preview-pane.md`. A stand-in bundle would prove
-//! nothing about the thing the owner asked for, so these cases find the installed release the way
-//! the monitor does, and panic naming the fix when there is none (`harness::mdrev_release`).
+//! nothing about the thing the owner asked for. The guest is the release the monitors PIN (#274,
+//! `vendor/mdrev`), built into the binary under test, so these cases need nothing installed and
+//! run wherever the suite does, CI included. History, notes and `conform` run the pinned CLI under
+//! node (20 or later), which `harness::mdrev_cli` demands by name.
 //!
 //! Ports 2821–2825. The classic page has no preview pane, so there is no second surface here: the
 //! owner named the right-most pane, which only the app shell has.
-//!
-//! `mdrev_guest_` marks the cases that need the real guest (mdrev >= 1.1.6). CI skips that prefix
-//! by name, in the workflow, because no such release is public yet — the public tap stops at
-//! 0.16.45 — and says so there; `without_mdrev_markdown_stays_text` needs none and runs everywhere.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,7 +14,7 @@ use std::time::Duration;
 
 mod harness;
 use harness::{
-    at, base, chrome, eval, mdrev_cli, mdrev_release, read_tool_at, serial, tool_result_at, until,
+    at, base, chrome, eval, mdrev_cli, mdrev_pin, read_tool_at, serial, tool_result_at, until,
     user_at, Kind, Monitor, Stores,
 };
 
@@ -90,6 +88,13 @@ fn open_shell(m: &Monitor, tab: &headless_chrome::Tab) {
         Duration::from_secs(30),
         "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
     );
+    // An English reader, on every machine: mdrev takes its language from `navigator.languages`
+    // when its module first loads — which is the first Markdown mount, still ahead — and this
+    // harness's Chrome otherwise inherits the machine's (Chinese here, English on CI).
+    eval(
+        tab,
+        "Object.defineProperty(Navigator.prototype, 'languages', { configurable: true, get: () => ['en-US'] }); 'ok'",
+    );
 }
 
 /// What the preview pane holds right now, for a failure message.
@@ -121,19 +126,34 @@ fn h1(tab: &headless_chrome::Tab) -> String {
     .to_string()
 }
 
+/// mdrev's notes control on its toolbar, as `hidden|shown`, or `absent`. The guide: `annotate: false`
+/// "hides the notes control and the selection invite" — in the pinned bundle, `hidden: !notesAllowed`
+/// on a button whose `aria-label` is `Q("notes")`, the English source string itself for the English
+/// reader `open_shell` pins. Its label is all it carries, so a relabelled control reads `absent`,
+/// which fails rather than passes.
+const NOTES_CONTROL: &str = "(function(){ var b = [...document.querySelectorAll('#previewBody .mdrev-host .topbar button')].find(b => b.getAttribute('aria-label') === 'notes'); return b ? (b.hidden || b.offsetWidth === 0 ? 'hidden' : 'shown') : 'absent'; })()";
+
+/// mdrev's invitation to select text and file a note — only drawn where notes are allowed.
+const NOTE_INVITE: &str =
+    "document.querySelectorAll('#previewBody .mdrev-host .note-hint-x').length";
+
 /// The owner: "For embedded contents, only show a cleanly rendered viewer (as a reader)". The
 /// attachment's text is rendered by mdrev — a real heading, not `# Field notes` in a `<pre>` — held
 /// by the monitor for the contract, and with no toolbar at all.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and an installed mdrev release"]
-fn mdrev_guest_renders_transcript_markdown_as_a_clean_reader() {
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn mdrev_renders_transcript_markdown_as_a_clean_reader() {
     let _serial = serial();
-    let _ = mdrev_release();
     let (base, stores, _repo) = fixture("mdrev-reader");
     let m = Monitor::spawn(Kind::V2, 2821, &base, Some(&stores), true);
     let browser = chrome();
     let tab = browser.new_tab().unwrap();
     open_shell(&m, &tab);
+    assert_eq!(
+        eval(&tab, "document.body.dataset.mdrev").as_str(),
+        Some(mdrev_pin().as_str()),
+        "the page names the pinned release, and nothing on this machine chose it"
+    );
     open_notes(&tab);
     until(
         &tab,
@@ -180,10 +200,10 @@ fn mdrev_guest_renders_transcript_markdown_as_a_clean_reader() {
 /// A file on disk — a stamped path from a tool head — mounts the whole viewer over the file's own
 /// checkout, with mdrev's toolbar.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and an installed mdrev release"]
-fn mdrev_guest_renders_a_local_markdown_file_with_its_toolbar() {
+#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+fn mdrev_renders_a_local_markdown_file_with_its_toolbar() {
     let _serial = serial();
-    let _ = mdrev_release();
+    drop(mdrev_cli()); // the monitor's history and notes run the pinned CLI under node
     let (base, stores, repo) = fixture("mdrev-local");
     let m = Monitor::spawn(Kind::V2, 2822, &base, Some(&stores), true);
     let browser = chrome();
@@ -210,16 +230,25 @@ fn mdrev_guest_renders_a_local_markdown_file_with_its_toolbar() {
         Some(repo.display().to_string().as_str()),
         "the collection is the file's checkout"
     );
+    assert_eq!(
+        eval(&tab, NOTES_CONTROL).as_str(),
+        Some("shown"),
+        "notes are allowed: the monitor runs the pinned CLI under node"
+    );
+    assert_eq!(
+        eval(&tab, NOTE_INVITE).as_i64(),
+        Some(1),
+        "and mdrev invites one"
+    );
 }
 
 /// mdrev acts on its own keys while the reader is engaged with it; the shell's document-wide keymap
 /// must not answer the same press. `\` is the hardest case — a `when: "any"` binding (the sidebar),
 /// which no context value can switch off. Red without `inGuest` in shared/keymap.js.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and an installed mdrev release"]
-fn mdrev_guest_owns_a_key_pressed_while_the_reader_is_engaged_with_it() {
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn mdrev_owns_a_key_pressed_while_the_reader_is_engaged_with_it() {
     let _serial = serial();
-    let _ = mdrev_release();
     let (base, stores, repo) = fixture("mdrev-keys");
     let m = Monitor::spawn(Kind::V2, 2823, &base, Some(&stores), true);
     let browser = chrome();
@@ -280,51 +309,60 @@ fn mdrev_guest_owns_a_key_pressed_while_the_reader_is_engaged_with_it() {
     );
 }
 
-/// No mdrev, no regression: with the release made absent the attachment's Markdown is in the
-/// pane's `<pre>`, exactly as before #270.
+/// No node (#274): the pinned guest needs none, and neither does history — the contract makes the
+/// host's store the source of revisions, and the monitor reads them from git — but notes are
+/// mdrev's own format, written only through its CLI. So the local file keeps its toolbar and its
+/// two revisions, and the monitor refuses notes, which mdrev renders by hiding their control.
+/// `MDREV_NODE` is final when set (mdrev's own rule): that is how the case takes node away on a
+/// machine that has one.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn without_mdrev_markdown_stays_text() {
+fn without_node_a_local_markdown_file_keeps_its_history_and_takes_no_notes() {
     let _serial = serial();
-    let (base, stores, _repo) = fixture("mdrev-absent");
+    let (base, stores, repo) = fixture("mdrev-nonode");
     let m = Monitor::spawn_with(
         Kind::V2,
         2824,
         &base,
         Some(&stores),
         true,
-        &[("AGENT_MONITOR_MDREV", "/nonexistent-mdrev-release")],
+        &[("MDREV_NODE", "/nonexistent-node")],
     );
     let browser = chrome();
     let tab = browser.new_tab().unwrap();
     open_shell(&m, &tab);
-    assert_eq!(
-        eval(&tab, "document.body.dataset.mdrev").as_str(),
-        Some(""),
-        "the page knows there is none"
-    );
-    open_notes(&tab);
+    open_guide(&tab, &repo);
     until(
         &tab,
-        "!!document.querySelector('#previewBody pre.artifact-text')",
-        "the text view",
-        Duration::from_secs(20),
+        "document.querySelectorAll('#previewBody .mdrev-host .topbar').length > 0",
+        "the guide with mdrev's toolbar — history is in play without node",
+        Duration::from_secs(30),
         PANE,
     );
-    let text = eval(
+    assert_eq!(h1(&tab), "The guide");
+    eval(
         &tab,
-        "document.querySelector('#previewBody pre.artifact-text').textContent",
-    )
-    .as_str()
-    .unwrap_or("")
-    .to_string();
-    assert!(
-        text.starts_with("# Field notes"),
-        "the Markdown source, as before: {text:?}"
+        "(function(){ var d = document.querySelector('.mdrev-pane').dataset; \
+         fetch('/api/mdrev/revisions?root=' + encodeURIComponent(d.root) + '&path=' + \
+         encodeURIComponent(d.path) + '&cap=' + d.cap).then(r => r.json()) \
+         .then(l => { window.__revisions = l.map(r => r.subject).join(','); }); return 'ok'; })()",
+    );
+    until(
+        &tab,
+        "window.__revisions === 'second,first'",
+        "the guide's two commits, newest first, from git",
+        Duration::from_secs(10),
+        "String(window.__revisions)",
     );
     assert_eq!(
-        eval(&tab, "document.querySelectorAll('.mdrev-host').length").as_i64(),
-        Some(0)
+        eval(&tab, NOTES_CONTROL).as_str(),
+        Some("hidden"),
+        "no node, no notes: the monitor refuses them and mdrev hides its control"
+    );
+    assert_eq!(
+        eval(&tab, NOTE_INVITE).as_i64(),
+        Some(0),
+        "nor does it invite one"
     );
 }
 
@@ -333,10 +371,9 @@ fn without_mdrev_markdown_stays_text() {
 /// sidecar with the code `mdrev --notes` uses, closed and deleted. The guide: when your host passes
 /// it, you are done. The capability is read off the page, where a reader gets one too.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and an installed mdrev release"]
-fn mdrev_guest_contract_passes_mdrev_cli_conform() {
+#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+fn mdrev_contract_passes_mdrev_cli_conform() {
     let _serial = serial();
-    let tree = mdrev_release();
     let (base, stores, repo) = fixture("mdrev-conform");
     let port = 2825;
     let m = Monitor::spawn(Kind::V2, port, &base, Some(&stores), true);
@@ -363,7 +400,7 @@ fn mdrev_guest_contract_passes_mdrev_cli_conform() {
     let (root, path, cap) = (fact("root"), fact("path"), fact("cap"));
     assert_eq!(path, "docs/guide.md");
     let token = m.token().expect("a paired monitor has a token");
-    let out = Command::new(mdrev_cli(&tree))
+    let out = mdrev_cli()
         .args([
             "conform",
             "--url",

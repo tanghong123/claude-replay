@@ -13,7 +13,7 @@ use crate::ui;
 use claude_replay_html::{
     query_get, service_routes, HttpResponse, Request, RouteHandler, SessionService,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// What both binaries hold behind their routes: the session service, THE index, the scratch
@@ -44,9 +44,27 @@ pub struct Frontend {
     pub session: Option<SessionArm>,
 }
 
-/// The listener's handler over one backend and one frontend.
+/// The listener's handler over one backend and one frontend. It also installs the pinned mdrev,
+/// because this is the one constructor both binaries go through.
 pub fn handler(backend: Arc<Backend>, front: Frontend) -> RouteHandler {
+    install_mdrev(&backend.scratch);
     Arc::new(move |req: &Request| dispatch(&backend, &front, req))
+}
+
+/// mdrev's embedded viewer for the preview pane (#270), PINNED (#274): the release vendored at
+/// `vendor/mdrev`, built into this binary — no mdrev installed on the machine is looked for. Its
+/// bundle is served from memory; its CLI is written under `scratch` when a route first needs it,
+/// and run with node.
+pub fn install_mdrev(scratch: &Path) {
+    claude_replay_html::install_mdrev(
+        claude_replay_html::MdrevKit {
+            version: mdrev::VERSION,
+            bundle: mdrev::BUNDLE,
+            cli: mdrev::CLI,
+            package_json: mdrev::PACKAGE_JSON,
+        },
+        scratch.join("mdrev"),
+    );
 }
 
 /// One request through the table.
@@ -149,6 +167,44 @@ mod tests {
 
     fn body(resp: &HttpResponse) -> String {
         String::from_utf8_lossy(&resp.body).into_owned()
+    }
+
+    /// Both binaries build their handler here, so both carry the pinned mdrev (#274): the page
+    /// names the pin's version, and the bundle under it is the vendored file, byte for byte.
+    #[test]
+    fn the_handler_serves_the_pinned_mdrev() {
+        // The app page reads the remembered shell from the state dir (#153: never the real one).
+        let state = std::env::temp_dir().join(format!("cm-routes-mdrev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+        std::fs::create_dir_all(&state).unwrap();
+        let _env = crate::index::StateEnv::set(&state);
+        let front = Frontend {
+            version: "0.0.0-test",
+            paired: false,
+            classic: Arc::new(|_: &str| HttpResponse::html(String::new())),
+            session: None,
+        };
+        let serve = handler(make_backend("mdrev"), front);
+        assert_eq!(claude_replay_html::mdrev_version(), Some(mdrev::VERSION));
+        let page = body(&serve(&get("", "ui=app")));
+        assert!(
+            page.contains(&format!("data-mdrev=\"{}\"", mdrev::VERSION)),
+            "the app shell names the pinned version"
+        );
+        let entry = format!("mdrev/{}/mdrev.js", mdrev::VERSION);
+        let r = serve(&get(&entry, ""));
+        assert_eq!(r.code, "200 OK");
+        let vendored =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../vendor/mdrev/release/bundle/mdrev.js");
+        assert!(
+            r.body == std::fs::read(vendored).unwrap(),
+            "the vendored entry, byte for byte"
+        );
+        assert_eq!(
+            serve(&get("mdrev/0.16.45/mdrev.js", "")).code,
+            "404 Not Found",
+            "only the pin's version"
+        );
     }
 
     /// The table serves the same surface for both frontends; only the named differences vary.

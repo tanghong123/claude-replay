@@ -21,6 +21,9 @@ path = "src/main.rs"
 claude-replay-core = { path = "../claude-replay-core" }
 claude-replay-present = { path = "../claude-replay-present" }
 claude-replay-html = { path = "../claude-replay-html" }
+# mdrev's embedded viewer for the preview pane (#270), PINNED (#274): one released embedding kit,
+# vendored and built into both monitors. It moves only by `scripts/vendor-mdrev.sh <version>`.
+mdrev = { path = "../vendor/mdrev" }
 anyhow = "1"
 serde_json = "1"
 # Salted hash for the optional injection passcode (#133 grant gate). Small, audited; a

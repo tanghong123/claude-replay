@@ -269,6 +269,7 @@ dependencies = [
  "claude-replay-core",
  "claude-replay-html",
  "claude-replay-present",
+ "mdrev",
  "serde_json",
  "sha2",
 ]
@@ -1140,6 +1141,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
 dependencies = [
  "hashbrown 0.15.5",
+]
+
+[[package]]
+name = "mdrev"
+version = "1.1.12"
+dependencies = [
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

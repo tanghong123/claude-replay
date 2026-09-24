@@ -38,7 +38,7 @@ mod serve;
 pub mod shared;
 pub(crate) mod sig; // capability signatures for the local-file routes
 pub use bundle::{dump_all_html, dump_html};
-pub use mdrev::version as mdrev_version;
+pub use mdrev::{install as install_mdrev, version as mdrev_version, Kit as MdrevKit};
 pub use serve::{
     existing_server, get_request, handoff_url, mint_token, query_get, serve, service_routes,
     spawn_listener, spawn_listener_gated, start_server, AuthGate, HttpResponse, LiveServer,

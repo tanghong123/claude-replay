@@ -72,24 +72,35 @@ machine, not the API: `term`/`injectable` describe the process the row was LINKE
 link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.
 
 **Markdown in the preview pane is mdrev's viewer, as a guest** (#270,
-`design/mdrev-in-the-preview-pane.md`). The monitor carries none of mdrev: it FINDS one installed
-release at startup (`AGENT_MONITOR_MDREV`, final when set; else the `mdrev`/`mdrev-embed` kegs under
-the brew prefixes), serves its `bundle/` at `/mdrev/<version>/` (immutable, since the prefix names the
-version) and runs that same tree's `mdrev-cli` for notes — bundle and CLI from ONE release, as mdrev's
-guide §11 requires. Older than **1.1.6** counts as none (the `toolbar`/`review`/`annotate` options
-arrived then). Absent, the pane shows Markdown as text, exactly as before; the page learns which from
-`data-mdrev`. Both modes use mdrev's HTTP contract at `api/mdrev/` (`html_export/mdrev.rs`), never its
-in-process `client` (that seam needs renderer internals the release does not export): text a
-transcript CARRIES is handed to the monitor (`POST hold`), kept content-addressed in memory under a
+`design/mdrev-in-the-preview-pane.md`), and **mdrev is PINNED** (#274, the owner: "only depend on
+static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
+upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
+mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
+`docs/*.md`); its version IS the release's (1.1.12), `release.sha256` is checked by its tests (never
+hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
+depends on it, and `routes::handler` — the one constructor both binaries go through — installs it
+into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
+the machine is looked at. **The pin moves only by `scripts/vendor-mdrev.sh <version>`** (the public
+release's `mdrev-embed-<version>.tar.gz`, checked against the digest the release publishes; refuses
+< 1.1.6, whose guest ignores the `toolbar`/`review`/`annotate` options), then gates, the full browser
+suite and a commit of its own. mdrev's source repository is private: only its public release may
+enter this repository. The bundle is served from memory at `/mdrev/<version>/` (immutable, since the prefix
+names the version) and the page learns the version from `data-mdrev`. The CLI is written into the
+monitor's scratch and run with node ≥ 20 (`MDREV_NODE`, final when set; else `PATH`; else the brew
+prefixes). node gates NOTES only: without it `open` declares `annotate: false` and history comes from
+the name's `git log`. Both modes use mdrev's HTTP contract at `api/mdrev/` (`html_export/mdrev.rs`),
+never its in-process `client` (that seam needs renderer internals the release does not export): text
+a transcript CARRIES is handed to the monitor (`POST hold`), kept content-addressed in memory under a
 `Cap::Held` stamp, and mounted as a plain reader with no toolbar; a FILE opens through
 `GET open?path=&sig=`, and every route re-applies `/file`'s four guards with the file's own
 `Cap::File` stamp as mdrev's `cap`, so the viewer reads nothing the page was not offered. Notes are
 `mdrev-cli notes …` behind `deny_mutation` (PATCH/DELETE included), one document at a time.
-`mdrev-cli conform` against a live monitor is the definition of done
-(`mdrev_guest_contract_passes_mdrev_cli_conform`). Keys: `bindKeymap` tracks ENGAGEMENT as mdrev does
-— the last click or focus inside `[data-guest-keys]` — and yields every key while it holds; the host
-element is NOT focusable. The request parser REFUSES (413) a body over its route's bound instead of
-silently cutting it to 64 KB; `hold` gets the artifact cap.
+The pinned `mdrev-cli conform` against a live monitor is the definition of done
+(`mdrev_contract_passes_mdrev_cli_conform`); the mdrev browser cases need nothing installed and run in
+CI too. Keys: `bindKeymap` tracks ENGAGEMENT as mdrev does — the last click or focus inside
+`[data-guest-keys]` — and yields every key while it holds; the host element is NOT focusable. The
+request parser REFUSES (413) a body over its route's bound instead of silently cutting it to 64 KB;
+`hold` gets the artifact cap.
 
 `src/codex-ui/{reference.css,reference-shell.html,icons.js}` are **generated**, extracted
 byte-for-byte from `design/agent-monitor-codex-demo.html` by
@@ -505,6 +516,8 @@ A Cargo **workspace** with eight library/binary crates, layered for multi-level 
 (#71, #87): engine → agents → core (facade) → present → {tui, html} → the root binary
 crate — plus `claude-replay-browser-tests/`, a member deliberately kept OUT of
 `default-members` so its headless-Chrome dep never reaches an ordinary build — plus
+`vendor/mdrev/`, the PINNED mdrev release (#274): data only, versioned as the release it holds,
+and a dependency of `claude-monitor` alone — plus
 **`claude-monitor/`** — the machine-wide session index (#98): a loopback web service whose
 page is a session-list rail beside the html crate's session view in an iframe; scan/state/
 cards in `src/index.rs`, the rail in `src/rail.html`; lazy population — a session's durable

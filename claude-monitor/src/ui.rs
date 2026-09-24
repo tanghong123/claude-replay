@@ -102,8 +102,9 @@ pub fn page(version: &str, paired: bool, default_ui: bool) -> String {
         .replace("{{VERSION}}", version)
         .replace("{{PAIRED}}", if paired { "true" } else { "false" })
         .replace("{{DEFAULT_UI}}", if default_ui { "true" } else { "false" })
-        // The installed mdrev release the preview pane mounts Markdown with (#270), or "" when this
-        // machine has none — the page then renders Markdown as text, as it always did.
+        // The mdrev release the preview pane mounts Markdown with (#270), pinned into this binary
+        // (#274) and installed by `routes::handler`; "" only before that, when the page renders
+        // Markdown as text, as it always did.
         .replace(
             "{{MDREV}}",
             claude_replay_html::mdrev_version().unwrap_or(""),

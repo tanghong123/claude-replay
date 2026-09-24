@@ -1,0 +1,13 @@
+[package]
+name = "mdrev"
+# The PINNED mdrev release (#274). This crate's version IS that release's, so Cargo.lock names the
+# pin; it moves only by `scripts/vendor-mdrev.sh <version>`, never with the workspace's own version.
+version = "1.1.12"
+edition.workspace = true
+license = "MIT"
+publish = false
+description = "mdrev's embedding kit, vendored from one public mdrev release and built into the monitors"
+
+[dev-dependencies]
+serde_json = "1"
+sha2 = "0.10"

@@ -991,58 +991,40 @@ pub fn quiet_keys(tab: &headless_chrome::Tab) {
     );
 }
 
-/// The mdrev release tree a spawned monitor will serve (#270), found the way the monitor finds it:
-/// `AGENT_MONITOR_MDREV`, else the brew kegs. The mdrev cases PANIC without one, naming the fix —
-/// never a silent skip, which is how a missing dependency once read as a pass. CI installs the
-/// public release; a developer has it from `brew install tanghong123/tap/mdrev`.
+/// The mdrev release the monitors pin (#274): `vendor/mdrev`, built into both binaries — so the
+/// mdrev cases need nothing installed, and run wherever the suite does.
 pub fn mdrev_release() -> PathBuf {
-    // The monitor's own floor (html_export/mdrev.rs MIN_VERSION): an older guest is no guest.
-    let recent = |t: &Path| {
-        let pkg = std::fs::read_to_string(t.join("package.json")).unwrap_or_default();
-        let v: serde_json::Value = serde_json::from_str(&pkg).unwrap_or_default();
-        let core = v["version"]
-            .as_str()
-            .unwrap_or("")
-            .split(['-', '+'])
-            .next()
-            .unwrap_or("")
-            .to_string();
-        let n: Vec<u64> = core.split('.').filter_map(|p| p.parse().ok()).collect();
-        n.len() == 3 && (n[0], n[1], n[2]) >= (1, 1, 6)
-    };
-    let valid = |t: &Path| t.join("bundle/mdrev.js").is_file() && recent(t);
-    if let Some(t) = std::env::var_os("AGENT_MONITOR_MDREV").map(PathBuf::from) {
-        assert!(
-            valid(&t),
-            "AGENT_MONITOR_MDREV={} is not an mdrev release tree",
-            t.display()
-        );
-        return t;
-    }
-    for prefix in ["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"] {
-        for keg in ["mdrev", "mdrev-embed"] {
-            let t = Path::new(prefix).join("opt").join(keg).join("libexec");
-            if valid(&t) {
-                return t;
-            }
-        }
-    }
-    panic!(
-        "no mdrev release >= 1.1.6 — the mdrev_guest_ cases need the real guest: `alibrew install mdrev` \
-         (or `brew install tanghong123/tap/mdrev` once a 1.1.6+ is public), or set AGENT_MONITOR_MDREV \
-         to an unpacked mdrev-embed tree"
-    );
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("vendor/mdrev/release")
 }
 
-/// That tree's `mdrev-cli`: the keg's own `bin/` wrapper (which resolves node) when the tree is a
-/// keg's `libexec`, else the tree's launcher — the monitor's own rule.
-pub fn mdrev_cli(tree: &Path) -> PathBuf {
-    let keg = tree
-        .parent()
-        .filter(|_| tree.file_name().is_some_and(|n| n == "libexec"))
-        .map(|p| p.join("bin/mdrev-cli"))
-        .filter(|p| p.is_file());
-    keg.unwrap_or_else(|| tree.join("mdrev-cli"))
+/// The pinned version, as the page must name it (`data-mdrev`).
+pub fn mdrev_pin() -> String {
+    let pkg = std::fs::read_to_string(mdrev_release().join("package.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&pkg).unwrap();
+    v["version"].as_str().unwrap().to_string()
+}
+
+/// The PINNED `mdrev-cli`, run with node — `conform` must come from the release the monitor
+/// serves. Panics naming the fix when there is no node: the kit's CLI needs one (20 or later), and
+/// so do the monitor's history and notes, which the same cases exercise.
+pub fn mdrev_cli() -> std::process::Command {
+    let node = std::env::var_os("MDREV_NODE")
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "node".into());
+    let runs = std::process::Command::new(&node)
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    assert!(
+        runs,
+        "no node to run mdrev-cli ({node:?}) — the mdrev cases need node >= 20 on PATH"
+    );
+    let mut cmd = std::process::Command::new(node);
+    cmd.arg(mdrev_release().join("mdrev-cli.js"));
+    cmd
 }
 
 pub struct Monitor {
@@ -1063,9 +1045,9 @@ impl Monitor {
         Self::spawn_with(kind, port, base, stores, paired, &[])
     }
 
-    /// [`Monitor::spawn`] with extra environment for the monitor process ONLY — a case that must
-    /// make mdrev absent (`AGENT_MONITOR_MDREV=<nothing>`, #270) sets it on the child rather than
-    /// on this process, where every case running in parallel would inherit it.
+    /// [`Monitor::spawn`] with extra environment for the monitor process ONLY — a case that takes
+    /// node away from mdrev (`MDREV_NODE=<nothing runnable>`, #274) sets it on the child rather
+    /// than on this process, where every case running in parallel would inherit it.
     pub fn spawn_with(
         kind: Kind,
         port: u16,

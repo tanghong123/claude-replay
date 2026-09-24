@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="mdrev">
+  <!--
+    One line removed above one line added: a redline, which is what the tool is
+    for.
+
+    Drawn for 16px, because that is where a favicon actually lives. A first
+    attempt used three thinner bars including a neutral "document" line; at tab
+    size they smudged into one another and the red and green stopped being
+    distinguishable, which loses the only thing the icon has to say. Two chunky
+    bars survive the downscale, and unequal widths keep it reading as text
+    rather than as a flag.
+
+    Single-look on purpose: a favicon sits on browser chrome rather than on the
+    page, so it should hold against a light or dark tab strip instead of
+    matching either.
+  -->
+  <rect width="32" height="32" rx="7" fill="#1b4f96"/>
+  <rect x="6" y="8" width="20" height="7" rx="3.5" fill="#ff8a8a"/>
+  <rect x="6" y="18" width="15" height="7" rx="3.5" fill="#69d569"/>
+</svg>

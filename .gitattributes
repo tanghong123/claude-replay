@@ -1,0 +1,3 @@
+# The vendored mdrev release (#274) is third-party code: keep it out of the language statistics.
+# Its diffs stay ON — .githooks/pre-push reads `git log -p` for the corporate address.
+vendor/mdrev/release/** linguist-vendored

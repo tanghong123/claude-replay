@@ -1,21 +1,23 @@
 # mdrev in the preview pane (#270)
 
-*Status: built in v1.296.0 (#270). The record of what was decided and why.*
+*Status: built in v1.296.0 (#270); mdrev PINNED in v1.297.0 (#274). The record of what was decided
+and why.*
 
 The owner, 2026-09-24: render the Markdown the app shell's right-most pane shows through
 **mdrev's embedded viewer, as a guest** — a clean reader for Markdown the transcript itself
 carries, and the viewer with its toolbar (redlines against history, review notes) for a Markdown
 file read from the local disk. And: **use mdrev's released artifacts**.
 
-mdrev's embedding guide and contract ship inside every mdrev release, at
-`<prefix>/opt/mdrev/libexec/docs/`; this page assumes them and says only what the monitor does.
+mdrev's embedding guide and contract ship inside every mdrev release, and the pinned release's are
+in this repository at `vendor/mdrev/release/docs/`. This page assumes them and says only what the
+monitor does.
 
 ## Two modes, decided by where the text came from
 
 | The pane shows | mdrev is mounted as | Declared |
 |---|---|---|
 | Markdown the transcript CARRIES — an attachment's `att_text` (`item.text != null`) | a plain reader | `review: false`, `annotate: false`, `isGit: false`, `toolbar: 'none'` |
-| a Markdown FILE, read through its capability-stamped `/file` link | the whole viewer | `review: true`, `annotate: true`; history and notes from the file's own checkout |
+| a Markdown FILE, read through its capability-stamped `/file` link | the whole viewer | `review: true`; `annotate: true` where the monitor has node to run mdrev's CLI, else `false`; history and notes from the file's own checkout |
 
 "Markdown" is the tab's name ending in `.md`, `.markdown`, `.mdown` or `.mkd`. Everything else
 the pane shows is unchanged: images through the shared image view, `.html` in its sandbox,
@@ -25,37 +27,68 @@ other text in a `<pre>`.
 its own": the chrome goes, the keys stay. The moment `review` or `annotate` is effective the
 toolbar is always present and its controls are not the host's to hide — mdrev's rule, not ours.
 
-## The release is found, not built in
+## One release, pinned
 
-mdrev is public, in the same tap as agent-monitor (`tanghong123/tap/mdrev`), and its release tree
-is a keg: `bundle/` (the guest: `mdrev.js`, `mdrev.css`, lazy `chunks/`, `assets/`), `mdrev-cli`
-and a `package.json` naming the version. The monitor looks for ONE tree when it starts:
+The owner, 2026-09-25, after v1.296.0 had shipped a monitor that FOUND an installed mdrev when it
+started: "only depend on static version of mdrev, similar to how agent-monitor depends on crates in
+claude-replay. Future upgrades will be triggered explicitly and manually". And: pin **1.1.12**,
+"the latest version today and has all the embedding features we need".
 
-1. `AGENT_MONITOR_MDREV=<tree>` — explicit, and final: an explicit tree that is not valid means
-   mdrev is off, never "try the next one" (that is how a case makes it absent on purpose);
-2. `opt/mdrev/libexec`, then `opt/mdrev-embed/libexec` (the corp tap's kit-only keg), under each of
-   `/opt/homebrew`, `/usr/local` and `/home/linuxbrew/.linuxbrew`.
+So mdrev is a crate in this workspace, `vendor/mdrev` (#274), and `claude-monitor` depends on it the
+way it depends on the html crate. The crate holds the embedding kit of one PUBLIC mdrev release,
+unmodified, under `release/`: `bundle/` (the guest: `mdrev.js`, `mdrev.css`, lazy `chunks/`,
+`assets/`), `mdrev-cli.js` with its `package.json`, and `docs/*.md`. Its version is the release's,
+so `Cargo.lock` names the pin. Its build script turns `bundle/` into a table of `include_bytes!`,
+and both monitors serve that from memory. Nothing installed on the machine is looked at, and
+`agent-replay`, which has no preview pane, carries none of it — the html crate defines the kit's
+shape (`MdrevKit`) and never names the crate, and `claude_monitor::routes::handler`, the one
+constructor both binaries go through, installs it.
 
-A tree is valid when it has both bundle entries, a version, and a `mdrev-cli` — the keg's
-`bin/mdrev-cli` wrapper first (it resolves node), else the tree's own launcher — and the version is
-at least **1.1.6**. `toolbar` arrived in 1.1.6-dev9 and the `review`/`annotate` ceilings in
-1.1.6-dev11; an older guest takes options it does not know as nothing and would draw its toolbar over
-Markdown the owner asked to be read clean, so an older tree counts as none. Measured 2026-09-24: the
-public tap's mdrev is 0.16.45, the corp tap's 1.1.12 — so today the viewer lights up for readers on
-the corp tap, and for everyone else the day a 1.1.6+ is public.
-
-Why not compile the bundle into the binary: it is 7.5 MB, and the guide's §11 requires the bundle
-and `mdrev-cli` to come from **one release** ("they share the note record and the anchor format").
-The CLI needs node and git on the machine anyway; a bundle frozen into agent-monitor beside a CLI
-that `brew upgrade` moves is exactly the pairing §11 forbids. Found at runtime, the two are one keg
-and upgrade together.
+- **Provenance.** The source is the public release's `mdrev-embed-<version>.tar.gz` — "the kit
+  alone", in mdrev's release notes — checked against the sha256 digest the release publishes for
+  it. For 1.1.12 the application tarball's kit and the corp tap's kit matched it byte for byte
+  (bundle, CLI, `package.json`, contract); the corp edition's guides differ only in their install
+  instructions, which is also why nothing is taken from it. `vendor/mdrev/README.md` has the URL,
+  the checksum and the date; `release.sha256` has every file's checksum, and `cargo test -p mdrev`
+  holds the tree to it, so a hand edit fails a gate.
+- **Moving it.** `scripts/vendor-mdrev.sh <version>` is the only way: download, digest check, unpack,
+  check (both entries, `package.json` naming the version, the CLI reporting the same version under
+  node — the guide's §11: bundle and CLI from ONE release), replace `release/` whole, rewrite the
+  manifest, the crate's version and the README's provenance rows, then `cargo check -p mdrev`. It
+  refuses a kit older than **1.1.6**: `toolbar` arrived in 1.1.6-dev9 and the `review`/`annotate`
+  ceilings in 1.1.6-dev11, and an older guest takes those options as nothing and would draw its
+  toolbar over Markdown the owner asked to be read clean. A test holds the pin to the same floor. The
+  bump is then reviewed (`git diff vendor/mdrev/release/docs/contract.md` says what the host must now
+  honour), put through the gates and the full browser suite, and committed as a change of its own.
+- **The CLI.** The binary writes `mdrev-cli.js` and its `package.json` into its scratch directory
+  (`<scratch>/mdrev/<version>/`) the first time a route needs it, over whatever is there, and runs it
+  as `node mdrev-cli.js … --root <root>`. node is found once: `MDREV_NODE` first and FINAL when set
+  (mdrev's own launchers read it that way, and it is how a case takes node away), else the first
+  `node` on `PATH`, else `/opt/homebrew/bin`, `/usr/local/bin` or Linuxbrew — a monitor started by
+  launchd has no brew on its `PATH`. It must report 20 or later (the kit's README).
+- **Without node.** The guest needs no node, and neither does history: the contract makes the
+  host's store the source of revisions, so the monitor lists the NAME's history from `git log`
+  (entries without `path`, the contract's shape for a host that does not follow renames). Notes are
+  mdrev's own format, written only through its CLI, so without node `open` declares
+  `annotate: false`, and mdrev hides its notes control and never asks the annotation routes. The
+  monitor says so once, on stderr, when it first looks.
 
 The bundle is served at `/mdrev/<version>/…` — a **versioned prefix**, because the two entries are
-not content-hashed and a page must not keep a stale `mdrev.js` across an upgrade. Everything under
-it is cacheable forever. A page that asks for another version gets 404 and reloads.
+not content-hashed and a page must not keep a stale `mdrev.js` across a monitor upgrade that moved
+the pin. Everything under it is cacheable forever. A page that asks for another version gets 404 and
+reloads.
 
-**Absent**, the pane renders exactly what it rendered before: the text in a `<pre>`. No mdrev, no
-regression.
+A server that installed no kit (`agent-replay --html`) answers every mdrev route 404 and names no
+version, and the pane renders what it rendered before mdrev: the text in a `<pre>`. So does a
+document mdrev cannot mount.
+
+**What v1.296.0 did instead**, and why the pin is better on its own terms: the monitor looked for an
+installed release at startup (`AGENT_MONITOR_MDREV`, else the `mdrev`/`mdrev-embed` kegs), because a
+bundle compiled in beside a CLI that `brew upgrade` moves would break §11. The pin meets §11 by
+construction — bundle and CLI come from the same vendored release, and neither moves unless the
+repository does. It also removed the class of bug discovery had: a running monitor upgraded
+underneath served the new tree's files under the old version's immutable prefix (#273, cancelled
+with discovery). And the viewer now works on a machine with no mdrev installed, CI included.
 
 ## Both modes go through the contract
 
@@ -104,11 +137,11 @@ the guards again before touching the disk. The table:
 |---|---|---|
 | `GET text?rev=current` | the file, as `/file` would read it | |
 | `GET text?rev=<commit>` | `git show <commit>:<name>`, the name taken from the revisions below | `rev` must be hex — never an option git would parse |
-| `GET revisions` | `mdrev-cli revisions --path P`, cached per `HEAD` | what mdrev-v2 does: renames followed exactly as mdrev follows them |
+| `GET revisions` | `mdrev-cli revisions --path P`, cached per `HEAD`; without node, the name's `git log` | what mdrev-v2 does: renames followed exactly as mdrev follows them — by the CLI only |
 | `GET revisions` (no `path`) | `git log` of the collection | only for a root some hosted session explains |
 | `GET asset` | a raster image, as `/file` serves one | SVG is script-bearing; not served as an image |
 | `POST resolve` | a `Cap::File` stamp per target inside the root that passes containment and the render policy; `null` otherwise | the viewer draws a refusal and never asks |
-| `GET/POST/PATCH/DELETE annotations…` | `mdrev-cli notes list/add/resolve/wontfix/reopen/reply/delete/delete-reply --root R` | writes are gated like the monitor's other writes; one document's calls are serialised |
+| `GET/POST/PATCH/DELETE annotations…` | `mdrev-cli notes list/add/resolve/wontfix/reopen/reply/delete/delete-reply --root R` | writes are gated like the monitor's other writes; one document's calls are serialised; without node, refused (`annotate: false`, so never asked) |
 | `GET snapshot?blob=` | `git cat-file -p <blob>` | `blob` must be hex |
 | `GET stat` | `{mtimeMs}` | |
 | `GET events` | 204 — the viewer polls | |
@@ -159,20 +192,27 @@ pane always gets mdrev's narrow layout. The owner declined a narrower toolbar in
 
 ## How it is held
 
-- **Unit** (`html_export/mdrev.rs`): discovery over fixture trees; the static prefix (version,
-  traversal, media types); the held store (content addressing, the bound, the stamp); every local
-  route's guards (unpaired, cross-origin, a wrong stamp, `..`, a non-hex `rev`); `revisions` and the
-  note routes against a stand-in `mdrev-cli` that records its arguments; text at a revision against
-  a fixture repository; 413 for an oversized body.
-- **Browser** (app shell, real Chrome, the real release): an attachment carrying Markdown mounts a
-  reader with a rendered heading and no toolbar; a committed file mounts the viewer with its toolbar;
-  a key pressed inside the mount leaves the transcript's search where it was (red before the keymap
-  rule); with mdrev absent the text is in a `<pre>` as before.
-- **The contract itself**: `mdrev-cli conform` against a live paired monitor — every route, every
-  shape, and a note filed, found in the sidecar, closed and deleted. The guide: when your host
-  passes it, you are done.
-- **CI** cannot provision a guest: no mdrev >= 1.1.6 is public yet, and the corp tap is out of its
-  reach. The cases that need one are named `mdrev_guest_…` and the workflow skips that prefix by name,
-  with the reason beside it — the `known_red_` convention, never a silent pass. The fallback case and
-  the contract's unit tests (a stand-in `mdrev-cli`) run there; the guest cases run wherever mdrev is
-  installed, and `harness::mdrev_release` panics naming the fix when it is not.
+- **The pin** (`vendor/mdrev`): the tree matches `release.sha256` byte for byte and holds nothing
+  else; the embedded table is the `bundle/` directory as it stands; the crate's version is the
+  release's `package.json`; the version is at least 1.1.6 and fit for a URL segment. Each was
+  checked by mutation — a byte appended to `mdrev.css`, a stray file in `docs/`.
+- **Unit** (`html_export/mdrev.rs`): the bundle from memory under its version (another version, `..`,
+  a directory, the SVG, a missing name — all 404); finding node (`MDREV_NODE` final, `PATH`, the
+  prefixes, 20 or later); writing the CLI beside its `package.json` and over a tampered copy; the
+  held store (content addressing, the bound, the stamp); every local route's guards (unpaired,
+  cross-origin, a wrong stamp, `..`, a non-hex `rev`); `revisions` and the note routes against a
+  stand-in `mdrev-cli` that records its arguments; without node, history from git and notes
+  refused; text at a revision against a fixture repository; 413 for an oversized body. And in
+  `claude-monitor`: the handler both binaries build installs the pin — the page names its version
+  and `/mdrev/<version>/mdrev.js` is the vendored file, byte for byte.
+- **Browser** (app shell, real Chrome, the pinned guest in the binary under test): an attachment
+  carrying Markdown mounts a reader with a rendered heading and no toolbar, on a page that names the
+  pin; a committed file mounts the viewer with its toolbar and its notes control; a key pressed
+  inside the mount leaves the transcript's search where it was (red before the keymap rule);
+  without node (`MDREV_NODE` pointed at nothing) the file keeps its toolbar and its two revisions
+  and mdrev hides its notes control — red when `open` grants notes regardless.
+- **The contract itself**: the pinned `mdrev-cli conform`, run with node against a live paired
+  monitor — every route, every shape, and a note filed, found in the sidecar, closed and deleted.
+  The guide: when your host passes it, you are done.
+- **CI** runs all of it: the guest is in the binary, so nothing needs installing; the browser job
+  sets up node for the CLI.

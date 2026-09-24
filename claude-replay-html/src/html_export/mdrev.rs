@@ -1,16 +1,20 @@
 //! mdrev's embedded viewer, as a guest in the app shell's preview pane (#270) — the monitor's half
 //! of mdrev's embedding contract. `design/mdrev-in-the-preview-pane.md` is the design; mdrev's own
-//! guide and contract ship inside every release, at `<tree>/docs/`.
+//! guide and contract are pinned with the release, at `vendor/mdrev/release/docs/`.
 //!
-//! Three things live here, and nothing of mdrev is compiled in:
+//! Three things live here:
 //!
-//! * **the release** — ONE installed mdrev tree, found when the process starts. Its `bundle/` is
-//!   the guest the page mounts and its `mdrev-cli` is the note store; they come from one release
-//!   because the guide requires it (§11: "they share the note record and the anchor format"),
-//!   which is also why the bundle is not built into the binary beside a CLI that `brew upgrade`
-//!   moves on its own;
-//! * **`mdrev/<version>/…`** — that bundle as static files, under a prefix that names the version,
-//!   since the two entries are not content-hashed and a page must not keep a stale one;
+//! * **the kit** — ONE mdrev release, PINNED (#274): the monitors build the vendored release
+//!   (`vendor/mdrev`, the `mdrev` crate) into their binaries and [`install`] it when they start.
+//!   Its `bundle/` is the guest the page mounts and its `mdrev-cli.js` is the note store, run with
+//!   node; they come from one release because the guide requires it (§11: "they share the note
+//!   record and the anchor format"). Nothing installed on the machine is looked at — the version
+//!   in the repository is the dependency, and it moves only by `scripts/vendor-mdrev.sh`. This
+//!   crate never names the kit's crate, so `agent-replay`, which serves no preview pane, carries
+//!   none of it;
+//! * **`mdrev/<version>/…`** — that bundle, from memory, under a prefix that names the version,
+//!   since the two entries are not content-hashed and a page must not keep a stale one across a
+//!   monitor upgrade that moved the pin;
 //! * **`api/mdrev/…`** — the contract, for two collections. `held` is Markdown the transcript
 //!   itself carries, which the page hands to us and we keep content-addressed in memory; any other
 //!   `root` is a directory on this machine, and every route about a document in it re-applies the
@@ -31,105 +35,156 @@ use super::serve::{
 use super::sig::{self, Cap};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-// ---------------------------------------------------------------------------------- the release
+// ------------------------------------------------------------------------------------- the kit
 
-/// One installed mdrev release: where its `bundle/` is served from and which `mdrev-cli` to run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Release {
-    pub tree: PathBuf,
-    pub version: String,
-    pub cli: PathBuf,
+/// A pinned mdrev release, as a binary carries it (#274): its version, every file of its `bundle/`
+/// by its path inside `bundle/` — sorted by that path, so a lookup is a binary search — and its
+/// CLI with the `package.json` the CLI reads its version from.
+#[derive(Clone, Copy)]
+pub struct Kit {
+    pub version: &'static str,
+    pub bundle: &'static [(&'static str, &'static [u8])],
+    pub cli: &'static [u8],
+    pub package_json: &'static [u8],
 }
 
-/// An explicit release tree. FINAL when set: a tree named here that is not valid means mdrev is
-/// off, never "try the next place" — which is how a case makes mdrev absent on purpose.
-pub const TREE_ENV: &str = "AGENT_MONITOR_MDREV";
+/// The kit this process serves, and how its CLI runs here — found on first use, since that means
+/// writing the CLI out and finding a node to run it.
+pub(super) struct Release {
+    version: &'static str,
+    bundle: &'static [(&'static str, &'static [u8])],
+    kit: Option<Kit>,
+    dir: PathBuf,
+    cli: OnceLock<Option<Vec<OsString>>>,
+}
 
-/// Where a keg lives: Apple silicon, Intel, Linuxbrew. `mdrev` is the application, with the kit
-/// inside it (the public tap); `mdrev-embed` is the kit alone (the corp tap).
-const PREFIXES: &[&str] = &["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"];
-const KEGS: &[&str] = &["mdrev", "mdrev-embed"];
+static INSTALLED: OnceLock<Release> = OnceLock::new();
 
-/// The oldest mdrev whose guest understands what this host declares — `toolbar` arrived in
-/// 1.1.6-dev9 and the `review`/`annotate` ceilings in 1.1.6-dev11 (mdrev's own history). An older
-/// guest takes the options it does not know as nothing and draws its toolbar over Markdown the owner
-/// asked to be read clean, so an older tree counts as no mdrev at all: the pane keeps its text view.
-/// Measured 2026-09-24: the public tap's mdrev is 0.16.45; the corp tap's is 1.1.12.
-const MIN_VERSION: (u64, u64, u64) = (1, 1, 6);
+/// Serve `kit`, writing its CLI under `dir` when a route first needs it. Once per process: a
+/// binary carries exactly one kit, so a second call is ignored.
+pub fn install(kit: Kit, dir: PathBuf) {
+    let _ = INSTALLED.set(Release {
+        version: kit.version,
+        bundle: kit.bundle,
+        kit: Some(kit),
+        dir,
+        cli: OnceLock::new(),
+    });
+}
 
-/// `version >= min`, semver's way: `1.1.12-dev4` is past `1.1.6`, while `1.1.6-dev11` — a
-/// pre-release OF the minimum — is not yet it.
-fn at_least(version: &str, min: (u64, u64, u64)) -> bool {
-    let (core, pre) = match version.split_once(['-', '+']) {
-        Some((c, _)) => (c, true),
-        None => (version, false),
+/// The kit this process serves. `None` in a server that installed none (`agent-replay --html`),
+/// where the routes answer 404 and the page keeps rendering Markdown as text.
+fn release() -> Option<&'static Release> {
+    INSTALLED.get()
+}
+
+impl Release {
+    /// The command that runs the kit's CLI — `node <dir>/<version>/mdrev-cli.js` — or `None` when
+    /// this machine has no node fit to run it. Then notes are not offered (`open` says so) rather
+    /// than failing on every call, and history comes from git instead of the CLI.
+    fn cli_argv(&self) -> Option<&[OsString]> {
+        self.cli
+            .get_or_init(|| {
+                let kit = self.kit?;
+                let explicit = std::env::var_os("MDREV_NODE");
+                let Some(node) = find_node(explicit, std::env::var_os("PATH"), NODE_FALLBACKS, &node_fits)
+                else {
+                    eprintln!(
+                        "mdrev: review notes are off — no node >= {NODE_MAJOR} (MDREV_NODE, PATH, {}); \
+                         history comes from git, without following renames",
+                        NODE_FALLBACKS.join(", ")
+                    );
+                    return None;
+                };
+                match write_cli(&kit, &self.dir) {
+                    Ok(script) => Some(vec![node.into_os_string(), script.into_os_string()]),
+                    Err(e) => {
+                        eprintln!(
+                            "mdrev: review notes are off — writing mdrev-cli into {}: {e}",
+                            self.dir.display()
+                        );
+                        None
+                    }
+                }
+            })
+            .as_deref()
+    }
+}
+
+/// The oldest node the kit runs on — its README: "Requires node ≥ 20".
+const NODE_MAJOR: u64 = 20;
+
+/// Where node is when it is not on the PATH the monitor was started with — a launchd agent, a
+/// shell that never sourced brew's environment: Apple silicon, Intel, Linuxbrew.
+const NODE_FALLBACKS: &[&str] = &[
+    "/opt/homebrew/bin/node",
+    "/usr/local/bin/node",
+    "/home/linuxbrew/.linuxbrew/bin/node",
+];
+
+/// The node to run the CLI with. `MDREV_NODE` is mdrev's own name for "this node" and is FINAL when
+/// set, as it is in mdrev's launchers (`${MDREV_NODE:-node}`, so an empty one is unset) — which is
+/// also how a case takes node away. Otherwise the first fit `node` on `PATH`, then the fallbacks.
+fn find_node(
+    explicit: Option<OsString>,
+    path: Option<OsString>,
+    fallbacks: &[&str],
+    fits: &dyn Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if let Some(node) = explicit.filter(|n| !n.is_empty()).map(PathBuf::from) {
+        return fits(&node).then_some(node);
+    }
+    let on_path: Vec<PathBuf> = path
+        .map(|p| std::env::split_paths(&p).map(|d| d.join("node")).collect())
+        .unwrap_or_default();
+    on_path
+        .into_iter()
+        .chain(fallbacks.iter().map(PathBuf::from))
+        .find(|n| n.is_file() && fits(n))
+}
+
+/// A node runs, and reports a version the kit runs on.
+fn node_fits(node: &Path) -> bool {
+    let Ok(out) = Command::new(node)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
     };
-    let mut parts = core.split('.').map(|p| p.parse::<u64>());
-    match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some(Ok(a)), Some(Ok(b)), Some(Ok(c)), None) => {
-            (a, b, c) > min || ((a, b, c) == min && !pre)
-        }
-        _ => false,
-    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let major = text
+        .trim()
+        .strip_prefix('v')
+        .and_then(|v| v.split('.').next())
+        .and_then(|m| m.parse::<u64>().ok());
+    out.status.success() && major.is_some_and(|m| m >= NODE_MAJOR)
 }
 
-/// The release this process serves, found once. `None` means the pane keeps rendering Markdown as
-/// text, exactly as it did before mdrev was integrated.
-pub fn release() -> Option<&'static Release> {
-    static R: OnceLock<Option<Release>> = OnceLock::new();
-    R.get_or_init(|| discover(std::env::var_os(TREE_ENV).map(PathBuf::from), &candidates()))
-        .as_ref()
-}
-
-fn candidates() -> Vec<PathBuf> {
-    PREFIXES
-        .iter()
-        .flat_map(|p| {
-            KEGS.iter()
-                .map(move |k| Path::new(p).join("opt").join(k).join("libexec"))
-        })
-        .collect()
-}
-
-fn discover(explicit: Option<PathBuf>, candidates: &[PathBuf]) -> Option<Release> {
-    match explicit {
-        Some(tree) => validate(&tree),
-        None => candidates.iter().find_map(|t| validate(t)),
+/// The kit's CLI, written out where node can run it: `<dir>/<version>/mdrev-cli.js`, beside the
+/// `package.json` it reads its version from. Rewritten once per process over whatever is there —
+/// the binary's copy is the pin, a file left in a scratch directory is not — and each file lands
+/// by rename, so a reader never sees half of one.
+fn write_cli(kit: &Kit, dir: &Path) -> std::io::Result<PathBuf> {
+    let at = dir.join(kit.version);
+    std::fs::create_dir_all(&at)?;
+    for (name, bytes) in [
+        ("package.json", kit.package_json),
+        ("mdrev-cli.js", kit.cli),
+    ] {
+        let tmp = at.join(format!(".{name}.{}", std::process::id()));
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, at.join(name))?;
     }
-}
-
-/// A tree is a release when it has both bundle entries, a version fit for a URL segment, and a
-/// `mdrev-cli`. In a keg (`…/libexec`) the keg's own `bin/mdrev-cli` wins: it is the wrapper that
-/// resolves node. Anywhere else only the tree's own launcher counts — the sibling `bin/` of an
-/// unpacked tarball in `/opt` is somebody else's directory.
-fn validate(tree: &Path) -> Option<Release> {
-    let bundle = tree.join("bundle");
-    if !bundle.join("mdrev.js").is_file() || !bundle.join("mdrev.css").is_file() {
-        return None;
-    }
-    let pkg: Value =
-        serde_json::from_slice(&std::fs::read(tree.join("package.json")).ok()?).ok()?;
-    let version = pkg.get("version")?.as_str()?.to_string();
-    let url_safe = |b: u8| b.is_ascii_alphanumeric() || b == b'.' || b == b'-';
-    if version.is_empty() || !version.bytes().all(url_safe) || !at_least(&version, MIN_VERSION) {
-        return None;
-    }
-    let keg_bin = (tree.file_name().and_then(|n| n.to_str()) == Some("libexec"))
-        .then(|| tree.parent().map(|p| p.join("bin").join("mdrev-cli")))
-        .flatten()
-        .filter(|p| p.is_file());
-    let cli = keg_bin.or_else(|| Some(tree.join("mdrev-cli")).filter(|p| p.is_file()))?;
-    Some(Release {
-        tree: tree.to_path_buf(),
-        version,
-        cli,
-    })
+    Ok(at.join("mdrev-cli.js"))
 }
 
 // ------------------------------------------------------------------------------------ dispatch
@@ -159,14 +214,14 @@ fn contract(
     held: &Mutex<Held>,
 ) -> HttpResponse {
     let Some(rel) = rel else {
-        return HttpResponse::not_found("mdrev is not installed");
+        return HttpResponse::not_found("this server carries no mdrev");
     };
     if !req.origin_ok {
         return HttpResponse::forbidden("cross-origin request refused");
     }
     match route {
         "hold" => return hold(req, held),
-        "open" => return open(live, req),
+        "open" => return open(rel, live, req),
         // Reveal is interim — it will be replaced by a web file browser (#272) — so mdrev's rail
         // does not get a new Finder path. 501 is the contract's "never": the entry leaves the menu.
         "reveal" | "forget" => {
@@ -193,44 +248,31 @@ fn contract(
 
 fn bundle_file(rel: Option<&Release>, rest: &str) -> HttpResponse {
     let Some(rel) = rel else {
-        return HttpResponse::not_found("mdrev is not installed");
+        return HttpResponse::not_found("this server carries no mdrev");
     };
     let Some((version, file)) = rest.split_once('/') else {
         return HttpResponse::not_found("no such file");
     };
-    // Another version is a page from before an upgrade: 404, and it reloads.
+    // Another version is a page from before the monitor moved the pin: 404, and it reloads.
     if version != rel.version {
         return HttpResponse::not_found("no such mdrev version");
-    }
-    let plain =
-        |s: &str| !s.is_empty() && s != "." && s != ".." && !s.contains('\\') && !s.contains('\0');
-    if !file.split('/').all(plain) {
-        return HttpResponse::not_found("no such file");
     }
     let ext = file.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     let Some(ct) = bundle_type(&ext) else {
         return HttpResponse::not_found("no such file");
     };
-    let base = rel.tree.join("bundle");
-    // The belt to the segment check: nothing — a symlink inside the keg included — leads out.
-    let (Ok(real), Ok(root)) = (base.join(file).canonicalize(), base.canonicalize()) else {
+    // The table IS the bundle: a name not in it — `..`, an absolute path, a directory — names
+    // nothing, and there is no filesystem underneath to lead anywhere else.
+    let Ok(i) = rel.bundle.binary_search_by(|(path, _)| (*path).cmp(file)) else {
         return HttpResponse::not_found("no such file");
     };
-    if !real.starts_with(&root) || !real.is_file() {
-        return HttpResponse::not_found("no such file");
-    }
-    match std::fs::read(&real) {
-        Ok(bytes) => {
-            let mut r = HttpResponse::ok(ct, bytes);
-            // The prefix names the version, so nothing under it ever changes.
-            r.headers
-                .push("Cache-Control: public, max-age=31536000, immutable".to_string());
-            r.headers
-                .push("X-Content-Type-Options: nosniff".to_string());
-            r
-        }
-        Err(_) => HttpResponse::not_found("no such file"),
-    }
+    let mut r = HttpResponse::ok(ct, rel.bundle[i].1.to_vec());
+    // The prefix names the version, so nothing under it ever changes.
+    r.headers
+        .push("Cache-Control: public, max-age=31536000, immutable".to_string());
+    r.headers
+        .push("X-Content-Type-Options: nosniff".to_string());
+    r
 }
 
 /// What the bundle is made of (measured on 1.1.12: js, css, woff2, woff, ttf). The favicon's SVG
@@ -401,8 +443,8 @@ fn held_route(req: &Request, route: &str, held: &Mutex<Held>) -> HttpResponse {
 // ------------------------------------------------------------------------------ local files
 
 /// The mount's facts for a file the page already holds a `/file` stamp for:
-/// `{root, path, cap, isGit, name}`. The same four guards as `/file`.
-fn open(live: Option<&SessionService>, req: &Request) -> HttpResponse {
+/// `{root, path, cap, isGit, name, review, annotate}`. The same four guards as `/file`.
+fn open(rel: &Release, live: Option<&SessionService>, req: &Request) -> HttpResponse {
     if let Some(r) = refuse_unpaired(req) {
         return r;
     }
@@ -424,10 +466,18 @@ fn open(live: Option<&SessionService>, req: &Request) -> HttpResponse {
         );
     }
     let (root, is_git) = root_of(&abs);
-    let rel = abs[root.len()..].trim_start_matches('/').to_string();
-    let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+    let path = abs[root.len()..].trim_start_matches('/').to_string();
+    let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+    // Notes are mdrev's own format, written only through its CLI; without a node to run it this
+    // host refuses them — the contract's leave, and a refusal is whole: the viewer never asks the
+    // annotation routes. History is the host's store, served from git either way.
+    let notes = rel.cli_argv().is_some();
     HttpResponse::json(
-        json!({"root": root, "path": rel, "cap": stamp, "isGit": is_git, "name": name}).to_string(),
+        json!({
+            "root": root, "path": path, "cap": stamp, "isGit": is_git, "name": name,
+            "review": true, "annotate": notes,
+        })
+        .to_string(),
     )
 }
 
@@ -647,7 +697,8 @@ fn revisions(rel: &Release, d: &Doc) -> HttpResponse {
 
 /// `mdrev-cli revisions --path P`, cached per `HEAD` (mdrev-v2's rule: a process per read was
 /// measured at 650 ms there, ~90 ms here — and it is asked for on every text read). A collection
-/// with no history has none to list and is not asked.
+/// with no history has none to list and is not asked. Without a node for the CLI, the NAME's
+/// history from git ([`name_history`]).
 fn revision_list(rel: &Release, d: &Doc) -> Option<Vec<Value>> {
     if !Path::new(&d.root).join(".git").exists() {
         return Some(Vec::new());
@@ -664,18 +715,57 @@ fn revision_list(rel: &Release, d: &Doc) -> Option<Vec<Value>> {
             return Some(list.clone());
         }
     }
-    let out = cli(rel, &d.root, &["revisions", "--path", &d.rel], None);
-    let list: Vec<Value> = match out.code {
-        0 => serde_json::from_slice(&out.out).ok()?,
-        // "No such document" in history: a draft nobody has committed yet.
-        2 => Vec::new(),
-        _ => return None,
+    let list: Vec<Value> = if rel.cli_argv().is_some() {
+        let out = cli(rel, &d.root, &["revisions", "--path", &d.rel], None);
+        match out.code {
+            0 => serde_json::from_slice(&out.out).ok()?,
+            // "No such document" in history: a draft nobody has committed yet.
+            2 => Vec::new(),
+            _ => return None,
+        }
+    } else {
+        name_history(&d.root, &d.rel)?
     };
     let mut g = cache.lock().unwrap_or_else(|e| e.into_inner());
     if g.len() > 256 {
         g.clear();
     }
     g.insert(key, (head, list.clone()));
+    Some(list)
+}
+
+/// The revisions that touched this NAME, newest first, from git — what the contract calls a host
+/// that "lists the history of the name": each entry without `path`, so `/text` reads every one
+/// under the document's own name, and nothing from before a rename is listed. Only the kit's CLI
+/// follows renames exactly as mdrev does; this is the history a machine without node still has.
+fn name_history(root: &str, rel: &str) -> Option<Vec<Value>> {
+    const FIELD: char = '\u{1f}';
+    const RECORD: char = '\u{1e}';
+    let out = git(
+        root,
+        &[
+            "log",
+            "--no-color",
+            "--format=%H%x1f%aI%x1f%an%x1f%s%x1f%b%x1e",
+            "--",
+            rel,
+        ],
+    )?;
+    let text = String::from_utf8_lossy(&out);
+    let list = text
+        .split(RECORD)
+        .filter_map(|record| {
+            let f: Vec<&str> = record.trim_start_matches('\n').split(FIELD).collect();
+            let [rev, date, author, subject, rest @ ..] = f.as_slice() else {
+                return None;
+            };
+            let mut entry = json!({"rev": rev, "date": date, "author": author, "subject": subject});
+            if let Some(body) = rest.first().map(|b| b.trim()).filter(|b| !b.is_empty()) {
+                entry["body"] = json!(body);
+            }
+            Some(entry)
+        })
+        .collect();
     Some(list)
 }
 
@@ -935,11 +1025,19 @@ struct Out {
 /// How long one `mdrev-cli` call may take before the request gives up on it.
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Run the release's `mdrev-cli` in `root`, with `--root root` as mdrev-v2 does. Output is read on
+/// Run the kit's `mdrev-cli` in `root`, with `--root root` as mdrev-v2 does. Output is read on
 /// threads while the child runs — a note list larger than a pipe buffer would otherwise hold the
 /// child and this request against each other until the timeout.
 fn cli(rel: &Release, root: &str, args: &[&str], stdin: Option<&[u8]>) -> Out {
-    let spawned = Command::new(&rel.cli)
+    let Some((program, lead)) = rel.cli_argv().and_then(|a| a.split_first()) else {
+        return Out {
+            code: -1,
+            out: Vec::new(),
+            err: format!("mdrev-cli needs node >= {NODE_MAJOR}, and this machine has none"),
+        };
+    };
+    let spawned = Command::new(program)
+        .args(lead)
         .args(args)
         .args(["--root", root])
         .current_dir(root)
@@ -1022,6 +1120,8 @@ fn git(root: &str, args: &[&str]) -> Option<Vec<u8>> {
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        // A document named `:(glob)*.md` is a name, never pathspec magic.
+        .env("GIT_LITERAL_PATHSPECS", "1")
         .stdin(Stdio::null())
         .output()
         .ok()?;
@@ -1053,7 +1153,7 @@ fn status(code: &'static str, body: Vec<u8>) -> HttpResponse {
 
 /// The version the app shell names in its page, so it knows whether — and where — to load mdrev.
 pub fn version() -> Option<&'static str> {
-    release().map(|r| r.version.as_str())
+    release().map(|r| r.version)
 }
 
 #[cfg(test)]
@@ -1070,25 +1170,36 @@ mod tests {
         d
     }
 
-    /// A release tree: both bundle entries, a lazy chunk, a version, and a `mdrev-cli`.
-    fn release_tree(at: &Path, cli: &str) -> PathBuf {
-        let bundle = at.join("bundle");
-        std::fs::create_dir_all(bundle.join("chunks")).unwrap();
-        std::fs::write(bundle.join("mdrev.js"), "export const mountMdrev = 1;").unwrap();
-        std::fs::write(bundle.join("mdrev.css"), ".mdrev-host{}").unwrap();
-        std::fs::write(bundle.join("chunks/c-1a2b.js"), "export {};").unwrap();
-        std::fs::write(bundle.join("favicon.svg"), "<svg/>").unwrap();
-        std::fs::write(
-            at.join("package.json"),
-            r#"{"type":"module","version":"9.9.9"}"#,
-        )
-        .unwrap();
-        let launcher = at.join("mdrev-cli");
-        std::fs::write(&launcher, cli).unwrap();
+    /// A bundle as a binary carries one: both entries, a lazy chunk, and an SVG the route must
+    /// refuse — sorted by path, as the kit's build writes it.
+    static TEST_BUNDLE: &[(&str, &[u8])] = &[
+        ("chunks/c-1a2b.js", b"export {};"),
+        ("favicon.svg", b"<svg/>"),
+        ("mdrev.css", b".mdrev-host{}"),
+        ("mdrev.js", b"export const mountMdrev = 1;"),
+    ];
+
+    impl Release {
+        /// A release whose CLI is already resolved: `argv` runs it, `None` is a machine without node.
+        fn fixed(argv: Option<Vec<OsString>>) -> Release {
+            Release {
+                version: "9.9.9",
+                bundle: TEST_BUNDLE,
+                kit: None,
+                dir: PathBuf::new(),
+                cli: OnceLock::from(argv),
+            }
+        }
+    }
+
+    /// An executable script at `at` — the stand-in CLI, or a stand-in node.
+    fn script(at: &Path, body: &str) -> PathBuf {
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, body).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(at, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         at.to_path_buf()
     }
@@ -1145,7 +1256,7 @@ esac
 
     /// A checkout with `docs/doc.md` committed twice ("# One", then "# Two"), an image and a text
     /// file beside it, a session whose cwd is the checkout (so containment explains it), and a
-    /// release tree with the stand-in CLI.
+    /// release whose CLI is the stand-in.
     fn fx(name: &str) -> Fx {
         let dir = scratch(name);
         let repo = dir.join("repo");
@@ -1191,8 +1302,9 @@ esac
         })
         .unwrap();
         live.register_root(&sess);
-        let kit = release_tree(&dir.join("kit"), FAKE_CLI);
-        let rel = validate(&kit).expect("the fixture tree is a release");
+        let kit = dir.join("kit");
+        let cli = script(&kit.join("mdrev-cli"), FAKE_CLI);
+        let rel = Release::fixed(Some(vec![cli.into_os_string()]));
         Fx {
             _dir: dir,
             repo,
@@ -1244,95 +1356,20 @@ esac
         std::fs::read_to_string(f.kit.join("calls.log")).unwrap_or_default()
     }
 
-    // ------------------------------------------------------------------ the release
+    // ---------------------------------------------------------------------- the kit
 
     #[test]
-    fn a_release_is_a_tree_with_both_entries_a_version_and_a_cli() {
-        let d = scratch("validate");
-        assert!(
-            validate(&d).is_none(),
-            "an empty directory is not a release"
-        );
-        let t = release_tree(&d.join("t"), "#!/bin/sh\n");
-        let r = validate(&t).expect("complete");
-        assert_eq!(r.version, "9.9.9");
-        assert_eq!(
-            r.cli,
-            t.join("mdrev-cli"),
-            "outside a keg, the tree's own launcher"
-        );
-
-        std::fs::remove_file(t.join("bundle/mdrev.css")).unwrap();
-        assert!(validate(&t).is_none(), "both entries, or nothing");
-        std::fs::write(t.join("bundle/mdrev.css"), "").unwrap();
-        std::fs::write(t.join("package.json"), r#"{"version":"1.0/../x"}"#).unwrap();
-        assert!(
-            validate(&t).is_none(),
-            "a version is a URL segment: no slashes"
-        );
-        std::fs::write(t.join("package.json"), r#"{"version":"1.0.0"}"#).unwrap();
-        std::fs::remove_file(t.join("mdrev-cli")).unwrap();
-        assert!(validate(&t).is_none(), "no CLI, no notes — not a release");
-
-        // A keg: the tree is `…/libexec` and the keg's own `bin/mdrev-cli` (which resolves node)
-        // wins over the tree's launcher.
-        let keg = d.join("opt/mdrev");
-        let lib = release_tree(&keg.join("libexec"), "#!/bin/sh\n");
-        std::fs::create_dir_all(keg.join("bin")).unwrap();
-        std::fs::write(keg.join("bin/mdrev-cli"), "#!/bin/sh\n").unwrap();
-        assert_eq!(validate(&lib).unwrap().cli, keg.join("bin/mdrev-cli"));
-    }
-
-    #[test]
-    fn an_mdrev_older_than_the_options_this_host_declares_counts_as_none() {
-        for (v, ok) in [
-            ("0.16.45", false), // the public tap, today
-            ("1.1.5", false),
-            ("1.1.6-dev11", false), // a pre-release OF the minimum is not yet it
-            ("1.1.6", true),
-            ("1.1.12-dev4", true),
-            ("1.1.12", true), // the corp tap, today
-            ("2.0.0", true),
-            ("1.1", false),
-            ("1.1.6.1", false),
-            ("x.y.z", false),
-        ] {
-            assert_eq!(at_least(v, MIN_VERSION), ok, "{v}");
-        }
-        let d = scratch("minver");
-        let t = release_tree(&d.join("t"), "#!/bin/sh\n");
-        std::fs::write(t.join("package.json"), r#"{"version":"0.16.45"}"#).unwrap();
-        assert!(
-            validate(&t).is_none(),
-            "an old mdrev is no mdrev: the pane keeps its text view"
-        );
-    }
-
-    #[test]
-    fn an_explicit_tree_is_final_even_when_a_candidate_would_do() {
-        let d = scratch("discover");
-        let good = release_tree(&d.join("good"), "#!/bin/sh\n");
-        assert_eq!(
-            discover(None, &[d.join("nope"), good.clone()])
-                .unwrap()
-                .tree,
-            good
-        );
-        assert!(
-            discover(Some(d.join("nope")), &[good]).is_none(),
-            "an explicit tree that is not a release means mdrev is OFF — how a case makes it absent"
-        );
-    }
-
-    // ------------------------------------------------------------------- the bundle
-
-    #[test]
-    fn the_bundle_is_served_under_its_version_and_nothing_else_is() {
-        let d = scratch("bundle");
-        let rel = validate(&release_tree(&d.join("t"), "#!/bin/sh\n")).unwrap();
+    fn the_bundle_is_served_from_the_binary_under_its_version_and_nothing_else_is() {
+        let rel = Release::fixed(None);
         let r = bundle_file(Some(&rel), "9.9.9/mdrev.js");
-        assert_eq!(r.code, "200 OK");
-        assert_eq!(r.content_type, "text/javascript; charset=utf-8");
+        assert_eq!(
+            (r.code, r.content_type, r.body.as_slice()),
+            (
+                "200 OK",
+                "text/javascript; charset=utf-8",
+                b"export const mountMdrev = 1;".as_slice()
+            )
+        );
         assert!(
             r.headers.iter().any(|h| h.contains("immutable")),
             "the prefix is versioned"
@@ -1345,13 +1382,13 @@ esac
             bundle_file(Some(&rel), "9.9.9/mdrev.css").content_type,
             "text/css; charset=utf-8"
         );
-
         for refused in [
-            "9.9.8/mdrev.js",        // another version: a page from before an upgrade
-            "9.9.9/../package.json", // out of the bundle
+            "9.9.8/mdrev.js",    // another version: a page from before the pin moved
+            "9.9.9/../mdrev.js", // the table names files, never a way out of it
             "9.9.9/./mdrev.js",
             "9.9.9//mdrev.js",
-            "9.9.9/favicon.svg", // an SVG is a script host on this origin
+            "9.9.9/chunks",      // a directory is not a file
+            "9.9.9/favicon.svg", // in the bundle, but an SVG is a script host on this origin
             "9.9.9/missing.js",
             "9.9.9",
         ] {
@@ -1361,17 +1398,90 @@ esac
                 "{refused}"
             );
         }
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(d.join("t/package.json"), d.join("t/bundle/leak.js"))
-                .unwrap();
-            assert_eq!(
-                bundle_file(Some(&rel), "9.9.9/leak.js").code,
-                "404 Not Found",
-                "a symlink inside the keg does not lead out of it"
-            );
-        }
         assert_eq!(bundle_file(None, "9.9.9/mdrev.js").code, "404 Not Found");
+    }
+
+    #[test]
+    fn node_is_mdrev_s_own_choice_else_the_path_s_else_a_brew_prefix() {
+        let d = scratch("node");
+        let at = |p: &str| script(&d.join(p), "");
+        let (old, new, brew) = (at("old/node"), at("new/node"), at("brew/bin/node"));
+        // "Fits" stands for `node --version` >= 20 (held below): here, anything but the old one.
+        let fits = |n: &Path| !n.starts_with(d.join("old"));
+        let path = std::env::join_paths([d.join("missing"), d.join("old"), d.join("new")]).unwrap();
+        let fallbacks = [brew.to_str().unwrap()];
+        assert_eq!(
+            find_node(None, Some(path.clone()), &fallbacks, &fits),
+            Some(new.clone()),
+            "the first node on PATH that fits"
+        );
+        assert_eq!(
+            find_node(None, None, &fallbacks, &fits),
+            Some(brew.clone()),
+            "a brew prefix, for a monitor started without brew on its PATH"
+        );
+        assert_eq!(
+            find_node(Some(new.clone().into()), None, &fallbacks, &fits),
+            Some(new),
+            "MDREV_NODE"
+        );
+        assert_eq!(
+            find_node(Some(old.into()), Some(path), &fallbacks, &fits),
+            None,
+            "MDREV_NODE is final, as in mdrev's own launchers — how a case takes node away"
+        );
+        assert_eq!(
+            find_node(Some(OsString::new()), None, &fallbacks, &fits),
+            Some(brew),
+            "an empty MDREV_NODE is unset, as `${{MDREV_NODE:-node}}` reads it"
+        );
+        assert_eq!(find_node(None, None, &[], &fits), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_node_fits_when_it_runs_and_is_20_or_later() {
+        let d = scratch("fits");
+        for (i, (body, fits)) in [
+            ("echo v24.15.0", true),
+            ("echo v20.0.0", true),
+            ("echo v18.19.1", false),
+            ("echo nonsense", false),
+            ("echo v22.1.0; exit 1", false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let node = script(&d.join(format!("n{i}")), &format!("#!/bin/sh\n{body}\n"));
+            assert_eq!(node_fits(&node), fits, "{body}");
+        }
+        assert!(!node_fits(&d.join("absent")));
+    }
+
+    #[test]
+    fn the_cli_is_written_beside_its_package_json_and_over_anything_already_there() {
+        let d = scratch("write");
+        let kit = Kit {
+            version: "9.9.9",
+            bundle: TEST_BUNDLE,
+            cli: b"// the pinned cli",
+            package_json: br#"{"version":"9.9.9"}"#,
+        };
+        let cli = write_cli(&kit, &d).unwrap();
+        assert_eq!(cli, d.join("9.9.9/mdrev-cli.js"));
+        assert_eq!(std::fs::read(&cli).unwrap(), kit.cli);
+        assert_eq!(
+            std::fs::read(d.join("9.9.9/package.json")).unwrap(),
+            kit.package_json,
+            "`mdrev-cli --version` reads it beside itself"
+        );
+        std::fs::write(&cli, "tampered").unwrap();
+        write_cli(&kit, &d).unwrap();
+        assert_eq!(
+            std::fs::read(&cli).unwrap(),
+            kit.cli,
+            "the binary's copy is the pin, not what a scratch directory held"
+        );
     }
 
     // ------------------------------------------------------------- held documents
@@ -1501,6 +1611,11 @@ esac
         assert_eq!(v["path"], "docs/doc.md");
         assert_eq!(v["isGit"], true);
         assert_eq!(
+            (&v["review"], &v["annotate"]),
+            (&json!(true), &json!(true)),
+            "history and notes are offered: the CLI runs"
+        );
+        assert_eq!(
             v["cap"],
             json!(stamp(&abs)),
             "mdrev's cap IS the file's own stamp"
@@ -1529,6 +1644,62 @@ esac
         assert_eq!(
             call(&f, &held, "open", &req("GET", &q, b"", true)).code,
             "415 Unsupported Media Type"
+        );
+    }
+
+    /// No node, no CLI: the host refuses notes — mdrev's own format, written only through its CLI —
+    /// and serves history from git instead: the name's revisions, each read under that name.
+    #[test]
+    fn without_node_a_local_file_keeps_its_history_from_git_and_takes_no_notes() {
+        let f = fx("nonode");
+        let held = Mutex::new(Held::default());
+        let bare = Release::fixed(None);
+        let ask = |route: &str, q: &str| {
+            contract(
+                Some(&bare),
+                Some(&f.live),
+                &req("GET", q, b"", true),
+                route,
+                &held,
+            )
+        };
+        let abs = format!("{}/docs/doc.md", f.repo.display());
+        let open = ask("open", &format!("path={}&sig={}", enc(&abs), stamp(&abs)));
+        let v: Value = serde_json::from_slice(&open.body).unwrap();
+        assert_eq!(
+            (&v["review"], &v["annotate"]),
+            (&json!(true), &json!(false)),
+            "history offered, notes refused — a refusal the viewer honours by never asking"
+        );
+
+        let q = doc_query(&f, "docs/doc.md");
+        let revs = ask("revisions", &q);
+        assert_eq!(
+            revs.code,
+            "200 OK",
+            "{}",
+            String::from_utf8_lossy(&revs.body)
+        );
+        let list: Vec<Value> = serde_json::from_slice(&revs.body).unwrap();
+        assert_eq!(list.len(), 2, "{list:?}");
+        assert_eq!(list[1]["rev"], json!(f.first), "newest first");
+        assert_eq!(list[1]["subject"], "one");
+        assert!(
+            list.iter().all(|r| r.get("path").is_none()),
+            "the NAME's history: no `path`, as the contract has such a host answer"
+        );
+        assert_eq!(
+            ask("text", &format!("{q}&rev={}", f.first)).body,
+            b"# One\n",
+            "a listed revision reads under the document's own name"
+        );
+
+        let notes = ask("annotations", &q);
+        assert_eq!(notes.code, "502 Bad Gateway");
+        assert!(
+            String::from_utf8_lossy(&notes.body).contains("needs node"),
+            "a route the viewer no longer asks for says why: {}",
+            String::from_utf8_lossy(&notes.body)
         );
     }
 

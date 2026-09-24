@@ -1,0 +1,933 @@
+/* mdrev guest stylesheet — every rule scoped under .mdrev-host; theme it with --mdrev-<token> */
+.mdrev-host *:where(:not(svg, svg *, canvas, .mdv-canvas, .mdv-canvas *)) { all: revert; }
+.mdrev-host.is-contained { contain: layout; }
+.mdrev-host:not(.is-contained) { height: auto; overflow: visible; }
+.mdrev-host .doc {--read-body:1rem;--read-line:1.5;--read-measure:44rem;--read-rhythm:1.25em;--read-serif:ui-serif, "New York", "Iowan Old Style", "Palatino Linotype", Georgia, serif;--read-sans:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;--read-face:var(--read-serif);--read-head:var(--read-serif);font-family:var(--read-face);font-size:var(--read-body);line-height:var(--read-line);color:var(--ink);font-kerning:normal;text-rendering:optimizelegibility;hanging-punctuation:first last;text-autospace:normal}
+.mdrev-host .doc.face-sans {--read-face:var(--read-sans);--read-head:var(--read-sans)}
+.mdrev-host .doc.density-compact {--read-line:1.42;--read-rhythm:1.02em}
+.mdrev-host .doc.size-xs {--read-body:.875rem}
+.mdrev-host .doc.size-s {--read-body:.9375rem}
+.mdrev-host .doc.size-m {--read-body:1rem}
+.mdrev-host .doc.size-l {--read-body:1.0625rem}
+.mdrev-host .doc.size-xl {--read-body:1.1875rem}
+.mdrev-host .doc.size-xxl {--read-body:1.3125rem}
+.mdrev-host .layout-doc .doc {max-width:calc(var(--read-measure) + 4rem)}
+.mdrev-host .width-medium .layout-doc .doc {max-width:64rem}
+.mdrev-host .width-medium .layout-doc {grid-template-columns:minmax(0,1fr) minmax(0,64rem) minmax(288px,1fr);display:grid}
+.mdrev-host .no-annotate.width-medium .layout-doc {grid-template-columns:minmax(0,1fr) minmax(0,64rem) minmax(0,1fr)}
+.mdrev-host .width-medium .layout-doc>* {grid-column:2;min-width:0}
+.mdrev-host .width-medium .layout-doc>.gutter-margin, .mdrev-host .width-medium .layout-doc>.blame-stack {grid-column:1/-1}
+.mdrev-host .width-medium .layout-doc>.doc {width:100%;max-width:none}
+.mdrev-host .is-wide .layout-doc .doc {max-width:none}
+.mdrev-host .doc h1, .mdrev-host .doc h2, .mdrev-host .doc h3, .mdrev-host .doc h4, .mdrev-host .doc h5, .mdrev-host .doc h6 {font-family:var(--read-head);letter-spacing:-.006em;text-wrap:balance;color:var(--ink);margin:2.1em 0 .55em;font-weight:600;line-height:1.3}
+.mdrev-host .doc>:first-child {margin-top:0}
+.mdrev-host .doc h1 {letter-spacing:-.014em;margin-top:.2em;font-size:1.6em}
+.mdrev-host .doc h2 {font-size:1.3em}
+.mdrev-host .doc h3 {font-size:1.1em}
+.mdrev-host .doc h4 {color:var(--ink-soft);font-size:1em}
+.mdrev-host .doc h5, .mdrev-host .doc h6 {color:var(--ink-soft);text-transform:uppercase;letter-spacing:.06em;font-size:.92em}
+.mdrev-host .doc h2:before {content:"";border-top:1px solid #0000;width:100%;margin-bottom:.85em;display:block}
+.mdrev-host .doc h1+h2:before, .mdrev-host .doc h2:first-child:before {display:none}
+.mdrev-host .doc p, .mdrev-host .doc ul, .mdrev-host .doc ol, .mdrev-host .doc blockquote, .mdrev-host .doc pre, .mdrev-host .doc table, .mdrev-host .doc dl {margin:0 0 var(--read-rhythm)}
+.mdrev-host .doc p {text-wrap:pretty}
+.mdrev-host .doc ul, .mdrev-host .doc ol {padding-left:1.35em}
+.mdrev-host .doc li {margin:.3em 0}
+.mdrev-host .doc li::marker {color:var(--ink-faint)}
+.mdrev-host .doc li>ul, .mdrev-host .doc li>ol {margin:.3em 0 .35em}
+.mdrev-host .doc li>p {margin-bottom:.45em}
+.mdrev-host .doc blockquote {border-left:2px solid var(--rule);color:var(--ink-soft);margin-left:0;padding:.1em 0 .1em 1.15em;font-style:italic}
+.mdrev-host .doc blockquote p:last-child {margin-bottom:0}
+.mdrev-host .doc blockquote.mdv-alert {color:var(--ink);border-left-width:3px;border-left-color:var(--alert,var(--accent));background:color-mix(in srgb, var(--alert,var(--accent)) 6%, transparent);border-radius:0 8px 8px 0;margin:.2em 0 1.1em;padding:.55em 1em .6em 1.05em;font-style:normal}
+.mdrev-host .doc blockquote.mdv-alert:before {content:attr(data-mdv-alert-title);letter-spacing:.06em;text-transform:uppercase;color:var(--alert,var(--accent));margin-bottom:.35em;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Noto Sans,Helvetica,Arial,sans-serif;font-size:.78em;font-weight:650;display:block}
+.mdrev-host .doc .mdv-alert-note {--alert:var(--accent)}
+.mdrev-host .doc .mdv-alert-tip {--alert:var(--ins-fg)}
+.mdrev-host .doc .mdv-alert-important {--alert:var(--accent);border-left-width:4px}
+.mdrev-host .doc .mdv-alert-warning {--alert:var(--mod-fg)}
+.mdrev-host .doc .mdv-alert-caution {--alert:var(--del-fg)}
+.mdrev-host .doc blockquote.mdv-alert.mdv-block-ins {background:var(--ins-bg)}
+.mdrev-host .doc blockquote.mdv-alert.mdv-block-del {background:var(--del-bg)}
+.mdrev-host .doc mark {background:color-mix(in srgb, var(--mod-fg) 22%, transparent);color:inherit;border-radius:2px;padding:0 .1em}
+.mdrev-host .doc sub, .mdrev-host .doc sup {font-size:.72em;line-height:0}
+.mdrev-host .doc .mdv-math:not([data-mdv-typeset=ok]) {color:var(--ink-soft);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em}
+.mdrev-host .doc .mdv-math-display {text-align:center;margin:.6em 0 1em;overflow-x:auto}
+.mdrev-host .doc .mdv-math[data-mdv-typeset=ok] .katex {font-size:1.05em}
+.mdrev-host .doc .mdv-math[data-mdv-typeset=ok] {-webkit-user-select:all;user-select:all}
+.mdrev-host .doc dl {margin:0 0 1.1em}
+.mdrev-host .doc dt {margin-top:.55em;font-weight:600}
+.mdrev-host .doc dt:first-child {margin-top:0}
+.mdrev-host .doc dd {margin:.15em 0 0 1.4em}
+.mdrev-host .doc a.mdv-wikilink {text-decoration-style:dotted}
+.mdrev-host .doc a.mdv-embed-link:before {content:"⧉ ";color:var(--ink-faint)}
+.mdrev-host .doc img.mdv-embed {display:block}
+.mdrev-host .doc code {font-family:var(--read-mono);font-variant-numeric:tabular-nums;background:var(--bg-inset);border-radius:4px;padding:.12em .34em;font-size:.855em}
+.mdrev-host .doc pre {font-family:var(--read-mono);background:var(--code-bg);border:1px solid var(--rule-soft);tab-size:2;border-radius:8px;padding:.85em 1em;font-size:.82em;line-height:1.55;overflow-x:auto}
+.mdrev-host .doc pre code {font-size:inherit;background:0 0;padding:0}
+.mdrev-host .doc.wrap pre {white-space:pre-wrap;overflow-wrap:anywhere;overflow-x:auto}
+.mdrev-host .doc.wrap pre code {white-space:inherit}
+.mdrev-host .doc.wrap pre .mdv-line {white-space:pre-wrap;overflow-wrap:anywhere;text-indent:-2ch;padding-left:2ch;display:block}
+.mdrev-host .doc.wrap pre.mdv-code-diff, .mdrev-host .doc.wrap pre.mdv-code-diff>code {white-space:normal}
+.mdrev-host .doc table {border-collapse:collapse;font-family:var(--read-sans);font-variant-numeric:tabular-nums lining-nums;font-size:.9em;line-height:1.45;display:block;overflow-x:auto}
+.mdrev-host .doc th, .mdrev-host .doc td {border:1px solid var(--rule-soft);vertical-align:top;overflow-wrap:anywhere;padding:.4em .75em}
+.mdrev-host .doc th {z-index:1;background:var(--bg-soft);text-align:left;white-space:nowrap;font-weight:620;position:sticky;top:0}
+.mdrev-host .doc tbody tr:nth-child(2n) td {background:color-mix(in srgb, var(--bg-soft) 40%, transparent)}
+.mdrev-host .doc a {color:var(--accent);text-underline-offset:.15em;text-decoration:underline;text-decoration-thickness:.06em;-webkit-text-decoration-color:color-mix(in srgb, var(--accent) 40%, transparent);text-decoration-color:color-mix(in srgb, var(--accent) 40%, transparent)}
+.mdrev-host .doc a:hover {-webkit-text-decoration-color:var(--accent);text-decoration-color:var(--accent)}
+.mdrev-host .doc hr {border:none;border-top:1px solid var(--rule);margin:2.4em 0}
+.mdrev-host .doc img {border-radius:6px;max-width:100%}
+.mdrev-host .doc strong {font-weight:650}
+.mdrev-host .doc abbr[title] {-webkit-text-decoration:underline dotted;text-decoration:underline dotted}
+.mdrev-host .doc .footnotes {color:var(--ink-soft);border-top:1px solid var(--rule-soft);margin-top:2.5em;font-size:.92em}
+.mdrev-host .doc dt {font-weight:620}
+.mdrev-host .doc dd {color:var(--ink-soft);margin:0 0 .6em 1.2em}
+.mdrev-host, .mdrev-host[data-theme=light] {--bg: var(--mdrev-bg, #fff); --bg-soft: var(--mdrev-bg-soft, #f7f8fc); --bg-inset: var(--mdrev-bg-inset, #eef4fc); --ink: var(--mdrev-ink, #202536); --ink-soft: var(--mdrev-ink-soft, #646c80); --ink-faint: var(--mdrev-ink-faint, #69738a); --rule: var(--mdrev-rule, #3e496c1c); --rule-soft: var(--mdrev-rule-soft, #3e496c12); --accent: var(--mdrev-accent, #4758d0); --accent-soft: var(--mdrev-accent-soft, #4758d01f); --on-accent: var(--mdrev-on-accent, #fff); --ins-fg: var(--mdrev-ins-fg, #1d7536); --ins-bg: var(--mdrev-ins-bg, #1d75361c); --del-fg: var(--mdrev-del-fg, #bc212e); --del-bg: var(--mdrev-del-bg, #bc212e1a); --mod-fg: var(--mdrev-mod-fg, #363fb6); --mod-bg: var(--mdrev-mod-bg, #363fb61c); --shape-fg: var(--mdrev-shape-fg, #6b7590); --shape-bg: var(--mdrev-shape-bg, #6b75901c); --read-mono: var(--mdrev-read-mono, "Sarasa Mono SC", "Maple Mono NF CN", "Noto Sans Mono CJK SC", "Source Han Mono SC", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace); --code-bg: var(--mdrev-code-bg, #f7f8fc); --shadow: var(--mdrev-shadow, 0 12px 38px #323d681f); --lightningcss-light: var(--mdrev-lightningcss-light, initial); --lightningcss-dark:; color-scheme:light;}
+@media (prefers-color-scheme:dark) {
+.mdrev-host:not([data-theme=light]) {--bg: var(--mdrev-bg, #181b24); --bg-soft: var(--mdrev-bg-soft, #20242f); --bg-inset: var(--mdrev-bg-inset, #222c3d); --ink: var(--mdrev-ink, #f0f2f8); --ink-soft: var(--mdrev-ink-soft, #adb4c5); --ink-faint: var(--mdrev-ink-faint, #747e94); --rule: var(--mdrev-rule, #cfd7ef1c); --rule-soft: var(--mdrev-rule-soft, #cfd7ef12); --accent: var(--mdrev-accent, #93a4e4); --accent-soft: var(--mdrev-accent-soft, #93a4e429); --on-accent: var(--mdrev-on-accent, #181b24); --ins-fg: var(--mdrev-ins-fg, #50bb6e); --ins-bg: var(--mdrev-ins-bg, #50bb6e24); --del-fg: var(--mdrev-del-fg, #f18991); --del-bg: var(--mdrev-del-bg, #f1899121); --mod-fg: var(--mdrev-mod-fg, #93a4e4); --mod-bg: var(--mdrev-mod-bg, #93a4e421); --shape-fg: var(--mdrev-shape-fg, #8d97b3); --shape-bg: var(--mdrev-shape-bg, #8d97b321); --code-bg: var(--mdrev-code-bg, #20242f); --shadow: var(--mdrev-shadow, 0 18px 48px #04071261); --lightningcss-light:; --lightningcss-dark: var(--mdrev-lightningcss-dark, initial); color-scheme:dark;}
+}
+.mdrev-host[data-theme=dark] {--bg: var(--mdrev-bg, #181b24); --bg-soft: var(--mdrev-bg-soft, #20242f); --bg-inset: var(--mdrev-bg-inset, #222c3d); --ink: var(--mdrev-ink, #f0f2f8); --ink-soft: var(--mdrev-ink-soft, #adb4c5); --ink-faint: var(--mdrev-ink-faint, #747e94); --rule: var(--mdrev-rule, #cfd7ef1c); --rule-soft: var(--mdrev-rule-soft, #cfd7ef12); --accent: var(--mdrev-accent, #93a4e4); --accent-soft: var(--mdrev-accent-soft, #93a4e429); --on-accent: var(--mdrev-on-accent, #181b24); --ins-fg: var(--mdrev-ins-fg, #50bb6e); --ins-bg: var(--mdrev-ins-bg, #50bb6e24); --del-fg: var(--mdrev-del-fg, #f18991); --del-bg: var(--mdrev-del-bg, #f1899121); --mod-fg: var(--mdrev-mod-fg, #93a4e4); --mod-bg: var(--mdrev-mod-bg, #93a4e421); --shape-fg: var(--mdrev-shape-fg, #8d97b3); --shape-bg: var(--mdrev-shape-bg, #8d97b321); --code-bg: var(--mdrev-code-bg, #20242f); --shadow: var(--mdrev-shadow, 0 18px 48px #04071261); --lightningcss-light:; --lightningcss-dark: var(--mdrev-lightningcss-dark, initial); color-scheme:dark;}
+.mdrev-host * {box-sizing:border-box}
+.mdrev-host, .mdrev-host, .mdrev-host #root {height:100%;margin:0;padding:0;overflow:hidden}
+.mdrev-host {background:var(--bg);color:var(--ink);font:15.5px/1.65 -apple-system,BlinkMacSystemFont,Segoe UI,Noto Sans,Helvetica,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji}
+.mdrev-host code, .mdrev-host pre, .mdrev-host .changes-pill, .mdrev-host .pick, .mdrev-host .history-date, .mdrev-host .history-meta {background:var(--accent-soft)}
+.mdrev-host ::selection {background:var(--accent-soft)}
+.mdrev-host button {font:inherit;cursor:pointer}
+.mdrev-host button:disabled {cursor:default;opacity:.45}
+.mdrev-host button:focus-visible {outline:2px solid var(--accent);outline-offset:1px}
+.mdrev-host .app {--mdv-read-min:600px;--mdv-outline-w:232px;--mdv-rail-min:170px;grid-template-rows:auto auto minmax(0,1fr);grid-template-columns:auto minmax(0,1fr);height:100%;display:grid}
+.mdrev-host .app:fullscreen {background:var(--bg)}
+.mdrev-host .app>.file-rail {grid-area:1/1/-1/2}
+.mdrev-host .app>.topbar {grid-area:1/2}
+.mdrev-host .app>.error {grid-area:2/2}
+.mdrev-host .app>.main {grid-area:3/2;min-height:0}
+.mdrev-host .main {flex:1;min-height:0;display:flex}
+.mdrev-host .scrollpane {overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--rule) transparent;flex:1;min-width:0;overflow-y:auto}
+.mdrev-host .app.is-hosted-scroll {height:auto}
+.mdrev-host .is-hosted-scroll .main {align-items:flex-start;min-height:0}
+.mdrev-host .is-hosted-scroll .scrollpane {overflow:visible}
+.mdrev-host .is-hosted-scroll .topbar {z-index:40;position:sticky;top:0}
+.mdrev-host .is-hosted-scroll .rail, .mdrev-host .is-hosted-scroll .outline, .mdrev-host .is-hosted-scroll>.file-rail {top:var(--mdrev-topbar-h,0px);height:calc(var(--mdrev-viewport-h,100vh) - var(--mdrev-topbar-h,0px));position:sticky}
+.mdrev-host .scrollpane::-webkit-scrollbar {width:11px}
+.mdrev-host .scrollpane::-webkit-scrollbar-track {background:0 0}
+.mdrev-host .scrollpane::-webkit-scrollbar-thumb {background:var(--rule);border:3px solid var(--bg);border-radius:999px}
+.mdrev-host .scrollpane::-webkit-scrollbar-thumb:hover {background:var(--ink-faint)}
+.mdrev-host .scrollpane .doc, .mdrev-host .scrollpane .source-view {transition:opacity .15s}
+.mdrev-host .scrollpane.is-updating .doc, .mdrev-host .scrollpane.is-updating .source-view {opacity:.55}
+.mdrev-host .doc pre.mdv-raw-html {border-left:3px solid var(--mod-fg)}
+.mdrev-host .doc code.mdv-raw-html {color:var(--mod-fg)}
+.mdrev-host .doc [data-mdv-refused] {color:var(--ink-faint);cursor:not-allowed;text-decoration:line-through}
+.mdrev-host .doc img[data-mdv-refused] {border:1px dashed var(--rule);background:var(--bg-soft);border-radius:4px;min-width:120px;min-height:44px;display:inline-block}
+.mdrev-host .topbar {background:var(--bg-soft);border-bottom:1px solid var(--rule);flex-wrap:wrap;flex-shrink:0;align-items:center;gap:8px 12px;padding:8px 0 7px;display:flex;position:relative;container:topbar/inline-size}
+.mdrev-host .topbar-row {--tier:2;padding:0 14px}
+.mdrev-host .outline-wrap.for-merged, .mdrev-host .display-menu .display-doc, .mdrev-host .display-menu .display-build, .mdrev-host .history-picks {display:none}
+.mdrev-host .doc-tools {flex-wrap:wrap;align-items:center;gap:8px;display:flex}
+.mdrev-host .build-in-menu {color:var(--ink-faint);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px}
+.mdrev-host .history-picks {border-bottom:1px solid var(--rule-soft);flex-wrap:wrap;gap:10px;padding:8px 12px 2px}
+.mdrev-host .topbar.tier-1 .topbar-row {--tier:1}
+.mdrev-host .topbar.tier-1 .topbar-row:not(.topbar-tools) {display:contents}
+.mdrev-host .topbar.tier-1 .outline-wrap.for-merged {margin-left:14px;display:inline-flex}
+.mdrev-host .topbar.tier-1 .topbar-tools>.outline-wrap {display:none}
+.mdrev-host .topbar.tier-1 .topbar-tools {flex:0 auto;padding:0}
+.mdrev-host .topbar.tier-1 .build {order:1;margin-left:0;margin-right:14px}
+.mdrev-host .topbar.tier-1 .note-hint {display:none}
+.mdrev-host .topbar.tier-1 .picker:before {content:"";background:var(--rule);align-self:stretch;width:1px;margin:6px 8px 6px 0}
+.mdrev-host .topbar.set-read.tier-2 .controls, .mdrev-host .topbar.set-annotate.tier-2 .controls {margin-left:0}
+.mdrev-host .topbar.tier-3 .topbar-row {--tier:3}
+.mdrev-host .topbar.tier-4 .topbar-row {--tier:4}
+.mdrev-host .topbar.tier-5 .topbar-row {--tier:5}
+.mdrev-host .topbar.tier-3 .picker>.pick-unit, .mdrev-host .topbar.tier-4 .picker>.pick-unit, .mdrev-host .topbar.tier-5 .picker>.pick-unit {display:none}
+.mdrev-host .topbar.tier-3 .pick-mini, .mdrev-host .topbar.tier-4 .pick-mini {display:inline-flex}
+.mdrev-host :is(.topbar.tier-4:has(.display-wrap:not([hidden])) .controls>.reading, .mdrev-host .topbar.tier-5:has(.display-wrap:not([hidden])) .controls>.reading) {display:none}
+.mdrev-host .topbar.tier-4 .display-doc, .mdrev-host .topbar.tier-5 .display-doc, .mdrev-host .topbar.tier-5 .history-picks {display:flex}
+.mdrev-host .topbar.tier-4 .display-wrap, .mdrev-host .topbar.tier-5 .display-wrap {position:static}
+.mdrev-host .topbar.tier-4 .display-menu, .mdrev-host .topbar.tier-5 .display-menu {top:calc(100% - 6px);right:8px}
+.mdrev-host .topbar.tier-5 .controls {justify-content:flex-start;margin-left:0}
+.mdrev-host .topbar.tier-5 .controls>.acts {display:contents}
+.mdrev-host .topbar.title-1 .note-hint, .mdrev-host .topbar.title-2 .note-hint, .mdrev-host .topbar.title-2 .file-dir, .mdrev-host .topbar.title-2 .doc-time {display:none}
+.mdrev-host .topbar.title-2:has(.display-wrap:not([hidden])) .build {display:none}
+.mdrev-host .topbar.title-2 .display-build {display:flex}
+.mdrev-host .topbar-row {flex-wrap:wrap;flex:100%;align-items:center;gap:12px;min-width:0;display:flex}
+.mdrev-host .topbar-row:not(.topbar-tools) {flex-wrap:nowrap}
+.mdrev-host .acts, .mdrev-host .reading {flex-wrap:wrap;align-items:center;gap:8px;display:flex}
+.mdrev-host .file-name {letter-spacing:.01em;text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:14.5px;font-weight:650;overflow:hidden}
+.mdrev-host .file-dir {color:var(--ink-faint);font-weight:400}
+.mdrev-host .changes-pill {color:var(--ink);background:var(--bg-soft);border:1px solid var(--rule);white-space:nowrap;border-radius:999px;flex:none;padding:2px 10px;font-size:12px;font-weight:600}
+.mdrev-host .doc-time {color:var(--ink-faint);white-space:nowrap;font-size:11.5px}
+.mdrev-host .file-copy {color:var(--ink-faint);opacity:0;background:0 0;border:none;margin-left:3px;padding:0 2px;line-height:0;transition:opacity .12s,color .12s}
+.mdrev-host .switcher-wrap:hover .file-copy, .mdrev-host .file-copy:focus-visible, .mdrev-host .file-copy.copied {opacity:1}
+.mdrev-host .file-copy:hover {color:var(--ink)}
+.mdrev-host .file-copy.copied {color:var(--ins-fg)}
+.mdrev-host .controls {flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px;margin-left:auto;display:flex}
+.mdrev-host .topbar-tools {align-items:center;position:relative}
+.mdrev-host .topbar-tools .picker {padding:0}
+.mdrev-host .build {letter-spacing:.02em;color:var(--ink-faint);-webkit-user-select:all;user-select:all;margin-left:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}
+.mdrev-host .seg {border:1px solid var(--rule);border-radius:7px;height:26px;display:inline-flex;overflow:hidden}
+.mdrev-host .seg button {color:var(--ink-soft);border:none;border-right:1px solid var(--rule);background:0 0;padding:0 11px;font-size:12.5px}
+.mdrev-host .seg button:last-child {border-right:none}
+.mdrev-host .seg button.on {background:var(--bg-soft);color:var(--ink);font-weight:600}
+.mdrev-host .ctl {height:26px;color:var(--ink-soft);border:1px solid var(--rule);background:0 0;border-radius:7px;align-items:center;gap:5px;padding:0 10px;font-size:12.5px;display:inline-flex}
+.mdrev-host .ctl:hover:not(:disabled) {color:var(--ink);background:var(--bg-soft)}
+.mdrev-host .ctl.on {background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.mdrev-host .ctl {position:relative}
+.mdrev-host .ctl:focus-visible:after {content:attr(title);z-index:60;border:1px solid var(--rule);background:var(--bg-soft);width:max-content;max-width:34ch;color:var(--ink);text-align:left;text-transform:none;letter-spacing:normal;white-space:normal;pointer-events:none;border-radius:6px;padding:5px 8px;font-size:11.5px;line-height:1.35;position:absolute;top:calc(100% + 6px);left:50%;transform:translate(-50%);box-shadow:0 4px 14px #00000024}
+.mdrev-host .topbar-tools .controls>.ctl:nth-last-child(-n+3):focus-visible:after {left:auto;right:0;transform:none}
+.mdrev-host .note-hint {color:var(--ink-faint);white-space:nowrap;align-items:center;gap:5px;font-size:11.5px;display:inline-flex}
+.mdrev-host .warn-wrap {display:inline-flex;position:relative}
+.mdrev-host .warn-ctl {color:var(--mod-fg);cursor:pointer;background:0 0;border:none;border-radius:5px;align-items:center;padding:2px;display:inline-flex}
+.mdrev-host .warn-ctl:hover, .mdrev-host .warn-ctl.on {background:var(--mod-bg)}
+.mdrev-host .warn-pop {z-index:70;background:var(--bg);border:1px solid var(--rule);width:280px;box-shadow:var(--shadow);color:var(--ink-soft);text-align:left;white-space:normal;border-radius:10px;padding:12px;font-size:12px;line-height:1.5;position:absolute;top:calc(100% + 6px);left:0}
+.mdrev-host .warn-pop p {margin:0 0 8px}
+.mdrev-host .warn-pop b {font-variant-numeric:tabular-nums;color:var(--ink)}
+.mdrev-host .warn-get {border:1px solid var(--accent);color:var(--accent);background:var(--accent-soft);text-align:center;border-radius:6px;padding:5px 8px;font-weight:600;text-decoration:none;display:block}
+.mdrev-host .warn-get:hover {background:var(--accent);color:var(--on-accent)}
+.mdrev-host .warn-alt {border-color:var(--rule);color:var(--ink-soft);background:0 0;margin-top:6px;font-weight:400}
+.mdrev-host .warn-alt:hover {background:var(--bg-soft);color:var(--ink)}
+.mdrev-host .warn-never {width:100%;color:var(--ink-faint);font:inherit;text-align:center;cursor:pointer;background:0 0;border:none;margin-top:10px;padding:0;font-size:11px;display:block}
+.mdrev-host .warn-never:hover {color:var(--ink-soft);text-decoration:underline}
+.mdrev-host .note-hint kbd {font:inherit;font-family:var(--mono,ui-monospace, monospace);color:var(--ink-soft)}
+.mdrev-host .note-hint kbd:before {content:"("}
+.mdrev-host .note-hint kbd:after {content:")"}
+.mdrev-host .note-hint-x {color:var(--ink-faint);background:0 0;border:none;border-radius:4px;padding:2px 4px;font-size:14px;line-height:1}
+.mdrev-host .note-hint-x:hover {color:var(--ink);background:var(--bg-soft)}
+.mdrev-host .find {z-index:150;border:1px solid var(--rule);background:var(--bg);border-radius:10px;align-items:center;gap:6px;padding:6px 8px;display:flex;position:fixed;top:14px;right:18px;box-shadow:0 6px 22px #0000002e}
+.mdrev-host .find-input {border:1px solid var(--rule-soft);width:15rem;height:24px;color:var(--ink);background:var(--bg-soft);border-radius:6px;padding:0 7px;font-size:13px}
+.mdrev-host .find-count {min-width:8.5rem;color:var(--ink-faint);font-variant-numeric:tabular-nums;white-space:nowrap;font-size:11.5px}
+.mdrev-host .find-count.none {color:var(--del-fg)}
+.mdrev-host .find-step {border:1px solid var(--rule-soft);width:24px;height:24px;color:var(--ink-soft);background:0 0;border-radius:6px;font-size:13px;line-height:1}
+.mdrev-host .find-step:hover:not(:disabled) {color:var(--ink);background:var(--bg-soft)}
+.mdrev-host .find-step:disabled {opacity:.4}
+.mdrev-host ::highlight(mdv-find) {background:var(--mod-bg)}
+.mdrev-host ::highlight(mdv-find-on) {background:var(--accent);color:var(--on-accent)}
+.mdrev-host .picker {flex-wrap:wrap;align-items:center;gap:7px;padding:7px 2px 1px;display:flex}
+.mdrev-host .history-wrap {display:inline-flex}
+.mdrev-host .pick-unit {align-items:center;gap:7px;display:inline-flex}
+.mdrev-host .pick-mini {align-items:center;gap:4px;display:none;position:relative}
+.mdrev-host .pick-glyph-wrap {display:inline-flex;position:relative}
+.mdrev-host .pick.pick-glyph {justify-content:center;align-items:center;height:26px;padding:0 10px;display:inline-flex}
+.mdrev-host .pick.pick-glyph svg {flex:none}
+.mdrev-host .pick-pop {z-index:50;background:var(--bg);border:1px solid var(--rule);border-radius:7px;display:inline-flex;position:absolute;top:calc(100% + 6px);left:0;overflow:hidden;box-shadow:0 4px 14px #00000024}
+.mdrev-host .pick-pop .pick {border:none;border-right:1px solid var(--rule);border-radius:0;height:26px}
+.mdrev-host .pick-pop .pick:last-child {border-right:none}
+.mdrev-host .picker-label {color:var(--ink-faint);text-transform:uppercase;letter-spacing:.07em;font-size:11.5px}
+.mdrev-host .picker-group {border:1px solid var(--rule);border-radius:7px;height:26px;display:inline-flex;overflow:hidden}
+.mdrev-host .picker-group .pick {border:none;border-right:1px solid var(--rule);border-radius:0;height:100%}
+.mdrev-host .picker-group .pick:last-child {border-right:none}
+.mdrev-host .pick {height:26px;color:var(--ink-soft);border:1px solid var(--rule);background:0 0;border-radius:7px;padding:0 9px;font-size:12px}
+.mdrev-host .pick:hover:not(:disabled) {background:var(--bg-soft);color:var(--ink)}
+.mdrev-host .pick.active {background:var(--accent-soft);color:var(--accent);font-weight:600}
+.mdrev-host .pick-history {margin-left:4px}
+.mdrev-host .history {background:var(--bg);border:1px solid var(--rule);width:min(560px,100cqw - 16px);box-shadow:var(--shadow);z-index:50;border-radius:10px;position:absolute;top:calc(100% + 6px);left:8px;overflow:hidden}
+.mdrev-host .history-hint {color:var(--ink-faint);border-bottom:1px solid var(--rule-soft);background:var(--bg-soft);padding:8px 12px;font-size:11.5px}
+.mdrev-host .history-list {-webkit-user-select:none;user-select:none;max-height:320px;overflow-y:auto}
+.mdrev-host .history-row {cursor:pointer;border-left:3px solid #0000;align-items:baseline;gap:10px;padding:5px 12px;font-size:12.5px;display:flex}
+.mdrev-host .history-row:hover {background:var(--bg-soft)}
+.mdrev-host .history-row.selecting {background:var(--accent-soft)}
+.mdrev-host .history-row.is-from {border-left-color:var(--del-fg)}
+.mdrev-host .history-row.is-to {border-left-color:var(--ins-fg)}
+.mdrev-host .history-row.is-worktree {cursor:default}
+.mdrev-host .history-row.is-worktree .history-subject {color:var(--ink-soft)}
+.mdrev-host .history-tag {border:1px solid var(--rule);color:var(--ink-soft);text-transform:uppercase;letter-spacing:.05em;border-radius:999px;margin-left:6px;padding:0 5px;font-size:10px}
+.mdrev-host .history-row.history-worktree {border-bottom:1px dashed var(--rule-soft);color:var(--ink-soft);font-style:italic}
+.mdrev-host .history-row.history-worktree .history-date {min-width:6.5em}
+.mdrev-host .history-row.history-start {border-top:1px dashed var(--rule-soft);color:var(--ink-soft);font-style:italic}
+.mdrev-host .history-row.history-start .history-date {min-width:6.5em}
+.mdrev-host .history-date {color:var(--ink-soft);white-space:nowrap;font-size:11.5px}
+.mdrev-host .history-subject {text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;overflow:hidden}
+.mdrev-host .history-meta {color:var(--ink-faint);white-space:nowrap;font-size:11px}
+.mdrev-host .doc {max-width:46rem;padding:30px 22px calc(var(--mdv-app-h,100vh) * .45);margin:0 auto}
+.mdrev-host .is-wide .doc {max-width:none;padding:30px 48px calc(var(--mdv-app-h,100vh) * .45) 40px;margin:0}
+.mdrev-host .no-review.is-wide .doc {padding-left:22px}
+.mdrev-host .no-annotate.is-wide .doc {padding-right:22px}
+.mdrev-host .is-wide .ann-margin {--ann-margin-open:56px;width:56px}
+.mdrev-host .doc del.mdv-del, .mdrev-host .doc .mdv-block-del:not(tr) {transition:font-size .13s}
+.mdrev-host .is-cuts-folded .doc del.mdv-del, .mdrev-host .is-cuts-folded .doc .mdv-block-del:not(tr) {background:0 0;font-size:0;text-decoration:none}
+.mdrev-host .is-cuts-folded .doc .mdv-block-del:not(tr) {margin:7px 0}
+.mdrev-host .is-cuts-folded .doc pre:has(>code.mdv-block-del) {background:0 0;border-color:#0000;border-radius:0;margin:7px 0;padding:0}
+.mdrev-host .is-cuts-folded .doc pre>code.mdv-block-del {opacity:1}
+.mdrev-host .is-cuts-folded .doc .mdv-canvas.mdv-block-del>.mdv-canvas-stage, .mdrev-host .is-cuts-folded .doc .mdv-canvas.mdv-block-del>.mdv-canvas-bar {display:none}
+.mdrev-host .is-cuts-folded .doc .mdv-canvas.mdv-block-del {background:0 0;border-color:#0000;margin:7px 0;overflow:visible}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .doc del.mdv-del, .mdrev-host .doc .mdv-block-del:not(tr) {transition:none}
+}
+@keyframes mdv-cut-mark-in {0%{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
+.mdrev-host .is-cuts-folded .doc [data-mdv-cut] {--cut-dot:radial-gradient(circle, currentColor 1.35px, transparent 1.45px)}
+.mdrev-host .is-cuts-folded .doc [data-mdv-cut="1"] {--cut-pad:8px;--cut-dots:var(--cut-dot);--cut-pos:right 3px top calc(50% + .5px)}
+.mdrev-host .is-cuts-folded .doc [data-mdv-cut="2"] {--cut-pad:8px;--cut-dots:var(--cut-dot), var(--cut-dot);--cut-pos:right 3px top calc(50% - 1.1px), right 3px top calc(50% + 2.1px)}
+.mdrev-host .is-cuts-folded .doc [data-mdv-cut="3"] {--cut-pad:11px;--cut-dots:var(--cut-dot), var(--cut-dot), var(--cut-dot);--cut-pos:right 3.4px top calc(50% - 1.65px), right 5.3px top calc(50% + 1.95px), right 1.5px top calc(50% + 1.95px)}
+.mdrev-host .is-cuts-folded .doc del.mdv-del:after, .mdrev-host .is-cuts-folded .doc .mdv-block-del:not(tr):after {content:"⌫";padding:1px var(--cut-pad,4px) 1px 4px;background:var(--del-bg);background-image:var(--cut-dots);background-position:var(--cut-pos);color:var(--ink-soft);border:1px solid var(--rule-soft);vertical-align:baseline;background-repeat:no-repeat;background-size:4px 4px;border-radius:4px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;line-height:1;animation:.14s ease-out both mdv-cut-mark-in}
+.mdrev-host .is-cuts-folded .doc del.mdv-del:hover:after, .mdrev-host .is-cuts-folded .doc .mdv-block-del:not(tr):hover:after {color:var(--ink);border-color:var(--rule)}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .is-cuts-folded .doc del.mdv-del:after, .mdrev-host .is-cuts-folded .doc .mdv-block-del:not(tr):after {animation:none}
+}
+.mdrev-host .cut-peek {z-index:60;max-width:340px;max-height:calc(var(--mdv-app-h,100vh) * .4);border:1px solid var(--rule);border-left:3px solid var(--del);background:var(--bg);box-shadow:var(--shadow);color:var(--ink);white-space:pre-wrap;border-radius:8px;padding:8px 10px;font-size:12.5px;line-height:1.5;position:fixed;overflow-y:auto}
+.mdrev-host .cut-peek-head {letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:3px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9.5px;display:block}
+.mdrev-host .mdv-ins {background:var(--ins-bg);color:var(--ins-fg);box-shadow:inset 0 -1.5px 0 color-mix(in srgb, var(--ins-fg) 45%, transparent);border-radius:3px;padding:.06em .14em;text-decoration:none}
+.mdrev-host .mdv-del {background:var(--del-bg);color:var(--del-fg);border-radius:3px;padding:.06em .14em;text-decoration:line-through;text-decoration-thickness:1px}
+.mdrev-host .mdv-block-ins {background:var(--ins-bg);border-radius:4px;margin-left:-.4em;margin-right:-.4em;padding:.15em .4em}
+.mdrev-host .mdv-block-del {background:var(--del-bg);color:var(--ink-soft);border-radius:4px;margin-left:-.4em;margin-right:-.4em;padding:.15em .4em;text-decoration:line-through;text-decoration-thickness:1px}
+.mdrev-host .mdv-block-del .mdv-ins, .mdrev-host .mdv-block-del ins {text-decoration:line-through}
+.mdrev-host .doc .mdv-canvas.mdv-block-del, .mdrev-host .doc .mdv-canvas.mdv-block-del * {text-decoration:none}
+.mdrev-host li.mdv-block-ins, .mdrev-host li.mdv-block-del {margin-left:0;margin-right:0;padding:.1em .3em}
+.mdrev-host tr.mdv-block-ins td {background:var(--ins-bg)}
+.mdrev-host tr.mdv-block-del td {background:var(--del-bg);text-decoration:line-through}
+.mdrev-host pre>code.mdv-block-ins, .mdrev-host pre>code.mdv-block-del {color:var(--ink);background:0 0;text-decoration:none;display:block}
+.mdrev-host pre:has(>code.mdv-block-ins) {background:color-mix(in srgb, var(--ins-bg) 45%, var(--code-bg))}
+.mdrev-host pre:has(>code.mdv-block-del) {background:color-mix(in srgb, var(--del-bg) 45%, var(--code-bg))}
+.mdrev-host pre>code.mdv-block-del {opacity:.75}
+.mdrev-host pre.mdv-code-diff {white-space:normal;padding:.55em 0}
+.mdrev-host .mdv-line {white-space:pre;padding:0 1.1em;display:block}
+.mdrev-host .mdv-line-ins {background:var(--ins-bg)}
+.mdrev-host .mdv-line-del {background:var(--del-bg);opacity:.8}
+.mdrev-host .mdv-line-mod {background:var(--mod-bg)}
+.mdrev-host .mdv-line-mod del {background:var(--del-bg);color:var(--del-fg);border-radius:2px;text-decoration:line-through}
+.mdrev-host .mdv-line-mod ins {background:var(--ins-bg);color:var(--ins-fg);border-radius:2px;text-decoration:none}
+.mdrev-host .mdv-line-mod ins span {color:inherit!important}
+.mdrev-host .doc pre.shiki {background:var(--code-bg)!important}
+.mdrev-host .doc .shiki code {background:0 0}
+@media (prefers-color-scheme:dark) {
+.mdrev-host:not([data-theme=light]) .doc .shiki, .mdrev-host:not([data-theme=light]) .doc .shiki span, .mdrev-host:not([data-theme=light]) .doc .mdv-line span {color:var(--shiki-dark,inherit)!important}
+}
+.mdrev-host[data-theme=dark] .doc .shiki, .mdrev-host[data-theme=dark] .doc .shiki span, .mdrev-host[data-theme=dark] .doc .mdv-line span {color:var(--shiki-dark,inherit)!important}
+@keyframes mdv-flash-frames {0%{background-color:var(--accent-soft)}to{background-color:#0000}}
+.mdrev-host .mdv-flash {animation:1.2s ease-out mdv-flash-frames}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .mdv-flash {animation:none}
+.mdrev-host * {scroll-behavior:auto!important;transition:none!important}
+}
+.mdrev-host pre.is-rendered {display:none}
+.mdrev-host .mdv-canvas {border:1px solid var(--rule);background:var(--bg);border-radius:8px;margin:1.2em 0;overflow:hidden}
+.mdrev-host .mdv-canvas-stage {overscroll-behavior-x:contain;text-align:center;min-height:3rem;padding:1rem;overflow:auto}
+.mdrev-host .mdv-canvas-stage svg {vertical-align:middle}
+.mdrev-host .doc .mdv-canvas-stage img {vertical-align:middle;border-radius:0;max-width:none;display:inline-block}
+.mdrev-host .mdv-canvas-image .mdv-canvas-ms {display:none}
+.mdrev-host .mdv-canvas:not(.is-drawn) {opacity:.6;border-style:dashed}
+.mdrev-host .mdv-canvas.is-picked {outline:4px solid var(--accent-soft);border-color:var(--accent)}
+.mdrev-host .mdv-canvas.has-note {box-shadow:inset 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent)}
+.mdrev-host .mdv-canvas-bar::selection {background:var(--bg-soft)}
+.mdrev-host .mdv-canvas-bar ::selection {background:var(--bg-soft)}
+.mdrev-host .mdv-canvas:not(.is-drawn) .mdv-canvas-stage:after {content:"";border:2px solid var(--rule);border-top-color:var(--ink-soft);border-radius:50%;width:1.1rem;height:1.1rem;margin:.6rem auto;animation:.7s linear infinite mdv-spin;display:inline-block}
+@keyframes mdv-spin {to{transform:rotate(360deg)}}
+.mdrev-host .mdv-canvas-ms {letter-spacing:.01em;color:var(--ink-faint);font-variant-numeric:tabular-nums;white-space:nowrap;cursor:default;align-self:center;margin-left:auto;margin-right:.55rem;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Noto Sans,Helvetica,Arial,sans-serif;font-size:11px}
+.mdrev-host .mdv-canvas-ms:empty {display:none}
+.mdrev-host .mdv-canvas-ms:not(:empty)+.mdv-canvas-zoom {margin-left:0}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .mdv-canvas:not(.is-drawn) .mdv-canvas-stage:after {border-top-color:var(--rule);opacity:.7;animation:none}
+}
+.mdrev-host .mdv-canvas-bar {border-bottom:1px solid var(--rule);background:var(--bg-soft);justify-content:space-between;align-items:center;gap:12px;padding:4px 6px;display:flex}
+.mdrev-host .mdv-canvas-zoom {margin-left:auto}
+.mdrev-host .mdv-canvas-views, .mdrev-host .mdv-canvas-pick, .mdrev-host .mdv-canvas-zoom {border:1px solid var(--rule);background:var(--bg);border-radius:6px;display:inline-flex;overflow:hidden}
+.mdrev-host .mdv-canvas-bar button {font-variant-numeric:tabular-nums;color:var(--ink-soft);border:none;border-right:1px solid var(--rule);background:0 0;min-width:2.6em;padding:2px 10px;font-size:12px;line-height:1.7}
+.mdrev-host .mdv-canvas-bar button:before {content:attr(data-label)}
+.mdrev-host .mdv-canvas-bar button:last-child {border-right:none}
+.mdrev-host .mdv-canvas-bar button:hover:not(:disabled) {background:var(--bg-soft);color:var(--ink)}
+.mdrev-host .mdv-canvas-bar button.on {background:var(--accent-soft);color:var(--accent);font-weight:600}
+.mdrev-host .mdv-canvas-bar button:disabled {opacity:.4;cursor:default}
+.mdrev-host .mdv-canvas-full[hidden] {display:none}
+.mdrev-host .mdv-canvas-full {z-index:200;padding:clamp(.75rem, calc(var(--mdv-app-h,100vh) * .03), 2.5rem) clamp(.75rem, calc(var(--mdv-app-w,100vw) * .03), 2.5rem);-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);background:#0b0b0b8c;place-items:center;display:grid;position:fixed;inset:0}
+.mdrev-host .mdv-canvas-panel {background:var(--bg);border:1px solid var(--rule);width:100%;height:100%;min-height:0;box-shadow:var(--shadow);border-radius:10px;flex-direction:column;display:flex;overflow:hidden}
+.mdrev-host .mdv-canvas-panel>.mdv-canvas-stage {flex:1;place-items:safe center;min-height:0;padding:1.25rem;display:grid;overflow:auto}
+.mdrev-host .mdv-canvas-full .mdv-canvas-bar {border-bottom:1px solid var(--rule);flex-shrink:0;justify-content:flex-end}
+.mdrev-host.mdv-has-overlay {overflow:hidden}
+.mdrev-host .mdv-hidden {display:none!important}
+.mdrev-host .mdv-pill {width:100%;color:var(--ink-soft);background:var(--bg-soft);border:1px dashed var(--rule);text-align:center;border-radius:8px;margin:12px 0;padding:5px 12px;font-size:12px;display:block}
+.mdrev-host .mdv-pill:hover {color:var(--ink);border-color:var(--ink-faint);background:var(--bg-inset)}
+.mdrev-host .source-view {background:var(--code-bg);border:1px solid var(--rule-soft);max-width:60rem;font-family:var(--read-mono);border-radius:8px;margin:16px auto;padding:16px 20px;font-size:13px;line-height:1.55;overflow-x:auto}
+.mdrev-host .width-medium .source-view {max-width:76rem}
+.mdrev-host .is-wide .source-view {max-width:none;margin:16px 24px}
+.mdrev-host .source-view .src-line {text-indent:-2ch;padding-left:2ch;display:block}
+.mdrev-host .source-view.wrap {overflow-x:hidden}
+.mdrev-host .source-view.wrap .src-line {white-space:pre-wrap;overflow-wrap:anywhere}
+.mdrev-host .keys-box {text-align:left;width:min(34rem,100%)}
+.mdrev-host .keys-title {color:var(--ink);margin:0 0 14px;font-size:15px;font-weight:600}
+.mdrev-host .keys-group {margin-bottom:14px}
+.mdrev-host .keys-group-name {text-transform:uppercase;letter-spacing:.08em;color:var(--ink-faint);margin-bottom:5px;font-size:11px}
+.mdrev-host .keys-row {align-items:baseline;gap:10px;padding:2px 0;display:flex}
+.mdrev-host .keys-keys {flex-wrap:wrap;flex:0 0 7.5rem;gap:4px;display:flex}
+.mdrev-host .keys-keys kbd {border:1px solid var(--rule);color:var(--ink-soft);background:var(--bg-soft);border-bottom-width:2px;border-radius:4px;padding:0 5px;font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+.mdrev-host .keys-what {color:var(--ink-soft);font-size:12.5px}
+.mdrev-host .keys-close {border:1px solid var(--rule);height:26px;color:var(--ink-soft);background:0 0;border-radius:7px;margin-top:4px;padding:0 12px;font-size:12.5px}
+.mdrev-host .keys-close:hover {color:var(--ink);background:var(--bg-soft)}
+.mdrev-host .md-mark {color:var(--ink-faint);opacity:.75}
+.mdrev-host .md-head {color:var(--ink)}
+.mdrev-host .md-code {color:var(--ins-fg)}
+.mdrev-host .md-link {color:var(--accent)}
+.mdrev-host .md-url {color:var(--ink-soft)}
+.mdrev-host .src-mark {width:2ch;color:var(--ink-faint);-webkit-user-select:none;user-select:none;display:inline-block}
+.mdrev-host .src-ins {background:var(--ins-bg);color:var(--ins-fg)}
+.mdrev-host .src-del {background:var(--del-bg);color:var(--del-fg)}
+.mdrev-host .src-ins .src-mark {color:var(--ins-fg)}
+.mdrev-host .src-del .src-mark {color:var(--del-fg)}
+.mdrev-host .source-view.is-plain .src-line {text-indent:0;padding-left:0}
+.mdrev-host .source-view.is-plain .src-mark {display:none}
+.mdrev-host .src-fold {border:0;border-top:1px dashed var(--rule);border-bottom:1px dashed var(--rule);background:var(--bg-soft);width:100%;color:var(--ink-faint);font:inherit;text-align:left;cursor:pointer;margin:2px 0;padding:2px 2ch;display:block}
+.mdrev-host .src-fold:hover {color:var(--ink-soft);background:var(--bg-inset)}
+.mdrev-host .rail {background:var(--bg-soft);border-left:1px solid var(--rule-soft);flex-shrink:0;width:22px;position:relative}
+.mdrev-host .rail-mark {border:none;border-radius:2px;width:8px;padding:0;position:absolute;left:4px}
+.mdrev-host .rail-mark:hover {width:12px;left:2px}
+.mdrev-host .rail-ins {background:var(--ins-fg)}
+.mdrev-host .rail-del {background:var(--del-fg)}
+.mdrev-host .rail-mod {background:var(--mod-fg)}
+.mdrev-host .rail-shape {background:var(--shape-fg)}
+.mdrev-host .rail-mark.current {width:12px;left:2px}
+.mdrev-host .rail-note {cursor:pointer;box-sizing:border-box;border:1px solid var(--accent);z-index:1;background:#f7f6f3;border-radius:50%;width:6px;height:6px;padding:0;position:absolute;left:5px;transform:translateY(-50%)}
+.mdrev-host .rail-note.closed {border-color:var(--ink-faint)}
+.mdrev-host .rail-note:hover {border-color:var(--accent);transform:translateY(-50%)scale(1.5)}
+.mdrev-host .rail-note:focus-visible {outline:2px solid var(--accent);outline-offset:2px}
+@keyframes mdv-ann-arrived-frames {0%,to{transform:scale(1)}30%{transform:scale(1.45)}}
+.mdrev-host .ann-marker.arrived {border-color:var(--accent);z-index:3;animation:1.4s ease-out mdv-ann-arrived-frames}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .ann-marker.arrived {animation:none}
+.mdrev-host .rail-note:hover {transform:translateY(-50%)}
+}
+.mdrev-host .rail-counter {color:var(--ink-soft);background:var(--bg);border:1px solid var(--rule);white-space:nowrap;writing-mode:vertical-rl;border-radius:5px;padding:4px 1px;font-size:10px;position:absolute;bottom:8px;left:50%;transform:translate(-50%)}
+.mdrev-host .layout-body {min-width:0}
+.mdrev-host .file-rail {width:260px;max-width:max(var(--mdv-rail-min), calc(var(--mdv-app-w,100vw) - var(--mdv-read-min)));border-right:1px solid var(--rule-soft);flex-direction:column;height:100%;min-height:0;padding:10px 8px 16px;display:flex;position:relative;overflow:hidden}
+.mdrev-host .app.has-outline>.file-rail {max-width:max(var(--mdv-rail-min), calc(var(--mdv-app-w,100vw) - var(--mdv-read-min) - var(--mdv-outline-w)))}
+.mdrev-host .file-rail-edge {cursor:col-resize;touch-action:none;width:7px;position:absolute;top:0;bottom:0;right:0}
+.mdrev-host .file-rail-edge:before {content:"";background:0 0;width:1px;transition:background .12s,width .12s;position:absolute;top:8px;bottom:8px;right:0}
+.mdrev-host .file-rail-edge:hover:before, .mdrev-host .file-rail-edge:focus-visible:before {background:var(--accent);border-radius:2px;width:3px}
+.mdrev-host .file-rail-edge:focus-visible {outline:2px solid var(--accent);outline-offset:-2px;border-radius:4px}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .file-rail-edge:before {transition:none}
+}
+.mdrev-host .file-rail-head {flex-shrink:0}
+.mdrev-host .file-rail.is-collapsed {width:34px;padding:10px 4px;overflow:hidden}
+.mdrev-host .file-rail-tab {width:100%;color:var(--ink-faint);cursor:pointer;background:0 0;border:0;border-radius:6px;flex-direction:column;align-items:center;gap:6px;padding:6px 0;display:flex}
+.mdrev-host .file-rail-tab:hover {background:var(--bg-soft);color:var(--ink-soft)}
+.mdrev-host .file-rail-head {border-bottom:1px solid var(--rule-soft);justify-content:flex-end;align-items:center;gap:8px;margin-bottom:2px;padding:0 4px 8px 8px;display:flex}
+.mdrev-host .file-rail-fold {width:20px;height:20px;color:var(--ink-faint);cursor:pointer;background:0 0;border:0;border-radius:5px;flex-shrink:0;justify-content:center;align-items:center;display:flex}
+.mdrev-host .file-rail-fold:hover {background:var(--bg-soft);color:var(--ink-soft)}
+.mdrev-host .file-rail-empty {color:var(--ink-soft);padding:4px 8px;font-size:12.5px}
+.mdrev-host .file-rail-empty.file-rail-nested {padding:4px 8px 4px calc(20px + var(--depth,0) * 12px)}
+.mdrev-host .file-rail-panes {flex-direction:column;flex:1 1 0;min-height:0;display:flex;overflow-y:auto}
+.mdrev-host .file-rail-section {flex-direction:column;flex:none;min-height:0;display:flex}
+.mdrev-host .file-rail-section.is-open {flex:var(--share,1) 1 0;min-height:4.4em}
+.mdrev-host .file-rail-body {overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--rule) transparent;min-height:0;overflow-y:auto}
+.mdrev-host .file-rail-section+.file-rail-section {border-top:1px solid var(--rule-soft);margin-top:4px;padding-top:4px}
+.mdrev-host .file-rail-split {cursor:row-resize;touch-action:none;background:0 0;border:0;flex:none;height:11px;margin:3px 0;padding:0;position:relative}
+.mdrev-host .file-rail-split:before {content:"";background:var(--rule-soft);height:1px;transition:background .12s,height .12s;position:absolute;top:5px;left:8px;right:8px}
+.mdrev-host .file-rail-split:hover:before, .mdrev-host .file-rail-split:focus-visible:before {background:var(--accent);border-radius:2px;height:3px}
+.mdrev-host .file-rail-split:focus-visible {outline:2px solid var(--accent);outline-offset:-2px;border-radius:4px}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .file-rail-split:before {transition:none}
+}
+.mdrev-host .file-rail-toggle {text-align:left;width:100%;font:inherit;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-faint);cursor:pointer;background:0 0;border:0;border-radius:6px;align-items:center;gap:6px;padding:6px 8px;font-size:11px;display:flex}
+.mdrev-host .file-rail-toggle:hover {background:var(--bg-soft);color:var(--ink-soft)}
+.mdrev-host .file-rail-label {flex:1}
+.mdrev-host .file-rail-notice {background:color-mix(in srgb, var(--del) 12%, transparent);color:var(--ink);border-radius:6px;align-items:flex-start;gap:6px;margin:0 4px 6px;padding:6px 8px;font-size:11.5px;line-height:1.35;display:flex}
+.mdrev-host .file-rail-notice-close {color:var(--ink-faint);cursor:pointer;background:0 0;border:0;flex-shrink:0;padding:0 2px;font-size:13px;line-height:1}
+.mdrev-host .rail-menu {--menu-w:260px;--menu-h:132px;left:min(var(--cx,0px), calc(var(--mdv-app-w,100vw) - var(--menu-w) - 8px));top:min(var(--cy,0px), calc(var(--mdv-app-h,100vh) - var(--menu-h) - 8px));z-index:60;width:var(--menu-w);border:1px solid var(--rule);background:var(--bg);box-shadow:var(--shadow);border-radius:8px;padding:4px;font-size:12.5px;position:fixed}
+.mdrev-host .rail-menu-item {width:100%;color:var(--ink);font:inherit;text-align:left;cursor:default;background:0 0;border:0;border-radius:5px;padding:5px 8px;display:block}
+.mdrev-host .rail-menu-item:hover, .mdrev-host .rail-menu-item:focus-visible {background:var(--accent-soft)}
+.mdrev-host .rail-menu-path {border-top:1px solid var(--rule-soft);color:var(--ink-soft);overflow-wrap:anywhere;-webkit-user-select:text;user-select:text;margin-top:4px;padding:5px 8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.45}
+.mdrev-host .file-rail-count {font-variant-numeric:tabular-nums;letter-spacing:0;color:var(--ink-faint);font-size:10.5px}
+.mdrev-host .file-rail-tab .file-rail-count+.file-rail-count.is-total {border-top:1px solid var(--rule-soft);text-align:center;width:18px;padding-top:5px}
+.mdrev-host .file-rail-nested {padding-left:calc(20px + var(--depth,0) * 12px)}
+.mdrev-host .file-rail-branch {text-align:left;width:100%;padding:5px 8px 5px calc(8px + var(--depth,0) * 12px);font:inherit;color:var(--ink);cursor:pointer;background:0 0;border:0;border-radius:6px;align-items:center;gap:6px;font-size:12.5px;display:flex}
+.mdrev-host .file-rail-branch:hover {background:var(--bg-soft)}
+.mdrev-host .file-rail-branch .file-rail-label {text-transform:none;letter-spacing:0;font-size:12.5px}
+.mdrev-host .file-rail-caret {flex-shrink:0;transition:transform .12s}
+.mdrev-host .file-rail-caret.is-open {transform:rotate(90deg)}
+.mdrev-host .file-rail-caret.is-back {transform:rotate(180deg)}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .file-rail-caret {transition:none}
+}
+.mdrev-host .file-rail-item {text-align:left;width:100%;color:var(--ink);padding:5px 8px 5px calc(8px + var(--depth,0) * 12px);background:0 0;border:none;border-radius:6px;align-items:baseline;gap:8px;font-size:12.5px;display:flex}
+.mdrev-host .file-rail-item:hover {background:var(--bg-soft)}
+.mdrev-host .file-rail-item.active {background:var(--bg-soft);font-weight:600}
+.mdrev-host .file-rail-item.gone {opacity:.55;cursor:default;text-decoration:line-through}
+.mdrev-host .file-path {overflow-wrap:anywhere}
+.mdrev-host .file-status {font-size:11px;font-weight:700}
+.mdrev-host .file-when {color:var(--ink-faint);font-variant-numeric:tabular-nums;flex:none;margin-left:auto;font-size:11px}
+.mdrev-host .file-when.is-after {color:var(--accent)}
+.mdrev-host .file-status-A {color:var(--ins-fg)}
+.mdrev-host .file-status-M {color:var(--mod-fg)}
+.mdrev-host .file-status-D {color:var(--del-fg)}
+.mdrev-host .file-status-R {color:var(--accent)}
+.mdrev-host ::highlight(mdv-ann) {background:color-mix(in srgb, var(--accent) 22%, transparent)}
+.mdrev-host .mdv-ann-mark {border-bottom:2px dotted var(--accent)}
+.mdrev-host .layout-doc {position:relative;container:doc/inline-size}
+@container doc (width<=820px) {
+.mdrev-host .app:not(.no-annotate) .doc {padding-right:48px}
+}
+.mdrev-host .ann-margin {--ann-margin-open:288px;pointer-events:none;width:288px;position:absolute;top:0;bottom:0;right:0}
+.mdrev-host .ann-margin>* {pointer-events:auto}
+.mdrev-host .ann-card {right:10px;left:var(--ann-card-left,auto);width:228px;max-width:calc(var(--mdv-app-w,100vw) - 40px);background:var(--bg);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:8px;padding:8px 10px;font-size:12.5px;position:absolute;box-shadow:0 2px 10px #1f232814}
+.mdrev-host .ann-card.floating {z-index:40;box-shadow:var(--shadow)}
+.mdrev-host .ann-card.ann-resolved, .mdrev-host .ann-card.ann-wontfix {border-left-color:var(--rule);color:var(--ink-soft);background:var(--bg-soft)}
+.mdrev-host .ann-card.ann-resolved .ann-author, .mdrev-host .ann-card.ann-wontfix .ann-author {color:var(--ink-soft)}
+.mdrev-host .ann-card .ann-quote {margin-bottom:4px;font-size:11.5px}
+.mdrev-host .ann-card textarea {font:inherit;background:var(--bg-soft);color:var(--ink);border:1px solid var(--rule);resize:vertical;border-radius:6px;width:100%;min-height:3em;margin-bottom:6px;padding:5px 8px;font-size:12.5px}
+.mdrev-host .ann-marker {right:10px;left:var(--ann-chip-left,auto);border:1px solid color-mix(in srgb, var(--accent) 38%, transparent);background:var(--accent-soft);width:24px;height:24px;color:var(--accent);box-shadow:0 1px 3px hsl(from var(--ink) h s l / 14%);border-radius:50%;padding:0;font-size:13px;font-weight:600;line-height:1;transition:transform .12s,background .12s;position:absolute}
+.mdrev-host .ann-marker:hover {background:color-mix(in srgb, var(--accent) 22%, transparent);transform:scale(1.12)}
+.mdrev-host .ann-marker.ann-resolved, .mdrev-host .ann-marker.ann-wontfix {background:var(--bg-inset);border-color:var(--rule);color:var(--ink-faint);font-weight:500}
+.mdrev-host .ann-marker.is-open, .mdrev-host .ann-marker.is-open.ann-resolved, .mdrev-host .ann-marker.is-open.ann-wontfix {background:var(--accent);border-color:var(--accent);color:var(--on-accent);z-index:4}
+.mdrev-host .ann-marker.ann-group {overflow:visible}
+.mdrev-host .ann-count {background:var(--accent);min-width:15px;height:15px;color:var(--on-accent);text-align:center;box-shadow:0 0 0 1.5px var(--bg);border-radius:999px;padding:0 3px;font-size:10px;font-weight:700;line-height:15px;position:absolute;top:-6px;right:-7px}
+.mdrev-host .ann-marker.ann-resolved .ann-count, .mdrev-host .ann-marker.ann-wontfix .ann-count {background:var(--ink-faint)}
+.mdrev-host .ann-marker.ann-resolved:hover, .mdrev-host .ann-marker.ann-wontfix:hover {background:var(--bg-soft);color:var(--ink-soft)}
+.mdrev-host .ann-err {color:var(--del-fg);font-size:12.5px}
+.mdrev-host .ann-status {color:var(--ink-faint);border:1px solid var(--rule);white-space:nowrap;border-radius:4px;margin-right:4px;padding:0 6px;font-size:10.5px}
+.mdrev-host .ann-quote {border-left:3px solid var(--accent);color:var(--ink-soft);cursor:pointer;overflow-wrap:anywhere;margin:0 0 5px;padding:2px 8px;font-style:italic}
+.mdrev-host .ann-type {color:var(--mod-fg);margin-right:6px;font-weight:600}
+.mdrev-host .ann-repl {color:var(--ins-fg);overflow-wrap:anywhere;padding-top:2px;font-size:12.5px}
+.mdrev-host .ann-resolution {border-top:1px solid var(--rule-soft);color:var(--ink-soft);overflow-wrap:anywhere;margin-top:6px;padding-top:5px;font-size:11.5px}
+.mdrev-host .ann-resolution-resolved:before {content:"✓ ";color:var(--ins-fg);font-weight:700}
+.mdrev-host .ann-resolution-wontfix:before {content:"⊘ ";color:var(--ink-faint);font-weight:700}
+.mdrev-host .ann-resolution-bare {color:var(--ink-faint);font-style:italic}
+.mdrev-host .ann-drift {color:var(--ink-faint);margin-top:4px;font-size:10.5px;font-style:italic}
+.mdrev-host .ann-entry {border-top:1px solid var(--rule-soft);padding:6px 0 2px}
+.mdrev-host .ann-entry-head {flex-wrap:wrap;align-items:baseline;gap:6px;margin-bottom:2px;display:flex}
+.mdrev-host .ann-entry-body {overflow-wrap:anywhere;font-size:12px}
+.mdrev-host .ann-entry-head .ann-reply-drop {margin-left:auto;padding:0 4px;font-size:10px}
+.mdrev-host .ann-entry .ann-type {color:var(--ink-faint);text-transform:uppercase;letter-spacing:.06em;font-size:10px}
+.mdrev-host .ann-close .ann-entry-body {color:var(--ink-soft);font-size:11.5px}
+.mdrev-host .ann-close-mark {font-weight:700}
+.mdrev-host .ann-close-resolved .ann-close-mark:before {content:"✓";color:var(--ins-fg)}
+.mdrev-host .ann-close-wontfix .ann-close-mark:before {content:"⊘";color:var(--ink-faint)}
+.mdrev-host .ann-close-open .ann-close-mark:before {content:"↺";color:var(--ink-faint)}
+.mdrev-host .ann-reply {border-left:2px solid var(--rule-soft);color:var(--ink-soft);overflow-wrap:anywhere;margin-top:5px;padding-left:8px;font-size:11.5px}
+.mdrev-host .ann-reply-who {color:var(--ink);margin-right:5px;font-weight:600}
+.mdrev-host .ann-reply-box {align-items:flex-end;gap:5px;margin-top:6px;display:flex}
+.mdrev-host .ann-reply-box textarea {min-height:0;font:inherit;background:var(--bg-soft);color:var(--ink);border:1px solid var(--rule);resize:vertical;border-radius:6px;flex:1;margin:0;padding:3px 7px;font-size:11.5px}
+.mdrev-host .ann-reply-box button {white-space:nowrap}
+.mdrev-host .ann-actions button.ann-drop-armed {color:var(--del-fg);border-color:var(--del-fg);font-weight:600}
+.mdrev-host .ann-resolution-commit {font-family:var(--read-mono,ui-monospace, monospace);color:var(--ink-faint);margin-left:5px;font-size:10.5px;display:inline-block}
+.mdrev-host .ann-meta {color:var(--ink-soft);justify-content:space-between;align-items:baseline;margin-top:5px;font-size:11.5px;display:flex}
+.mdrev-host .ann-actions button, .mdrev-host .ann-composer button {color:var(--ink-soft);border:1px solid var(--rule);background:0 0;border-radius:5px;margin-left:4px;padding:1px 6px;font-size:11.5px}
+.mdrev-host .ann-composer {width:min(560px, calc(var(--mdv-app-w,100vw) - 48px));background:var(--bg);border:1px solid var(--rule);z-index:60;box-shadow:var(--shadow);border-radius:12px;flex-direction:column;gap:8px;padding:12px;display:flex;position:fixed;bottom:16px;left:50%;transform:translate(-50%)}
+.mdrev-host .ann-composer textarea {font:inherit;background:var(--bg-soft);color:var(--ink);border:1px solid var(--rule);resize:vertical;border-radius:6px;min-height:3.2em;padding:7px 10px;font-size:13.5px}
+.mdrev-host .ann-composer-row {gap:6px;display:flex}
+.mdrev-host .ann-composer-row .active {background:var(--bg-soft);color:var(--ink)}
+.mdrev-host .ann-composer-row .primary {color:var(--on-accent);background:var(--accent);border-color:var(--accent)}
+.mdrev-host .error {border:1px solid var(--del-fg);max-width:46rem;color:var(--del-fg);background:var(--del-bg);border-radius:8px;margin:12px auto;padding:9px 16px;font-size:13.5px}
+.mdrev-host .say {z-index:200;background:#1414146b;place-items:center;padding:24px;animation:.12s ease-out mdv-say-dim;display:grid;position:fixed;inset:0}
+.mdrev-host .say-box {border:1px solid var(--rule);background:var(--bg);border-radius:12px;width:min(30rem,100%);padding:22px 24px 18px;animation:.14s ease-out mdv-say-rise;box-shadow:0 1px 2px #0000001a,0 18px 50px #00000047}
+.mdrev-host .say-what {color:var(--ink);margin:0;font-size:15px;line-height:1.45}
+.mdrev-host .say-what strong {overflow-wrap:anywhere;font-family:ui-monospace,Menlo,monospace;font-size:13.5px;font-weight:600}
+.mdrev-host .say-how {color:var(--ink-soft);margin:10px 0 0;font-size:13px;line-height:1.55}
+.mdrev-host .say-how code {background:0 0;font-family:ui-monospace,Menlo,monospace;font-size:12.5px}
+.mdrev-host .say-aside {color:var(--del-fg);margin:8px 0 0;font-size:12.5px;line-height:1.5}
+.mdrev-host .say-link {color:var(--accent);font:inherit;text-underline-offset:2px;background:0 0;border:0;padding:0;text-decoration:underline}
+.mdrev-host .say-link:hover {text-decoration-thickness:2px}
+.mdrev-host .say-ok {border:1px solid var(--accent);background:var(--accent);color:var(--bg);border-radius:7px;margin:20px 0 0 auto;padding:7px 22px;font-size:13px;font-weight:500;display:block}
+.mdrev-host .say-ok:hover {filter:brightness(1.08)}
+.mdrev-host .say-ok:focus-visible {outline:2px solid var(--accent);outline-offset:2px}
+@keyframes mdv-say-dim {0%{background:#14141400}}
+@keyframes mdv-say-rise {0%{opacity:0;transform:translateY(6px)}}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .say, .mdrev-host .say-box {animation:none}
+}
+.mdrev-host .topbar-row.is-inert {opacity:.42}
+.mdrev-host .empty {text-align:center;color:var(--ink-soft);padding:48px}
+.mdrev-host .empty p {margin:0 0 8px}
+.mdrev-host .empty code {color:var(--ink);background:0 0;font-family:ui-monospace,Menlo,monospace}
+.mdrev-host .doc-waiting {text-align:center;color:var(--ink-faint);padding:48px;font-size:13px}
+.mdrev-host .gutter-margin {pointer-events:none;position:absolute;inset:0}
+.mdrev-host .gutter-bar {pointer-events:auto;cursor:default;border-radius:3px;width:6px;position:absolute}
+.mdrev-host .gutter-bar:hover {width:9px}
+.mdrev-host .gutter-ins {background:var(--ins-fg)}
+.mdrev-host .gutter-del {background:var(--del-fg)}
+.mdrev-host .gutter-mod {background:var(--mod-fg)}
+.mdrev-host .gutter-shape {background:var(--shape-fg)}
+.mdrev-host .blame-pop {white-space:normal;z-index:55;background:var(--bg);border:1px solid var(--rule);box-shadow:var(--shadow);pointer-events:none;border-radius:8px;flex-direction:column;gap:3px;width:300px;padding:5px;font-size:12px;display:flex;position:fixed;transform:translate(-100%)}
+.mdrev-host .blame-pop.pinned {pointer-events:auto;border-color:var(--accent)}
+.mdrev-host .blame-pop.flip, .mdrev-host .blame-pop.dock {transform:none}
+.mdrev-host .blame-commit-chip {text-align:left;color:var(--ink);background:0 0;border:1px solid #0000;border-radius:6px;grid-template-columns:auto 1fr;gap:2px 7px;max-width:100%;padding:3px 7px;font-size:12px;display:grid}
+.mdrev-host .blame-pop.pinned .blame-commit-chip:hover {background:var(--bg-soft);border-color:var(--rule-soft)}
+.mdrev-host .blame-pop-sha {color:var(--ink-faint);font-family:ui-monospace,Menlo,monospace;font-size:11px}
+.mdrev-host .blame-pop-subject {white-space:normal;overflow-wrap:anywhere;grid-column:1/-1;line-height:1.4}
+.mdrev-host .blame-pop-meta {color:var(--ink-faint);white-space:nowrap;justify-self:start;font-size:11px}
+.mdrev-host .blame-detail {padding:4px 7px}
+.mdrev-host .blame-detail-head {width:100%;font:inherit;text-align:left;color:inherit;cursor:pointer;background:0 0;border:none;border-radius:4px;align-items:baseline;gap:8px;margin-bottom:4px;padding:0;display:flex}
+.mdrev-host .blame-detail-head:hover {background:var(--bg-soft)}
+.mdrev-host .blame-body {white-space:pre-wrap;overflow-wrap:anywhere;max-height:calc(var(--mdv-app-h,100vh) * .4);color:var(--ink);margin:0;font-family:inherit;font-size:12px;line-height:1.5;overflow-y:auto}
+.mdrev-host .ann-invite-group {right:14px;left:var(--ann-chip-left,auto);flex-direction:column;gap:5px;width:26px;display:flex;position:absolute}
+.mdrev-host .ann-invite {border:1px solid color-mix(in srgb, var(--accent) 38%, transparent);background:var(--accent-soft);width:26px;height:26px;color:var(--accent);cursor:pointer;box-shadow:0 1px 3px hsl(from var(--ink) h s l / 14%);border-radius:50%;padding:0;font-size:13px;line-height:1;transition:transform .12s,background .12s}
+.mdrev-host .ann-invite:hover {background:color-mix(in srgb, var(--accent) 24%, transparent);border-color:var(--accent);transform:scale(1.12)}
+.mdrev-host .ann-invite-group.is-beside {background:var(--bg);z-index:6;border-radius:999px;flex-direction:row;gap:6px;width:auto;padding:2px;box-shadow:0 2px 10px #0b0b0b24}
+.mdrev-host .ann-invite-group.has-selection .ann-invite {animation:.16s ease-out both mdv-ann-invite-in}
+.mdrev-host .ann-invite-group.has-selection .ann-invite:last-child {animation-delay:40ms}
+@keyframes mdv-ann-invite-in {0%{opacity:0;transform:translateY(3px)scale(.9)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .ann-invite-group.has-selection .ann-invite {animation:none}
+.mdrev-host .ann-marker, .mdrev-host .ann-invite {transition:none}
+.mdrev-host .ann-marker:hover, .mdrev-host .ann-invite:hover {transform:none}
+}
+.mdrev-host .ann-head {flex-wrap:nowrap;align-items:baseline;gap:4px;margin-bottom:3px;display:flex}
+.mdrev-host .ann-author, .mdrev-host .ann-when {white-space:nowrap}
+.mdrev-host .ann-author {text-overflow:ellipsis;flex:0 auto;min-width:0;overflow:hidden}
+.mdrev-host .ann-when {flex:none}
+.mdrev-host .ann-head .ann-actions {white-space:nowrap;flex:none;gap:4px;display:flex}
+.mdrev-host .ann-actions button {flex:none}
+.mdrev-host .ann-actions button.ann-status {cursor:pointer;margin-right:0}
+.mdrev-host .ann-actions button.ann-status:hover {color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.mdrev-host .ann-author {font-size:12px;font-weight:600}
+.mdrev-host .ann-when {color:var(--ink-faint);font-size:11px}
+.mdrev-host .ann-head .ann-actions {margin-left:auto}
+.mdrev-host .ann-card .ann-quote {color:var(--ink-soft);margin:2px 0 4px;font-size:11px}
+.mdrev-host .ann-id {letter-spacing:.02em;color:var(--ink-faint);-webkit-user-select:all;user-select:all;flex:none;margin-right:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9.5px}
+.mdrev-host .ann-quote.is-linked {cursor:pointer}
+.mdrev-host .ann-quote.is-linked:hover {color:var(--accent)}
+.mdrev-host .ann-card .ann-head {margin-bottom:4px}
+.mdrev-host .ann-card .ann-drift {margin:0 0 4px}
+.mdrev-host .blame-stack {pointer-events:none;position:absolute;inset:0}
+.mdrev-host .blame-stack>* {pointer-events:auto}
+.mdrev-host .blame-stack .blame-pop {z-index:45;position:absolute;top:0;left:12px;transform:none}
+.mdrev-host .blame-stack .blame-pop.preview {pointer-events:none;opacity:.97}
+.mdrev-host .blame-close {color:var(--ink-faint);background:0 0;border:none;padding:0 3px;font-size:13px;line-height:1;position:absolute;top:2px;right:4px}
+.mdrev-host .blame-close:hover {color:var(--ink)}
+.mdrev-host .gutter-bar.pinned {width:9px}
+.mdrev-host .outline {width:var(--mdv-outline-w);border-right:1px solid var(--rule-soft);background:var(--bg);flex-shrink:0;padding:14px 8px 24px;overflow-y:auto}
+.mdrev-host .outline-empty {color:var(--ink-faint);padding:14px 12px;font-size:12px}
+.mdrev-host .outline-row {text-align:left;width:100%;color:var(--ink-soft);background:0 0;border:none;border-left:2px solid #0000;border-radius:0 5px 5px 0;align-items:baseline;gap:8px;padding:3px 8px;font-size:12.5px;line-height:1.4;display:flex}
+.mdrev-host .outline-row:hover {background:var(--bg-soft);color:var(--ink)}
+.mdrev-host .outline-row.active {border-left-color:var(--accent);color:var(--ink);background:var(--bg-soft);font-weight:600}
+.mdrev-host .outline-l1 {color:var(--ink);font-weight:620}
+.mdrev-host .outline-l2 {padding-left:16px}
+.mdrev-host .outline-l3 {padding-left:28px;font-size:12px}
+.mdrev-host .outline-text {text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;overflow:hidden}
+.mdrev-host .outline-count {color:var(--mod-fg);background:var(--mod-bg);border-radius:999px;padding:0 6px;font-family:ui-monospace,Menlo,monospace;font-size:10.5px}
+.mdrev-host .display-wrap {display:inline-flex;position:relative}
+.mdrev-host .topbar .ctl[hidden], .mdrev-host .topbar .display-wrap[hidden] {display:none}
+.mdrev-host .toolbar-reveal-wrap {--measure:46rem;grid-column:1/-1;height:0;position:relative}
+.mdrev-host .is-wide .toolbar-reveal-wrap, .mdrev-host .width-medium .toolbar-reveal-wrap {--measure:100%}
+.mdrev-host .toolbar-reveal {top:6px;right:max(8px, calc((100% - var(--measure)) / 2 - 43px));z-index:30;background:var(--bg);border:1px solid var(--rule-soft);position:absolute}
+.mdrev-host .display-menu {z-index:50;background:var(--bg);border:1px solid var(--rule);max-width:calc(100cqw - 16px);box-shadow:var(--shadow);white-space:nowrap;border-radius:10px;flex-direction:column;gap:10px;padding:10px;display:flex;position:absolute;top:calc(100% + 6px);left:auto;right:0}
+.mdrev-host .display-group {justify-content:space-between;align-items:center;gap:10px;display:flex}
+.mdrev-host .display-label {text-transform:uppercase;letter-spacing:.07em;color:var(--ink-faint);font-size:11px}
+.mdrev-host .size-seg button {justify-content:center;align-items:baseline;min-width:34px;display:inline-flex}
+.mdrev-host .size-seg .size-value {min-width:40px;font-family:ui-monospace,Menlo,monospace;font-size:11px}
+.mdrev-host .size-small {font-size:.78em}
+.mdrev-host .size-large {font-size:1.15em}
+.mdrev-host .outline-wrap {display:inline-flex;position:relative}
+.mdrev-host .outline-overlay {z-index:60;width:280px;max-width:calc(var(--mdv-app-w,100vw) - 28px);padding-top:6px;position:absolute;top:100%;left:0}
+.mdrev-host .outline-overlay .outline {width:auto;max-height:calc(var(--mdv-app-h,100vh) * .7);background:var(--bg);border:1px solid var(--rule);border-right:1px solid var(--rule);box-shadow:var(--shadow);border-radius:10px;padding:6px;overflow-y:auto}
+.mdrev-host .mdv-pill {border-style:dashed;border-color:var(--rule);background:var(--bg-soft);color:var(--ink-soft);letter-spacing:.02em;font-size:11.5px}
+.mdrev-host .mdv-pill:hover {background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.mdrev-host .switcher-wrap {min-width:0;display:inline-flex;position:relative}
+.mdrev-host button.file-name {color:inherit;background:0 0;border:1px solid #0000;border-radius:7px;align-items:baseline;gap:4px;padding:2px 8px;display:inline-flex}
+.mdrev-host button.file-name:hover {background:var(--bg-soft);border-color:var(--rule-soft)}
+.mdrev-host .switcher-caret {color:var(--ink-faint);font-size:10px}
+.mdrev-host .switcher {z-index:60;min-width:320px;max-width:520px;max-height:calc(var(--mdv-app-h,100vh) * .6);background:var(--bg);border:1px solid var(--rule);box-shadow:var(--shadow);border-radius:10px;padding:5px;position:absolute;top:calc(100% + 6px);left:0;overflow-y:auto}
+.mdrev-host .switcher-hint {text-transform:uppercase;letter-spacing:.07em;color:var(--ink-faint);padding:4px 8px 6px;font-size:11px}
+.mdrev-host .switcher-row {text-align:left;width:100%;color:var(--ink);background:0 0;border:none;border-radius:6px;align-items:baseline;gap:10px;padding:5px 8px;font-size:12.5px;display:flex}
+.mdrev-host .switcher-row:hover {background:var(--bg-soft)}
+.mdrev-host .switcher-row.active {background:var(--accent-soft);color:var(--accent);font-weight:600}
+.mdrev-host .switcher-path {text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;font-family:ui-monospace,Menlo,monospace;font-size:12px;overflow:hidden}
+.mdrev-host .switcher-root {color:var(--ink-faint);white-space:nowrap;font-size:11px}
+.mdrev-host .mdv-canvas-raw-note {color:var(--ink-soft);padding:4px 2px 6px;font-size:12px}
+.mdrev-host .mdv-canvas-raw-note+pre {max-height:calc(var(--mdv-app-h,100vh) * .6);margin:0;overflow:auto}
+.mdrev-host .mdv-pill-row td {text-align:center;color:var(--ink-soft);background:var(--bg-soft);cursor:pointer;padding:4px 12px;font-size:11.5px;border-top:1px dashed var(--rule)!important;border-bottom:1px dashed var(--rule)!important}
+.mdrev-host .mdv-pill-row:hover td {color:var(--accent);background:var(--accent-soft)}
+.mdrev-host .toast {z-index:70;box-shadow:var(--shadow);max-width:min(560px, calc(var(--mdv-app-w,100vw) - 40px));border-radius:999px;padding:6px 16px;font-size:12.5px;position:fixed;bottom:18px;left:50%;transform:translate(-50%)}
+.mdrev-host .toast.ok {color:var(--ins-fg);background:var(--ins-bg);border:1px solid var(--ins-fg)}
+.mdrev-host .toast.bad {color:var(--del-fg);background:var(--del-bg);border:1px solid var(--del-fg)}
+.mdrev-host .ann-orphans {width:260px;max-height:calc(var(--mdv-app-h,100vh) * .6);z-index:40;flex-direction:column;display:flex;position:fixed;bottom:14px;right:18px}
+.mdrev-host .ann-orphans .ann-orphan-toggle {flex:none}
+.mdrev-host .ann-orphans.is-open .ann-orphan-toggle {border-bottom-right-radius:0;border-bottom-left-radius:0}
+.mdrev-host .ann-orphan-list {background:var(--bg);border:1px solid var(--rule);border-top:none;border-radius:0 0 6px 6px;flex:1;min-height:0;padding:4px;overflow-y:auto}
+.mdrev-host .ann-card.ann-orphan.is-dense {cursor:pointer;padding:4px 8px}
+.mdrev-host .ann-card.ann-orphan.is-dense:hover {border-color:var(--accent);opacity:1}
+.mdrev-host .ann-card.ann-orphan.is-unfolded {cursor:pointer;opacity:1}
+.mdrev-host .ann-dense {align-items:baseline;gap:5px;min-width:0;display:flex}
+.mdrev-host .ann-dense-glyph {color:var(--ink-faint);flex:none;font-size:11px}
+.mdrev-host .ann-dense .ann-author {flex:none}
+.mdrev-host .ann-dense-body {text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--ink-soft);flex:1;font-size:11.5px;overflow:hidden}
+.mdrev-host .ann-orphan-toggle {text-align:left;width:100%;color:var(--ink-faint);background:var(--bg);border:1px solid var(--rule);cursor:pointer;border-radius:6px;padding:4px 8px;font-size:11.5px}
+.mdrev-host .ann-orphan-toggle:hover {color:var(--accent);border-color:var(--accent)}
+.mdrev-host .ann-card.ann-orphan {opacity:.85;width:auto;max-width:none;margin:0 0 4px;position:static}
+.mdrev-host .ann-card.ann-orphan:last-child {margin-bottom:0}
+.mdrev-host .ann-orphan-why {color:var(--ink-faint);margin-top:4px;font-size:10.5px;font-style:italic}
+.mdrev-host .width-ctl {padding:0 8px}
+.mdrev-host .ann-resolution-open:before {content:"↺ ";color:var(--ink-faint);font-weight:700}
+.mdrev-host .ann-resolution-was {color:var(--ink-faint);font-style:italic}
+@media print {
+.mdrev-host[data-theme], .mdrev-host:not([data-theme]) {--bg: var(--mdrev-bg, #fff); --bg-soft: var(--mdrev-bg-soft, #f7f8fc); --bg-inset: var(--mdrev-bg-inset, #eef4fc); --ink: var(--mdrev-ink, #202536); --ink-soft: var(--mdrev-ink-soft, #646c80); --ink-faint: var(--mdrev-ink-faint, #69738a); --rule: var(--mdrev-rule, #3e496c1c); --rule-soft: var(--mdrev-rule-soft, #3e496c12); --accent: var(--mdrev-accent, #4758d0); --accent-soft: var(--mdrev-accent-soft, #4758d01f); --on-accent: var(--mdrev-on-accent, #fff); --ins-fg: var(--mdrev-ins-fg, #1d7536); --ins-bg: var(--mdrev-ins-bg, #1d75361c); --del-fg: var(--mdrev-del-fg, #bc212e); --del-bg: var(--mdrev-del-bg, #bc212e1a); --mod-fg: var(--mdrev-mod-fg, #363fb6); --mod-bg: var(--mdrev-mod-bg, #363fb61c); --code-bg: var(--mdrev-code-bg, #f7f8fc); --shadow: var(--mdrev-shadow, none); --lightningcss-light: var(--mdrev-lightningcss-light, initial); --lightningcss-dark:; color-scheme:light;}
+.mdrev-host, .mdrev-host .app, .mdrev-host .doc {color:var(--ink)!important;background:#fff!important}
+.mdrev-host, .mdrev-host, .mdrev-host .app, .mdrev-host .main {height:auto!important;min-height:0!important;display:block!important;overflow:visible!important}
+.mdrev-host .scrollpane {height:auto!important;overflow:visible!important}
+.mdrev-host .topbar, .mdrev-host .rail, .mdrev-host .file-rail, .mdrev-host .outline, .mdrev-host .mdv-canvas-bar, .mdrev-host .toast, .mdrev-host .ann-orphans, .mdrev-host .blame-pop, .mdrev-host .ann-invite-group, .mdrev-host .ann-margin, .mdrev-host .gutter-margin, .mdrev-host .find {display:none!important}
+.mdrev-host .mdv-canvas.is-picked {border-color:var(--rule);outline:none}
+.mdrev-host .doc .mdv-block-ins:not(tr):not(code), .mdrev-host .doc .mdv-block-del:not(tr):not(code), .mdrev-host .doc .mdv-block-mod:not(tr):not(code), .mdrev-host .doc .mdv-block-shape:not(tr):not(code) {border-left:3px solid #0000;margin-left:-10px!important;padding-left:7px!important}
+.mdrev-host .doc .mdv-block-ins:not(tr):not(code) {border-left-color:var(--ins-fg)}
+.mdrev-host .doc .mdv-block-del:not(tr):not(code) {border-left-color:var(--del-fg)}
+.mdrev-host .doc .mdv-block-mod:not(tr):not(code) {border-left-color:var(--mod-fg)}
+.mdrev-host .doc .mdv-block-shape:not(tr):not(code) {border-left-color:var(--shape-fg)}
+.mdrev-host .doc .mdv-line-ins {box-shadow:inset 2px 0 0 var(--ins-fg)}
+.mdrev-host .doc .mdv-line-del {box-shadow:inset 2px 0 0 var(--del-fg)}
+.mdrev-host .doc .mdv-line-mod {box-shadow:inset 2px 0 0 var(--mod-fg)}
+.mdrev-host .doc pre:has(>code.mdv-block-ins) {box-shadow:-17px 0 0 -7px var(--ins-fg)}
+.mdrev-host .doc pre:has(>code.mdv-block-del) {box-shadow:-17px 0 0 -7px var(--del-fg)}
+.mdrev-host .doc pre:has(>code.mdv-block-mod) {box-shadow:-17px 0 0 -7px var(--mod-fg)}
+.mdrev-host .doc pre:has(>code.mdv-block-shape) {box-shadow:-17px 0 0 -7px var(--shape-fg)}
+.mdrev-host .layout-body {display:block!important}
+.mdrev-host .layout-doc {padding:0!important;display:block!important}
+.mdrev-host .doc, .mdrev-host .is-wide .doc, .mdrev-host .width-medium .layout-doc .doc {width:auto!important;max-width:none!important;margin:0!important;padding:0!important}
+.mdrev-host .source-view {margin:0!important}
+.mdrev-host .width-narrow .layout-doc .doc, .mdrev-host .width-narrow .layout-doc .source-view {padding-left:20mm!important;padding-right:20mm!important}
+.mdrev-host .width-medium .layout-doc .doc, .mdrev-host .width-medium .layout-doc .source-view {padding-left:9mm!important;padding-right:9mm!important}
+.mdrev-host .width-wide .layout-doc .doc, .mdrev-host .width-wide .layout-doc .source-view {padding-left:0!important;padding-right:0!important}
+.mdrev-host .mdv-ins, .mdrev-host .mdv-del, .mdrev-host .mdv-ins *, .mdrev-host .mdv-del *, .mdrev-host .mdv-block-ins, .mdrev-host .mdv-block-del, .mdrev-host .mdv-block-mod, .mdrev-host .mdv-block-shape, .mdrev-host .mdv-block-ins *, .mdrev-host .mdv-block-del *, .mdrev-host .mdv-block-mod *, .mdrev-host .mdv-block-shape *, .mdrev-host .doc [data-mdv-cut]:after, .mdrev-host .doc pre, .mdrev-host .doc code, .mdrev-host .doc th {-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.mdrev-host ::highlight(mdv-ann) {-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.mdrev-host .mdv-canvas svg, .mdrev-host .mdv-canvas img {max-width:100%!important;height:auto!important}
+.mdrev-host .mdv-canvas-stage {overflow:visible!important}
+.mdrev-host .doc th {white-space:normal}
+.mdrev-host .cut-peek {display:none!important}
+.mdrev-host h1, .mdrev-host h2, .mdrev-host h3, .mdrev-host h4, .mdrev-host h5, .mdrev-host h6 {break-after:avoid}
+.mdrev-host tr, .mdrev-host figure, .mdrev-host img, .mdrev-host svg, .mdrev-host .mdv-canvas {break-inside:avoid}
+.mdrev-host p, .mdrev-host li, .mdrev-host blockquote, .mdrev-host dd {orphans:2;widows:2}
+.mdrev-host pre {white-space:pre-wrap;overflow:visible!important}
+.mdrev-host a {color:inherit}
+}
+.mdrev-host .build-toast {z-index:40;color:var(--ink);background:var(--bg-soft);border:1px solid var(--rule-soft);border-radius:8px;align-items:center;gap:10px;padding:8px 12px;font-size:13px;display:flex;position:fixed;bottom:16px;right:16px;box-shadow:0 4px 16px #0000001f}
+.mdrev-host .build-toast button {font:inherit;color:var(--accent);background:var(--bg);border:1px solid var(--rule-soft);cursor:pointer;border-radius:6px;padding:4px 10px}
+@font-face {font-display:block;font-family:mdvKaTeX_AMS;font-style:normal;font-weight:400;src:url(./assets/KaTeX_AMS-Regular-BQhdFMY1.woff2)format("woff2"),url(./assets/KaTeX_AMS-Regular-DMm9YOAa.woff)format("woff"),url(./assets/KaTeX_AMS-Regular-DRggAlZN.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Caligraphic;font-style:normal;font-weight:700;src:url(./assets/KaTeX_Caligraphic-Bold-Dq_IR9rO.woff2)format("woff2"),url(./assets/KaTeX_Caligraphic-Bold-BEiXGLvX.woff)format("woff"),url(./assets/KaTeX_Caligraphic-Bold-ATXxdsX0.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Caligraphic;font-style:normal;font-weight:400;src:url(./assets/KaTeX_Caligraphic-Regular-Di6jR-x-.woff2)format("woff2"),url(./assets/KaTeX_Caligraphic-Regular-CTRA-rTL.woff)format("woff"),url(./assets/KaTeX_Caligraphic-Regular-wX97UBjC.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Fraktur;font-style:normal;font-weight:700;src:url(./assets/KaTeX_Fraktur-Bold-CL6g_b3V.woff2)format("woff2"),url(./assets/KaTeX_Fraktur-Bold-BsDP51OF.woff)format("woff"),url(./assets/KaTeX_Fraktur-Bold-BdnERNNW.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Fraktur;font-style:normal;font-weight:400;src:url(./assets/KaTeX_Fraktur-Regular-CTYiF6lA.woff2)format("woff2"),url(./assets/KaTeX_Fraktur-Regular-Dxdc4cR9.woff)format("woff"),url(./assets/KaTeX_Fraktur-Regular-CB_wures.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Main;font-style:normal;font-weight:700;src:url(./assets/KaTeX_Main-Bold-Cx986IdX.woff2)format("woff2"),url(./assets/KaTeX_Main-Bold-Jm3AIy58.woff)format("woff"),url(./assets/KaTeX_Main-Bold-waoOVXN0.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Main;font-style:italic;font-weight:700;src:url(./assets/KaTeX_Main-BoldItalic-DxDJ3AOS.woff2)format("woff2"),url(./assets/KaTeX_Main-BoldItalic-SpSLRI95.woff)format("woff"),url(./assets/KaTeX_Main-BoldItalic-DzxPMmG6.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Main;font-style:italic;font-weight:400;src:url(./assets/KaTeX_Main-Italic-NWA7e6Wa.woff2)format("woff2"),url(./assets/KaTeX_Main-Italic-BMLOBm91.woff)format("woff"),url(./assets/KaTeX_Main-Italic-3WenGoN9.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Main;font-style:normal;font-weight:400;src:url(./assets/KaTeX_Main-Regular-B22Nviop.woff2)format("woff2"),url(./assets/KaTeX_Main-Regular-Dr94JaBh.woff)format("woff"),url(./assets/KaTeX_Main-Regular-ypZvNtVU.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Math;font-style:italic;font-weight:700;src:url(./assets/KaTeX_Math-BoldItalic-CZnvNsCZ.woff2)format("woff2"),url(./assets/KaTeX_Math-BoldItalic-iY-2wyZ7.woff)format("woff"),url(./assets/KaTeX_Math-BoldItalic-B3XSjfu4.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Math;font-style:italic;font-weight:400;src:url(./assets/KaTeX_Math-Italic-t53AETM-.woff2)format("woff2"),url(./assets/KaTeX_Math-Italic-DA0__PXp.woff)format("woff"),url(./assets/KaTeX_Math-Italic-flOr_0UB.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_SansSerif;font-style:normal;font-weight:700;src:url(./assets/KaTeX_SansSerif-Bold-D1sUS0GD.woff2)format("woff2"),url(./assets/KaTeX_SansSerif-Bold-DbIhKOiC.woff)format("woff"),url(./assets/KaTeX_SansSerif-Bold-CFMepnvq.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_SansSerif;font-style:italic;font-weight:400;src:url(./assets/KaTeX_SansSerif-Italic-C3H0VqGB.woff2)format("woff2"),url(./assets/KaTeX_SansSerif-Italic-DN2j7dab.woff)format("woff"),url(./assets/KaTeX_SansSerif-Italic-YYjJ1zSn.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_SansSerif;font-style:normal;font-weight:400;src:url(./assets/KaTeX_SansSerif-Regular-DDBCnlJ7.woff2)format("woff2"),url(./assets/KaTeX_SansSerif-Regular-CS6fqUqJ.woff)format("woff"),url(./assets/KaTeX_SansSerif-Regular-BNo7hRIc.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Script;font-style:normal;font-weight:400;src:url(./assets/KaTeX_Script-Regular-D3wIWfF6.woff2)format("woff2"),url(./assets/KaTeX_Script-Regular-D5yQViql.woff)format("woff"),url(./assets/KaTeX_Script-Regular-C5JkGWo-.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Size1;font-style:normal;font-weight:400;src:url(./assets/KaTeX_Size1-Regular-mCD8mA8B.woff2)format("woff2"),url(./assets/KaTeX_Size1-Regular-C195tn64.woff)format("woff"),url(./assets/KaTeX_Size1-Regular-Dbsnue_I.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Size2;font-style:normal;font-weight:400;src:url(./assets/KaTeX_Size2-Regular-Dy4dx90m.woff2)format("woff2"),url(./assets/KaTeX_Size2-Regular-oD1tc_U0.woff)format("woff"),url(./assets/KaTeX_Size2-Regular-B7gKUWhC.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Size3;font-style:normal;font-weight:400;src:url(./assets/KaTeX_Size3-Regular-gV2CO0n9.woff2)format("woff2"),url(./assets/KaTeX_Size3-Regular-CTq5MqoE.woff)format("woff"),url(./assets/KaTeX_Size3-Regular-DgpXs0kz.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Size4;font-style:normal;font-weight:400;src:url(./assets/KaTeX_Size4-Regular-Dl5lxZxV.woff2)format("woff2"),url(./assets/KaTeX_Size4-Regular-BF-4gkZK.woff)format("woff"),url(./assets/KaTeX_Size4-Regular-DWFBv043.ttf)format("truetype")}
+@font-face {font-display:block;font-family:mdvKaTeX_Typewriter;font-style:normal;font-weight:400;src:url(./assets/KaTeX_Typewriter-Regular-CO6r4hn1.woff2)format("woff2"),url(./assets/KaTeX_Typewriter-Regular-C0xS9mPB.woff)format("woff"),url(./assets/KaTeX_Typewriter-Regular-D3Ib7_Hf.ttf)format("truetype")}
+.mdrev-host .katex {text-indent:0;text-rendering:auto;font:1.21em/1.2 KaTeX_Main,Times New Roman,serif;position:relative}
+.mdrev-host .katex * {border-color:currentColor;-ms-high-contrast-adjust:none!important}
+.mdrev-host .katex .katex-version:after {content:"0.16.47"}
+.mdrev-host .katex .katex-mathml {clip-path:inset(50%);border:0;width:1px;height:1px;padding:0;position:absolute;overflow:hidden}
+.mdrev-host .katex .katex-html>.newline {display:block}
+.mdrev-host .katex .base {white-space:nowrap;width:min-content;position:relative}
+.mdrev-host .katex .base, .mdrev-host .katex .strut {display:inline-block}
+.mdrev-host .katex .textbf {font-weight:700}
+.mdrev-host .katex .textit {font-style:italic}
+.mdrev-host .katex .textrm {font-family:mdvKaTeX_Main}
+.mdrev-host .katex .textsf {font-family:mdvKaTeX_SansSerif}
+.mdrev-host .katex .texttt {font-family:mdvKaTeX_Typewriter}
+.mdrev-host .katex .mathnormal {font-family:mdvKaTeX_Math;font-style:italic}
+.mdrev-host .katex .mathit {font-family:mdvKaTeX_Main;font-style:italic}
+.mdrev-host .katex .mathrm {font-style:normal}
+.mdrev-host .katex .mathbf {font-family:mdvKaTeX_Main;font-weight:700}
+.mdrev-host .katex .boldsymbol {font-family:mdvKaTeX_Math;font-style:italic;font-weight:700}
+.mdrev-host .katex .amsrm, .mdrev-host .katex .mathbb, .mdrev-host .katex .textbb {font-family:mdvKaTeX_AMS}
+.mdrev-host .katex .mathcal {font-family:mdvKaTeX_Caligraphic}
+.mdrev-host .katex .mathfrak, .mdrev-host .katex .textfrak {font-family:mdvKaTeX_Fraktur}
+.mdrev-host .katex .mathboldfrak, .mdrev-host .katex .textboldfrak {font-family:mdvKaTeX_Fraktur;font-weight:700}
+.mdrev-host .katex .mathtt {font-family:mdvKaTeX_Typewriter}
+.mdrev-host .katex .mathscr, .mdrev-host .katex .textscr {font-family:mdvKaTeX_Script}
+.mdrev-host .katex .mathsf, .mdrev-host .katex .textsf {font-family:mdvKaTeX_SansSerif}
+.mdrev-host .katex .mathboldsf, .mdrev-host .katex .textboldsf {font-family:mdvKaTeX_SansSerif;font-weight:700}
+.mdrev-host .katex .mathitsf, .mdrev-host .katex .mathsfit, .mdrev-host .katex .textitsf {font-family:mdvKaTeX_SansSerif;font-style:italic}
+.mdrev-host .katex .mainrm {font-family:mdvKaTeX_Main;font-style:normal}
+.mdrev-host .katex .vlist-t {border-collapse:collapse;table-layout:fixed;display:inline-table}
+.mdrev-host .katex .vlist-r {display:table-row}
+.mdrev-host .katex .vlist {vertical-align:bottom;display:table-cell;position:relative}
+.mdrev-host .katex .vlist>span {height:0;display:block;position:relative}
+.mdrev-host .katex .vlist>span>span {display:inline-block}
+.mdrev-host .katex .vlist>span>.pstrut {width:0;overflow:hidden}
+.mdrev-host .katex .vlist-t2 {margin-right:-2px}
+.mdrev-host .katex .vlist-s {vertical-align:bottom;width:2px;min-width:2px;font-size:1px;display:table-cell}
+.mdrev-host .katex .vbox {flex-direction:column;align-items:baseline;display:inline-flex}
+.mdrev-host .katex .hbox {width:100%}
+.mdrev-host .katex .hbox, .mdrev-host .katex .thinbox {flex-direction:row;display:inline-flex}
+.mdrev-host .katex .thinbox {width:0;max-width:0}
+.mdrev-host .katex .msupsub {text-align:left}
+.mdrev-host .katex .mfrac>span>span {text-align:center}
+.mdrev-host .katex .mfrac .frac-line {border-bottom-style:solid;width:100%;display:inline-block}
+.mdrev-host .katex .hdashline, .mdrev-host .katex .hline, .mdrev-host .katex .mfrac .frac-line, .mdrev-host .katex .overline .overline-line, .mdrev-host .katex .rule, .mdrev-host .katex .underline .underline-line {min-height:1px}
+.mdrev-host .katex .mspace {display:inline-block}
+.mdrev-host .katex .smash {line-height:0;display:inline}
+.mdrev-host .katex .clap, .mdrev-host .katex .llap, .mdrev-host .katex .rlap {width:0;position:relative}
+.mdrev-host .katex .clap>.inner, .mdrev-host .katex .llap>.inner, .mdrev-host .katex .rlap>.inner {position:absolute}
+.mdrev-host .katex .clap>.fix, .mdrev-host .katex .llap>.fix, .mdrev-host .katex .rlap>.fix {display:inline-block}
+.mdrev-host .katex .llap>.inner {right:0}
+.mdrev-host .katex .clap>.inner, .mdrev-host .katex .rlap>.inner {left:0}
+.mdrev-host .katex .clap>.inner>span {margin-left:-50%;margin-right:50%}
+.mdrev-host .katex .rule {border:0 solid;display:inline-block;position:relative}
+.mdrev-host .katex .hline, .mdrev-host .katex .overline .overline-line, .mdrev-host .katex .underline .underline-line {border-bottom-style:solid;width:100%;display:inline-block}
+.mdrev-host .katex .hdashline {border-bottom-style:dashed;width:100%;display:inline-block}
+.mdrev-host .katex .sqrt>.root {margin-left:.277778em;margin-right:-.555556em}
+.mdrev-host .katex .fontsize-ensurer.reset-size1.size1, .mdrev-host .katex .sizing.reset-size1.size1 {font-size:1em}
+.mdrev-host .katex .fontsize-ensurer.reset-size1.size2, .mdrev-host .katex .sizing.reset-size1.size2 {font-size:1.2em}
+.mdrev-host .katex .fontsize-ensurer.reset-size1.size3, .mdrev-host .katex .sizing.reset-size1.size3 {font-size:1.4em}
+.mdrev-host .katex .fontsize-ensurer.reset-size1.size4, .mdrev-host .katex .sizing.reset-size1.size4 {font-size:1.6em}
+.mdrev-host .katex .fontsize-ensurer.reset-size1.size5, .mdrev-host .katex .sizing.reset-size1.size5 {font-size:1.8em}
+.mdrev-host .katex .fontsize-ensurer.reset-size1.size6, .mdrev-host .katex .sizing.reset-size1.size6 {font-size:2em}
+.mdrev-host .katex .fontsize-ensurer.reset-size1.size7, .mdrev-host .katex .sizing.reset-size1.size7 {font-size:2.4em}
+.mdrev-host .katex .fontsize-ensurer.reset-size1.size8, .mdrev-host .katex .sizing.reset-size1.size8 {font-size:2.88em}
+.mdrev-host .katex .fontsize-ensurer.reset-size1.size9, .mdrev-host .katex .sizing.reset-size1.size9 {font-size:3.456em}
+.mdrev-host .katex .fontsize-ensurer.reset-size1.size10, .mdrev-host .katex .sizing.reset-size1.size10 {font-size:4.148em}
+.mdrev-host .katex .fontsize-ensurer.reset-size1.size11, .mdrev-host .katex .sizing.reset-size1.size11 {font-size:4.976em}
+.mdrev-host .katex .fontsize-ensurer.reset-size2.size1, .mdrev-host .katex .sizing.reset-size2.size1 {font-size:.833333em}
+.mdrev-host .katex .fontsize-ensurer.reset-size2.size2, .mdrev-host .katex .sizing.reset-size2.size2 {font-size:1em}
+.mdrev-host .katex .fontsize-ensurer.reset-size2.size3, .mdrev-host .katex .sizing.reset-size2.size3 {font-size:1.16667em}
+.mdrev-host .katex .fontsize-ensurer.reset-size2.size4, .mdrev-host .katex .sizing.reset-size2.size4 {font-size:1.33333em}
+.mdrev-host .katex .fontsize-ensurer.reset-size2.size5, .mdrev-host .katex .sizing.reset-size2.size5 {font-size:1.5em}
+.mdrev-host .katex .fontsize-ensurer.reset-size2.size6, .mdrev-host .katex .sizing.reset-size2.size6 {font-size:1.66667em}
+.mdrev-host .katex .fontsize-ensurer.reset-size2.size7, .mdrev-host .katex .sizing.reset-size2.size7 {font-size:2em}
+.mdrev-host .katex .fontsize-ensurer.reset-size2.size8, .mdrev-host .katex .sizing.reset-size2.size8 {font-size:2.4em}
+.mdrev-host .katex .fontsize-ensurer.reset-size2.size9, .mdrev-host .katex .sizing.reset-size2.size9 {font-size:2.88em}
+.mdrev-host .katex .fontsize-ensurer.reset-size2.size10, .mdrev-host .katex .sizing.reset-size2.size10 {font-size:3.45667em}
+.mdrev-host .katex .fontsize-ensurer.reset-size2.size11, .mdrev-host .katex .sizing.reset-size2.size11 {font-size:4.14667em}
+.mdrev-host .katex .fontsize-ensurer.reset-size3.size1, .mdrev-host .katex .sizing.reset-size3.size1 {font-size:.714286em}
+.mdrev-host .katex .fontsize-ensurer.reset-size3.size2, .mdrev-host .katex .sizing.reset-size3.size2 {font-size:.857143em}
+.mdrev-host .katex .fontsize-ensurer.reset-size3.size3, .mdrev-host .katex .sizing.reset-size3.size3 {font-size:1em}
+.mdrev-host .katex .fontsize-ensurer.reset-size3.size4, .mdrev-host .katex .sizing.reset-size3.size4 {font-size:1.14286em}
+.mdrev-host .katex .fontsize-ensurer.reset-size3.size5, .mdrev-host .katex .sizing.reset-size3.size5 {font-size:1.28571em}
+.mdrev-host .katex .fontsize-ensurer.reset-size3.size6, .mdrev-host .katex .sizing.reset-size3.size6 {font-size:1.42857em}
+.mdrev-host .katex .fontsize-ensurer.reset-size3.size7, .mdrev-host .katex .sizing.reset-size3.size7 {font-size:1.71429em}
+.mdrev-host .katex .fontsize-ensurer.reset-size3.size8, .mdrev-host .katex .sizing.reset-size3.size8 {font-size:2.05714em}
+.mdrev-host .katex .fontsize-ensurer.reset-size3.size9, .mdrev-host .katex .sizing.reset-size3.size9 {font-size:2.46857em}
+.mdrev-host .katex .fontsize-ensurer.reset-size3.size10, .mdrev-host .katex .sizing.reset-size3.size10 {font-size:2.96286em}
+.mdrev-host .katex .fontsize-ensurer.reset-size3.size11, .mdrev-host .katex .sizing.reset-size3.size11 {font-size:3.55429em}
+.mdrev-host .katex .fontsize-ensurer.reset-size4.size1, .mdrev-host .katex .sizing.reset-size4.size1 {font-size:.625em}
+.mdrev-host .katex .fontsize-ensurer.reset-size4.size2, .mdrev-host .katex .sizing.reset-size4.size2 {font-size:.75em}
+.mdrev-host .katex .fontsize-ensurer.reset-size4.size3, .mdrev-host .katex .sizing.reset-size4.size3 {font-size:.875em}
+.mdrev-host .katex .fontsize-ensurer.reset-size4.size4, .mdrev-host .katex .sizing.reset-size4.size4 {font-size:1em}
+.mdrev-host .katex .fontsize-ensurer.reset-size4.size5, .mdrev-host .katex .sizing.reset-size4.size5 {font-size:1.125em}
+.mdrev-host .katex .fontsize-ensurer.reset-size4.size6, .mdrev-host .katex .sizing.reset-size4.size6 {font-size:1.25em}
+.mdrev-host .katex .fontsize-ensurer.reset-size4.size7, .mdrev-host .katex .sizing.reset-size4.size7 {font-size:1.5em}
+.mdrev-host .katex .fontsize-ensurer.reset-size4.size8, .mdrev-host .katex .sizing.reset-size4.size8 {font-size:1.8em}
+.mdrev-host .katex .fontsize-ensurer.reset-size4.size9, .mdrev-host .katex .sizing.reset-size4.size9 {font-size:2.16em}
+.mdrev-host .katex .fontsize-ensurer.reset-size4.size10, .mdrev-host .katex .sizing.reset-size4.size10 {font-size:2.5925em}
+.mdrev-host .katex .fontsize-ensurer.reset-size4.size11, .mdrev-host .katex .sizing.reset-size4.size11 {font-size:3.11em}
+.mdrev-host .katex .fontsize-ensurer.reset-size5.size1, .mdrev-host .katex .sizing.reset-size5.size1 {font-size:.555556em}
+.mdrev-host .katex .fontsize-ensurer.reset-size5.size2, .mdrev-host .katex .sizing.reset-size5.size2 {font-size:.666667em}
+.mdrev-host .katex .fontsize-ensurer.reset-size5.size3, .mdrev-host .katex .sizing.reset-size5.size3 {font-size:.777778em}
+.mdrev-host .katex .fontsize-ensurer.reset-size5.size4, .mdrev-host .katex .sizing.reset-size5.size4 {font-size:.888889em}
+.mdrev-host .katex .fontsize-ensurer.reset-size5.size5, .mdrev-host .katex .sizing.reset-size5.size5 {font-size:1em}
+.mdrev-host .katex .fontsize-ensurer.reset-size5.size6, .mdrev-host .katex .sizing.reset-size5.size6 {font-size:1.11111em}
+.mdrev-host .katex .fontsize-ensurer.reset-size5.size7, .mdrev-host .katex .sizing.reset-size5.size7 {font-size:1.33333em}
+.mdrev-host .katex .fontsize-ensurer.reset-size5.size8, .mdrev-host .katex .sizing.reset-size5.size8 {font-size:1.6em}
+.mdrev-host .katex .fontsize-ensurer.reset-size5.size9, .mdrev-host .katex .sizing.reset-size5.size9 {font-size:1.92em}
+.mdrev-host .katex .fontsize-ensurer.reset-size5.size10, .mdrev-host .katex .sizing.reset-size5.size10 {font-size:2.30444em}
+.mdrev-host .katex .fontsize-ensurer.reset-size5.size11, .mdrev-host .katex .sizing.reset-size5.size11 {font-size:2.76444em}
+.mdrev-host .katex .fontsize-ensurer.reset-size6.size1, .mdrev-host .katex .sizing.reset-size6.size1 {font-size:.5em}
+.mdrev-host .katex .fontsize-ensurer.reset-size6.size2, .mdrev-host .katex .sizing.reset-size6.size2 {font-size:.6em}
+.mdrev-host .katex .fontsize-ensurer.reset-size6.size3, .mdrev-host .katex .sizing.reset-size6.size3 {font-size:.7em}
+.mdrev-host .katex .fontsize-ensurer.reset-size6.size4, .mdrev-host .katex .sizing.reset-size6.size4 {font-size:.8em}
+.mdrev-host .katex .fontsize-ensurer.reset-size6.size5, .mdrev-host .katex .sizing.reset-size6.size5 {font-size:.9em}
+.mdrev-host .katex .fontsize-ensurer.reset-size6.size6, .mdrev-host .katex .sizing.reset-size6.size6 {font-size:1em}
+.mdrev-host .katex .fontsize-ensurer.reset-size6.size7, .mdrev-host .katex .sizing.reset-size6.size7 {font-size:1.2em}
+.mdrev-host .katex .fontsize-ensurer.reset-size6.size8, .mdrev-host .katex .sizing.reset-size6.size8 {font-size:1.44em}
+.mdrev-host .katex .fontsize-ensurer.reset-size6.size9, .mdrev-host .katex .sizing.reset-size6.size9 {font-size:1.728em}
+.mdrev-host .katex .fontsize-ensurer.reset-size6.size10, .mdrev-host .katex .sizing.reset-size6.size10 {font-size:2.074em}
+.mdrev-host .katex .fontsize-ensurer.reset-size6.size11, .mdrev-host .katex .sizing.reset-size6.size11 {font-size:2.488em}
+.mdrev-host .katex .fontsize-ensurer.reset-size7.size1, .mdrev-host .katex .sizing.reset-size7.size1 {font-size:.416667em}
+.mdrev-host .katex .fontsize-ensurer.reset-size7.size2, .mdrev-host .katex .sizing.reset-size7.size2 {font-size:.5em}
+.mdrev-host .katex .fontsize-ensurer.reset-size7.size3, .mdrev-host .katex .sizing.reset-size7.size3 {font-size:.583333em}
+.mdrev-host .katex .fontsize-ensurer.reset-size7.size4, .mdrev-host .katex .sizing.reset-size7.size4 {font-size:.666667em}
+.mdrev-host .katex .fontsize-ensurer.reset-size7.size5, .mdrev-host .katex .sizing.reset-size7.size5 {font-size:.75em}
+.mdrev-host .katex .fontsize-ensurer.reset-size7.size6, .mdrev-host .katex .sizing.reset-size7.size6 {font-size:.833333em}
+.mdrev-host .katex .fontsize-ensurer.reset-size7.size7, .mdrev-host .katex .sizing.reset-size7.size7 {font-size:1em}
+.mdrev-host .katex .fontsize-ensurer.reset-size7.size8, .mdrev-host .katex .sizing.reset-size7.size8 {font-size:1.2em}
+.mdrev-host .katex .fontsize-ensurer.reset-size7.size9, .mdrev-host .katex .sizing.reset-size7.size9 {font-size:1.44em}
+.mdrev-host .katex .fontsize-ensurer.reset-size7.size10, .mdrev-host .katex .sizing.reset-size7.size10 {font-size:1.72833em}
+.mdrev-host .katex .fontsize-ensurer.reset-size7.size11, .mdrev-host .katex .sizing.reset-size7.size11 {font-size:2.07333em}
+.mdrev-host .katex .fontsize-ensurer.reset-size8.size1, .mdrev-host .katex .sizing.reset-size8.size1 {font-size:.347222em}
+.mdrev-host .katex .fontsize-ensurer.reset-size8.size2, .mdrev-host .katex .sizing.reset-size8.size2 {font-size:.416667em}
+.mdrev-host .katex .fontsize-ensurer.reset-size8.size3, .mdrev-host .katex .sizing.reset-size8.size3 {font-size:.486111em}
+.mdrev-host .katex .fontsize-ensurer.reset-size8.size4, .mdrev-host .katex .sizing.reset-size8.size4 {font-size:.555556em}
+.mdrev-host .katex .fontsize-ensurer.reset-size8.size5, .mdrev-host .katex .sizing.reset-size8.size5 {font-size:.625em}
+.mdrev-host .katex .fontsize-ensurer.reset-size8.size6, .mdrev-host .katex .sizing.reset-size8.size6 {font-size:.694444em}
+.mdrev-host .katex .fontsize-ensurer.reset-size8.size7, .mdrev-host .katex .sizing.reset-size8.size7 {font-size:.833333em}
+.mdrev-host .katex .fontsize-ensurer.reset-size8.size8, .mdrev-host .katex .sizing.reset-size8.size8 {font-size:1em}
+.mdrev-host .katex .fontsize-ensurer.reset-size8.size9, .mdrev-host .katex .sizing.reset-size8.size9 {font-size:1.2em}
+.mdrev-host .katex .fontsize-ensurer.reset-size8.size10, .mdrev-host .katex .sizing.reset-size8.size10 {font-size:1.44028em}
+.mdrev-host .katex .fontsize-ensurer.reset-size8.size11, .mdrev-host .katex .sizing.reset-size8.size11 {font-size:1.72778em}
+.mdrev-host .katex .fontsize-ensurer.reset-size9.size1, .mdrev-host .katex .sizing.reset-size9.size1 {font-size:.289352em}
+.mdrev-host .katex .fontsize-ensurer.reset-size9.size2, .mdrev-host .katex .sizing.reset-size9.size2 {font-size:.347222em}
+.mdrev-host .katex .fontsize-ensurer.reset-size9.size3, .mdrev-host .katex .sizing.reset-size9.size3 {font-size:.405093em}
+.mdrev-host .katex .fontsize-ensurer.reset-size9.size4, .mdrev-host .katex .sizing.reset-size9.size4 {font-size:.462963em}
+.mdrev-host .katex .fontsize-ensurer.reset-size9.size5, .mdrev-host .katex .sizing.reset-size9.size5 {font-size:.520833em}
+.mdrev-host .katex .fontsize-ensurer.reset-size9.size6, .mdrev-host .katex .sizing.reset-size9.size6 {font-size:.578704em}
+.mdrev-host .katex .fontsize-ensurer.reset-size9.size7, .mdrev-host .katex .sizing.reset-size9.size7 {font-size:.694444em}
+.mdrev-host .katex .fontsize-ensurer.reset-size9.size8, .mdrev-host .katex .sizing.reset-size9.size8 {font-size:.833333em}
+.mdrev-host .katex .fontsize-ensurer.reset-size9.size9, .mdrev-host .katex .sizing.reset-size9.size9 {font-size:1em}
+.mdrev-host .katex .fontsize-ensurer.reset-size9.size10, .mdrev-host .katex .sizing.reset-size9.size10 {font-size:1.20023em}
+.mdrev-host .katex .fontsize-ensurer.reset-size9.size11, .mdrev-host .katex .sizing.reset-size9.size11 {font-size:1.43981em}
+.mdrev-host .katex .fontsize-ensurer.reset-size10.size1, .mdrev-host .katex .sizing.reset-size10.size1 {font-size:.24108em}
+.mdrev-host .katex .fontsize-ensurer.reset-size10.size2, .mdrev-host .katex .sizing.reset-size10.size2 {font-size:.289296em}
+.mdrev-host .katex .fontsize-ensurer.reset-size10.size3, .mdrev-host .katex .sizing.reset-size10.size3 {font-size:.337512em}
+.mdrev-host .katex .fontsize-ensurer.reset-size10.size4, .mdrev-host .katex .sizing.reset-size10.size4 {font-size:.385728em}
+.mdrev-host .katex .fontsize-ensurer.reset-size10.size5, .mdrev-host .katex .sizing.reset-size10.size5 {font-size:.433944em}
+.mdrev-host .katex .fontsize-ensurer.reset-size10.size6, .mdrev-host .katex .sizing.reset-size10.size6 {font-size:.48216em}
+.mdrev-host .katex .fontsize-ensurer.reset-size10.size7, .mdrev-host .katex .sizing.reset-size10.size7 {font-size:.578592em}
+.mdrev-host .katex .fontsize-ensurer.reset-size10.size8, .mdrev-host .katex .sizing.reset-size10.size8 {font-size:.694311em}
+.mdrev-host .katex .fontsize-ensurer.reset-size10.size9, .mdrev-host .katex .sizing.reset-size10.size9 {font-size:.833173em}
+.mdrev-host .katex .fontsize-ensurer.reset-size10.size10, .mdrev-host .katex .sizing.reset-size10.size10 {font-size:1em}
+.mdrev-host .katex .fontsize-ensurer.reset-size10.size11, .mdrev-host .katex .sizing.reset-size10.size11 {font-size:1.19961em}
+.mdrev-host .katex .fontsize-ensurer.reset-size11.size1, .mdrev-host .katex .sizing.reset-size11.size1 {font-size:.200965em}
+.mdrev-host .katex .fontsize-ensurer.reset-size11.size2, .mdrev-host .katex .sizing.reset-size11.size2 {font-size:.241158em}
+.mdrev-host .katex .fontsize-ensurer.reset-size11.size3, .mdrev-host .katex .sizing.reset-size11.size3 {font-size:.281351em}
+.mdrev-host .katex .fontsize-ensurer.reset-size11.size4, .mdrev-host .katex .sizing.reset-size11.size4 {font-size:.321543em}
+.mdrev-host .katex .fontsize-ensurer.reset-size11.size5, .mdrev-host .katex .sizing.reset-size11.size5 {font-size:.361736em}
+.mdrev-host .katex .fontsize-ensurer.reset-size11.size6, .mdrev-host .katex .sizing.reset-size11.size6 {font-size:.401929em}
+.mdrev-host .katex .fontsize-ensurer.reset-size11.size7, .mdrev-host .katex .sizing.reset-size11.size7 {font-size:.482315em}
+.mdrev-host .katex .fontsize-ensurer.reset-size11.size8, .mdrev-host .katex .sizing.reset-size11.size8 {font-size:.578778em}
+.mdrev-host .katex .fontsize-ensurer.reset-size11.size9, .mdrev-host .katex .sizing.reset-size11.size9 {font-size:.694534em}
+.mdrev-host .katex .fontsize-ensurer.reset-size11.size10, .mdrev-host .katex .sizing.reset-size11.size10 {font-size:.833601em}
+.mdrev-host .katex .fontsize-ensurer.reset-size11.size11, .mdrev-host .katex .sizing.reset-size11.size11 {font-size:1em}
+.mdrev-host .katex .delimsizing.size1 {font-family:mdvKaTeX_Size1}
+.mdrev-host .katex .delimsizing.size2 {font-family:mdvKaTeX_Size2}
+.mdrev-host .katex .delimsizing.size3 {font-family:mdvKaTeX_Size3}
+.mdrev-host .katex .delimsizing.size4 {font-family:mdvKaTeX_Size4}
+.mdrev-host .katex .delimsizing.mult .delim-size1>span {font-family:mdvKaTeX_Size1}
+.mdrev-host .katex .delimsizing.mult .delim-size4>span {font-family:mdvKaTeX_Size4}
+.mdrev-host .katex .nulldelimiter {width:.12em;display:inline-block}
+.mdrev-host .katex .delimcenter, .mdrev-host .katex .op-symbol {position:relative}
+.mdrev-host .katex .op-symbol.small-op {font-family:mdvKaTeX_Size1}
+.mdrev-host .katex .op-symbol.large-op {font-family:mdvKaTeX_Size2}
+.mdrev-host .katex .accent>.vlist-t, .mdrev-host .katex .op-limits>.vlist-t {text-align:center}
+.mdrev-host .katex .accent .accent-body {position:relative}
+.mdrev-host .katex .accent .accent-body:not(.accent-full) {width:0}
+.mdrev-host .katex .overlay {display:block}
+.mdrev-host .katex .mtable .vertical-separator {min-width:1px;display:inline-block}
+.mdrev-host .katex .mtable .arraycolsep {display:inline-block}
+.mdrev-host .katex .mtable .col-align-c>.vlist-t {text-align:center}
+.mdrev-host .katex .mtable .col-align-l>.vlist-t {text-align:left}
+.mdrev-host .katex .mtable .col-align-r>.vlist-t {text-align:right}
+.mdrev-host .katex .svg-align {text-align:left}
+.mdrev-host .katex svg {fill:currentColor;stroke:currentColor;height:inherit;width:100%;display:block;position:absolute}
+.mdrev-host .katex svg path {stroke:none}
+.mdrev-host .katex svg {fill-rule:nonzero;fill-opacity:1;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1}
+.mdrev-host .katex img {border-style:none;min-width:0;max-width:none;min-height:0;max-height:none}
+.mdrev-host .katex .stretchy {width:100%;display:block;position:relative;overflow:hidden}
+.mdrev-host .katex .stretchy:after, .mdrev-host .katex .stretchy:before {content:""}
+.mdrev-host .katex .hide-tail {width:100%;position:relative;overflow:hidden}
+.mdrev-host .katex .halfarrow-left {width:50.2%;position:absolute;left:0;overflow:hidden}
+.mdrev-host .katex .halfarrow-right {width:50.2%;position:absolute;right:0;overflow:hidden}
+.mdrev-host .katex .brace-left {width:25.1%;position:absolute;left:0;overflow:hidden}
+.mdrev-host .katex .brace-center {width:50%;position:absolute;left:25%;overflow:hidden}
+.mdrev-host .katex .brace-right {width:25.1%;position:absolute;right:0;overflow:hidden}
+.mdrev-host .katex .x-arrow-pad {padding:0 .5em}
+.mdrev-host .katex .cd-arrow-pad {padding:0 .55556em 0 .27778em}
+.mdrev-host .katex .mover, .mdrev-host .katex .munder, .mdrev-host .katex .x-arrow {text-align:center}
+.mdrev-host .katex .boxpad {padding:0 .3em}
+.mdrev-host .katex .fbox, .mdrev-host .katex .fcolorbox {box-sizing:border-box;border:.04em solid}
+.mdrev-host .katex .cancel-pad {padding:0 .2em}
+.mdrev-host .katex .cancel-lap {margin-left:-.2em;margin-right:-.2em}
+.mdrev-host .katex .sout {border-bottom-style:solid;border-bottom-width:.08em}
+.mdrev-host .katex .angl {box-sizing:border-box;border-top:.049em solid;border-right:.049em solid;margin-right:.03889em}
+.mdrev-host .katex .anglpad {padding:0 .03889em}
+.mdrev-host .katex .eqn-num:before {content:"(" counter(katexEqnNo) ")";counter-increment:katexEqnNo}
+.mdrev-host .katex .mml-eqn-num:before {content:"(" counter(mmlEqnNo) ")";counter-increment:mmlEqnNo}
+.mdrev-host .katex .mtr-glue {width:50%}
+.mdrev-host .katex .cd-vert-arrow {display:inline-block;position:relative}
+.mdrev-host .katex .cd-label-left {text-align:left;display:inline-block;position:absolute;right:calc(50% + .3em)}
+.mdrev-host .katex .cd-label-right {text-align:right;display:inline-block;position:absolute;left:calc(50% + .3em)}
+.mdrev-host .katex-display {text-align:center;margin:1em 0;display:block}
+.mdrev-host .katex-display>.katex {text-align:center;white-space:nowrap;display:block}
+.mdrev-host .katex-display>.katex>.katex-html {display:block;position:relative}
+.mdrev-host .katex-display>.katex>.katex-html>.tag {position:absolute;right:0}
+.mdrev-host .katex-display.leqno>.katex>.katex-html>.tag {left:0;right:auto}
+.mdrev-host .katex-display.fleqn>.katex {text-align:left;padding-left:2em}
+.mdrev-host {counter-reset:katexEqnNo mmlEqnNo}

@@ -1,16 +1,17 @@
 // mdrev's embedded viewer, as a guest in the preview pane (#270) — design/mdrev-in-the-preview-pane.md.
 //
-// The monitor serves an INSTALLED mdrev release, never a copy of its source: the page learns the
-// version from `data-mdrev` (empty when there is none) and imports the bundle from
-// `/mdrev/<version>/` only when a Markdown document is first shown, so a shell that never previews
-// Markdown never loads it. Where the document came from decides how much of mdrev it gets:
+// The monitor serves the mdrev release PINNED into it (#274, `vendor/mdrev`): the page learns the
+// version from `data-mdrev` and imports the bundle from `/mdrev/<version>/` only when a Markdown
+// document is first shown, so a shell that never previews Markdown never loads it. Where the
+// document came from decides how much of mdrev it gets:
 //
 //  * Markdown the transcript CARRIES (`item.text`) — the owner: "only show a cleanly rendered
 //    viewer (as a reader)". The monitor holds the text for mdrev's contract and the mount declares
 //    no history, no notes and no toolbar — mdrev's own word for a document inside a page that has
 //    chrome of its own. The keys stay.
 //  * a Markdown FILE the page holds a `/file` stamp for — the whole viewer: redlines against the
-//    file's own git history and review notes in its checkout, on mdrev's toolbar.
+//    file's own git history and review notes in its checkout, on mdrev's toolbar. Notes run on
+//    mdrev's CLI under node; a monitor with no node refuses them and keeps the history.
 //
 // Both go through mdrev's HTTP contract under `/api/mdrev`; its in-process `client` seam needs
 // internals the released bundle does not export (the design says why).
@@ -21,7 +22,7 @@ const MARKDOWN = /\.(md|markdown|mdown|mkd)$/i;
 /** Whether the pane should hand this tab to mdrev: a Markdown name, by extension. */
 export const isMarkdownName = name => MARKDOWN.test(String(name || ""));
 
-/** The installed mdrev release's version, or "" when this monitor found none. */
+/** The pinned mdrev release's version, or "" from a server that carries none. */
 export const mdrevVersion = () => document.body?.dataset.mdrev || "";
 
 let loading = null;
@@ -59,13 +60,15 @@ async function factsFor(item) {
   }
   const query = `path=${encodeURIComponent(item.path || "")}&sig=${encodeURIComponent(item.fsig || "")}`;
   const open = await answer(await fetch(`${CONTRACT}/open?${query}`, { cache: "no-store" }));
-  return { root: open.root, path: open.path, cap: open.cap, isGit: open.isGit, review: true, annotate: true };
+  // The leave is the monitor's to give: history always (from git), notes only where it has a node
+  // to run mdrev's CLI — mdrev's own format is written through nothing else.
+  return { root: open.root, path: open.path, cap: open.cap, isGit: open.isGit, review: open.review, annotate: open.annotate };
 }
 
 /**
- * Mount mdrev on `el` for `item`. Resolves to `{unmount()}`, or null when this monitor has no
- * mdrev. Rejects when mdrev is there but this document cannot be mounted — the pane then shows the
- * text exactly as it did before mdrev.
+ * Mount mdrev on `el` for `item`. Resolves to `{unmount()}`, or null from a server that carries no
+ * mdrev. Rejects when this document cannot be mounted — the pane then shows the text exactly as it
+ * did before mdrev.
  */
 export async function mountMarkdown(el, item) {
   const version = mdrevVersion();
