@@ -863,3 +863,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 /* #270 mdrev's viewer fills the preview pane and scrolls itself; the pane stops scrolling around it. */
 .preview-body.mdrev-mounted{overflow:hidden;display:flex;flex-direction:column}
 .mdrev-pane{flex:1;min-height:0;outline:none}
+/* #271 the pane's Markdown in a tab of its own: beside the close button, only while mdrev has a
+   document mounted. `iconbtn` sets `display:grid`, which would outrank the `hidden` attribute. */
+.preview-head .preview-newtab{width:32px;height:32px;flex:none;font-size:15px;line-height:1}
+.preview-head .preview-newtab[hidden]{display:none}

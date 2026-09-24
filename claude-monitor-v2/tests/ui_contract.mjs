@@ -21,7 +21,7 @@ import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, t
 import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, bindKeymap, hintFor, inGuest, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
-import { isMarkdownName } from "../../claude-monitor/src/codex-ui/mdrev-pane.js";
+import { isMarkdownName, standaloneFacts, standaloneHref } from "../../claude-monitor/src/codex-ui/mdrev-pane.js";
 import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
@@ -405,6 +405,17 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // What the preview pane hands to mdrev: Markdown, by name.
   for (const name of ["README.md", "notes.MARKDOWN", "a.mdown", "b.mkd"]) assert.ok(isMarkdownName(name), name);
   for (const name of ["page.html", "md", "README", "x.mdx", "", null]) assert.ok(!isMarkdownName(name), String(name));
+  // #271: a tab of its own is addressed by exactly the facts the pane mounted with, plus the range
+  // the reader chose — and reads them back unchanged, whatever a path or a revision spells.
+  const trip = place => { const href = standaloneHref(place); assert.ok(href.startsWith("/markdown?"), href); return standaloneFacts(href.slice(href.indexOf("?"))); };
+  const local = { root: "/Users/x/a b/repo", path: "docs/Notes & plans #1.md", cap: "c".repeat(64) };
+  assert.deepEqual(trip({ ...local, range: null }), { ...local, range: null }, "a plain read carries no range");
+  assert.deepEqual(trip({ ...local, range: { from: "abc123", to: "WORKTREE", since: null } }), { ...local, range: { from: "abc123" } }, "as it stands is the default, never spelled");
+  assert.deepEqual(trip({ ...local, range: { from: "EMPTY", to: "def456" } }), { ...local, range: { from: "EMPTY", to: "def456" } }, "before the first revision, to a revision");
+  assert.deepEqual(trip({ ...local, range: { from: "abc123", to: "WORKTREE", since: "1w" } }), { ...local, range: { from: "abc123", since: "1w" } }, "a time window keeps its window");
+  assert.deepEqual(trip({ ...local, range: { from: null, to: "def456" } }), { ...local, range: { from: null, to: "def456" } }, "a plain read AT a revision — what mdrev reports for a pick in clean mode — is still a range");
+  assert.deepEqual(trip({ root: "held", path: "0123456789abcdef/NOTES.md", cap: "d".repeat(64), range: null }), { root: "held", path: "0123456789abcdef/NOTES.md", cap: "d".repeat(64), range: null }, "held text, by the path the store gave it");
+  assert.deepEqual(standaloneFacts(""), { root: "", path: "", cap: "", range: null }, "an empty address names nothing");
   assert.equal(hintFor("hit-prev"), "N"); assert.equal(hintFor("page-up"), "⇧Space"); assert.equal(hintFor("nope"), "");
   assert.match(appSource, /bindKeymap\(document, /, "the shell binds the keymap once, at the document");
   assert.match(appSource, /viewport\.pageBy\(direction, \{ intent: true \}\)/, "key-driven scrolling counts as the reader's own, so following releases instead of snapping back — through the engine, stamped where the old code stamped (#196 stage 4)");

@@ -17,6 +17,15 @@ export class Preview {
   bind() {
     byId("previewBtn").onclick = () => this.setOpen(!uiState.preview);
     byId("closePreview").onclick = () => this.setOpen(false);
+    // The Markdown document the pane shows, in a tab of its own (#271): production chrome beside
+    // the demo's close button, there only while mdrev has a document mounted. NOT `noopener` — the
+    // tab `window.open` makes inherits a copy of this page's sessionStorage, which is how held text
+    // reaches it (mdrev-pane.js `href`); the tab is this monitor's own page on this origin.
+    this.newTab = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-newtab", textContent: "↗", title: "Open in a new tab", hidden: true });
+    this.newTab.dataset.previewNewTab = "";
+    this.newTab.setAttribute("aria-label", "Open this document in a new tab");
+    this.newTab.onclick = () => { const href = this.markdown?.href(); if (href) window.open(href, "_blank"); };
+    byId("closePreview").before(this.newTab);
     byId("previewHead").onclick = event => {
       const close = event.target.closest("[data-preview-tab-close]");
       if (close) { this.closeTab(close.dataset.previewTabClose); return; }
@@ -139,6 +148,7 @@ export class Preview {
       if (this.markdownToken !== token) { handle?.unmount(); return; }
       if (!handle) throw new Error("no mdrev");
       this.markdown = handle;
+      this.newTab.hidden = false;
     }).catch(() => {
       if (this.markdownToken !== token) return;
       this.teardownMarkdown();
@@ -147,6 +157,7 @@ export class Preview {
   }
   teardownMarkdown() {
     this.markdown?.unmount(); this.markdown = null;
+    this.newTab.hidden = true;
     this.markdownItem = null; this.markdownToken = null;
     byId("previewBody").classList.remove("mdrev-mounted");
   }

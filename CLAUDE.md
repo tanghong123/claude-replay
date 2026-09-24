@@ -94,7 +94,11 @@ a transcript CARRIES is handed to the monitor (`POST hold`), kept content-addres
 `Cap::Held` stamp, and mounted as a plain reader with no toolbar; a FILE opens through
 `GET open?path=&sig=`, and every route re-applies `/file`'s four guards with the file's own
 `Cap::File` stamp as mdrev's `cap`, so the viewer reads nothing the page was not offered. Notes are
-`mdrev-cli notes …` behind `deny_mutation` (PATCH/DELETE included), one document at a time.
+`mdrev-cli notes …` behind `deny_mutation` (PATCH/DELETE included), one document at a time. The
+pane's ↗ opens the document in a tab of its own (#271): `/markdown` is a STATIC page
+(`ui::markdown_page` + `markdown-page.js`) that reads root, path, cap and the reader's range from its
+own address and goes through the same routes; held text reaches the tab through sessionStorage,
+which `window.open` copies into the tab it makes — so that control must never use `noopener`.
 The pinned `mdrev-cli conform` against a live monitor is the definition of done
 (`mdrev_contract_passes_mdrev_cli_conform`); the mdrev browser cases need nothing installed and run in
 CI too. Keys: `bindKeymap` tracks ENGAGEMENT as mdrev does — the last click or focus inside

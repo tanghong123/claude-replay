@@ -84,6 +84,8 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
                 HttpResponse::html(ui::app_page(front.version, front.paired))
             }
         }
+        // A Markdown document from the preview pane, in a tab of its own (#271).
+        "markdown" => HttpResponse::html(ui::markdown_page()),
         // Read or set which shell `/` serves; the toggle in each shell's header calls this
         // and reloads.
         "api/ui" => ui::route(query),
@@ -204,6 +206,43 @@ mod tests {
             serve(&get("mdrev/0.16.45/mdrev.js", "")).code,
             "404 Not Found",
             "only the pin's version"
+        );
+    }
+
+    /// A Markdown document's tab of its own (#271) is a STATIC page: it names the pin, loads its
+    /// module, and writes nothing its address carries into its HTML — the module reads the address
+    /// itself and every fetch it makes goes through the pane's own guarded routes.
+    #[test]
+    fn the_markdown_tab_is_a_static_page() {
+        let front = Frontend {
+            version: "0.0.0-test",
+            paired: false,
+            classic: Arc::new(|_: &str| HttpResponse::html(String::new())),
+            session: None,
+        };
+        let serve = handler(make_backend("markdown"), front);
+        let hostile =
+            "root=%3Cscript%3Ealert(1)%3C%2Fscript%3E&path=%22%3E%3Cimg%20src%3Dx%3E&cap=x";
+        let page = serve(&get("markdown", hostile));
+        assert_eq!(page.code, "200 OK");
+        let html = body(&page);
+        assert!(html.contains(&format!("data-mdrev=\"{}\"", mdrev::VERSION)));
+        assert!(html.contains(r#"src="/monitor-ui/markdown-page.js""#));
+        for reflected in ["alert(1)", "<img", "%3Cscript", "src=x"] {
+            assert!(
+                !html.contains(reflected),
+                "the address reached the HTML: {reflected}"
+            );
+        }
+        assert_eq!(
+            body(&serve(&get("markdown", ""))),
+            html,
+            "one page, whatever it is asked"
+        );
+        let module = serve(&get("monitor-ui/markdown-page.js", ""));
+        assert_eq!(
+            (module.code, module.content_type),
+            ("200 OK", "text/javascript; charset=utf-8")
         );
     }
 

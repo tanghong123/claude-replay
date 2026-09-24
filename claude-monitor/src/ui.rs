@@ -112,6 +112,18 @@ pub fn page(version: &str, paired: bool, default_ui: bool) -> String {
     format!("{head}{REFERENCE_SHELL}{PAGE_TAIL}")
 }
 
+/// The page a Markdown document opens in when the preview pane sends it to a tab of its own (#271):
+/// mdrev's viewer as the whole page. STATIC but for the pinned version — `markdown-page.js` reads
+/// the document it names from its own address, so nothing a URL carries is ever written into HTML,
+/// and every request it makes goes to the same `api/mdrev/` routes, under the same guards, as the
+/// pane's.
+pub fn markdown_page() -> String {
+    include_str!("codex-ui/markdown-page.html").replace(
+        "{{MDREV}}",
+        claude_replay_html::mdrev_version().unwrap_or(""),
+    )
+}
+
 /// The monitor's tab icon (#203): the green list mark the classic rail inlines as a data URI
 /// (`rail.html`), served here so the app shell — extracted byte-for-byte from the hand-written
 /// demo, which declares no `<link rel="icon">` — gets it from the production layer's injected
@@ -181,6 +193,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
         "monitor-ui/mdrev-pane.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/mdrev-pane.js").as_slice(),
+        ),
+        "monitor-ui/markdown-page.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/markdown-page.js").as_slice(),
         ),
         "monitor-ui/preview.js" => (
             "text/javascript; charset=utf-8",
@@ -277,6 +293,10 @@ mod tests {
             ("icons.js", include_str!("codex-ui/icons.js")),
             ("preview.js", include_str!("codex-ui/preview.js")),
             ("mdrev-pane.js", include_str!("codex-ui/mdrev-pane.js")),
+            (
+                "markdown-page.js",
+                include_str!("codex-ui/markdown-page.js"),
+            ),
             ("record-store.js", include_str!("codex-ui/record-store.js")),
             ("sandbox.js", include_str!("codex-ui/sandbox.js")),
             (

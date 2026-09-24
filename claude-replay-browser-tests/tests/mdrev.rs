@@ -5,8 +5,9 @@
 //! run wherever the suite does, CI included. History, notes and `conform` run the pinned CLI under
 //! node (20 or later), which `harness::mdrev_cli` demands by name.
 //!
-//! Ports 2821–2825. The classic page has no preview pane, so there is no second surface here: the
-//! owner named the right-most pane, which only the app shell has.
+//! Ports 2821–2829. The classic page has no preview pane, so there is no second surface here: the
+//! owner named the right-most pane, which only the app shell has. 2826–2829 are #271: the pane's
+//! document in a tab of its own (`/markdown`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,9 +22,10 @@ use harness::{
 const SID: &str = "5e5510a1-0000-4000-8000-000000000270";
 const NOTES: &str = "# Field notes\n\nA paragraph with **bold** text.\n\n- one\n- two\n";
 
-/// A checkout with `docs/guide.md` committed twice, and a session — its cwd that checkout, so
-/// containment explains the file — which READ the guide (a stamped path in a tool head) and carries
-/// `NOTES.md` as an attachment WITH its text: the transcript's own Markdown.
+/// A checkout with `docs/guide.md` committed twice — the second time linking `docs/other.md` — and
+/// a session — its cwd that checkout, so containment explains the file — which READ the guide (a
+/// stamped path in a tool head) and carries `NOTES.md` as an attachment WITH its text: the
+/// transcript's own Markdown.
 fn fixture(name: &str) -> (PathBuf, Stores, PathBuf) {
     let base = base(name);
     let stores = Stores::new(&base);
@@ -54,10 +56,12 @@ fn fixture(name: &str) -> (PathBuf, Stores, PathBuf) {
     git(&["commit", "-qm", "first"]);
     std::fs::write(
         repo.join("docs/guide.md"),
-        "# The guide\n\nSome **bold** prose.\n",
+        "# The guide\n\nSome **bold** prose, and [the other guide](other.md).\n",
     )
     .unwrap();
-    git(&["commit", "-qam", "second"]);
+    std::fs::write(repo.join("docs/other.md"), "# The other guide\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "second"]);
 
     let guide = repo.join("docs/guide.md").display().to_string();
     let notes_path = repo.join("NOTES.md").display().to_string();
@@ -418,4 +422,368 @@ fn mdrev_contract_passes_mdrev_cli_conform() {
     );
     assert!(out.status.success(), "conform:\n{report}");
     assert!(report.contains("conforms"), "{report}");
+}
+
+// ------------------------------------------------------------------ a tab of its own (#271)
+
+/// What a tab of its own holds right now, for a failure message.
+const OWN: &str = "(function(){ var d = document.getElementById('doc'); return location.href + ' | ' + (d ? d.className + ' | ' + d.innerHTML.slice(0, 300) : 'no #doc'); })()";
+
+/// The app shell for an UNPAIRED monitor: held text needs no pairing, and a case that proves so
+/// must not pair first.
+fn open_shell_unpaired(m: &Monitor, tab: &headless_chrome::Tab) {
+    m.open(tab, &format!("?ui=app&session={SID}"));
+    until(
+        tab,
+        "!!document.querySelector('[data-attachment-action=\"preview\"]')",
+        "the session's attachment card",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+}
+
+/// The pane's control for a tab of its own, pressed the way a reader presses it — a trusted click,
+/// which is what lets `window.open` past the popup blocker.
+fn open_in_a_tab(tab: &headless_chrome::Tab) {
+    until(
+        tab,
+        "!!document.querySelector('#previewHead .preview-newtab:not([hidden])')",
+        "the pane's open-in-a-tab control",
+        Duration::from_secs(10),
+        PANE,
+    );
+    tab.find_element("#previewHead .preview-newtab")
+        .unwrap()
+        .click()
+        .unwrap();
+}
+
+/// The tab the pane opened, once it has its address.
+fn opened_tab(browser: &headless_chrome::Browser) -> std::sync::Arc<headless_chrome::Tab> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let found = browser
+            .get_tabs()
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|t| t.get_url().contains("/markdown?"))
+            .cloned();
+        if let Some(tab) = found {
+            return tab;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the pane opened no tab at /markdown?"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn own_h1(tab: &headless_chrome::Tab) -> String {
+    eval(
+        tab,
+        "(document.querySelector('#doc.mdrev-host h1') || {}).textContent || ''",
+    )
+    .as_str()
+    .unwrap_or("")
+    .trim()
+    .to_string()
+}
+
+/// The owner: "open the markdown file shown in the right pane in a standalone tab". Text the
+/// transcript carries opens there as it reads in the pane — the clean reader, no toolbar — from a
+/// monitor that was never paired: held text touches no disk, so it asks for no pairing.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn mdrev_opens_held_text_in_a_tab_of_its_own() {
+    let _serial = serial();
+    let (base, stores, _repo) = fixture("mdrev-tab-held");
+    let m = Monitor::spawn(Kind::V2, 2826, &base, Some(&stores), false);
+    let browser = chrome();
+    let tab = browser.new_tab().unwrap();
+    open_shell_unpaired(&m, &tab);
+    open_notes(&tab);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1')",
+        "mdrev to render the held notes in the pane",
+        Duration::from_secs(30),
+        PANE,
+    );
+    open_in_a_tab(&tab);
+    let own = opened_tab(&browser);
+    until(
+        &own,
+        "!!document.querySelector('#doc.mdrev-host h1')",
+        "the held notes in a tab of their own",
+        Duration::from_secs(30),
+        OWN,
+    );
+    assert_eq!(own_h1(&own), "Field notes");
+    assert_eq!(
+        eval(&own, "document.getElementById('doc').dataset.root").as_str(),
+        Some("held")
+    );
+    assert_eq!(
+        eval(
+            &own,
+            "document.querySelectorAll('#doc.mdrev-host .topbar').length"
+        )
+        .as_i64(),
+        Some(0),
+        "a reader there too: no toolbar"
+    );
+    assert_eq!(eval(&own, "document.title").as_str(), Some("NOTES.md"));
+}
+
+/// A file on disk opens in its tab as the whole viewer, at the range the reader chose in the pane —
+/// and the tab is a frame around the same guarded routes, not a new way to read: a forged
+/// capability in its address shows a refusal, never the text.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+fn mdrev_opens_a_file_in_a_tab_where_the_reader_was() {
+    let _serial = serial();
+    drop(mdrev_cli()); // the file's history and notes run the pinned CLI under node
+    let (base, stores, repo) = fixture("mdrev-tab-local");
+    let m = Monitor::spawn(Kind::V2, 2827, &base, Some(&stores), true);
+    let browser = chrome();
+    let tab = browser.new_tab().unwrap();
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "document.querySelectorAll('#previewBody .mdrev-host .topbar button.pick').length > 0",
+        "the guide on mdrev's toolbar, with its range picks",
+        Duration::from_secs(30),
+        PANE,
+    );
+    // The reader picks the file's last change on mdrev's own toolbar (the pick reads "1" in every
+    // language), and the pane hears it.
+    eval(
+        &tab,
+        "[...document.querySelectorAll('#previewBody .mdrev-host .topbar button.pick')].find(b => b.textContent.trim() === '1').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "(function(){ var d = document.querySelector('.mdrev-pane').dataset; return !!(d.from || d.to); })()",
+        "the pane to hear the range the reader chose",
+        Duration::from_secs(10),
+        PANE,
+    );
+    let range = |t: &headless_chrome::Tab, el: &str| {
+        eval(
+            t,
+            &format!("(function(){{ var d = document.querySelector('{el}').dataset; return (d.from || '') + '..' + (d.to || ''); }})()"),
+        )
+        .as_str()
+        .unwrap_or("")
+        .to_string()
+    };
+    let chosen = range(&tab, ".mdrev-pane");
+    open_in_a_tab(&tab);
+    let own = opened_tab(&browser);
+    until(
+        &own,
+        "!!document.querySelector('#doc.mdrev-host h1')",
+        "the guide in a tab of its own",
+        Duration::from_secs(30),
+        OWN,
+    );
+    // The tab shows what the pane shows, and the range is what decides it: a tab that dropped the
+    // range would read the file as it stands ("The guide"), while the pick took the reader to a
+    // revision from before the last change.
+    let shown = own_h1(&own);
+    assert_eq!(
+        shown, "Old guide",
+        "the tab reads the guide at the reader's range"
+    );
+    until(
+        &tab,
+        &format!("(document.querySelector('#previewBody .mdrev-host h1') || {{}}).textContent === {shown:?}"),
+        "the pane and its tab to show the same revision",
+        Duration::from_secs(10),
+        PANE,
+    );
+    assert_eq!(
+        range(&own, "#doc"),
+        chosen,
+        "the tab opened at the reader's range: {}",
+        own.get_url()
+    );
+    let (from, to) = chosen.split_once("..").unwrap();
+    for (key, value) in [("from", from), ("to", to)] {
+        assert!(
+            value.is_empty() || own.get_url().contains(&format!("{key}={value}")),
+            "the address carries it: {}",
+            own.get_url()
+        );
+    }
+    until(
+        &own,
+        "document.querySelectorAll('#doc.mdrev-host .topbar').length > 0",
+        "the whole viewer — history and notes are in play for a file",
+        Duration::from_secs(20),
+        OWN,
+    );
+    assert_eq!(
+        eval(&own, "document.title").as_str(),
+        Some("guide.md"),
+        "the tab names its document"
+    );
+
+    let cap = eval(&own, "document.getElementById('doc').dataset.cap")
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    assert_eq!(cap.len(), 64, "a stamp: {cap:?}");
+    let forged = browser.new_tab().unwrap();
+    forged
+        .navigate_to(&own.get_url().replace(&cap, &"0".repeat(64)))
+        .unwrap();
+    forged.wait_until_navigated().unwrap();
+    until(
+        &forged,
+        "document.getElementById('doc').classList.contains('unavailable')",
+        "the forged address refused",
+        Duration::from_secs(20),
+        OWN,
+    );
+    assert_eq!(
+        eval(&forged, "document.querySelectorAll('.mdrev-host').length").as_i64(),
+        Some(0),
+        "no viewer, no text: {}",
+        eval(&forged, OWN)
+    );
+}
+
+/// Held text lives in the monitor's memory, which a restart empties — so the pane leaves the tab its
+/// own copy, and a tab kept open across a restart shows its document again on reload. The control:
+/// without that copy, the same address after another restart says the text is gone rather than
+/// showing nothing.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_tab_of_held_text_survives_a_monitor_restart() {
+    let _serial = serial();
+    let (base, stores, _repo) = fixture("mdrev-tab-restart");
+    let m = Monitor::spawn(Kind::V2, 2828, &base, Some(&stores), false);
+    let browser = chrome();
+    let tab = browser.new_tab().unwrap();
+    open_shell_unpaired(&m, &tab);
+    open_notes(&tab);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1')",
+        "mdrev to render the held notes in the pane",
+        Duration::from_secs(30),
+        PANE,
+    );
+    open_in_a_tab(&tab);
+    let own = opened_tab(&browser);
+    until(
+        &own,
+        "!!document.querySelector('#doc.mdrev-host h1')",
+        "the held notes in a tab of their own",
+        Duration::from_secs(30),
+        OWN,
+    );
+
+    drop(m); // the monitor goes, and the text it held with it
+    let m = Monitor::spawn(Kind::V2, 2828, &base, Some(&stores), false);
+    own.reload(false, None).unwrap();
+    own.wait_until_navigated().unwrap();
+    until(
+        &own,
+        "!!document.querySelector('#doc.mdrev-host h1')",
+        "the notes again, held from the tab's own copy",
+        Duration::from_secs(30),
+        OWN,
+    );
+    assert_eq!(own_h1(&own), "Field notes");
+
+    eval(&own, "sessionStorage.clear(); 'ok'");
+    drop(m);
+    let _m = Monitor::spawn(Kind::V2, 2828, &base, Some(&stores), false);
+    own.reload(false, None).unwrap();
+    own.wait_until_navigated().unwrap();
+    until(
+        &own,
+        "document.getElementById('doc').classList.contains('unavailable')",
+        "without its copy, the tab to say the text is gone",
+        Duration::from_secs(20),
+        OWN,
+    );
+    let said = eval(&own, "document.getElementById('doc').textContent")
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    assert!(said.contains("no longer held"), "{said}");
+}
+
+/// The reader follows a link to another document of the collection, inside mdrev: the pane learns
+/// the capability for it (`resolve`, asked in the name of the document it was given) and a tab of
+/// its own opens THAT document — not the one the pane started with, and not with the capability
+/// that opened it, which names another path.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+fn mdrev_follows_the_reader_to_another_document_into_its_tab() {
+    let _serial = serial();
+    drop(mdrev_cli()); // the file's history and notes run the pinned CLI under node
+    let (base, stores, repo) = fixture("mdrev-tab-follow");
+    let m = Monitor::spawn(Kind::V2, 2829, &base, Some(&stores), true);
+    let browser = chrome();
+    let tab = browser.new_tab().unwrap();
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host a[href$=\"other.md\"]')",
+        "the guide, with its link to the other guide",
+        Duration::from_secs(30),
+        PANE,
+    );
+    let pane_cap = |t: &headless_chrome::Tab| {
+        eval(t, "document.querySelector('.mdrev-pane').dataset.cap")
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    };
+    let guide_cap = pane_cap(&tab);
+    // mdrev draws a link before it has finished preparing it, and a click that lands first follows
+    // nothing (measured: the same click a moment later moves the pane) — so the reader clicks
+    // again until the pane moves, as a reader would.
+    let link = "#previewBody .mdrev-host a[href$=\"other.md\"]";
+    let moved = "(function(){ var d = document.querySelector('.mdrev-pane').dataset; return d.path === 'docs/other.md' && d.cap.length === 64; })()";
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while eval(&tab, moved).as_bool() != Some(true) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the pane never followed the reader to the other guide, with its own capability: {}",
+            eval(&tab, PANE)
+        );
+        if let Ok(element) = tab.find_element(link) {
+            let _ = element.click();
+        }
+        std::thread::sleep(Duration::from_millis(1500));
+    }
+    assert_ne!(
+        pane_cap(&tab),
+        guide_cap,
+        "a capability names one path: the guide's cannot open the other guide"
+    );
+    open_in_a_tab(&tab);
+    let own = opened_tab(&browser);
+    until(
+        &own,
+        "!!document.querySelector('#doc.mdrev-host h1')",
+        "the other guide in a tab of its own",
+        Duration::from_secs(30),
+        OWN,
+    );
+    assert_eq!(own_h1(&own), "The other guide", "{}", own.get_url());
+    assert!(
+        own.get_url().contains("path=docs%2Fother.md"),
+        "{}",
+        own.get_url()
+    );
 }

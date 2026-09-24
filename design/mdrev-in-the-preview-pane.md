@@ -1,7 +1,7 @@
 # mdrev in the preview pane (#270)
 
-*Status: built in v1.296.0 (#270); mdrev PINNED in v1.297.0 (#274). The record of what was decided
-and why.*
+*Status: built in v1.296.0 (#270); mdrev PINNED in v1.297.0 (#274); a tab of its own in v1.298.0
+(#271). The record of what was decided and why.*
 
 The owner, 2026-09-24: render the Markdown the app shell's right-most pane shows through
 **mdrev's embedded viewer, as a guest** — a clean reader for Markdown the transcript itself
@@ -181,6 +181,36 @@ The shell owns the theme (`documentElement.dataset.theme`), so the mount is told
 disagree. mdrev has no way to change the theme of a live mount, so a toggle remounts it; the
 document, the range and the notes are all re-read from the same routes.
 
+## A tab of its own (#271)
+
+The owner: "open the markdown file shown in the right pane in a standalone tab". While mdrev has a
+document mounted, the pane's head carries a ↗ control (production chrome beside the demo's close
+button). It opens `/markdown?root=&path=&cap=[&from=&to=&since=]`: the same collection, document and
+capability the pane mounted, plus the range the reader is on, which mdrev reports through
+`onNavigate`. So the tab opens where the reader was.
+
+- **The page is static.** `ui::markdown_page` names the pinned version and loads
+  `markdown-page.js`, which reads its own address, so nothing a URL carries is ever written into
+  HTML. A test sends a hostile query and finds none of it in the page. Every request the page makes
+  goes to the same `api/mdrev/` routes, under the same guards. A file's facts come from `open`, with
+  the stamp the address carries, and a forged stamp gets a refusal, never the text. The tab is a new
+  frame around the routes, not a new way to read.
+- **Held text in a tab.** The transcript's text lives in the monitor's memory, and a restart empties
+  it. So the pane leaves the tab its own copy: it writes the text to sessionStorage just before
+  `window.open`, which copies the opener's sessionStorage into the tab it makes. That is why the
+  control does NOT pass `noopener`: the tab is this monitor's own page, on this origin. The tab holds
+  the text again on load, and being content-addressed it returns under the same path and capability,
+  so a tab kept open across a restart shows its document on reload. Without the copy (an address
+  pasted elsewhere), the tab reads the store, and says plainly when the text is gone.
+- **The address follows the reader.** The tab's `onNavigate` rewrites its URL (`replaceState`), so a
+  reload or a copied link lands on the document and range the reader was on. A plain read at a
+  revision (`to` alone) is a range too; it is what mdrev reports for a pick in clean mode. A move to
+  another document of the collection takes the capability `resolve` mints for it, asked in the name
+  of the document the tab was opened for. The pane keeps the same bookkeeping, so its dataset names
+  where the reader is, and a theme toggle remounts there rather than back at the start.
+- **The theme** is the shell's own setting (`am-demo-theme`), followed across tabs through the
+  `storage` event.
+
 ## Not in scope
 
 **The classic page.** The owner named the right-most pane, which only the app shell has, and the
@@ -188,7 +218,7 @@ classic page is also the html crate's offline export, which has no server to ans
 
 **A narrower toolbar.** The pane is 340–680 px and mdrev's one layout breakpoint is 820 px, so the
 pane always gets mdrev's narrow layout. The owner declined a narrower toolbar inside mdrev
-(`what-a-host-takes.md`, Decided §1); #271 opens a document in a tab of its own for the room.
+(`what-a-host-takes.md`, Decided §1); a tab of its own (#271, above) is where the room is.
 
 ## How it is held
 
@@ -211,6 +241,16 @@ pane always gets mdrev's narrow layout. The owner declined a narrower toolbar in
   inside the mount leaves the transcript's search where it was (red before the keymap rule);
   without node (`MDREV_NODE` pointed at nothing) the file keeps its toolbar and its two revisions
   and mdrev hides its notes control — red when `open` grants notes regardless.
+- **A tab of its own** (#271): the node contract holds the address round trip (characters, a plain
+  read, `EMPTY`, a time window, `to` alone); a Rust test holds the page to reflecting nothing; and
+  four browser cases hold the rest. Held text opens as the clean reader in its tab, from a monitor
+  never paired. A file opens at the reader's range: the pick moved the pane to a revision, the tab
+  shows the same one, and a forged capability shows a refusal. Held text survives a restart on the
+  tab's own copy, and the control without the copy says the text is gone. A reader who follows a
+  link to another document moves the pane to it, with that document's own capability, and its tab
+  opens that document. Each mechanism was checked by mutation: a tab address without the range
+  reads the file as it stands; without the copy, a restart strands the tab; and without `resolve`'s
+  capability the pane never follows.
 - **The contract itself**: the pinned `mdrev-cli conform`, run with node against a live paired
   monitor — every route, every shape, and a note filed, found in the sidecar, closed and deleted.
   The guide: when your host passes it, you are done.
