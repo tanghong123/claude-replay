@@ -2043,6 +2043,7 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
             execution: None,
             published: publish.map(Box::new),
             asked: asked_from_input(name, input).map(Box::new),
+            delivered: delivered_from_input(name, input),
         }
     }
 }
@@ -2148,6 +2149,31 @@ fn apply_answers(asked: &mut Asked, tur: &Value) {
                 .unwrap_or_default();
         }
     }
+}
+
+/// #275: every file a `SendUserFile` call delivered, as it named them.
+///
+/// The header names the first and counts the rest (`tool_target`: `~/…/deck.html +2`), which is
+/// a label, not a list — so the other files were a number with nothing behind it, and half the
+/// owner's sends deliver several (31 of 64). The call's own input is the fact; its result repeats
+/// the paths in prose for the agent, which is not something to parse.
+fn delivered_from_input(name: &str, input: &Value) -> Vec<String> {
+    if name != "SendUserFile" {
+        return Vec::new();
+    }
+    input
+        .get("files")
+        .and_then(Value::as_array)
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// #281: why a call that has come back carries no answer — `None` when it carries one, and for
@@ -2506,6 +2532,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 execution: None,
                                 published: None,
                                 asked: None,
+                                delivered: Vec::new(),
                             });
                         }
                         Some("advisor_tool_result") => {
@@ -2595,6 +2622,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     execution: None,
                                     published: None,
                                     asked: None,
+                                    delivered: Vec::new(),
                                 });
                             }
                             let idx = out.len() - 1;
@@ -6106,6 +6134,42 @@ mod tests {
         }
         // An empty list is no target at all, not a crash.
         assert_eq!(tool_target(&serde_json::json!({ "files": [] }), "/w"), "");
+    }
+
+    /// #275: the block carries EVERY file a send delivered — the label above can hold only the
+    /// first and a count — as the call named them, and nothing for any other tool.
+    #[test]
+    fn a_send_carries_every_file_it_delivered() {
+        let jsonl = r##"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"s1","name":"SendUserFile","input":{"files":["/w/a.html","/w/b.png","/w/c.txt"],"caption":"three","status":"normal"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"s2","name":"SendUserFile","input":{"files":["/w/only.md"]}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/w/a.html"}}]}}
+"##;
+        fn sends(blocks: &[Block], out: &mut Vec<(String, Vec<String>)>) {
+            for b in blocks {
+                match b {
+                    Block::ToolUse {
+                        name, delivered, ..
+                    } => out.push((name.clone(), delivered.clone())),
+                    Block::Thinking { tools, .. } => sends(tools, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut seen = Vec::new();
+        sends(&parse(jsonl), &mut seen);
+        let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            seen,
+            vec![
+                (
+                    "SendUserFile".to_string(),
+                    v(&["/w/a.html", "/w/b.png", "/w/c.txt"])
+                ),
+                ("SendUserFile".to_string(), v(&["/w/only.md"])),
+                ("Read".to_string(), v(&[])),
+            ]
+        );
     }
 
     #[test]

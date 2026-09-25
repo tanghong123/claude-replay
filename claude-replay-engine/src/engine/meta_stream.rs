@@ -201,9 +201,13 @@ pub const COMPACT_AFTER: usize = 256;
 /// (`Asked::unanswered`: timed out, declined, failed). A v32 stream has no reason on any of them,
 /// so their cards keep saying "Waiting for user input" about questions long over.
 ///
+/// v34: #275 — a Claude `SendUserFile` block carries every file it delivered
+/// (`ToolUse::delivered`). A v33 stream has only the first, as the header's label, so the other
+/// files of a multi-file send stay a count with nothing behind it.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across.
-pub const FOLD_VERSION: u16 = 33;
+pub const FOLD_VERSION: u16 = 34;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

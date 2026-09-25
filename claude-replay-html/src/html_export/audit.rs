@@ -429,6 +429,7 @@ fn tool_use(
         execution: None,
         published: None,
         asked: None,
+        delivered: Vec::new(),
     }
 }
 

@@ -277,6 +277,7 @@ mod tests {
                     execution: None,
                     published: None,
                     asked: None,
+                    delivered: Vec::new(),
                 }],
             },
             Block::ToolUse {
@@ -290,6 +291,7 @@ mod tests {
                 execution: None,
                 published: None,
                 asked: None,
+                delivered: Vec::new(),
             },
             Block::SubAgent(SubAgent {
                 agent_id: "aXYZ".into(),

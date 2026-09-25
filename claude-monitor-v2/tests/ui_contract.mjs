@@ -91,6 +91,17 @@ assert.match(attachmentCapability({ att_kind: "image", att_name: "shot.png", att
 assert.equal(attachmentCapability({ att_name: "notes.md", att_path: "/tmp/notes.md", att_fsig: "file-signed" }).action, "preview");
 assert.equal(attachmentCapability({ att_name: "sample.tgz", att_path: "/tmp/sample.tgz", att_fsig: "file-signed" }).action, "download");
 {
+  // #275: whether a PATH is an image is what `/file` serves (serve.rs raster_type — a Rust test
+  // holds the two lists together); embedded bytes are drawn as they are.
+  const served = name => attachmentCapability({ att_name: name, att_path: `/tmp/${name}`, att_fsig: "file-signed" }).action;
+  assert.equal(served("diagram.svg"), "preview", "a path .svg is its source, as text — never an image from this origin");
+  assert.equal(served("scan.bmp"), "image", "a path .bmp is served as an image");
+  assert.equal(served("photo.avif"), "image", "…and so is .avif");
+  assert.equal(attachmentCapability({ att_kind: "image", att_name: "diagram.svg", att_path: "/tmp/diagram.svg", att_fsig: "file-signed" }).action, "preview", "the kind does not make a path an image the server will not serve as one");
+  assert.equal(attachmentCapability({ att_name: "diagram.svg", att_datauri: "data:image/svg+xml;base64," }).action, "image", "EMBEDDED svg bytes are drawn — a data URI in an <img> runs no script");
+  console.log("#275 path image cases passed");
+}
+{
   // Reveal (parity #2): a reveal stamp alone yields the file-manager action — never anything
   // that would call /file — and no stamp at all still degrades to copying the path.
   const revealOnly = attachmentCapability({ att_name: "notes.md", att_path: "/tmp/notes.md", att_sig: "reveal-only" });

@@ -10,16 +10,29 @@
 // only on their own stamp, so a link cannot be edited from one capability into the other;
 // this module decides what a click DOES from the stamps offered, once, for every consumer.
 
-const IMAGE_FILE = /\.(png|jpe?g|gif|webp|avif|svg)$/i;
-const TEXT_FILE = /\.(txt|md|mdx|rs|js|mjs|cjs|ts|tsx|jsx|json|jsonl|toml|ya?ml|html?|css|scss|py|rb|go|java|kt|swift|sh|zsh|fish|sql|csv|tsv|log|diff|patch|xml|ini|conf)$/i;
+/** An image the page can draw from EMBEDDED bytes (a `data:` URI in an <img>, inert whatever it
+ *  holds — an SVG there runs no script). */
+const IMAGE_FILE = /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i;
+/** What `/file` serves AS AN IMAGE from a PATH — `raster_type` in html_export/serve.rs, and a test
+ *  holds the two to the same list (#275). SVG is deliberately absent: served from this origin it
+ *  is a document that can run script, so the server sends its SOURCE as text, and the page
+ *  previews it as text. The two lists disagreed once: a path .svg was offered as an image, and the
+ *  lightbox asked `/file`, got text and showed its error; a path .avif was served as a download;
+ *  a path .bmp the server would show was offered as one. */
+const RASTER_FILE = /\.(png|jpe?g|gif|webp|bmp|ico|avif)$/i;
+const TEXT_FILE = /\.(txt|md|mdx|rs|js|mjs|cjs|ts|tsx|jsx|json|jsonl|toml|ya?ml|html?|css|scss|py|rb|go|java|kt|swift|sh|zsh|fish|sql|csv|tsv|log|diff|patch|xml|svg|ini|conf)$/i;
 
 function attachmentCapability(head = {}) {
   const name = head.att_name || head.att_path || "";
-  const image = head.att_kind === "image" || IMAGE_FILE.test(name);
-  const hasSource = head.att_datauri != null || (head.att_path && head.att_fsig);
-  if (image && hasSource) return { action: "image", label: "Enlarge", hint: head.att_datauri != null ? "image · saved with the session" : "image · temporary file" };
-  if (head.att_text != null || (TEXT_FILE.test(name) && head.att_path && head.att_fsig)) return { action: "preview", label: "Open preview", hint: "opens in the preview pane" };
-  if (head.att_datauri != null || (head.att_path && head.att_fsig)) return { action: "download", label: "Download", hint: "no inline preview · click to download" };
+  const embedded = head.att_datauri != null;
+  const served = Boolean(head.att_path && head.att_fsig);
+  // #275: whether it is an IMAGE depends on where the bytes come from. Embedded bytes are drawn
+  // as they are; a path is an image only if `/file` will serve it as one, which it decides from
+  // the path's own extension.
+  const image = embedded ? head.att_kind === "image" || IMAGE_FILE.test(name) : served && RASTER_FILE.test(head.att_path);
+  if (image) return { action: "image", label: "Enlarge", hint: embedded ? "image · saved with the session" : "image · temporary file" };
+  if (head.att_text != null || (TEXT_FILE.test(name) && served)) return { action: "preview", label: "Open preview", hint: "opens in the preview pane" };
+  if (embedded || served) return { action: "download", label: "Download", hint: "no inline preview · click to download" };
   // The render policy withheld the file stamp (or the bytes are not the kind the page shows),
   // but the server offered the REVEAL stamp: the file manager can still show the file. This is
   // the classic view's fallback (export.js: `fsig ? openArtifact : reveal`), and it is what
@@ -102,4 +115,4 @@ function groupPointerRuns(items, headOf) {
   return out.map(g => (g.run && g.items.length === 1 ? { run: false, item: g.items[0] } : g));
 }
 
-export { attachmentCapability, canReveal, groupPointerRuns, isPointerAttachment, POINTER_KINDS, referenceAction, revealQuery, stampQuery };
+export { attachmentCapability, canReveal, groupPointerRuns, isPointerAttachment, POINTER_KINDS, RASTER_FILE, referenceAction, revealQuery, stampQuery };

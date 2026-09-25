@@ -294,6 +294,7 @@ mod tests {
             }),
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let mut o = Map::new();
         block_fields(&b, &mut o);

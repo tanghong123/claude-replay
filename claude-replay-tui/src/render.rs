@@ -1364,6 +1364,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let lines = render_one(&b, 200, Hl::Styled);
         let t = texts(&lines);
@@ -1457,6 +1458,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1506,6 +1508,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let e = texts(&render_one(&block, 100, Hl::Styled));
         let all = e.join("\n");
@@ -1543,6 +1546,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
 
         // Collapsed → 10-line preview + "… +15 lines".
@@ -1634,6 +1638,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let t = texts(&lines);
@@ -1686,6 +1691,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1736,6 +1742,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         }
     }
 
@@ -1765,6 +1772,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let rt = texts(&render_collapsed(&read)).join("\n");
         assert!(
@@ -2141,6 +2149,7 @@ mod tests {
                 execution: None,
                 published: None,
                 asked: None,
+                delivered: Vec::new(),
             },
             Block::ToolUse {
                 name: "Read".into(),
@@ -2153,6 +2162,7 @@ mod tests {
                 execution: None,
                 published: None,
                 asked: None,
+                delivered: Vec::new(),
             },
         ];
         let turn = Block::Thinking {
@@ -2195,6 +2205,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines

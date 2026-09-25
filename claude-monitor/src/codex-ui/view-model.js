@@ -278,6 +278,8 @@ function rendererRecord(record, renderer, name) {
     path: head.path || head.att_path,
     revealSig: head.sig || head.att_sig,
     fileSig: head.fsig || head.att_fsig,
+    // #275: every file a send delivered, `{path, sig, fsig}` each — the head can name only one.
+    files: Array.isArray(head.files) ? head.files : [],
     // A BARE result (#122): a `tool_result` with no call before it. The server names it
     // `Result` with the first 70 characters as its target and writes no `tool` field — only a
     // tool CALL carries that — so its body wears the ⎿ gutter, as the classic page draws it.

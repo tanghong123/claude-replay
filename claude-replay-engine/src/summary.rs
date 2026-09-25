@@ -257,6 +257,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         }
     }
 

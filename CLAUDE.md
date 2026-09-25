@@ -159,6 +159,12 @@ a download, an error), and a prompt card carries a reveal beside its own action,
 process-surface card did. Nothing reveals automatically, not even on a refusal (v2's fallback did):
 a reveal is a side effect on the reader's desktop. Reveal is interim — a web file browser will
 replace it — so no new reveal-only path is added (mdrev's `/reveal` answers 501 for this reason).
+Three rules keep the offer honest (#275). A PATH is offered as an image exactly when `/file` serves
+it as one — `RASTER_FILE` in `shared/capabilities.js` is held to `raster_type` by a test, and an
+SVG is never one from this origin (its source is shown as text; embedded SVG bytes still draw).
+A path offered with NO stamp (a server with no usable key) is COPIED on both pages, never sent to
+`/__reveal` unsigned, which is refused every time. And every file a multi-file `SendUserFile`
+delivered is offered (`ToolUse::delivered` → `head.files`), not only the first the header names.
 
 ## Test the TUI without a TTY
 - **Deterministic (preferred):** drive `view::View` under ratatui **`TestBackend`**
@@ -186,7 +192,9 @@ replace it — so no new reveal-only path is added (mdrev's `/reveal` answers 50
   `jump_to_end`, `open_last_fold`, `LiveGrowth`). `tests/browser_follow.rs` holds the
   structural cases (the html server's viewport contract; `the_app_shell_*` on ports 2831–2836;
   `the_classic_rail_*` on 2837–2838 against v1; `the_v2_shell_*`, the compose affordance on
-  2841–2842). `tests/files.rs` holds #272's file affordances on the app shell (2811–2813); a case
+  2841–2842). `tests/files.rs` holds #272's file affordances on the app shell (2811–2814), and
+  `tests/unsigned.rs` the unstamped-path case on both pages (2815) — its own binary, because the
+  signing key is read once per process and that case needs none; a case
   that clicks a reveal wraps the page's `fetch` so `/__reveal` is recorded, never sent — `open -R`
   must never run on the machine the suite runs on. `tests/scenarios.rs` holds scenarios written ONCE and run against BOTH pages —
   the classic page (the html server's `export.js`) is the reference, the app shell is held to

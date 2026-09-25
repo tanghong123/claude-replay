@@ -489,6 +489,33 @@ pub fn tool_result_text(call_id: &str, text: &str, ts: &str) -> String {
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":\"{text}\"}}]}},\"timestamp\":\"{ts}\"}}\n"
     )
 }
+/// #275: a `SendUserFile` call delivering `files` (absolute paths), in the shape the client records
+/// (`{files, caption, status}`), and its result: one line per file, which is prose for the agent.
+/// Built with `serde_json`, so a path with a quote in it cannot break the line.
+pub fn send_user_file_at(id: &str, files: &[&str], ts: &str) -> String {
+    let call = serde_json::json!({
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {"role": "assistant", "content": [{
+            "type": "tool_use", "id": id, "name": "SendUserFile",
+            "input": {"files": files, "caption": "the files", "status": "normal"}}]},
+    });
+    let prose = std::iter::once(format!("{} files delivered to user.", files.len()))
+        .chain(
+            files
+                .iter()
+                .map(|f| format!("  {f} → file_uuid: 00000000-0000-4000-8000-000000000000")),
+        )
+        .collect::<Vec<_>>()
+        .join("\n");
+    let result = serde_json::json!({
+        "type": "user",
+        "timestamp": ts,
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": prose}]},
+    });
+    format!("{call}\n{result}\n")
+}
+
 pub fn tool_result_at(id: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"out line\\nout line\\nout line\\n\"}}]}},\"timestamp\":\"{ts}\"}}\n"

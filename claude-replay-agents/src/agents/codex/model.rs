@@ -1052,6 +1052,7 @@ fn codex_build_tool(id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block
         execution,
         published: None,
         asked: None,
+        delivered: Vec::new(),
     }
 }
 
@@ -1819,6 +1820,7 @@ fn parse_lines<S: AsRef<str>>(
                             execution: None,
                             published: None,
                             asked: None,
+                            delivered: Vec::new(),
                         });
                         let index = out.len() - 1;
                         if !call_id.is_empty() {
@@ -2158,6 +2160,7 @@ fn apply_output(block: &mut Block, output: String) {
                     execution: None,
                     published: None,
                     asked: None,
+                    delivered: Vec::new(),
                 };
             }
         }

@@ -758,6 +758,10 @@ body.selecting #toolmenu, body.selecting #agentmenu {
   border-bottom: 1px dashed transparent; text-decoration: none;
 }
 .tool-path:hover { color: var(--link); border-bottom-color: var(--link); text-decoration: none; }
+/* #275 every file a send delivered, each offered like the header's path */
+.delivered { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 2px 0 8px;
+  font: 12px var(--mono); }
+.delivered-lead { color: var(--muted); }
 /* The "↵ <id>" link to a sub-agent's own transcript (multi-file bundles). */
 .agent-open {
   flex: none; margin-left: 8px; font: 12px/20px var(--mono); color: var(--link);

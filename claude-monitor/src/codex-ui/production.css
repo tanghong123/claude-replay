@@ -106,6 +106,8 @@
    toolbar and the attachment note carry reveal as the secondary action beside the primary. */
 .renderer-target-link{cursor:pointer;text-decoration:underline dotted;text-decoration-color:color-mix(in srgb,currentColor 45%,transparent);text-underline-offset:3px}
 .renderer-target-link:hover{color:var(--ink);text-decoration-style:solid}
+/* #275 Every file a send delivered, each an offered path the page acts on like the head's. */
+.renderer-delivered{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;margin:2px 0 8px;font:11px var(--mono)}.renderer-delivered-lead{color:var(--faint)}.renderer-delivered-file{color:var(--sub);cursor:pointer;text-decoration:underline dotted;text-decoration-color:color-mix(in srgb,currentColor 45%,transparent);text-underline-offset:3px}.renderer-delivered-file:hover{color:var(--ink);text-decoration-style:solid}
 .artifact-actions{margin-left:auto;flex:none;display:flex;align-items:center;gap:6px}
 .artifact-link-secondary{margin-left:14px;color:var(--faint)}
 .artifact-link-secondary:hover{color:var(--ink)}

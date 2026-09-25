@@ -75,6 +75,21 @@
     if (text != null) n.textContent = text;
     return n;
   }
+  // A path the page OFFERS (#46): a native file:// link, which a standalone page follows, and on a
+  // served page the delegated `.tool-path` click, where the shared two-stamp rule decides what it
+  // does — open, reveal, or (with no stamp at all) copy the path, #275. `offer` is a head's
+  // `{path, sig, fsig}`, or one of a send's `files`.
+  function toolPathLink(offer, text) {
+    var a = el("a", "tool-path", text);
+    a.href = "file://" + offer.path.split("/").map(encodeURIComponent).join("/");
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.dataset.path = offer.path;
+    if (offer.sig) a.dataset.sig = offer.sig;
+    if (offer.fsig) a.dataset.fsig = offer.fsig;
+    a.title = ({ preview: "Open ", reveal: "Reveal ", copy: "Copy " })[shared.referenceAction({ fileSig: ARTIFACTS ? offer.fsig : null, revealSig: offer.sig })] + offer.path;
+    return a;
+  }
   // hh:mm alone for TODAY's turns; older turns carry their date (and year when it differs).
   // The rule is the shared module's (html/shared/time.js, #112) — one with the app shell.
   var fmtTime = shared.fmtTime;
@@ -607,7 +622,8 @@
             };
         } else if (path != null) {
             an.classList.add("adl");
-            an.title = ARTIFACTS ? "open" : "reveal in file manager";
+            var pathAction = shared.referenceAction({ fileSig: ARTIFACTS ? fsig : null, revealSig: sig });
+            an.title = ({ preview: "open", reveal: "reveal in file manager", copy: "copy path" })[pathAction];
             an.onclick = function () {
                 // Two stamps, because they permit different things: `sig` reveals the
                 // path, `fsig` renders its bytes and exists only when the render policy
@@ -616,8 +632,15 @@
                 // shared rule's call (html/shared/capabilities.js, #46) — the same rule the
                 // app shell applies; a host that serves no artifacts offers no file stamp.
                 var reveal = function () { return fetch("__reveal?" + shared.stampQuery({ path: path, sig: sig })); };
-                var action = shared.referenceAction({ fileSig: ARTIFACTS ? fsig : null, revealSig: sig });
-                if (action === "preview") openArtifact(shared.stampQuery({ path: path, sig: fsig }), reveal); else reveal();
+                if (pathAction === "preview") openArtifact(shared.stampQuery({ path: path, sig: fsig }), reveal);
+                else if (pathAction === "reveal") reveal();
+                // #275: no stamp, nothing the server will act on — copy the path (see the
+                // tool-path click, which had the same unsigned reveal).
+                else copyText(path).then(function (ok) {
+                    var was = an.textContent;
+                    an.textContent = ok ? "copied ✓" : "copy blocked";
+                    setTimeout(function () { an.textContent = was; }, 1000);
+                });
             };
         }
         ac.appendChild(an);
@@ -767,15 +790,7 @@
           // (live) page the click hits the local /__reveal endpoint (browsers
           // block http→file:// navigation); a standalone file:// page follows the
           // native file:// link. Clicking elsewhere on the header still folds.
-          var a = el("a", "tool-path", head.target);
-          a.href = "file://" + head.path.split("/").map(encodeURIComponent).join("/");
-          a.target = "_blank";
-          a.rel = "noopener";
-          a.dataset.path = head.path;
-          if (head.sig) a.dataset.sig = head.sig;
-          if (head.fsig) a.dataset.fsig = head.fsig;
-          a.title = (shared.referenceAction({ fileSig: ARTIFACTS ? head.fsig : null, revealSig: head.sig }) === "preview" ? "Open " : "Reveal ") + head.path;
-          h.appendChild(a);
+          h.appendChild(toolPathLink(head, head.target));
         } else {
           h.appendChild(el("span", "tool-target", head.target));
         }
@@ -790,6 +805,16 @@
     // its markup — is the shared module's, the same one the app shell draws.
     if (shared.isInteraction(head.interaction)) {
       fb.insertAdjacentHTML("beforeend", shared.interactionHtml(head.interaction, head.target, CLASSIC_INTERACTION));
+    }
+    // #275: every file a send delivered, each offered like the header's path — which can name
+    // only the first and count the rest.
+    if (head.files && head.files.length > 1) {
+      var delivered = el("div", "delivered");
+      delivered.appendChild(el("span", "delivered-lead", "Delivered"));
+      head.files.forEach(function (offer) {
+        delivered.appendChild(toolPathLink(offer, offer.path.split("/").pop() || offer.path));
+      });
+      fb.appendChild(delivered);
     }
     body.forEach(function (p) { renderPart(p, fb); });
     f.appendChild(fb);
@@ -3038,7 +3063,15 @@
       };
       // #46: the shared two-stamp rule decides, as it does for the attachment card above.
       var action = shared.referenceAction({ fileSig: ARTIFACTS ? tp.dataset.fsig : null, revealSig: tp.dataset.sig });
-      if (action === "preview") openArtifact(shared.stampQuery({ path: tp.dataset.path, sig: tp.dataset.fsig }), reveal); else reveal();
+      if (action === "preview") openArtifact(shared.stampQuery({ path: tp.dataset.path, sig: tp.dataset.fsig }), reveal);
+      else if (action === "reveal") reveal();
+      // #275: with NO stamp the server offered nothing to act on, and an unsigned `/__reveal` is
+      // refused every time — this used to send one anyway and flash "not found". The rule's third
+      // answer is to copy the path, which is what the app shell has always done with it.
+      else copyText(tp.dataset.path).then(function (ok) {
+        tp.textContent = ok ? "copied ✓" : "copy blocked";
+        setTimeout(function () { tp.textContent = orig; }, 1000);
+      });
       return;
     }
     // The agent-transcript link navigates (full page load to `?session=<id>`); let the

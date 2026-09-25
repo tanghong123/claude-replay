@@ -292,6 +292,12 @@ pub enum Block {
         /// every tool but `AskUserQuestion` (#255).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         asked: Option<Box<Asked>>,
+        /// Every local file this call DELIVERED to the reader, in the order it named them
+        /// (#275: `SendUserFile { files }`). `target` labels only the first and counts the
+        /// rest (`~/…/deck.html +2`), so this is where the rest are: each one a path a page
+        /// can stamp, open and reveal like any other. Empty for every other tool.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        delivered: Vec<String>,
     },
     /// A tool result with no matching tool_use (rare).
     ToolResult(String),
@@ -895,6 +901,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let blocks = vec![
             Block::Thinking {
@@ -940,6 +947,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let img = || {
             Block::Attachment(Attachment {
@@ -1048,6 +1056,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         assert_eq!(fold_key(&mk("Read")), "read");
         assert_eq!(fold_key(&mk("Grep")), "read");
@@ -1084,6 +1093,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let bare = Block::Thinking {
             text: "x".into(),

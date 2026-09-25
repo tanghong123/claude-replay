@@ -12935,6 +12935,81 @@ fn both_shells_say_why_a_question_went_unanswered() {
     }
 }
 
+/// A `SendUserFile` that delivered three files — a page, an image and text — each of which exists.
+fn delivered_files_fixture(name: &str) -> (Fixture, Vec<String>) {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let repo = base.join("delivered");
+    std::fs::create_dir_all(&repo).unwrap();
+    let files: Vec<String> = [
+        ("deck.html", "<h1>deck</h1>"),
+        ("notes.txt", "notes"),
+        ("more.md", "# more"),
+    ]
+    .iter()
+    .map(|(f, body)| {
+        let p = repo.join(f);
+        std::fs::write(&p, body).unwrap();
+        p.display().to_string()
+    })
+    .collect();
+    let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: send me the files", &now_minus(200));
+    t += &harness::send_user_file_at("send1", &refs, &now_minus(190));
+    t += &assistant_at("Sent all three.", &now_minus(180));
+    let path = stores.claude_session(name, &t);
+    (
+        Fixture {
+            base,
+            path,
+            turns: 13,
+        },
+        files,
+    )
+}
+
+/// #275 — every file a multi-file `SendUserFile` delivered can be acted on, on BOTH pages.
+///
+/// The header names the first file and counts the rest (`~/…/deck.html +2`), and only that first
+/// path was stamped: the "+2" were a number with nothing behind it, so two of the three delivered
+/// files could be neither opened nor revealed. Half the owner's sends deliver several files (31 of
+/// 64). Each file now carries its own stamps and a path element the page's own click machinery acts
+/// on — the classic page's `.tool-path`, the app shell's `[data-reference-path]`.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_offer_every_file_a_send_delivered() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3028)] {
+        let (fx, files) = delivered_files_fixture(match surface {
+            Surface::Classic => "delivered-classic",
+            _ => "delivered-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        let (selector, path_attr) = match surface {
+            Surface::Classic => (".tool-path[data-path][data-sig]", "path"),
+            Surface::AppShell => ("[data-reference-path][data-reference-sig]", "referencePath"),
+        };
+        let js = format!(
+            "JSON.stringify([...new Set([...document.querySelectorAll('{selector}')].map(function (e) {{ return e.dataset.{path_attr}; }}))])"
+        );
+        let stamped: Vec<String> = eval(&page.tab, &js)
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        let offered: Vec<&String> = files.iter().filter(|f| stamped.contains(f)).collect();
+        assert_eq!(
+            offered.len(),
+            files.len(),
+            "{surface:?}: each delivered file has a stamped path the page acts on, not only the \
+             first — offered {offered:?} of {files:?}; every stamped path on the page: {stamped:?}"
+        );
+    }
+}
+
 /// #260 — the outline column holds only the offset the CHAIN sold it.
 ///
 /// The owner saw it in a recording and could not reproduce it: "the tasks drawer overlaps with

@@ -132,7 +132,8 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // `notes`, and a reply the prose could not be parsed for is `resolved`.
     // v15: #281 — an interaction whose call came back without an answer is `resolved` and says
     // why (`unanswered: {why, seconds?}`) instead of staying `resolved: false`, i.e. waiting.
-    const RECORD_SCHEMA: u16 = 15;
+    // v16: #275 — a multi-file send's head carries `files: [{path, sig, fsig?}]`, one per file.
+    const RECORD_SCHEMA: u16 = 16;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
@@ -1687,6 +1688,10 @@ pub(super) fn raster_type(ext: &str) -> Option<&'static str> {
         "webp" => "image/webp",
         "bmp" => "image/bmp",
         "ico" => "image/x-icon",
+        // #275: a raster format every engine this page targets draws. The page's own list
+        // (`RASTER_FILE`, shared/capabilities.js) offered it as an image while this served it as
+        // a download.
+        "avif" => "image/avif",
         _ => return None,
     })
 }
@@ -2176,6 +2181,50 @@ pub fn service_routes(
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    /// #275: the page offers a PATH as an image exactly when `/file` will serve it as one. The
+    /// page's list is `RASTER_FILE` in `shared/capabilities.js`; this reads it out of the module
+    /// and holds it to `raster_type` in both directions over every image extension either side
+    /// has ever named. They disagreed: `.svg` and `.avif` were offered as images that `/file`
+    /// served as text and as a download, and `.bmp`/`.ico` the other way round.
+    #[test]
+    fn the_page_offers_a_path_as_an_image_exactly_when_file_serves_one() {
+        let module = include_str!("../html/shared/capabilities.js");
+        let line = module
+            .lines()
+            .find(|l| l.starts_with("const RASTER_FILE = "))
+            .expect("capabilities.js declares RASTER_FILE");
+        let alternation = line
+            .split_once("\\.(")
+            .and_then(|(_, rest)| rest.split_once(")$/i"))
+            .map(|(alt, _)| alt)
+            .expect("RASTER_FILE is /\\.(a|b|…)$/i");
+        let mut page: Vec<String> = alternation
+            .split('|')
+            .flat_map(|e| match e {
+                "jpe?g" => vec!["jpg".to_string(), "jpeg".to_string()],
+                other => vec![other.to_string()],
+            })
+            .collect();
+        page.sort();
+        let candidates = [
+            "avif", "bmp", "gif", "heic", "ico", "jpeg", "jpg", "png", "svg", "tif", "tiff", "webp",
+        ];
+        let mut served: Vec<String> = candidates
+            .iter()
+            .filter(|e| raster_type(e).is_some())
+            .map(|e| e.to_string())
+            .collect();
+        served.sort();
+        assert_eq!(
+            page, served,
+            "RASTER_FILE and raster_type name the same extensions"
+        );
+        assert!(
+            raster_type("svg").is_none(),
+            "an SVG is never served as an image from this origin"
+        );
+    }
 
     /// #270: a body over its route's bound is REFUSED, never cut to size. This listener used to
     /// read the first 64 KB of a larger body and hand the route that — for a held document, a

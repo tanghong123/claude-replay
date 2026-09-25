@@ -45,6 +45,21 @@ const codeRecordOf = element => element.closest("[data-codebox]")?.querySelector
 /** This shell's names for the shared result body (html/shared/parts.js). */
 const APP_RESULT = { result: "renderer-result", lead: "renderer-result-lead", box: "renderer-result-box" };
 
+/** What a click on an offered path does, in the words its title uses (`referenceAction`). */
+const REFERENCE_TITLES = { preview: "Open in the preview pane", reveal: "Reveal in file manager", copy: "Copy the path" };
+
+/** #275: every file a send DELIVERED, each an offered path the page acts on like the head's —
+ *  which can name only the first and count the rest ("deck.html +2"). Nothing for one file. */
+function deliveredHtml(view) {
+  if (!(view.files?.length > 1)) return "";
+  const files = view.files.map(offer => {
+    const name = String(offer.path || "").split("/").pop() || offer.path;
+    const action = referenceAction({ fileSig: offer.fsig, revealSig: offer.sig });
+    return `<span class="renderer-delivered-file" data-reference-path="${escapeText(offer.path)}" data-reference-fsig="${escapeText(offer.fsig || "")}" data-reference-sig="${escapeText(offer.sig || "")}" title="${escapeText(`${REFERENCE_TITLES[action]}: ${offer.path}`)}">${escapeText(name)}</span>`;
+  }).join("");
+  return `<div class="renderer-delivered"><span class="renderer-delivered-lead">Delivered</span>${files}</div>`;
+}
+
 function rendererBody(view, state) {
   if (view.renderer === "fallback") {
     return `<div class="renderer-fallback"><div class="renderer-fallback-row"><span>record</span><code class="fallback-raw">${escapeText(JSON.stringify(view.raw, null, 2))}</code></div></div>`;
@@ -117,7 +132,7 @@ function renderRenderer(view, index, state, inherited) {
   // rather than of `view.html`, because a record can have parts and no html, or html and a body
   // that renders to nothing — and #168 made the empty case really empty, so the two questions
   // ("is there a body" and "does the body render") had to become one.
-  const bodyMarkup = rendererBody(view, state);
+  const bodyMarkup = deliveredHtml(view) + rendererBody(view, state);
   const noninteractive = !bodyMarkup && !children;
   const title = view.name || view.renderer || "Record";
   // The state word and the pill are the shared head module's (#117): a failure names its word
@@ -129,8 +144,11 @@ function renderRenderer(view, index, state, inherited) {
   // attachment record, leaving the Read itself bodyless — and the owner saw a bare "Read" with no
   // path, beside a classic page that named the file. What a record IS must not depend on whether
   // it has something to unfold.
-  const targetHtml = view.path && (view.fileSig || view.revealSig)
-    ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${referenceAction(view) === "preview" ? "Open in the preview pane" : "Reveal in file manager"}">${escapeText(view.summary || "")}</span>`
+  //
+  // #275: a path with NO stamp is still a link — `referenceAction` answers "copy" for it, as the
+  // classic page now does. It used to be plain text here, so the path could not even be copied.
+  const targetHtml = view.path
+    ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${REFERENCE_TITLES[referenceAction(view)]}">${escapeText(view.summary || "")}</span>`
     : `<span class="renderer-target">${escapeText(view.summary || "")}</span>`;
   const head = noninteractive
     ? `<div class="renderer-head" aria-label="${escapeText(title)}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}<span class="renderer-state"></span></div>`

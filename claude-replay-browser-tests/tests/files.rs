@@ -8,7 +8,7 @@
 //! No case ever reveals anything: the page's `fetch` is wrapped so a `/__reveal` request is recorded
 //! and answered, never sent — `open -R` must not run on the machine the suite runs on.
 //!
-//! Ports 2811–2813. The classic page draws no preview pane; its file view already pairs the two
+//! Ports 2811–2814. The classic page draws no preview pane; its file view already pairs the two
 //! (export.js `openArtifact` and its "Reveal in file manager" action), which is the reference here.
 
 use std::path::PathBuf;
@@ -356,6 +356,139 @@ fn the_app_shell_prompt_card_offers_the_file_manager_beside_its_action() {
 }
 
 /// `encodeURIComponent`, as the page encodes a path in the query.
+/// A 1×1 24-bit BMP: a raster `/file` serves as `image/bmp`.
+const BMP: &[u8] = &[
+    0x42, 0x4d, 0x3a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00,
+    0x00, // file header
+    0x28, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x18, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x13, 0x0b, 0x00, 0x00, 0x13, 0x0b, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // info header
+    0x00, 0x00, 0xff, 0x00, // one pixel, and the row's padding
+];
+
+/// #275 — a PATH is offered as an image exactly when `/file` will serve it as one.
+///
+/// The page decided "image" from a list of extensions the server did not share: a path `.svg` was
+/// offered as "Enlarge", the lightbox asked `/file`, got the SVG's source as text (an SVG served
+/// from this origin could run script, so it is never served as an image) and showed its error;
+/// a path `.bmp`, which the server does serve as an image, was offered as a download. Codex
+/// Desktop's "Files mentioned by the user" is where such a path arrives, one pointer per prompt
+/// (two in a row would fold into a run and never reach the rule).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_offers_a_path_as_an_image_exactly_when_the_server_serves_one() {
+    let _serial = serial();
+    let base = base("files-raster");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(
+        repo.join("diagram.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4" fill="red"/></svg>"#,
+    )
+    .unwrap();
+    std::fs::write(repo.join("scan.bmp"), BMP).unwrap();
+    const CODEX: &str = "5e5510a1-0000-4000-8000-000000000275";
+    let line = |v: serde_json::Value| format!("{v}\n");
+    let mentioned = |file: &str, ts: &str| {
+        line(serde_json::json!({
+            "timestamp": ts, "type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": [{"type": "input_text",
+                "text": format!("# Files mentioned by the user:\n\n## {file}: {}\n\n## My request:\nLook at {file}\n", repo.join(file).display())}]}}))
+    };
+    let said = |text: &str, ts: &str| {
+        line(serde_json::json!({
+            "timestamp": ts, "type": "response_item",
+            "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}}))
+    };
+    let mut jsonl = line(serde_json::json!({
+        "timestamp": at("00:00"), "type": "session_meta",
+        "payload": {"id": CODEX, "cwd": repo.display().to_string(), "originator": "codex-tui", "cli_version": "0.147.0"}}));
+    jsonl += &mentioned("diagram.svg", &at("00:01"));
+    jsonl += &said("A red square.", &at("00:02"));
+    jsonl += &mentioned("scan.bmp", &at("00:03"));
+    jsonl += &said("One pixel.", &at("00:04"));
+    stores.codex_session(CODEX, &jsonl);
+
+    let m = Monitor::spawn(Kind::V2, 2814, &base, Some(&stores), true);
+    let browser = chrome();
+    let tab = browser.new_tab().unwrap();
+    m.pair(&tab);
+    // The monitor names a Codex session by its rollout's file stem.
+    m.open(&tab, &format!("?ui=app&session=rollout-{CODEX}"));
+    let card = |file: &str| format!("[data-attachment-action][data-path$=\"/{file}\"]");
+    until(
+        &tab,
+        &format!(
+            "!!document.querySelector({:?}) && !!document.querySelector({:?})",
+            card("diagram.svg"),
+            card("scan.bmp")
+        ),
+        "a card for each mentioned file",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+    eval(&tab, STUB_REVEAL);
+    let action = |file: &str| {
+        eval(
+            &tab,
+            &format!(
+                "document.querySelector({:?}).dataset.attachmentAction",
+                card(file)
+            ),
+        )
+        .as_str()
+        .unwrap_or("")
+        .to_string()
+    };
+    assert_eq!(
+        (action("diagram.svg"), action("scan.bmp")),
+        ("preview".to_string(), "image".to_string()),
+        "a path .svg is text to read (the server sends its source) and a path .bmp is an image \
+         (the server serves it as one)"
+    );
+
+    // The image the page now offers really draws.
+    eval(
+        &tab,
+        &format!(
+            "document.querySelector({:?}).click(); 'ok'",
+            card("scan.bmp")
+        ),
+    );
+    until(
+        &tab,
+        "(function(){ var i = document.querySelector('[data-lightbox-image]'); var e = document.querySelector('.image-lightbox-error'); return !!i && i.naturalWidth === 1 && !!e && e.hidden; })()",
+        "the lightbox drawing the one-pixel BMP",
+        Duration::from_secs(10),
+        "(function(){ var i = document.querySelector('[data-lightbox-image]'); var e = document.querySelector('.image-lightbox-error'); return JSON.stringify({ src: i && i.getAttribute('src'), w: i && i.naturalWidth, error: e && !e.hidden }); })()",
+    );
+    eval(
+        &tab,
+        "document.querySelector('[data-lightbox-close]').click(); 'ok'",
+    );
+
+    // …and the SVG is read as its source, in the preview pane.
+    eval(
+        &tab,
+        &format!(
+            "document.querySelector({:?}).click(); 'ok'",
+            card("diagram.svg")
+        ),
+    );
+    until(
+        &tab,
+        "(function(){ var t = document.querySelector('#previewBody pre.artifact-text'); return !!t && t.textContent.indexOf('<svg') >= 0; })()",
+        "the preview pane showing the SVG's source",
+        Duration::from_secs(10),
+        PANE,
+    );
+    assert!(
+        reveals(&tab).is_empty(),
+        "nothing asked the file manager for anything"
+    );
+}
+
 fn url_encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {

@@ -523,6 +523,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let blocks = vec![
             Block::UserText("hi".into()), // turn 1

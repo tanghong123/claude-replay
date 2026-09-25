@@ -915,6 +915,29 @@ fn hunks_by_file(hunks: &[crate::model::Hunk]) -> Vec<&[crate::model::Hunk]> {
 /// made absolute (no cwd and a relative target). Existence is **not** required — the
 /// export may be opened later or on another machine, and a stale `file://` link
 /// simply fails; the browser can't reveal-in-Finder regardless.
+/// A path this page OFFERS, stamped: the routes act only on paths this server rendered a link
+/// to, so a token holder cannot name a file the page never showed (`html_export::sig`). Unsigned
+/// when there is no key — the link then falls to copying the path, which acts on nothing.
+///
+/// Two stamps for two capabilities. `sig` reveals the path in the file manager and is always
+/// minted: it hands over no bytes, and on a page that renders nothing inline it is the only thing
+/// a click can do. `fsig` renders the bytes, and exists only for a path the render policy allows —
+/// not stamping IS the restriction.
+fn offered_path(abs: &str) -> Map<String, Value> {
+    use crate::html_export::sig;
+    let mut offer = Map::new();
+    if let Some(s) = sig::sign(sig::Cap::Reveal, abs) {
+        offer.insert("sig".into(), json!(s));
+    }
+    if sig::may_render(abs) {
+        if let Some(s) = sig::sign(sig::Cap::File, abs) {
+            offer.insert("fsig".into(), json!(s));
+        }
+    }
+    offer.insert("path".into(), json!(abs));
+    offer
+}
+
 fn resolve_abs(cwd: &str, target: &str) -> Option<String> {
     if let Some(rest) = target.strip_prefix("~/") {
         if let Some(home) = std::env::var_os("HOME").and_then(|h| h.into_string().ok()) {
@@ -1305,6 +1328,7 @@ impl Emitter<'_> {
                 execution,
                 published,
                 asked,
+                delivered,
                 ..
             } => {
                 o.insert("id".into(), json!(self.block_id()));
@@ -1372,37 +1396,34 @@ impl Emitter<'_> {
                     // a path; the suffix is prose about the rest. Scoped to the tool that
                     // produces the suffix, so a file genuinely ending in " +2" is still revealed
                     // correctly everywhere else.
+                    //
+                    // #275: the call's own list names the first file exactly; the label is the
+                    // fallback for a block that carries no list.
                     let target: &str = if name == "SendUserFile" {
-                        target
-                            .rsplit_once(" +")
-                            .filter(|(_, count)| {
-                                !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit())
-                            })
-                            .map_or(target.as_str(), |(first, _)| first)
+                        delivered.first().map(String::as_str).unwrap_or_else(|| {
+                            target
+                                .rsplit_once(" +")
+                                .filter(|(_, count)| {
+                                    !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit())
+                                })
+                                .map_or(target.as_str(), |(first, _)| first)
+                        })
                     } else {
                         target.as_str()
                     };
                     if let Some(abs) = resolve_abs(base, target) {
-                        // Stamp it: the routes act only on paths this server OFFERED, so a
-                        // token holder cannot name a file the page never showed
-                        // (`html_export::sig`). Unsigned when there is no key — the link is
-                        // then inert, which is the safe direction to fail.
-                        //
-                        // Two stamps for two capabilities. `sig` reveals the path in the file
-                        // manager and is always minted: it hands over no bytes, and on a page
-                        // that renders nothing inline it is the only thing a click can do.
-                        // `fsig` renders the bytes, and exists only for a path the render
-                        // policy allows — not stamping IS the restriction.
-                        use crate::html_export::sig;
-                        if let Some(s) = sig::sign(sig::Cap::Reveal, &abs) {
-                            head.insert("sig".into(), json!(s));
-                        }
-                        if sig::may_render(&abs) {
-                            if let Some(s) = sig::sign(sig::Cap::File, &abs) {
-                                head.insert("fsig".into(), json!(s));
-                            }
-                        }
-                        head.insert("path".into(), json!(abs));
+                        head.extend(offered_path(&abs));
+                    }
+                    // #275: a send that delivered SEVERAL files offers every one of them. The
+                    // header can name only the first — the rest were a "+2" with nothing behind
+                    // it, neither openable nor revealable.
+                    if delivered.len() > 1 {
+                        let files: Vec<Value> = delivered
+                            .iter()
+                            .filter_map(|p| resolve_abs(base, p))
+                            .map(|abs| Value::Object(offered_path(&abs)))
+                            .collect();
+                        head.insert("files".into(), json!(files));
                     }
                 }
                 // An artifact this call published (its URL, name and description). Two jobs:
@@ -3039,6 +3060,7 @@ mod tests {
                 execution: None,
                 published: None,
                 asked: None,
+                delivered: Vec::new(),
             },
             Block::UserText("second question".into()),
             Block::AssistantText("done".into()),
@@ -3135,6 +3157,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let blocks = vec![
             Block::UserText("first".into()),
@@ -3237,6 +3260,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         }
     }
 
@@ -3801,6 +3825,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         }
     }
 
@@ -3893,6 +3918,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         }
     }
 
@@ -4483,6 +4509,7 @@ mod tests {
             execution: None,
             published: None,
             asked: Some(Box::new(asked.clone())),
+            delivered: Vec::new(),
         };
         let prose = format!(
             "The user answered: \"Exit code?\"=\"exit 2\" notes: check the installer, \
@@ -4574,6 +4601,7 @@ mod tests {
                 execution: None,
                 published: None,
                 asked: a.map(Box::new),
+                delivered: Vec::new(),
             };
             stream(&[block], &FoldPolicy::none())[0]["head"]["interaction"].clone()
         };
@@ -4644,6 +4672,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let out = stream(&[block], &FoldPolicy::none());
         assert_eq!(out[0]["head"]["interaction"]["kind"], "request_user_input");
@@ -4688,6 +4717,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let out = stream(&[block], &FoldPolicy::none());
         let diff = out[0]["body"]
@@ -4806,6 +4836,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         let out = stream(&[block], &FoldPolicy::none());
         let num = out[0]["body"]
@@ -4865,6 +4896,7 @@ mod tests {
                 execution: None,
                 published: None,
                 asked: None,
+                delivered: Vec::new(),
             };
             stream(&[block], &FoldPolicy::none())[0]["head"]["chips"].clone()
         };
@@ -4984,6 +5016,7 @@ mod tests {
                 execution: None,
                 published: None,
                 asked: None,
+                delivered: Vec::new(),
             },
             bash("ls -la", "out"),
         ];
@@ -5105,6 +5138,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         }];
         let out = stream(&blocks, &FoldPolicy::none());
         assert_eq!(
@@ -5130,11 +5164,64 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         }];
         assert_eq!(
             stream(&odd, &FoldPolicy::none())[0]["head"]["path"],
             json!("/repo/notes +2"),
             "another tool's target is a path in full, spaces and all"
+        );
+    }
+
+    /// #275: a multi-file send offers EVERY file, each stamped the way the header's path is — the
+    /// header can name only the first. The first path comes from the call's own list now, not
+    /// from picking the label apart; one file needs no list, since the header IS that file.
+    #[test]
+    fn a_multi_file_delivery_offers_every_file() {
+        let send = |delivered: &[&str]| Block::ToolUse {
+            name: "SendUserFile".into(),
+            target: "video/tour.mp4 +2".into(),
+            diffs: vec![],
+            output: Some("3 files delivered to user.".into()),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: delivered.iter().map(|d| d.to_string()).collect(),
+        };
+        let out = stream(
+            &[send(&[
+                "/repo/video/tour.mp4",
+                "notes.md",
+                "/elsewhere/deck.html",
+            ])],
+            &FoldPolicy::none(),
+        );
+        let head = &out[0]["head"];
+        assert_eq!(head["path"], json!("/repo/video/tour.mp4"), "{head}");
+        let files = head["files"].as_array().expect("every file is listed");
+        assert_eq!(
+            files.iter().map(|f| f["path"].clone()).collect::<Vec<_>>(),
+            vec![
+                json!("/repo/video/tour.mp4"),
+                json!("/repo/notes.md"),
+                json!("/elsewhere/deck.html")
+            ],
+            "in the order the call named them, a relative one resolved against the cwd"
+        );
+        assert!(
+            files
+                .iter()
+                .all(|f| f.get("sig").is_some() && f.get("fsig").is_some()),
+            "…each stamped for both capabilities, like the header's path: {head}"
+        );
+        let one = stream(&[send(&["/repo/video/tour.mp4"])], &FoldPolicy::none());
+        assert!(
+            one[0]["head"].get("files").is_none(),
+            "one file needs no list — the header is that file: {}",
+            one[0]["head"]
         );
     }
 
@@ -5152,6 +5239,7 @@ mod tests {
                 execution: None,
                 published: None,
                 asked: None,
+                delivered: Vec::new(),
             },
             bash("ls -la", "out"),
         ];
@@ -5181,6 +5269,7 @@ mod tests {
             execution: None,
             published: None,
             asked: None,
+            delivered: Vec::new(),
         };
         // reveal = false (the `--dump-html` shape): the header still names the file
         // but carries no absolute `path` for the browser to link/reveal.
