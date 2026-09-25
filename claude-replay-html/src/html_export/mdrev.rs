@@ -1193,9 +1193,20 @@ mod tests {
     }
 
     /// An executable script at `at` — the stand-in CLI, or a stand-in node.
+    /// An executable script at `at`. The FINAL file is written by a `cp` child, never by this
+    /// process: on Linux, exec'ing a file that any process holds open for writing fails with
+    /// ETXTBSY, and a test thread that forks while another thread is writing hands its child a
+    /// copy of that write descriptor until the child execs. CI caught it —
+    /// `a_node_fits_when_it_runs_and_is_20_or_later` saw a freshly written `echo v20.0.0` fail
+    /// to run — and macOS, which does not refuse, never will. Only the temporary is ours to
+    /// write, and nothing execs the temporary.
     fn script(at: &Path, body: &str) -> PathBuf {
         std::fs::create_dir_all(at.parent().unwrap()).unwrap();
-        std::fs::write(at, body).unwrap();
+        let draft = at.with_extension("draft");
+        std::fs::write(&draft, body).unwrap();
+        let copied = Command::new("cp").arg(&draft).arg(at).status().unwrap();
+        assert!(copied.success(), "cp {} {}", draft.display(), at.display());
+        std::fs::remove_file(&draft).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

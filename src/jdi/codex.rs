@@ -821,8 +821,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn preflight_invokes_codex_login_status_and_reports_failure() {
-        use std::os::unix::fs::PermissionsExt;
-
         let root =
             std::env::temp_dir().join(format!("agent-jdi-codex-preflight-{}", std::process::id()));
         std::fs::remove_dir_all(&root).ok();
@@ -830,14 +828,12 @@ mod tests {
         let ok = root.join("codex-ok");
         let failed = root.join("codex-failed");
         for (path, exit) in [(&ok, 0), (&failed, 7)] {
-            std::fs::write(
+            crate::jdi::write_script(
                 path,
-                format!(
+                &format!(
                     "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\necho login-state >&2\nexit {exit}\n"
                 ),
-            )
-            .unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            );
         }
 
         CodexAdapter::preflight_program(&ok).unwrap();

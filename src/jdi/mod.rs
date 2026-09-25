@@ -2209,6 +2209,34 @@ fn anyhow_no_session(cwd: &Path) -> anyhow::Error {
     )
 }
 
+/// An executable script for a test to run: `body` at `path`, mode 0755.
+///
+/// The FINAL file is written by a `cp` child, never by this process. On Linux, exec'ing a file
+/// that any process holds open for writing fails with ETXTBSY, and a test thread that forks while
+/// another is writing hands its child a copy of that write descriptor until the child execs — so
+/// write-then-run in a parallel test binary fails at random, and only on Linux (macOS does not
+/// refuse). CI caught the same pattern in the html crate's mdrev tests. Only the draft is ours
+/// to write, and nothing runs the draft.
+#[cfg(test)]
+pub(crate) fn write_script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let draft = path.with_extension("draft");
+    std::fs::write(&draft, body).unwrap();
+    let copied = std::process::Command::new("cp")
+        .arg(&draft)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(
+        copied.success(),
+        "cp {} {}",
+        draft.display(),
+        path.display()
+    );
+    std::fs::remove_file(&draft).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

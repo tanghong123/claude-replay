@@ -461,7 +461,6 @@ pub fn takeover(session: &Session) -> Result<()> {
 mod tests {
     use super::*;
     use crate::jdi::state;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     fn tmp() -> PathBuf {
@@ -477,14 +476,10 @@ mod tests {
 
     fn fake_codex(root: &Path, body: &str) -> PathBuf {
         let p = root.join("codex");
-        fs::write(
+        crate::jdi::write_script(
             &p,
-            format!("#!/bin/sh\nif [ \"$1\" = exec ]; then {body}; fi\nexit 0\n"),
-        )
-        .unwrap();
-        let mut perm = fs::metadata(&p).unwrap().permissions();
-        perm.set_mode(0o755);
-        fs::set_permissions(&p, perm).unwrap();
+            &format!("#!/bin/sh\nif [ \"$1\" = exec ]; then {body}; fi\nexit 0\n"),
+        );
         p
     }
 
@@ -662,10 +657,7 @@ if [ "$1" = exec ]; then
 fi
 exit 0
 "#;
-        fs::write(&codex, script).unwrap();
-        let mut perm = fs::metadata(&codex).unwrap().permissions();
-        perm.set_mode(0o755);
-        fs::set_permissions(&codex, perm).unwrap();
+        crate::jdi::write_script(&codex, script);
 
         let s = Session::new(&home, "sess");
         s.ensure_dir().unwrap();
