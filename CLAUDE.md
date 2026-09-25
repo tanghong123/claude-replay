@@ -384,13 +384,16 @@ every file-editing Bash command — and `git log -S bashEditDiff` was empty, so 
 thirteen sessions carried a diff the page dropped in silence (#263).
 
 **The reporting rule is an ALLOW-LIST, and that is the whole design.** A census of the twelve
-largest sessions found **125 distinct top-level `toolUseResult` keys**; the Claude adapter reads
+largest sessions found **125 distinct top-level `toolUseResult` keys**; the Claude adapter read
 eight. "Report any key no code reads" would have fired on 117 on its first run — `isImage` 80,791
 times — and a log nobody can read is a log nobody reads. So `TOOL_RESULT_READ` and
 `TOOL_RESULT_KNOWN_IGNORED` (`agents/claude/model.rs`) are a snapshot of the vocabulary as of
 2026-09-20, and only a key outside both is reported. **Adding a key to the ignored list is a
 deliberate act** — it says "looked at it, it carries nothing we render" — and belongs in the same
-commit as the look that decided so, never in a sweep to quieten the output.
+commit as the look that decided so, never in a sweep to quieten the output. That claim can be
+wrong: `answers` and `annotations` sat on the ignored list while the `AskUserQuestion` card read
+the reply out of the result's prose, which cannot carry a typed answer or a note, and the owner
+found an answer missing from the card (#280). They are read now, so the list holds ten.
 
 The channel is `claude-replay-engine/src/unknown.rs`, re-exported through `engine/seam.rs` as
 `note_unknown`/`UnknownAt` so all three families and any third-party adapter report the same way.

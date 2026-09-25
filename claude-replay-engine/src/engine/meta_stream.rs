@@ -192,9 +192,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// so a resumed session would show the change on the turns folded after the upgrade and not on
 /// the ones before it.
 ///
+/// v32: #280 — each question of a Claude `AskUserQuestion` block carries the reader's ANSWER and
+/// NOTES, read from `toolUseResult.answers`/`annotations`. A v31 stream has neither, so its card
+/// falls back to the result's prose, which drops every typed answer and every note — the owner's
+/// report, on the records folded before the upgrade and not on the ones after it.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across.
-pub const FOLD_VERSION: u16 = 31;
+pub const FOLD_VERSION: u16 = 32;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

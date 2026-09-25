@@ -128,7 +128,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // stated by the transcript, which is every Claude record — see `Block::AssistantMessage`);
     // Codex Desktop prompt envelopes project as clean user text + a named attachment; proposed
     // plans and request_user_input records carry semantic presentation metadata.
-    const RECORD_SCHEMA: u16 = 13;
+    // v14: #280 — an AskUserQuestion card's questions carry the reader's `typed` words and
+    // `notes`, and a reply the prose could not be parsed for is `resolved`.
+    const RECORD_SCHEMA: u16 = 14;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);

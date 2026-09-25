@@ -60,7 +60,8 @@ pub struct Published {
     pub icon: String,
 }
 
-/// The questions a call put to the reader, with every option it offered (#255).
+/// The questions a call put to the reader, with every option it offered (#255) — and, once the
+/// call is answered, what the reader said to each (#280).
 ///
 /// The transcript records all of it — each question's header, whether it took more than one
 /// answer, and every option's label AND description — while the viewer used to show the first
@@ -89,6 +90,19 @@ pub struct AskedQuestion {
     /// Every option offered — label and description both, because the description is where the
     /// trade-off was written.
     pub options: Vec<AskedOption>,
+    /// What the reader answered (#280), as the client recorded it: an option's label, several
+    /// labels comma-joined for a multi-select, or the reader's OWN words, typed instead of
+    /// picked. `None` until the call is answered, and for a question answered with notes alone.
+    ///
+    /// Carried verbatim; which options it names is the presenter's question. The card used to
+    /// learn the answer from the result's prose, which cannot be read back in general — the
+    /// reader's own quotes end a quoted answer early — and it only ever matched labels, so a
+    /// typed answer (one in five, measured) was drawn nowhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    /// The notes the reader attached to the answer (#280); empty when none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
 }
 
 /// One option of an [`AskedQuestion`].

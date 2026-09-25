@@ -607,9 +607,13 @@ fn note_unknown_shape(v: &Value, at: UnknownAt, name: Option<&str>, known: &[&st
 }
 
 /// The `toolUseResult` keys this adapter READS. Everything it does with a tool result comes
-/// from one of these eight.
+/// from one of these ten. (#280 moved `answers` and `annotations` here from the ignored list:
+/// they are an `AskUserQuestion`'s reply, which the card used to take from the result's prose
+/// and could not read back when the reader typed their own answer or wrote notes.)
 const TOOL_RESULT_READ: &[&str] = &[
     "agentId",
+    "annotations",
+    "answers",
     "bashEditDiff",
     "outputFile",
     "state",
@@ -622,7 +626,8 @@ const TOOL_RESULT_READ: &[&str] = &[
 /// The `toolUseResult` keys this adapter has SEEN and deliberately does not read (#264).
 ///
 /// A census of the twelve largest sessions on 2026-09-20 found **125 distinct top-level keys**;
-/// the eight above are read and these 117 are not. Writing them down is the whole mechanism:
+/// eight were read then and the other 117 were not (two of which #280 has since moved up to
+/// the read list). Writing them down is the whole mechanism:
 /// "report any key no code reads" would have fired on all 117 on its first run — `isImage`
 /// 80,791 times, `noOutputExpected` 80,791, `userModified` 10,051 — and a log nobody can read
 /// is a log nobody reads. Against this list, the only thing reported is a key that did not
@@ -639,8 +644,6 @@ const TOOL_RESULT_READ: &[&str] = &[
 const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "afkTimeoutMs",
     "agentType",
-    "annotations",
-    "answers",
     "artifactRead",
     "artifact_id",
     "artifacts",
@@ -1259,8 +1262,13 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
             read_lines,
             execution,
             published,
+            asked,
             ..
         } => {
+            // #280: the reader's answers, from the result's structured half.
+            if let Some(a) = asked.as_deref_mut() {
+                apply_answers(a, tur);
+            }
             // A `Workflow` call's input is the script, so it builds with nothing to show for
             // itself and renders as a bare `Workflow()`. Its result names the run (#38) — take
             // that as the label, so the launched fleet below it has a heading.
@@ -2040,10 +2048,55 @@ fn asked_from_input(name: &str, input: &Value) -> Option<Asked> {
                             .collect()
                     })
                     .unwrap_or_default(),
+                // The call is only the asking; `apply_result` brings the answers (#280).
+                answer: None,
+                notes: String::new(),
             })
         })
         .collect();
     (!questions.is_empty()).then_some(Asked { questions })
+}
+
+/// #280: what the reader answered, joined onto the questions the call put.
+///
+/// The client records it twice. The result's PROSE is a sentence for the agent, and cannot be
+/// read back in general: a quote the reader typed ends the quoted answer early, a notes-only
+/// answer is written `=(no option selected) notes: …` with no quotes at all, and a selected
+/// option's preview is appended after it. The STRUCTURED half is exact — `answers` maps each
+/// question's whole text to its answer, `annotations` maps it to `{notes, preview}` — so it is
+/// the half read here. (`preview` is the chosen option's own preview, the asker's text rather
+/// than the reader's, and is not carried.)
+///
+/// The answer is kept verbatim. The one exception is the client's placeholder for an answer
+/// given as notes alone, `(notes only)`: that is the client's word, not the reader's, so the
+/// answer stays `None` and the notes carry the reply.
+fn apply_answers(asked: &mut Asked, tur: &Value) {
+    const NOTES_ONLY: &str = "(notes only)";
+    let answers = tur.get("answers").and_then(Value::as_object);
+    let annotations = tur.get("annotations").and_then(Value::as_object);
+    // Keyed by the question's WHOLE text. The question was entity-decoded when it was lifted
+    // from the input, so each key is decoded the same way before it is compared.
+    let lookup = |map: Option<&serde_json::Map<String, Value>>, question: &str| -> Option<Value> {
+        map?.iter()
+            .find(|(k, _)| decode_entities(k) == question)
+            .map(|(_, v)| v.clone())
+    };
+    for q in &mut asked.questions {
+        if let Some(a) = lookup(answers, &q.question) {
+            q.answer = a
+                .as_str()
+                .map(str::trim)
+                .filter(|a| !a.is_empty() && *a != NOTES_ONLY)
+                .map(decode_entities);
+        }
+        if let Some(n) = lookup(annotations, &q.question) {
+            q.notes = n
+                .get("notes")
+                .and_then(Value::as_str)
+                .map(|n| decode_entities(n.trim()))
+                .unwrap_or_default();
+        }
+    }
 }
 
 /// The half of an `Artifact` publish that the CALL knows: what to call it, what it is, and the
@@ -3736,6 +3789,51 @@ mod tests {
         assert_eq!(
             a.questions[1].options[0].description, "",
             "an option with no description carries an empty one rather than vanishing"
+        );
+    }
+
+    /// #280: the reader's answers are joined onto the questions from the result's STRUCTURED
+    /// half, not its prose. Every shape the client records, as measured across the owner's
+    /// sessions (262 answers): a pick; the reader's own words, typed instead of picked (54 of
+    /// them) — here with a `"` and a `, ` in it, the two characters the prose cannot carry; a
+    /// multi-select, comma-joined; a pick with notes; and notes alone, which the client records
+    /// as the placeholder `(notes only)`. Keys are the question's whole text, entity-encoded the
+    /// way the input's are, and a question nobody answered is left alone.
+    #[test]
+    fn an_answered_ask_carries_each_answer_and_its_notes() {
+        let jsonl = r##"
+{"type":"assistant","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":[{"type":"tool_use","id":"a1","name":"AskUserQuestion","input":{"questions":[{"header":"Exit","question":"Exit 2 &amp; warn?","multiSelect":false,"options":[{"label":"Yes"},{"label":"No"}]},{"header":"Switch","question":"Where does it live?","multiSelect":false,"options":[{"label":"Both"},{"label":"Park it"}]},{"header":"Crates","question":"Which crates?","multiSelect":true,"options":[{"label":"engine"},{"label":"html"},{"label":"tui"}]},{"header":"Name","question":"Which name?","multiSelect":false,"options":[{"label":"--manage"},{"label":"--own"}]},{"header":"Later","question":"Anything else?","multiSelect":false,"options":[{"label":"No"}]}]}}]}}
+{"type":"user","timestamp":"2026-06-30T03:00:09.000Z","toolUseResult":{"questions":[],"answers":{"Exit 2 &amp; warn?":"Yes","Where does it live?":"Both - say \"manage\" up front, and ask per skill later. ","Which crates?":"engine, tui","Which name?":"(notes only)"},"annotations":{"Exit 2 &amp; warn?":{"notes":"check the installer"},"Which name?":{"notes":"follow sync","preview":"--manage"}}},"message":{"content":[{"type":"tool_result","tool_use_id":"a1","content":"The user answered: …"}]}}
+"##;
+        let blocks = parse(jsonl);
+        let Some(Block::ToolUse { asked, .. }) = blocks
+            .iter()
+            .find(|b| matches!(b, Block::ToolUse { name, .. } if name == "AskUserQuestion"))
+        else {
+            panic!("the call is there: {blocks:?}")
+        };
+        let replies: Vec<(Option<&str>, &str)> = asked
+            .as_deref()
+            .expect("the call asked")
+            .questions
+            .iter()
+            .map(|q| (q.answer.as_deref(), q.notes.as_str()))
+            .collect();
+        assert_eq!(
+            replies,
+            vec![
+                (Some("Yes"), "check the installer"),
+                (
+                    Some("Both - say \"manage\" up front, and ask per skill later."),
+                    ""
+                ),
+                (Some("engine, tui"), ""),
+                (None, "follow sync"),
+                (None, ""),
+            ],
+            "a pick with its notes; typed words verbatim, quotes and commas intact (trimmed, \
+             not split); a multi-select as recorded; notes alone with the client's placeholder \
+             dropped; and a question with no answer left unanswered"
         );
     }
 

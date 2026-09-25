@@ -464,7 +464,8 @@ fn ask_user_question_projection(output: &str) -> Option<Value> {
     }))
 }
 
-/// #255: what the call OFFERED, folded into the interaction card beside what came back.
+/// #255: what the call OFFERED, folded into the interaction card beside what came back — and
+/// #280, what the reader said to each question, in whatever shape they said it.
 ///
 /// The transcript records every question with its header, its multi-select flag and every
 /// option's label AND description; the card used to show the first question's text and the
@@ -472,13 +473,22 @@ fn ask_user_question_projection(output: &str) -> Option<Value> {
 /// is 2 of the 8 things the asker wrote, and the options that were DECLINED — where the
 /// trade-off is written — never reached the reader at all.
 ///
-/// `chosen` is matched per QUESTION, and two things about the recorded answer make that less
-/// obvious than it looks (both measured on a real four-question call):
+/// #280: the reply comes from the question itself (`AskedQuestion::answer`/`notes`, which the
+/// adapter reads from the result's structured half), and it says what matching labels never
+/// could — see [`reading`]. The owner's report was a two-question call whose second answer was
+/// typed rather than picked: nothing ticked, and the words themselves drawn nowhere.
+///
+/// A record whose questions carry no reply falls back to the rows parsed out of the result's
+/// PROSE, where `chosen` is matched per QUESTION and two things make that less obvious than it
+/// looks (both measured on a real four-question call):
 ///
 ///   - the answer row's `id` is the question text as the RESULT prose carried it, which is
 ///     TRUNCATED — so a row belongs to the question it is a prefix of, not one that equals it;
 ///   - a multi-select answer comes back COMMA-JOINED ("okr, dms-mcp-server"), so an option is
 ///     chosen when it matches the whole answer or any comma-separated part of it.
+///
+/// That fallback only ticks. The prose cannot be read back in general — a quote the reader typed
+/// ends the quoted answer early — so words it failed to match are not trusted to be the reader's.
 ///
 /// Matching per question rather than against every answer also stops an option ticking because
 /// a DIFFERENT question happened to be answered with the same word.
@@ -501,25 +511,106 @@ fn asked_section(asked: &crate::model::Asked, answers: &[Value]) -> Value {
             })
             .unwrap_or_default()
     };
+    let structured = replied(asked);
     Value::Array(
         asked
             .questions
             .iter()
             .map(|q| {
-                let picked = row_for(&q.question);
-                json!({
+                let (chosen, typed) = if structured {
+                    reading(q)
+                } else {
+                    let picked = row_for(&q.question);
+                    let chosen = q
+                        .options
+                        .iter()
+                        .map(|o| picked.iter().any(|p| p == &o.label))
+                        .collect();
+                    (chosen, String::new())
+                };
+                let mut row = json!({
                     "header": q.header,
                     "question": q.question,
                     "multi": q.multi_select,
-                    "options": q.options.iter().map(|o| json!({
+                    "options": q.options.iter().zip(chosen).map(|(o, chosen)| json!({
                         "label": o.label,
                         "description": o.description,
-                        "chosen": picked.iter().any(|p| p == &o.label),
+                        "chosen": chosen,
                     })).collect::<Vec<_>>(),
-                })
+                });
+                if let Some(obj) = row.as_object_mut() {
+                    if !typed.is_empty() {
+                        obj.insert("typed".into(), json!(typed));
+                    }
+                    if !q.notes.is_empty() {
+                        obj.insert("notes".into(), json!(q.notes));
+                    }
+                }
+                row
             })
             .collect(),
     )
+}
+
+/// #280: whether the call's questions carry the reader's reply themselves — the structured half
+/// of the result was there to read.
+fn replied(asked: &crate::model::Asked) -> bool {
+    asked
+        .questions
+        .iter()
+        .any(|q| q.answer.is_some() || !q.notes.is_empty())
+}
+
+/// #280: which of a question's options its answer names, and what is left over — the reader's
+/// OWN words, typed in the client instead of (or, on a multi-select, beside) a pick.
+///
+/// A single-select answer is ONE string: it is an option's label or it is the reader's words,
+/// and it is never split — "Both - ask for …, and …" is a sentence the reader wrote, not the
+/// option "Both", and a comma inside it is punctuation. A multi-select answer is the picked labels
+/// joined with `", "`, so it is walked label by label (longest first, so a label that itself
+/// holds a comma is still one pick); a stretch that names no option is typed words.
+fn reading(q: &crate::model::AskedQuestion) -> (Vec<bool>, String) {
+    let mut chosen = vec![false; q.options.len()];
+    let Some(answer) = q.answer.as_deref().map(str::trim).filter(|a| !a.is_empty()) else {
+        return (chosen, String::new());
+    };
+    if let Some(i) = q.options.iter().position(|o| o.label == answer) {
+        chosen[i] = true;
+        return (chosen, String::new());
+    }
+    if !q.multi_select {
+        return (chosen, answer.to_string());
+    }
+    let mut labels: Vec<(usize, &str)> = q
+        .options
+        .iter()
+        .enumerate()
+        .map(|(i, o)| (i, o.label.as_str()))
+        .filter(|(_, l)| !l.is_empty())
+        .collect();
+    labels.sort_by_key(|(_, l)| std::cmp::Reverse(l.len()));
+    let mut typed: Vec<&str> = Vec::new();
+    let mut rest = answer;
+    loop {
+        let whole = |l: &str| rest.len() == l.len() || rest[l.len()..].starts_with(", ");
+        let taken = match labels.iter().find(|(_, l)| rest.starts_with(l) && whole(l)) {
+            Some(&(i, l)) => {
+                chosen[i] = true;
+                l.len()
+            }
+            None => {
+                let end = rest.find(", ").unwrap_or(rest.len());
+                typed.push(rest[..end].trim());
+                end
+            }
+        };
+        match rest[taken..].strip_prefix(", ") {
+            Some(next) => rest = next,
+            None => break,
+        }
+    }
+    typed.retain(|t| !t.is_empty());
+    (chosen, typed.join(", "))
 }
 
 fn request_user_input_projection(output: &str) -> Option<Value> {
@@ -1397,7 +1488,19 @@ impl Emitter<'_> {
                             let answered = if name.eq_ignore_ascii_case("request_user_input") {
                                 request_user_input_projection(out)
                             } else if name.eq_ignore_ascii_case("AskUserQuestion") {
-                                ask_user_question_projection(out)
+                                // #280: the prose is a sentence for the agent, and the client has
+                                // reworded it before ("Your questions have been answered:" became
+                                // "The user answered:"). A reply the questions carry themselves is
+                                // a reply whatever that sentence says.
+                                ask_user_question_projection(out).or_else(|| {
+                                    asked.as_deref().filter(|a| replied(a)).map(|_| {
+                                        json!({
+                                            "kind": "request_user_input",
+                                            "resolved": true,
+                                            "answers": [],
+                                        })
+                                    })
+                                })
                             } else {
                                 None
                             };
@@ -1412,6 +1515,11 @@ impl Emitter<'_> {
                                         .cloned()
                                         .unwrap_or_default();
                                     obj.insert("asked".into(), asked_section(a, &rows));
+                                    // #280: answered is what the questions say, not whether a
+                                    // pair could be read out of the prose.
+                                    if replied(a) {
+                                        obj.insert("resolved".into(), json!(true));
+                                    }
                                 }
                                 head.insert("interaction".into(), interaction);
                             }
@@ -2487,6 +2595,8 @@ mod tests {
                     description: String::new(),
                 })
                 .collect(),
+            answer: None,
+            notes: String::new(),
         };
         let asked = Asked {
             questions: vec![
@@ -2534,6 +2644,88 @@ mod tests {
             "and matching is per QUESTION: the `okr` here is NOT ticked by the first \
              question's answer"
         );
+    }
+
+    /// #280: what an answer the QUESTION carries says — which options it names, and the
+    /// reader's own words where it names none. A single-select answer is never split: the
+    /// owner's typed reply began "Both - …" and held a comma, and it is neither the option
+    /// "Both" nor two answers.
+    #[test]
+    fn a_carried_answer_reads_as_picks_and_the_reader_s_own_words() {
+        use crate::model::{AskedOption, AskedQuestion};
+        let q = |multi: bool, opts: &[&str], answer: Option<&str>| AskedQuestion {
+            header: String::new(),
+            question: "?".into(),
+            multi_select: multi,
+            options: opts
+                .iter()
+                .map(|l| AskedOption {
+                    label: (*l).into(),
+                    description: String::new(),
+                })
+                .collect(),
+            answer: answer.map(str::to_string),
+            notes: String::new(),
+        };
+        let read = |q: &AskedQuestion| {
+            let (chosen, typed) = super::reading(q);
+            let picked: Vec<&str> = q
+                .options
+                .iter()
+                .zip(chosen)
+                .filter(|(_, c)| *c)
+                .map(|(o, _)| o.label.as_str())
+                .collect();
+            (picked.join("|"), typed)
+        };
+        let owner = "Both - knack should ask by default, and say per-skill consent comes later.";
+        let cases: [(AskedQuestion, (&str, &str)); 8] = [
+            (q(false, &["Yes", "No"], Some("Yes")), ("Yes", "")),
+            (
+                q(false, &["(a) on init", "Both", "Park it"], Some(owner)),
+                ("", owner),
+            ),
+            (q(false, &["Yes", "No"], None), ("", "")),
+            (
+                q(true, &["engine", "html", "tui"], Some("engine, tui")),
+                ("engine|tui", ""),
+            ),
+            (
+                q(
+                    true,
+                    &["engine", "html", "tui"],
+                    Some("engine, the docs too, tui"),
+                ),
+                ("engine|tui", "the docs too"),
+            ),
+            (
+                q(
+                    true,
+                    &["Comment, worklog note", "Edit"],
+                    Some("Comment, worklog note, Edit"),
+                ),
+                ("Comment, worklog note|Edit", ""),
+            ),
+            (q(true, &["engine", "html"], Some("html")), ("html", "")),
+            (
+                q(true, &["engine", "html"], Some("engineering, html")),
+                ("html", "engineering"),
+            ),
+        ];
+        for (question, (picked, typed)) in cases {
+            assert_eq!(
+                read(&question),
+                (picked.to_string(), typed.to_string()),
+                "answer {:?} over options {:?} (multi: {})",
+                question.answer,
+                question
+                    .options
+                    .iter()
+                    .map(|o| &o.label)
+                    .collect::<Vec<_>>(),
+                question.multi_select
+            );
+        }
     }
 
     use super::{preformatted_runs, user_body_parts};
@@ -4207,6 +4399,105 @@ mod tests {
         let html = out[0]["body"][0]["h"].as_str().unwrap();
         assert!(html.contains("Safe migration"));
         assert!(!html.contains("proposed_plan"));
+    }
+
+    /// #280: an `AskUserQuestion` whose questions carry the reader's reply draws it — however
+    /// badly the result's prose reads back. The prose here is the client's own shape: the typed
+    /// answer's quotes end its quoted value early, and the notes-only answer has no quotes at
+    /// all, so the prose alone yields a truncated second answer and no third.
+    #[test]
+    fn an_ask_user_question_reply_comes_from_the_questions_not_the_prose() {
+        use crate::model::{Asked, AskedOption, AskedQuestion};
+        let q = |question: &str, opts: &[&str], answer: Option<&str>, notes: &str| AskedQuestion {
+            header: String::new(),
+            question: question.into(),
+            multi_select: false,
+            options: opts
+                .iter()
+                .map(|l| AskedOption {
+                    label: (*l).into(),
+                    description: String::new(),
+                })
+                .collect(),
+            answer: answer.map(str::to_string),
+            notes: notes.into(),
+        };
+        let typed = "Both - ask for the \"manage\" privilege, and say consent comes later.";
+        let asked = Asked {
+            questions: vec![
+                q(
+                    "Exit code?",
+                    &["exit 2", "exit 0"],
+                    Some("exit 2"),
+                    "check the installer",
+                ),
+                q("Where?", &["on init", "Both"], Some(typed), ""),
+                q("Which name?", &["--manage", "--own"], None, "follow sync"),
+            ],
+        };
+        let block = |output: &str| Block::ToolUse {
+            name: "AskUserQuestion".into(),
+            target: "Exit code? +2".into(),
+            diffs: vec![],
+            output: Some(output.into()),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: Some(Box::new(asked.clone())),
+        };
+        let prose = format!(
+            "The user answered: \"Exit code?\"=\"exit 2\" notes: check the installer, \
+             \"Where?\"=\"{typed}\", \"Which name?\"=(no option selected) notes: follow sync. \
+             Read the answers carefully."
+        );
+        let out = stream(&[block(&prose)], &FoldPolicy::none());
+        let card = &out[0]["head"]["interaction"];
+        assert_eq!(card["resolved"], true, "{card}");
+        let chosen = |i: usize| -> Vec<&str> {
+            card["asked"][i]["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|o| o["chosen"] == true)
+                .map(|o| o["label"].as_str().unwrap())
+                .collect()
+        };
+        assert_eq!(chosen(0), vec!["exit 2"], "{card}");
+        assert_eq!(card["asked"][0]["notes"], "check the installer", "{card}");
+        assert_eq!(
+            chosen(1),
+            Vec::<&str>::new(),
+            "a typed \"Both - …\" is not the option \"Both\": {card}"
+        );
+        assert_eq!(card["asked"][1]["typed"], typed, "verbatim, whole: {card}");
+        assert_eq!(chosen(2), Vec::<&str>::new(), "{card}");
+        assert!(card["asked"][2].get("typed").is_none(), "{card}");
+        assert_eq!(card["asked"][2]["notes"], "follow sync", "{card}");
+
+        // A notes-only reply is the one shape the prose parser finds NO pair in — the card still
+        // says it was answered, rather than waiting on a question the reader has already put
+        // down.
+        let alone = Asked {
+            questions: vec![q(
+                "Which name?",
+                &["--manage", "--own"],
+                None,
+                "follow sync",
+            )],
+        };
+        let mut notes_only = block(
+            "Your questions have been answered: \"Which name?\"=(no option selected) notes: \
+             follow sync. You can now continue.",
+        );
+        if let Block::ToolUse { asked, .. } = &mut notes_only {
+            *asked = Some(Box::new(alone));
+        }
+        let out = stream(&[notes_only], &FoldPolicy::none());
+        let card = &out[0]["head"]["interaction"];
+        assert_eq!(card["resolved"], true, "{card}");
+        assert_eq!(card["asked"][0]["notes"], "follow sync", "{card}");
     }
 
     #[test]

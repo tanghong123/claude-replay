@@ -98,7 +98,7 @@
   var CLASSIC_MARKS = { add: "+", del: "−", ctx: " " };
   var CLASSIC_RESULT = { result: "result", lead: "lead", box: "resultbox" };
   var CLASSIC_CTX = { root: "ctx-report", head: "ctx-head", table: "ctx-table", num: "ctx-num", track: "ctx-track" };
-  var CLASSIC_INTERACTION = { card: "irq", icon: "irq-icon", copy: "irq-copy", meta: "irq-meta", answers: "irq-answers", answer: "irq-answer" };
+  var CLASSIC_INTERACTION = { card: "irq", icon: "irq-icon", copy: "irq-copy", meta: "irq-meta", answers: "irq-answers", answer: "irq-answer", question: "irq-question", reply: "irq-reply" };
   var CLASSIC_TASK = { card: "tcard", head: "tcard-head", glyph: "tcard-glyph", id: "tcard-id", title: "tcard-title", chips: "tcard-chips", chip: "tchip", dates: "tcard-dates", gap: "tcard-gap", section: "tcard-sec", label: "tcard-label", body: "tcard-body", item: "tcard-item", outcome: "tcard-out", log: "tcard-log", logTime: "tcard-lt", logMsg: "tcard-lm", logBy: "tcard-lb" };
 
   // A capped list: the first `cap` rows stay visible, the rest go into a hidden div revealed

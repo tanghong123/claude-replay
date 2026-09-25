@@ -12703,6 +12703,150 @@ fn both_shells_show_every_question_and_every_option_that_was_offered() {
     }
 }
 
+/// An `AskUserQuestion` answered three ways at once: a pick with notes, typed words, notes alone.
+fn ask_replied_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: ask me about init", &now_minus(200));
+    t += &harness::ask_replied_at("ask1", &now_minus(198));
+    t += &harness::ask_replied_answer("ask1", &now_minus(150));
+    t += &assistant_at(
+        "Exit 2, a switch on both, and the flag named after sync.",
+        &now_minus(140),
+    );
+    let path = stores.claude_session(name, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #280 — every question on the card is drawn the same way, and every answer the reader gave is
+/// on it, on BOTH pages.
+///
+/// The owner, with a screenshot of a two-question call: "bug: agent asks two questions, but the
+/// two questions are not rendered equally" — and then: "you also missed that the rendering of the
+/// #104 question uses a different font size/style than the question for #101". Two defects:
+///
+///   - the card's headline was the call's TARGET, which is the first question (" +1"), so the
+///     first question was printed twice — once at reading size, once in the small note type every
+///     question's lead used — and read as THE question while the second read as a footnote;
+///   - an answer that named no option — the reader's own words, typed in the client — was drawn
+///     nowhere: no option ticked, and the words themselves gone. The card had only ever matched
+///     answers against labels.
+///
+/// So: each question's text appears exactly once, every element carrying one is typeset alike,
+/// the typed words are there verbatim with a tick and no option is ticked for them (a typed
+/// "Both - …" is not the option "Both"), the notes are there, and the client's `(notes only)`
+/// placeholder is not — it is the client's word, not the reader's.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_draw_every_question_alike_and_every_answer_given() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3024)] {
+        let fx = ask_replied_fixture(match surface {
+            Surface::Classic => "ask-replied-classic",
+            _ => "ask-replied-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        let card = match surface {
+            Surface::Classic => ".irq",
+            Surface::AppShell => ".input-request",
+        };
+        let lit = |s: &str| serde_json::to_string(s).unwrap();
+        let [q1, q2, q3] = harness::REPLIED_QUESTIONS;
+        let [n1, n3] = harness::REPLIED_NOTES;
+        // An element "carries" a string when one of its OWN text nodes contains it — so a
+        // question's holder is the innermost element that prints it, whatever the markup.
+        let js = format!(
+            "(function(){{ var c = document.querySelector('{card}'); if (!c) return JSON.stringify({{ miss: 'no card' }}); \
+               var t = c.textContent; \
+               var holders = function (s) {{ return [...c.querySelectorAll('*')].filter(function (e) {{ \
+                 return [...e.childNodes].some(function (n) {{ return n.nodeType === 3 && n.textContent.indexOf(s) >= 0; }}); }}); }}; \
+               var type = function (e) {{ var s = getComputedStyle(e); return [s.fontSize, s.fontFamily, s.fontWeight, s.fontStyle, s.color].join(' | '); }}; \
+               var qs = [{q1}, {q2}, {q3}]; \
+               return JSON.stringify({{ \
+                 counts: qs.map(function (q) {{ return t.split(q).length - 1; }}), \
+                 types: qs.map(function (q) {{ return holders(q).map(type); }}), \
+                 typed: t.indexOf({typed}) >= 0, \
+                 notes: [{n1}, {n3}].map(function (n) {{ return t.indexOf(n) >= 0; }}), \
+                 placeholder: t.indexOf('(notes only)') >= 0, \
+                 ticked: holders('✓').map(function (e) {{ return e.textContent.replace('✓', '').trim(); }}).filter(function (x) {{ return x; }}), \
+                 title: (c.querySelector('strong') || {{}}).textContent || '' }}); }})()",
+            q1 = lit(q1),
+            q2 = lit(q2),
+            q3 = lit(q3),
+            typed = lit(harness::REPLIED_TYPED),
+            n1 = lit(n1),
+            n3 = lit(n3),
+        );
+        let seen: serde_json::Value = eval(&page.tab, &js)
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        assert_eq!(
+            seen["counts"],
+            serde_json::json!([1, 1, 1]),
+            "{surface:?}: each question is printed exactly once — the first one is not promoted \
+             into the headline and then listed again: {seen}"
+        );
+        let types: Vec<String> = seen["types"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|holders| holders.as_array().cloned().unwrap_or_default())
+            .filter_map(|t| t.as_str().map(str::to_string))
+            .collect();
+        assert!(
+            types.len() == 3 && types.iter().all(|t| t == &types[0]),
+            "{surface:?}: every question is typeset alike — size, family, weight, style and \
+             colour: {seen}"
+        );
+        assert_eq!(
+            seen["typed"],
+            serde_json::json!(true),
+            "{surface:?}: the reader's own words are on the card, verbatim: {seen}"
+        );
+        let ticked: Vec<String> = seen["ticked"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t.as_str().map(str::to_string))
+            .collect();
+        assert_eq!(
+            ticked,
+            vec![
+                "(a) exit 2 (Recommended)".to_string(),
+                harness::REPLIED_TYPED.to_string()
+            ],
+            "{surface:?}: the pick is ticked, the typed words are ticked, and nothing else — \
+             not the option \"Both\" the typed answer happens to start with: {seen}"
+        );
+        assert_eq!(
+            seen["notes"],
+            serde_json::json!([true, true]),
+            "{surface:?}: the notes the reader attached are on the card, beside a pick and on \
+             their own: {seen}"
+        );
+        assert_eq!(
+            seen["placeholder"],
+            serde_json::json!(false),
+            "{surface:?}: `(notes only)` is the client's placeholder, never shown as an answer: \
+             {seen}"
+        );
+        assert_eq!(
+            seen["title"],
+            serde_json::json!("User input received"),
+            "{surface:?}: an answered call is not waiting: {seen}"
+        );
+    }
+}
+
 /// #260 — the outline column holds only the offset the CHAIN sold it.
 ///
 /// The owner saw it in a recording and could not reproduce it: "the tasks drawer overlaps with

@@ -568,6 +568,86 @@ pub fn ask_question_answer(id: &str, ts: &str) -> String {
     format!("{line}\n")
 }
 
+/// #280: the three questions [`ask_replied_at`] puts, in order.
+pub const REPLIED_QUESTIONS: [&str; 3] = [
+    "What should init exit with when it reports a problem?",
+    "Where should the non-interactive switch live?",
+    "Which name should the flag take?",
+];
+/// #280: the second question's answer — the reader's OWN words, typed through the client's
+/// "Type something" rather than picked. It opens with an option's label ("Both") so a renderer
+/// that guesses a tick from a prefix is caught, and it carries `, ` and `"` because the client's
+/// prose splits on the first and quotes with the second.
+pub const REPLIED_TYPED: &str =
+    "Both - ask for the \"manage\" privilege by default, and say per-skill consent comes later.";
+/// #280: the notes the reader attached — to the first question beside a pick, and to the third
+/// with no pick at all (the client records that answer as the placeholder `(notes only)`).
+pub const REPLIED_NOTES: [&str; 2] = [
+    "check the installer handles a 2",
+    "neither of these; follow what sync calls it",
+];
+
+/// #280: an `AskUserQuestion` call whose answers are each a different SHAPE the client records —
+/// a pick with notes, typed words, notes alone. The owner's report was the middle one: a typed
+/// answer that the card dropped, beside a picked one it ticked.
+pub fn ask_replied_at(id: &str, ts: &str) -> String {
+    let line = serde_json::json!({
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {"role": "assistant", "content": [{
+            "type": "tool_use", "id": id, "name": "AskUserQuestion",
+            "input": {"questions": replied_questions()}}]},
+    });
+    format!("{line}\n")
+}
+
+fn replied_questions() -> serde_json::Value {
+    serde_json::json!([
+        {"header": "Exit code", "question": REPLIED_QUESTIONS[0], "multiSelect": false,
+         "options": [
+            {"label": "(a) exit 2 (Recommended)", "description": "One convention for done-but-look."},
+            {"label": "(b) exit 0", "description": "Setup verbs exit 0 and print."},
+            {"label": "Park it", "description": "Leave it open for now."}]},
+        {"header": "Switch", "question": REPLIED_QUESTIONS[1], "multiSelect": false,
+         "options": [
+            {"label": "(a) on instructions (Recommended)", "description": "The verb that manages them."},
+            {"label": "(b) on init", "description": "Set up in one step."},
+            {"label": "Both", "description": "The verb owns it; init accepts it too."},
+            {"label": "Park it", "description": "Leave it open for now."}]},
+        {"header": "Flag name", "question": REPLIED_QUESTIONS[2], "multiSelect": false,
+         "options": [
+            {"label": "--manage", "description": "Says what it grants."},
+            {"label": "--own", "description": "Shorter."}]}
+    ])
+}
+
+/// #280: the answers to [`ask_replied_at`], the way the client records them today: the prose
+/// sentence for the agent AND the structured `toolUseResult` — `answers` keyed by the whole
+/// question, `annotations` carrying the notes. The prose is not parseable in general (the typed
+/// answer's own quotes end it early, and a notes-only answer is written `=(no option selected)`
+/// with no quotes at all), which is why the structured half is the one to read.
+pub fn ask_replied_answer(id: &str, ts: &str) -> String {
+    let [q1, q2, q3] = REPLIED_QUESTIONS;
+    let [n1, n3] = REPLIED_NOTES;
+    let prose = format!(
+        "The user answered: \"{q1}\"=\"(a) exit 2 (Recommended)\" notes: {n1}, \"{q2}\"=\"{REPLIED_TYPED}\", \
+         \"{q3}\"=(no option selected) notes: {n3}. Read the answers carefully — they may request \
+         clarification, changes, or that you not proceed — and follow what they actually say."
+    );
+    let line = serde_json::json!({
+        "type": "user",
+        "timestamp": ts,
+        "toolUseResult": {
+            "questions": replied_questions(),
+            "answers": {q1: "(a) exit 2 (Recommended)", q2: REPLIED_TYPED, q3: "(notes only)"},
+            "annotations": {q1: {"notes": n1}, q3: {"notes": n3}},
+        },
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": id, "content": prose}]},
+    });
+    format!("{line}\n")
+}
+
 /// A sub-agent spawn: the `Agent` tool call the parent makes (the spawn chip).
 pub fn agent_spawn(call_id: &str, subagent_type: &str, s: u32) -> String {
     format!(

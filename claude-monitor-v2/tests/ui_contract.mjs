@@ -1736,6 +1736,40 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#121 request-for-input cases passed");
 }
 
+// #280: every question on the card is drawn alike, and every answer the reader gave is on it.
+{
+  const asked = [
+    { header: "Exit code", question: "What should init exit with?", multi: false, options: [{ label: "exit 2", description: "One convention.", chosen: true }, { label: "exit 0", description: "", chosen: false }], notes: "check the installer" },
+    { header: "Switch", question: "Where should the switch live?", multi: false, options: [{ label: "Both", description: "The verb owns it.", chosen: false }], typed: "Both - ask for the \"manage\" privilege, <later>" },
+  ];
+  const interaction = { kind: "request_user_input", resolved: true, answers: [], asked };
+  // The summary is the call's target: the FIRST question, " +1".
+  const summary = "What should init exit with? +1";
+  const card = interactionCard(interaction, summary);
+  assert.equal(card.text, "Answered in the agent client", "a card that lists its questions does not promote the first into its headline");
+  assert.equal(card.meta, "", "…and says where the answer went once");
+  const classes = { card: "c", icon: "i", copy: "p", meta: "m", answers: "as", answer: "a", question: "q", reply: "r" };
+  const html = interactionHtml(interaction, summary, classes);
+  assert.equal(html.split("What should init exit with?").length - 1, 1, "each question is printed once");
+  const blocks = html.match(/<div class="q">.*?<\/p>/g) || [];
+  assert.deepEqual(
+    blocks.map(b => b.replace(/>[^<]*</g, "><")),
+    ['<div class="q"><small class="m"></small><p></p>', '<div class="q"><small class="m"></small><p></p>'],
+    "every question is the same markup: its header in the note type, the question at reading size",
+  );
+  assert.match(html, /<span class="a"><span>✓ exit 2<\/span><small>One convention\.<\/small><\/span>/, "a pick is a ticked chip");
+  assert.match(html, /<span class="a"><span>Both<\/span>/, "the option a typed answer happens to start with is NOT ticked");
+  assert.match(
+    html,
+    /<div class="r"><small>Typed answer<\/small><span>✓ Both - ask for the &quot;manage&quot; privilege, &lt;later&gt;<\/span><\/div>/,
+    "the reader's own words are on the card, whole and escaped, ticked and captioned — a reply, not an option",
+  );
+  assert.match(html, /<div class="r"><small>Notes<\/small><span>check the installer<\/span><\/div>/, "the notes they attached are there too");
+  const multi = interactionHtml({ kind: "request_user_input", resolved: false, answers: [], asked: [{ header: "Crates", question: "Which?", multi: true, options: [] }] }, "", classes);
+  assert.match(multi, /<small class="m">Crates · any number<\/small><p>Which\?<\/p>/, "a multi-select says so in its lead, not in its question");
+  console.log("#280 question-and-reply cases passed");
+}
+
 // #118: the search and the filter are one set of rules, and both pages run them.
 {
   assert.deepEqual(CLASS_ORDER, ["u", "a", "t", "o", "b", "r", "e"]);
