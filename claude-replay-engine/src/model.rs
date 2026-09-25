@@ -133,6 +133,11 @@ pub struct AskedOption {
     /// What it meant; empty when the asker wrote none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// What the asker DREW for it (#282): an ASCII mockup, a file tree, a code sketch — shown
+    /// beside the options so the reader can compare them, and verbatim, since its whitespace is
+    /// the drawing. Empty when the option has none (most do not: 260 of 832 had one, measured).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub preview: String,
 }
 
 impl Published {

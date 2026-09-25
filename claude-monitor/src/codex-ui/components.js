@@ -35,7 +35,7 @@ function bodyHtml(view, state) {
 }
 
 /** This shell's names for the shared request-for-input card (html/shared/interaction.js). */
-const APP_INTERACTION = { card: "input-request", icon: "input-request-icon", copy: "input-request-copy", meta: "input-request-meta", answers: "input-answers", answer: "input-answer", question: "input-request-question", reply: "input-reply" };
+const APP_INTERACTION = { card: "input-request", icon: "input-request-icon", copy: "input-request-copy", meta: "input-request-meta", answers: "input-answers", answer: "input-answer", question: "input-request-question", reply: "input-reply", preview: "input-preview" };
 
 /** The record a code pane belongs to (#173): its per-block size / wrap override is keyed by it,
  *  and view-model's `codeRows` stamps it on the marked container, so the bar and the markup read

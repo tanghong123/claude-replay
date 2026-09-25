@@ -2,7 +2,7 @@
 // When an agent asks the reader a question through its own client, the server projects the call
 // into `head.interaction` — `{kind: "request_user_input", resolved, answers: [{id, label}]}`
 // (html_export/mod.rs `request_user_input_projection`), and a Claude `AskUserQuestion` adds
-// `asked: [{header, question, multi, options: [{label, description, chosen}], typed?, notes?}]`
+// `asked: [{header, question, multi, options: [{label, description, chosen, preview?}], typed?, notes?}]`
 // — every question put, and what the reader said to each (#255, #280; `asked_section`). A call
 // that came back WITHOUT an answer is `resolved` too, with `unanswered: {why, seconds?}` saying
 // why — timed out, declined, failed, or none (#281).
@@ -33,6 +33,8 @@ const unansweredNote = ({ why, seconds } = {}) =>
 /** #280: what the reader wrote themselves, captioned so it never reads as one of the options. */
 const TYPED_CAPTION = "Typed answer";
 const NOTES_CAPTION = "Notes";
+/** #282: what the asker drew for an option. */
+const PREVIEW_CAPTION = "Preview";
 
 /** Is this head a request for user input? Anything else renders as an ordinary call. */
 function isInteraction(interaction) {
@@ -75,7 +77,8 @@ function interactionCard(interaction, summary) {
  *  Each question is one `question` block, the same markup for every one of them (#280): its
  *  header (and "any number" on a multi-select) in the note type, the question at reading size,
  *  the options it offered as ANSWER chips — label, then description — with the picks ticked,
- *  and then what the reader wrote themselves, if anything, as a `reply`: the words they typed
+ *  the `preview` the asker drew for any of them (#282), and then what the reader wrote
+ *  themselves, if anything, as a `reply`: the words they typed
  *  instead of picking (ticked, since they ARE the answer) and the notes they attached. Neither
  *  is an option, so neither is drawn as one.
  *
@@ -87,11 +90,17 @@ function interactionHtml(interaction, summary, classes) {
     `<span class="${classes.answer}"><span>${chosen ? "✓ " : ""}${escapeInteraction(label)}</span>${note ? `<small>${escapeInteraction(note)}</small>` : ""}</span>`;
   const reply = (caption, text, chosen) =>
     `<div class="${classes.reply}"><small>${escapeInteraction(caption)}</small><span>${chosen ? "✓ " : ""}${escapeInteraction(text)}</span></div>`;
+  // #282: the drawing an option came with, on demand — a call can carry ten of them, up to twenty
+  // lines each — except the CHOSEN option's, which opens with the card: it is the picture of the
+  // choice. Verbatim, in a block that scrolls sideways rather than wrapping a drawing apart.
+  const preview = o =>
+    `<details class="${classes.preview}"${o.chosen ? " open" : ""}><summary>${escapeInteraction(PREVIEW_CAPTION)} · ${escapeInteraction(o.label)}</summary><pre>${escapeInteraction(o.preview)}</pre></details>`;
   const asked = card.asked
     .map(q => {
       const options = (q.options || []).map(o => chip(o.label, o.description, o.chosen)).join("");
+      const previews = (q.options || []).filter(o => o.preview).map(preview).join("");
       const lead = [q.header, q.multi ? "any number" : ""].filter(Boolean).join(" · ");
-      return `<div class="${classes.question}">${lead ? `<small class="${classes.meta}">${escapeInteraction(lead)}</small>` : ""}<p>${escapeInteraction(q.question || "")}</p>${options ? `<div class="${classes.answers}">${options}</div>` : ""}${q.typed ? reply(TYPED_CAPTION, q.typed, true) : ""}${q.notes ? reply(NOTES_CAPTION, q.notes, false) : ""}</div>`;
+      return `<div class="${classes.question}">${lead ? `<small class="${classes.meta}">${escapeInteraction(lead)}</small>` : ""}<p>${escapeInteraction(q.question || "")}</p>${options ? `<div class="${classes.answers}">${options}</div>` : ""}${previews}${q.typed ? reply(TYPED_CAPTION, q.typed, true) : ""}${q.notes ? reply(NOTES_CAPTION, q.notes, false) : ""}</div>`;
     })
     .join("");
   const answers = asked

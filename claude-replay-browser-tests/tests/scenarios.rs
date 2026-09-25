@@ -13157,6 +13157,91 @@ fn both_shells_open_a_file_from_the_session_s_own_scratch() {
     }
 }
 
+/// An `AskUserQuestion` whose options came with the asker's drawings, answered with the first.
+fn ask_previewed_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: ask me about the layout", &now_minus(200));
+    t += &harness::ask_previewed_at("ask1", &now_minus(198));
+    t += &harness::ask_previewed_answer("ask1", &now_minus(150));
+    t += &assistant_at("Board it is.", &now_minus(140));
+    let path = stores.claude_session(name, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #282 — the drawings an asker gave its options are on the card, on BOTH pages: on demand, but
+/// for the chosen option's, which opens with the card.
+///
+/// 260 of the 832 options the owner's sessions offered came with a preview — an ASCII mockup, a
+/// file tree, a code sketch — drawn so the reader could compare them, and the card dropped every
+/// one: the options it listed were the labels and descriptions alone.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_show_the_drawings_an_asker_gave_its_options() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3034)] {
+        let fx = ask_previewed_fixture(match surface {
+            Surface::Classic => "ask-previewed-classic",
+            _ => "ask-previewed-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        let card = match surface {
+            Surface::Classic => ".irq",
+            Surface::AppShell => ".input-request",
+        };
+        let read = format!(
+            "JSON.stringify([...(document.querySelector('{card}') || document).querySelectorAll('{card} details')].map(function (d) {{ return {{ open: d.open, summary: d.querySelector('summary').textContent, drawing: (d.querySelector('pre') || {{}}).textContent || '' }}; }}))"
+        );
+        let seen: Vec<serde_json::Value> = eval(&page.tab, &read)
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        assert_eq!(
+            seen.len(),
+            2,
+            "{surface:?}: one preview per option that has one: {seen:?}"
+        );
+        assert_eq!(
+            (
+                seen[0]["open"].clone(),
+                seen[0]["drawing"].clone(),
+                seen[1]["open"].clone(),
+                seen[1]["drawing"].clone()
+            ),
+            (
+                serde_json::json!(true),
+                serde_json::json!(harness::PREVIEW_BOARD),
+                serde_json::json!(false),
+                serde_json::json!(harness::PREVIEW_LIST)
+            ),
+            "{surface:?}: the chosen option's drawing opens with the card, verbatim; the other \
+             waits: {seen:?}"
+        );
+        // …and opens when the reader asks for it.
+        eval(
+            &page.tab,
+            &format!("document.querySelectorAll('{card} details')[1].querySelector('summary').click(); 'ok'"),
+        );
+        assert_eq!(
+            eval(
+                &page.tab,
+                &format!("document.querySelectorAll('{card} details')[1].open")
+            )
+            .as_bool(),
+            Some(true),
+            "{surface:?}: a closed preview opens on a click"
+        );
+    }
+}
+
 /// #260 — the outline column holds only the offset the CHAIN sold it.
 ///
 /// The owner saw it in a recording and could not reproduce it: "the tasks drawer overlaps with

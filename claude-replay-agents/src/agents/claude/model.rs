@@ -2092,6 +2092,11 @@ fn asked_from_input(name: &str, input: &Value) -> Option<Asked> {
                                         .and_then(Value::as_str)
                                         .map(decode_entities)
                                         .unwrap_or_default(),
+                                    preview: o
+                                        .get("preview")
+                                        .and_then(Value::as_str)
+                                        .map(decode_entities)
+                                        .unwrap_or_default(),
                                 })
                             })
                             .collect()
@@ -3902,6 +3907,25 @@ mod tests {
             a.questions[1].options[0].description, "",
             "an option with no description carries an empty one rather than vanishing"
         );
+    }
+
+    /// #282: an option keeps the preview its asker drew — verbatim, since its whitespace is the
+    /// drawing — and an option without one keeps nothing.
+    #[test]
+    fn an_ask_keeps_each_option_s_preview() {
+        let jsonl = r##"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"p1","name":"AskUserQuestion","input":{"questions":[{"header":"Layout","question":"Which layout?","multiSelect":false,"options":[{"label":"Board","description":"cards","preview":"┌─ board ─┐\n│ [a] [b] │\n└─────────┘"},{"label":"List"}]}]}}]}}
+"##;
+        let blocks = parse(jsonl);
+        let Some(Block::ToolUse { asked, .. }) = blocks
+            .iter()
+            .find(|b| matches!(b, Block::ToolUse { name, .. } if name == "AskUserQuestion"))
+        else {
+            panic!("the call is there: {blocks:?}")
+        };
+        let options = &asked.as_deref().expect("asked").questions[0].options;
+        assert_eq!(options[0].preview, "┌─ board ─┐\n│ [a] [b] │\n└─────────┘");
+        assert_eq!(options[1].preview, "", "no preview, nothing kept");
     }
 
     /// #280: the reader's answers are joined onto the questions from the result's STRUCTURED

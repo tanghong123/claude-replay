@@ -703,6 +703,40 @@ pub fn ask_declined_answer(id: &str, ts: &str) -> String {
     format!("{line}\n")
 }
 
+/// #282: the drawing [`ask_previewed_at`] offers with its first option (the one the reader picks).
+pub const PREVIEW_BOARD: &str = "┌─ board ──────┐\n│ [card] [card] │\n└───────────────┘";
+/// #282: …and with its second.
+pub const PREVIEW_LIST: &str = "- first card\n- second card";
+
+/// #282: an `AskUserQuestion` whose options carry PREVIEWS — the asker's drawings — two of three.
+pub fn ask_previewed_at(id: &str, ts: &str) -> String {
+    let line = serde_json::json!({
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {"role": "assistant", "content": [{
+            "type": "tool_use", "id": id, "name": "AskUserQuestion",
+            "input": {"questions": [{"header": "Layout", "question": "Which layout should the board use?",
+                "multiSelect": false, "options": [
+                    {"label": "Board", "description": "Cards in columns.", "preview": PREVIEW_BOARD},
+                    {"label": "List", "description": "One card per row.", "preview": PREVIEW_LIST},
+                    {"label": "Grid", "description": "No drawing for this one."}]}]}}]},
+    });
+    format!("{line}\n")
+}
+
+/// #282: the answer to [`ask_previewed_at`]: the reader picked "Board".
+pub fn ask_previewed_answer(id: &str, ts: &str) -> String {
+    let q = "Which layout should the board use?";
+    let line = serde_json::json!({
+        "type": "user",
+        "timestamp": ts,
+        "toolUseResult": {"questions": [], "answers": {q: "Board"}, "annotations": {q: {"preview": PREVIEW_BOARD}}},
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id,
+            "content": format!("The user answered: \"{q}\"=\"Board\" selected preview:\n{PREVIEW_BOARD}. Read the answers carefully.")}]},
+    });
+    format!("{line}\n")
+}
+
 /// A sub-agent spawn: the `Agent` tool call the parent makes (the spawn chip).
 pub fn agent_spawn(call_id: &str, subagent_type: &str, s: u32) -> String {
     format!(

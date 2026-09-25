@@ -1800,6 +1800,22 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#281 unanswered cases passed");
 }
 
+// #282: an option's preview — the asker's drawing — is on the card, on demand but for the chosen one's.
+{
+  const asked = [{ header: "Layout", question: "Which layout?", multi: false, options: [
+    { label: "Board", description: "cards", chosen: true, preview: "┌─ <board> ─┐\n│ [a]  [b]  │" },
+    { label: "List", description: "", chosen: false, preview: "- a\n- b" },
+    { label: "Grid", description: "", chosen: false },
+  ] }];
+  const classes = { card: "c", icon: "i", copy: "p", meta: "m", answers: "as", answer: "a", question: "q", reply: "r", preview: "v" };
+  const html = interactionHtml({ kind: "request_user_input", resolved: true, answers: [], asked }, "", classes);
+  const previews = html.match(/<details class="v"( open)?><summary>[^<]*<\/summary><pre>[^<]*<\/pre><\/details>/g) || [];
+  assert.equal(previews.length, 2, "one preview per option that has one — none for the option without");
+  assert.match(previews[0], /^<details class="v" open><summary>Preview · Board<\/summary><pre>┌─ &lt;board&gt; ─┐\n│ \[a\]  \[b\]  │<\/pre>/, "the chosen option's opens with the card, verbatim and escaped");
+  assert.match(previews[1], /^<details class="v"><summary>Preview · List<\/summary>/, "the others wait to be opened");
+  console.log("#282 option preview cases passed");
+}
+
 // #118: the search and the filter are one set of rules, and both pages run them.
 {
   assert.deepEqual(CLASS_ORDER, ["u", "a", "t", "o", "b", "r", "e"]);

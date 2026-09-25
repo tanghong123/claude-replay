@@ -133,7 +133,8 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // v15: #281 — an interaction whose call came back without an answer is `resolved` and says
     // why (`unanswered: {why, seconds?}`) instead of staying `resolved: false`, i.e. waiting.
     // v16: #275 — a multi-file send's head carries `files: [{path, sig, fsig?}]`, one per file.
-    const RECORD_SCHEMA: u16 = 16;
+    // v17: #282 — an asked option carries its `preview`, the asker's drawing, when it has one.
+    const RECORD_SCHEMA: u16 = 17;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);

@@ -532,11 +532,18 @@ fn asked_section(asked: &crate::model::Asked, answers: &[Value]) -> Value {
                     "header": q.header,
                     "question": q.question,
                     "multi": q.multi_select,
-                    "options": q.options.iter().zip(chosen).map(|(o, chosen)| json!({
-                        "label": o.label,
-                        "description": o.description,
-                        "chosen": chosen,
-                    })).collect::<Vec<_>>(),
+                    "options": q.options.iter().zip(chosen).map(|(o, chosen)| {
+                        let mut option = json!({
+                            "label": o.label,
+                            "description": o.description,
+                            "chosen": chosen,
+                        });
+                        // #282: the asker's drawing for this option, when there is one.
+                        if !o.preview.is_empty() {
+                            option["preview"] = json!(o.preview);
+                        }
+                        option
+                    }).collect::<Vec<_>>(),
                 });
                 if let Some(obj) = row.as_object_mut() {
                     if !typed.is_empty() {
@@ -2649,6 +2656,7 @@ mod tests {
                 .map(|l| AskedOption {
                     label: (*l).into(),
                     description: String::new(),
+                    preview: String::new(),
                 })
                 .collect(),
             answer: None,
@@ -2703,6 +2711,33 @@ mod tests {
         );
     }
 
+    /// #282: an option's preview rides the card's data when the asker drew one, verbatim, and
+    /// is absent otherwise.
+    #[test]
+    fn an_option_s_preview_rides_the_card() {
+        use crate::model::{Asked, AskedOption, AskedQuestion};
+        let option = |label: &str, preview: &str| AskedOption {
+            label: label.into(),
+            description: String::new(),
+            preview: preview.into(),
+        };
+        let asked = Asked {
+            questions: vec![AskedQuestion {
+                header: "Layout".into(),
+                question: "Which layout?".into(),
+                multi_select: false,
+                options: vec![option("Board", "┌─┐\n└─┘"), option("List", "")],
+                answer: Some("Board".into()),
+                notes: String::new(),
+            }],
+            unanswered: None,
+        };
+        let out = asked_section(&asked, &[]);
+        assert_eq!(out[0]["options"][0]["preview"], json!("┌─┐\n└─┘"));
+        assert_eq!(out[0]["options"][0]["chosen"], json!(true));
+        assert!(out[0]["options"][1].get("preview").is_none(), "{out}");
+    }
+
     /// #280: what an answer the QUESTION carries says — which options it names, and the
     /// reader's own words where it names none. A single-select answer is never split: the
     /// owner's typed reply began "Both - …" and held a comma, and it is neither the option
@@ -2719,6 +2754,7 @@ mod tests {
                 .map(|l| AskedOption {
                     label: (*l).into(),
                     description: String::new(),
+                    preview: String::new(),
                 })
                 .collect(),
             answer: answer.map(str::to_string),
@@ -4479,6 +4515,7 @@ mod tests {
                 .map(|l| AskedOption {
                     label: (*l).into(),
                     description: String::new(),
+                    preview: String::new(),
                 })
                 .collect(),
             answer: answer.map(str::to_string),
@@ -4582,6 +4619,7 @@ mod tests {
                     .map(|l| AskedOption {
                         label: (*l).into(),
                         description: String::new(),
+                        preview: String::new(),
                     })
                     .collect(),
                 answer: None,

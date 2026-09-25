@@ -205,9 +205,13 @@ pub const COMPACT_AFTER: usize = 256;
 /// (`ToolUse::delivered`). A v33 stream has only the first, as the header's label, so the other
 /// files of a multi-file send stay a count with nothing behind it.
 ///
+/// v35: #282 — an `AskUserQuestion` option carries the PREVIEW its asker drew for it
+/// (`AskedOption::preview`). A v34 stream has none, so the card lists the options without the
+/// mockups that were the point of offering them.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across.
-pub const FOLD_VERSION: u16 = 34;
+pub const FOLD_VERSION: u16 = 35;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

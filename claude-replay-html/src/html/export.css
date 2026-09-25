@@ -824,6 +824,12 @@ body.selecting #toolmenu, body.selecting #agentmenu {
   border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg);
   white-space: pre-wrap; overflow-wrap: anywhere; }
 .irq-reply > small { color: var(--muted); font-size: 11px; white-space: normal; }
+/* #282 an option's preview — the asker's drawing, on demand but for the chosen option's */
+.irq-preview { margin-top: 6px; }
+.irq-preview > summary { cursor: pointer; color: var(--muted); font-size: 11.5px; }
+.irq-preview > pre { margin: 4px 0 0; padding: 6px 10px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg); font: 12px/1.35 var(--mono); white-space: pre;
+  overflow-x: auto; }
 
 /* ── a task, as the queue's own board shows it (#125, shared/task-card.js) ─ */
 .task-meta { margin: 0 0 3px 22px; font: 11px var(--sans); color: var(--muted); }
