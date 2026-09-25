@@ -1297,7 +1297,9 @@ mod price_tests {
     }
 
     /// Pins all four billing tiers where vendor/model families differ. Both vendors' tables were
-    /// queried 2026-09-09; `pricing.json` records the exact query timestamp and source URLs.
+    /// queried 2026-09-09 and re-read since (OpenAI's on 2026-09-25, #279, when its flagship
+    /// table began publishing cache-WRITE rates above input); `pricing.json` records the exact
+    /// query timestamps and source URLs.
     #[test]
     fn prices_match_the_published_tables() {
         for (model, want) in [
@@ -1319,13 +1321,20 @@ mod price_tests {
             ("claude-haiku-3-5", p("0.8", "1", "0.08", "4")),
             ("claude-3-5-haiku-20241022", p("0.8", "1", "0.08", "4")),
             ("claude-3-haiku-20240307", p("0.25", "0.3", "0.03", "1.25")),
-            ("gpt-6-astra", p("10", "10", "1", "50")),
-            ("gpt-5.6-sol", p("4", "4", "0.4", "20")),
-            ("gpt-5.6", p("4", "4", "0.4", "20")),
-            ("gpt-daybreak-blue-latest", p("4", "4", "0.4", "20")),
-            ("gpt-5-6-terra", p("2", "2", "0.2", "12")),
-            ("gpt-5.6-luna", p("0.2", "0.2", "0.02", "1.2")),
-            ("gpt-daybreak-red-latest", p("12.5", "12.5", "1.25", "75")),
+            ("gpt-6-astra", p("10", "12.5", "1", "50")),
+            ("gpt-6-sol", p("2", "2.5", "0.2", "10")),
+            ("gpt-6-luna", p("0.1", "0.125", "0.01", "0.5")),
+            ("gpt-5.6-sol", p("4", "5", "0.4", "20")),
+            ("gpt-5.6", p("4", "5", "0.4", "20")),
+            ("gpt-daybreak-blue-latest", p("4", "5", "0.4", "20")),
+            ("gpt-5-6-terra", p("2", "2.5", "0.2", "12")),
+            ("gpt-5.6-luna", p("0.2", "0.25", "0.02", "1.2")),
+            ("gpt-5.6-cyber", p("12.5", "15.625", "1.25", "75")),
+            ("gpt-daybreak-red-latest", p("12.5", "15.625", "1.25", "75")),
+            // Listed with no cache-write rate, so it no longer shares gpt-5.6-cyber's row.
+            ("gpt-5.5-cyber", p("12.5", "12.5", "1.25", "75")),
+            // Delisted by 2026-09-25, kept at the rate listed when the catalog was built.
+            ("gpt-5.1-codex-max", p("1.25", "1.25", "0.125", "10")),
             ("gpt-5.5", p("5", "5", "0.5", "30")),
             ("gpt-5.4-mini", p("0.75", "0.75", "0.075", "4.5")),
             ("gpt-5.3-codex", p("1.75", "1.75", "0.175", "14")),
@@ -1345,7 +1354,7 @@ mod price_tests {
     fn lookup_is_normalized_but_exact() {
         assert_eq!(
             resolve(&PriceTable::new(), "GPT-5.6-SOL"),
-            Some(p("4", "4", "0.4", "20"))
+            Some(p("4", "5", "0.4", "20"))
         );
         for model in [
             "some-unknown-model",
@@ -1643,7 +1652,7 @@ mod price_tests {
         let mut table = PriceTable::with_normalizer(AliasNormalizer);
         assert_eq!(
             resolve(&table, "internal-astra"),
-            Some(p("10", "10", "1", "50"))
+            Some(p("10", "12.5", "1", "50"))
         );
 
         let custom = p("1", "2", "0.1", "3");
