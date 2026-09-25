@@ -867,3 +867,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    document mounted. `iconbtn` sets `display:grid`, which would outrank the `hidden` attribute. */
 .preview-head .preview-newtab{width:32px;height:32px;flex:none;font-size:15px;line-height:1}
 .preview-head .preview-newtab[hidden]{display:none}
+/* #272 every file view offers the file manager beside showing or downloading: one control in the
+   pane's head for whatever the pane shows, and a prompt card's own reveal beside its action. */
+.preview-head .preview-reveal{width:32px;height:32px;flex:none}
+.preview-head .preview-reveal[hidden]{display:none}
+.preview-head .preview-reveal .icon{width:15px;height:15px}
+.prompt-attachment-pair{display:flex;gap:4px;min-width:0}
+.prompt-attachment-pair>.prompt-attachment{flex:1;min-width:0}
+.prompt-attachment-reveal{width:32px;flex:none;border:1px solid color-mix(in srgb,var(--primary) 14%,var(--line));border-radius:11px;background:transparent;color:var(--faint);display:grid;place-items:center;cursor:pointer}
+.prompt-attachment-reveal:hover{background:var(--hover);color:var(--ink)}
+.prompt-attachment-reveal .icon{width:14px;height:14px}

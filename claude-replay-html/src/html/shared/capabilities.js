@@ -37,6 +37,12 @@ function referenceAction({ fileSig, revealSig } = {}) {
   return "copy";
 }
 
+/** Whether the file manager can be asked to show this file: a path, and the REVEAL stamp the
+ *  server offered for it. The file stamp is a different capability and never stands in for this
+ *  one. Every file view offers reveal beside showing or downloading (#272, the owner: "offering
+ *  both for now") — until a web file browser replaces reveal, no view offers only one half. */
+const canReveal = ({ path, sig } = {}) => Boolean(path && sig);
+
 /** The `/__reveal` query for a path and its reveal stamp — encoded once, verbatim. */
 const revealQuery = ({ path, sig }) => `/__reveal?path=${encodeURIComponent(path || "")}&sig=${encodeURIComponent(sig || "")}`;
 
@@ -96,4 +102,4 @@ function groupPointerRuns(items, headOf) {
   return out.map(g => (g.run && g.items.length === 1 ? { run: false, item: g.items[0] } : g));
 }
 
-export { attachmentCapability, groupPointerRuns, isPointerAttachment, POINTER_KINDS, referenceAction, revealQuery, stampQuery };
+export { attachmentCapability, canReveal, groupPointerRuns, isPointerAttachment, POINTER_KINDS, referenceAction, revealQuery, stampQuery };

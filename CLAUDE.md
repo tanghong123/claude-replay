@@ -149,6 +149,17 @@ revealing in the file manager: reveal hands over nothing and is the only thing a
 on the pages that render nothing inline. The effective policy is folded into `render_flavor`,
 so changing it re-renders rather than leaving cached pages stamped under the old one.
 
+**Every file view offers BOTH halves** (#272, the owner: "offering both for now"): showing the file
+in the page — or downloading it, for bytes the page does not show (`/file`'s `Content-Disposition:
+attachment`) — AND revealing it in the file manager, wherever the server offered each stamp
+(`canReveal` in `shared/capabilities.js` is the one rule: a path and the REVEAL stamp, never the
+file stamp standing in). In the app shell the preview pane — where every "show me the file" click
+lands — carries ONE reveal control in its head for whatever it shows (image, page, Markdown, text,
+a download, an error), and a prompt card carries a reveal beside its own action, as the
+process-surface card did. Nothing reveals automatically, not even on a refusal (v2's fallback did):
+a reveal is a side effect on the reader's desktop. Reveal is interim — a web file browser will
+replace it — so no new reveal-only path is added (mdrev's `/reveal` answers 501 for this reason).
+
 ## Test the TUI without a TTY
 - **Deterministic (preferred):** drive `view::View` under ratatui **`TestBackend`**
   — render to an in-memory buffer, call the view's methods, assert cells. See the
@@ -175,7 +186,9 @@ so changing it re-renders rather than leaving cached pages stamped under the old
   `jump_to_end`, `open_last_fold`, `LiveGrowth`). `tests/browser_follow.rs` holds the
   structural cases (the html server's viewport contract; `the_app_shell_*` on ports 2831–2836;
   `the_classic_rail_*` on 2837–2838 against v1; `the_v2_shell_*`, the compose affordance on
-  2841–2842). `tests/scenarios.rs` holds scenarios written ONCE and run against BOTH pages —
+  2841–2842). `tests/files.rs` holds #272's file affordances on the app shell (2811–2813); a case
+  that clicks a reveal wraps the page's `fetch` so `/__reveal` is recorded, never sent — `open -R`
+  must never run on the machine the suite runs on. `tests/scenarios.rs` holds scenarios written ONCE and run against BOTH pages —
   the classic page (the html server's `export.js`) is the reference, the app shell is held to
   the same assertions (ports 2851+). `tests/rendering_audit.rs` is the #174 rendering-control
   audit (ports 2951+), and it is a different instrument from a scenario: it serves the DERIVED

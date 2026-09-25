@@ -1,6 +1,6 @@
 // The two-stamp file rule — what a clicked attachment or path may DO — is the shared module's
 // (html/shared/capabilities.js, #46), read here and by the classic page alike.
-import { attachmentCapability, groupPointerRuns, isPointerAttachment, referenceAction, revealQuery } from "./shared/capabilities.js";
+import { attachmentCapability, canReveal, groupPointerRuns, isPointerAttachment, referenceAction, revealQuery } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 import { fleetGroups } from "./shared/fleet.js";
 import { escapeText, partsHtml } from "./view-model.js";
@@ -89,7 +89,7 @@ function rendererBody(view, state) {
     // renderer is `noninteractive` (see above) and draws as ONE head line — the kind, the
     // path, and the path itself clickable through `targetHtml`. A pointer looks like a pointer.
     if (isPointerAttachment(h)) return "";
-    return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button>${capability.action !== "reveal" && h.att_path && h.att_sig ? `<button class="artifact-link artifact-link-secondary" data-attachment="${escapeText(view.id || "")}" data-attachment-action="reveal" data-path="${escapeText(h.att_path)}" data-sig="${escapeText(h.att_sig)}">Reveal in file manager</button>` : ""}</div>`;
+    return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button>${capability.action !== "reveal" && canReveal({ path: h.att_path, sig: h.att_sig }) ? `<button class="artifact-link artifact-link-secondary" data-attachment="${escapeText(view.id || "")}" data-attachment-action="reveal" data-path="${escapeText(h.att_path)}" data-sig="${escapeText(h.att_sig)}">Reveal in file manager</button>` : ""}</div>`;
   }
   if (view.renderer === "bash") return `<div class="renderer-terminal ${view.error ? "error" : ""}"><span class="output">${bodyHtml(view, state) || "No output recorded"}</span></div>`;
   // #168: a record with nothing to show renders NOTHING. A card whose only content is a sentence
@@ -308,10 +308,16 @@ function renderPromptAttachments(attachments = []) {
     // lookup misses (#144) — the lightbox reading "attachment" over a card that says "image.png"
     // is the visible fingerprint of that miss.
     const action = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
-    if (isImage && source) return `<button class="prompt-attachment prompt-image" type="button" ${action} title="Enlarge ${escapeText(h.att_name || "image")}"><span class="prompt-image-thumb"><img src="${escapeText(source)}" alt=""></span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "image")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">⤢</span></button>`;
     const ext = String(h.att_name || "file").split(".").pop().slice(0, 4).toUpperCase();
     const glyph = capability.action === "download" ? "↓" : capability.action === "copy" ? "⎘" : "↗";
-    return `<button class="prompt-attachment prompt-file" type="button" ${action}><span class="prompt-file-icon">${escapeText(ext)}</span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "Attachment")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">${glyph}</span></button>`;
+    const card = isImage && source
+      ? `<button class="prompt-attachment prompt-image" type="button" ${action} title="Enlarge ${escapeText(h.att_name || "image")}"><span class="prompt-image-thumb"><img src="${escapeText(source)}" alt=""></span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "image")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">⤢</span></button>`
+      : `<button class="prompt-attachment prompt-file" type="button" ${action}><span class="prompt-file-icon">${escapeText(ext)}</span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "Attachment")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">${glyph}</span></button>`;
+    // The card's own action, and — where that is not already the file manager and the server
+    // offered the reveal stamp — the file manager beside it, as the process-surface card has (#272).
+    if (capability.action === "reveal" || !canReveal({ path: h.att_path, sig: h.att_sig })) return card;
+    const label = `Reveal ${escapeText(h.att_name || "this file")} in the file manager`;
+    return `<span class="prompt-attachment-pair">${card}<button class="prompt-attachment-reveal" type="button" data-attachment="${escapeText(view.id || "")}" data-attachment-action="reveal" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path)}" data-sig="${escapeText(h.att_sig)}" title="${label}" aria-label="${label}">${svg("folder")}</button></span>`;
   }).join("");
   return `<div class="prompt-attachments" aria-label="Prompt attachments">${cards}</div>`;
 }

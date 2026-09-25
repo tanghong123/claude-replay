@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
 import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../claude-monitor/src/codex-ui/components.js";
-import { attachmentCapability, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
+import { attachmentCapability, canReveal, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
 import { fleetGroups } from "../../claude-replay-html/src/html/shared/fleet.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "../../claude-replay-html/src/html/shared/runtime.js";
@@ -101,6 +101,15 @@ assert.equal(attachmentCapability({ att_name: "sample.tgz", att_path: "/tmp/samp
   assert.equal(referenceAction({ fileSig: "f", revealSig: "r" }), "preview");
   assert.equal(referenceAction({ fileSig: "", revealSig: "r" }), "reveal");
   assert.equal(referenceAction({}), "copy");
+  // #272: every file view offers the file manager where the server offered its stamp — the REVEAL
+  // stamp, never the file stamp standing in for it (a different capability, which `/__reveal`
+  // refuses), and never without a path.
+  assert.equal(canReveal({ path: "/w/a.png", sig: "r" }), true);
+  assert.equal(canReveal({ path: "/w/a.png", sig: "r", fsig: "f" }), true);
+  assert.equal(canReveal({ path: "/w/a.png", fsig: "f" }), false, "a file stamp is not a reveal stamp");
+  assert.equal(canReveal({ sig: "r" }), false, "nothing to reveal without a path");
+  assert.equal(canReveal({}), false);
+  assert.equal(canReveal(), false);
   assert.equal(revealQuery({ path: "/w/my repo/a.rs", sig: "s+1" }), "/__reveal?path=%2Fw%2Fmy%20repo%2Fa.rs&sig=s%2B1", "the path and stamp travel verbatim, encoded once");
 }
 assert.equal(attachmentCapability({ att_name: "sample.tgz", att_path: "/tmp/sample.tgz" }).action, "copy");

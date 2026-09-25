@@ -239,6 +239,16 @@ fn mdrev_renders_a_local_markdown_file_with_its_toolbar() {
         Some("shown"),
         "notes are allowed: the monitor runs the pinned CLI under node"
     );
+    // #272: the file manager beside mdrev's view too — the pane head's one control for any file.
+    assert_eq!(
+        eval(
+            &tab,
+            "(function(){ var b = document.querySelector('#previewHead .preview-reveal'); return !!b && !b.hidden && b.offsetWidth > 0; })()"
+        )
+        .as_bool(),
+        Some(true),
+        "the file manager offered beside the Markdown file"
+    );
     assert_eq!(
         eval(&tab, NOTE_INVITE).as_i64(),
         Some(1),

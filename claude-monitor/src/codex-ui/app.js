@@ -223,7 +223,7 @@ bindComponentEvents(transcript, recordState, {
   toast
 });
 
-const preview = new Preview({ layoutChanged: () => viewport.remeasure(), toast, reveal: item => attachmentViewer.reveal(item), jumpToRecord: at => viewport.jumpToRecord(at, "artifact") });
+const preview = new Preview({ layoutChanged: () => viewport.remeasure(), toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => viewport.jumpToRecord(at, "artifact") });
 const attachmentViewer = new AttachmentViewer({ openPreview: item => preview.open(item), toast });
 const controls = new ControlStore({ toast, refreshIndex: loadSessions });
 const sessionIndex = new SessionIndexStore({

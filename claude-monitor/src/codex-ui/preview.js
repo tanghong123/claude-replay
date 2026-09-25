@@ -3,6 +3,8 @@ import { uiState } from "./state.js";
 import { sandboxDocument } from "./sandbox.js";
 import { createImageView } from "./shared/image-view.js";
 import { isMarkdownName, mdrevVersion, mountMarkdown } from "./mdrev-pane.js";
+import { canReveal } from "./shared/capabilities.js";
+import { svg } from "./icons.js";
 
 const byId = id => document.getElementById(id);
 const SESSION_CACHE_LIMIT = 6;
@@ -25,7 +27,14 @@ export class Preview {
     this.newTab.dataset.previewNewTab = "";
     this.newTab.setAttribute("aria-label", "Open this document in a new tab");
     this.newTab.onclick = () => { const href = this.markdown?.href(); if (href) window.open(href, "_blank"); };
-    byId("closePreview").before(this.newTab);
+    // The file manager, for whatever the pane shows (#272). The pane is where every "show me the
+    // file" click lands, so this one control gives each view — an image, a page, Markdown, text,
+    // a download, an error — the other half the owner asked for ("offering both for now"). Only
+    // on a click: a reveal is a side effect on the reader's desktop, so an error never fires one.
+    this.revealBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-reveal", title: "Reveal in file manager", hidden: true, innerHTML: svg("folder") });
+    this.revealBtn.setAttribute("aria-label", "Reveal this file in the file manager");
+    this.revealBtn.onclick = () => { if (this.shown) this.actions.reveal?.(this.shown); };
+    byId("closePreview").before(this.revealBtn, this.newTab);
     byId("previewHead").onclick = event => {
       const close = event.target.closest("[data-preview-tab-close]");
       if (close) { this.closeTab(close.dataset.previewTabClose); return; }
@@ -95,6 +104,8 @@ export class Preview {
   render() {
     const generation = ++this.renderGeneration;
     const item = uiState.previewTabs.find(tab => tab.id === uiState.previewId);
+    this.shown = item || null;
+    this.revealBtn.hidden = !(item && canReveal(item));
     // No file tab selected and something was published: the roster is what the pane shows —
     // so it is also what a freshly opened pane lands on, without hunting for a control.
     const roster = !item && this.roster.length > 0;
@@ -117,13 +128,24 @@ export class Preview {
     byId("previewBody").classList.add("production-loading"); byId("previewBody").textContent = "Reading securely…";
     const query = `path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig || "")}`;
     fetch(`/file?${query}`, { cache: "no-store" }).then(response => {
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (response.status === 401) throw new Error("Reading local files requires pairing — run `agent-monitor --pair`.");
+      if (!response.ok) throw new Error(`HTTP ${response.status} · The original path may be gone, or the file is outside what this monitor may read.`);
       const type = response.headers.get("content-type") || "";
-      return type.startsWith("image/") ? response.blob().then(blob => { if (generation === this.renderGeneration) this.show(item, null, URL.createObjectURL(blob)); }) : response.text().then(text => { if (generation === this.renderGeneration) this.show(item, text, null); });
+      if (type.startsWith("image/")) return response.blob().then(blob => { if (generation === this.renderGeneration) this.show(item, null, URL.createObjectURL(blob)); });
+      // Bytes the page does not show come as a download (`/file`: octet-stream, `Content-Disposition:
+      // attachment`), and the pane offers exactly that — never the bytes read as text (#272).
+      if (/attachment/i.test(response.headers.get("content-disposition") || "")) {
+        response.body?.cancel();
+        if (generation === this.renderGeneration) this.showDownload(item, Number(response.headers.get("content-length")) || 0);
+        return;
+      }
+      return response.text().then(text => { if (generation === this.renderGeneration) this.show(item, text, null); });
     }).catch(error => {
       if (generation !== this.renderGeneration) return;
       const body = byId("previewBody"); body.classList.remove("production-loading");
-      body.innerHTML = `<div class="preview-error"><strong>Cannot preview this file</strong><span>${escapeText(error.message)} · The original path may be gone, or the file is outside what this monitor may read.</span><div class="preview-error-actions"><button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
+      body.innerHTML = `<div class="preview-error"><strong>Cannot preview this file</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${canReveal(item) ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
+      const reveal = body.querySelector("[data-preview-reveal]");
+      if (reveal) reveal.onclick = () => this.actions.reveal?.(item);
       body.querySelector("[data-copy-path]").onclick = () => {
         const operation = navigator.clipboard?.writeText(item.path || "");
         if (operation) operation.then(() => this.actions.toast?.("Copied the original path"));
@@ -131,6 +153,14 @@ export class Preview {
       };
       body.querySelector("[data-close-preview]").onclick = () => this.closeTab(item.id);
     });
+  }
+  /** A file the page does not show: a download, with the file's place above it — and the head's
+   *  reveal beside it (#272). */
+  showDownload(item, size) {
+    const body = byId("previewBody"); body.classList.remove("production-loading");
+    const bytes = size >= 1048576 ? `${(size / 1048576).toFixed(1)} MB` : size >= 1024 ? `${Math.round(size / 1024)} KB` : size ? `${size} bytes` : "";
+    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="preview-error preview-download"><strong>No preview for this file</strong><span>${escapeText(item.name)}${bytes ? ` · ${bytes}` : ""} — this pane shows text and images; this file downloads.</span><div class="preview-error-actions"><button class="smallbtn primary" data-preview-download>Download</button></div></div>`;
+    body.querySelector("[data-preview-download]").onclick = () => this.actions.download?.(item);
   }
   /** Markdown through mdrev's viewer (#270): a reader for text the transcript carries, the whole
    *  viewer for a file on disk. Any failure — no bundle, a refused route, a mount that throws —
@@ -186,10 +216,9 @@ export class Preview {
     }
     const html = /\.html?$/i.test(item.name || "");
     if (html && document.body.dataset.paired === "true") { body.innerHTML = '<iframe class="artifact-html-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; body.querySelector("iframe").srcdoc = sandboxDocument(text || ""); return; }
-    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div>${item.path && item.sig ? '<div class="artifact-actions"><button class="smallbtn" type="button" data-preview-reveal>Reveal in file manager</button></div>' : ""}</div><div class="artifact-surface"><pre class="artifact-text"></pre></div>`;
+    // The file's place above its text; revealing it is the head's control (#272), one for every view.
+    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="artifact-surface"><pre class="artifact-text"></pre></div>`;
     body.querySelector("pre").textContent = text || "";
-    const reveal = body.querySelector("[data-preview-reveal]");
-    if (reveal) reveal.onclick = () => this.actions.reveal?.(item);
   }
 }
 
