@@ -542,6 +542,9 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "batching_reminder_sent",
     "command_permissions",
     "compact_file_reference",
+    // #277: `{type, organizationUuid}` — which organisation the credentials belong to, and
+    // nothing else. Account bookkeeping.
+    "credential_org",
     "date",
     "date_change",
     "deferred_tools_delta",
@@ -640,7 +643,8 @@ const TOOL_RESULT_READ: &[&str] = &[
 ///
 /// **Adding a key here is a deliberate act.** It says "seen it, it carries nothing we render" —
 /// so it belongs in the same commit as the look that decided so, not in a sweep to make a test
-/// pass. `every_tool_result_key_in_the_corpus_is_accounted_for` is the test that notices.
+/// pass. `an_unrecognised_tool_result_key_is_reported_and_a_known_one_is_not` and
+/// `every_category_reports_what_is_new_and_nothing_that_is_known` are the tests that notice.
 const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "afkTimeoutMs",
     "agentType",
@@ -670,6 +674,9 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "description",
     "disabledReason",
     "display",
+    // #277, CronCreate: whether the job outlives the session. Its result text says so
+    // ("Session-only (not written to disk …)").
+    "durable",
     "durationMs",
     "durationSeconds",
     "error",
@@ -677,6 +684,8 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "filePath",
     "firstPage",
     "gitOperation",
+    // #277, CronCreate: the schedule in words, which its result text already states.
+    "humanSchedule",
     "interrupted",
     "isAgent",
     "isAsync",
@@ -689,6 +698,8 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "memdirStamped",
     "message",
     "method",
+    // #277, SendMessage: an opaque delivery id; the result text names where the message went.
+    "msg_id",
     "name",
     "newString",
     "noOutputExpected",
@@ -709,6 +720,8 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "query",
     "questions",
     "read",
+    // #277, CronCreate: whether the job repeats ("Scheduled recurring job …" in its text).
+    "recurring",
     "remaining",
     "replaceAll",
     "resolvedModel",
@@ -759,16 +772,47 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "wasClamped",
 ];
 
+/// Generic key NAMES this adapter knows only inside the result SHAPE they were looked at in
+/// (#277).
+///
+/// The two lists above are keyed by name alone, which is right for a name that means one thing
+/// (`bashEditDiff`, `msg_id`) and wrong for one that could mean anything: putting `id` on the
+/// ignored list would silence it from every tool Claude Code adds after this. So each name here
+/// is known only when EVERY key of the result belongs to the shape it was judged in, and is
+/// reported anywhere else exactly like a key nobody has met.
+const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
+    // CronCreate returns all four and CronDelete `{id}` alone; the result text already states the
+    // job id, its schedule in words, whether it recurs and whether it is session-only.
+    ("id", &["durable", "humanSchedule", "id", "recurring"]),
+    // Read's `file_unchanged` (`{type, file, source}`): `source: "seeded"` says the file was in
+    // context from seeding (a CLAUDE.md) rather than from an earlier Read. The page already draws
+    // the file_unchanged result, whose text says the file is in context; the provenance word
+    // adds nothing a reader needs.
+    ("source", &["file", "source", "type"]),
+];
+
+/// The `toolUseResult` keys this adapter neither reads nor has already met (#264), in the
+/// order the result carries them.
+fn unknown_tool_result_keys(tur: &Value) -> Vec<&str> {
+    let Some(obj) = tur.as_object() else {
+        return Vec::new();
+    };
+    let in_shape = |k: &str| {
+        TOOL_RESULT_KNOWN_IN_SHAPE
+            .iter()
+            .any(|(name, shape)| *name == k && obj.keys().all(|key| shape.contains(&key.as_str())))
+    };
+    obj.keys()
+        .map(String::as_str)
+        .filter(|k| {
+            !TOOL_RESULT_READ.contains(k) && !TOOL_RESULT_KNOWN_IGNORED.contains(k) && !in_shape(k)
+        })
+        .collect()
+}
+
 /// Report any `toolUseResult` key this adapter neither reads nor has already met (#264).
 fn note_unknown_tool_result_keys(tur: &Value, version: Option<&str>, at: Option<&str>) {
-    let Some(obj) = tur.as_object() else {
-        return;
-    };
-    for key in obj.keys() {
-        let k = key.as_str();
-        if TOOL_RESULT_READ.contains(&k) || TOOL_RESULT_KNOWN_IGNORED.contains(&k) {
-            continue;
-        }
+    for k in unknown_tool_result_keys(tur) {
         note_unknown("claude", UnknownAt::ToolResultKey, k, version, at);
     }
 }
@@ -4434,6 +4478,55 @@ mod tests {
             "a key the adapter READS or has already met says nothing — 125 keys appear in the \
              corpus and 117 are deliberately unread, so reporting those is the noise that \
              makes a log unreadable: {seen:?}"
+        );
+    }
+
+    /// #277 — seven shapes the daily review judged bookkeeping are known now, and the two with
+    /// GENERIC names are known only in the shape they were judged in. `id` on the ignored list
+    /// would have silenced it from every tool added after this; scoped to the Cron result, a new
+    /// tool that returns an `id` of its own is still reported, as any new key is. The shapes
+    /// are the measured ones: CronCreate `{id, humanSchedule, recurring, durable}`, CronDelete
+    /// `{id}`, Read's `file_unchanged` `{type, file, source}`, SendMessage `{success, message,
+    /// display, msg_id}`.
+    #[test]
+    fn a_generic_result_key_is_known_only_in_the_shape_it_was_judged_in() {
+        let unknown = |v: &Value| -> Vec<String> {
+            unknown_tool_result_keys(v)
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        };
+        for known in [
+            serde_json::json!({"id": "12b4386c", "humanSchedule": "Every hour at :17", "recurring": true, "durable": false}),
+            serde_json::json!({"id": "12b4386c"}),
+            serde_json::json!({"type": "file_unchanged", "file": {"filePath": "/w/CLAUDE.md"}, "source": "seeded"}),
+            serde_json::json!({"success": true, "message": "sent", "display": "sent", "msg_id": "6a90484e"}),
+        ] {
+            assert_eq!(
+                unknown(&known),
+                Vec::<String>::new(),
+                "judged and known: {known}"
+            );
+        }
+        assert_eq!(
+            unknown(&serde_json::json!({"id": "x", "aKeyFromTheFuture": 1})),
+            vec!["aKeyFromTheFuture".to_string(), "id".to_string()],
+            "the same `id` in any other shape is reported beside the key that is new"
+        );
+        assert_eq!(
+            unknown(&serde_json::json!({"source": "seeded", "stdout": "ok"})),
+            vec!["source".to_string()],
+            "…and so is `source` outside Read's file_unchanged"
+        );
+
+        // The attachment is `{type, organizationUuid}` and nothing else.
+        let jsonl = r##"
+{"type":"attachment","version":"2.1.281","sessionId":"s-277","attachment":{"type":"credential_org","organizationUuid":"00000000-0000-0000-0000-000000000000"}}
+"##;
+        let _ = parse(jsonl);
+        assert!(
+            !unknown_shapes().iter().any(|s| s.name == "credential_org"),
+            "an organisation id is account bookkeeping, known"
         );
     }
 
