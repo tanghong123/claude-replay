@@ -12847,6 +12847,94 @@ fn both_shells_draw_every_question_alike_and_every_answer_given() {
     }
 }
 
+/// Two questions that came back WITHOUT an answer: one the client stopped waiting on, one the
+/// reader dismissed.
+fn ask_unanswered_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: ask me twice", &now_minus(200));
+    t += &harness::ask_question_at("ask-t", &now_minus(198));
+    t += &harness::ask_timed_out_answer("ask-t", &now_minus(138));
+    t += &harness::ask_question_at("ask-d", &now_minus(130));
+    t += &harness::ask_declined_answer("ask-d", &now_minus(120));
+    t += &assistant_at("Understood; I will stop and wait.", &now_minus(110));
+    let path = stores.claude_session(name, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #281 — a question that came back without an answer is settled, and says why, on BOTH pages.
+///
+/// The card drawn while a question waits was replaced only by a parsed ANSWER, so a question the
+/// client stopped waiting on after 60s, and one the reader dismissed, both said "Waiting for user
+/// input — please return to the agent client" forever: 25 of the owner's 223 questions, one in
+/// nine. A call that has come back is not waiting.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_say_why_a_question_went_unanswered() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3026)] {
+        let fx = ask_unanswered_fixture(match surface {
+            Surface::Classic => "ask-unanswered-classic",
+            _ => "ask-unanswered-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        let card = match surface {
+            Surface::Classic => ".irq",
+            Surface::AppShell => ".input-request",
+        };
+        let js = format!(
+            "JSON.stringify([...document.querySelectorAll('{card}')].map(function (c) {{ return {{ \
+               state: c.className, title: (c.querySelector('strong') || {{}}).textContent || '', \
+               text: (c.querySelector('p') || {{}}).textContent || '', \
+               ticked: c.textContent.split('✓').length - 1, \
+               options: ['Cut now', 'Hold', 'engine', 'tui'].filter(function (o) {{ return c.textContent.indexOf(o) >= 0; }}).length }}; }}))"
+        );
+        let cards: Vec<serde_json::Value> = eval(&page.tab, &js)
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        assert_eq!(
+            cards.len(),
+            2,
+            "{surface:?}: both questions drew a card: {cards:?}"
+        );
+        for c in &cards {
+            let state = c["state"].as_str().unwrap_or("");
+            assert!(
+                state.split_whitespace().any(|w| w == "unanswered")
+                    && !state.split_whitespace().any(|w| w == "waiting"),
+                "{surface:?}: a question that came back is settled, not waiting: {c}"
+            );
+            assert_eq!(c["title"], "No answer", "{surface:?}: {c}");
+            assert_eq!(
+                c["ticked"], 0,
+                "{surface:?}: nothing ticked — nothing was chosen: {c}"
+            );
+            assert_eq!(
+                c["options"], 4,
+                "{surface:?}: …and what was asked is still there to read: {c}"
+            );
+        }
+        let texts: Vec<&str> = cards.iter().filter_map(|c| c["text"].as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "The agent client stopped waiting after 60s; the agent went on without an answer.",
+                "Declined in the agent client; the agent was told not to proceed.",
+            ],
+            "{surface:?}: each says why, in the order they were asked: {cards:?}"
+        );
+    }
+}
+
 /// #260 — the outline column holds only the offset the CHAIN sold it.
 ///
 /// The owner saw it in a recording and could not reproduce it: "the tasks drawer overlaps with

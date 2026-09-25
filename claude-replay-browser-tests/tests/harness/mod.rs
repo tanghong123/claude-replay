@@ -648,6 +648,34 @@ pub fn ask_replied_answer(id: &str, ts: &str) -> String {
     format!("{line}\n")
 }
 
+/// #281: the result of a question the client stopped waiting on — the structured half empty but
+/// for `afkTimeoutMs`, and the client's sentence telling the agent to go on without it.
+pub fn ask_timed_out_answer(id: &str, ts: &str) -> String {
+    let line = serde_json::json!({
+        "type": "user",
+        "timestamp": ts,
+        "toolUseResult": {"questions": [], "answers": {}, "annotations": {}, "afkTimeoutMs": 60000},
+        "message": {"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": id,
+            "content": "No response after 60s — the user may be away from keyboard. Proceed using your best judgment based on the context so far; you can re-ask this question later if it's still relevant."}]},
+    });
+    format!("{line}\n")
+}
+
+/// #281: the result of a question the reader DISMISSED — an error result carrying the client's
+/// refusal, the way 20 of the owner's 223 questions ended.
+pub fn ask_declined_answer(id: &str, ts: &str) -> String {
+    let line = serde_json::json!({
+        "type": "user",
+        "timestamp": ts,
+        "toolUseResult": "User rejected tool use",
+        "message": {"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": id, "is_error": true,
+            "content": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."}]},
+    });
+    format!("{line}\n")
+}
+
 /// A sub-agent spawn: the `Agent` tool call the parent makes (the spawn chip).
 pub fn agent_spawn(call_id: &str, subagent_type: &str, s: u32) -> String {
     format!(

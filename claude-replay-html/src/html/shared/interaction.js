@@ -3,7 +3,9 @@
 // into `head.interaction` — `{kind: "request_user_input", resolved, answers: [{id, label}]}`
 // (html_export/mod.rs `request_user_input_projection`), and a Claude `AskUserQuestion` adds
 // `asked: [{header, question, multi, options: [{label, description, chosen}], typed?, notes?}]`
-// — every question put, and what the reader said to each (#255, #280; `asked_section`).
+// — every question put, and what the reader said to each (#255, #280; `asked_section`). A call
+// that came back WITHOUT an answer is `resolved` too, with `unanswered: {why, seconds?}` saying
+// why — timed out, declined, failed, or none (#281).
 // Monitor cannot answer a native prompt, so the card's job is to say WHERE the answer goes and,
 // once it has been given, WHAT it was.
 // The app shell had this card; the classic page showed a generic tool fold. Now the words, the
@@ -13,11 +15,21 @@
 
 const escapeInteraction = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 
-/** The two states, in the words the reader sees. */
+/** The three states, in the words the reader sees. */
 const WAITING_TITLE = "Waiting for user input";
 const RESOLVED_TITLE = "User input received";
 const WAITING_NOTE = "Please return to the agent client to answer; Monitor cannot submit this native prompt.";
 const RESOLVED_NOTE = "Answered in the agent client";
+/** #281: a call that came back with NO answer is not waiting either — it says why. */
+const UNANSWERED_TITLE = "No answer";
+const unansweredNote = ({ why, seconds } = {}) =>
+  why === "timeout"
+    ? `The agent client stopped waiting${seconds ? ` after ${seconds}s` : ""}; the agent went on without an answer.`
+    : why === "declined"
+      ? "Declined in the agent client; the agent was told not to proceed."
+      : why === "failed"
+        ? "The question failed before it was answered."
+        : "The call came back without an answer.";
 /** #280: what the reader wrote themselves, captioned so it never reads as one of the options. */
 const TYPED_CAPTION = "Typed answer";
 const NOTES_CAPTION = "Notes";
@@ -30,16 +42,18 @@ function isInteraction(interaction) {
 /** What the card says: its state, its title, the note under it and the answers given. */
 function interactionCard(interaction, summary) {
   const resolved = !!(interaction && interaction.resolved);
-  const note = resolved ? RESOLVED_NOTE : WAITING_NOTE;
+  // #281: `unanswered` rides only on a call that has come back, and it outranks "received".
+  const unanswered = resolved && interaction.unanswered ? interaction.unanswered : null;
+  const note = unanswered ? unansweredNote(unanswered) : resolved ? RESOLVED_NOTE : WAITING_NOTE;
   // #255: every question the call put, with every option it offered and which came back.
   // The transcript always had this; the card used to show the first question's text and the
   // labels that were picked, which on a four-question call is a fraction of what was asked —
   // and the options that were DECLINED, where the trade-off is written, never appeared.
   const asked = (interaction && interaction.asked) || [];
   return {
-    state: resolved ? "resolved" : "waiting",
-    icon: resolved ? "✓" : "?",
-    title: resolved ? RESOLVED_TITLE : WAITING_TITLE,
+    state: unanswered ? "unanswered" : resolved ? "resolved" : "waiting",
+    icon: unanswered ? "–" : resolved ? "✓" : "?",
+    title: unanswered ? UNANSWERED_TITLE : resolved ? RESOLVED_TITLE : WAITING_TITLE,
     note,
     // The question itself when the record carries one; the note stands in when it does not,
     // and then moves out of the body so the reader is never told the same thing twice.

@@ -610,10 +610,13 @@ fn note_unknown_shape(v: &Value, at: UnknownAt, name: Option<&str>, known: &[&st
 }
 
 /// The `toolUseResult` keys this adapter READS. Everything it does with a tool result comes
-/// from one of these ten. (#280 moved `answers` and `annotations` here from the ignored list:
+/// from one of these eleven. (#280 moved `answers` and `annotations` here from the ignored list:
 /// they are an `AskUserQuestion`'s reply, which the card used to take from the result's prose
-/// and could not read back when the reader typed their own answer or wrote notes.)
+/// and could not read back when the reader typed their own answer or wrote notes. #281 moved
+/// `afkTimeoutMs`: a question the client stopped waiting on, which the card said was still
+/// waiting.)
 const TOOL_RESULT_READ: &[&str] = &[
+    "afkTimeoutMs",
     "agentId",
     "annotations",
     "answers",
@@ -629,8 +632,8 @@ const TOOL_RESULT_READ: &[&str] = &[
 /// The `toolUseResult` keys this adapter has SEEN and deliberately does not read (#264).
 ///
 /// A census of the twelve largest sessions on 2026-09-20 found **125 distinct top-level keys**;
-/// eight were read then and the other 117 were not (two of which #280 has since moved up to
-/// the read list). Writing them down is the whole mechanism:
+/// eight were read then and the other 117 were not (three of which #280 and #281 have since
+/// moved up to the read list). Writing them down is the whole mechanism:
 /// "report any key no code reads" would have fired on all 117 on its first run — `isImage`
 /// 80,791 times, `noOutputExpected` 80,791, `userModified` 10,051 — and a log nobody can read
 /// is a log nobody reads. Against this list, the only thing reported is a key that did not
@@ -646,7 +649,6 @@ const TOOL_RESULT_READ: &[&str] = &[
 /// pass. `an_unrecognised_tool_result_key_is_reported_and_a_known_one_is_not` and
 /// `every_category_reports_what_is_new_and_nothing_that_is_known` are the tests that notice.
 const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
-    "afkTimeoutMs",
     "agentType",
     "artifactRead",
     "artifact_id",
@@ -1309,9 +1311,11 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
             asked,
             ..
         } => {
-            // #280: the reader's answers, from the result's structured half.
+            // #280: the reader's answers, from the result's structured half — and #281, why
+            // there are none when there are none.
             if let Some(a) = asked.as_deref_mut() {
                 apply_answers(a, tur);
+                a.unanswered = unanswered(a, txt, tur, is_error);
             }
             // A `Workflow` call's input is the script, so it builds with nothing to show for
             // itself and renders as a bare `Workflow()`. Its result names the run (#38) — take
@@ -2098,7 +2102,10 @@ fn asked_from_input(name: &str, input: &Value) -> Option<Asked> {
             })
         })
         .collect();
-    (!questions.is_empty()).then_some(Asked { questions })
+    (!questions.is_empty()).then_some(Asked {
+        questions,
+        unanswered: None,
+    })
 }
 
 /// #280: what the reader answered, joined onto the questions the call put.
@@ -2141,6 +2148,39 @@ fn apply_answers(asked: &mut Asked, tur: &Value) {
                 .unwrap_or_default();
         }
     }
+}
+
+/// #281: why a call that has come back carries no answer — `None` when it carries one, and for
+/// a result that says nothing either way (an older client's prose-only answer, which the page
+/// still reads).
+///
+/// Measured over the owner's 223 questions: 198 answered, 20 DECLINED and 5 TIMED OUT. A timeout
+/// is structured (`afkTimeoutMs`, with `answers` empty). A decline is the format's failure fact
+/// (`is_error`) carrying the client's refusal — the text "The user doesn't want to proceed with
+/// this tool use…", the `toolUseResult` "User rejected tool use" or that same sentence behind
+/// "Error: " — and all 20 error results are that. An error that is NOT a refusal is kept apart as
+/// `Failed`, so a call that broke is never said to have been declined by the reader.
+fn unanswered(asked: &Asked, txt: &str, tur: &Value, is_error: Option<bool>) -> Option<Unanswered> {
+    if asked
+        .questions
+        .iter()
+        .any(|q| q.answer.is_some() || !q.notes.is_empty())
+    {
+        return None;
+    }
+    if let Some(after_ms) = tur.get("afkTimeoutMs").and_then(Value::as_u64) {
+        return Some(Unanswered::TimedOut { after_ms });
+    }
+    if is_error != Some(true) {
+        return None;
+    }
+    const REFUSALS: [&str; 2] = ["doesn't want to proceed", "rejected tool use"];
+    let refused = |s: &str| REFUSALS.iter().any(|r| s.contains(r));
+    Some(if refused(txt) || tur.as_str().is_some_and(refused) {
+        Unanswered::Declined
+    } else {
+        Unanswered::Failed
+    })
 }
 
 /// The half of an `Artifact` publish that the CALL knows: what to call it, what it is, and the
@@ -4437,6 +4477,62 @@ mod tests {
         assert_eq!(
             nth_loaded_attachment(file_line, 0),
             Some(LoadedAttachment::Text("# Backlog\nitem".into()))
+        );
+    }
+
+    /// #281: a question that came back WITHOUT an answer says why, in each shape the client
+    /// records it (measured over the owner's 223 questions: 198 answered, 20 declined, 5 timed
+    /// out): the timeout is structured (`afkTimeoutMs`, `answers` empty); a decline is an error
+    /// result carrying the client's refusal, whose `toolUseResult` is either "User rejected tool
+    /// use" or the refusal sentence itself. An error that is NOT a refusal is a failure — never a
+    /// decline the reader did not make — and an answered question has no reason at all.
+    #[test]
+    fn an_unanswered_ask_says_why() {
+        let ask = |id: &str| {
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"AskUserQuestion","input":{{"questions":[{{"header":"Q","question":"Cut it now?","multiSelect":false,"options":[{{"label":"Yes"}},{{"label":"No"}}]}}]}}}}]}}}}"#
+            )
+        };
+        let refusal = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+        let jsonl = [
+            ask("t1"),
+            r#"{"type":"user","toolUseResult":{"questions":[],"answers":{},"annotations":{},"afkTimeoutMs":60000},"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"No response after 60s — the user may be away from keyboard. Proceed using your best judgment based on the context so far; you can re-ask this question later if it's still relevant."}]}}"#.to_string(),
+            ask("t2"),
+            format!(r#"{{"type":"user","toolUseResult":"User rejected tool use","message":{{"content":[{{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":"{refusal}"}}]}}}}"#),
+            ask("t3"),
+            format!(r#"{{"type":"user","toolUseResult":"Error: {refusal}","message":{{"content":[{{"type":"tool_result","tool_use_id":"t3","is_error":true,"content":"{refusal}"}}]}}}}"#),
+            ask("t4"),
+            r#"{"type":"user","toolUseResult":"Error: InputValidationError: questions[0].options must have at least 2 items","message":{"content":[{"type":"tool_result","tool_use_id":"t4","is_error":true,"content":"<tool_use_error>InputValidationError: questions[0].options must have at least 2 items</tool_use_error>"}]}}"#.to_string(),
+            ask("t5"),
+            r#"{"type":"user","toolUseResult":{"questions":[],"answers":{"Cut it now?":"Yes"},"annotations":{}},"message":{"content":[{"type":"tool_result","tool_use_id":"t5","content":"The user answered: \"Cut it now?\"=\"Yes\"."}]}}"#.to_string(),
+            ask("t6"),
+        ]
+        .join("\n");
+        fn asks(blocks: &[Block], out: &mut Vec<Option<Unanswered>>) {
+            for b in blocks {
+                match b {
+                    Block::ToolUse { name, asked, .. } if name == "AskUserQuestion" => {
+                        out.push(asked.as_deref().and_then(|a| a.unanswered))
+                    }
+                    Block::Thinking { tools, .. } => asks(tools, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut seen = Vec::new();
+        asks(&parse(&jsonl), &mut seen);
+        assert_eq!(
+            seen,
+            vec![
+                Some(Unanswered::TimedOut { after_ms: 60_000 }),
+                Some(Unanswered::Declined),
+                Some(Unanswered::Declined),
+                Some(Unanswered::Failed),
+                None,
+                None,
+            ],
+            "timed out; declined, both ways the client records it; a failure that is not a \
+             refusal; answered; and still waiting (no result yet)"
         );
     }
 

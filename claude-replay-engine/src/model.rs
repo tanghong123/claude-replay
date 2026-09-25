@@ -75,6 +75,26 @@ pub struct Published {
 pub struct Asked {
     /// The questions, in the order they were put.
     pub questions: Vec<AskedQuestion>,
+    /// Why the call came back WITHOUT an answer (#281), when it did. `None` while the call waits
+    /// and once it is answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unanswered: Option<Unanswered>,
+}
+
+/// Why a call that put questions to the reader came back with no answer (#281).
+///
+/// A call that has come back is not waiting, whatever it carries — yet the card said "Waiting
+/// for user input" about every one of these, forever: 25 of the 223 questions in the owner's
+/// sessions, measured, one in nine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unanswered {
+    /// The client stopped waiting after this long, and the agent went on without an answer.
+    TimedOut { after_ms: u64 },
+    /// The reader dismissed the question in the client, and the agent was told not to proceed.
+    Declined,
+    /// The call failed for some other reason; its result says which.
+    Failed,
 }
 
 /// One question of an [`Asked`].

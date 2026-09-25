@@ -197,9 +197,13 @@ pub const COMPACT_AFTER: usize = 256;
 /// falls back to the result's prose, which drops every typed answer and every note — the owner's
 /// report, on the records folded before the upgrade and not on the ones after it.
 ///
+/// v33: #281 — a Claude `AskUserQuestion` block that came back WITHOUT an answer says why
+/// (`Asked::unanswered`: timed out, declined, failed). A v32 stream has no reason on any of them,
+/// so their cards keep saying "Waiting for user input" about questions long over.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across.
-pub const FOLD_VERSION: u16 = 32;
+pub const FOLD_VERSION: u16 = 33;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

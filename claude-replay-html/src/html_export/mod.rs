@@ -613,6 +613,21 @@ fn reading(q: &crate::model::AskedQuestion) -> (Vec<bool>, String) {
     (chosen, typed.join(", "))
 }
 
+/// #281: why an interaction call came back without an answer, in the card's words' terms:
+/// `why` is `timeout` (with the `seconds` the client waited), `declined`, `failed`, or `none` when
+/// the result says nothing the adapter could name.
+fn unanswered_json(why: Option<crate::model::Unanswered>) -> Value {
+    use crate::model::Unanswered;
+    match why {
+        Some(Unanswered::TimedOut { after_ms }) => {
+            json!({ "why": "timeout", "seconds": (after_ms + 500) / 1000 })
+        }
+        Some(Unanswered::Declined) => json!({ "why": "declined" }),
+        Some(Unanswered::Failed) => json!({ "why": "failed" }),
+        None => json!({ "why": "none" }),
+    }
+}
+
 fn request_user_input_projection(output: &str) -> Option<Value> {
     let value: Value = serde_json::from_str(output.trim()).ok()?;
     let answers = value.get("answers")?.as_object()?;
@@ -1504,7 +1519,32 @@ impl Emitter<'_> {
                             } else {
                                 None
                             };
-                            if let Some(mut interaction) = answered {
+                            // #281: a call that has come back is not waiting, whatever it
+                            // brought. The card drawn while it waited is replaced every time: by
+                            // the answer when the result is one — even where no pair could be
+                            // read out of the prose, which is still underneath — and otherwise by
+                            // why there is none. It used to be replaced only by a parsed answer,
+                            // so 25 of the owner's 223 questions said "Waiting for user input"
+                            // about a question long over.
+                            let interactive = name.eq_ignore_ascii_case("request_user_input")
+                                || name.eq_ignore_ascii_case("AskUserQuestion");
+                            let why = asked.as_deref().and_then(|a| a.unanswered);
+                            let card = match (why, answered) {
+                                (None, Some(mut found)) => {
+                                    if let Some(obj) = found.as_object_mut() {
+                                        obj.insert("resolved".into(), json!(true));
+                                    }
+                                    Some(found)
+                                }
+                                (why, _) if interactive => Some(json!({
+                                    "kind": "request_user_input",
+                                    "resolved": true,
+                                    "answers": [],
+                                    "unanswered": unanswered_json(why),
+                                })),
+                                _ => None,
+                            };
+                            if let Some(mut interaction) = card {
                                 // #255: the questions and their options ride along, with the
                                 // pick marked — so the card shows what was on offer, not just
                                 // what was taken.
@@ -1515,11 +1555,6 @@ impl Emitter<'_> {
                                         .cloned()
                                         .unwrap_or_default();
                                     obj.insert("asked".into(), asked_section(a, &rows));
-                                    // #280: answered is what the questions say, not whether a
-                                    // pair could be read out of the prose.
-                                    if replied(a) {
-                                        obj.insert("resolved".into(), json!(true));
-                                    }
                                 }
                                 head.insert("interaction".into(), interaction);
                             }
@@ -2599,6 +2634,7 @@ mod tests {
             notes: String::new(),
         };
         let asked = Asked {
+            unanswered: None,
             questions: vec![
                 q("MCP", "Which MCP servers?", true, &["okr", "dms", "none"]),
                 q(
@@ -4424,6 +4460,7 @@ mod tests {
         };
         let typed = "Both - ask for the \"manage\" privilege, and say consent comes later.";
         let asked = Asked {
+            unanswered: None,
             questions: vec![
                 q(
                     "Exit code?",
@@ -4480,6 +4517,7 @@ mod tests {
         // says it was answered, rather than waiting on a question the reader has already put
         // down.
         let alone = Asked {
+            unanswered: None,
             questions: vec![q(
                 "Which name?",
                 &["--manage", "--own"],
@@ -4498,6 +4536,96 @@ mod tests {
         let card = &out[0]["head"]["interaction"];
         assert_eq!(card["resolved"], true, "{card}");
         assert_eq!(card["asked"][0]["notes"], "follow sync", "{card}");
+    }
+
+    /// #281: a question card whose call has COME BACK is never "waiting". Without an answer it
+    /// says why — the reason the adapter named, or `none` when it named none (a Codex output that
+    /// is not an answer shape) — and an answer the prose cannot be parsed for still says the
+    /// question was answered: the client wrote "answered:", and the raw result is underneath.
+    #[test]
+    fn a_question_that_came_back_is_never_waiting() {
+        use crate::model::{Asked, AskedOption, AskedQuestion, Unanswered};
+        let asked = |why: Option<Unanswered>| Asked {
+            questions: vec![AskedQuestion {
+                header: "Q".into(),
+                question: "Cut it now?".into(),
+                multi_select: false,
+                options: ["Yes", "No"]
+                    .iter()
+                    .map(|l| AskedOption {
+                        label: (*l).into(),
+                        description: String::new(),
+                    })
+                    .collect(),
+                answer: None,
+                notes: String::new(),
+            }],
+            unanswered: why,
+        };
+        let card = |name: &str, output: &str, a: Option<Asked>| -> Value {
+            let block = Block::ToolUse {
+                name: name.into(),
+                target: "Cut it now?".into(),
+                diffs: vec![],
+                output: Some(output.into()),
+                patch: None,
+                read_lines: None,
+                cwd: String::new(),
+                execution: None,
+                published: None,
+                asked: a.map(Box::new),
+            };
+            stream(&[block], &FoldPolicy::none())[0]["head"]["interaction"].clone()
+        };
+        let timed_out = card(
+            "AskUserQuestion",
+            "No response after 60s — the user may be away from keyboard.",
+            Some(asked(Some(Unanswered::TimedOut { after_ms: 60_000 }))),
+        );
+        assert_eq!(timed_out["resolved"], true, "{timed_out}");
+        assert_eq!(
+            timed_out["unanswered"],
+            json!({"why": "timeout", "seconds": 60}),
+            "{timed_out}"
+        );
+        assert_eq!(
+            timed_out["asked"][0]["question"], "Cut it now?",
+            "the questions are still listed: {timed_out}"
+        );
+        for (why, word) in [
+            (Unanswered::Declined, "declined"),
+            (Unanswered::Failed, "failed"),
+        ] {
+            let c = card(
+                "AskUserQuestion",
+                "The user doesn't want to proceed with this tool use.",
+                Some(asked(Some(why))),
+            );
+            assert_eq!(
+                (c["resolved"].clone(), c["unanswered"]["why"].clone()),
+                (json!(true), json!(word)),
+                "{c}"
+            );
+        }
+        let codex = card("request_user_input", "the client closed the prompt", None);
+        assert_eq!(
+            (
+                codex["resolved"].clone(),
+                codex["unanswered"]["why"].clone()
+            ),
+            (json!(true), json!("none")),
+            "an output that is no answer shape is still a call that came back: {codex}"
+        );
+        let unparsed = card(
+            "AskUserQuestion",
+            "Your questions have been answered: none of it parses. You can now continue.",
+            Some(asked(None)),
+        );
+        assert_eq!(unparsed["resolved"], true, "{unparsed}");
+        assert!(
+            unparsed.get("unanswered").is_none(),
+            "the client said it was answered, so the card does not say otherwise: {unparsed}"
+        );
     }
 
     #[test]

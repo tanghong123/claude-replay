@@ -130,7 +130,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // plans and request_user_input records carry semantic presentation metadata.
     // v14: #280 — an AskUserQuestion card's questions carry the reader's `typed` words and
     // `notes`, and a reply the prose could not be parsed for is `resolved`.
-    const RECORD_SCHEMA: u16 = 14;
+    // v15: #281 — an interaction whose call came back without an answer is `resolved` and says
+    // why (`unanswered: {why, seconds?}`) instead of staying `resolved: false`, i.e. waiting.
+    const RECORD_SCHEMA: u16 = 15;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);

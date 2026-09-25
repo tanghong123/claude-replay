@@ -393,7 +393,8 @@ deliberate act** — it says "looked at it, it carries nothing we render" — an
 commit as the look that decided so, never in a sweep to quieten the output. That claim can be
 wrong: `answers` and `annotations` sat on the ignored list while the `AskUserQuestion` card read
 the reply out of the result's prose, which cannot carry a typed answer or a note, and the owner
-found an answer missing from the card (#280). They are read now, so the list holds ten.
+found an answer missing from the card (#280). They are read now, and so is `afkTimeoutMs` (#281:
+the card called a question the client had stopped waiting on "waiting"), so the list holds eleven.
 
 The channel is `claude-replay-engine/src/unknown.rs`, re-exported through `engine/seam.rs` as
 `note_unknown`/`UnknownAt` so all three families and any third-party adapter report the same way.

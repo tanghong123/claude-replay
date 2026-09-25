@@ -1770,6 +1770,25 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#280 question-and-reply cases passed");
 }
 
+// #281: a call that came back without an answer is settled, and says why — never "waiting".
+{
+  const asked = [{ header: "Q", question: "Cut it now?", multi: false, options: [{ label: "Yes", description: "", chosen: false }] }];
+  const card = unanswered => interactionCard({ kind: "request_user_input", resolved: true, answers: [], asked, unanswered }, "Cut it now?");
+  const timeout = card({ why: "timeout", seconds: 60 });
+  assert.deepEqual([timeout.state, timeout.icon, timeout.title], ["unanswered", "–", "No answer"], "a timed-out question is not waiting and not answered");
+  assert.equal(timeout.text, "The agent client stopped waiting after 60s; the agent went on without an answer.");
+  assert.match(card({ why: "declined" }).text, /^Declined in the agent client/);
+  assert.match(card({ why: "failed" }).text, /failed before it was answered/);
+  assert.match(card({ why: "none" }).text, /came back without an answer/);
+  const pending = interactionCard({ kind: "request_user_input", resolved: false, answers: [], asked, unanswered: { why: "timeout" } }, "");
+  assert.equal(pending.state, "waiting", "`unanswered` means nothing on a call still waiting");
+  const classes = { card: "c", icon: "i", copy: "p", meta: "m", answers: "as", answer: "a", question: "q", reply: "r" };
+  const html = interactionHtml({ kind: "request_user_input", resolved: true, answers: [], asked, unanswered: { why: "declined" } }, "", classes);
+  assert.match(html, /^<div class="c unanswered"><span class="i" aria-hidden="true">–<\/span><div class="p"><strong>No answer<\/strong>/, "the page styles the state by its class");
+  assert.match(html, /<span class="a"><span>Yes<\/span><\/span>/, "the options are still listed, nothing ticked");
+  console.log("#281 unanswered cases passed");
+}
+
 // #118: the search and the filter are one set of rules, and both pages run them.
 {
   assert.deepEqual(CLASS_ORDER, ["u", "a", "t", "o", "b", "r", "e"]);
