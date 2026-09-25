@@ -13010,6 +13010,153 @@ fn both_shells_offer_every_file_a_send_delivered() {
     }
 }
 
+/// A session that READ two files from agent scratch: one under its own project's scratch, one
+/// under another project's. Returns the fixture and the two paths. Plain text, because Markdown
+/// opens in mdrev's viewer (#270) — the same guards, a different page.
+fn scratch_fixture(name: &str) -> (Fixture, String, String) {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let scratch = base.join("stores").join("claude-scratch");
+    let write = |rel: &str, body: &str| {
+        let p = scratch.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, body).unwrap();
+        p.display().to_string()
+    };
+    // The fixture's store slug is `-r` (`Stores::claude_session`), so its scratch is `<root>/-r`.
+    let own = write(
+        "-r/7efa38c0-0000-4000-8000-000000000283/scratchpad/notes.txt",
+        "scratch notes of this project",
+    );
+    let other = write(
+        "-elsewhere/c8e30428-0000-4000-8000-000000000283/scratchpad/other.txt",
+        "another project's notes",
+    );
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: read the scratch", &now_minus(200));
+    t += &read_tool_at("r1", &own, &now_minus(190));
+    t += &tool_result_at("r1", &now_minus(190));
+    t += &read_tool_at("r2", &other, &now_minus(185));
+    t += &tool_result_at("r2", &now_minus(185));
+    t += &assistant_at("Read both.", &now_minus(180));
+    let path = stores.claude_session(name, &t);
+    (
+        Fixture {
+            base,
+            path,
+            turns: 13,
+        },
+        own,
+        other,
+    )
+}
+
+/// #283 — a file under the agent's OWN scratch for this project opens in the page, on BOTH pages;
+/// one under ANOTHER project's scratch still does not.
+///
+/// The owner: "also allow inline rendering of files under agent's scratch directory whose paths are
+/// in the transcript. E.g. /private/tmp/claude-502". The render policy decides which offered paths
+/// get a file stamp, but `/file` also asks whether a hosted session EXPLAINS the path (its cwd, its
+/// project, its transcript's directory) — and no session explained its scratch, so a scratchpad
+/// file the transcript named was refused whatever the policy said. A session now explains its own
+/// project's scratch (`TranscriptAdapter::scratch_dirs`: `<scratch root>/<project slug>/`, where a
+/// session's spawned agents keep their scratch too). The classic page falls back to revealing a
+/// refused file, which is how the refusal shows there.
+///
+/// Both pages come from ONE v2 monitor: the classic page is its splice (`?ui=classic`), because
+/// the html server this file's other classic cases use renders no file inline at all — it only
+/// reveals — so it could not show the difference.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_open_a_file_from_the_session_s_own_scratch() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 3032), (Surface::AppShell, 3030)] {
+        let (fx, own, other) = scratch_fixture(match surface {
+            Surface::Classic => "scratch-classic",
+            _ => "scratch-app",
+        });
+        let browser = harness::chrome();
+        let tab = browser.new_tab().unwrap();
+        let stores = Stores {
+            root: fx.base.join("stores"),
+        };
+        let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
+        monitor.pair(&tab);
+        let (ui, ready) = match surface {
+            Surface::Classic => ("classic", "document.querySelectorAll('#stream .blk').length >= 3"),
+            _ => ("app", "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3"),
+        };
+        monitor.open(
+            &tab,
+            &format!("?ui={ui}&session={}&mountall=1", sid_of(&fx)),
+        );
+        harness::until(
+            &tab,
+            ready,
+            "the page to render the fixture",
+            Duration::from_secs(30),
+            "document.body.innerText.slice(0, 200)",
+        );
+        settle();
+        // Record every reveal, never send one: `open -R` must not run here.
+        eval(
+            &tab,
+            "window.__reveals = []; var real = window.fetch; window.fetch = function (u, o) { var s = String(u); if (/__reveal\\?/.test(s)) { window.__reveals.push(s); return Promise.resolve(new Response('', {status: 200})); } return real(u, o); }; 'ok'",
+        );
+        let (link, shown) = match surface {
+            Surface::Classic => (".tool-path[data-path={p}]", ".lightbox pre.lb-text"),
+            Surface::AppShell => (
+                "[data-reference-path={p}]",
+                "#previewBody pre.artifact-text",
+            ),
+        };
+        let click = |p: &str| {
+            let sel = link.replace("{p}", &format!("{p:?}"));
+            eval(
+                &tab,
+                &format!("document.querySelector({sel:?}).click(); 'ok'"),
+            );
+        };
+        click(&own);
+        until(
+            &tab,
+            &format!(
+                "[...document.querySelectorAll({shown:?})].some(function (e) {{ return e.textContent.indexOf('scratch notes of this project') >= 0; }})"
+            ),
+            "the session's own scratch file, shown in the page",
+            Duration::from_secs(10),
+            "JSON.stringify({ reveals: window.__reveals, shown: [...document.querySelectorAll('pre')].map(function (e) { return e.className + ':' + e.textContent.slice(0, 40); }).slice(-4) })",
+        );
+        click(&other);
+        let refused = match surface {
+            // The classic page reveals what `/file` refuses.
+            Surface::Classic => {
+                "(window.__reveals || []).some(function (u) { return u.indexOf('other.txt') >= 0; })"
+            }
+            // The app shell's pane says it cannot read the file, and offers the file manager.
+            Surface::AppShell => "!!document.querySelector('#previewBody [data-preview-reveal]')",
+        };
+        until(
+            &tab,
+            refused,
+            "another project's scratch file refused",
+            Duration::from_secs(10),
+            "JSON.stringify({ reveals: window.__reveals, pane: (document.getElementById('previewBody') || {}).className })",
+        );
+        assert_eq!(
+            eval(
+                &tab,
+                &format!(
+                    "[...document.querySelectorAll({shown:?})].some(function (e) {{ return e.textContent.indexOf(\"another project's notes\") >= 0; }})"
+                )
+            )
+            .as_bool(),
+            Some(false),
+            "{surface:?}: a session does not explain another project's scratch"
+        );
+    }
+}
+
 /// #260 — the outline column holds only the offset the CHAIN sold it.
 ///
 /// The owner saw it in a recording and could not reproduce it: "the tasks drawer overlaps with

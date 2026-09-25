@@ -148,6 +148,12 @@ default when the file is absent) or `allowlist`. It governs rendering bytes into
 revealing in the file manager: reveal hands over nothing and is the only thing a click can do
 on the pages that render nothing inline. The effective policy is folded into `render_flavor`,
 so changing it re-renders rather than leaving cached pages stamped under the old one.
+The policy decides which paths get a FILE stamp; `/file` then also asks whether a hosted session
+EXPLAINS the path (containment: its cwd, its project, its transcript's directory, and — #283 — the
+agent's own scratch for that project, `TranscriptAdapter::scratch_dirs`: for Claude
+`/tmp/claude-<uid>/<project slug>/`, where a session's spawned agents keep theirs too; `<uid>` is
+the transcript owner's, `CLAUDE_SCRATCH_ROOT` moves it for tests). So an allowlist entry for a
+directory no session explains mints stamps that `/file` still refuses.
 
 **Every file view offers BOTH halves** (#272, the owner: "offering both for now"): showing the file
 in the page — or downloading it, for bytes the page does not show (`/file`'s `Content-Disposition:

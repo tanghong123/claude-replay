@@ -185,6 +185,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn store_contains(&self, path: &Path) -> bool {
         path.starts_with(agents::claude::discover::projects_dir())
     }
+    fn scratch_dirs(&self, path: &Path) -> Vec<std::path::PathBuf> {
+        agents::claude::discover::scratch_dirs(path)
+    }
 }
 
 /// Codex adapter — delegates to the `codex_model` / `codex_discover` implementations.

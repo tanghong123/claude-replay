@@ -884,6 +884,8 @@ impl Stores {
             ("QODER_PROJECTS_DIR", self.root.join("qoder")),
             ("CODEX_HOME", self.root.join("codex")),
             ("CLAUDE_JDI_TASKS_ROOT", self.root.join("claude-tasks")),
+            // #283: Claude Code's per-user scratch (`/tmp/claude-<uid>` on a real machine).
+            ("CLAUDE_SCRATCH_ROOT", self.root.join("claude-scratch")),
         ]
     }
 

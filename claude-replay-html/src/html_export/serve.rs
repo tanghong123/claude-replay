@@ -561,11 +561,13 @@ impl SessionService {
         }
         // Copy out (cwd, transcript) and drop the lock: `project_path` and `canonicalize`
         // both touch the disk, and the roots list is on the pull path.
-        let roots: Vec<(String, PathBuf)> = {
+        let roots: Vec<(String, PathBuf, Agent)> = {
             let g = self.roots.lock().unwrap_or_else(|e| e.into_inner());
-            g.iter().map(|r| (r.cwd.clone(), r.path.clone())).collect()
+            g.iter()
+                .map(|r| (r.cwd.clone(), r.path.clone(), r.agent))
+                .collect()
         };
-        for (cwd, transcript) in &roots {
+        for (cwd, transcript, agent) in &roots {
             let mut allow: Vec<PathBuf> = Vec::new();
             if !cwd.is_empty() {
                 allow.push(PathBuf::from(cwd));
@@ -576,6 +578,10 @@ impl SessionService {
             if let Some(dir) = transcript.parent() {
                 allow.push(dir.to_path_buf());
             }
+            // #283: the agent's own scratch for this session's project — the drafts, background
+            // output and pasted images its transcript names. Which directory that is belongs to
+            // the adapter; `too_broad` still refuses anything that would admit $HOME.
+            allow.extend(crate::adapter(*agent).scratch_dirs(transcript));
             for a in allow {
                 if a.canonicalize()
                     .is_ok_and(|a| !too_broad(&a) && real.strip_prefix(&a).is_ok())

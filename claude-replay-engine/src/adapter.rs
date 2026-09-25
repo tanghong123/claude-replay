@@ -430,6 +430,14 @@ pub trait TranscriptAdapter: Sync {
     fn store_contains(&self, _path: &Path) -> bool {
         false
     }
+    /// Where the AGENT keeps scratch files for the session at `path` (#283): the drafts, the
+    /// background tasks' output and the pasted images its own transcript names. A served page
+    /// may render a file under one of these when the render policy allows it, exactly as it
+    /// renders one under the session's cwd — containment asks whether a hosted session explains a
+    /// path, and a session explains its own scratch. Default: none.
+    fn scratch_dirs(&self, _path: &Path) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
     /// The session this one was FORKED from, if the agent records forks (#142).
     ///
     /// Forking copies the conversation up to the fork point, so a fork's transcript is

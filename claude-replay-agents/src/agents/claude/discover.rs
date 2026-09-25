@@ -26,6 +26,46 @@ pub fn projects_dir() -> PathBuf {
     Path::new(&home).join(".claude").join("projects")
 }
 
+/// Root under which Claude Code writes its per-user scratch: `/tmp/claude-<uid>` (#283).
+/// `CLAUDE_SCRATCH_ROOT` points it elsewhere, for tests — the real one is a system directory.
+fn scratch_root(uid: u32) -> PathBuf {
+    if let Ok(p) = std::env::var("CLAUDE_SCRATCH_ROOT") {
+        return PathBuf::from(p);
+    }
+    PathBuf::from(format!("/tmp/claude-{uid}"))
+}
+
+/// Where Claude Code keeps scratch for the PROJECT a transcript belongs to (#283):
+/// `<scratch root>/<project slug>/`, beside the store's own `<projects>/<project slug>/`.
+///
+/// Measured on the owner's machine (2026-09-25): under `/private/tmp/claude-502` each project slug
+/// holds one directory per id — `scratchpad/`, `tasks/*.output`, `images/` — and the ids are not
+/// only the project's sessions: a sub-agent or a workflow agent a session spawned keeps its own id
+/// there, and the parent's transcript names paths in it. So the project is the unit, as broad as
+/// the session's cwd (which containment already admits) and never the whole per-user root.
+///
+/// The uid is the transcript's OWNER: the account that ran Claude Code is the one that owns the
+/// scratch. `502` is one account's uid, never a constant.
+pub fn scratch_dirs(transcript: &Path) -> Vec<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(meta) = std::fs::metadata(transcript) else {
+            return Vec::new();
+        };
+        // A root session's transcript sits directly in its project's store directory.
+        let Some(slug) = transcript.parent().and_then(Path::file_name) else {
+            return Vec::new();
+        };
+        vec![scratch_root(meta.uid()).join(slug)]
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = transcript;
+        Vec::new()
+    }
+}
+
 /// All transcript files under a store root — shared with the QoderWork store, whose
 /// on-disk layout (`<root>/<slug>/<id>.jsonl`) is identical to Claude Code's.
 pub(crate) fn all_transcripts_in(root: &Path) -> Vec<PathBuf> {
@@ -471,6 +511,31 @@ pub(crate) fn load_tasks_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #283: a session's scratch is its PROJECT's directory under Claude Code's per-user root,
+    /// `/tmp/claude-<uid>/<project slug>` — the uid being the transcript's owner, never a constant
+    /// (the owner's is 502 because that is the account's uid). Nothing for a transcript that is not
+    /// there to own anything.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_s_scratch_is_its_project_s_under_the_owner_s_root() {
+        use std::os::unix::fs::MetadataExt;
+        let root = std::env::temp_dir().join(format!("cr-scratch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("-Users-dev-repo");
+        std::fs::create_dir_all(&project).unwrap();
+        let transcript = project.join("f4d4b2d3-c2c0-4e5e-917d-4617babf9cb4.jsonl");
+        std::fs::write(&transcript, "{}\n").unwrap();
+        let uid = std::fs::metadata(&transcript).unwrap().uid();
+        if std::env::var_os("CLAUDE_SCRATCH_ROOT").is_none() {
+            assert_eq!(
+                scratch_dirs(&transcript),
+                vec![PathBuf::from(format!("/tmp/claude-{uid}")).join("-Users-dev-repo")]
+            );
+        }
+        assert!(scratch_dirs(&project.join("absent.jsonl")).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// The sub-agent listing is the complement of the main listing: `agent-*.jsonl` under
     /// `<project>/<sid>/subagents/`, parented to `<sid>` by path alone — main transcripts
