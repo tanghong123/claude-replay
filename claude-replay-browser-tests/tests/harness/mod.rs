@@ -1232,7 +1232,20 @@ impl Monitor {
             cmd.spawn()
                 .unwrap_or_else(|e| panic!("{} starts: {e}", kind.binary())),
         );
-        std::thread::sleep(Duration::from_millis(1500));
+        // Wait for the port to LISTEN, not for a fixed time. A fixed 1.5 s was the whole wait, and
+        // the first launch of a freshly rebuilt binary can take longer than that on macOS (its
+        // first exec is assessed before it runs): whichever case ran first after a release build
+        // navigated to a closed port and failed with `ERR_CONNECTION_REFUSED` — twice in three
+        // runs of one case, on 2026-09-26, with nothing wrong with the page.
+        let listening = Instant::now();
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(
+                listening.elapsed() < Duration::from_secs(15),
+                "{} never listened on port {port} within 15 s — does the binary start?",
+                kind.binary()
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
         Monitor {
             kind,
             port,
