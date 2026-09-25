@@ -398,6 +398,23 @@ It costs nothing when nothing is new: a recognised shape never reaches it, becau
 own `match` answers first. It never holds content — a kind, a name, a count, a version and one
 locator, safe to paste into an issue.
 
+**It sweeps every store, whatever directory it runs from** (#276 — it used the viewer's cwd-scoped
+discovery and scanned nothing from `/tmp`): the newest 200 transcripts machine-wide, or with
+`--since 1d` every one modified in that window, and `--json` gives one object per row
+(`agent, count, where, name, version, example`). It also names every MODEL that produced tokens
+with no price in `claude-replay-engine/pricing.json` (`where: model.unpriced`, counted in sessions):
+that session's cost silently becomes a lower bound.
+
+**A daily job reads it** (#276, the owner: "review ... any unknown dropped messages ... queue up
+tasks ... send me a message when new work is found", and, in the same job, pricing): the LaunchAgent
+`com.hong.unknown-review` runs `scripts/unknown-review.sh` at 09:30. It scans the last day, and a
+headless `claude -p` briefed by `scripts/unknown-review.md` judges each new row (RENDER or IGNORE),
+prices each unpriced model from the vendor's official page, and checks every known price against
+`pricing.json`'s sources — QUEUEING tasks tagged `origin=unknown-review`, never editing. The owner
+gets one `dws` message naming the queued tasks (and one if the job fails). State and logs:
+`~/.local/state/claude-replay/unknown-review/` and `/tmp/unknown-review.{out,err}.log`. A task it
+queued is ordinary queue work: execute it with the gates, the browser suite and a release.
+
 ## Test scratch
 Tests build their scratch under `std::env::temp_dir()` — ~100 call sites across the
 crates — and `.cargo/config.toml` points `TMPDIR` at the workspace's own `target/`,

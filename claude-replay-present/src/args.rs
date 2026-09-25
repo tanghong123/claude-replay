@@ -91,7 +91,11 @@ pub struct Args {
     /// per-TURN timestamps (`turn`, `turn_ts` — the model holds no per-block times), and
     /// tool execution facts (`status`/`exit`/`ms`) where the source recorded them.
     /// `--dump - --json` streams to stdout; with a stem, writes `<stem>.json`.
-    #[cfg_attr(feature = "cli", arg(long, requires = "dump"))]
+    ///
+    /// With `--unknown`: one JSON object per unrecognised shape instead of the table (#276) —
+    /// `{agent, count, where, name, version, example}` — and NOTHING on stdout when nothing is
+    /// new.
+    #[cfg_attr(feature = "cli", arg(long))]
     pub json: bool,
     /// Width for `--dump` (columns). Defaults to the terminal width, else 100.
     #[cfg_attr(feature = "cli", arg(long, value_name = "N"))]
@@ -139,7 +143,13 @@ pub struct Args {
     /// `attachment` alone has twenty types and most are bookkeeping — so anything printed here
     /// is genuinely new since the vocabulary was last taken.
     ///
-    /// With no target it sweeps every agent's store, newest first, up to `--limit`.
+    /// It also names every MODEL that produced tokens but has no price in `pricing.json`
+    /// (`model.unpriced`; its count is sessions): the session's cost silently becomes a lower
+    /// bound, which is the pricing half of the same question (#276).
+    ///
+    /// With no target it sweeps EVERY agent's store on this machine, whatever directory it is
+    /// run from — the newest 200 transcripts, or with `--since` every one modified within that
+    /// window. `--json` prints one object per shape, for a job to read (#276).
     #[cfg_attr(feature = "cli", arg(long))]
     pub unknown: bool,
 
@@ -152,11 +162,11 @@ pub struct Args {
     #[cfg_attr(feature = "cli", arg(long, requires = "paths"))]
     pub all: bool,
 
-    /// With `--paths --all`: only transcripts modified within this window — `90m`, `24h`,
-    /// `7d`. Filtered on mtime BEFORE any file is opened, which is the difference between
-    /// a sweep that costs milliseconds and one that reads every byte on the machine
-    /// (`latest_cwd` is a whole-file scan).
-    #[cfg_attr(feature = "cli", arg(long, value_name = "WINDOW", requires = "all"))]
+    /// With `--paths --all` or `--unknown`: only transcripts modified within this window —
+    /// `90m`, `24h`, `7d`. Filtered on mtime BEFORE any file is opened, which is the difference
+    /// between a sweep that costs milliseconds and one that reads every byte on the machine
+    /// (`latest_cwd` is a whole-file scan; `--unknown` parses every file it is given).
+    #[cfg_attr(feature = "cli", arg(long, value_name = "WINDOW"))]
     pub since: Option<String>,
 }
 

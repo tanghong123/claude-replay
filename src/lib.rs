@@ -29,6 +29,16 @@ pub fn run_viewer() -> Result<()> {
     // A machine used only for dumps would keep the leftovers forever, and those are exactly the
     // ones nobody is watching.
     sys::reclaim();
+    // The two flags `--unknown` shares (#276) each go with either of two others, which clap's own
+    // `requires` cannot say — so they are refused here, before anything runs, rather than ignored.
+    anyhow::ensure!(
+        !args.json || args.dump.is_some() || args.unknown,
+        "--json goes with --dump or --unknown"
+    );
+    anyhow::ensure!(
+        args.since.is_none() || args.all || args.unknown,
+        "--since goes with --paths --all or --unknown"
+    );
     // `--paths`: not a viewer at all — a shell-out entry to the `discover` path vocabulary
     // (for tools that can't link the crate, e.g. a Python collector). Resolve the same way the
     // viewer does, print the directory facts as JSON, and exit.
@@ -40,6 +50,7 @@ pub fn run_viewer() -> Result<()> {
     if args.unknown {
         return print_unknown_shapes(&args);
     }
+
     // `--html`: open a browser instead of the TUI, but with the SAME session
     // selection as the terminal viewer — an explicit id/path or `--latest` resolves
     // directly (cwd-scoped for `--latest`); otherwise show the picker (like a bare
@@ -150,7 +161,8 @@ fn dump_json(args: &Args, path: &std::path::Path) -> Result<()> {
 /// work, so this is the same code path a reader exercises, not a second parser that could
 /// disagree with it.
 fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
-    let limit = 200usize;
+    /// How many of the newest transcripts a sweep with no window parses.
+    const NEWEST: usize = 200;
     let paths: Vec<std::path::PathBuf> = if args.target.is_some() || args.latest {
         vec![discover::resolve_any(
             args.agent,
@@ -158,33 +170,112 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
             args.latest,
         )?]
     } else {
-        let mut all = discover::candidates_all(None);
-        all.sort_by_key(|c| std::cmp::Reverse(c.mtime));
-        all.into_iter().take(limit).map(|c| c.path).collect()
+        // Every agent's STORE, machine-wide (#276): the format moves under all of them, not
+        // under the directory this happens to run from. `candidates_all` answered that question
+        // — the viewer's, cwd-scoped — and from `/tmp` it swept nothing at all. `--since` trims
+        // on mtime before a byte is read; without a window, the newest NEWEST.
+        let cutoff = args.since.as_deref().map(window_cutoff).transpose()?;
+        let mut all: Vec<_> = discover::store_all(args.agent)
+            .into_iter()
+            .filter(|e| cutoff.is_none_or(|c| e.mtime >= c))
+            .collect();
+        all.sort_by(|a, b| b.mtime.total_cmp(&a.mtime));
+        let take = if cutoff.is_some() { all.len() } else { NEWEST };
+        all.into_iter().take(take).map(|e| e.path).collect()
     };
     eprintln!("scanning {} transcript(s)…", paths.len());
+    // The pricing half of "what the adapters did not know about" (#276): a model that produced
+    // tokens and has no price in `pricing.json` — its cost is DROPPED, and the session's figure
+    // becomes a lower bound. Keyed by family and model; the count is sessions.
+    let mut unpriced: std::collections::BTreeMap<(&'static str, String), (u64, Option<String>)> =
+        std::collections::BTreeMap::new();
     for path in &paths {
         // A transcript that will not parse says nothing about the FORMAT moving, and one bad
         // file must not stop the sweep that would have found the thing we are looking for.
-        let _ = claude_replay_core::parse_session(path);
+        let Ok(session) = claude_replay_core::parse_session(path) else {
+            continue;
+        };
+        if !session.metrics.cost_partial {
+            continue;
+        }
+        for (model, t) in &session.metrics.per_model {
+            let tokens = t.input + t.cache_creation + t.cache_read + t.output;
+            let priced = claude_replay_core::metrics::estimate_price(
+                &claude_replay_core::metrics::ModelContext::new(model.as_str()),
+                t.input,
+                t.cache_creation,
+                t.cache_read,
+                t.output,
+            )
+            .is_some();
+            if tokens == 0 || priced {
+                continue;
+            }
+            unpriced
+                .entry((session.agent.label(), model.clone()))
+                .or_insert_with(|| (0, discover::session_id(path)))
+                .0 += 1;
+        }
     }
     let seen = claude_replay_core::unknown::snapshot();
-    if seen.is_empty() {
+    if args.json {
+        // One object per shape, for a job to read — and silence on stdout when nothing is new.
+        for s in &seen {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "agent": s.agent,
+                    "count": s.count,
+                    "where": s.at.as_str(),
+                    "name": s.name,
+                    "version": s.version,
+                    "example": s.example,
+                })
+            );
+        }
+        for ((agent, model), (sessions, example)) in &unpriced {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "agent": agent,
+                    "count": sessions,
+                    "where": "model.unpriced",
+                    "name": model,
+                    "version": null,
+                    "example": example,
+                })
+            );
+        }
+        return Ok(());
+    }
+    if seen.is_empty() && unpriced.is_empty() {
         println!("nothing unrecognised in {} transcript(s).", paths.len());
         return Ok(());
     }
     println!(
-        "{:>8}  {:<18} {:<28} {:<10} example",
-        "count", "where", "name", "version"
+        "{:>8}  {:<10} {:<18} {:<28} {:<10} example",
+        "count", "agent", "where", "name", "version"
     );
     for s in &seen {
         println!(
-            "{:>8}  {:<18} {:<28} {:<10} {}",
+            "{:>8}  {:<10} {:<18} {:<28} {:<10} {}",
             s.count,
+            s.agent,
             s.at.as_str(),
             s.name,
             s.version.as_deref().unwrap_or("-"),
             s.example.as_deref().unwrap_or("-")
+        );
+    }
+    for ((agent, model), (sessions, example)) in &unpriced {
+        println!(
+            "{:>8}  {:<10} {:<18} {:<28} {:<10} {}",
+            sessions,
+            agent,
+            "model.unpriced",
+            model,
+            "-",
+            example.as_deref().unwrap_or("-")
         );
     }
     Ok(())
