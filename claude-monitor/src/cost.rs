@@ -54,8 +54,15 @@ const LEDGER_SHAPE: u32 = 6;
 /// CARRIES them, `restore` accepts them by design (legacy-cursor compat), and the
 /// size/mtime fast path never re-folds an idle transcript, so nothing ever corrected.
 /// A mismatch is a cold re-fold, never an error (a ledger entry is a cache).
+///
+/// And the price CATALOG's fingerprint rides in it too (#278): an entry persists dollars, so a price
+/// added or changed in `pricing.json` must re-price it. Without it, every Opus 5.5 session the ledger
+/// had priced as a lower bound kept its `≥$x` after the model was priced — an idle transcript never
+/// changes size, so the fast path never re-folded it. The daily review (#276) queues price changes
+/// as ordinary work now, so this has to follow the catalog by itself, not by a remembered bump.
 fn ledger_version() -> u64 {
-    (u64::from(LEDGER_SHAPE) << 16)
+    (u64::from(LEDGER_SHAPE) << 48)
+        | (u64::from(claude_replay_core::metrics::PRICING_FINGERPRINT) << 16)
         | u64::from(claude_replay_core::engine::meta_stream::FOLD_VERSION)
 }
 
@@ -595,6 +602,74 @@ mod tests {
                 partial: true,
             })),
             "deferred fold serves the cached subtotal as a lower bound"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #278: an entry persisted under another price CATALOG is re-priced, not served. The same stale
+    /// dollars under the current catalog's version ARE served from the fast path — so it is the
+    /// catalog fingerprint in the version, and nothing else, that decides.
+    #[test]
+    fn an_entry_priced_under_another_catalog_is_repriced() {
+        let d = scratch("catalog");
+        let t = d.join("rollout-2026-08-12T01-00-00-catalog-test.jsonl");
+        std::fs::write(
+            &t,
+            format!(
+                "{}{}",
+                turn_context("gpt-5.6"),
+                token_count("2026-08-12T01:00:01Z", 1_000_000, 0, 0)
+            ),
+        )
+        .unwrap();
+        let meta = std::fs::metadata(&t).unwrap();
+        let costs = d.join("cache").join("costs");
+        std::fs::create_dir_all(&costs).unwrap();
+        let stale = |fingerprint: u32| {
+            std::fs::write(
+                costs.join("rollout-2026-08-12T01-00-00-catalog-test.json"),
+                serde_json::json!({
+                    "v": (u64::from(LEDGER_SHAPE) << 48)
+                        | (u64::from(fingerprint) << 16)
+                        | u64::from(claude_replay_core::engine::meta_stream::FOLD_VERSION),
+                    "len": meta.len(),
+                    "mtime": epoch(meta.modified().ok()),
+                    "complete": true,
+                    "publish_unpriced": false,
+                    "cost": 1.0,
+                    "partial": true,
+                    "cursor": Value::Null,
+                })
+                .to_string(),
+            )
+            .unwrap();
+        };
+        let current = claude_replay_core::metrics::PRICING_FINGERPRINT;
+
+        stale(current);
+        let mut budget = COST_BUDGET_BYTES;
+        let served = CostLedger::new(&d.join("cache")).cost(Agent::CODEX, &t, &mut budget);
+        assert_eq!(
+            budget, COST_BUDGET_BYTES,
+            "same catalog: the fast path answers"
+        );
+        assert_eq!(
+            priced(served),
+            (1.0, true),
+            "and serves what it stored — the control"
+        );
+
+        stale(current ^ 0x5eed);
+        let mut budget = COST_BUDGET_BYTES;
+        let (cost, partial) =
+            priced(CostLedger::new(&d.join("cache")).cost(Agent::CODEX, &t, &mut budget));
+        assert!(
+            budget < COST_BUDGET_BYTES,
+            "another catalog: a real re-fold"
+        );
+        assert!(
+            (cost - 4.0).abs() < 1e-9 && !partial,
+            "re-priced exactly: {cost} {partial}"
         );
         let _ = std::fs::remove_dir_all(&d);
     }

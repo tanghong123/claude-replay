@@ -895,6 +895,27 @@ mod tests {
             (1500.0 + 50000.0 * 1.25 + 5_000_000.0 * 0.10) / 1e6 * 5.0 + 10000.0 / 1e6 * 25.0;
         assert!((c - expected).abs() < 1e-9, "cost {c} vs {expected}");
     }
+
+    /// #278: Opus 5.5 is priced exactly — found unpriced by the daily review (#276), which left
+    /// every session on it showing a lower bound (`≥$x`). Its own rates, not Opus 5's, and its
+    /// cache read at 0.05× input ($0.20 against $4), not the 0.1× the Opus 4.8 test above assumes.
+    #[test]
+    fn opus_5_5_is_priced_exactly_so_its_footer_is_no_lower_bound() {
+        let jsonl = r#"
+{"type":"assistant","timestamp":"2026-09-25T00:00:00.000Z","message":{"model":"claude-opus-5-5","usage":{"input_tokens":1000,"cache_creation_input_tokens":40000,"cache_read_input_tokens":2000000,"output_tokens":5000}}}
+"#;
+        let m = parse_reader(jsonl);
+        assert!(!m.cost_partial, "no model is left unpriced");
+        let c = m.cost_usd.expect("claude-opus-5-5 is priced");
+        let expected = 1000.0 / 1e6 * 4.0
+            + 40000.0 / 1e6 * 5.0
+            + 2_000_000.0 / 1e6 * 0.20
+            + 5000.0 / 1e6 * 20.0;
+        assert!((c - expected).abs() < 1e-9, "cost {c} vs {expected}");
+        let f = m.footer();
+        assert!(f.contains("~$"), "an exact cost, not a lower bound: {f}");
+        assert!(!f.contains("≥$"), "footer: {f}");
+    }
 }
 
 #[cfg(test)]

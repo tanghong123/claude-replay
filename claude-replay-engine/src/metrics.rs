@@ -825,13 +825,32 @@ fn parse_pricing_catalog(json: &str) -> Result<BTreeMap<String, ModelPrice>, Str
     Ok(prices)
 }
 
+/// The embedded catalog's text — what [`builtin_prices`] parses and [`PRICING_FINGERPRINT`] hashes.
+const PRICING_JSON: &str = include_str!("../pricing.json");
+
+/// A fingerprint of the embedded price catalog: FNV-1a over its bytes. A cache that persists
+/// PRICED state — dollars, not tokens — carries it in its version, so a price added or changed in
+/// `pricing.json` re-prices every entry instead of serving the old figure forever (#278: the
+/// monitor's cost ledger kept Opus 5.5 sessions at a lower bound after the model was priced).
+pub const PRICING_FINGERPRINT: u32 = fnv1a32(PRICING_JSON.as_bytes());
+
+const fn fnv1a32(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+        i += 1;
+    }
+    hash
+}
+
 /// Parse and validate the repository-owned default catalog once. Keeping the data in JSON makes
 /// adding a model a table edit; code owns only exact arithmetic, validation, and lookup semantics.
 fn builtin_prices() -> &'static BTreeMap<String, ModelPrice> {
     static PRICES: OnceLock<BTreeMap<String, ModelPrice>> = OnceLock::new();
     PRICES.get_or_init(|| {
-        parse_pricing_catalog(include_str!("../pricing.json"))
-            .expect("embedded pricing.json must be valid")
+        parse_pricing_catalog(PRICING_JSON).expect("embedded pricing.json must be valid")
     })
 }
 
@@ -1284,6 +1303,8 @@ mod price_tests {
         for (model, want) in [
             ("claude-fable-5-1", p("10", "12.5", "0.25", "50")),
             ("claude-mythos-5", p("10", "12.5", "1", "50")),
+            ("claude-opus-5-5", p("4", "5", "0.2", "20")),
+            ("claude-opus-5.5", p("4", "5", "0.2", "20")),
             ("claude-opus-5", p("5", "6.25", "0.5", "25")),
             ("claude-opus-4-8", p("5", "6.25", "0.5", "25")),
             ("claude-opus-4-1-20250805", p("15", "18.75", "1.5", "75")),
@@ -1375,6 +1396,22 @@ mod price_tests {
                 1_000_000
             ),
             Some(72.75)
+        );
+        // Opus 5.5 (#278): its cache read is 0.05x input ($0.20 against $4), where a derived 0.1x
+        // would bill $0.40 — the catalog's explicit column is the one that must reach the formula.
+        assert_eq!(
+            estimate_cost(
+                "claude-opus-5-5",
+                1_000_000,
+                1_000_000,
+                1_000_000,
+                1_000_000
+            ),
+            Some(29.2)
+        );
+        assert_eq!(
+            estimate_cost("claude-opus-5-5", 0, 0, 1_000_000, 0),
+            Some(0.2)
         );
     }
 
