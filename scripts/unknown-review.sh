@@ -12,7 +12,11 @@
 #   1. scan — `agent-replay --unknown --since <window> --json`, machine-wide: every shape the
 #      adapters (the same ones agent-monitor renders with) did not recognise, and every model that
 #      produced tokens with no price in pricing.json. The monitor itself keeps no such log.
-#   2. filter — rows already handed to a task (state/triaged.tsv) are not analysed again.
+#   2. filter — rows already handed to a task (state/triaged.tsv) are not analysed again, and nor
+#      are QoderWork's: the owner is sunsetting it (2026-09-26, "the app is no[w] in the process of
+#      sunsetting so no more investment"). Its transcripts are Claude-shaped and read by the Claude
+#      family, so its rows arrive labelled `claude`; a row whose example session is a QoderWork
+#      transcript is QoderWork's, and is counted in the log instead of analysed.
 #   3. analyse — a headless `claude -p` in this repo, briefed by scripts/unknown-review.md, with a
 #      read-only tool allowlist plus taskq and the web: it judges each new row, checks the known
 #      prices against their official sources (every run — a price can move with no new row), and
@@ -72,17 +76,33 @@ fail() {
 scanned=$(grep -o 'scanning [0-9]* transcript' "$STATE/scan.err" | grep -o '[0-9]*' || echo "?")
 
 # 2. filter
-python3 - "$STATE/scan.jsonl" "$STATE/triaged.tsv" > "$STATE/new.jsonl" <<'PY'
-import json, sys
-scan, triaged = sys.argv[1], sys.argv[2]
+QODERWORK_STORE="${QODERWORK_PROJECTS_DIR:-$HOME/.qoderwork/projects}"
+python3 - "$STATE/scan.jsonl" "$STATE/triaged.tsv" "$QODERWORK_STORE" \
+  > "$STATE/new.jsonl" 2> "$STATE/filter.err" <<'PY'
+import json, os, sys
+scan, triaged, qoderwork = sys.argv[1], sys.argv[2], sys.argv[3]
 done = {tuple(line.rstrip("\n").split("\t")[:3]) for line in open(triaged) if line.strip()}
+# QoderWork is being sunset: its sessions, by the transcripts in its own store.
+sunset = {
+    name[: -len(".jsonl")]
+    for _, _, files in os.walk(qoderwork)
+    for name in files
+    if name.endswith(".jsonl")
+}
+skipped = 0
 for line in open(scan):
     row = json.loads(line)
-    if (row["agent"], row["where"], row["name"]) not in done:
-        print(line.rstrip("\n"))
+    if (row["agent"], row["where"], row["name"]) in done:
+        continue
+    if row.get("example") in sunset:
+        skipped += 1
+        continue
+    print(line.rstrip("\n"))
+print(skipped, file=sys.stderr)
 PY
 new=$(wc -l < "$STATE/new.jsonl" | tr -d ' ')
-log "scanned $scanned transcript(s) in $WINDOW: $(wc -l < "$STATE/scan.jsonl" | tr -d ' ') row(s), $new new"
+sunset_skipped=$(tail -1 "$STATE/filter.err")
+log "scanned $scanned transcript(s) in $WINDOW: $(wc -l < "$STATE/scan.jsonl" | tr -d ' ') row(s), $new new, $sunset_skipped QoderWork row(s) skipped (sunset)"
 
 # 3. analyse — every run: the price check needs no new row to find a moved price.
 started=$(date -u +%FT%TZ)
