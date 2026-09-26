@@ -14,7 +14,7 @@ import { recordTextSize, LIVE_SEARCH_LIMIT, recordText, recordTextParts, parseSc
 import { fmtTime, fmtDur } from "../../claude-monitor/src/codex-ui/shared/time.js";
 import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/shared/parts.js";
 import { isInteraction, interactionCard, interactionHtml } from "../../claude-replay-html/src/html/shared/interaction.js";
-import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE } from "../../claude-replay-html/src/html/shared/search.js";
+import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE, takeTools, toolMatches, writeTools, recordHasTool } from "../../claude-replay-html/src/html/shared/search.js";
 import { chainWalk } from "../../claude-replay-html/src/html/shared/filter.js";
 import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, traceWanted } from "../../claude-replay-html/src/html/shared/virtual-window.js";
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
@@ -1600,7 +1600,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /data-scope-count="\$\{key\}"/, "the scope rows carry counts");
   assert.match(app, /function applyScopeFromMenu\(\) \{/, "the buttons rewrite the box's prefix");
   const search = readFileSync(new URL("../../claude-replay-html/src/html/shared/search.js", import.meta.url), "utf8");
-  assert.match(search, /^export \{ CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc \};\s*$/m);
+  assert.match(search, /^export \{ CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, takeTools, toolMatches, writeTools, recordHasTool, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc \};\s*$/m);
   console.log("#101 scope cases passed");
 }
 
@@ -2890,4 +2890,80 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 
   assert.deepEqual(fleetGroups(null), [], "a missing roster is not an error");
   console.log("#241 fleet-grouping cases passed");
+}
+
+// #292 — `tool:` is part of the one query grammar (design/in-session-search.md §3): a facet the
+// reader can TYPE, so a menu click and a typed token are one thing, and text narrows WITHIN the
+// tools rather than replacing them (which is what `activeMatches()` used to do).
+{
+  const q = raw => {
+    const r = splitQuery(raw);
+    return { needle: r.needle, scope: r.set ? Object.keys(r.set).filter(k => r.set[k]).join("") : null, tools: r.tools.map(t => (t.prefix ? "^" : "=") + t.name), tooShort: r.tooShort };
+  };
+  assert.deepEqual(q("timeout"), { needle: "timeout", scope: null, tools: [], tooShort: false },
+    "a query with no facet is what it always was");
+  assert.deepEqual(q("tool:Bash"), { needle: "", scope: null, tools: ["=Bash"], tooShort: false },
+    "a facet alone is a whole query — today's tool filter, typed");
+  assert.deepEqual(q("tool:Bash timeout"), { needle: "timeout", scope: null, tools: ["=Bash"], tooShort: false },
+    "…and beside text it NARROWS it: Bash calls whose text matches");
+  assert.deepEqual(q("ub: tool:Bash timeout"), { needle: "timeout", scope: "ub", tools: ["=Bash"], tooShort: false },
+    "all three axes at once, the scope prefix still first");
+  assert.deepEqual(q("tool:Bash tool:Read hunk"), { needle: "hunk", scope: null, tools: ["=Bash", "=Read"], tooShort: false },
+    "two tools are two values of ONE facet (they OR; facets AND)");
+  assert.deepEqual(q("tool:Bash tool:bash x2"), { needle: "x2", scope: null, tools: ["=Bash"], tooShort: false },
+    "the same tool twice is one value");
+  assert.deepEqual(q("tool:mcp__github__* issue"), { needle: "issue", scope: null, tools: ["^mcp__github__"], tooShort: false },
+    "a `*` value is the FAMILY form — the prefix match the classic menu's server rows already do");
+
+  // The rules the TUI shares, unchanged (the parser is the same one `/` uses).
+  assert.deepEqual(q("auto:"), { needle: "auto:", scope: null, tools: [], tooShort: false },
+    "a bare scope run still searches ITSELF — 'scopes alone as a facet query' would break `/`");
+  assert.deepEqual(q(":tool:Bash"), { needle: "tool:Bash", scope: null, tools: [], tooShort: false },
+    "the leading-colon escape means the literal text, facets included");
+  assert.deepEqual(q("tool:"), { needle: "tool:", scope: null, tools: [], tooShort: false },
+    "an empty value is not a token: a reader mid-type is not suddenly searching nothing");
+  assert.equal(q("tool:Bash a").tooShort, true,
+    "one character of text is too short whatever rides beside it — dropping the text silently " +
+    "would answer a question nobody asked");
+  assert.equal(q("tool:Bash").tooShort, false, "no text at all is not too short; the facet is the query");
+  assert.deepEqual(splitQuery("a tool:Bash b").needle, "a b",
+    "the token's own space goes with it");
+  assert.deepEqual(splitQuery("a  b").needle, "a  b", "…and the reader's own spacing does not");
+
+  assert.equal(toolMatches("Bash", [{ name: "Bash", prefix: false }]), true, "exact name");
+  assert.equal(toolMatches("bash", [{ name: "Bash", prefix: false }]), true, "typed by hand, so case-insensitive");
+  assert.equal(toolMatches("BashOutput", [{ name: "Bash", prefix: false }]), false, "exact means exact");
+  assert.equal(toolMatches("mcp__github__get_issue", [{ name: "mcp__github__", prefix: true }]), true, "a family");
+  assert.equal(toolMatches("mcp__slack__post", [{ name: "mcp__github__", prefix: true }]), false, "…and only its own");
+  assert.equal(toolMatches("Bash", []), true, "an empty facet asks nothing");
+  assert.equal(toolMatches("", [{ name: "Bash", prefix: false }]), false, "a record with no tool answers no tool facet");
+
+  assert.equal(writeTools("tool:Read timeout", ["Bash", "mcp__github__*"]), "tool:Bash tool:mcp__github__* timeout",
+    "the menu writes the box (#101): the reader's words are kept, the old tokens replaced");
+  assert.equal(writeTools("tool:Bash timeout", []), "timeout", "unticking the last tool leaves the text alone");
+
+  // Part-precise counting: the words must sit in the TOOL's own text, not merely in a record
+  // that contains one. `act` is the coalescing span the engine builds around tool calls.
+  const span = {
+    kind: "act",
+    body: [{ p: "think", h: "<p>a timeout, maybe</p>" }, { p: "blocks", items: [
+      { kind: "bash", tool: "Bash", body: [{ p: "pre", x: "curl: timeout after 30s" }] },
+      { kind: "read", tool: "Read", body: [{ p: "pre", x: "no such word here" }] },
+    ] }],
+  };
+  const { text, parts } = recordTextParts(span, stripTags, s => s.toLowerCase());
+  const count = tools => countRecord(text, parts, "timeout", false, 0, null, tools);
+  assert.equal(count(null), 2, "unscoped and unfacetted, both occurrences count");
+  assert.equal(count([{ name: "Bash", prefix: false }]), 1,
+    "with `tool:Bash`, only the Bash call's own words — the thinking's 'timeout' beside it is " +
+    "the thinking's, exactly as a scope already reads it");
+  assert.equal(count([{ name: "Read", prefix: false }]), 0, "and a tool whose text lacks the word counts none");
+  assert.equal(count([{ name: "mcp__x__", prefix: true }]), 0, "nor a family this span never called");
+
+  assert.equal(recordHasTool(span, [{ name: "Bash", prefix: false }]), true,
+    "a facet with no text asks whether the record HOLDS such a call — nested counts");
+  assert.equal(recordHasTool(span, [{ name: "Grep", prefix: false }]), false, "…and says no when it does not");
+  assert.equal(recordHasTool(span, []), false, "no facet, no claim");
+
+  console.log("#292 tool-facet grammar cases passed");
 }

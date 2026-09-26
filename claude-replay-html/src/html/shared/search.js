@@ -63,7 +63,10 @@ function recordTextParts(b, strip, lower = s => s) {
       const start = length;
       all.push(own);
       length += own.length;
-      parts.push({ start, end: length, mask: directMask(record.kind) });
+      // `tool` (#292) is the record whose own text this is — the name a `tool:` facet asks for,
+      // so "Bash calls whose text matches" is answered per PART: a word in the thinking that
+      // absorbed a Bash call is the thinking's, exactly as the scope mask beside it already is.
+      parts.push({ start, end: length, mask: directMask(record.kind), tool: record.tool || "" });
     }
     for (const p of record.body || []) if (p.p === "blocks") for (const item of p.items || []) walk(item);
   })(b);
@@ -185,24 +188,107 @@ function splitQuery(raw, minLen = MIN_NEEDLE) {
     else needle = rest;
   }
   const set = scoped && scoped.set ? scoped.set : null;
-  return { needle, lc: needle.toLowerCase(), set, scoped, tooShort: needle.length < minLen };
+  // `tool:` tokens (#292) come out of what is left, unless the query was ESCAPED with a leading
+  // colon — there the reader asked for the literal text, all of it.
+  const escaped = !!(scoped && scoped.set === null);
+  const tools = escaped ? [] : takeTools(needle);
+  if (tools.length) needle = tools.rest;
+  const text = needle.trim();
+  return {
+    needle: text,
+    lc: text.toLowerCase(),
+    set,
+    scoped,
+    tools: tools.length ? tools.slice() : [],
+    // A facet with no text is a whole query; text too short to run is too short whatever rides
+    // beside it — a one-character needle silently dropped would answer a question nobody asked.
+    tooShort: text.length > 0 && text.length < minLen,
+  };
+}
+
+/** A `tool:` VALUE as the reader may write it: a bare name (`tool:Bash`), or a name ending in `*`
+ *  for a family (`tool:mcp__github__*`, `tool:mcp__*`) — the prefix match the classic page's
+ *  `[data-tool^=]` filter already does. Quoting is not part of the grammar: a tool name has no
+ *  spaces (the value ends at whitespace), and a name that did could not be typed into the box
+ *  today either. */
+const TOOL_TOKEN = /(?:^|\s)tool:([^\s]+)/gi;
+
+/** Pull every `tool:` token out of `raw`, newest rules in `splitQuery`. Returns an array of
+ *  `{name, prefix}` — `prefix` true for the `*` form, with the star removed — carrying `rest`:
+ *  what is left of the box for the text search. Duplicates collapse; an empty value (`tool:`)
+ *  is not a token and stays in the text, so a reader mid-type is not searching nothing. */
+function takeTools(raw) {
+  const out = [];
+  const seen = new Set();
+  const rest = String(raw ?? "").replace(TOOL_TOKEN, (whole, value) => {
+    const prefix = value.endsWith("*");
+    const name = prefix ? value.slice(0, -1) : value;
+    if (!name.length) return whole;
+    const key = (prefix ? "^" : "=") + name.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push({ name, prefix });
+    }
+    // The match ATE the space before the token, so it is removed with it: what is left of
+    // `a tool:Bash b` is `a b`, not `a  b`, which would search two literal spaces. The reader's
+    // own spacing between their own words is untouched.
+    return "";
+  });
+  out.rest = rest;
+  return out;
+}
+
+/** Does a record's `tool` answer one of `tools` (as `splitQuery` returns them)? An empty list
+ *  asks nothing and admits every record — the caller decides whether that means "no filter".
+ *  Case-insensitive, because the box is typed by hand. */
+function toolMatches(tool, tools) {
+  if (!tools || !tools.length) return true;
+  if (!tool) return false;
+  const lc = String(tool).toLowerCase();
+  return tools.some(t => (t.prefix ? lc.startsWith(t.name.toLowerCase()) : lc === t.name.toLowerCase()));
+}
+
+/** The `tool:` tokens for a set of names, as the box would hold them — what a menu writes when
+ *  the reader ticks rows (#292: the box is the truth, so a click and a typed token are one
+ *  thing). A name ending in `*` is passed through as the family form. */
+function writeTools(raw, names) {
+  const rest = String(raw ?? "").replace(TOOL_TOKEN, " ").replace(/\s+/g, " ").trim();
+  const tokens = (names || []).map(n => "tool:" + n).join(" ");
+  return [tokens, rest].filter(Boolean).join(" ");
 }
 
 /** One record's hits: the total IN SCOPE, and — always, whatever the scope — every part's hits
  *  added into `counts` by the classes that part carries. The scope decides what is COUNTED for
  *  the reader, never what the per-class row shows, which is what makes an unscoped search still
  *  fill the scope rows a reader is about to choose from. */
-function countRecord(text, parts, lc, whole, wanted, counts) {
+function countRecord(text, parts, lc, whole, wanted, counts, tools) {
   let inScope = 0;
+  const byTool = !!(tools && tools.length);
   for (const part of parts || []) {
     const n = countOcc(text.slice(part.start, part.end), lc, whole);
     if (!n) continue;
     if (counts) for (const k of CLASS_ORDER) if (part.mask & CLASS_BIT[k]) counts[k] += n;
+    if (byTool && !toolMatches(part.tool, tools)) continue;
     if (!wanted || part.mask & wanted) inScope += n;
   }
   // Unscoped, the record's own text is the truth — a part-sum would drop the bytes no part
   // claims (a head's summary, an agent or attachment record) that the classic page counts.
-  return wanted ? inScope : countOcc(text, lc, whole);
+  // A TOOL facet (#292) is a claim about which call the words sit in, so there the parts ARE the
+  // answer: text no part claims belongs to no tool.
+  return wanted || byTool ? inScope : countOcc(text, lc, whole);
+}
+
+/** Does a record, or anything nested in it, hold a call one of `tools` names (#292)? The facet's
+ *  own question, for a query with no text: the chain is `shared/filter.js`'s, and this is the
+ *  predicate a page hands it. */
+function recordHasTool(b, tools) {
+  if (!tools || !tools.length) return false;
+  if (toolMatches(b.tool, tools)) return true;
+  for (const p of b.body || []) {
+    if (p.p !== "blocks") continue;
+    for (const item of p.items || []) if (recordHasTool(item, tools)) return true;
+  }
+  return false;
 }
 
 /** The count a reader sees: "12 hits", "3 hits in ua", "1 hit · whole words". */
@@ -222,4 +308,4 @@ function writePrefix(raw, letters) {
   return (letters.length ? letters.join("") + ":" : "") + rest;
 }
 
-export { CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };
+export { CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, takeTools, toolMatches, writeTools, recordHasTool, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };
