@@ -41,8 +41,9 @@ pub struct StoreEntry {
     /// Absolute path to the transcript.
     pub path: PathBuf,
     /// Last-modified time, epoch seconds. The cheap recency key: a machine can hold a
-    /// gigabyte of transcripts, and the per-file `discover` reads (`latest_cwd` scans the
-    /// whole file) are worth paying only for the ones a caller's window actually covers.
+    /// gigabyte of transcripts, and the per-file `discover` reads (`latest_cwd` reads the
+    /// file's end, or all of it when the end records no cwd) are worth paying only for the
+    /// ones a caller's window actually covers.
     pub mtime: f64,
 }
 

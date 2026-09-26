@@ -289,7 +289,8 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
 fn print_session_paths(args: &Args) -> Result<()> {
     // `--all`: the machine-wide sweep. The store registry decides what exists; `--since`
     // trims it by mtime BEFORE any transcript is opened, because the per-file facts below
-    // include `latest_cwd`, a whole-file scan.
+    // each open it — `latest_cwd` reads its end (#10), and a Codex rollout, whose cwd is
+    // recorded only in its head, the whole of it.
     if args.all {
         let cutoff = match args.since.as_deref() {
             Some(w) => Some(window_cutoff(w)?),

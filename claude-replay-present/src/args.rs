@@ -165,7 +165,8 @@ pub struct Args {
     /// With `--paths --all` or `--unknown`: only transcripts modified within this window —
     /// `90m`, `24h`, `7d`. Filtered on mtime BEFORE any file is opened, which is the difference
     /// between a sweep that costs milliseconds and one that reads every byte on the machine
-    /// (`latest_cwd` is a whole-file scan; `--unknown` parses every file it is given).
+    /// (`--unknown` parses every file it is given; `latest_cwd` reads a file's end, and the
+    /// whole of it only when the end records no cwd, #10).
     #[cfg_attr(feature = "cli", arg(long, value_name = "WINDOW"))]
     pub since: Option<String>,
 }

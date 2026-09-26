@@ -1,7 +1,7 @@
 //! The **discovery vocabulary** — the agent-free half of locating sessions (#87 step 3):
 //! the shared [`Candidate`] type, the cwd-ancestor scoping helpers, and the format-neutral
-//! transcript-head readers `first_cwd`/`latest_cwd`/`session_id` (and the disk-grounded
-//! `project_path`). The REGISTRY half — `detect_agent`,
+//! transcript readers `first_cwd`/`session_id` (the head) and `latest_cwd` (the end) (and the
+//! disk-grounded `project_path`). The REGISTRY half — `detect_agent`,
 //! `resolve_any`, `candidates_all`, the per-adapter dispatch — lives in the facade crate
 //! (`claude-replay-core`), which wires the agents in; adapters build on THIS half through
 //! the seam.
@@ -224,15 +224,85 @@ pub fn first_cwd(path: &Path) -> Option<PathBuf> {
         .find_map(|v| cwd_in_record(&v))
 }
 
+/// How much of a transcript's END [`latest_cwd`] reads before it reads the whole file. Measured
+/// over this machine's 141 transcripts (2026-09-26, #10): every Claude and QoderWork session
+/// records its last cwd within 1 MiB of EOF (132 of them within 64 KiB), because nearly every
+/// line they write carries one. A Codex rollout records it only in its head `session_meta`, so
+/// those always fall back — 1 MiB on top of the scan they paid before.
+const LATEST_CWD_TAIL: u64 = 1 << 20;
+
 /// The **last** working directory recorded in the transcript — the session's most-recent cwd.
-/// Pure, but scans the WHOLE transcript (the last cwd can be anywhere), unlike [`first_cwd`]'s
-/// head-only read. Accepts both Claude and Codex shapes. `None` when none is recorded.
+/// Pure. Accepts both Claude and Codex shapes. `None` when none is recorded.
+///
+/// The last cwd can be anywhere, so the answer is a whole-file question, but it is almost always
+/// on one of the last few lines: the END is read first, and the whole file only when the end
+/// records none (#10). That is exact rather than a heuristic — if any line in the tail records a
+/// cwd, every line after the last such one was read too, so it IS the file's last. It was a
+/// whole-file scan of every transcript `--paths --all` returned: 3.6 s of a daily sweep that then
+/// folded the same bytes again.
 pub fn latest_cwd(path: &Path) -> Option<PathBuf> {
-    // Whole-file scan for a small field: the one discovery read that genuinely elides.
-    crate::engine::bounded_lines(path, crate::engine::Elision::Aggressive)
-        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
-        .filter_map(|v| cwd_in_record(&v))
-        .last()
+    latest_cwd_within(path, LATEST_CWD_TAIL)
+}
+
+/// [`latest_cwd`] with the tail's size as a parameter, so the tests can move the window across
+/// every position of a small file.
+fn latest_cwd_within(path: &Path, tail: u64) -> Option<PathBuf> {
+    let len = std::fs::metadata(path).ok()?.len();
+    if len > tail {
+        if let Some(cwd) = last_cwd_from(path, len - tail) {
+            return Some(cwd);
+        }
+    }
+    last_cwd_from(path, 0)
+}
+
+/// The last cwd among the lines that START at or after `from`, each read through the bounded
+/// source the whole-file scan uses (#193: `Aggressive` elision, a torn final line yielded) — so a
+/// line reads the same whichever of the two scans reaches it. A `from` inside a line moves on to
+/// the next line start, and so does a `from` that IS one: telling the two apart costs a read
+/// behind `from`, and whatever the skip passes over the whole-file fallback still reads.
+fn last_cwd_from(path: &Path, from: u64) -> Option<PathBuf> {
+    use std::io::{BufRead, Seek, SeekFrom};
+    let mut reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    let mut at = from;
+    if from > 0 {
+        reader.seek(SeekFrom::Start(from)).ok()?;
+        // To the end of the line `from` lands in, through the buffer — never collected.
+        loop {
+            let buf = reader.fill_buf().ok()?;
+            if buf.is_empty() {
+                return None; // no line starts in the tail
+            }
+            match buf.iter().position(|&b| b == b'\n') {
+                Some(i) => {
+                    reader.consume(i + 1);
+                    at += i as u64 + 1;
+                    break;
+                }
+                None => {
+                    let n = buf.len();
+                    reader.consume(n);
+                    at += n as u64;
+                }
+            }
+        }
+    }
+    let mut src = crate::engine::LineSource::new(
+        reader,
+        at,
+        crate::engine::TornTail::Yield,
+        crate::engine::Elision::Aggressive,
+    );
+    let mut last = None;
+    while let Ok(Some((_, line))) = src.next() {
+        if let Some(cwd) = serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|v| cwd_in_record(&v))
+        {
+            last = Some(cwd);
+        }
+    }
+    last
 }
 
 /// The directory a session's transcript belongs to — DISK-GROUNDED, unlike the pure
@@ -381,6 +451,99 @@ mod cwd_tests {
         assert_eq!(first_cwd(&t), Some(PathBuf::from("/a/start")));
         assert_eq!(latest_cwd(&t), Some(PathBuf::from("/a/end")));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #10: reading the END first changes the cost of `latest_cwd`, never its answer. The oracle
+    /// is the whole-file scan it replaced, verbatim; every fixture is checked with the tail
+    /// window at EVERY size from one byte past the whole file, so the window's edge lands on
+    /// every byte — mid-line, on a line start, on a newline, inside a torn tail.
+    #[test]
+    fn reading_the_tail_first_agrees_with_the_whole_file_at_every_window() {
+        let oracle = |p: &Path| {
+            crate::engine::bounded_lines(p, crate::engine::Elision::Aggressive)
+                .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+                .filter_map(|v| cwd_in_record(&v))
+                .last()
+        };
+        let long = "x".repeat(300);
+        let fixtures: Vec<(&str, String)> = vec![
+            (
+                "the session moved, and says so on every line",
+                concat!(
+                    r#"{"type":"user","cwd":"/a/start"}"#,
+                    "\n",
+                    r#"{"type":"assistant","cwd":"/a/middle"}"#,
+                    "\n",
+                    r#"{"type":"user","cwd":"/a/end"}"#,
+                    "\n",
+                )
+                .to_string(),
+            ),
+            (
+                "Codex: the cwd lives only in the head record",
+                format!(
+                    "{}\n{}\n{}\n{}\n",
+                    r#"{"type":"session_meta","payload":{"id":"c","cwd":"/codex/repo"}}"#,
+                    r#"{"type":"response_item","payload":{"type":"message"}}"#,
+                    r#"{"type":"event_msg","payload":{"type":"token_count"}}"#,
+                    r#"{"type":"response_item","payload":{"type":"message"}}"#,
+                ),
+            ),
+            (
+                "the last line is longer than most windows, and carries the answer",
+                format!(
+                    "{}\n{{\"type\":\"user\",\"cwd\":\"/big/last\",\"t\":\"{long}\"}}\n",
+                    r#"{"type":"user","cwd":"/before"}"#
+                ),
+            ),
+            (
+                "records after the last cwd carry none",
+                format!(
+                    "{}\n{}\n{}\n{}\n",
+                    r#"{"type":"user","cwd":"/only"}"#,
+                    r#"{"type":"summary","summary":"s"}"#,
+                    r#"{"type":"custom-title","customTitle":"t"}"#,
+                    r#"{"type":"last-prompt","lastPrompt":"p"}"#,
+                ),
+            ),
+            (
+                "a torn final line that parses is a record awaiting its newline",
+                format!(
+                    "{}\n{}",
+                    r#"{"type":"user","cwd":"/complete"}"#, r#"{"type":"user","cwd":"/torn"}"#
+                ),
+            ),
+            (
+                "a torn final line that does not parse is a write in progress",
+                format!(
+                    "{}\n{}",
+                    r#"{"type":"user","cwd":"/complete"}"#, r#"{"type":"user","cwd":"/tor"#
+                ),
+            ),
+            (
+                "blank lines and CRLF endings",
+                "{\"type\":\"user\",\"cwd\":\"/crlf/a\"}\r\n\r\n\n{\"type\":\"user\",\"cwd\":\"/crlf/b\"}\r\n\n"
+                    .to_string(),
+            ),
+            ("nothing records a cwd", "{\"type\":\"summary\"}\n{}\n".to_string()),
+            ("an empty file", String::new()),
+        ];
+        let dir = std::env::temp_dir().join(format!("cr-cwd-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, (what, body)) in fixtures.iter().enumerate() {
+            let p = dir.join(format!("f{i}.jsonl"));
+            write(&p, body);
+            let want = oracle(&p);
+            for tail in 1..=body.len() as u64 + 1 {
+                assert_eq!(
+                    latest_cwd_within(&p, tail),
+                    want,
+                    "{what}: a {tail}-byte tail disagrees with the whole-file scan"
+                );
+            }
+            assert_eq!(latest_cwd(&p), want, "{what}: the production window");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
