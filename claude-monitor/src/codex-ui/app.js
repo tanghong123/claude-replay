@@ -3,7 +3,7 @@ import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "./shared/cost-display.js";
-import { chainWalk } from "./shared/filter.js";
+import { chainWalk, toolTree } from "./shared/filter.js";
 import { taskCardHtml, taskRowMeta, TASK_NO_TITLE } from "./shared/task-card.js";
 import { ControlStore } from "./control-store.js";
 import { Preview } from "./preview.js";
@@ -1465,6 +1465,15 @@ byId("transcriptSearchInput").onkeydown = event => {
   if (recordState.pendingSearch) { recordState.pendingSearch = false; updateSearch(true); return; }
   stepSearch(event.shiftKey ? -1 : 1);
 };
+// Whole words: production-only chrome, layered beside the box at runtime so the extracted demo
+// shell stays exact (#293 — the same way the shell switch is added). `w:` keeps working typed.
+const wholeWords = document.createElement("button");
+wholeWords.className = "find-nav find-whole"; wholeWords.id = "transcriptWholeWords"; wholeWords.type = "button";
+wholeWords.title = "Whole words only  ·  w:"; wholeWords.setAttribute("aria-label", "Whole words only");
+wholeWords.setAttribute("aria-pressed", "false");
+wholeWords.textContent = "ab|";
+byId("findPrev").insertAdjacentElement("beforebegin", wholeWords);
+wholeWords.onclick = () => { uiState.searchWhole = !uiState.searchWhole; applyScopeFromMenu(); renderFilterMenu(); };
 byId("findNext").onclick = () => stepSearch(1); byId("findPrev").onclick = () => stepSearch(-1);
 
 function toolNames(records, into = []) {
@@ -1476,15 +1485,54 @@ function toolNames(records, into = []) {
   }
   return into;
 }
+/** How many calls of each tool the session holds — the menu's counts (#293), from the RECORDS and
+ *  their nested items, never the DOM (which holds only the mounted window). */
+function toolCounts(records) {
+  const counts = Object.create(null);
+  for (const name of toolNames(records)) counts[name] = (counts[name] || 0) + 1;
+  return counts;
+}
+/** The box token for one row's selection: a name, or `name*` for a family (#292's `tool:` form). */
+function facetToken(select) {
+  return select.toolPre ? `${select.toolPre}*` : select.tool;
+}
 function renderFilterMenu() {
   const scopes = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "All tools"], ["b", "Bash output"], ["r", "Reads"], ["e", "Edits"]];
-  byId("scopeRow").innerHTML = scopes.map(([key, label]) => `<button class="scope-option ${uiState.searchScopes.has(key) ? "on" : ""}" data-scope="${key}"><span class="scope-check"></span><span>${label}</span><span class="scope-count" data-scope-count="${key}"></span><span class="scope-key">${key}</span></button>`).join("")
-    + `<button class="scope-option scope-whole ${uiState.searchWhole ? "on" : ""}" data-scope="w"><span class="scope-check"></span><span>Whole words</span><span class="scope-key">w</span></button>`;
-  // Every tool in the session, nested ones included — a tool call sits inside an activity
-  // record, so a top-level scan listed nothing (#110).
-  const tools = [...new Set(toolNames(recordState.records))];
-  byId("filterOptions").innerHTML = tools.map(tool => `<button class="tool-type-option ${uiState.toolFilters.has(tool) ? "on" : ""}" data-tool-filter="${escapeText(tool)}"><span class="filter-dot"></span><span>${escapeText(tool)}</span></button>`).join("") || '<div class="tool-type-empty">No tool events in this session</div>';
-  byId("filterBadge").textContent = uiState.toolFilters.size || "";
+  // The scope rows' hint reads as the TOKEN a reader would type (`u:`), not as a bare letter that
+  // looks like a keyboard shortcut (#293).
+  byId("scopeRow").innerHTML = scopes.map(([key, label]) => `<button class="scope-option ${uiState.searchScopes.has(key) ? "on" : ""}" data-scope="${key}"><span class="scope-check"></span><span>${label}</span><span class="scope-count" data-scope-count="${key}"></span><span class="scope-key">${key}:</span></button>`).join("");
+  // Whole words is a MATCH OPTION, not a part of the transcript, so it sits beside the box with
+  // the other match controls (#293) instead of below the scope classes it is not one of.
+  wholeWords.classList.toggle("on", !!uiState.searchWhole);
+  wholeWords.setAttribute("aria-pressed", uiState.searchWhole ? "true" : "false");
+  // The section's SHAPE is the shared rule (#293, shared/filter.js toolTree): every tool in the
+  // session with its count — nested ones included, since a call sits inside an activity record and
+  // a top-level scan listed nothing (#110) — and MCP calls collapsed into one expandable family
+  // instead of one row per `mcp__server__tool`, which is what a session with dozens of them needs.
+  // Most-used first here; the classic page keeps its alphabetical order.
+  const groups = toolTree(toolCounts(recordState.records), uiState.toolTreeOpen, "count");
+  const rows = groups.flatMap(g => g.rows);
+  byId("filterOptions").innerHTML = rows
+    .map(r => {
+      const token = facetToken(r.select);
+      const on = uiState.toolFilters.has(token) ? " on" : "";
+      const sub = r.depth ? ` tool-sub${r.depth}` : "";
+      // A twisty EXPANDS; it never selects (the handler checks it first). A row without one gets
+      // the bullet, tinted as the classic page tints its server and leaf rows.
+      const bullet = r.twisty
+        ? `<span class="tool-tw" data-tw="${escapeText(r.twisty)}">${uiState.toolTreeOpen.has(r.twisty) ? "▾" : "▸"}</span>`
+        : `<span class="filter-dot${r.tint ? " filter-dot-" + r.tint : ""}"></span>`;
+      // The full name as the tooltip: an MCP row reads `server/tool`, and the reader may still
+      // need the name a script would use.
+      const title = r.select.tool || `${r.select.toolPre}*`;
+      return `<button class="tool-type-option${on}${sub}" data-tool-filter="${escapeText(token)}" data-label="${escapeText(r.label)}" data-depth="${r.depth}" title="${escapeText(title)}">${bullet}<span>${escapeText(r.label)}</span><span class="count">${r.count}</span></button>`;
+    })
+    .join("") || '<div class="tool-type-empty">No tool events in this session</div>';
+  // The badge counts every active facet, tools AND classes (#293): a scope narrows the results, so
+  // a button that read "inactive" while `u:` was on was telling the reader the opposite of the
+  // truth. `searchWhole` is a match option, not a facet, and is not counted.
+  const classes = ALL_SCOPES.every(k => uiState.searchScopes.has(k)) ? 0 : uiState.searchScopes.size;
+  byId("filterBadge").textContent = uiState.toolFilters.size + classes || "";
 }
 /** Tick or untick one tool: write the facets into the BOX and let `updateSearch` do the rest
  *  (#292). Nothing sets the tool state directly any more — the box is the query. */
@@ -1771,7 +1819,11 @@ document.addEventListener("click", event => {
 }, true);
 applyReading();
 byId("filterTranscriptBtn").onclick = () => { setPopover(byId("navigatorOptions").classList.contains("open") ? null : "filter"); renderFilterMenu(); };
-byId("navigatorOptions").onclick = event => { const scope = event.target.closest("[data-scope]"); if (scope) { const key = scope.dataset.scope; if (key === "w") uiState.searchWhole = !uiState.searchWhole; else { const everything = ALL_SCOPES.every(k => uiState.searchScopes.has(k)); if (everything) uiState.searchScopes = new Set([key]); else if (uiState.searchScopes.has(key)) { uiState.searchScopes.delete(key); if (!uiState.searchScopes.size) uiState.searchScopes = new Set(ALL_SCOPES); } else uiState.searchScopes.add(key); } applyScopeFromMenu(); } const tool = event.target.closest("[data-tool-filter]"); if (tool) { toggleToolFacet(tool.dataset.toolFilter); } };
+byId("navigatorOptions").onclick = event => { const scope = event.target.closest("[data-scope]"); if (scope) { const key = scope.dataset.scope; { const everything = ALL_SCOPES.every(k => uiState.searchScopes.has(k)); if (everything) uiState.searchScopes = new Set([key]); else if (uiState.searchScopes.has(key)) { uiState.searchScopes.delete(key); if (!uiState.searchScopes.size) uiState.searchScopes = new Set(ALL_SCOPES); } else uiState.searchScopes.add(key); } applyScopeFromMenu(); } // A twisty EXPANDS its branch and selects nothing (#293): it sits INSIDE the row button, so it
+  // must be answered before the row, or opening a family would filter by it. Re-render only the
+  // menu — the query has not changed.
+  const tw = event.target.closest("[data-tw]"); if (tw) { const key = tw.dataset.tw; uiState.toolTreeOpen.has(key) ? uiState.toolTreeOpen.delete(key) : uiState.toolTreeOpen.add(key); renderFilterMenu(); return; }
+  const tool = event.target.closest("[data-tool-filter]"); if (tool) { toggleToolFacet(tool.dataset.toolFilter); } };
 byId("selectAllScopes").onclick = () => { uiState.searchScopes = new Set(ALL_SCOPES); uiState.searchWhole = false; applyScopeFromMenu(); };
 byId("clearTranscriptFilters").onclick = () => { setToolFacets([]); };
 

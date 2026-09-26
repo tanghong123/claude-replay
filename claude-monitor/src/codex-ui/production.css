@@ -885,3 +885,17 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .prompt-attachment-reveal{width:32px;flex:none;border:1px solid color-mix(in srgb,var(--primary) 14%,var(--line));border-radius:11px;background:transparent;color:var(--faint);display:grid;place-items:center;cursor:pointer}
 .prompt-attachment-reveal:hover{background:var(--hover);color:var(--ink)}
 .prompt-attachment-reveal .icon{width:14px;height:14px}
+
+/* #293 — the tool-types section is a TREE: a twisty where a branch expands, indents for its
+   levels, and the tints the classic page gives a server and a leaf row. The row grid is the
+   reference design's (dot | label | count), so a count needs no new column. */
+.tool-type-option .tool-tw{width:7px;font-size:9px;line-height:1;color:var(--faint);text-align:center}
+.tool-type-option:hover .tool-tw{color:var(--ink)}
+.tool-type-option.tool-sub1{padding-left:12px}
+.tool-type-option.tool-sub2{padding-left:24px}
+.tool-type-option .filter-dot-srv{background:color-mix(in srgb,var(--primary) 45%,var(--line))}
+.tool-type-option .filter-dot-leaf{background:color-mix(in srgb,var(--faint) 75%,var(--line))}
+/* #293 — whole words beside the box: a match option among the match controls, pressed-state like
+   the scope rows' ticks. */
+.header-searchbox .find-whole{font:9.5px/1 var(--mono);letter-spacing:.02em;padding:0 5px;color:var(--faint)}
+.header-searchbox .find-whole.on{color:var(--primary);background:color-mix(in srgb,var(--primary) 12%,transparent)}

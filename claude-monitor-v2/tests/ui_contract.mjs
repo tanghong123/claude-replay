@@ -15,7 +15,7 @@ import { fmtTime, fmtDur } from "../../claude-monitor/src/codex-ui/shared/time.j
 import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/shared/parts.js";
 import { isInteraction, interactionCard, interactionHtml } from "../../claude-replay-html/src/html/shared/interaction.js";
 import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE, takeTools, toolMatches, writeTools, recordHasTool } from "../../claude-replay-html/src/html/shared/search.js";
-import { chainWalk } from "../../claude-replay-html/src/html/shared/filter.js";
+import { chainWalk, toolTree } from "../../claude-replay-html/src/html/shared/filter.js";
 import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, traceWanted } from "../../claude-replay-html/src/html/shared/virtual-window.js";
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
 import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
@@ -2971,4 +2971,52 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(recordHasTool(span, []), false, "no facet, no claim");
 
   console.log("#292 tool-facet grammar cases passed");
+}
+
+// #293 (absorbing #120) — the tool menu's SHAPE, for both pages: MCP calls collapse into one
+// expandable family instead of one row per `mcp__server__tool`, which is what the classic page has
+// always done and the app shell never did. The rule lives in shared/filter.js so the two menus
+// cannot disagree about what a session's tools ARE; each page still draws its own rows.
+{
+  const counts = { Bash: 5, Read: 2, mcp__github__get_issue: 1, mcp__github__search: 3, mcp__slack__post: 1 };
+  const flat = (groups) => groups.flatMap(g => g.rows).map(r => `${r.depth}:${r.label}:${r.count}:${r.select?.tool || "^" + (r.select?.toolPre || "")}${r.twisty ? ":" + r.twisty : ""}`);
+
+  assert.deepEqual(
+    flat(toolTree(counts, new Set())),
+    ["0:Bash:5:Bash", "0:MCP:5:^mcp__:mcp", "0:Read:2:Read"],
+    "closed, label order (the classic page's): five MCP calls are ONE row, counted together, and " +
+    "the family sorts among the plain tools by its own label"
+  );
+  assert.deepEqual(
+    flat(toolTree(counts, new Set(), "count")),
+    ["0:Bash:5:Bash", "0:Read:2:Read", "0:MCP:5:^mcp__:mcp"],
+    "count order (the app shell's): most-used first, and the family LAST however big — a reader " +
+    "scanning for their own busiest tool should not have to read past it"
+  );
+  assert.deepEqual(
+    flat(toolTree(counts, new Set(["mcp"]), "count")).slice(2),
+    ["0:MCP:5:^mcp__:mcp", "1:github:4:^mcp__github__:mcp/github", "1:slack/post:1:mcp__slack__post"],
+    "open, the family lists its servers: github expands (two tools, its own count), and slack — " +
+    "ONE tool — is compressed into a `server/tool` row that filters that tool exactly, because a " +
+    "twisty onto a single child is a click that tells the reader nothing"
+  );
+  assert.deepEqual(
+    flat(toolTree(counts, new Set(["mcp", "mcp/github"]), "count")).slice(3),
+    ["1:github:4:^mcp__github__:mcp/github", "2:get_issue:1:mcp__github__get_issue", "2:search:3:mcp__github__search", "1:slack/post:1:mcp__slack__post"],
+    "…and a server lists its own tools, each with its count, alphabetical"
+  );
+  const server = toolTree(counts, new Set(["mcp"]), "count").at(-1).rows[1];
+  assert.deepEqual(server.select, { toolPre: "mcp__github__" },
+    "a server row filters by PREFIX — every call of that server, which is what choosing it means");
+  assert.equal(server.tint, "srv", "…and carries the bullet class the classic page gives it");
+
+  assert.deepEqual(toolTree({}, new Set()), [], "no tools, no rows");
+  assert.deepEqual(flat(toolTree({ Bash: 1 }, new Set(["mcp"]))), ["0:Bash:1:Bash"],
+    "an open key for a family this session has none of adds nothing");
+  assert.deepEqual(
+    flat(toolTree({ mcp__x__a: 1, mcp__x__b: 1 }, new Set(["mcp"]))),
+    ["0:MCP:2:^mcp__:mcp", "1:x:2:^mcp__x__:mcp/x"],
+    "a session of nothing but MCP calls is still one family"
+  );
+  console.log("#293 tool-tree shape cases passed");
 }

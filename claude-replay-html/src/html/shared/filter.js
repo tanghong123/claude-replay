@@ -25,4 +25,89 @@ function chainWalk(record, matches, onHit) {
   return hit;
 }
 
-export { chainWalk };
+/** The tool menu's SHAPE, for both pages (#293, absorbing #120): a session's tool calls as rows,
+ *  with MCP calls collapsed into one expandable family instead of one row per `mcp__server__tool`
+ *  — which is what a session with dozens of them needs, and what the classic page has always done.
+ *
+ *  `counts` is `{tool: n}`. `open` is the set of expanded twisty keys (`"mcp"`, `"mcp/<server>"`).
+ *  `order` is `"label"` (the classic page's, alphabetical) or `"count"` (the app shell's, most-used
+ *  first, ties alphabetical, the MCP family last).
+ *
+ *  Returns GROUPS, each `{label, count, rows}`: a group is one top-level entry and the rows its
+ *  expansion currently shows, in order. A page sorts groups among its own non-tool rows by `label`
+ *  (the classic page's kinds: Agent, Thinking, Activity…) and renders each group's rows as it
+ *  draws rows — so the shape is decided once and the DOM stays each page's own.
+ *
+ *  Each row: `{label, count, depth, select, twisty, tint}` — `select` is what the row FILTERS by
+ *  (`{tool}` exactly, or `{toolPre}` for a family, null for nothing), `twisty` the key it expands,
+ *  `tint` the bullet class the classic page gives server and leaf rows. A server with ONE tool is
+ *  compressed into a single `server/tool` row that filters that tool exactly — a twisty onto one
+ *  child is a click that tells the reader nothing. */
+function toolTree(counts, open, order = "label") {
+  const plain = [];
+  const mcp = { total: 0, servers: new Map() };
+  for (const name of Object.keys(counts || {})) {
+    const n = counts[name] || 0;
+    const m = /^mcp__(.+?)__(.+)$/.exec(name);
+    if (!m) {
+      plain.push({ label: name, count: n, tool: name });
+      continue;
+    }
+    mcp.total += n;
+    const server = mcp.servers.get(m[1]) || { count: 0, tools: new Map() };
+    server.count += n;
+    server.tools.set(m[2], (server.tools.get(m[2]) || 0) + n);
+    mcp.servers.set(m[1], server);
+  }
+  const has = key => !!(open && (open.has ? open.has(key) : open[key]));
+  const groups = plain.map(t => ({
+    label: t.label,
+    count: t.count,
+    rows: [{ label: t.label, count: t.count, depth: 0, select: { tool: t.tool }, twisty: null, tint: null }],
+  }));
+  if (mcp.total > 0) {
+    const rows = [{ label: "MCP", count: mcp.total, depth: 0, select: { toolPre: "mcp__" }, twisty: "mcp", tint: null }];
+    if (has("mcp")) {
+      for (const server of [...mcp.servers.keys()].sort()) {
+        const { count, tools } = mcp.servers.get(server);
+        const names = [...tools.keys()].sort();
+        if (names.length === 1) {
+          rows.push({
+            label: `${server}/${names[0]}`,
+            count,
+            depth: 1,
+            select: { tool: `mcp__${server}__${names[0]}` },
+            twisty: null,
+            tint: "srv",
+          });
+          continue;
+        }
+        const key = `mcp/${server}`;
+        rows.push({ label: server, count, depth: 1, select: { toolPre: `mcp__${server}__` }, twisty: key, tint: "srv" });
+        if (!has(key)) continue;
+        for (const tool of names) {
+          rows.push({
+            label: tool,
+            count: tools.get(tool),
+            depth: 2,
+            select: { tool: `mcp__${server}__${tool}` },
+            twisty: null,
+            tint: "leaf",
+          });
+        }
+      }
+    }
+    groups.push({ label: "MCP", count: mcp.total, rows, mcp: true });
+  }
+  if (order === "count") {
+    // Most-used first, ties alphabetical, and the family last however big it is: a reader looking
+    // for one MCP tool opens the family; a reader scanning for their own busiest tool should not
+    // have to read past it.
+    groups.sort((a, b) => (!!a.mcp - !!b.mcp) || b.count - a.count || a.label.localeCompare(b.label));
+  } else {
+    groups.sort((a, b) => a.label.localeCompare(b.label));
+  }
+  return groups;
+}
+
+export { chainWalk, toolTree };

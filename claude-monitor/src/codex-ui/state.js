@@ -85,6 +85,9 @@ export const uiState = {
   // and pending by default, which is exactly what the one box used to mean.
   taskGroupsShown: new Set(json("am-prod-task-groups", ["in_progress", "pending"])),
   searchTab: "all", searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), searchWhole: false, toolFilters: new Set(),
+  // #293: which branches of the tool tree are expanded (`mcp`, `mcp/<server>`). Survives the
+  // rebuilds a live session forces, as the classic page's `mcpOpen` does.
+  toolTreeOpen: new Set(),
   globalResults: [], globalIndex: 0,
   reading: parseReading(localStorage.getItem(READING_KEY)) || { ...DEFAULT_READING },
   // #45: the reading key is SHARED with the classic page. It is written only once a reader has

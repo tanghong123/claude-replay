@@ -14244,3 +14244,189 @@ fn both_shells_open_a_file_from_the_session_s_job_workspace() {
         drop(monitor);
     }
 }
+
+// ── scenario: MCP calls are one expandable family in the filter, with counts (#293, #120) ────
+
+/// Row 3.16 of design/rendering-parity-audit.md, and design/in-session-search.md §5. A session's
+/// MCP calls are ONE row — "MCP", with the number of calls — that opens onto its servers and a
+/// server onto its tools, each row carrying its count; a server with a single tool is one
+/// `server/tool` row. Choosing a server chooses every one of its calls and none of another's.
+/// The classic page has had this since #94; the app shell listed one flat row per raw
+/// `mcp__server__tool` name until #293, and neither page counted the rows.
+fn scenario_mcp_calls_are_one_family_in_the_filter(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // Each page's own menu, read as [label, count, depth].
+    let (open_menu, rows, twisty, pick) = match surface {
+        Surface::Classic => (
+            "(function(){ var b = document.getElementById('btn-tools'); if (b) b.click(); return 'open'; })()",
+            "JSON.stringify([...document.querySelectorAll('#toolitems .tool-item')].map(function (it) { return [it.dataset.label, Number((it.querySelector('.tool-count') || {}).textContent), it.classList.contains('tool-sub2') ? 2 : it.classList.contains('tool-sub1') ? 1 : 0]; }))",
+            "(function(key){ var t = document.querySelector('#toolitems .tool-tw[data-tw=\"' + key + '\"]'); if (!t) return 'no twisty'; t.click(); return 'toggled'; })",
+            "(function(label){ var it = [...document.querySelectorAll('#toolitems .tool-item')].find(function (e) { return e.dataset.label === label; }); if (!it) return 'no row'; it.click(); return 'picked'; })",
+        ),
+        Surface::AppShell => (
+            "(function(){ if (!document.getElementById('navigatorOptions').classList.contains('open')) document.getElementById('filterTranscriptBtn').click(); return 'open'; })()",
+            "JSON.stringify([...document.querySelectorAll('#filterOptions .tool-type-option')].map(function (it) { return [it.dataset.label, Number((it.querySelector('.count') || {}).textContent), Number(it.dataset.depth || 0)]; }))",
+            "(function(key){ var t = document.querySelector('#filterOptions .tool-tw[data-tw=\"' + key + '\"]'); if (!t) return 'no twisty'; t.click(); return 'toggled'; })",
+            "(function(label){ var it = [...document.querySelectorAll('#filterOptions .tool-type-option')].find(function (e) { return e.dataset.label === label; }); if (!it) return 'no row'; it.click(); return 'picked'; })",
+        ),
+    };
+    let read = || -> Vec<(String, i64, i64)> {
+        serde_json::from_str::<Vec<(String, i64, i64)>>(eval(tab, rows).as_str().unwrap_or("[]"))
+            .unwrap_or_default()
+    };
+    let row = |label: &str, count: i64, depth: i64| (label.to_string(), count, depth);
+    assert_eq!(eval(tab, open_menu), "open", "{surface:?}: the menu opens");
+    let closed = read();
+    assert!(
+        closed.contains(&row("MCP", 4, 0)),
+        "{surface:?}: one MCP row, counting all four calls: {closed:?}"
+    );
+    assert!(
+        !closed
+            .iter()
+            .any(|(label, _, _)| label.starts_with("mcp__")),
+        "{surface:?}: and no raw `mcp__server__tool` row of its own: {closed:?}"
+    );
+    assert!(
+        closed.contains(&row("Read", 1, 0)),
+        "{surface:?}: a tool that is not MCP keeps its own row, with its count: {closed:?}"
+    );
+    assert!(
+        !closed.iter().any(|(_, _, depth)| *depth > 0),
+        "{surface:?}: the family starts closed: {closed:?}"
+    );
+    assert_eq!(
+        eval(tab, &format!("{twisty}('mcp')")),
+        "toggled",
+        "{surface:?}: the family opens"
+    );
+    let servers: Vec<_> = read().into_iter().filter(|(_, _, d)| *d > 0).collect();
+    assert_eq!(
+        servers,
+        vec![row("github", 3, 1), row("slack/post_message", 1, 1)],
+        "{surface:?}: its servers with their counts — and a one-tool server as ONE `server/tool` \
+         row, because a twisty onto a single child tells the reader nothing"
+    );
+    assert_eq!(
+        eval(tab, &format!("{twisty}('mcp/github')")),
+        "toggled",
+        "{surface:?}: a server opens"
+    );
+    let tree: Vec<_> = read().into_iter().filter(|(_, _, d)| *d > 0).collect();
+    assert_eq!(
+        tree,
+        vec![
+            row("github", 3, 1),
+            row("get_issue", 1, 2),
+            row("search_issues", 2, 2),
+            row("slack/post_message", 1, 1),
+        ],
+        "{surface:?}: …onto its own tools, each with its count"
+    );
+    // Choosing the server chooses every call of it, and nothing of another server's.
+    assert_eq!(
+        eval(tab, &format!("{pick}('github')")),
+        "picked",
+        "{surface:?}: a server row can be chosen"
+    );
+    settle();
+    settle();
+    let box_value = eval(
+        tab,
+        match surface {
+            Surface::Classic => "document.getElementById('q').value",
+            Surface::AppShell => "document.getElementById('transcriptSearchInput').value",
+        },
+    );
+    match surface {
+        // The classic page's menu is its own cut: the filter is the server's family.
+        Surface::Classic => {
+            let visible = |sel: &str| {
+                eval(tab, &format!("[...document.querySelectorAll('#stream .fold[data-tool{sel}]')].map(function (f) {{ var r = f; while (r.parentElement && r.parentElement.closest('.fold')) r = r.parentElement.closest('.fold'); return r; }}).filter(function (r) {{ return r.getBoundingClientRect().height > 0; }}).length"))
+                    .as_i64()
+                    .unwrap_or(-1)
+            };
+            assert_eq!(
+                visible("^=\"mcp__github__\""),
+                3,
+                "Classic: every call of that server"
+            );
+            assert_eq!(
+                visible("=\"mcp__slack__post_message\""),
+                0,
+                "Classic: and none of another's"
+            );
+        }
+        // The app shell's is a search by kind (#133), typed into the box as a family facet (#292).
+        Surface::AppShell => {
+            assert_eq!(
+                box_value.as_str(),
+                Some("tool:mcp__github__*"),
+                "AppShell: the row wrote the family facet into the box"
+            );
+            let said = eval(
+                tab,
+                "document.getElementById('transcriptSearchCount').textContent.trim()",
+            );
+            assert_eq!(
+                said.as_str().unwrap_or(""),
+                "3 matches",
+                "AppShell: that server's three calls, and nothing else: {said}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_mcp_calls_are_one_family_in_the_filter() {
+    let _serial = serial();
+    let fx = mcp_fixture("scenario-mcp-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_mcp_calls_are_one_family_in_the_filter(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_mcp_calls_are_one_family_in_the_filter() {
+    let _serial = serial();
+    let fx = mcp_fixture("scenario-mcp-app");
+    let page = open(Surface::AppShell, &fx, 3042);
+    scenario_mcp_calls_are_one_family_in_the_filter(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Two MCP servers — `github` with two tools (three calls) and `slack` with one — and a `Read`
+/// beside them, so the menu has a plain row, a family that expands and a family that compresses.
+fn mcp_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(10, Shape::default());
+    t += &user_at("question 11: find the issue", &now_minus(120));
+    for (i, (id, tool)) in [
+        ("m1", "mcp__github__search_issues"),
+        ("m2", "mcp__github__get_issue"),
+        ("m3", "mcp__github__search_issues"),
+        ("m4", "mcp__slack__post_message"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        t += &harness::named_tool_at(id, tool, "/tmp/x", &now_minus(110 - i as u64 * 8));
+        t += &assistant_at(&format!("Step {i} done."), &now_minus(108 - i as u64 * 8));
+    }
+    t += &harness::read_tool_at("m5", "/tmp/notes.txt", &now_minus(60));
+    t += &tool_result_lines("m5", 2, &now_minus(58));
+    t += &assistant_at("answer mcp: filed and posted.", &now_minus(40));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 11,
+    }
+}

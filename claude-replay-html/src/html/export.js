@@ -1674,21 +1674,10 @@
     // Counted from the RECORDS (nested items included), not the DOM — the DOM only
     // holds the materialized window (#50).
     var entries = {}; // selector -> {label, count}
-    // MCP calls group into ONE expandable tree (#94): MCP -> server -> tool, parsed
-    // from mcp__<server>__<tool>; single-child nodes compress into their child.
-    var mcp = { total: 0, servers: {} };
+    var toolCounts = {}; // tool name -> count, for the shared tree (#293)
     eachFoldRec(function (b) {
       if (b.tool) {
-        var m = /^mcp__(.+?)__(.+)$/.exec(b.tool);
-        if (m) {
-          mcp.total++;
-          var srv = (mcp.servers[m[1]] = mcp.servers[m[1]] || { count: 0, tools: {} });
-          srv.count++;
-          srv.tools[m[2]] = (srv.tools[m[2]] || 0) + 1;
-          return;
-        }
-        var sel = '.fold[data-tool="' + b.tool + '"]';
-        (entries[sel] = entries[sel] || { label: b.tool, count: 0 }).count++;
+        toolCounts[b.tool] = (toolCounts[b.tool] || 0) + 1;
       } else if (b.kind) {
         var ks = '.fold[data-kind="' + b.kind + '"]';
         (entries[ks] = entries[ks] || { label: KIND_LABEL[b.kind] || b.kind, count: 0 }).count++;
@@ -1715,38 +1704,32 @@
       item.appendChild(el("span", "tool-count", String(count)));
       box.appendChild(item);
     }
-    var servers = Object.keys(mcp.servers).sort();
-    var toolSel = function (srv, tool) { return '.fold[data-tool="mcp__' + srv + '__' + tool + '"]'; };
-    var srvSel = function (srv) { return '.fold[data-tool^="mcp__' + srv + '__"]'; };
-    // The MCP root sorts into the flat list by label (#94 follow-ups): one "MCP"
-    // entry, never compressed with its children; expanding walks server rows
-    // (srv-tinted bullets) then tool rows.
-    var renderMcp = function () {
-      row('.fold[data-tool^="mcp__"]', "MCP", mcp.total, 0, "mcp");
-      if (!mcpOpen["mcp"]) return;
-      servers.forEach(function (srv) {
-        var tools = Object.keys(mcp.servers[srv].tools).sort();
-        if (tools.length === 1) {
-          // A server with one tool compresses into a combined child row.
-          row(toolSel(srv, tools[0]), srv + "/" + tools[0], mcp.servers[srv].count, 1, null, "srv");
-        } else {
-          row(srvSel(srv), srv, mcp.servers[srv].count, 1, "mcp/" + srv, "srv");
-          if (mcpOpen["mcp/" + srv]) {
-            tools.forEach(function (t) {
-              row(toolSel(srv, t), t, mcp.servers[srv].tools[t], 2, null, "leaf");
-            });
-          }
-        }
-      });
+    // The MENU's shape — which tools are rows, how MCP calls group into one expandable family,
+    // what each row filters by — is the shared rule (#293, shared/filter.js toolTree), so this
+    // page and the app shell cannot disagree about what a session's tools are. What a row LOOKS
+    // like stays here, byte for byte as it was: the selector shapes, the tints, the twisty.
+    var sel = function (pick) {
+      return pick.toolPre
+        ? '.fold[data-tool^="' + pick.toolPre + '"]'
+        : '.fold[data-tool="' + pick.tool + '"]';
     };
-    var flatRows = sels.map(function (sel) {
-      return { label: entries[sel].label, render: function () { row(sel, entries[sel].label, entries[sel].count, 0, null); } };
+    var groups = shared.toolTree(toolCounts, mcpOpen, "label");
+    var flatRows = sels.map(function (s) {
+      return { label: entries[s].label, render: function () { row(s, entries[s].label, entries[s].count, 0, null); } };
     });
-    if (mcp.total > 0) flatRows.push({ label: "MCP", render: renderMcp });
+    groups.forEach(function (g) {
+      flatRows.push({
+        label: g.label,
+        render: function () {
+          g.rows.forEach(function (r) { row(sel(r.select), r.label, r.count, r.depth, r.twisty, r.tint); });
+        },
+      });
+    });
     flatRows.sort(function (a, b) { return a.label.localeCompare(b.label); });
     flatRows.forEach(function (r) { r.render(); });
-    $("btn-tools").disabled = sels.length === 0 && mcp.total === 0;
+    $("btn-tools").disabled = sels.length === 0 && groups.length === 0;
   }
+
 
   function toolMenu(open) { $("toolmenu").classList.toggle("on", open); }
   function agentMenu(open) { $("agentmenu").classList.toggle("on", open); }

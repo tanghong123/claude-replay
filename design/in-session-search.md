@@ -84,6 +84,15 @@ and the chain walk); the pages own the presentation.
 
 ## 5. The controls (app shell)
 
+**Amended while implementing (2026-09-26).** §2's sketch names two sections, Messages and Tools,
+and the seven scope classes do not fit in it: `b:` (bash output), `r:` (reads) and `e:` (edits) are
+TEXT classes, not tools — `b:` counts what a Bash call printed, which is not the same question as
+"this is a Bash call". Dropping them to make the sketch literal would remove a capability nobody
+asked to lose. So the popover keeps its two existing sections — **Scope** (the seven classes, with
+All) and **Tool types** (with None) — and the tree is the Tool types section: each tool with its
+count, then MCP → server → tool. Whether the two sections should become one tree, with the classes
+as a level above the tools, is left for the owner; nothing here forecloses it.
+
 - **The popover is the tree**, each row with its count for the current text: Messages and its
   three classes, Tools and its tools, MCP and its servers and tools. Tools sort by count,
   most-used first, ties alphabetical; built-ins before the MCP branch. An MCP row reads
