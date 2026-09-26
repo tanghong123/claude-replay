@@ -22,18 +22,29 @@
 //! emits spawn facts and its `agent_id` — the child transcript is its own session,
 //! discoverable via `--paths --all`, not an inline sub-stream.
 
-use crate::model::{block_kind, AgentStatus, Block, ToolStatus};
+use crate::model::{block_kind, AgentStatus, Block, EpochSeconds, ToolStatus};
 use crate::Session;
 use serde_json::{json, Map, Value};
 
 /// Write `session`'s blocks as JSON Lines: one object per block, `\n`-terminated.
-pub fn write_block_stream<W: std::io::Write>(
+pub fn write_block_stream<W: std::io::Write + ?Sized>(
     session: &Session,
     out: &mut W,
 ) -> std::io::Result<()> {
-    let times = &session.user_times;
+    write_blocks(session.blocks().iter(), &session.user_times, out)
+}
+
+/// [`write_block_stream`] over any run of blocks that starts at the session's first block,
+/// with the session's per-turn times — how a dump that did not assemble a [`Session`] emits
+/// the same bytes (`--dump --json --cache` chains the committed blocks it restored with the
+/// open window it folded, #10). One projection for both, so they cannot drift.
+pub fn write_blocks<'a, W: std::io::Write + ?Sized>(
+    blocks: impl Iterator<Item = &'a Block>,
+    times: &[Option<EpochSeconds>],
+    out: &mut W,
+) -> std::io::Result<()> {
     let mut turn: Option<usize> = None;
-    for (i, b) in session.blocks().iter().enumerate() {
+    for (i, b) in blocks.enumerate() {
         if matches!(b, Block::UserText(_) | Block::Command { .. }) {
             turn = Some(turn.map_or(0, |t| t + 1));
         }

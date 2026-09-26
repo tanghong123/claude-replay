@@ -20,9 +20,9 @@ mod session_entry;
 pub mod transcript; // the canonical `Transcript` source handle (parse/follow/attachment)
 
 pub use adapter::{
-    adapter, adapters, metrics_fold, CursorReject, FoldStart, LinePreprocessor, MetricsAccumulator,
-    MetricsCursor, MetricsEvent, MetricsFold, PreprocessedLine, SniffClaim, SpawnRoster,
-    TranscriptAdapter,
+    adapter, adapters, expand_spawn_rosters, metrics_fold, CursorReject, FoldStart,
+    LinePreprocessor, MetricsAccumulator, MetricsCursor, MetricsEvent, MetricsFold,
+    PreprocessedLine, SniffClaim, SpawnRoster, TranscriptAdapter,
 };
 pub use claude_replay_agents::{claude_discover, codex_discover, qoderwork_discover};
 pub use claude_replay_engine::{

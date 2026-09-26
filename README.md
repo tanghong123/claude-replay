@@ -65,6 +65,9 @@ agent-replay <id|--latest> --dump -          plain text to stdout (no TUI) — f
 agent-replay <id|--latest> --dump [stem]     write <stem>.txt + <stem>.ansi (deduced stem if omitted)
 agent-replay <id|--latest> --dump --width N  dump at width N (default: terminal width, else 100)
 agent-replay <id|--latest> --dump --full     dump with everything expanded (default folds like the TUI)
+agent-replay <id|--latest> --dump - --json   the structured block stream, one JSON object per block
+agent-replay <path> --dump - --json --cache  the same bytes, resumed from the durable cache — for a
+                                               collector that dumps the same sessions every day
 agent-replay <id|--latest> --dump-html [stem] export a single self-contained <stem>.html (deduced stem if omitted)
 agent-replay <id|--latest> --dump-html -      write the HTML page to stdout (no TUI) — for pipes/tests
 agent-replay <id|--latest> --html             open in a browser (no TUI): serves over loopback, follows
@@ -82,6 +85,8 @@ snapshots. `-f`/`--follow` is accepted and ignored, so old commands keep working
 instead of re-reading the transcript — on a 100 MB session that is most of the file skipped.
 It is validated against the transcript (a rewritten or truncated source rebuilds from
 scratch), one writer at a time, and swept after two weeks idle. `--no-cache` opts out.
+Dumps never touch it — except a JSON dump given `--cache`, which keeps an entry of its own
+(`sessions/json/`) so a daily sweep folds only what each session appended since the last one.
 
 **Multi-agent.** With no argument, the picker merges this directory's sessions from
 **every agent** — Claude Code (`~/.claude/projects/`) and Codex

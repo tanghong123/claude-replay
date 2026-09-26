@@ -19,6 +19,10 @@ use std::path::{Path, PathBuf};
 pub enum Presentation {
     Tui,
     Html,
+    /// `--dump --json --cache` (#10): a collector's sweep, resuming where its last dump of the
+    /// session stopped. Its own namespace, so a sweep never waits on — or denies — a person
+    /// reading the same session in the TUI.
+    Json,
 }
 
 impl Presentation {
@@ -26,6 +30,7 @@ impl Presentation {
         match self {
             Presentation::Tui => "tui",
             Presentation::Html => "html",
+            Presentation::Json => "json",
         }
     }
 }

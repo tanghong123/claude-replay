@@ -210,7 +210,9 @@ pub const COMPACT_AFTER: usize = 256;
 /// mockups that were the point of offering them.
 ///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
-/// change must not be resumable across.
+/// change must not be resumable across. Pages are not the only readers of a resumed stream: a
+/// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
+/// notice it was handed the previous build's.
 pub const FOLD_VERSION: u16 = 35;
 
 impl Versions {

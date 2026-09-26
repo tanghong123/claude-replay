@@ -47,6 +47,15 @@ pub struct Args {
     #[cfg_attr(feature = "cli", arg(long))]
     pub no_cache: bool,
 
+    /// With `--dump --json`: resume from this session's durable cache entry, and extend it — so
+    /// a collector's repeat dump folds only what was appended since its last one. The output is
+    /// the same bytes a plain dump writes. Off by default because a plain dump is read-only and
+    /// takes no lock, which is what lets a sweep run beside live viewers; this writes an entry
+    /// under the cache directory and holds its lock while it folds. A peer holding the entry, a
+    /// cache that cannot be written, or a transcript caught mid-line gets the plain dump (#10).
+    #[cfg_attr(feature = "cli", arg(long, conflicts_with = "no_cache"))]
+    pub cache: bool,
+
     /// Hide ✻ thinking summaries (shown by default).
     #[cfg_attr(feature = "cli", arg(long))]
     pub no_thinking: bool,

@@ -7,6 +7,7 @@
 //! them under their long-standing module paths (so `claude_replay::model`,
 //! `claude_replay::tui::app`, … keep working), owns the CLI entry point, and hosts `jdi`.
 
+mod dump_cache;
 pub mod jdi;
 
 pub use claude_replay_html::html_export;
@@ -34,6 +35,10 @@ pub fn run_viewer() -> Result<()> {
     anyhow::ensure!(
         !args.json || args.dump.is_some() || args.unknown,
         "--json goes with --dump or --unknown"
+    );
+    anyhow::ensure!(
+        !args.cache || (args.dump.is_some() && args.json),
+        "--cache goes with --dump --json (the viewer and --html use the cache unless --no-cache)"
     );
     anyhow::ensure!(
         args.since.is_none() || args.all || args.unknown,
@@ -124,30 +129,59 @@ pub fn run_viewer() -> Result<()> {
 /// in [`claude_replay_core::block_json`] beside the vocabulary it projects. `--dump -`
 /// streams to stdout; with a stem (given or deduced), writes `<stem>.json` and prints the
 /// stem last for scripting, mirroring the text dump's contract.
+///
+/// With `--cache` (#10) the same bytes come from the session's durable entry when it has one,
+/// and the fold starts where the last cached dump stopped (see [`dump_cache`]).
 fn dump_json(args: &Args, path: &std::path::Path) -> Result<()> {
     let agent = claude_replay_core::discover::detect_agent(path);
-    // The flat parse: top-level blocks are identical to the enriched one's — a `SubAgent`
-    // emits spawn facts and its `agent_id`, and the child transcript is its own session
-    // (discoverable via `--paths --all`), not an inline sub-stream.
-    let session = claude_replay_core::parse_session_as(agent, path)?;
+    // No cache home at all is a fact about the machine, not an error: the plain dump.
+    let root = args.cache.then(cache::admit::default_root).flatten();
+    let write = |out: &mut dyn std::io::Write| -> Result<()> {
+        match &root {
+            Some(root) => dump_cache::write_cached(root, agent, path, out).map(|_| ()),
+            None => dump_cache::write_plain(agent, path, out),
+        }
+    };
     match args.dump.as_ref().and_then(|o| o.as_deref()) {
         Some("-") => {
-            let out = std::io::stdout();
-            claude_replay_core::block_json::write_block_stream(&session, &mut out.lock())?;
+            let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+            write(&mut out)?;
+            std::io::Write::flush(&mut out)?;
         }
         stem => {
             let stem = match stem {
                 Some(s) => s.to_string(),
                 None => claude_replay_present::sys::deduce_stem(path, None),
             };
-            let mut f = std::io::BufWriter::new(std::fs::File::create(format!("{stem}.json"))?);
-            claude_replay_core::block_json::write_block_stream(&session, &mut f)?;
+            let mut f = Counted {
+                inner: std::io::BufWriter::new(std::fs::File::create(format!("{stem}.json"))?),
+                lines: 0,
+            };
+            write(&mut f)?;
             std::io::Write::flush(&mut f)?;
-            eprintln!("wrote {stem}.json ({} blocks)", session.blocks().len());
+            eprintln!("wrote {stem}.json ({} blocks)", f.lines);
             println!("{stem}"); // last stdout line = the stem, for scripting
         }
     }
     Ok(())
+}
+
+/// A writer that counts the lines through it — the stem form's "(N blocks)": one line per
+/// block, and a JSON string never holds a raw newline.
+struct Counted<W> {
+    inner: W,
+    lines: usize,
+}
+
+impl<W: std::io::Write> std::io::Write for Counted<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.lines += buf[..n].iter().filter(|&&b| b == b'\n').count();
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// `--unknown` (#264): parse transcripts and print every shape the adapters did not recognise.

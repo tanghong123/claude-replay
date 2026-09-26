@@ -385,6 +385,13 @@ resizes the others (#159). Six drawer cases catch that in one run.
   `--dump - --json` instead emits the structured block stream (#34): JSON Lines, `kind`
   from the shared classification, per-TURN timestamps, tool `status`/`exit`/`ms` — the
   content half of the shell-out vocabulary (`--paths --all` is the discovery half).
+  `--cache` (#10, `src/dump_cache.rs`) makes that dump resumable for a collector's daily sweep:
+  the same bytes, from a `json` entry in the durable cache, folding only what was appended since
+  the last cached dump. The entry holds BLOCKS in the TUI's format and the stream is projected at
+  emission, so the one version that can make it stale is `FOLD_VERSION` — which therefore has a
+  PROGRAM consumer now: an un-bumped change to what a block carries reaches a script as silently
+  as it reaches a page. Opt-in, because the plain dump is read-only and lock-free; a held entry,
+  an unwritable cache or a transcript caught mid-line gets the plain dump.
 
 ## When the transcript format moves
 **`agent-replay --unknown` is the ten-second check** (#264). It parses transcripts and prints

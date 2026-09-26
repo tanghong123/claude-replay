@@ -4265,6 +4265,7 @@ mod tests {
         Args {
             unknown: false,
             no_cache: true,
+            cache: false,
             target: None,
             agent: None,
             latest: false,
