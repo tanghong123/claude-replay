@@ -15,7 +15,7 @@ import { displayState, denoteState, sessionFilterBuckets, FILTER_BUCKETS, FILTER
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, parseScope, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt } from "./shared/search.js";
+import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, parseScope, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt, toolMatches, writeTools, recordHasTool } from "./shared/search.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -1285,14 +1285,26 @@ function updateSearch(reset) {
   const set = activeScopeSet();
   const wanted = scopeMask(set), whole = !!(set && set.w);
   recordState.searchMask = wanted; recordState.searchWhole = whole;
+  // The box's `tool:` tokens (#292). The facet set is independent of the text, so the hits it
+  // opens are recomputed only when the tokens themselves change — a keystroke must not re-walk
+  // every record and re-open folds.
+  const tools = q.tools || [];
+  const toolKey = tools.map(t => (t.prefix ? "^" : "=") + t.name.toLowerCase()).sort().join(" ");
+  const toolsChanged = toolKey !== (recordState.toolKey || "");
+  recordState.searchTools = tools;
+  recordState.toolKey = toolKey;
+  uiState.toolFilters = new Set(tools.map(t => t.name + (t.prefix ? "*" : "")));
   recordState.matches = [];
   const classCounts = zeroCounts();
   let total = 0;
   if (query) recordState.records.forEach((record, index) => {
     const { text, parts } = searchTextOf(record);
-    const inScope = countRecord(text, parts, query, whole, wanted, classCounts);
+    // The facets narrow the TEXT: "Bash calls whose text matches", counted inside the call's own
+    // words (design §4) — not a record that merely holds one.
+    const inScope = countRecord(text, parts, query, whole, wanted, classCounts, tools);
     if (inScope) { recordState.matches.push(index); total += inScope; }
   });
+  if (toolsChanged) applyToolFilter();
   for (const k of CLASS_ORDER) { const cell = byId("scopeRow").querySelector(`[data-scope-count="${k}"]`); if (cell) cell.textContent = query ? String(classCounts[k]) : ""; }
   if (reset) { recordState.match = recordState.matches.length ? 0 : -1; recordState.landed = null; } else recordState.match = Math.min(recordState.match, recordState.matches.length - 1);
   paintMatchCount(query ? countLabel(total, set, whole) : "");
@@ -1302,7 +1314,7 @@ function updateSearch(reset) {
 /** The count the box shows: the query's own words when there is a query, else what the tool
  *  filter found (#133) — the filter is a search, and a search says how many. */
 function paintMatchCount(text) {
-  const hits = !text && uiState.toolFilters.size ? (recordState.filterMatches || []).length : 0;
+  const hits = !text && queryTools().length ? (recordState.filterMatches || []).length : 0;
   byId("transcriptSearchCount").textContent = text || (hits ? `${hits} ${hits === 1 ? "match" : "matches"}` : "");
 }
 /** The scope buttons rewrite the box's prefix (the classic page's applyScopeFromMenu). */
@@ -1319,11 +1331,25 @@ function applyScopeFromMenu() {
 function kindInScope(row, wanted) {
   return !wanted || !!(directMask(row?.dataset.recordKind || "") & wanted);
 }
-/** What ↑/↓ steps: the query's hits when there is a query, else the tool filter's (#133). A
- *  filter is a search by kind here, so it steps through the same control. */
+/** The tool facets the BOX holds (#292) — `tool:` tokens, parsed by the shared grammar. The one
+ *  source of truth: the menu writes tokens into the box, `updateSearch` reads them back, so a
+ *  tick and a typed token are the same thing (#101's rule, now for tools too). */
+function queryTools() {
+  return recordState.searchTools || [];
+}
+/** The name a `tool:` facet asks of a record: the tool it carries. The server writes the display
+ *  name into both `tool` and `head.name` (an Edit reads "Update" in both), so either answers —
+ *  `tool` first, because that is the field the classic page filters on. */
+function toolNameOf(record) {
+  return record.tool || record.head?.name || "";
+}
+/** What ↑/↓ steps (#292, design/in-session-search.md §4): the query's hits — which are ALREADY
+ *  narrowed to the facets, since `countRecord` counts inside the chosen calls — else, with no
+ *  text, the facets' own hits. One step list per query; a query no longer replaces the facet it
+ *  was typed beside, which is what `activeMatches` used to do. */
 function activeMatches() {
   if (recordState.search) return recordState.matches;
-  return uiState.toolFilters.size ? recordState.filterMatches || [] : [];
+  return queryTools().length ? recordState.filterMatches || [] : [];
 }
 function stepSearch(delta) {
   const matches = activeMatches();
@@ -1443,7 +1469,9 @@ byId("findNext").onclick = () => stepSearch(1); byId("findPrev").onclick = () =>
 
 function toolNames(records, into = []) {
   for (const record of records || []) {
-    if (["bash", "read", "write", "edit", "skill", "tool"].includes(record.kind)) into.push(record.head?.name || record.tool || record.kind);
+    // ONE tool identity with the facet (#292): what `toolNameOf` reads is what a `tool:` token
+    // asks for, so a ticked row and a typed token can never mean different things.
+    if (["bash", "read", "write", "edit", "skill", "tool"].includes(record.kind)) into.push(toolNameOf(record) || record.kind);
     for (const part of record.body || []) if (part.p === "blocks") toolNames(part.items, into);
   }
   return into;
@@ -1457,6 +1485,18 @@ function renderFilterMenu() {
   const tools = [...new Set(toolNames(recordState.records))];
   byId("filterOptions").innerHTML = tools.map(tool => `<button class="tool-type-option ${uiState.toolFilters.has(tool) ? "on" : ""}" data-tool-filter="${escapeText(tool)}"><span class="filter-dot"></span><span>${escapeText(tool)}</span></button>`).join("") || '<div class="tool-type-empty">No tool events in this session</div>';
   byId("filterBadge").textContent = uiState.toolFilters.size || "";
+}
+/** Tick or untick one tool: write the facets into the BOX and let `updateSearch` do the rest
+ *  (#292). Nothing sets the tool state directly any more — the box is the query. */
+function toggleToolFacet(name) {
+  const next = new Set(uiState.toolFilters);
+  next.has(name) ? next.delete(name) : next.add(name);
+  setToolFacets([...next]);
+}
+function setToolFacets(names) {
+  const input = byId("transcriptSearchInput");
+  input.value = writeTools(input.value, names);
+  updateSearch(true);
 }
 function applyFilters() {
   const hits = recordState.filterHits;
@@ -1493,7 +1533,7 @@ const toolKindsForFilter = new Set(["bash", "read", "write", "edit", "skill", "t
 function filterChain(record, wanted, hits, direct) {
   return chainWalk(
     record,
-    rec => toolKindsForFilter.has(rec.kind) && wanted.has(rec.head?.name || rec.tool || rec.kind),
+    rec => toolKindsForFilter.has(rec.kind) && toolMatches(toolNameOf(rec), wanted),
     (rec, own) => {
       if (!rec.id) return;
       if (own) direct.add(rec.id);
@@ -1506,7 +1546,7 @@ function filterChain(record, wanted, hits, direct) {
  *  since — only what is newly on it is opened, so a live session does not re-open a fold the
  *  reader closed a moment ago (#126). */
 function computeFilterHits() {
-  const wanted = uiState.toolFilters;
+  const wanted = queryTools();
   const before = recordState.filterHits;
   const hits = new Set(), direct = new Set(), indices = [];
   recordState.records.forEach((record, index) => { if (filterChain(record, wanted, hits, direct)) indices.push(index); });
@@ -1531,7 +1571,7 @@ function computeFilterHits() {
  *  snapshot is NOT retaken — it holds the pre-filter fold state — and the viewport does not
  *  jump: nobody asked to be moved. */
 function refreshFilterHits() {
-  if (!uiState.toolFilters.size || !recordState.filterHits) return;
+  if (!queryTools().length || !recordState.filterHits) return;
   computeFilterHits();
   // A fold the filter just opened is only in the DOM once the window is rebuilt; `render` holds
   // the reader's place while it does that, so an arrival never moves them.
@@ -1541,8 +1581,8 @@ function refreshFilterHits() {
 }
 
 function applyToolFilter() {
-  const wanted = uiState.toolFilters;
-  if (wanted.size) {
+  const wanted = queryTools();
+  if (wanted.length) {
     if (!recordState.filterSnapshot) recordState.filterSnapshot = { folds: new Map(recordState.folds), processFolds: new Map(recordState.processFolds), processExpanded: new Set(recordState.processExpanded) };
     const indices = computeFilterHits();
     viewport.rerender();
@@ -1731,9 +1771,9 @@ document.addEventListener("click", event => {
 }, true);
 applyReading();
 byId("filterTranscriptBtn").onclick = () => { setPopover(byId("navigatorOptions").classList.contains("open") ? null : "filter"); renderFilterMenu(); };
-byId("navigatorOptions").onclick = event => { const scope = event.target.closest("[data-scope]"); if (scope) { const key = scope.dataset.scope; if (key === "w") uiState.searchWhole = !uiState.searchWhole; else { const everything = ALL_SCOPES.every(k => uiState.searchScopes.has(k)); if (everything) uiState.searchScopes = new Set([key]); else if (uiState.searchScopes.has(key)) { uiState.searchScopes.delete(key); if (!uiState.searchScopes.size) uiState.searchScopes = new Set(ALL_SCOPES); } else uiState.searchScopes.add(key); } applyScopeFromMenu(); } const tool = event.target.closest("[data-tool-filter]"); if (tool) { uiState.toolFilters.has(tool.dataset.toolFilter) ? uiState.toolFilters.delete(tool.dataset.toolFilter) : uiState.toolFilters.add(tool.dataset.toolFilter); renderFilterMenu(); applyToolFilter(); } };
+byId("navigatorOptions").onclick = event => { const scope = event.target.closest("[data-scope]"); if (scope) { const key = scope.dataset.scope; if (key === "w") uiState.searchWhole = !uiState.searchWhole; else { const everything = ALL_SCOPES.every(k => uiState.searchScopes.has(k)); if (everything) uiState.searchScopes = new Set([key]); else if (uiState.searchScopes.has(key)) { uiState.searchScopes.delete(key); if (!uiState.searchScopes.size) uiState.searchScopes = new Set(ALL_SCOPES); } else uiState.searchScopes.add(key); } applyScopeFromMenu(); } const tool = event.target.closest("[data-tool-filter]"); if (tool) { toggleToolFacet(tool.dataset.toolFilter); } };
 byId("selectAllScopes").onclick = () => { uiState.searchScopes = new Set(ALL_SCOPES); uiState.searchWhole = false; applyScopeFromMenu(); };
-byId("clearTranscriptFilters").onclick = () => { uiState.toolFilters.clear(); renderFilterMenu(); applyToolFilter(); };
+byId("clearTranscriptFilters").onclick = () => { setToolFacets([]); };
 
 function openGlobalSearch() { byId("searchLayer").classList.add("production-open"); byId("searchInput").value = ""; uiState.searchTab = "all"; renderGlobalSearch(); byId("searchInput").focus(); }
 function globalRows(query) {

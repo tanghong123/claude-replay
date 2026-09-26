@@ -293,6 +293,7 @@
   stream.appendChild(botPad);
   var searchNeedle = ""; // active search term (lowercase), re-marked on materialize
   var searchScope = null; // `uatobrew:` prefix parse; w modifies matching, null = unscoped
+  var searchTools = null; // the box's `tool:` facets (#292), null = none typed
 
   function isTurnKind(b) { return b.kind === "user" || b.kind === "command"; }
   function isHiddenRec(i) { return !!filter && !isTurnKind(records[i]) && !recHit[i]; }
@@ -1937,6 +1938,10 @@
       filterCurId = null;
       filterNav(0);
     }
+    // The filter decides which records are on the page, and since #292 a search counts only
+    // those — so a query already in the box is re-run here, or the count would promise hits the
+    // filter has just taken away (or hide ones it has just brought back).
+    if (searchNeedle) search(q.value);
     all(".tool-item").forEach(function (ti2) {
       ti2.classList.toggle("active", ti2.dataset.sel === filter);
     });
@@ -3184,9 +3189,20 @@
   }
   // One record's hits, and — when `counts` is given — every part's hits added into the per-class
   // rows: the shared rule (#118, shared/search.js countRecord), which both pages now run.
+  // The active filter as the shared grammar's tool facets (#292): a tool selector asks for that
+  // tool, a tree node for its family, a KIND selector for neither — a kind is a class, not a tool.
+  function filterTools() {
+    if (!filter) return null;
+    var want = parseFilterSel(filter);
+    if (want.tool) return [{ name: want.tool, prefix: false }];
+    if (want.toolPre) return [{ name: want.toolPre, prefix: true }];
+    return null;
+  }
   function countRec(i, set, lc, whole, counts) {
     ensureRecText(i);
-    return shared.countRecord(recText[i], recSearchParts[i], lc, whole, scopeMask(set), counts || null);
+    // With a filter on, a text hit counts inside the CALL the filter kept (design
+    // in-session-search.md §4): the words of the thinking that absorbed it are the thinking's.
+    return shared.countRecord(recText[i], recSearchParts[i], lc, whole, scopeMask(set), counts || null, searchTools || filterTools());
   }
   var wholeAt = shared.wholeAt;
   var countOcc = shared.countOcc;
@@ -3202,7 +3218,12 @@
     var nodes = [], n;
     while ((n = walker.nextNode())) {
       var owner = n.parentElement && n.parentElement.closest(".blk");
+      // A tool facet marks only inside the call it names (#292) — the same part-precision the
+      // count has, so what is highlighted and what is counted cannot disagree.
+      var tools = searchTools || filterTools();
+      var holder = tools && n.parentElement && n.parentElement.closest("[data-tool]");
       if ((!searchScope || (owner && kindInScope(owner.dataset.kind, searchScope)))
+          && (!tools || (holder && shared.toolMatches(holder.dataset.tool, tools)))
           && countOcc(n.nodeValue.toLowerCase(), lc, whole)) nodes.push(n);
     }
     nodes.forEach(function (tn) {
@@ -3256,11 +3277,20 @@
       return;
     }
     searchScope = q.set;
+    // The box's own `tool:` facets (#292): one grammar with the app shell, so a typed facet
+    // narrows the search here too. The MENU's filter is this page's cut and still narrows beside
+    // it (`filterTools`); a typed facet takes precedence when both are present, because the box
+    // is what the reader just said.
+    searchTools = q.tools && q.tools.length ? q.tools : null;
     var lc = q.lc;
     searchNeedle = lc;
     classCounts = shared.zeroCounts();
     var whole = !!(searchScope && searchScope.w);
     for (var i = 0; i < records.length; i++) {
+      // A record the filter hides is not on the page, so its hits are neither counted nor
+      // steppable (#292, design §4: one count, one step list — the combined query's). This page
+      // used to count them, so the box could promise hits the reader could not reach.
+      if (isHiddenRec(i)) continue;
       var n = countRec(i, searchScope, lc, whole, classCounts);
       if (n) { hitRecs.push({ rec: i, count: n, start: totalHits }); totalHits += n; }
     }
@@ -3289,6 +3319,7 @@
   // re-running the search over all of them on every apply.
   function countNewRecord(i) {
     if (!searchNeedle) return;
+    if (isHiddenRec(i)) return; // as in `search`: hidden is not on the page (#292)
     var whole = !!(searchScope && searchScope.w);
     var n = countRec(i, searchScope, searchNeedle, whole, classCounts);
     if (!n) return;

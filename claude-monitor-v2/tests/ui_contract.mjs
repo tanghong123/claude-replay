@@ -1453,7 +1453,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // the two surfaces differ here on purpose.)
   assert.doesNotMatch(app, /classList\.add\("filter-hidden"\)|classList\.toggle\("filter-hidden"/, "nothing is hidden by a filter");
   assert.match(app, /recordState\.filterMatches = indices;/, "the filter's hits are a match list…");
-  assert.match(app, /function activeMatches\(\) \{[\s\S]{0,200}?return uiState\.toolFilters\.size \? recordState\.filterMatches \|\| \[\] : \[\];/, "…which is what the step control walks when there is no query");
+  // #292 amended this: the facets come from the BOX, and a query no longer replaces them — it is
+  // already narrowed to them (`countRecord` counts inside the chosen calls), so the step list is
+  // the query's hits when there is text and the facets' own when there is not.
+  assert.match(app, /function activeMatches\(\) \{[\s\S]{0,400}?return queryTools\(\)\.length \? recordState\.filterMatches \|\| \[\] : \[\];/, "…which is what the step control walks when there is no query");
+  assert.match(app, /const inScope = countRecord\(text, parts, query, whole, wanted, classCounts, tools\);/, "a text query is counted INSIDE the tools the box names (#292)");
+  assert.match(app, /input\.value = writeTools\(input\.value, names\);\n\s*updateSearch\(true\);/, "…and ticking a tool writes the box, which is the query (#101, #292)");
   assert.match(app, /recordState\.landed = matches\[recordState\.match\];\s*\n\s*viewport\.jumpToRecord\(recordState\.landed, textual \? "search" : "filter"\);/, "…landing each one in its surroundings");
   assert.match(app, /const already = matches\[nearest\] === recordState\.landed;/, "pressing next where a jump already landed moves on — while the first step after a fresh query still lands on the first hit");
   assert.match(app, /byId\("transcriptSearchCount"\)\.textContent = text \|\| \(hits \? `\$\{hits\} \$\{hits === 1 \? "match" : "matches"\}` : ""\);/, "the box counts what the filter found, the way it counts a search");
@@ -1596,7 +1601,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // The gate itself now lives in the shared module, and BOTH pages run it (#118).
   const searchModule = readFileSync(new URL("../../claude-replay-html/src/html/shared/search.js", import.meta.url), "utf8");
   assert.match(searchModule, /if \(!wanted \|\| part\.mask & wanted\) inScope \+= n;/, "stepping is gated by the scope");
-  assert.match(app, /const inScope = countRecord\(text, parts, query, whole, wanted, classCounts\);/, "the app shell counts through the module");
+  assert.match(app, /const inScope = countRecord\(text, parts, query, whole, wanted, classCounts, tools\);/, "the app shell counts through the module");
   assert.match(app, /data-scope-count="\$\{key\}"/, "the scope rows carry counts");
   assert.match(app, /function applyScopeFromMenu\(\) \{/, "the buttons rewrite the box's prefix");
   const search = readFileSync(new URL("../../claude-replay-html/src/html/shared/search.js", import.meta.url), "utf8");

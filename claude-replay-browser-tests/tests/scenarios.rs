@@ -13960,3 +13960,129 @@ fn scenario_a_five_digit_line_number_stays_on_one_line() {
         }
     }
 }
+
+// ── scenario: a query and a tool facet NARROW each other (#292) ──────────────────────────────
+
+/// design/in-session-search.md §4. The two axes were a mode switch: on the app shell a query
+/// returned the TEXT matches and a tool filter its own, so typing replaced the filter
+/// (`activeMatches`), and on the classic page a search counted hits in records the filter had
+/// taken off the page. Now `tool:` is part of the one grammar and everything narrows: the fixture
+/// says "needle" in a Bash command, in a Read's target and in an assistant's prose, so each axis
+/// alone finds more than the two together.
+fn scenario_a_query_and_a_tool_facet_narrow_each_other(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (box_sel, count_sel) = match surface {
+        Surface::Classic => (
+            "document.getElementById('q')",
+            "document.getElementById('qcount')",
+        ),
+        Surface::AppShell => (
+            "document.getElementById('transcriptSearchInput')",
+            "document.getElementById('transcriptSearchCount')",
+        ),
+    };
+    // Type into the box the way a reader does: the page's own input handler, then Enter for the
+    // pages that search on it.
+    let typed = |value: &str| {
+        assert_eq!(
+            eval(
+                tab,
+                &format!(
+                    "(function(){{ var b = {box_sel}; b.value = {value:?}; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true}})); return 'typed'; }})()"
+                ),
+            ),
+            "typed",
+            "{surface:?}: the box takes {value:?}"
+        );
+        settle();
+        settle();
+    };
+    let hits = |label: &str| -> i64 {
+        let text = eval(tab, &format!("{count_sel}.textContent.trim()"))
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let n = text
+            .split_whitespace()
+            .next()
+            .and_then(|w| w.split('/').last())
+            .and_then(|w| w.parse::<i64>().ok())
+            .unwrap_or(-1);
+        assert!(
+            n >= 0,
+            "{surface:?}: {label}: the box says a number: {text:?}"
+        );
+        n
+    };
+    typed("needle");
+    let text_only = hits("text alone");
+    assert!(
+        text_only >= 3,
+        "{surface:?}: the fixture says needle in a Bash command, a Read target and some prose: {text_only}"
+    );
+    typed("tool:Bash needle");
+    let both = hits("text and facet");
+    assert!(
+        both >= 1 && both < text_only,
+        "{surface:?}: `tool:Bash needle` is the Bash calls' own needles — fewer than every \
+         needle ({both} of {text_only}), and not zero"
+    );
+    typed("tool:Read needle");
+    let read = hits("the other tool");
+    assert!(
+        read >= 1 && read < text_only,
+        "{surface:?}: …and another tool finds its own ({read} of {text_only})"
+    );
+    typed("needle");
+    assert_eq!(
+        hits("text alone again"),
+        text_only,
+        "{surface:?}: dropping the facet brings every hit back"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_query_and_a_tool_facet_narrow_each_other() {
+    let _serial = serial();
+    let fx = needle_fixture("scenario-narrow-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_query_and_a_tool_facet_narrow_each_other(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_query_and_a_tool_facet_narrow_each_other() {
+    let _serial = serial();
+    let fx = needle_fixture("scenario-narrow-app");
+    let page = open(Surface::AppShell, &fx, 3036);
+    scenario_a_query_and_a_tool_facet_narrow_each_other(&page.tab, Surface::AppShell, &fx);
+}
+
+/// One word, "needle", in three places one facet can tell apart: a Bash command, a Read's target
+/// and an assistant's prose. Prose between the calls so each is its own record.
+fn needle_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(10, Shape::default());
+    t += &user_at("where is the needle?", &now_minus(90));
+    t += &assistant_at("Looking for the needle in the haystack.", &now_minus(85));
+    t += &harness::bash_call_at("grep -rn needle src", "t-narrow-bash", &now_minus(80));
+    t += &tool_result_lines("t-narrow-bash", 3, &now_minus(78));
+    t += &assistant_at("Now the file itself.", &now_minus(70));
+    t += &harness::read_tool_at("t-narrow-read", "/tmp/needle.txt", &now_minus(60));
+    t += &tool_result_lines("t-narrow-read", 4, &now_minus(58));
+    t += &assistant_at("answer narrow: the needle was in src.", &now_minus(40));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 11,
+    }
+}
