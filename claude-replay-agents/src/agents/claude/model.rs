@@ -526,6 +526,10 @@ const SYSTEM_SUBTYPES_KNOWN: &[&str] = &[
     "local_command",
     "model_consent_fallback",
     "model_refusal_fallback",
+    // #286: a refusal the client had no fallback model for. The turn's failure is drawn from the
+    // synthetic `isApiErrorMessage` message that follows it, whose text already names the model,
+    // the refusal category and the request id this record repeats.
+    "model_refusal_no_fallback",
     "scheduled_task_fire",
     "stop_hook_summary",
     "turn_duration",
@@ -650,6 +654,9 @@ const TOOL_RESULT_READ: &[&str] = &[
 /// `every_category_reports_what_is_new_and_nothing_that_is_known` are the tests that notice.
 const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "agentType",
+    // #285, Grep: the head_limit that cut its output, which its text states
+    // ("[Showing results with pagination = limit: N]").
+    "appliedLimit",
     "artifactRead",
     "artifact_id",
     "artifacts",
@@ -684,6 +691,8 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "error",
     "file",
     "filePath",
+    // #285, Grep: the files it matched, which its result text lists.
+    "filenames",
     "firstPage",
     "gitOperation",
     // #277, CronCreate: the schedule in words, which its result text already states.
@@ -706,6 +715,11 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "newString",
     "noOutputExpected",
     "notifications",
+    // #285, Grep: its counts. The result text states them ("Found N total occurrences across
+    // M file(s)"), or shows the lines themselves.
+    "numFiles",
+    "numLines",
+    "numMatches",
     "oldString",
     "originalFile",
     "path",
@@ -759,6 +773,8 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "title",
     "toolStats",
     "totalDurationMs",
+    // #285, Grep: how many lines a limited search had in all; the text says it was limited.
+    "totalLines",
     "totalTokens",
     "totalToolUseCount",
     "total_deferred_tools",
@@ -791,6 +807,23 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // the file_unchanged result, whose text says the file is in context; the provenance word
     // adds nothing a reader needs.
     ("source", &["file", "source", "type"]),
+    // Grep (#285), in both modes it has been met in — `content` (the lines, `appliedLimit` when a
+    // head_limit cut them) and `count` (`numMatches`). The page draws the result TEXT, which shows
+    // the lines or states the counts and the limit. `files_with_matches` was never seen: its keys
+    // are presumably these too, and if not, `mode` is reported beside the new one.
+    (
+        "mode",
+        &[
+            "appliedLimit",
+            "content",
+            "filenames",
+            "mode",
+            "numFiles",
+            "numLines",
+            "numMatches",
+            "totalLines",
+        ],
+    ),
 ];
 
 /// The `toolUseResult` keys this adapter neither reads nor has already met (#264), in the
@@ -4263,6 +4296,40 @@ mod tests {
         );
     }
 
+    /// #286: a refusal with no fallback model is three records — the refused assistant message, a
+    /// `system` `model_refusal_no_fallback` restating it, and the client's synthetic error message.
+    /// The reader sees ONE failure (the synthetic message's), and the system record is known, not
+    /// reported as a shape nobody has met.
+    #[test]
+    fn a_refusal_without_a_fallback_is_one_failure_and_a_known_shape() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-09-26T01:00:00.000Z","message":{"role":"user","content":"go"}}
+{"type":"assistant","version":"2.1.281","sessionId":"s-286","timestamp":"2026-09-26T01:00:01.000Z","message":{"role":"assistant","model":"claude-opus-5-5","stop_reason":"refusal","stop_details":{"type":"refusal","category":"reasoning_extraction"},"content":[{"type":"thinking","thinking":"","signature":"x"}]}}
+{"type":"system","subtype":"model_refusal_no_fallback","level":"warning","content":"","isMeta":false,"version":"2.1.281","sessionId":"s-286","timestamp":"2026-09-26T01:00:02.000Z","originalModel":"claude-opus-5-5","requestId":"req_286","apiRefusalCategory":"reasoning_extraction","apiRefusalExplanation":"This request was flagged.","refusedUserMessageUuid":"u-286"}
+{"type":"assistant","isApiErrorMessage":true,"error":"invalid_request","version":"2.1.281","sessionId":"s-286","timestamp":"2026-09-26T01:00:03.000Z","message":{"role":"assistant","model":"<synthetic>","stop_reason":"refusal","content":[{"type":"text","text":"API Error: the model's safeguards flagged this message. Category: reasoning_extraction. Request: req_286"}]}}
+"##;
+        let blocks = parse(jsonl);
+        let notes: Vec<&String> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolResult(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes.len(),
+            1,
+            "one failure, not one per record: {blocks:?}"
+        );
+        assert!(notes[0].contains("safeguards flagged"), "{notes:?}");
+        assert!(
+            !unknown_shapes()
+                .iter()
+                .any(|s| s.name == "model_refusal_no_fallback"),
+            "the system record is a known shape"
+        );
+    }
+
     /// #239: the recap the client writes for a reader who stepped away — verified to describe the
     /// TURN it follows, not the session, by reading one against its turn before building on it.
     #[test]
@@ -4665,6 +4732,24 @@ mod tests {
             unknown(&serde_json::json!({"source": "seeded", "stdout": "ok"})),
             vec!["source".to_string()],
             "…and so is `source` outside Read's file_unchanged"
+        );
+        // #285: Grep, in each shape it was met in — content mode, limited and not, and count mode.
+        for grep in [
+            serde_json::json!({"mode": "content", "numFiles": 0, "filenames": [], "content": "a.rs:1:x", "numLines": 1, "totalLines": 1}),
+            serde_json::json!({"mode": "content", "numFiles": 0, "filenames": [], "content": "a.rs:1:x", "numLines": 400, "totalLines": 3027, "appliedLimit": 400}),
+            serde_json::json!({"mode": "count", "numFiles": 1, "filenames": [], "content": "a.rs:27", "numMatches": 27}),
+        ] {
+            assert_eq!(unknown(&grep), Vec::<String>::new(), "Grep, known: {grep}");
+        }
+        assert_eq!(
+            unknown(&serde_json::json!({"mode": "content", "numFiles": 0, "appliedOffset": 20})),
+            vec!["appliedOffset".to_string(), "mode".to_string()],
+            "a Grep key nobody has met brings `mode` back with it"
+        );
+        assert_eq!(
+            unknown(&serde_json::json!({"mode": "plan", "stdout": "ok"})),
+            vec!["mode".to_string()],
+            "…and `mode` from any other tool is reported"
         );
 
         // The attachment is `{type, organizationUuid}` and nothing else.
