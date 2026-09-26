@@ -152,8 +152,16 @@ The policy decides which paths get a FILE stamp; `/file` then also asks whether 
 EXPLAINS the path (containment: its cwd, its project, its transcript's directory, and — #283 — the
 agent's own scratch for that project, `TranscriptAdapter::scratch_dirs`: for Claude
 `/tmp/claude-<uid>/<project slug>/`, where a session's spawned agents keep theirs too; `<uid>` is
-the transcript owner's, `CLAUDE_SCRATCH_ROOT` moves it for tests). So an allowlist entry for a
-directory no session explains mints stamps that `/file` still refuses.
+the transcript owner's, `CLAUDE_SCRATCH_ROOT` moves it for tests). **A background session also
+explains its own job workspace** (#291): Claude Code gives every daemon-hosted session
+`<claude home>/jobs/<first 8 chars of its id>/tmp`, and an agent uses it as a scratch — one session
+had built git worktrees and logs there, named on 749 of its transcript's lines. The eight
+characters are a PREFIX, so the job's `state.json` must name that session (`sessionId` or
+`resumeSessionId`) before its tmp counts; a sub-agent gets its ROOT session's, which is where its
+parent works. The home comes from the transcript's own path — the parent of the store holding the
+project slugs — never from `$HOME`, so a relocated store is followed and a test's store stays
+hermetic. So an allowlist entry for a directory no session explains mints stamps that `/file`
+still refuses.
 
 **Every file view offers BOTH halves** (#272, the owner: "offering both for now"): showing the file
 in the page — or downloading it, for bytes the page does not show (`/file`'s `Content-Disposition:

@@ -14086,3 +14086,161 @@ fn needle_fixture(name: &str) -> Fixture {
         turns: 11,
     }
 }
+
+/// A background session whose agent worked in its JOB tmp (#291): one file there, and one in
+/// another session's job tmp. Returns the fixture and the two paths. Plain text, as `scratch_fixture`: Markdown opens
+/// in mdrev's viewer (#270), a different page with the same guards.
+fn job_tmp_fixture(name: &str, sid: &str) -> (Fixture, String, String) {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    // `job_home_and_session` derives the claude home from the transcript's own path — the parent
+    // of the store that holds the project slugs — so here the jobs live beside the store itself.
+    let home = base.join("stores");
+    let job = |prefix: &str, names: &str, rel: &str, body: &str| -> String {
+        let dir = home.join("jobs").join(prefix);
+        std::fs::create_dir_all(dir.join("tmp")).unwrap();
+        std::fs::write(dir.join("state.json"), names).unwrap();
+        let p = dir.join("tmp").join(rel);
+        std::fs::write(&p, body).unwrap();
+        p.display().to_string()
+    };
+    let mine = job(
+        &sid[..8],
+        &format!(
+            "{{\"sessionId\":\"{sid}\",\"resumeSessionId\":\"{sid}\",\"backend\":\"daemon\"}}"
+        ),
+        "work.txt",
+        "the job's own workspace",
+    );
+    // Another job, of another session. (A job whose NAME shares this session's prefix while its
+    // state names someone else cannot be built here — one directory, one name — so that collision
+    // is held by the unit test in `claude/discover.rs`, which can write the two states in turn.)
+    let other_sid = "c07adf79-0000-4000-8000-000000000291";
+    let theirs = job(
+        "c07adf79",
+        &format!("{{\"sessionId\":\"{other_sid}\",\"resumeSessionId\":\"{other_sid}\"}}"),
+        "theirs.txt",
+        "another job's workspace",
+    );
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: read the job workspace", &now_minus(200));
+    t += &read_tool_at("j1", &mine, &now_minus(190));
+    t += &tool_result_at("j1", &now_minus(190));
+    t += &read_tool_at("j2", &theirs, &now_minus(185));
+    t += &tool_result_at("j2", &now_minus(185));
+    t += &assistant_at("Read both.", &now_minus(180));
+    let path = stores.claude_session(sid, &t);
+    (
+        Fixture {
+            base,
+            path,
+            turns: 13,
+        },
+        mine,
+        theirs,
+    )
+}
+
+/// #291 — a file in the session's OWN job workspace (`~/.claude/jobs/<sid[..8]>/tmp`) opens in the
+/// page, on BOTH pages; one in another session's job tmp does not. (That the eight characters are
+/// checked against the job's `state.json`, and not taken as an identity, is the unit test's claim:
+/// two states cannot share one directory name here.)
+///
+/// The owner found 32 GB in one such directory and asked what the transcript said about it: its
+/// agent had been using `tmp/` as a workspace for days, and 749 of its lines named paths there —
+/// none of which could render, because `/file` only serves what a hosted session EXPLAINS (#283)
+/// and a job tmp was not among those places. It is now, on one condition: the job's `state.json`
+/// must NAME this session, since eight characters are a prefix and not an identity.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn both_shells_open_a_file_from_the_session_s_job_workspace() {
+    let _serial = serial();
+    let sid = "b0bb9596-4060-4a9b-9834-a2bc736d2f6c";
+    for (surface, port) in [(Surface::Classic, 3038), (Surface::AppShell, 3040)] {
+        let (fx, mine, theirs) = job_tmp_fixture(
+            match surface {
+                Surface::Classic => "jobtmp-classic",
+                _ => "jobtmp-app",
+            },
+            sid,
+        );
+        let browser = harness::chrome();
+        let tab = browser.new_tab().unwrap();
+        let stores = Stores {
+            root: fx.base.join("stores"),
+        };
+        let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
+        monitor.pair(&tab);
+        let (ui, ready) = match surface {
+            Surface::Classic => ("classic", "document.querySelectorAll('#stream .blk').length >= 3"),
+            _ => ("app", "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3"),
+        };
+        monitor.open(
+            &tab,
+            &format!("?ui={ui}&session={}&mountall=1", sid_of(&fx)),
+        );
+        harness::until(
+            &tab,
+            ready,
+            "the page to render the fixture",
+            Duration::from_secs(30),
+            "document.body.innerText.slice(0, 200)",
+        );
+        settle();
+        // Record every reveal, never send one: `open -R` must not run on this machine.
+        eval(
+            &tab,
+            "window.__reveals = []; var real = window.fetch; window.fetch = function (u, o) { var s = String(u); if (/__reveal\\?/.test(s)) { window.__reveals.push(s); return Promise.resolve(new Response('', {status: 200})); } return real(u, o); }; 'ok'",
+        );
+        let (link, shown) = match surface {
+            Surface::Classic => (".tool-path[data-path={p}]", ".lightbox pre.lb-text"),
+            Surface::AppShell => (
+                "[data-reference-path={p}]",
+                "#previewBody pre.artifact-text",
+            ),
+        };
+        let click = |p: &str| {
+            let sel = link.replace("{p}", &format!("{p:?}"));
+            eval(
+                &tab,
+                &format!("document.querySelector({sel:?}).click(); 'ok'"),
+            );
+        };
+        click(&mine);
+        until(
+            &tab,
+            &format!(
+                "[...document.querySelectorAll({shown:?})].some(function (e) {{ return e.textContent.indexOf(\"the job's own workspace\") >= 0; }})"
+            ),
+            "the session's own job workspace, shown in the page",
+            Duration::from_secs(10),
+            "JSON.stringify({ reveals: window.__reveals, shown: [...document.querySelectorAll('pre')].map(function (e) { return e.className + ':' + e.textContent.slice(0, 40); }).slice(-4) })",
+        );
+        click(&theirs);
+        let refused = match surface {
+            Surface::Classic => {
+                "(window.__reveals || []).some(function (u) { return u.indexOf('theirs.txt') >= 0; })"
+            }
+            Surface::AppShell => "!!document.querySelector('#previewBody [data-preview-reveal]')",
+        };
+        until(
+            &tab,
+            refused,
+            "another job's workspace refused",
+            Duration::from_secs(10),
+            "JSON.stringify({ reveals: window.__reveals, pane: (document.getElementById('previewBody') || {}).className })",
+        );
+        assert_eq!(
+            eval(
+                &tab,
+                &format!(
+                    "[...document.querySelectorAll({shown:?})].some(function (e) {{ return e.textContent.indexOf(\"another job's workspace\") >= 0; }})"
+                )
+            )
+            .as_bool(),
+            Some(false),
+            "{surface:?}: a session explains its OWN job workspace and no other's"
+        );
+        drop(monitor);
+    }
+}

@@ -47,23 +47,83 @@ fn scratch_root(uid: u32) -> PathBuf {
 /// The uid is the transcript's OWNER: the account that ran Claude Code is the one that owns the
 /// scratch. `502` is one account's uid, never a constant.
 pub fn scratch_dirs(transcript: &Path) -> Vec<PathBuf> {
+    // A transcript that is not there owns nothing — neither scratch below.
+    if std::fs::metadata(transcript).is_err() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let Ok(meta) = std::fs::metadata(transcript) else {
-            return Vec::new();
-        };
         // A root session's transcript sits directly in its project's store directory.
-        let Some(slug) = transcript.parent().and_then(Path::file_name) else {
-            return Vec::new();
-        };
-        vec![scratch_root(meta.uid()).join(slug)]
+        if let (Ok(meta), Some(slug)) = (
+            std::fs::metadata(transcript),
+            transcript.parent().and_then(Path::file_name),
+        ) {
+            out.push(scratch_root(meta.uid()).join(slug));
+        }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = transcript;
-        Vec::new()
+    if let Some(job) = job_tmp_dir(transcript) {
+        out.push(job);
     }
+    out
+}
+
+/// A BACKGROUND session's own workspace (#291): `<claude home>/jobs/<first eight characters of the
+/// session id>/tmp`. Claude Code gives every daemon-hosted session a directory there — `state.json`
+/// (the job's facts), `timeline.jsonl` (its state history) and an empty `tmp/` — and an agent uses
+/// that `tmp` as a scratch the way it uses the per-project one: measured on the owner's machine
+/// (2026-09-26), one session had built git worktrees, a helper script and logs in it, and 749 of its
+/// 69,985 transcript lines name paths there.
+///
+/// The directory name is only a PREFIX, so it is not enough on its own: the job's `state.json` must
+/// NAME this transcript's session (`sessionId`, or `resumeSessionId` — a resumed session keeps the
+/// entry it was created with). Without that check a session would claim the scratch of any other
+/// whose id happens to start with the same eight characters.
+///
+/// **A sub-agent gets its ROOT session's job tmp**, deliberately: the job belongs to the session
+/// the daemon hosts, its `tmp` is where that session's work happens, and a child spawned inside it
+/// reads and writes the same files. (Its own id has no job directory at all.)
+///
+/// `<claude home>` comes from the transcript's own path — the parent of the `projects/` directory it
+/// sits under — never from `$HOME`, so a test's store stays hermetic and a relocated store is
+/// followed rather than guessed at.
+fn job_tmp_dir(transcript: &Path) -> Option<PathBuf> {
+    let (home, session) = job_home_and_session(transcript)?;
+    let prefix = session.get(..8)?;
+    let dir = home.join("jobs").join(prefix);
+    let state = std::fs::read_to_string(dir.join("state.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&state).ok()?;
+    let names = ["sessionId", "resumeSessionId"];
+    let named = names
+        .iter()
+        .any(|k| v.get(*k).and_then(serde_json::Value::as_str) == Some(session.as_str()));
+    named.then(|| dir.join("tmp"))
+}
+
+/// The store's `<claude home>` and the SESSION a transcript belongs to — its own id for a root
+/// transcript, its root's for a sub-agent.
+///
+/// Both come from the path's SHAPE, not from a directory's name: a root session is
+/// `<store>/<slug>/<sid>.jsonl` and a spawn is `<store>/<slug>/<sid>/subagents/agent-*.jsonl`, so
+/// the store is two (or four) levels up and the home is its parent — `~/.claude/projects` →
+/// `~/.claude`. Keyed on the name `projects` it would find nothing in a relocated store, which is
+/// every store a test builds (`CLAUDE_PROJECTS_DIR`).
+fn job_home_and_session(transcript: &Path) -> Option<(PathBuf, String)> {
+    let parent = transcript.parent()?;
+    let (store, session) = if parent.file_name() == Some(std::ffi::OsStr::new("subagents")) {
+        let root = parent.parent()?; // <store>/<slug>/<sid>
+        (
+            root.parent()?.parent()?,
+            root.file_name()?.to_str()?.to_string(),
+        )
+    } else {
+        (
+            parent.parent()?,
+            transcript.file_stem()?.to_str()?.to_string(),
+        )
+    };
+    Some((store.parent()?.to_path_buf(), session))
 }
 
 /// All transcript files under a store root — shared with the QoderWork store, whose
@@ -534,6 +594,87 @@ mod tests {
             );
         }
         assert!(scratch_dirs(&project.join("absent.jsonl")).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #291: a background session's own workspace, `<claude home>/jobs/<sid[..8]>/tmp`, is its
+    /// scratch too — but only when the job's `state.json` NAMES that session, because the directory
+    /// is keyed by a prefix. A sub-agent gets its ROOT session's, which is where its parent works.
+    #[test]
+    fn a_background_session_s_job_tmp_is_its_scratch_when_the_job_names_it() {
+        let root = std::env::temp_dir().join(format!("cr-jobtmp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join(".claude");
+        let project = home.join("projects").join("-Users-dev-repo");
+        std::fs::create_dir_all(&project).unwrap();
+        let sid = "b0bb9596-4060-4a9b-9834-a2bc736d2f6c";
+        let transcript = project.join(format!("{sid}.jsonl"));
+        std::fs::write(&transcript, "{}\n").unwrap();
+        let job = home.join("jobs").join("b0bb9596");
+        let tmp = job.join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let has_tmp = |t: &Path| scratch_dirs(t).contains(&tmp);
+
+        // No job directory at all — nothing but the project scratch.
+        assert!(!has_tmp(&transcript), "no state.json, no claim");
+
+        // A job whose state names ANOTHER session that shares the prefix: still nothing.
+        let other = "b0bb9596-0000-4000-8000-000000000000";
+        std::fs::write(
+            job.join("state.json"),
+            format!("{{\"sessionId\":\"{other}\",\"resumeSessionId\":\"{other}\"}}"),
+        )
+        .unwrap();
+        assert!(
+            !has_tmp(&transcript),
+            "eight characters are a prefix, not an identity: a job that names another session \
+             keeps its own scratch"
+        );
+
+        // The job names this session.
+        std::fs::write(
+            job.join("state.json"),
+            format!(
+                "{{\"sessionId\":\"{sid}\",\"resumeSessionId\":\"{sid}\",\"backend\":\"daemon\"}}"
+            ),
+        )
+        .unwrap();
+        assert!(
+            has_tmp(&transcript),
+            "…and this one is its own: {:?}",
+            scratch_dirs(&transcript)
+        );
+
+        // Named as the RESUMED session alone (a session resumed into an older job entry).
+        std::fs::write(
+            job.join("state.json"),
+            format!("{{\"sessionId\":\"{other}\",\"resumeSessionId\":\"{sid}\"}}"),
+        )
+        .unwrap();
+        assert!(
+            has_tmp(&transcript),
+            "a resumed session keeps the entry it was created with"
+        );
+
+        // A sub-agent of that session: its parent's job tmp, since that is where the work is.
+        std::fs::write(
+            job.join("state.json"),
+            format!("{{\"sessionId\":\"{sid}\",\"resumeSessionId\":\"{sid}\"}}"),
+        )
+        .unwrap();
+        let subs = project.join(sid).join("subagents");
+        std::fs::create_dir_all(&subs).unwrap();
+        let child = subs.join("agent-4f2b1c.jsonl");
+        std::fs::write(&child, "{}\n").unwrap();
+        assert!(
+            has_tmp(&child),
+            "a spawn reads and writes its root's workspace"
+        );
+
+        // A transcript outside any `projects/` store understands nothing, and says so.
+        let stray = root.join("loose.jsonl");
+        std::fs::write(&stray, "{}\n").unwrap();
+        assert!(!has_tmp(&stray));
         let _ = std::fs::remove_dir_all(&root);
     }
 
