@@ -426,8 +426,9 @@ fn await_tail(tab: &headless_chrome::Tab, surface: Surface, what: &str) {
         std::thread::sleep(Duration::from_millis(200));
     }
     panic!(
-        "timed out waiting for {what} (top turn {})",
-        turn_at_top(tab, surface)
+        "timed out waiting for {what} (top turn {}); {}",
+        turn_at_top(tab, surface),
+        harness::renderer_verdict(tab)
     );
 }
 
@@ -7415,11 +7416,18 @@ fn grow_around(tab: &headless_chrome::Tab, surface: Surface, px: i64) -> bool {
 /// tail, whose tail has just moved away; one reading, whose page has just been pushed down.
 ///
 /// Confirmed RED on the code without the fix: with `outerObserver.observe(mount.content)` taken
-/// out, both surfaces fail on the first assertion — "pinned, 320px appeared above the run and the
-/// tail is still the tail". The observer watches the BORDER box on purpose: what moves the run is
-/// usually the chrome's own padding, and a padding change leaves the content box untouched, so
+/// out, both surfaces failed on the first assertion — "pinned, 320px appeared above the run and
+/// the tail is still the tail". The observer watches the BORDER box on purpose: what moves the run
+/// is usually the chrome's own padding, and a padding change leaves the content box untouched, so
 /// the default box hears nothing at all (that is how the app-shell half of this case failed once
 /// the rest was working).
+///
+/// Measured again on 2026-09-26 (#289), when the waits went in: it is the UNPINNED reader that
+/// catches a missing observer every time now. Without it, the app shell puts a pinned reader back
+/// at the tail by another path within about 100ms, and the classic page does so in some runs and
+/// not in others; the unpinned reader is never put back (turn 59 at the top where 60 was read).
+/// So the case was red in all nine runs without the observer — failing in either half — and green
+/// in all six with it.
 fn scenario_a_growth_around_the_run_displaces_the_reader(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -7431,11 +7439,24 @@ fn scenario_a_growth_around_the_run_displaces_the_reader(
         grow_around(tab, surface, 320),
         "{surface:?}: the chrome above the run can be grown"
     );
+    // The correction is delivered by a ResizeObserver, at FRAME time, and a headless tab on a
+    // busy machine produces frames lazily (#204): one full run on 2026-09-26 read the tail before
+    // it had landed. So the settles stay, a bounded wait follows them — a correction that never
+    // comes still fails, with the renderer's verdict — and the page is read once more after a
+    // further settle, because the claim is that the reader STAYS where they were.
     settle();
+    settle();
+    await_tail(
+        tab,
+        surface,
+        &format!(
+            "{surface:?}: pinned, 320px appeared above the run and the tail is still the tail"
+        ),
+    );
     settle();
     assert!(
         at_tail(tab, surface),
-        "{surface:?}: pinned, 320px appeared above the run and the tail is still the tail"
+        "{surface:?}: pinned, 320px appeared above the run and the tail stayed the tail"
     );
     // …and the same growth for a reader who is not pinned: it must move nothing they can see.
     let target = fx.turns / 2;
@@ -7455,10 +7476,34 @@ fn scenario_a_growth_around_the_run_displaces_the_reader(
     );
     settle();
     settle();
+    await_turn_at_top(
+        tab,
+        surface,
+        reading,
+        &format!("{surface:?}: reading turn {reading}, 320px appeared above the run, and it stayed there"),
+    );
+    settle();
     assert_eq!(
         turn_at_top(tab, surface),
         reading,
-        "{surface:?}: reading turn {reading}, 320px appeared above the run, and it stayed there"
+        "{surface:?}: reading turn {reading}, 320px appeared above the run, and it stays there"
+    );
+}
+
+/// Wait for `turn` to be the turn at the viewport top, or fail naming the turn that is there
+/// instead — [`await_tail`]'s counterpart for a reader who is not pinned.
+fn await_turn_at_top(tab: &headless_chrome::Tab, surface: Surface, turn: i64, what: &str) {
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < Duration::from_secs(8) {
+        if turn_at_top(tab, surface) == turn {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    panic!(
+        "timed out waiting for {what} (top turn {}); {}",
+        turn_at_top(tab, surface),
+        harness::renderer_verdict(tab)
     );
 }
 
