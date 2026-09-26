@@ -99,8 +99,13 @@ and the chain walk); the pages own the presentation.
   goes. `reference-shell.html` is generated: remove it in `design/agent-monitor-codex-demo.html`
   and re-run `scripts/extract-agent-monitor-demo.mjs`.
 
-**Not decided, left open:** showing active facets as removable chips inside the box; an "only
-matches" toggle that hides the rest on the app shell.
+**Decided against, and held** (owner, 2026-09-26): active facets as chips inside the box are NOT
+wanted — a filter "needs more direct exposure" than a token in a text field, which is what the
+popover and its badge are for. The "only matches" toggle is on hold.
+
+What §3 keeps is the typed FORM of a facet, not a chip: a reader may type `tool:Bash`, and ticking
+a row writes that token into the box the way ticking a scope already writes `ub:` there (#101). The
+popover stays the control.
 
 ## 6. The classic page
 

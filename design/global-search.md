@@ -42,14 +42,23 @@ is what the Transcript tab was.
   `project:knack` — and are the same `key:value` token shape as the in-session `tool:`. The
   in-session scope prefix and `tool:` mean nothing here and are ignored rather than matched
   as text.
-- **Open, for the owner** (not decided): ranking by recency with the open session's project
-  first; choosing a project filtering the sidebar instead of opening its first session;
-  whether the sidebar's session filter (Active recently / Blocked / Idle) applies here — the
-  recommendation is that it does not, and that each row shows its bucket; folding the Search
-  button and the mini search into one entry point.
+- **Ranking: by recency** (owner, 2026-09-26). The most recently active sessions first, so the
+  list opens on what the reader was just doing.
+- **A project row opens its own most recent session** (owner): the project is the address, its
+  newest session is where the reader lands. It does not filter the sidebar.
+- **The sidebar's session filter does not narrow this list** (owner), but a row the sidebar is
+  currently hiding is drawn in a **dimmed shade**, and choosing it **clears the sidebar filter to
+  All** — otherwise the reader would be dropped into a session the list beside them does not show.
+  That clearing is the reader's own act (they picked the row), so it is not a filter changing
+  underneath them.
+- **The two entry points stay two** (measured 2026-09-26): `searchBtn` belongs to the expanded
+  sidebar and `sidebarMiniSearch` to the collapsed 64px rail (`.app.sidebar-off`), so they are one
+  control in two sidebar states, not a duplicate.
 
 ## 5. Implementation (filed as a task)
 
 Remove the Transcript tab and its note, reword the placeholder, parse qualifiers through the
-shared grammar module. A scenario on the app shell (the classic rail has no such dialog): the
-tab is gone, a name query jumps, `project:` narrows.
+shared grammar module, rank by recency, land a project row on its newest session, and dim the rows
+the sidebar is hiding — choosing one clears that filter to All. A scenario on the app shell (the
+classic rail has no such dialog): the tab is gone, a name query jumps, `project:` narrows, a hidden
+session reads as dimmed and picking it leaves the sidebar showing everything.
