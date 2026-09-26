@@ -49,9 +49,16 @@ Backward compatible with every query that parses today:
 | `tool:mcp__server__*` | every tool of an MCP server; `tool:mcp__*` every MCP call | new; the prefix form, as the classic page's `[data-tool^=]` |
 | leading `:` | escape a scope-shaped literal | unchanged |
 
-`tool:` tokens may sit anywhere in the box; the prefix run stays first. A box holding only facets
-(no text) is a valid query: it matches every record the facets select — which is today's tool
-filter, and now also works for scopes alone ("show me the thinking").
+`tool:` tokens may sit anywhere in the box; the prefix run stays first. The value is the name a
+record's `tool` field carries — the server's display name (an Edit reads `Update`), the same on
+both pages. A box holding only `tool:` tokens (no text) is a valid query: it matches every call
+of those tools — today's tool filter, typed.
+
+**Amended while implementing (2026-09-26):** a box holding only a scope prefix is NOT a facet
+query. `auto:` alone searches the literal text `auto:`, as it always has — the TUI shares this
+parser and the rule is load-bearing — so "scopes alone" is out. And text shorter than two
+characters beside a `tool:` token runs nothing until the text is empty or long enough, rather
+than being silently dropped.
 
 ## 4. What each combination means
 
