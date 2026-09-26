@@ -493,6 +493,10 @@ fn is_boilerplate(s: &str) -> bool {
 /// type outside this list is Claude Code writing something it did not write before (#264).
 const RECORD_TYPES_KNOWN: &[&str] = &[
     "agent-name",
+    // #290: `{type, agentSetting, sessionId}`, written at a session's start and again on resume —
+    // the agent definition the session runs as. Only ever the default, "claude", so far: if a
+    // session is ever seen running as a named agent, that is worth a look before it is a label.
+    "agent-setting",
     "ai-title",
     "artifact-autoreact-ledger",
     "artifact-comment-monitor",
@@ -539,6 +543,9 @@ const SYSTEM_SUBTYPES_KNOWN: &[&str] = &[
 /// `total_tokens_reminder` alone occurs 1,515 times in one session — and the handful that
 /// carry something a reader wants are handled above.
 const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
+    // #290: a bare `{type}`, always right after a `thinking_stripped` — the same bookkeeping, for
+    // the advisor's content kept out of the model's context. Nothing to draw.
+    "advisor_stripped",
     "advisor_tool",
     "agent_listing_delta",
     "auto_mode",
@@ -677,6 +684,9 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "command",
     "commandName",
     "content",
+    // #290, Edit (2.1.283): the edit's content was kept out of the model's context. The card draws
+    // the edit from `structuredPatch`, which every such result carries.
+    "contentNotInModelContext",
     "contentType",
     "contract",
     "dangerouslyDisableSandbox",
@@ -807,6 +817,8 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // the file_unchanged result, whose text says the file is in context; the provenance word
     // adds nothing a reader needs.
     ("source", &["file", "source", "type"]),
+    // CronList (#290): its whole result is `{jobs}`, and its text states every job with its id.
+    ("jobs", &["jobs"]),
     // Grep (#285), in both modes it has been met in — `content` (the lines, `appliedLimit` when a
     // head_limit cut them) and `count` (`numMatches`). The page draws the result TEXT, which shows
     // the lines or states the counts and the limit. `files_with_matches` was never seen: its keys
@@ -4703,6 +4715,52 @@ mod tests {
     /// are the measured ones: CronCreate `{id, humanSchedule, recurring, durable}`, CronDelete
     /// `{id}`, Read's `file_unchanged` `{type, file, source}`, SendMessage `{success, message,
     /// display, msg_id}`.
+    /// #290: the shapes client 2.1.283 began writing, each looked at and found to carry nothing the
+    /// page draws — and `jobs`, a generic name, known only as the whole of a CronList result.
+    #[test]
+    fn the_2_1_283_shapes_are_known() {
+        let unknown = |v: &Value| -> Vec<String> {
+            unknown_tool_result_keys(v)
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        };
+        let edit = serde_json::json!({"filePath": "/w/a.rs", "oldString": "a", "newString": "b",
+            "originalFile": null, "structuredPatch": [], "userModified": false, "replaceAll": false,
+            "contentNotInModelContext": true});
+        assert_eq!(
+            unknown(&edit),
+            Vec::<String>::new(),
+            "an Edit result, known: {edit}"
+        );
+        let cron_list = serde_json::json!({"jobs": [{"id": "12b4386c", "cron": "17 * * * *",
+            "humanSchedule": "Every hour at :17", "prompt": "check", "recurring": true,
+            "durable": false}]});
+        assert_eq!(
+            unknown(&cron_list),
+            Vec::<String>::new(),
+            "CronList, known: {cron_list}"
+        );
+        assert_eq!(
+            unknown(&serde_json::json!({"jobs": [], "aKeyFromTheFuture": 1})),
+            vec!["aKeyFromTheFuture".to_string(), "jobs".to_string()],
+            "`jobs` beside a key nobody has met is reported with it"
+        );
+
+        let jsonl = r##"
+{"type":"agent-setting","agentSetting":"claude","sessionId":"s-290"}
+{"type":"attachment","version":"2.1.283","sessionId":"s-290","attachment":{"type":"thinking_stripped"}}
+{"type":"attachment","version":"2.1.283","sessionId":"s-290","attachment":{"type":"advisor_stripped"}}
+"##;
+        let _ = parse(jsonl);
+        for name in ["agent-setting", "advisor_stripped"] {
+            assert!(
+                !unknown_shapes().iter().any(|s| s.name == name),
+                "{name} is a known shape"
+            );
+        }
+    }
+
     #[test]
     fn a_generic_result_key_is_known_only_in_the_shape_it_was_judged_in() {
         let unknown = |v: &Value| -> Vec<String> {
