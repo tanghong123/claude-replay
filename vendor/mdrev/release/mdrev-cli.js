@@ -1140,10 +1140,17 @@ ${staged}`;
    * The ref is what makes it durable: an unreferenced blob is pruned by gc
    * after a fortnight. Refs outside refs/heads stay out of log, branch and
    * status, and are not pushed.
+   *
+   * Given a COMMIT, the snapshot is that commit's copy of the file: a note
+   * filed while the reader looked at an older revision quotes that revision,
+   * and its offsets index it. Freezing the working tree instead refused every
+   * such note on text reworded since — "the document does not contain" words
+   * that were on the screen (#355). The commit's blob is pinned the same way,
+   * so a rebase that drops the commit does not take the snapshot with it.
    */
-  async snapshotBlob(path2) {
+  async snapshotBlob(path2, rev) {
     try {
-      const sha = (await this.git("hash-object", "-w", "--", path2)).trim();
+      const sha = (rev && rev !== WORKTREE2 ? await this.git("rev-parse", "--verify", "--quiet", `${rev}:${path2}`) : await this.git("hash-object", "-w", "--", path2)).trim();
       if (!sha)
         return void 0;
       await this.git("update-ref", `refs/mdrev/snapshots/${sha}`, sha);
@@ -30863,6 +30870,7 @@ function sharedSuffixLen(a, b) {
 }
 var FUZZY_FLOOR = 0.6;
 var HEIR_FLOOR = 0.8;
+var WEDGE = 400;
 var REFINE_BUDGET = 48;
 function resolveAnchor(docText, given) {
   const anchor = sane(given);
@@ -30972,6 +30980,14 @@ function mapAnchor(fromText, toText, given) {
     mappedStart = afterEnd;
   if (mappedEnd === null)
     mappedEnd = afterEnd;
+  for (const step of steps) {
+    if (step.kind !== "ins" || step.after <= mappedStart || step.after >= mappedEnd)
+      continue;
+    if (step.text.length > Math.max(anchor.exact.length, WEDGE)) {
+      mappedEnd = step.after;
+      break;
+    }
+  }
   if (mappedEnd <= mappedStart)
     return { state: "orphaned", at: mappedStart };
   const now = toText.slice(mappedStart, mappedEnd);
@@ -31103,17 +31119,79 @@ async function consolidateNotes(source, opts = {}) {
   }
   return out;
 }
+async function upgradeAnchors(source, path2, annotations) {
+  const stale = annotations.filter((a) => a.anchor?.exact && a.anchor.space === void 0);
+  if (stale.length === 0)
+    return annotations;
+  const texts = /* @__PURE__ */ new Map();
+  const textOf2 = async (a) => {
+    const key2 = a.blob ?? "";
+    if (!texts.has(key2)) {
+      let text8 = null;
+      try {
+        text8 = (a.blob ? await source.readSnapshot(a.blob) : void 0) ?? null;
+        if (text8 === null && !a.blob)
+          text8 = await source.readBlob(WORKTREE2, path2);
+      } catch {
+        text8 = null;
+      }
+      texts.set(key2, text8);
+    }
+    return texts.get(key2) ?? null;
+  };
+  const upgraded = /* @__PURE__ */ new Map();
+  for (const ann of stale) {
+    const src = await textOf2(ann);
+    if (src === null)
+      continue;
+    const at = src.indexOf(ann.anchor.exact);
+    if (at < 0 || src.indexOf(ann.anchor.exact, at + 1) >= 0)
+      continue;
+    upgraded.set(ann.id, {
+      ...buildAnchor(src, at, at + ann.anchor.exact.length, ann.anchor.trail),
+      space: "source",
+      side: "to"
+    });
+  }
+  if (upgraded.size === 0)
+    return annotations;
+  for (const [id, anchor] of upgraded) {
+    const found = await findAnnotation(source.repoRoot, id).catch(() => null);
+    if (found)
+      await updateAnnotation(source.repoRoot, found.path, id, { anchor }).catch(() => void 0);
+  }
+  return annotations.map((a) => upgraded.has(a.id) ? { ...a, anchor: upgraded.get(a.id) } : a);
+}
 async function annotationsFor(source, relPath) {
   return (await docsByDestination(source, relPath))[0]?.annotations ?? [];
+}
+function inScope(annotation, q) {
+  if (!q.all && annotation.status !== "open")
+    return false;
+  return !(q.revs && q.revs.size > 0 && !q.revs.has(annotation.rev) && annotation.rev !== WORKTREE2);
+}
+async function recordsFor(source, q = {}) {
+  const out = [];
+  for (const doc of await docsByDestination(source, q.path)) {
+    if (doc.annotations.length === 0)
+      continue;
+    const annotations = q.upgrade ? await upgradeAnchors(source, doc.path, doc.annotations) : doc.annotations;
+    for (const annotation of annotations)
+      if (inScope(annotation, q))
+        out.push(annotation);
+  }
+  return out;
 }
 async function collectNotes(source, q = {}) {
   const docs = await docsByDestination(source, q.path);
   const out = [];
   const bases = /* @__PURE__ */ new Map();
   const subjects = /* @__PURE__ */ new Map();
-  for (const { path: path2, annotations } of docs) {
-    if (annotations.length === 0)
+  for (const doc of docs) {
+    const { path: path2 } = doc;
+    if (doc.annotations.length === 0)
       continue;
+    const annotations = q.upgrade ? await upgradeAnchors(source, path2, doc.annotations) : doc.annotations;
     let src = "";
     try {
       src = await source.readBlob(WORKTREE2, path2);
@@ -31121,9 +31199,7 @@ async function collectNotes(source, q = {}) {
     }
     const rendered = src ? plainTextOf(renderPlain(src).html) : "";
     for (const annotation of annotations) {
-      if (!q.all && annotation.status !== "open")
-        continue;
-      if (q.revs && q.revs.size > 0 && !q.revs.has(annotation.rev) && annotation.rev !== WORKTREE2)
+      if (!inScope(annotation, q))
         continue;
       const text8 = spaceOf(annotation.anchor) === "source" ? src : rendered;
       const m = await mapFromBase(source, annotation, text8, bases) ?? resolveAnchor(text8, annotation.anchor);
@@ -31250,6 +31326,8 @@ var STATE_LABEL = {
   changed: "TEXT CHANGED since the note",
   orphaned: "TEXT GONE"
 };
+var hang = (text8, col) => text8.replace(/\r?\n/g, `
+${" ".repeat(col)}`);
 function formatNotes(views) {
   if (views.length === 0)
     return "no open notes";
@@ -31265,16 +31343,17 @@ function formatNotes(views) {
     const a = v.annotation;
     const flag = STATE_LABEL[v.state];
     lines.push(`  ${a.id}${flag ? `  [${flag}]` : ""}`);
-    lines.push(`    note:  ${a.body}`);
+    lines.push(`    note:  ${hang(a.body, 11)}`);
     lines.push(`    on:    "${ellipsis(a.anchor.exact, 68)}"`);
     if (v.state === "changed" && v.currentText) {
       lines.push(`    now:   "${ellipsis(v.currentText, 68)}"`);
     }
     if (a.status === "open" && a.resolvedBy?.note) {
-      lines.push(`    (was closed: ${a.resolvedBy.note})`);
+      lines.push(`    (was closed: ${hang(a.resolvedBy.note, 17)})`);
     }
     for (const r of a.replies ?? []) {
-      lines.push(`    reply: ${r.author.split("@")[0]}: ${r.body}`);
+      const by = `${r.author.split("@")[0]}: `;
+      lines.push(`    reply: ${by}${hang(r.body, 11 + by.length)}`);
     }
     const where = (a.anchor?.trail ?? []).filter(Boolean).join(" \u203A ");
     const when = a.created?.slice(0, 10) ?? "undated";
@@ -31287,7 +31366,7 @@ function formatNotes(views) {
       if (v.closingSubject)
         lines.push(`    why:   ${v.closingSubject}`);
       if (said)
-        lines.push(`    did:   ${said}`);
+        lines.push(`    did:   ${hang(said, 11)}`);
     }
   }
   const files = new Set(views.map((v) => v.path)).size;
@@ -31567,58 +31646,21 @@ var Review = class {
   async annotations(args) {
     const source = await this.registry.get(args.root);
     const annotations = await annotationsFor(source, args.path);
-    return { path: args.path, annotations: await this.upgradeAnchors(source, args.path, annotations) };
-  }
-  /**
-   * Re-express old notes in the file's own coordinates, once, on the way past.
-   *
-   * Every annotation written before source anchoring existed quotes RENDERED
-   * text — markup already stripped — with offsets into a render. Those keep
-   * working, because resolution has always been quote-first, but they carry
-   * the two costs the move exists to end: an agent cannot find the quote in
-   * the `.md`, and the renderer stays pinned to reproducing the exact text
-   * lengths those offsets were taken against.
-   *
-   * Most of them convert cleanly: a quote that crosses no markup appears
-   * verbatim in the source, so locating it there gives a real source anchor.
-   * A quote that DOES cross markup — `four times` spanning a `**` boundary —
-   * has no verbatim home in the file, and is left exactly as it was rather
-   * than being forced into coordinates it does not fit. Those keep resolving
-   * the old way, which is why the rendered path stays.
-   */
-  async upgradeAnchors(source, path2, annotations) {
-    const stale = annotations.filter((a) => a.anchor?.exact && a.anchor.space === void 0);
-    if (stale.length === 0)
-      return annotations;
-    let src;
-    try {
-      src = await source.readBlob(WORKTREE2, path2);
-    } catch {
-      return annotations;
-    }
-    const upgraded = /* @__PURE__ */ new Map();
-    for (const ann of stale) {
-      const at = src.indexOf(ann.anchor.exact);
-      if (at < 0 || src.indexOf(ann.anchor.exact, at + 1) >= 0)
-        continue;
-      upgraded.set(ann.id, {
-        ...buildAnchor(src, at, at + ann.anchor.exact.length, ann.anchor.trail),
-        space: "source",
-        side: "to"
-      });
-    }
-    if (upgraded.size === 0)
-      return annotations;
-    for (const [id, anchor] of upgraded) {
-      await updateAnnotation(source.repoRoot, path2, id, { anchor }).catch(() => void 0);
-    }
-    return annotations.map((a) => upgraded.has(a.id) ? { ...a, anchor: upgraded.get(a.id) } : a);
+    return { path: args.path, annotations: await upgradeAnchors(source, args.path, annotations) };
   }
   async createAnnotation(args) {
     const source = await this.registry.get(args.root);
     const asked = args.annotation.rev;
-    const base2 = await baseRevFor(source, args.path, asked);
     const given = args.annotation.anchor;
+    const fromRev = given?.side === "from" ? args.annotation.fromRev : void 0;
+    const base2 = await baseRevFor(source, args.path, asked);
+    if (given?.side === "from") {
+      const struck = fromRev ? await source.snapshotBlob(args.path, fromRev) : void 0;
+      if (struck)
+        base2.blob = struck;
+      else
+        delete base2.blob;
+    }
     const canonical = await placedInSource(source, base2.blob, given) ?? await canonicalAnchor(source, base2.blob, given);
     await verifyInSource(source, base2.blob, canonical ?? given);
     return appendAnnotation(source.repoRoot, args.path, {
@@ -31678,7 +31720,7 @@ var Review = class {
   }
 };
 async function baseRevFor(source, path2, asked) {
-  const blob = await source.snapshotBlob(path2);
+  const blob = (asked && asked !== WORKTREE2 ? await source.snapshotBlob(path2, asked) : void 0) ?? await source.snapshotBlob(path2);
   const snap = blob ? { blob } : {};
   if (!source.isGit)
     return { rev: WORKTREE2, ...snap };
@@ -31702,7 +31744,7 @@ async function baseRevFor(source, path2, asked) {
   }
 }
 async function verifyInSource(source, blob, anchor) {
-  if (!anchor || anchor.space !== "source" || anchor.side === "from" || !blob)
+  if (!anchor || anchor.space !== "source" || !blob)
     return;
   if (typeof anchor.start !== "number" || typeof anchor.end !== "number" || typeof anchor.exact !== "string")
     return;
@@ -31754,6 +31796,9 @@ async function canonicalAnchor(source, blob, anchor) {
     return null;
   }
 }
+
+// packages/core/dist/events.js
+var PAGE_BODY_MAX = 16 * 1024;
 
 // packages/cli/dist/conform.js
 import { stat as stat2 } from "node:fs/promises";
@@ -31947,6 +31992,22 @@ async function conform(opts, fetchImpl = fetch) {
     }
   } catch (e) {
     fail("GET /stat", `${e instanceof Error ? e.message : e}`);
+  }
+  try {
+    const res = await send("log", {}, "POST", { lines: [{ kind: "page.conform-check", was: (/* @__PURE__ */ new Date()).toISOString() }] });
+    if (res.status === 404 || res.status === 501)
+      skip("POST /log", "not offered: the page keeps its account of what went wrong to itself");
+    else if (res.status !== 204 && res.status !== 200)
+      fail("POST /log", `expected 204, 404 or 501, got ${res.status}`);
+    else {
+      const refused = await send("log", {}, "POST", { lines: [{ kind: "host.stop" }] });
+      if (refused.status !== 400)
+        fail("POST /log", `a line that is not a page's must be refused with 400, got ${refused.status}`);
+      else
+        pass("POST /log", "takes a page's line and refuses anything else");
+    }
+  } catch (e) {
+    fail("POST /log", `${e instanceof Error ? e.message : e}`);
   }
   try {
     const res = await get("documents", {});
@@ -32213,6 +32274,8 @@ var USAGE = `mdrev-cli \u2014 mdrev's store, from the command line, for a host a
 
   mdrev-cli notes list   [--path P] [--all]            open notes (--all: closed too), as JSON
                          [--from REV [--to REV]]       only notes filed against that range
+                         [--records]                   the records alone, not judged against the file:
+                                                       what a viewer's route returns (it places notes itself)
   mdrev-cli notes add    --path P  < record.json       file a note; the record is {body, anchor, type?, rev?}
   mdrev-cli notes reply  ID --body "\u2026"
   mdrev-cli notes resolve ID [--note "\u2026"]
@@ -32242,7 +32305,7 @@ Options:
 Exit codes: 0 done \xB7 1 error (message on stderr) \xB7 2 no such note or document
 `;
 function parse5(argv) {
-  const o = { all: false, json: false, text: false, headers: {}, version: false, positional: [] };
+  const o = { all: false, json: false, text: false, records: false, headers: {}, version: false, positional: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next2 = () => {
@@ -32275,6 +32338,8 @@ function parse5(argv) {
       o.author = next2();
     else if (a === "--text")
       o.text = true;
+    else if (a === "--records")
+      o.records = true;
     else if (a === "--url")
       o.url = next2();
     else if (a === "--review")
@@ -32399,7 +32464,11 @@ async function run2(argv, out = (s2) => process.stdout.write(s2), input = readSt
             const to = await source.resolve(o.to ?? WORKTREE2);
             revs = await source.revsBetween(from.rev, to.rev);
           }
-          const views = await collectNotes(source, { path: o.path, all: o.all, revs });
+          if (o.records) {
+            emit(await recordsFor(source, { path: o.path, all: o.all, revs, upgrade: o.path !== void 0 }));
+            return 0;
+          }
+          const views = await collectNotes(source, { path: o.path, all: o.all, revs, upgrade: o.path !== void 0 });
           if (o.text)
             out(`${formatNotes(views)}
 `);

@@ -2,7 +2,7 @@
 name = "mdrev"
 # The PINNED mdrev release (#274). This crate's version IS that release's, so Cargo.lock names the
 # pin; it moves only by `scripts/vendor-mdrev.sh <version>`, never with the workspace's own version.
-version = "1.1.12"
+version = "1.1.13"
 edition.workspace = true
 license = "MIT"
 publish = false

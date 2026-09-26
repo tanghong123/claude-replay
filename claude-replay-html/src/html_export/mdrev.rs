@@ -229,6 +229,11 @@ fn contract(
         }
         // No push: 204 is the contract's "poll me".
         "events" => return status("204 No Content", Vec::new()),
+        // The page's own account of what went wrong (1.1.13, optional): this host keeps no event
+        // log for it to join, and 501 is the answer after which that page does not send again.
+        "log" => {
+            return status("501 Not Implemented", error("not offered by this host"));
+        }
         // A side pane has no file rail. Absent is the answer that hides each section; an empty
         // list would draw a section that can never fill.
         "documents" | "tree" | "changed" | "recents" | "recent-changes" => {
@@ -874,28 +879,28 @@ fn stat(d: &Doc) -> HttpResponse {
 
 // ------------------------------------------------------------------------------------ notes
 
-/// `GET annotations`: the document's notes, closed ones included, as mdrev's records.
+/// `GET annotations`: the document's notes, closed ones included, as mdrev's records — asked
+/// for as RECORDS (1.1.13's contract) and returned as they come. Without `--records` the CLI
+/// first judges every note against the file as it stands now (what `--notes` shows an agent),
+/// which the viewer never reads and which costs a word diff per snapshot: seconds on a document
+/// with a few dozen notes, after every note, every reply and every poll.
 fn notes_list(rel: &Release, d: &Doc) -> HttpResponse {
     let out = cli(
         rel,
         &d.root,
-        &["notes", "list", "--path", &d.rel, "--all"],
+        &["notes", "list", "--path", &d.rel, "--all", "--records"],
         None,
     );
     if out.code != 0 {
         return cli_error(&out);
     }
-    let Ok(items) = serde_json::from_slice::<Vec<Value>>(&out.out) else {
+    if serde_json::from_slice::<Vec<Value>>(&out.out).is_err() {
         return status(
             "502 Bad Gateway",
             error("mdrev-cli answered something other than a list"),
         );
-    };
-    let notes: Vec<Value> = items
-        .into_iter()
-        .filter_map(|mut i| i.get_mut("annotation").map(Value::take))
-        .collect();
-    HttpResponse::json(Value::Array(notes).to_string())
+    }
+    HttpResponse::json(String::from_utf8_lossy(&out.out).into_owned())
 }
 
 /// `POST annotations`: file a note — the viewer's record on stdin, the stored note back, 201.
@@ -1227,7 +1232,10 @@ case "$1" in
   text) printf 'from the cli' ;;
   notes)
     case "$2" in
-      list) echo '[{"path":"docs/doc.md","annotation":{"id":"ann-1","body":"hi"},"state":"exact"}]' ;;
+      list) case "$*" in
+          *--records*) echo '[{"id":"ann-1","body":"hi"}]' ;;
+          *) echo '[{"path":"docs/doc.md","annotation":{"id":"ann-1","body":"hi"},"state":"exact"}]' ;;
+        esac ;;
       add) cat > "$here/stdin.json"; echo '{"id":"ann-2","body":"filed"}' ;;
       delete) if [ "$3" = "ann-missing" ]; then echo "mdrev-cli: no such note" >&2; exit 2; fi; echo '{"deleted":true}' ;;
       *) echo '{"id":"'"$3"'","status":"'"$2"'"}' ;;
@@ -1597,6 +1605,17 @@ esac
             call(&f, &held, "reveal", &req("POST", "", b"{}", true)).code,
             "501 Not Implemented"
         );
+        // 1.1.13's optional page log: a batch of `page.*` lines, answered with the one refusal
+        // after which the page stops sending — with or without a document named beside it.
+        let lines = br#"{"lines":[{"kind":"page.gone","was":"2026-09-26T03:45:31.000Z","road":"listing"}]}"#;
+        assert_eq!(
+            call(&f, &held, "log", &req("POST", "", lines, true)).code,
+            "501 Not Implemented"
+        );
+        assert_eq!(
+            call(&f, &held, "log", &req("POST", &q, lines, true)).code,
+            "501 Not Implemented"
+        );
         assert_eq!(
             call(&f, &held, "tree", &req("GET", "", b"", true)).code,
             "404 Not Found"
@@ -1872,7 +1891,8 @@ esac
         assert_eq!(
             serde_json::from_slice::<Value>(&list.body).unwrap(),
             json!([{"id":"ann-1","body":"hi"}]),
-            "the records, not the CLI's wrapper"
+            "the records, asked for as records (the CLI's judged wrapper is what a host that \
+             forgot `--records` gets back, slowly)"
         );
 
         let note = br#"{"body":"tighten","anchor":{"exact":"Two"}}"#;

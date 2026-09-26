@@ -19,6 +19,9 @@
 .mdrev-host .width-medium .layout-doc>.gutter-margin, .mdrev-host .width-medium .layout-doc>.blame-stack {grid-column:1/-1}
 .mdrev-host .width-medium .layout-doc>.doc {width:100%;max-width:none}
 .mdrev-host .is-wide .layout-doc .doc {max-width:none}
+@container doc (width>=calc(48rem + 288px)) {
+.mdrev-host .app.width-narrow:not(.no-annotate) .layout-doc>.doc {margin-left:min((100% - var(--read-measure) - 4rem) / 2, 100% - var(--read-measure) - 4rem - 288px)}
+}
 .mdrev-host .doc h1, .mdrev-host .doc h2, .mdrev-host .doc h3, .mdrev-host .doc h4, .mdrev-host .doc h5, .mdrev-host .doc h6 {font-family:var(--read-head);letter-spacing:-.006em;text-wrap:balance;color:var(--ink);margin:2.1em 0 .55em;font-weight:600;line-height:1.3}
 .mdrev-host .doc>:first-child {margin-top:0}
 .mdrev-host .doc h1 {letter-spacing:-.014em;margin-top:.2em;font-size:1.6em}
@@ -367,6 +370,7 @@
 .mdrev-host .rail-mod {background:var(--mod-fg)}
 .mdrev-host .rail-shape {background:var(--shape-fg)}
 .mdrev-host .rail-mark.current {width:12px;left:2px}
+.mdrev-host .rail-mark:focus-visible {outline:2px solid var(--accent);outline-offset:1px;width:12px;left:2px}
 .mdrev-host .rail-note {cursor:pointer;box-sizing:border-box;border:1px solid var(--accent);z-index:1;background:#f7f6f3;border-radius:50%;width:6px;height:6px;padding:0;position:absolute;left:5px;transform:translateY(-50%)}
 .mdrev-host .rail-note.closed {border-color:var(--ink-faint)}
 .mdrev-host .rail-note:hover {border-color:var(--accent);transform:translateY(-50%)scale(1.5)}
@@ -476,7 +480,7 @@
 .mdrev-host .ann-drift {color:var(--ink-faint);margin-top:4px;font-size:10.5px;font-style:italic}
 .mdrev-host .ann-entry {border-top:1px solid var(--rule-soft);padding:6px 0 2px}
 .mdrev-host .ann-entry-head {flex-wrap:wrap;align-items:baseline;gap:6px;margin-bottom:2px;display:flex}
-.mdrev-host .ann-entry-body {overflow-wrap:anywhere;font-size:12px}
+.mdrev-host .ann-entry-body {overflow-wrap:anywhere;white-space:pre-wrap;font-size:12px}
 .mdrev-host .ann-entry-head .ann-reply-drop {margin-left:auto;padding:0 4px;font-size:10px}
 .mdrev-host .ann-entry .ann-type {color:var(--ink-faint);text-transform:uppercase;letter-spacing:.06em;font-size:10px}
 .mdrev-host .ann-close .ann-entry-body {color:var(--ink-soft);font-size:11.5px}
@@ -489,6 +493,7 @@
 .mdrev-host .ann-reply-box {align-items:flex-end;gap:5px;margin-top:6px;display:flex}
 .mdrev-host .ann-reply-box textarea {min-height:0;font:inherit;background:var(--bg-soft);color:var(--ink);border:1px solid var(--rule);resize:vertical;border-radius:6px;flex:1;margin:0;padding:3px 7px;font-size:11.5px}
 .mdrev-host .ann-reply-box button {white-space:nowrap}
+.mdrev-host .ann-draft[aria-busy=true] textarea, .mdrev-host .ann-reply-box[aria-busy=true] textarea {opacity:.55;border-color:var(--rule);cursor:progress;outline:none}
 .mdrev-host .ann-actions button.ann-drop-armed {color:var(--del-fg);border-color:var(--del-fg);font-weight:600}
 .mdrev-host .ann-resolution-commit {font-family:var(--read-mono,ui-monospace, monospace);color:var(--ink-faint);margin-left:5px;font-size:10.5px;display:inline-block}
 .mdrev-host .ann-meta {color:var(--ink-soft);justify-content:space-between;align-items:baseline;margin-top:5px;font-size:11.5px;display:flex}
@@ -588,7 +593,8 @@
 .mdrev-host .outline-count {color:var(--mod-fg);background:var(--mod-bg);border-radius:999px;padding:0 6px;font-family:ui-monospace,Menlo,monospace;font-size:10.5px}
 .mdrev-host .display-wrap {display:inline-flex;position:relative}
 .mdrev-host .topbar .ctl[hidden], .mdrev-host .topbar .display-wrap[hidden] {display:none}
-.mdrev-host .toolbar-reveal-wrap {--measure:46rem;grid-column:1/-1;height:0;position:relative}
+.mdrev-host .toolbar-reveal-wrap {--measure:46rem;grid-area:1/2;height:0;position:relative}
+.mdrev-host .app.has-outline>.toolbar-reveal-wrap {margin-left:var(--mdv-outline-w)}
 .mdrev-host .is-wide .toolbar-reveal-wrap, .mdrev-host .width-medium .toolbar-reveal-wrap {--measure:100%}
 .mdrev-host .toolbar-reveal {top:6px;right:max(8px, calc((100% - var(--measure)) / 2 - 43px));z-index:30;background:var(--bg);border:1px solid var(--rule-soft);position:absolute}
 .mdrev-host .display-menu {z-index:50;background:var(--bg);border:1px solid var(--rule);max-width:calc(100cqw - 16px);box-shadow:var(--shadow);white-space:nowrap;border-radius:10px;flex-direction:column;gap:10px;padding:10px;display:flex;position:absolute;top:calc(100% + 6px);left:auto;right:0}

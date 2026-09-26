@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.12/
+mdrev-embed-1.1.13/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -147,6 +147,7 @@ prefix**, the `contract` you pass at the mount, so `/text` is really
 | watches an agent revise the document | your push, or the bundle's poll | `GET /events`: a stream, or **204** for "poll me" |
 | right-clicks a row to reveal it on disk | your host — the browser cannot, and will not be asked twice if you answer **501** | `POST /reveal`, optional |
 | takes a collection out of the switcher | your host | `POST /forget`, optional |
+| is told something went wrong — a note that did not save, a document that can no longer be shown | your host keeps the page's account of it, for a post-mortem | `POST /log`, optional |
 | acts on a note from the terminal, tomorrow | the `mdrev` application, reading the same sidecar | nothing — it is the same file |
 
 The pattern in that table is the design: **everything about a DOCUMENT is
@@ -179,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.12`, with two tarballs: `mdrev-1.1.12-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.12.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.13`, with two tarballs: `mdrev-1.1.13-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.13.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.12/mdrev-embed-1.1.12.tar.gz
-tar xzf mdrev-embed-1.1.12.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.12
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.13/mdrev-embed-1.1.13.tar.gz
+tar xzf mdrev-embed-1.1.13.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.13
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.12/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.13/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -195,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.12/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.12.tar.gz
-cd mdrev-embed-1.1.12
+tar xzf mdrev-embed-1.1.13.tar.gz
+cd mdrev-embed-1.1.13
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -393,7 +394,7 @@ What is fixed, and is worth a moment if you are fitting this to a framework that
 | `GET /text?path=&rev=` | the Markdown, `text/plain; charset=utf-8` | `rev` is an id from `/revisions`, or `current` for the document as it stands. Send an `ETag`; the viewer polls with `If-None-Match` when you have no push, and a 304 is free. Refuse `..` |
 | `GET /revisions?path=` | `[{rev, date, author, subject, body?}]`, **newest first** | `rev` must be the **git commit id** if notes are to be shared with the mdrev application, because a note records the revision it was taken on. `[]` means no history: the viewer is then a reader with notes. **With no `path`** — optional — the COLLECTION's own revisions, which is how the viewer tells "this folder has no history" from "this document has none yet" |
 | `GET /asset?path=` | the file, with its media type | images a document refers to; same root and refusals as `/text` |
-| `GET /annotations?path=` | `[note]` | `mdrev-cli notes list --path P --all --root R`, returning each item's `annotation` (§6) |
+| `GET /annotations?path=` | `[note]` | `mdrev-cli notes list --path P --all --records --root R`, returned as it is (§6) |
 | `POST /annotations?path=` | the note as stored, **201** | `mdrev-cli notes add --path P --root R` with the request body on stdin |
 | `PATCH /annotations/{id}?path=` `POST /annotations/{id}/replies?path=` `DELETE /annotations/{id}?path=` | the note as it now is; 204 for delete | `notes resolve\|wontfix\|reopen ID --note "…"`, `notes reply ID --body "…"`, `notes delete ID`. A read-and-file-only host may answer 501 |
 | `GET /documents` — optional | `{files: [{path, cap?}]}` | every document you hold, for the viewer's switcher — not what changed, not what was opened. `git ls-files -- '*.md' '**/*.md'`. Gating? Mint a `cap` **per row**, or the rows are documents the viewer may name and not open |
@@ -424,7 +425,7 @@ Install the `mdrev-embed` tree on the machine that runs your server (§1, *Getti
 
 | Your route | Run | stdin | stdout |
 |---|---|---|---|
-| `GET /annotations` | `mdrev-cli notes list --path P --all --root R` | — | `[{path, annotation, state, currentText}]` — return the `annotation`s |
+| `GET /annotations` | `mdrev-cli notes list --path P --all --records --root R` | — | `[note]` — return it as it is; without `--records` every note is judged against the file first, which the viewer does not use and which takes seconds on a busy document |
 | `POST /annotations` | `mdrev-cli notes add --path P --root R --author U` | the request body: `{body, anchor, type?}` | the stored note, with `id`, `rev`, `blob`, `created`, and the anchor placed |
 | `POST …/{id}/replies` | `mdrev-cli notes reply ID --body "…" --root R --author U` | — | the note |
 | `PATCH …/{id}` `{status: "resolved"}` | `mdrev-cli notes resolve ID --note "…" --root R --author U` | — | the note, with `resolvedBy` |

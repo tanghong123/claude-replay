@@ -158,11 +158,11 @@ A file the document refers to — an image, mostly — with its media type. The 
 
 ### `GET {prefix}/annotations?path=`
 
-The document's notes, as a JSON array of records in mdrev's shape (below). The host answers by running `mdrev-cli notes list --path P --all --root <checkout>` and returning the `annotation` of each item — or by reading the sidecar, `.mdrev/annotations/<path>.jsonl`, one record per line.
+The document's notes, as a JSON array of records in mdrev's shape (below). The host answers by running `mdrev-cli notes list --path P --all --records --root <checkout>` and returning its output as it is — or by reading the sidecar, `.mdrev/annotations/<path>.jsonl`, one record per line. Without `--records` the CLI judges every note against the file first — where its text is now, for an agent reading `--notes` — which the viewer does not use and which costs a word diff per snapshot: seconds, on a document with a few dozen notes, after every note and reply and on every poll. An older host that runs it that way and returns each item's `annotation` still works, slowly.
 
 ### `POST {prefix}/annotations?path=`
 
-File a note. The body is the record the viewer built: `{body, type, anchor}`, with `anchor` in source space. The host adds what it knows and stores it, and returns the record as stored, with 201: run `mdrev-cli notes add --path P --root <checkout>` with the body on stdin, and return its output. The CLI resolves the revision, writes the snapshot `blob`, places an anchor whose offsets were only a guess, and appends the line.
+File a note. The body is the record the viewer built: `{body, type, anchor}`, with `anchor` in source space, and the `rev` on screen — plus `fromRev` for a note on struck text; pass the body through as it is. The host adds what it knows and stores it, and returns the record as stored, with 201: run `mdrev-cli notes add --path P --root <checkout>` with the body on stdin, and return its output. The CLI resolves the revision, writes the snapshot `blob`, places an anchor whose offsets were only a guess, and appends the line.
 
 ### `PATCH {prefix}/annotations/{id}?path=` · `POST …/{id}/replies` · `DELETE …/{id}` · `DELETE …/{id}/replies/{at}`
 
@@ -435,6 +435,32 @@ route says it does not exist, so the viewer reads it as the host's verdict on
 itself and takes the entry away from every row — which is a menu that vanishes
 because one file was deleted. `410` is the status for "it was here and is not".
 
+### `POST {prefix}/log` — optional
+
+```json
+{"lines": [{"kind": "page.gone", "was": "2026-09-25T03:45:31.000Z", "road": "listing", "root": "/srv/docs"}]}
+→ 204
+```
+
+The viewer's account of what went wrong in the page — the messages it showed
+the reader about a problem, a note that did not save, the host going away and
+coming back, an error nobody caught — for the host to keep beside its own
+logs, so a post-mortem can read what the reader was told. mdrev's own hosts
+write these into the machine's event log, `mdrev --events` (docs/events.md).
+
+It is rare by construction: nothing is sent per request, per render or per
+poll, a page sends at most twenty lines a minute, and a batch is at most
+twenty lines in 16 KB. `kind` always starts `page.`; `was` is when it happened
+in the page, which can be well before it arrives — a page that lost its host
+keeps what it could not send and sends it after a reload. The other fields are
+short strings, numbers and booleans: paths, collections, statuses and
+messages, never a note's text.
+
+**A message names the URL that failed, and a URL carries its capability**:
+strip every URL's query before you keep a line. A host that keeps no such log
+answers `404` or `501` and is not asked again by that page; `204` for a batch
+taken, `400` for one that is not a batch of page lines.
+
 ### `GET {prefix}/events?path=` — optional
 
 Live reload. Either a `text/event-stream` that sends an event named `change` when the document changes, or **204**, which tells the viewer to poll `/text` every few seconds while its tab is visible. Answer 204 unless you already have push.
@@ -471,6 +497,7 @@ One JSON object per note, the same on the wire and in the sidecar:
 
 - `id` — the host may mint one; the CLI does.
 - `rev` — the git commit the note was taken on; `WORKTREE` for an uncommitted file. `blob` — a content snapshot of the document as the reviewer saw it, written to the git object store; with it a note is mapped *exactly* through later edits, without it every reader falls back to searching for the quote. The CLI writes both.
+- `fromRev` — only on a note on struck text (`anchor.side: "from"`): the older revision of the redline it was taken on. Its offsets index that revision's text, and `blob` is that text; `rev` stays the revision on screen. The viewer sends it and the CLI snapshots it.
 - `anchor` — `exact` is the quoted text; `start`/`end` are offsets into the Markdown **source** (`space: "source"`); `prefix`/`suffix` are the 32 characters around it; `trail` is the heading path; `side` is `to` for text in the newer revision of a redline and `from` for struck text, which exists only in the older one. A host filing a note by hand may send `exact` alone with zero offsets; the CLI locates it.
 - `status` — `open`, `resolved`, `wontfix`. `resolvedBy.note` is what the closer said; `resolvedBy.commit` is the commit that answered it, which is where the reasoning lives.
 
