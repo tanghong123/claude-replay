@@ -14065,6 +14065,126 @@ fn app_shell_a_query_and_a_tool_facet_narrow_each_other() {
     scenario_a_query_and_a_tool_facet_narrow_each_other(&page.tab, Surface::AppShell, &fx);
 }
 
+/// #296 — the owner, with a screenshot of the box reading `o:tool:R` beside `2168 matches`: "the
+/// search box is too narrow to even show the query", and "move the whole word toggle on the right
+/// side of the upper/down arrows, and on the left side of the filter". At three window widths, a
+/// query holding a scope and a tool token is shown WHOLE in its own box — focused, and still
+/// after the reader has clicked away with the query held — the count is not clipped, and the row
+/// reads ↑ ↓ ab| filter, each control answering its own hit test.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_search_box_shows_its_own_query() {
+    let _serial = serial();
+    let fx = needle_fixture("searchbox-width-app");
+    let page = open(Surface::AppShell, &fx, 3046);
+    let tab = &page.tab;
+    let query = "o:tool:Read needle";
+    let probe = "(function(){ var box = document.querySelector('.header-searchbox'); var input = document.getElementById('transcriptSearchInput'); var count = document.getElementById('transcriptSearchCount'); var ids = ['findPrev', 'findNext', 'transcriptWholeWords', 'filterTranscriptBtn']; var rects = ids.map(function (id) { var el = document.getElementById(id); if (!el || !el.offsetWidth) return null; var r = el.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { id: id, left: Math.round(r.left), right: Math.round(r.right), hit: !!hit && el.contains(hit) }; }); return JSON.stringify({ bar: [...document.querySelector('.topbar').children].filter(function (c) { return c.offsetWidth; }).map(function (c) { return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().width); }).join(' '), head: [...document.querySelector('.session-heading').children].map(function (c) { var cs = getComputedStyle(c); return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().width) + '/' + cs.flexShrink + '/' + cs.minWidth; }).join(' '), box: Math.round(box.getBoundingClientRect().width), title: (function(){ var t = document.getElementById('sessionTitle'); t.textContent = 'A session whose name needs every pixel the top bar can give it'; var r = t.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.right), Math.round(box.getBoundingClientRect().left), t.scrollWidth, t.clientWidth, t.textContent]; })(), input: [input.scrollWidth, input.clientWidth], count: [count.scrollWidth, count.clientWidth, count.textContent], rects: rects }); })()";
+    for (width, height) in [(1440.0, 900.0), (1100.0, 860.0), (820.0, 860.0)] {
+        harness::resize(tab, width, height);
+        harness::until(
+            tab,
+            &format!("innerWidth <= {width} && innerWidth > {width} - 40"),
+            "the window to take its new width",
+            Duration::from_secs(10),
+            "innerWidth",
+        );
+        harness::until_preview_parked(tab);
+        // The title's width with the box at rest (empty, not focused): what widening must not cost.
+        eval(tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = ''; b.dispatchEvent(new Event('input', {bubbles: true})); b.blur(); return 'rest'; })()");
+        settle();
+        let rest: serde_json::Value =
+            serde_json::from_str(eval(tab, probe).as_str().unwrap_or("{}")).unwrap();
+        let rest_title = rest["title"][0].as_i64().unwrap_or(0);
+        eval(
+            tab,
+            &format!("(function(){{ var b = document.getElementById('transcriptSearchInput'); b.focus(); b.value = {query:?}; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true, cancelable: true}})); return 'typed'; }})()"),
+        );
+        harness::until(
+            tab,
+            "/\\d/.test(document.getElementById('transcriptSearchCount').textContent)",
+            "the count for the query",
+            Duration::from_secs(10),
+            "document.getElementById('transcriptSearchCount').textContent",
+        );
+        settle();
+        for moment in ["focused", "clicked away"] {
+            if moment == "clicked away" {
+                eval(tab, "(function(){ document.getElementById('transcriptSearchInput').blur(); var t = document.querySelector('.transcript'); if (t) t.dispatchEvent(new MouseEvent('mousedown', {bubbles: true})); return 'away'; })()");
+                settle();
+            }
+            let seen: serde_json::Value =
+                serde_json::from_str(eval(tab, probe).as_str().unwrap_or("{}")).unwrap();
+            // Below 900px there is no room for both: the box takes the heading's place while the
+            // reader types, and at rest gives it back at its resting width, where a long query may
+            // clip (the count and the steps still answer).
+            let narrow = width <= 900.0;
+            let input = &seen["input"];
+            if !(narrow && moment == "clicked away") {
+                assert!(
+                    input[0].as_i64() <= input[1].as_i64() && input[1].as_i64() > Some(0),
+                    "at {width}px, {moment}: the box shows the whole query (scrollWidth <= clientWidth): {seen}"
+                );
+            }
+            let count = &seen["count"];
+            assert!(
+                count[0].as_i64() <= count[1].as_i64(),
+                "at {width}px, {moment}: the count is not clipped: {seen}"
+            );
+            let rects = seen["rects"].as_array().unwrap();
+            // Narrow and clicked away, the box folds to the query and the filter; the count and
+            // the steps come back with focus.
+            let folded = narrow && moment == "clicked away";
+            if folded {
+                assert!(
+                    rects[3]["hit"] == true && rects[..3].iter().all(|r| r.is_null()),
+                    "at {width}px, {moment}: the box holds the query and the filter, the rest folded: {seen}"
+                );
+                assert_eq!(
+                    seen["count"][1].as_i64(),
+                    Some(0),
+                    "at {width}px, {moment}: the count folds with the steps: {seen}"
+                );
+            } else {
+                assert!(
+                    rects.iter().all(|r| r["hit"] == true),
+                    "at {width}px, {moment}: every control answers its own hit test: {seen}"
+                );
+            }
+            // The box grows into the spacer and never over the session's name, which stays
+            // readable: whole, or at least 120px, or what it had at rest if that was less. The
+            // probe gives the title a long name, so this measures the squeeze, not the fixture.
+            let title = &seen["title"];
+            if narrow && moment == "focused" {
+                assert_eq!(
+                    title[0].as_i64(),
+                    Some(0),
+                    "at {width}px, typing: the box has the heading's place, not a sliver beside it: {seen}"
+                );
+            } else {
+                let wide = title[0].as_i64().unwrap_or(0);
+                let whole = title[3].as_i64() <= title[4].as_i64();
+                assert!(
+                    (whole || wide >= 120.min(rest_title - 1))
+                        && title[1].as_i64() <= title[2].as_i64(),
+                    "at {width}px, {moment}: the session title stays readable (at rest it was \
+                 {rest_title}px) and clear of the box: {seen}"
+                );
+            }
+            if folded {
+                continue;
+            }
+            let at = |i: usize, k: &str| rects[i][k].as_i64().unwrap();
+            assert!(
+                at(0, "right") <= at(1, "left")
+                    && at(1, "right") <= at(2, "left")
+                    && at(2, "right") <= at(3, "left"),
+                "at {width}px, {moment}: the row reads ↑ ↓ ab| filter: {seen}"
+            );
+        }
+    }
+}
+
 /// One word, "needle", in three places one facet can tell apart: a Bash command, a Read's target
 /// and an assistant's prose. Prose between the calls so each is its own record.
 fn needle_fixture(name: &str) -> Fixture {
@@ -14401,6 +14521,77 @@ fn app_shell_mcp_calls_are_one_family_in_the_filter() {
     scenario_mcp_calls_are_one_family_in_the_filter(&page.tab, Surface::AppShell, &fx);
 }
 
+/// #297 — the owner: "Tool type selector should use checkbox". The Scope rows select with a tick
+/// and the Tool types rows used a coloured bullet — two vocabularies for one act in one popover.
+/// Every tool row carries the SAME tick element the scope rows do; a branch row (MCP, a server)
+/// carries BOTH its twisty and its tick, because expanding and selecting are different acts; the
+/// twisty expands without selecting, and a ticked row's tick is painted as a ticked scope row's is.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_tool_rows_select_with_the_scope_rows_tick() {
+    let _serial = serial();
+    let fx = mcp_fixture("tool-ticks-app");
+    let page = open(Surface::AppShell, &fx, 3048);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    eval(tab, "(function(){ if (!document.getElementById('navigatorOptions').classList.contains('open')) document.getElementById('filterTranscriptBtn').click(); return 'open'; })()");
+    harness::until(
+        tab,
+        "document.querySelectorAll('#filterOptions .tool-type-option').length >= 2",
+        "the tool rows",
+        Duration::from_secs(10),
+        "document.getElementById('filterOptions').innerHTML.slice(0, 400)",
+    );
+    // Open every branch, so leaf rows under a server are in the list too.
+    for _ in 0..3 {
+        eval(tab, "(function(){ [...document.querySelectorAll('#filterOptions .tool-tw')].forEach(function (t) { if (t.textContent === '▸') t.click(); }); return 'ok'; })()");
+        settle();
+    }
+    let shape = eval(tab, "JSON.stringify([...document.querySelectorAll('#filterOptions .tool-type-option')].map(function (it) { return [it.dataset.label, it.querySelectorAll('.scope-check').length, !!it.querySelector('.tool-tw'), !!it.querySelector('.filter-dot')]; }))");
+    let rows: Vec<(String, usize, bool, bool)> =
+        serde_json::from_str(shape.as_str().unwrap_or("[]")).unwrap();
+    assert!(
+        rows.iter().any(|r| r.2) && rows.iter().any(|r| !r.2),
+        "the fixture gives both branch and leaf rows: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|r| r.1 == 1 && !r.3),
+        "every tool row selects with the scope rows' tick, and no bullet is left: {rows:?}"
+    );
+
+    // The twisty expands and never selects.
+    let before = eval(
+        tab,
+        "document.querySelectorAll('#filterOptions .tool-type-option.on').length",
+    );
+    eval(tab, "(function(){ var t = document.querySelector('#filterOptions .tool-tw'); t.click(); return 'ok'; })()");
+    settle();
+    assert_eq!(
+        eval(
+            tab,
+            "document.querySelectorAll('#filterOptions .tool-type-option.on').length"
+        ),
+        before,
+        "a twisty expands; it selects nothing"
+    );
+    eval(tab, "(function(){ var t = document.querySelector('#filterOptions .tool-tw'); t.click(); return 'ok'; })()");
+    settle();
+
+    // The tick selects, is where a click lands, and is painted as a ticked scope row's tick.
+    let hit = eval(tab, "(function(){ var c = document.querySelector('#filterOptions .tool-type-option[data-tool-filter=\"Read\"] .scope-check'); var r = c.getBoundingClientRect(); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return h && (h === c || c.contains(h) || h.contains(c)) ? 'hit' : 'covered by ' + (h ? h.className : 'nothing'); })()");
+    assert_eq!(hit, "hit", "the Read row's tick answers its own hit test");
+    eval(tab, "(function(){ document.querySelector('#filterOptions .tool-type-option[data-tool-filter=\"Read\"] .scope-check').click(); return 'ok'; })()");
+    settle();
+    let painted = eval(tab, "(function(){ var t = document.querySelector('#filterOptions .tool-type-option[data-tool-filter=\"Read\"]'); var scope = document.querySelector('#scopeRow .scope-option.on .scope-check'); if (!t || !scope) return 'missing'; var a = getComputedStyle(t.querySelector('.scope-check')), b = getComputedStyle(scope); var after = getComputedStyle(t.querySelector('.scope-check'), '::after').opacity; return JSON.stringify([t.classList.contains('on'), t.getAttribute('aria-checked'), a.backgroundColor === b.backgroundColor, after]); })()");
+    assert_eq!(
+        painted.as_str(),
+        Some("[true,\"true\",true,\"1\"]"),
+        "the ticked Read row is on, says so, and its tick is painted as a ticked scope row's: {painted}"
+    );
+}
+
 /// Two MCP servers — `github` with two tools (three calls) and `slack` with one — and a `Read`
 /// beside them, so the menu has a plain row, a family that expands and a family that compresses.
 fn mcp_fixture(name: &str) -> Fixture {
@@ -14653,6 +14844,33 @@ fn app_shell_command_k_is_a_jump_to_ranked_by_recency() {
             .iter()
             .all(|b| set.iter().any(|s| s == b)),
         "choosing a row the sidebar was hiding shows everything again: {buckets}"
+    );
+
+    // A name typed and Enter pressed GOES there — the jump-to is done from the keyboard. ↓ and ↑
+    // move the highlight; Enter takes the highlighted row, which lands on the session.
+    assert_eq!(eval(&tab, open_k), "open", "⌘K opens for the name jump");
+    settle();
+    type_in("elsewhere");
+    let key = |k: &str| {
+        eval(
+            &tab,
+            &format!("(function(){{ document.getElementById('searchInput').dispatchEvent(new KeyboardEvent('keydown', {{key: {k:?}, bubbles: true, cancelable: true}})); return 'k'; }})()"),
+        );
+        settle();
+    };
+    let active = "(function(){ var a = document.querySelector('#searchResults .search-result.active'); return a ? a.dataset.globalIndex : 'none'; })()";
+    assert_eq!(eval(&tab, active), "0", "the first row is highlighted");
+    key("ArrowDown");
+    assert_eq!(eval(&tab, active), "1", "↓ moves the highlight");
+    key("ArrowUp");
+    assert_eq!(eval(&tab, active), "0", "↑ moves it back");
+    key("Enter");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.tree-row.session.selected[data-session=\"bbbb2222-0000-4000-8000-000000000294\"]') && !document.getElementById('searchLayer').classList.contains('production-open')",
+        "Enter to land on the session the name names, and close the dialog",
+        Duration::from_secs(10),
+        "(document.querySelector('.tree-row.session.selected') || {dataset: {}}).dataset.session + ' ' + document.getElementById('searchLayer').className",
     );
     drop(m);
 }

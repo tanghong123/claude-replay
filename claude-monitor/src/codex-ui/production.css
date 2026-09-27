@@ -893,12 +893,35 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .tool-type-option:hover .tool-tw{color:var(--ink)}
 .tool-type-option.tool-sub1{padding-left:12px}
 .tool-type-option.tool-sub2{padding-left:24px}
-.tool-type-option .filter-dot-srv{background:color-mix(in srgb,var(--primary) 45%,var(--line))}
-.tool-type-option .filter-dot-leaf{background:color-mix(in srgb,var(--faint) 75%,var(--line))}
+/* #297 — a tool row selects with the Scope rows' tick: a twisty slot (empty on a leaf), the tick,
+   the name, the count. The ticked state is the scope rows' own paint. */
+.tool-type-option{grid-template-columns:9px 15px minmax(0,1fr) auto;gap:7px}
+.tool-type-option .tool-tw{width:9px}
+.tool-type-option.on .scope-check{border-color:var(--primary);background:var(--primary);box-shadow:0 1px 2px color-mix(in srgb,var(--primary) 22%,transparent)}
+.tool-type-option.on .scope-check:after{opacity:1}
 /* #293 — whole words beside the box: a match option among the match controls, pressed-state like
    the scope rows' ticks. */
 .header-searchbox .find-whole{font:9.5px/1 var(--mono);letter-spacing:.02em;padding:0 5px;color:var(--faint)}
 .header-searchbox .find-whole.on{color:var(--primary);background:color-mix(in srgb,var(--primary) 12%,transparent)}
+/* #296 — the box was too narrow to show its own query: at 286px, with the count, ↑ ↓, ab| and the
+   filter beside it, the input kept ~57px and `o:tool:Read` read as `o:tool:R`. While it is in use —
+   focused, or holding a query after the reader clicked away — it widens into the top bar's spacer
+   (the session title already yields with an ellipsis). The count keeps its own width rather than
+   squeezing the input. Below 700px the box is an icon (reference.css) and stays one. */
+.header-searchbox .find-count{flex:none}
+/* …and when the widened box and the heading both want the bar, the crumb (agent · project) and the
+   status chip give way before the session's name does: both say less than the title, and both are
+   in the sidebar row too. */
+.session-heading>.crumb{min-width:0;flex-shrink:8;overflow:hidden;text-overflow:ellipsis}
+.session-heading>.status-chip{min-width:0;flex-shrink:4}
+@media(min-width:1181px){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)){width:min(460px,36vw)}}
+@media(min-width:901px) and (max-width:1180px){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)){width:min(400px,40vw)}}
+/* Below 900px the bar has no room for both (about 520px beside the sidebar), and a box sharing it
+   left the title 10px wide: there the box takes the heading's place while the reader TYPES, and at
+   rest — a query held, the reader clicked away — gives it back at its resting width. There the
+   count and the steps fold away until the box is focused again: at 180px they pushed the filter
+   button out past the box's edge, and a wider resting box took the same pixels from the title. */
+@media(min-width:701px) and (max-width:900px){.header-searchbox:focus-within{width:min(360px,48vw)}.topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}.header-searchbox:not(:focus-within) input~:is(.find-count,.find-nav){display:none}}
 
 /* #294 — a ⌘K row the sidebar is not showing (hidden, or outside the session filter): still
    listed (the filter does not narrow this list), dimmed, and saying why in the sidebar's own words.

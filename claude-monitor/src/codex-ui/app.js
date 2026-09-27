@@ -1279,7 +1279,6 @@ function updateSearch(reset) {
     // No prefix (or the escape): everything, as the classic page — the buttons follow the box.
     uiState.searchScopes = new Set(ALL_SCOPES); uiState.searchWhole = false;
   }
-  renderFilterMenu();
   const query = q.tooShort ? "" : q.lc;
   recordState.search = query;
   const set = activeScopeSet();
@@ -1294,6 +1293,9 @@ function updateSearch(reset) {
   recordState.searchTools = tools;
   recordState.toolKey = toolKey;
   uiState.toolFilters = new Set(tools.map(t => t.name + (t.prefix ? "*" : "")));
+  // Drawn only now that both halves of the state follow the box: drawn above the line before, the
+  // menu and its badge showed the PREVIOUS query's tools, so a ticked tool read as unticked (#297).
+  renderFilterMenu();
   recordState.matches = [];
   const classCounts = zeroCounts();
   let total = 0;
@@ -1467,12 +1469,14 @@ byId("transcriptSearchInput").onkeydown = event => {
 };
 // Whole words: production-only chrome, layered beside the box at runtime so the extracted demo
 // shell stays exact (#293 — the same way the shell switch is added). `w:` keeps working typed.
+// It sits after ↑ ↓ and before the filter button (owner, #296): stepping comes first, then the
+// match options, then the facets.
 const wholeWords = document.createElement("button");
 wholeWords.className = "find-nav find-whole"; wholeWords.id = "transcriptWholeWords"; wholeWords.type = "button";
 wholeWords.title = "Whole words only  ·  w:"; wholeWords.setAttribute("aria-label", "Whole words only");
 wholeWords.setAttribute("aria-pressed", "false");
 wholeWords.textContent = "ab|";
-byId("findPrev").insertAdjacentElement("beforebegin", wholeWords);
+byId("filterTranscriptBtn").insertAdjacentElement("beforebegin", wholeWords);
 wholeWords.onclick = () => { uiState.searchWhole = !uiState.searchWhole; applyScopeFromMenu(); renderFilterMenu(); };
 byId("findNext").onclick = () => stepSearch(1); byId("findPrev").onclick = () => stepSearch(-1);
 
@@ -1517,15 +1521,18 @@ function renderFilterMenu() {
       const token = facetToken(r.select);
       const on = uiState.toolFilters.has(token) ? " on" : "";
       const sub = r.depth ? ` tool-sub${r.depth}` : "";
-      // A twisty EXPANDS; it never selects (the handler checks it first). A row without one gets
-      // the bullet, tinted as the classic page tints its server and leaf rows.
-      const bullet = r.twisty
+      // Two slots on every row (#297): the twisty, which EXPANDS and never selects (the handler
+      // checks it first) — empty on a leaf, so the ticks line up — and the tick the Scope rows use,
+      // which selects. A branch row carries both. The bullet and its tints went with it: the indent
+      // and the twisty already say which rows are servers and which are their tools.
+      const twisty = r.twisty
         ? `<span class="tool-tw" data-tw="${escapeText(r.twisty)}">${uiState.toolTreeOpen.has(r.twisty) ? "▾" : "▸"}</span>`
-        : `<span class="filter-dot${r.tint ? " filter-dot-" + r.tint : ""}"></span>`;
+        : '<span class="tool-tw-slot"></span>';
+      const bullet = `${twisty}<span class="scope-check"></span>`;
       // The full name as the tooltip: an MCP row reads `server/tool`, and the reader may still
       // need the name a script would use.
       const title = r.select.tool || `${r.select.toolPre}*`;
-      return `<button class="tool-type-option${on}${sub}" data-tool-filter="${escapeText(token)}" data-label="${escapeText(r.label)}" data-depth="${r.depth}" title="${escapeText(title)}">${bullet}<span>${escapeText(r.label)}</span><span class="count">${r.count}</span></button>`;
+      return `<button class="tool-type-option${on}${sub}" role="menuitemcheckbox" aria-checked="${on ? "true" : "false"}" data-tool-filter="${escapeText(token)}" data-label="${escapeText(r.label)}" data-depth="${r.depth}" title="${escapeText(title)}">${bullet}<span>${escapeText(r.label)}</span><span class="count">${r.count}</span></button>`;
     })
     .join("") || '<div class="tool-type-empty">No tool events in this session</div>';
   // The badge counts every active facet, tools AND classes (#293): a scope narrows the results, so
@@ -1896,13 +1903,36 @@ function renderGlobalSearch() {
 }
 byId("searchBtn").onclick = openGlobalSearch; byId("sidebarMiniSearch").onclick = openGlobalSearch;
 byId("searchInput").oninput = () => { uiState.globalIndex = 0; renderGlobalSearch(); };
-byId("searchResults").onclick = event => { const item = event.target.closest("[data-global-index]"); if (!item) return; const row = uiState.globalResults[Number(item.dataset.globalIndex)]; byId("searchLayer").classList.remove("production-open");
+/** Go to a ⌘K row — by click, or Enter on the highlighted one. */
+function chooseGlobal(index) {
+  const row = uiState.globalResults[index]; if (!row) return;
+  byId("searchLayer").classList.remove("production-open");
   // A row the sidebar is not showing: opening it clears what hides it — the bucket filter to All
   // (owner, 2026-09-26), and Include hidden for a hidden one — or the reader lands in a session
   // the list beside them does not show.
   if (row.why.includes("hidden")) { indexState.showHidden = true; renderTree(); }
   if (row.why.some(why => why !== "hidden")) setBuckets(FILTER_BUCKETS);
-  if (row.sid) selectSession(row.sid, true); };
+  if (row.sid) selectSession(row.sid, true);
+}
+byId("searchResults").onclick = event => { const item = event.target.closest("[data-global-index]"); if (item) chooseGlobal(Number(item.dataset.globalIndex)); };
+// A jump-to is done from the keyboard: ↑/↓ move the highlight, Enter goes. The demo's own handler
+// never runs here, so without this Enter did nothing (#294's gap, found by #296's case).
+byId("searchInput").onkeydown = event => {
+  const n = uiState.globalResults.length;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault(); if (!n) return;
+    uiState.globalIndex = (uiState.globalIndex + (event.key === "ArrowDown" ? 1 : n - 1)) % n;
+    renderGlobalSearch();
+    // Keep the highlight in view by moving the LIST's own offset — never scrollIntoView, which the
+    // contract bans from this file because the browser may move the transcript with it.
+    const list = byId("searchResults"), active = list.querySelector(".search-result.active");
+    if (active) {
+      const r = active.getBoundingClientRect(), l = list.getBoundingClientRect();
+      if (r.top < l.top) list.scrollTop -= l.top - r.top;
+      else if (r.bottom > l.bottom) list.scrollTop += r.bottom - l.bottom;
+    }
+  } else if (event.key === "Enter") { event.preventDefault(); chooseGlobal(uiState.globalIndex); }
+};
 byId("searchLayer").onclick = event => { if (event.target === byId("searchLayer")) byId("searchLayer").classList.remove("production-open"); };
 
 /** `shown` is what the CLICKED card was already displaying (#144). The card rendered from data
