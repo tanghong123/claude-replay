@@ -183,7 +183,15 @@ git -C "$TAP" config --local user.email "$EMAIL" || stop "preflight: cannot set 
 git -C "$TAP" config --local user.name  "$NAME"  || stop "preflight: cannot set user.name in the tap clone"
 say "  identity pinned repo-locally from the tap's own history (not printed; never enters this repo)"
 
-gh release view "v$V" -R "$GH_REPO" --json tagName >/dev/null 2>&1 || stop "preflight: there is no release v$V on $GH_REPO — cut it first with scripts/release.sh"
+# Retried, and gh's own words kept: through this machine's proxy a dropped connection
+# ("connection reset by peer") used to read as "there is no release" and stopped two publishes
+# of releases that existed.
+GH_ERR=""
+for _try in 1 2 3; do
+  if GH_ERR=$(gh release view "v$V" -R "$GH_REPO" --json tagName 2>&1 >/dev/null); then GH_ERR=""; break; fi
+  sleep 5
+done
+[ -z "$GH_ERR" ] || stop "preflight: cannot see release v$V on $GH_REPO after three tries (gh: $GH_ERR) — if it does not exist, cut it with scripts/release.sh"
 n=0; waited=0
 while :; do
   n=$(gh release view "v$V" -R "$GH_REPO" --json assets -q '.assets|length' 2>/dev/null || echo 0)
