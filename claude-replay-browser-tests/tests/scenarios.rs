@@ -14185,6 +14185,98 @@ fn app_shell_the_search_box_shows_its_own_query() {
     }
 }
 
+/// #298 — the owner: "after / focuses on the search box, we should offer esc to defocus (same effect
+/// as clicking outside the box)". `/` puts the reader in the box; Escape takes them out of it and
+/// leaves the query, its count and its marks exactly as they were — as a click outside does — and
+/// the next key reaches the page's keymap again rather than the box. The classic page already did
+/// this (`q.blur()` on Escape); it is the reference.
+fn scenario_escape_leaves_the_search_box(tab: &headless_chrome::Tab, surface: Surface) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (box_id, count_id) = match surface {
+        Surface::Classic => ("q", "qcount"),
+        Surface::AppShell => ("transcriptSearchInput", "transcriptSearchCount"),
+    };
+    let key_on = |target: &str, key: &str| {
+        eval(
+            tab,
+            &format!("(function(){{ var t = {target}; t.dispatchEvent(new KeyboardEvent('keydown', {{key: {key:?}, bubbles: true, cancelable: true}})); return 'sent'; }})()"),
+        );
+        settle();
+    };
+    let focused = format!("document.activeElement === document.getElementById({box_id:?})");
+    key_on("document.body", "/");
+    assert_eq!(
+        eval(tab, &focused),
+        true,
+        "{surface:?}: / puts the reader in the box"
+    );
+    eval(
+        tab,
+        &format!("(function(){{ var b = document.getElementById({box_id:?}); b.value = 'needle'; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true, cancelable: true}})); return 'typed'; }})()"),
+    );
+    settle();
+    settle();
+    let count = format!("document.getElementById({count_id:?}).textContent.trim()");
+    let marks = "document.querySelectorAll('mark, .search-mark, .hit').length";
+    let before = (eval(tab, &count), eval(tab, marks));
+    assert!(
+        before
+            .0
+            .as_str()
+            .is_some_and(|c| c.chars().any(|ch| ch.is_ascii_digit())),
+        "{surface:?}: the query counts its hits: {before:?}"
+    );
+    assert_eq!(
+        eval(tab, &focused),
+        true,
+        "{surface:?}: still in the box after typing"
+    );
+
+    key_on(&format!("document.getElementById({box_id:?})"), "Escape");
+    assert_eq!(
+        eval(tab, &focused),
+        false,
+        "{surface:?}: Escape takes the reader out of the box"
+    );
+    assert_eq!(
+        eval(tab, &format!("document.getElementById({box_id:?}).value")),
+        "needle",
+        "{surface:?}: …keeping the query, as a click outside does"
+    );
+    assert_eq!(
+        (eval(tab, &count), eval(tab, marks)),
+        before,
+        "{surface:?}: …and its count and marks"
+    );
+    // The next key is the page's again: `/` from the page puts the reader back in the box.
+    key_on("document.body", "/");
+    assert_eq!(
+        eval(tab, &focused),
+        true,
+        "{surface:?}: after Escape the keymap answers again"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_escape_leaves_the_search_box() {
+    let _serial = serial();
+    let fx = needle_fixture("escape-box-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_escape_leaves_the_search_box(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_escape_leaves_the_search_box() {
+    let _serial = serial();
+    let fx = needle_fixture("escape-box-app");
+    let page = open(Surface::AppShell, &fx, 3050);
+    scenario_escape_leaves_the_search_box(&page.tab, Surface::AppShell);
+}
+
 /// One word, "needle", in three places one facet can tell apart: a Bash command, a Read's target
 /// and an assistant's prose. Prose between the calls so each is its own record.
 fn needle_fixture(name: &str) -> Fixture {

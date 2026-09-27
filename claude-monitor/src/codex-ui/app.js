@@ -1462,6 +1462,10 @@ byId("transcriptSearchInput").oninput = () => {
   byId("transcriptSearchCount").textContent = byId("transcriptSearchInput").value.trim() ? "⏎ to search" : "";
 };
 byId("transcriptSearchInput").onkeydown = event => {
+  // Escape leaves the box as a click outside would (#298, the owner; the classic page's `q.blur()`):
+  // the query, its count and its marks stay, and the next key is the page's keymap's again. An open
+  // filter popover closes with it, as the page-wide Escape closes it.
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); return; }
   if (event.key !== "Enter") return;
   event.preventDefault(); event.stopPropagation();
   if (recordState.pendingSearch) { recordState.pendingSearch = false; updateSearch(true); return; }
