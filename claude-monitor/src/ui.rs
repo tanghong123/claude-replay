@@ -166,6 +166,11 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/state.js").as_slice(),
         ),
+        // ⌘K's own query (#294, decoupled from the session grammar 2026-09-28).
+        "monitor-ui/jump-query.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/jump-query.js").as_slice(),
+        ),
         "monitor-ui/record-store.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/record-store.js").as_slice(),
@@ -292,6 +297,7 @@ mod tests {
             ),
             ("icons.js", include_str!("codex-ui/icons.js")),
             ("preview.js", include_str!("codex-ui/preview.js")),
+            ("jump-query.js", include_str!("codex-ui/jump-query.js")),
             ("mdrev-pane.js", include_str!("codex-ui/mdrev-pane.js")),
             (
                 "markdown-page.js",

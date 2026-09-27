@@ -15516,11 +15516,12 @@ fn app_shell_command_k_is_a_jump_to_ranked_by_recency() {
         narrowed.len(),
         all.len()
     );
-    // A scope prefix belongs to the transcript box; here it is dropped, not matched as text.
-    type_in("ub:");
+    // ⌘K shares nothing with the session box's grammar (owner, 2026-09-28): its filters are plain
+    // text here, matched against names like any other words — and no name holds these.
+    type_in("ub: tool:Bash");
     assert!(
-        !read().is_empty(),
-        "an in-session scope prefix is ignored here rather than searched for"
+        read().is_empty(),
+        "the session box's filters are text in ⌘K, not something it strips or obeys"
     );
 
     // A session the reader HID reads `hidden`, and choosing it turns Include hidden on.

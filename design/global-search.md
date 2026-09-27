@@ -20,9 +20,11 @@ bar's search.
 2. **The Transcript tab is removed**, with its note.
 3. **Cross-session content search is on hold.** When it comes, it is a mode of its own whose
    results land in a session with the same query already in the top bar.
-4. **It shares the in-session grammar** (`in-session-search.md` §3): a query typed here means
-   what it means there, and the session-level qualifiers below extend it rather than invent a
-   second syntax.
+4. ~~It shares the in-session grammar.~~ **Reversed 2026-09-28** (owner: "we should decouple mac-K
+   from the shared grammar entirely"). Sharing meant ⌘K called the session box's parser to strip
+   its filters, so a change to the session grammar (#302) changed what ⌘K found. ⌘K now reads its
+   own query (`codex-ui/jump-query.js`): `agent:` and `project:`, and everything else is text
+   matched against names.
 
 ## 3. Why a jump-to and a find are different tools
 
@@ -40,9 +42,8 @@ is what the Transcript tab was.
   "Search agents、Projects、Session or transcripts…", with a Chinese comma and a promise it does
   not keep).
 - **Grammar**: plain words match names, as today. Qualifiers narrow the list — `agent:codex`,
-  `project:knack` — and are the same `key:value` token shape as the in-session `tool:`. The
-  in-session scope prefix and `tool:` mean nothing here and are ignored rather than matched
-  as text.
+  `project:knack`. Nothing else is special: the session box's filters (`tool:`, `scope:`, `ub:`)
+  are plain text here (decoupled 2026-09-28, §2.4).
 - **Ranking: by recency** (owner, 2026-09-26). The most recently active sessions first, so the
   list opens on what the reader was just doing.
 - **A project row opens its own most recent session** (owner): the project is the address, its

@@ -15,7 +15,8 @@ import { displayState, denoteState, sessionFilterBuckets, FILTER_BUCKETS, FILTER
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, querySpans, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt, toolMatches, writeTools, recordHasTool, takeTokens } from "./shared/search.js";
+import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, querySpans, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt, toolMatches, writeTools, recordHasTool } from "./shared/search.js";
+import { parseJumpQuery } from "./jump-query.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -2182,14 +2183,11 @@ function openGlobalSearch() { byId("searchLayer").classList.add("production-open
  *  as the in-session `tool:`. An in-session scope prefix and `tool:` tokens mean nothing here and
  *  are dropped rather than matched as text. */
 function globalRows(raw) {
-  const agentQ = takeTokens(raw, "agent");
-  const projectQ = takeTokens(agentQ.rest, "project");
-  // The in-session facets — `tools:`, `scope:`, the bare `ub:` — belong to the transcript box; here
-  // they are dropped, not matched as text, and an escaped token reads as the literal it names (§8).
-  // A bare letter run with nothing after it (`ub:`) is literal text to the in-session grammar, but
-  // here it is a reader starting an in-session query in the wrong box: dropped, not searched for.
-  const parsed = splitQuery(projectQ.rest).lc;
-  const text = /^[uatobrew+]{1,15}:$/.test(parsed) ? "" : parsed;
+  // ⌘K's own query (jump-query.js): `agent:` and `project:`, the rest matched against names. It
+  // shares nothing with the session box's grammar, whose filters mean nothing here (owner).
+  const jq = parseJumpQuery(raw);
+  const agentQ = { values: jq.agents }, projectQ = { values: jq.projects };
+  const text = jq.text;
   const now = Date.now() / 1000;
   // Why the sidebar is not showing a session right now, in the words of its own controls: "hidden"
   // (the reader hid it, or its project) and the filter bucket the reader has unticked ("idle").
