@@ -175,31 +175,134 @@ function zeroCounts() {
   return { u: 0, a: 0, t: 0, o: 0, b: 0, r: 0, e: 0 };
 }
 
-/** A raw box value → what to search: the needle (lowercased in `lc`), the scope set (null for
- *  everything) and whether it is too short to run. A PURE scope run ("auto:") has nothing after
- *  it, so it searches ITSELF, literally — the parser still reports the scope, so an armed but
- *  empty menu keeps its state. A leading ":" escapes a scope-shaped literal. */
-function splitQuery(raw, minLen = MIN_NEEDLE) {
-  let needle = String(raw ?? "").trim();
-  let scoped = parseScope(needle);
-  if (scoped) {
-    const rest = needle.slice(scoped.len);
-    if (scoped.set && !rest.length) scoped = null;
-    else needle = rest;
+/** A scope letter run (`ub`, `u+b`, `wt`) → its set, or null: each letter once, at least one. */
+function scopeSetOf(run) {
+  const set = { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: false };
+  for (const ch of String(run).toLowerCase()) {
+    if (ch === "+") continue;
+    if (!(ch in set) || set[ch]) return null;
+    set[ch] = true;
   }
-  const set = scoped && scoped.set ? scoped.set : null;
-  // `tool:` tokens (#292) come out of what is left, unless the query was ESCAPED with a leading
-  // colon — there the reader asked for the literal text, all of it.
-  const escaped = !!(scoped && scoped.set === null);
-  const tools = escaped ? [] : takeTools(needle);
-  if (tools.length) needle = tools.rest;
-  const text = needle.trim();
+  return activeLetters(set).length ? set : null;
+}
+
+/** A `tools:` value → `[{name, prefix}]`: comma-separated names, a trailing `*` for a family. */
+function toolsOf(value) {
+  const out = [];
+  for (const piece of String(value).split(",")) {
+    const prefix = piece.endsWith("*");
+    const name = prefix ? piece.slice(0, -1) : piece;
+    if (name.length) out.push({ name, prefix });
+  }
+  return out;
+}
+
+const FACET_KEY = /^(tools?|scope):(.*)$/i;
+const BARE_SCOPE = /^([uatobrew+]{1,15}):/i;
+
+/** The box as SPANS (design/in-session-search.md §8): each whitespace-separated token is TEXT, a
+ *  SCOPE facet or a TOOLS facet, with its offsets in `raw`, so the readers (`splitQuery`) and the
+ *  writers (`writePrefix`, `writeTools`) share one reading and a writer can replace facets without
+ *  touching a character of the reader's own text.
+ *  - `tools:A,B` (`tool:` too) and `scope:ub` are facets ANYWHERE — at the start or after a space,
+ *    so `about:blank` is text: `about` is not a key. An empty or invalid value is text (a reader
+ *    mid-type is not suddenly searching nothing; `scope:xyz` is not a scope).
+ *  - A leading `:` escapes ONE token, up to the next space (owner, 2026-09-27): `:tools:` is the
+ *    literal `tools:`, and the rest of the box parses as usual.
+ *  - The bare letter run at the very start (`ub:x`, `ub: x`) is still a scope — the TUI's `/` and
+ *    the reader's hands know it — unless nothing follows it (`auto:` searches itself). What follows
+ *    its colon in the same token is read as a token of its own, so `ub:tool:Read` is two facets. */
+function querySpans(raw) {
+  const s = String(raw ?? "");
+  const tokens = [];
+  const rx = /\S+/g;
+  let m;
+  while ((m = rx.exec(s))) tokens.push({ t: m[0], start: m.index });
+  const spans = [];
+  tokens.forEach(({ t, start }, i) => {
+    if (i === 0) {
+      const bare = BARE_SCOPE.exec(t);
+      const set = bare && scopeSetOf(bare[1]);
+      if (set && (t.length > bare[0].length || tokens.length > 1)) {
+        spans.push({ kind: "scope", start, end: start + bare[0].length, set, bare: true });
+        start += bare[0].length;
+        t = t.slice(bare[0].length);
+        if (!t) return;
+      }
+    }
+    if (t.length > 1 && t.charAt(0) === ":") {
+      spans.push({ kind: "text", start, end: start + t.length, escaped: true });
+      return;
+    }
+    const key = FACET_KEY.exec(t);
+    if (key) {
+      if (key[1].toLowerCase() === "scope") {
+        const set = scopeSetOf(key[2]);
+        if (set) return void spans.push({ kind: "scope", start, end: start + t.length, set });
+      } else {
+        const tools = toolsOf(key[2]);
+        if (tools.length) return void spans.push({ kind: "tools", start, end: start + t.length, tools });
+      }
+    }
+    spans.push({ kind: "text", start, end: start + t.length });
+  });
+  return spans;
+}
+
+/** `raw` with every span of `kinds` removed — each with the whitespace before it, so what is left
+ *  of `a tools:Bash b` is `a b` — and every other character kept as typed (escapes included). */
+function withoutSpans(raw, spans, kinds) {
+  const s = String(raw ?? "");
+  let out = "";
+  let at = 0;
+  for (const span of spans) {
+    if (!kinds.includes(span.kind)) continue;
+    let from = span.start;
+    while (from > at && /\s/.test(s.charAt(from - 1))) from--;
+    out += s.slice(at, from);
+    at = span.end;
+  }
+  return (out + s.slice(at)).trim();
+}
+
+/** A raw box value → what to search (§8): the text (lowercased in `lc`), the scope set (the union
+ *  of every scope facet; null for everything), the tools (the union of every tools facet) and
+ *  whether the text is too short to run. The text is what is left once the facets are out, with
+ *  each escaped token's colon dropped. */
+function splitQuery(raw, minLen = MIN_NEEDLE) {
+  const s = String(raw ?? "").trim();
+  const spans = querySpans(s);
+  let set = null;
+  const tools = [];
+  const seen = new Set();
+  let text = "";
+  let prevEnd = 0;
+  for (const span of spans) {
+    if (span.kind === "scope") {
+      set = set || { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: false };
+      for (const k of activeLetters(span.set)) set[k] = true;
+    } else if (span.kind === "tools") {
+      for (const tool of span.tools) {
+        const key = (tool.prefix ? "^" : "=") + tool.name.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          tools.push(tool);
+        }
+      }
+    } else {
+      // The reader's own spacing between their own words is kept; a facet's space went with it.
+      const piece = s.slice(span.start + (span.escaped ? 1 : 0), span.end);
+      text += (text ? s.slice(prevEnd, span.start) : "") + piece;
+    }
+    prevEnd = span.end;
+  }
+  text = text.trim();
   return {
     needle: text,
     lc: text.toLowerCase(),
     set,
-    scoped,
-    tools: tools.length ? tools.slice() : [],
+    scoped: set ? { set } : null,
+    tools,
     // A facet with no text is a whole query; text too short to run is too short whatever rides
     // beside it — a one-character needle silently dropped would answer a question nobody asked.
     tooShort: text.length > 0 && text.length < minLen,
@@ -269,13 +372,14 @@ function toolMatches(tool, tools) {
   return tools.some(t => (t.prefix ? lc.startsWith(t.name.toLowerCase()) : lc === t.name.toLowerCase()));
 }
 
-/** The `tool:` tokens for a set of names, as the box would hold them — what a menu writes when
+/** The `tools:` token for a set of names, as the box would hold them — what a menu writes when
  *  the reader ticks rows (#292: the box is the truth, so a click and a typed token are one
- *  thing). A name ending in `*` is passed through as the family form. */
+ *  thing). Every tools facet already in the box, wherever it sat, is replaced by ONE comma-joined
+ *  `tools:A,B` token at the front (§8). A name ending in `*` is passed through as the family form. */
 function writeTools(raw, names) {
-  const rest = String(raw ?? "").replace(TOOL_TOKEN, " ").replace(/\s+/g, " ").trim();
-  const tokens = (names || []).map(n => "tool:" + n).join(" ");
-  return [tokens, rest].filter(Boolean).join(" ");
+  const rest = withoutSpans(raw, querySpans(raw), ["tools"]);
+  const token = (names || []).length ? "tools:" + names.join(",") : "";
+  return [token, rest].filter(Boolean).join(" ");
 }
 
 /** One record's hits: the total IN SCOPE, and — always, whatever the scope — every part's hits
@@ -320,13 +424,14 @@ function countLabel(total, set, whole) {
     + (whole ? " · whole words" : "");
 }
 
-/** The box value the scope menu writes back: the chosen letters as a prefix, the reader's own
- *  words kept. No letters means no prefix — the box says "everything" by saying nothing. */
+/** The box value the scope menu writes back (§8): every scope facet — the bare prefix or a
+ *  `scope:` token, wherever it sat — replaced by ONE `scope:<letters>` token at the front, the
+ *  reader's own words kept as typed. No letters means no token: the box says "everything" by
+ *  saying nothing. */
 function writePrefix(raw, letters) {
-  const value = String(raw ?? "").replace(/^\s+/, "");
-  const parsed = parseScope(value);
-  const rest = parsed ? value.slice(parsed.len) : value;
-  return (letters.length ? letters.join("") + ":" : "") + rest;
+  const rest = withoutSpans(raw, querySpans(raw), ["scope"]);
+  const token = letters.length ? "scope:" + letters.join("") : "";
+  return [token, rest].filter(Boolean).join(" ");
 }
 
-export { CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, takeTools, takeTokens, toolMatches, writeTools, recordHasTool, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };
+export { CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, querySpans, takeTools, takeTokens, toolMatches, writeTools, recordHasTool, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };

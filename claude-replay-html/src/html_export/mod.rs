@@ -4264,18 +4264,20 @@ mod tests {
         let search = super::shared::shared_source("search").unwrap();
         #[allow(non_snake_case)]
         let SEARCH = search;
+        // #302: the grammar is the shared module's token reader (design/in-session-search.md §8) —
+        // `scope:`/`tools:` facets anywhere, the bare letter run at the start, a per-token escape.
         assert!(
-            SEARCH.contains(r"/^([uatobrew+]{1,15}):/i")
-                && SEARCH.contains("function parseScope")
-                && JS.contains("var parseScope = shared.parseScope;"),
-            "the order-free letter-run grammar is the one parser — the shared module's (#101)"
+            SEARCH.contains(r"const BARE_SCOPE = /^([uatobrew+]{1,15}):/i;")
+                && SEARCH.contains("function querySpans")
+                && JS.contains("shared.splitQuery(q.value).set"),
+            "the order-free letter-run grammar is the one parser — the shared module's (#101, #302)"
         );
         assert!(
-            SEARCH.contains(r#"if (needle.charAt(0) === ":") return { set: null, len: 1 };"#),
-            "a leading colon escapes a scope-shaped literal"
+            SEARCH.contains(r#"if (t.length > 1 && t.charAt(0) === ":") {"#),
+            "a leading colon escapes ONE token (owner, #302)"
         );
         assert!(
-            SEARCH.contains("if (scoped.set && !rest.length) scoped = null;")
+            SEARCH.contains("if (set && (t.length > bare[0].length || tokens.length > 1)) {")
                 && JS.contains("var q = shared.splitQuery(v);"),
             "a pure scope run searches itself — the rule is the shared module's, the page runs it (#118)"
         );

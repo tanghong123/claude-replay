@@ -3235,7 +3235,6 @@
   // for the escape; null when the text has no prefix (repeats, foreign letters —
   // including the dropped `user:` alias — and colons in ordinary text like `http://`).
   // The `uatobrew:` grammar is the shared module's (#101) — one parser with the app shell.
-  var parseScope = shared.parseScope;
   function searchInScope(i) {
     return !searchScope || countRec(i, searchScope, searchNeedle, !!searchScope.w) > 0;
   }
@@ -3567,8 +3566,8 @@
     if (m) m.classList.toggle("on", !!open);
   }
   function syncQScope() {
-    var parsed = parseScope(q.value.trim());
-    var set = (parsed && parsed.set)
+    // A scope facet anywhere in the box ticks its boxes — `scope:ub` or the bare `ub:` (§8).
+    var set = shared.splitQuery(q.value).set
       || { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: false };
     ["u", "a", "t", "o", "b", "r", "e", "w"].forEach(function (k) {
       var cb = $("qs-" + k);

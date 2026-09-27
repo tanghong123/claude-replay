@@ -1502,13 +1502,14 @@ impl View {
     fn recompute_matches(&mut self) {
         self.matches.clear();
         self.occurrences = 0;
-        let (scope, needle) = scoped_query(&self.query);
-        let q = needle.to_lowercase();
-        if q.is_empty() {
+        let query = parse_query(&self.query);
+        let q = query.needle.to_lowercase();
+        // A `tools:` facet alone is a whole query — every call of those tools, as on the pages.
+        if q.is_empty() && query.tools.is_empty() {
             return;
         }
         for (i, b) in self.blocks.iter().enumerate() {
-            let n = scope.occurrences(b, &q);
+            let n = query.occurrences(b, &q);
             if n > 0 {
                 self.matches.push(i);
                 self.occurrences += n;
@@ -1963,8 +1964,9 @@ impl View {
         // A scoped search additionally requires the row's block to be in scope — the
         // needle appearing in an out-of-scope block must not light up a row `n`/`N`
         // will never visit.
-        let (scope, raw_needle) = scoped_query(&self.query);
-        let needle = (!raw_needle.is_empty()).then(|| raw_needle.to_lowercase());
+        let query = parse_query(&self.query);
+        let scope = query.scope;
+        let needle = (!query.needle.is_empty()).then(|| query.needle.to_lowercase());
         let mut view: Vec<Line> = Vec::new();
         for ai in self.scroll..end {
             let Some(line) = self.line_at(ai) else { break };
@@ -1974,7 +1976,7 @@ impl View {
             let tag = self.tag_of(ai);
             let in_scope = tag.is_some_and(|b| {
                 self.matches.binary_search(&b).is_ok()
-                    && (!scope.is_scoped() || self.blocks.get(b).is_some_and(|b| scope.admits(b)))
+                    && self.blocks.get(b).is_some_and(|b| query.admits(b))
             });
             let styled = match &needle {
                 Some(q) if in_scope && text_occurrences(&row_text(&line), q, scope.whole) > 0 => {
@@ -2238,6 +2240,10 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
             "/uatobrew:x",
             "scope: you/agent/think/tools/bash/reads/edits · w=whole word",
         ),
+        (
+            "/tools:Bash,Read x",
+            "only those calls · scope:ub anywhere · :tools: is literal",
+        ),
         ("t", "task/todo panel (session task queue)"),
         (
             "mouse",
@@ -2500,55 +2506,230 @@ impl SearchScope {
     }
 }
 
-/// Split a raw search query into `(scope, needle)`. The prefix grammar (shared with the
-/// HTML viewer's search box, case-insensitive): a run of DISTINCT letters — `u` (your
-/// turns) / `a` (agent replies) / `t` (thinking) / `o` (all tools) / `b` (bash) /
-/// `r` (reads) / `e` (edits+writes), plus `w` (whole-word modifier) — then `:`,
-/// **order-free**, so `aut:` ≡ `uat:` and `tw:` means whole words in thinking prose.
-/// (`u+a+t:`, the v1.73 spelling, still parses.) A LEADING colon
-/// escapes: `:aut:x` searches the literal text `aut:x` — needed whenever the needle
-/// itself starts with a scope-shaped run followed by MORE text (`:rate:limit` for the
-/// literal `rate:limit`). A PURE run with nothing after it searches itself — `auto:`
-/// alone finds the literal `auto:`, no escape needed, because the scope reading would
-/// search for nothing. A repeated letter (`tt:`), any other letter (`user:` — the
-/// dropped v1.67 alias — reads as literal text), or a colon further out in ordinary
-/// text (`http://`, `12:30`) is not a prefix.
-fn scoped_query(raw: &str) -> (SearchScope, &str) {
-    // The escape hatch: one leading `:` and the rest is the literal needle.
-    if let Some(rest) = raw.strip_prefix(':') {
-        return (SearchScope::default(), rest);
+/// A `tools:` value: a tool's display name (the name the pages match, so an Edit is `Update`), or
+/// a family ending in `*` (`mcp__github__*`). Case-insensitive, as it is typed by hand.
+#[derive(Clone, Debug, PartialEq)]
+struct ToolPat {
+    name: String,
+    prefix: bool,
+}
+
+impl ToolPat {
+    fn matches(&self, tool: &str) -> bool {
+        let (tool, name) = (tool.to_lowercase(), self.name.to_lowercase());
+        if self.prefix {
+            tool.starts_with(&name)
+        } else {
+            tool == name
+        }
     }
-    // The longest valid prefix is the fully separated "u+a+t+o+b+r+e+w".
-    if let Some(colon) = raw.find(':').filter(|&c| (1..=15).contains(&c)) {
-        let mut scope = SearchScope::default();
-        let mut valid = true;
-        for ch in raw[..colon].chars() {
-            let slot = match ch.to_ascii_lowercase() {
-                'u' => &mut scope.user,
-                'a' => &mut scope.assistant,
-                't' => &mut scope.thinking,
-                'o' => &mut scope.tools,
-                'b' => &mut scope.bash,
-                'r' => &mut scope.reads,
-                'e' => &mut scope.edits,
-                'w' => &mut scope.whole,
-                '+' => continue, // the v1.73 separator, still accepted
-                _ => {
-                    valid = false;
-                    break;
-                }
-            };
-            if *slot {
-                valid = false; // a repeated letter is a word, not a scope
-                break;
+}
+
+/// A parsed `/` query — the grammar the HTML pages' search box reads (design/in-session-search.md
+/// §8, `shared/search.js` `querySpans`): the scope facets, the tool facets and the text.
+#[derive(Clone, Default)]
+struct SearchQuery {
+    scope: SearchScope,
+    tools: Vec<ToolPat>,
+    needle: String,
+}
+
+impl SearchQuery {
+    fn tool_ok(&self, b: &Block) -> bool {
+        match b {
+            Block::ToolUse { name, .. } => {
+                let shown = crate::present::display_name(name);
+                self.tools.iter().any(|t| t.matches(shown))
             }
-            *slot = true;
-        }
-        if valid && (scope.is_scoped() || scope.whole) && colon + 1 < raw.len() {
-            return (scope, &raw[colon + 1..]);
+            _ => false,
         }
     }
-    (SearchScope::default(), raw)
+    /// Occurrences under the whole query. Without a tool facet this is the scope's count. With one,
+    /// only the named tools' calls count — a thinking span's absorbed calls included, its own prose
+    /// not — and a facet with no text counts each such call once, so `n`/`N` step through them.
+    fn occurrences(&self, b: &Block, needle: &str) -> usize {
+        if self.tools.is_empty() {
+            return self.scope.occurrences(b, needle);
+        }
+        let one = |tool: &Block| -> usize {
+            if !self.tool_ok(tool)
+                || (self.scope.is_scoped()
+                    && !self.scope.admits_tool_kind(crate::model::block_kind(tool)))
+            {
+                return 0;
+            }
+            if needle.is_empty() {
+                1
+            } else {
+                block_occurrences(tool, needle, self.scope.whole)
+            }
+        };
+        match b {
+            Block::Thinking { tools, .. } => tools.iter().map(one).sum(),
+            _ => one(b),
+        }
+    }
+    /// Whether a block can hold a hit at all — the row highlight's gate.
+    fn admits(&self, b: &Block) -> bool {
+        if !self.tools.is_empty() {
+            return match b {
+                Block::Thinking { tools, .. } => tools.iter().any(|t| self.tool_ok(t)),
+                _ => self.tool_ok(b),
+            };
+        }
+        !self.scope.is_scoped() || self.scope.admits(b)
+    }
+}
+
+/// A scope letter run (`ub`, `u+b`, `wt`, case-insensitive, order-free) → its scope: each letter
+/// once, at least one. `u` your turns, `a` agent replies, `t` thinking, `o` all tools, `b` bash,
+/// `r` reads, `e` edits+writes, `w` the whole-word modifier; `+` the v1.73 separator.
+fn scope_of(run: &str) -> Option<SearchScope> {
+    let mut scope = SearchScope::default();
+    for ch in run.chars() {
+        let slot = match ch.to_ascii_lowercase() {
+            'u' => &mut scope.user,
+            'a' => &mut scope.assistant,
+            't' => &mut scope.thinking,
+            'o' => &mut scope.tools,
+            'b' => &mut scope.bash,
+            'r' => &mut scope.reads,
+            'e' => &mut scope.edits,
+            'w' => &mut scope.whole,
+            '+' => continue,
+            _ => return None,
+        };
+        if *slot {
+            return None; // a repeated letter is a word, not a scope
+        }
+        *slot = true;
+    }
+    (scope.is_scoped() || scope.whole).then_some(scope)
+}
+
+fn union(a: SearchScope, b: SearchScope) -> SearchScope {
+    SearchScope {
+        user: a.user || b.user,
+        assistant: a.assistant || b.assistant,
+        thinking: a.thinking || b.thinking,
+        tools: a.tools || b.tools,
+        bash: a.bash || b.bash,
+        reads: a.reads || b.reads,
+        edits: a.edits || b.edits,
+        whole: a.whole || b.whole,
+    }
+}
+
+/// Parse a `/` query (design/in-session-search.md §8), the same reading as the pages:
+/// - `tools:A,B` (`tool:` too) and `scope:ub` are facets ANYWHERE — a whitespace-separated token
+///   whose key is exactly that; `about:blank` is text, `about` being no key. An empty or invalid
+///   value is text.
+/// - A leading `:` escapes ONE token, up to the next space: `:tools:` is the literal `tools:`.
+/// - The bare letter run at the very start (`ub:x`, `ub: x`) is still a scope unless nothing follows
+///   it (`auto:` searches itself); what follows its colon in the same token is a token of its own,
+///   so `ub:tool:Read` is two facets. A colon further out in ordinary text (`http://`, `12:30`) is
+///   not a prefix.
+///
+/// A query with no facet and no escape keeps its needle byte for byte, spaces included.
+fn parse_query(raw: &str) -> SearchQuery {
+    let tokens: Vec<(usize, &str)> = {
+        let mut out = Vec::new();
+        let mut start = None;
+        for (i, ch) in raw.char_indices() {
+            match (ch.is_whitespace(), start) {
+                (false, None) => start = Some(i),
+                (true, Some(st)) => {
+                    out.push((st, &raw[st..i]));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(st) = start {
+            out.push((st, &raw[st..]));
+        }
+        out
+    };
+    let mut query = SearchQuery::default();
+    // Text pieces as (start, end, escaped): the text is rebuilt from them, a facet's own leading
+    // whitespace going with it.
+    let mut text: Vec<(usize, usize, bool)> = Vec::new();
+    let mut facet = false;
+    for (idx, &(start0, tok0)) in tokens.iter().enumerate() {
+        let (mut start, mut tok) = (start0, tok0);
+        if idx == 0 {
+            if let Some(colon) = tok.find(':').filter(|&c| (1..=15).contains(&c)) {
+                if let Some(set) = scope_of(&tok[..colon]) {
+                    if tok.len() > colon + 1 || tokens.len() > 1 {
+                        query.scope = union(query.scope, set);
+                        facet = true;
+                        start += colon + 1;
+                        tok = &tok[colon + 1..];
+                        if tok.is_empty() {
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        if tok.len() > 1 && tok.starts_with(':') {
+            text.push((start, start + tok.len(), true));
+            facet = true;
+            continue;
+        }
+        if let Some((key, value)) = tok.split_once(':') {
+            let key = key.to_ascii_lowercase();
+            if key == "scope" {
+                if let Some(set) = scope_of(value) {
+                    query.scope = union(query.scope, set);
+                    facet = true;
+                    continue;
+                }
+            } else if key == "tools" || key == "tool" {
+                let mut any = false;
+                for piece in value.split(',') {
+                    let prefix = piece.ends_with('*');
+                    let name = piece.trim_end_matches('*');
+                    if name.is_empty() {
+                        continue;
+                    }
+                    any = true;
+                    let pat = ToolPat {
+                        name: name.to_string(),
+                        prefix,
+                    };
+                    if !query
+                        .tools
+                        .iter()
+                        .any(|t| t.prefix == pat.prefix && t.name.eq_ignore_ascii_case(&pat.name))
+                    {
+                        query.tools.push(pat);
+                    }
+                }
+                if any {
+                    facet = true;
+                    continue;
+                }
+            }
+        }
+        text.push((start, start + tok.len(), false));
+    }
+    if !facet {
+        query.needle = raw.to_string();
+        return query;
+    }
+    // Each piece after the first takes the whitespace just before it — the reader's own spacing
+    // between their own words, while a facet's space went with the facet (`a tools:Bash b` → `a b`).
+    let mut needle = String::new();
+    for &(start, end, escaped) in &text {
+        if !needle.is_empty() {
+            let before = &raw[..start];
+            needle.push_str(&before[before.trim_end().len()..]);
+        }
+        needle.push_str(&raw[start + usize::from(escaped)..end]);
+    }
+    query.needle = needle.trim().to_string();
+    query
 }
 
 fn text_occurrences(hay: &str, needle: &str, whole: bool) -> usize {
@@ -5130,15 +5311,193 @@ mod tests {
             "word boundaries use Unicode alphanumeric characters"
         );
 
-        let (whole, needle) = scoped_query("w:Cat");
-        assert_eq!(needle, "Cat");
-        assert!(whole.whole);
-        assert!(!whole.is_scoped(), "w modifies an otherwise global search");
+        let q = parse_query("w:Cat");
+        assert_eq!(q.needle, "Cat");
+        assert!(q.scope.whole);
+        assert!(
+            !q.scope.is_scoped(),
+            "w modifies an otherwise global search"
+        );
 
-        let (thinking_whole, needle) = scoped_query("wt:Cat");
-        assert_eq!(needle, "Cat");
-        assert!(thinking_whole.whole && thinking_whole.thinking);
-        assert!(thinking_whole.is_scoped());
+        let q = parse_query("wt:Cat");
+        assert_eq!(q.needle, "Cat");
+        assert!(q.scope.whole && q.scope.thinking);
+        assert!(q.scope.is_scoped());
+    }
+
+    /// #302 — the `/` grammar is the pages' (design/in-session-search.md §8): `tools:` and
+    /// `scope:` facets anywhere, a leading `:` escaping ONE token, the bare prefix at the start.
+    #[test]
+    fn the_query_grammar_reads_facets_anywhere_and_escapes_one_token() {
+        let read = |raw: &str| {
+            let q = parse_query(raw);
+            let letters: String = [
+                (q.scope.user, 'u'),
+                (q.scope.assistant, 'a'),
+                (q.scope.thinking, 't'),
+                (q.scope.tools, 'o'),
+                (q.scope.bash, 'b'),
+                (q.scope.reads, 'r'),
+                (q.scope.edits, 'e'),
+                (q.scope.whole, 'w'),
+            ]
+            .iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, c)| *c)
+            .collect();
+            let tools: Vec<String> = q
+                .tools
+                .iter()
+                .map(|t| format!("{}{}", t.name, if t.prefix { "*" } else { "" }))
+                .collect();
+            (letters, tools.join(","), q.needle)
+        };
+        let s = |a: &str, b: &str, c: &str| (a.to_string(), b.to_string(), c.to_string());
+        assert_eq!(read("needle"), s("", "", "needle"));
+        assert_eq!(
+            read("  spaced  out "),
+            s("", "", "  spaced  out "),
+            "no facet: the needle as typed"
+        );
+        assert_eq!(
+            read("ub:needle"),
+            s("ub", "", "needle"),
+            "the bare prefix at the start"
+        );
+        assert_eq!(read("ub: needle"), s("ub", "", "needle"));
+        assert_eq!(
+            read("xy tools:Read scope:o"),
+            read("o:tool:Read xy"),
+            "the new spelling means the old"
+        );
+        assert_eq!(read("xy tools:Read scope:o"), s("o", "Read", "xy"));
+        assert_eq!(read("tools:Bash,Read hunk"), s("", "Bash,Read", "hunk"));
+        assert_eq!(
+            read("tool:Read ub:x"),
+            s("", "Read", "ub:x"),
+            "the bare prefix only at the start"
+        );
+        assert_eq!(
+            read("x about:blank"),
+            s("", "", "x about:blank"),
+            "about is not a key"
+        );
+        assert_eq!(read("scope:about xy"), s("uatob", "", "xy"));
+        assert_eq!(
+            read("scope:u scope:b zz"),
+            s("ub", "", "zz"),
+            "scope tokens union"
+        );
+        assert_eq!(
+            read("scope:xyz q"),
+            s("", "", "scope:xyz q"),
+            "an invalid value is text"
+        );
+        assert_eq!(
+            read(":tools: xy"),
+            s("", "", "tools: xy"),
+            "the escape is per token"
+        );
+        assert_eq!(
+            read(":scope:ub tools:Bash xy"),
+            s("", "Bash", "scope:ub xy"),
+            "…and only that token"
+        );
+        assert_eq!(read(":ub:x"), s("", "", "ub:x"));
+        assert_eq!(
+            read("auto:"),
+            s("", "", "auto:"),
+            "a pure run searches itself"
+        );
+        assert_eq!(
+            read("tools:"),
+            s("", "", "tools:"),
+            "an empty value is text"
+        );
+        assert_eq!(
+            read("ub:tool:Read xy"),
+            s("ub", "Read", "xy"),
+            "the prefix's remainder is a token"
+        );
+        assert_eq!(
+            read("a tools:Bash b"),
+            s("", "Bash", "a b"),
+            "a facet's space goes with it"
+        );
+        assert_eq!(
+            read("tools:mcp__github__* issue"),
+            s("", "mcp__github__*", "issue")
+        );
+    }
+
+    /// #302 — a `tools:` facet in the TUI: only the named tools' calls count, a thinking span's
+    /// absorbed calls included and its own prose not; alone, it steps through those calls.
+    #[test]
+    fn a_tools_facet_counts_only_that_tool_s_calls() {
+        let call = |name: &str, output: &str| Block::ToolUse {
+            name: name.into(),
+            target: "t".into(),
+            diffs: vec![],
+            output: Some(output.into()),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+        };
+        let act = Block::Thinking {
+            text: "needle in the thought".into(),
+            duration_secs: None,
+            tools: vec![
+                call("Grep", "needle via grep"),
+                call("Bash", "needle via bash"),
+            ],
+        };
+        let blocks = vec![
+            act,
+            call("Bash", "another needle"),
+            call("Read", "needle read"),
+        ];
+        let mut v = View::new(blocks, "t", false, FoldPolicy::none());
+        draw(&mut v, 60, 8);
+        let count_for = |v: &mut View, q: &str| {
+            v.search_start();
+            for c in q.chars() {
+                v.search_input(c);
+            }
+            let n = v.match_count();
+            v.search_cancel();
+            n
+        };
+        // Counts are BLOCKS with a hit (`match_count`), the steps `n`/`N` take.
+        assert_eq!(
+            count_for(&mut v, "needle"),
+            3,
+            "unfaceted: every block with the word"
+        );
+        assert_eq!(
+            count_for(&mut v, "tools:Bash needle"),
+            2,
+            "two Bash calls, one absorbed"
+        );
+        assert_eq!(count_for(&mut v, "needle tools:Bash,Read"), 3, "tools OR");
+        assert_eq!(
+            count_for(&mut v, "tools:bash"),
+            2,
+            "alone, a facet is the query; case-insensitive"
+        );
+        assert_eq!(
+            count_for(&mut v, "tools:Grep scope:b needle"),
+            0,
+            "facets AND"
+        );
+        assert_eq!(
+            count_for(&mut v, ":tools:Bash"),
+            0,
+            "escaped, it is text nobody wrote"
+        );
     }
 
     #[test]

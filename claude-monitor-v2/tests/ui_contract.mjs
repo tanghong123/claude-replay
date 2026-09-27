@@ -14,7 +14,7 @@ import { recordTextSize, LIVE_SEARCH_LIMIT, recordText, recordTextParts, parseSc
 import { fmtTime, fmtDur } from "../../claude-monitor/src/codex-ui/shared/time.js";
 import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/shared/parts.js";
 import { isInteraction, interactionCard, interactionHtml } from "../../claude-replay-html/src/html/shared/interaction.js";
-import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE, takeTools, takeTokens, toolMatches, writeTools, recordHasTool } from "../../claude-replay-html/src/html/shared/search.js";
+import { splitQuery, querySpans, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE, takeTools, takeTokens, toolMatches, writeTools, recordHasTool } from "../../claude-replay-html/src/html/shared/search.js";
 import { chainWalk, toolTree } from "../../claude-replay-html/src/html/shared/filter.js";
 import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, traceWanted } from "../../claude-replay-html/src/html/shared/virtual-window.js";
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
@@ -1609,7 +1609,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /data-scope-count="\$\{key\}"/, "the scope rows carry counts");
   assert.match(app, /function applyScopeFromMenu\(\) \{/, "the buttons rewrite the box's prefix");
   const search = readFileSync(new URL("../../claude-replay-html/src/html/shared/search.js", import.meta.url), "utf8");
-  assert.match(search, /^export \{ CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, takeTools, takeTokens, toolMatches, writeTools, recordHasTool, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc \};\s*$/m);
+  assert.match(search, /^export \{ CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, querySpans, takeTools, takeTokens, toolMatches, writeTools, recordHasTool, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc \};\s*$/m);
   console.log("#101 scope cases passed");
 }
 
@@ -1848,9 +1848,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(countLabel(1, null, false), "1 hit");
   assert.equal(countLabel(12, parseScope("ub:x").set, false), "12 hits in ub");
   assert.equal(countLabel(3, parseScope("w:x") ? parseScope("w:x").set : null, true), "3 hits · whole words", "whole words alone scopes nothing");
-  assert.equal(writePrefix("ub:needle", ["a"]), "a:needle");
-  assert.equal(writePrefix("ub:needle", []), "needle", "no letters, no prefix");
-  assert.equal(writePrefix("  needle", ["u", "b"]), "ub:needle");
+  // §8: the menu writes ONE `scope:` token (the bare prefix it replaces is read, never written).
+  assert.equal(writePrefix("ub:needle", ["a"]), "scope:a needle");
+  assert.equal(writePrefix("ub:needle", []), "needle", "no letters, no token");
+  assert.equal(writePrefix("  needle", ["u", "b"]), "scope:ub needle");
+  assert.equal(writePrefix("x scope:ub needle", ["t"]), "scope:t x needle", "a scope token anywhere is replaced");
+  assert.equal(writePrefix(":scope:ub needle", ["t"]), "scope:t :scope:ub needle", "an escaped token is the reader's text, kept as typed");
   // The filter chain: a parent whose child matches is on the chain, and the walk says which.
   const seen = [];
   const tree = { id: "p", kind: "act", body: [{ p: "blocks", items: [{ id: "c1", kind: "bash", body: [] }, { id: "c2", kind: "read", body: [] }] }] };
@@ -2916,7 +2919,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(q("tool:Bash timeout"), { needle: "timeout", scope: null, tools: ["=Bash"], tooShort: false },
     "…and beside text it NARROWS it: Bash calls whose text matches");
   assert.deepEqual(q("ub: tool:Bash timeout"), { needle: "timeout", scope: "ub", tools: ["=Bash"], tooShort: false },
-    "all three axes at once, the scope prefix still first");
+    "all three axes at once, the bare scope prefix first");
   assert.deepEqual(q("tool:Bash tool:Read hunk"), { needle: "hunk", scope: null, tools: ["=Bash", "=Read"], tooShort: false },
     "two tools are two values of ONE facet (they OR; facets AND)");
   assert.deepEqual(q("tool:Bash tool:bash x2"), { needle: "x2", scope: null, tools: ["=Bash"], tooShort: false },
@@ -2928,7 +2931,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(q("auto:"), { needle: "auto:", scope: null, tools: [], tooShort: false },
     "a bare scope run still searches ITSELF — 'scopes alone as a facet query' would break `/`");
   assert.deepEqual(q(":tool:Bash"), { needle: "tool:Bash", scope: null, tools: [], tooShort: false },
-    "the leading-colon escape means the literal text, facets included");
+    "the leading-colon escape means the literal text");
   assert.deepEqual(q("tool:"), { needle: "tool:", scope: null, tools: [], tooShort: false },
     "an empty value is not a token: a reader mid-type is not suddenly searching nothing");
   assert.equal(q("tool:Bash a").tooShort, true,
@@ -2947,9 +2950,41 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(toolMatches("Bash", []), true, "an empty facet asks nothing");
   assert.equal(toolMatches("", [{ name: "Bash", prefix: false }]), false, "a record with no tool answers no tool facet");
 
-  assert.equal(writeTools("tool:Read timeout", ["Bash", "mcp__github__*"]), "tool:Bash tool:mcp__github__* timeout",
-    "the menu writes the box (#101): the reader's words are kept, the old tokens replaced");
+  assert.equal(writeTools("tool:Read timeout", ["Bash", "mcp__github__*"]), "tools:Bash,mcp__github__* timeout",
+    "the menu writes the box (#101): the reader's words are kept, the old tokens replaced by ONE `tools:` token (§8)");
   assert.equal(writeTools("tool:Bash timeout", []), "timeout", "unticking the last tool leaves the text alone");
+
+  // #302 — design/in-session-search.md §8: `tools:` and `scope:` are one shape, a named facet
+  // ANYWHERE; a leading `:` escapes ONE token, up to the next space; the bare prefix still reads at
+  // the very start (the TUI's `/`, and habit), and nowhere else.
+  assert.deepEqual(q("xy tools:Read scope:o"), q("o:tool:Read xy"), "the new spelling means what the old one did");
+  assert.deepEqual(q("xy tools:Read scope:o"), { needle: "xy", scope: "o", tools: ["=Read"], tooShort: false },
+    "facets anywhere, in any order");
+  assert.deepEqual(q("tools:Bash,Read hunk"), { needle: "hunk", scope: null, tools: ["=Bash", "=Read"], tooShort: false },
+    "`tools:` takes names, comma-separated (they OR)");
+  assert.deepEqual(q("tool:Read scope:ub xy"), { needle: "xy", scope: "ub", tools: ["=Read"], tooShort: false },
+    "a scope token need not come first");
+  assert.deepEqual(q("scope:u scope:b zz"), { needle: "zz", scope: "ub", tools: [], tooShort: false },
+    "two scope tokens are their union");
+  assert.deepEqual(q("tool:Read ub:x"), { needle: "ub:x", scope: null, tools: ["=Read"], tooShort: false },
+    "the BARE prefix counts only at the very start — elsewhere `ub:x` is text");
+  assert.deepEqual(q("x about:blank"), { needle: "x about:blank", scope: null, tools: [], tooShort: false },
+    "`about` is not a key, so `about:blank` after a word is text");
+  assert.deepEqual(q("scope:about xy"), { needle: "xy", scope: "uatob", tools: [], tooShort: false },
+    "…and `scope:` spells any letter run explicitly");
+  assert.deepEqual(q("scope:xyz q"), { needle: "scope:xyz q", scope: null, tools: [], tooShort: false },
+    "an invalid scope value is text, not a scope over nothing");
+  assert.deepEqual(q(":tools: x"), { needle: "tools: x", scope: null, tools: [], tooShort: false },
+    "`:tools:` is the literal key (owner: the escape is per token)");
+  assert.deepEqual(q(":scope:ub tools:Bash xy"), { needle: "scope:ub xy", scope: null, tools: ["=Bash"], tooShort: false },
+    "…and ONLY that token: the rest of the box parses as usual");
+  assert.deepEqual(q(":ub:x"), { needle: "ub:x", scope: null, tools: [], tooShort: false },
+    "an escaped bare prefix is the literal it names");
+  assert.deepEqual(q("scope:"), { needle: "scope:", scope: null, tools: [], tooShort: false },
+    "an empty value is text: a reader mid-type is not searching nothing");
+  const spans = querySpans("ub:tool:Read x");
+  assert.deepEqual(spans.map(sp => sp.kind), ["scope", "tools", "text"],
+    "the bare prefix's remainder is read as a token of its own, so `ub:tool:Read` is two facets");
 
   // Part-precise counting: the words must sit in the TOOL's own text, not merely in a record
   // that contains one. `act` is the coalescing span the engine builds around tool calls.

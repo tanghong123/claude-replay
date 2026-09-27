@@ -15,7 +15,7 @@ import { displayState, denoteState, sessionFilterBuckets, FILTER_BUCKETS, FILTER
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, parseScope, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt, toolMatches, writeTools, recordHasTool, takeTokens } from "./shared/search.js";
+import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt, toolMatches, writeTools, recordHasTool, takeTokens } from "./shared/search.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -1399,11 +1399,12 @@ function updateSearch(reset) {
   // query means the same thing on both pages — including the two-character floor, which this
   // shell did not have.
   const q = splitQuery(raw);
-  if (q.scoped && q.set && q.needle.length) {
+  // The buttons follow the box (#101): a scope facet anywhere in it — `scope:ub` or the bare `ub:`
+  // at the start (§8) — ticks its rows; none (or only an escaped `:scope:`) means everything.
+  if (q.set) {
     uiState.searchScopes = new Set(scopeLetters(q.set).length ? scopeLetters(q.set) : ALL_SCOPES);
     uiState.searchWhole = !!q.set.w;
-  } else if (!q.scoped || q.scoped.set === null) {
-    // No prefix (or the escape): everything, as the classic page — the buttons follow the box.
+  } else {
     uiState.searchScopes = new Set(ALL_SCOPES); uiState.searchWhole = false;
   }
   const query = q.tooShort ? "" : q.lc;
@@ -1981,10 +1982,9 @@ function openGlobalSearch() { byId("searchLayer").classList.add("production-open
 function globalRows(raw) {
   const agentQ = takeTokens(raw, "agent");
   const projectQ = takeTokens(agentQ.rest, "project");
-  const toolQ = takeTokens(projectQ.rest, "tool");
-  // A leading `uatobrew:` run belongs to the transcript box; here it is noise.
-  const scoped = parseScope(toolQ.rest.trim());
-  const text = (scoped && scoped.set ? toolQ.rest.trim().slice(scoped.len) : toolQ.rest).trim().toLowerCase();
+  // The in-session facets — `tools:`, `scope:`, the bare `ub:` — belong to the transcript box; here
+  // they are dropped, not matched as text, and an escaped token reads as the literal it names (§8).
+  const text = splitQuery(projectQ.rest).lc;
   const now = Date.now() / 1000;
   // Why the sidebar is not showing a session right now, in the words of its own controls: "hidden"
   // (the reader hid it, or its project) and the filter bucket the reader has unticked ("idle").

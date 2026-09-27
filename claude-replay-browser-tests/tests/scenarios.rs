@@ -5716,10 +5716,15 @@ fn scenario_scope_counts_prefix_and_gating(
     );
     settle();
     let value = eval(tab, box_value).as_str().unwrap_or("").to_string();
-    let prefix = value.split(':').next().unwrap_or("").to_string();
+    // #302: the button writes ONE `scope:` token (design/in-session-search.md §8).
+    let letters = value
+        .strip_prefix("scope:")
+        .and_then(|rest| rest.split(' ').next())
+        .unwrap_or("")
+        .to_string();
     assert!(
-        value.contains(':') && prefix.contains('b') && value.ends_with("needle"),
-        "the button wrote a prefix with b: {value:?}"
+        letters.contains('b') && value.ends_with("needle"),
+        "the button wrote a scope token with b: {value:?}"
     );
 }
 
@@ -14045,6 +14050,33 @@ fn scenario_a_query_and_a_tool_facet_narrow_each_other(
         text_only,
         "{surface:?}: dropping the facet brings every hit back"
     );
+
+    // #302 — design/in-session-search.md §8: the facets are named tokens ANYWHERE, so the new
+    // spelling, facets last and in any order, means exactly what the old prefix-first one did.
+    typed("o:tool:Read needle");
+    let old_spelling = hits("the old spelling");
+    typed("needle tools:Read scope:o");
+    assert_eq!(
+        hits("the new spelling"),
+        old_spelling,
+        "{surface:?}: `needle tools:Read scope:o` is `o:tool:Read needle`"
+    );
+    typed("tools:Read needle");
+    assert_eq!(
+        hits("tools: alone"),
+        read,
+        "{surface:?}: `tools:` is `tool:`"
+    );
+    // A leading colon escapes ONE token (owner): `:tools:Read` is the literal, which no record holds.
+    typed(":tools:Read needle");
+    let said = eval(tab, &format!("{count_sel}.textContent.trim()"))
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        said.starts_with('0') || said.to_lowercase().starts_with("no "),
+        "{surface:?}: the escaped token is searched as text, and nothing holds it: {said:?}"
+    );
 }
 
 #[test]
@@ -14905,8 +14937,8 @@ fn scenario_mcp_calls_are_one_family_in_the_filter(
         Surface::AppShell => {
             assert_eq!(
                 box_value.as_str(),
-                Some("tool:mcp__github__*"),
-                "AppShell: the row wrote the family facet into the box"
+                Some("tools:mcp__github__*"),
+                "AppShell: the row wrote the family facet into the box (the `tools:` token, #302)"
             );
             let said = eval(
                 tab,
