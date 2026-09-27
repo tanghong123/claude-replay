@@ -806,6 +806,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 /* #228 — the preview pane's image is the same zoomable stage. The panel is the narrowest place
    an image is shown, so "too big to fit" is its normal condition rather than an edge case. */
 .artifact-stage{overflow:hidden;position:relative;touch-action:none}
+/* #305 — the stage FILLS the pane's body. Its image is absolutely positioned, so a stage with no
+   height of its own collapsed to its padding (22px + 46px) and the fit scaled a 1200×800 screenshot
+   into that 68px sliver — "drawn as a thumbnail" (the owner). */
+.preview-body>.artifact-stage{height:100%;box-sizing:border-box}
 .artifact-stage>img.artifact-image{position:absolute;left:50%;top:50%;transform-origin:center center;will-change:transform;max-width:none;max-height:none;margin:0}
 .artifact-stage[data-pannable="yes"]{cursor:grab}
 .artifact-stage[data-pannable="yes"].dragging{cursor:grabbing}
@@ -831,6 +835,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    visual left, and then left-alignment pushes the overflow back out to the right, losing the
    file name the rule exists to keep. Measured: name starting 230px into a 275px box. */
 .renderer-target{direction:rtl}
+/* #304 — …but the TEXT inside is isolated left-to-right (`<bdi dir="ltr">`). In a right-to-left
+   paragraph the leading neutral characters of a path — `/`, `./`, `~/.` — resolve right-to-left and
+   are drawn at the far end: `~/.claude/…/portal-models.png` read `claude/…/portal-models.png./~`.
+   Isolated, the path keeps its own order while the box still clips its head. */
 /* NOT `unicode-bidi:plaintext`, which was the first attempt and silently undid the line above:
    plaintext resolves each run's direction from its first strong character, and a path's first
    strong character is Latin — so the run went back to LTR and kept clipping the tail. Measured

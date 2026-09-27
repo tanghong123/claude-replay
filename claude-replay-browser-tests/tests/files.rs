@@ -523,3 +523,115 @@ fn url_encode(s: &str) -> String {
         })
         .collect()
 }
+
+/// A real PNG of `w`×`h` grey pixels, uncompressed (stored deflate blocks) — big enough that the
+/// pane has to SHRINK it to fit, which a 1×1 image can never show.
+fn big_png(w: u32, h: u32) -> Vec<u8> {
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut c = 0xffff_ffffu32;
+        for &b in bytes {
+            c ^= b as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    0xedb8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    }
+    fn chunk(out: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let mut body = kind.to_vec();
+        body.extend_from_slice(data);
+        out.extend_from_slice(&body);
+        out.extend_from_slice(&crc32(&body).to_be_bytes());
+    }
+    let mut raw = Vec::with_capacity(((w + 1) * h) as usize);
+    for y in 0..h {
+        raw.push(0); // filter: none
+        raw.extend((0..w).map(|x| ((x + y) % 200 + 40) as u8));
+    }
+    let (mut a, mut b) = (1u32, 0u32);
+    for &byte in &raw {
+        a = (a + byte as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    let mut z = vec![0x78, 0x01];
+    let blocks: Vec<&[u8]> = raw.chunks(65_535).collect();
+    for (i, block) in blocks.iter().enumerate() {
+        z.push(u8::from(i + 1 == blocks.len()));
+        let len = block.len() as u16;
+        z.extend_from_slice(&len.to_le_bytes());
+        z.extend_from_slice(&(!len).to_le_bytes());
+        z.extend_from_slice(block);
+    }
+    z.extend_from_slice(&((b << 16) | a).to_be_bytes());
+    let mut out = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&w.to_be_bytes());
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 0, 0, 0, 0]); // 8-bit greyscale
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &z);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+/// #305 — the owner: an image opened in the preview pane was drawn thumbnail-sized at the top of an
+/// empty pane, where Preview.app fit it to the window. The stage had no height of its own (the
+/// image is absolutely positioned), so the fit used its PADDING box, about 68px tall. A large image
+/// fills the pane on one axis, and re-fits when the pane changes width.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_preview_fits_a_large_image_to_the_pane() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("files-fit");
+    std::fs::write(repo.join("shot.png"), big_png(1200, 800)).unwrap();
+    let m = Monitor::spawn(Kind::V2, 2816, &base, Some(&stores), true);
+    let browser = chrome();
+    let tab = browser.new_tab().unwrap();
+    harness::resize(&tab, 1440.0, 900.0);
+    open_shell(&m, &tab, true);
+    click_path(&tab, &repo, "shot.png");
+    until(
+        &tab,
+        "(function(){ var i = document.querySelector('#previewBody img.artifact-image'); return !!i && i.complete && i.naturalWidth === 1200; })()",
+        "the large image in the pane",
+        Duration::from_secs(20),
+        PANE,
+    );
+    let measure = "(function(){ var s = document.querySelector('#previewBody .artifact-stage'); var i = s.querySelector('img'); var r = i.getBoundingClientRect(); return JSON.stringify({ sw: s.clientWidth, sh: s.clientHeight, iw: Math.round(r.width), ih: Math.round(r.height) }); })()";
+    let fits = |label: &str| -> serde_json::Value {
+        until(
+            &tab,
+            &format!("(function(){{ var m = JSON.parse({measure}); return m.sh > 200 && (m.iw >= Math.min(m.sw, 1200) - 4 || m.ih >= Math.min(m.sh, 800) - 4); }})()"),
+            label,
+            Duration::from_secs(5),
+            measure,
+        );
+        serde_json::from_str(eval(&tab, measure).as_str().unwrap_or("{}")).unwrap()
+    };
+    let first = fits("the image to fill the pane on one axis");
+    // The pane widens: the image follows it.
+    eval(
+        &tab,
+        "document.getElementById('app').style.setProperty('--preview', '760px'); 'ok'",
+    );
+    until(
+        &tab,
+        &format!(
+            "JSON.parse({measure}).sw > {}",
+            first["sw"].as_i64().unwrap_or(0) + 50
+        ),
+        "the pane to widen",
+        Duration::from_secs(5),
+        measure,
+    );
+    let wider = fits("the image to re-fit the wider pane");
+    assert!(
+        wider["iw"].as_i64() > first["iw"].as_i64(),
+        "a wider pane draws the image wider: {first} → {wider}"
+    );
+}

@@ -14843,6 +14843,82 @@ fn app_shell_facets_are_typed_from_a_drop_down_and_frozen_into_chips() {
     }
 }
 
+/// #304 — the owner: a SendUserFile head read `claude/jobs/72b570af/tmp/portal-models.png./~` for
+/// `~/.claude/jobs/…/portal-models.png`. The head's target is a right-to-left box (so a long path
+/// clips its HEAD and keeps the file name), and in a right-to-left paragraph the leading NEUTRAL
+/// characters — `~/.`, `./`, `/` — are drawn at the far end. Every target that starts with one is
+/// affected; the drawn order must be the text's order, first character leftmost.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_head_target_reads_in_its_own_order() {
+    let _serial = serial();
+    let base = base("head-bidi-app");
+    let stores = Stores::new(&base);
+    let mut t = long_session(10, Shape::default());
+    t += &user_at("question 11: build it", &now_minus(90));
+    // Two standalone heads (a Write stands alone; Bash would fold into an Activity group), each
+    // target starting with neutral characters: an absolute path, and the owner's `~/.` shape.
+    let write = |id: &str, path: &str, ts: &str| {
+        format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Write\",\"input\":{{\"file_path\":\"{path}\",\"content\":\"x\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
+        )
+    };
+    t += &write("t-bidi-1", "/tmp/cr-bidi/build-report.md", &now_minus(80));
+    t += &tool_result_lines("t-bidi-1", 1, &now_minus(78));
+    t += &write(
+        "t-bidi-2",
+        "~/.claude/jobs/72b570af/tmp/portal-models.md",
+        &now_minus(70),
+    );
+    t += &tool_result_lines("t-bidi-2", 1, &now_minus(68));
+    t += &assistant_at("answer bidi: built.", &now_minus(60));
+    let path = stores.claude_session(SID, &t);
+    let fx = Fixture {
+        base,
+        path,
+        turns: 11,
+    };
+    let page = open(Surface::AppShell, &fx, 3058);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    // For each target holding one of the commands: its text, and whether its first character is
+    // drawn left of its last (measured per character with a Range over the text nodes).
+    let probe = "JSON.stringify([...document.querySelectorAll('.renderer-target')].filter(function (t) { return /build-report|portal-models/.test(t.textContent); }).map(function (t) { var walker = document.createTreeWalker(t, NodeFilter.SHOW_TEXT); var nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode); var first = nodes[0], last = nodes[nodes.length - 1]; function box(node, i) { var r = document.createRange(); r.setStart(node, i); r.setEnd(node, i + 1); return r.getBoundingClientRect(); } var a = box(first, 0), b = box(last, last.length - 1); return [t.textContent, Math.round(a.left), Math.round(b.left), a.left < b.left]; }))";
+    harness::until(
+        tab,
+        &format!("JSON.parse({probe}).length >= 2"),
+        "both command heads",
+        Duration::from_secs(20),
+        probe,
+    );
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(eval(tab, probe).as_str().unwrap_or("[]")).unwrap();
+    for row in &rows {
+        assert_eq!(
+            row[3], true,
+            "the head reads in its own order — first character leftmost: {row}"
+        );
+    }
+    // …and the box still does what it is right-to-left FOR: at a narrow window a long path clips
+    // its HEAD, and its last character — the file name — stays inside the box.
+    harness::resize(tab, 820.0, 700.0);
+    harness::until_preview_parked(tab);
+    settle();
+    let tail = "(function(){ var t = [...document.querySelectorAll('.renderer-target')].find(function (e) { return /portal-models/.test(e.textContent); }); var n = t.querySelector('bdi').firstChild; var r = document.createRange(); r.setStart(n, n.length - 1); r.setEnd(n, n.length); var last = r.getBoundingClientRect(), box = t.getBoundingClientRect(); var r0 = document.createRange(); r0.setStart(n, 0); r0.setEnd(n, 1); var first = r0.getBoundingClientRect(); return JSON.stringify({ clipped: t.scrollWidth > t.clientWidth, lastIn: last.right <= box.right + 1 && last.left >= box.left, firstLeft: first.left < box.left + 1 }); })()";
+    let seen: serde_json::Value =
+        serde_json::from_str(eval(tab, tail).as_str().unwrap_or("{}")).unwrap();
+    assert_eq!(
+        seen["clipped"], true,
+        "the case needs the path to clip at this width, or it measures nothing: {seen}"
+    );
+    assert!(
+        seen["lastIn"] == true && seen["firstLeft"] == true,
+        "a clipped path keeps its file name in the box and loses its head: {seen}"
+    );
+}
+
 /// One word, "needle", in three places one facet can tell apart: a Bash command, a Read's target
 /// and an assistant's prose. Prose between the calls so each is its own record.
 fn needle_fixture(name: &str) -> Fixture {

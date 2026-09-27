@@ -148,8 +148,8 @@ function renderRenderer(view, index, state, inherited) {
   // #275: a path with NO stamp is still a link — `referenceAction` answers "copy" for it, as the
   // classic page now does. It used to be plain text here, so the path could not even be copied.
   const targetHtml = view.path
-    ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${REFERENCE_TITLES[referenceAction(view)]}">${escapeText(view.summary || "")}</span>`
-    : `<span class="renderer-target">${escapeText(view.summary || "")}</span>`;
+    ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${REFERENCE_TITLES[referenceAction(view)]}"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`
+    : `<span class="renderer-target"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`;
   const head = noninteractive
     ? `<div class="renderer-head" aria-label="${escapeText(title)}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}<span class="renderer-state"></span></div>`
     : `<button class="renderer-head" type="button" aria-expanded="${!closed}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}<span class="renderer-state" title="${escapeText(status)}">${escapeText(view.state ? view.pill : status === "completed" ? "" : status)}</span></button>`;

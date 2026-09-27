@@ -952,7 +952,14 @@
       box.appendChild(panel);
     }
     var cap = el("div", "lb-cap");
-    cap.appendChild(el("span", null, path));
+    // #304: the caption clips its head right-to-left (export.css `.lb-cap > span`); the path inside
+    // is isolated left-to-right so its leading `/`, `./` or `~/.` are not drawn at the far end.
+    var capPath = el("span");
+    var capText = document.createElement("bdi");
+    capText.dir = "ltr";
+    capText.textContent = path;
+    capPath.appendChild(capText);
+    cap.appendChild(capPath);
     var rev = el("button", "lb-act", "Reveal in file manager");
     rev.onclick = function (ev) {
       ev.stopPropagation();

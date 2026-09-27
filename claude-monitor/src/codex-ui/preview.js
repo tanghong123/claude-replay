@@ -169,6 +169,7 @@ export class Preview {
     const body = byId("previewBody");
     if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = ""; }
     if (this.imageView) { this.imageView.destroy(); this.imageView = null; }
+    if (this.stageObserver) { this.stageObserver.disconnect(); this.stageObserver = null; }
     body.classList.remove("production-loading");
     body.classList.add("mdrev-mounted");
     body.innerHTML = '<div class="mdrev-pane"></div>';
@@ -203,6 +204,7 @@ export class Preview {
     // A previewed image zooms and pans like the enlarged one (#228): this panel is narrow, so it
     // is exactly where a screenshot is "too big to fit". Same shared engine, same gestures.
     if (this.imageView) { this.imageView.destroy(); this.imageView = null; }
+    if (this.stageObserver) { this.stageObserver.disconnect(); this.stageObserver = null; }
     if (data) {
       this.objectUrl = data.startsWith("blob:") ? data : "";
       body.innerHTML = `<div class="artifact-surface artifact-stage"><img class="artifact-image" alt="${escapeText(item.name)}"></div>`;
@@ -211,6 +213,14 @@ export class Preview {
       // can be collapsed with an image still mounted, and a collapsed pane must not own
       // `0`/`-`/`+`… against the compose box beside it.
       this.imageView = createImageView(stage, img, { isActive: () => uiState.preview });
+      // The pane opens, is dragged wider, or the window resizes: the fit follows (#305). `sync`
+      // re-fits a reader at the default and only re-clamps one who has zoomed. Without it a fit
+      // taken while the pane was still opening stayed a thumbnail.
+      if (typeof ResizeObserver !== "undefined") {
+        const view = this.imageView;
+        this.stageObserver = new ResizeObserver(() => view.sync());
+        this.stageObserver.observe(stage);
+      }
       img.src = data;
       return;
     }
