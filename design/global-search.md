@@ -55,6 +55,11 @@ is what the Transcript tab was.
   hidden one — otherwise the reader would be dropped into a session the list beside them does not
   show. That clearing is the reader's own act (they picked the row), so it is not a filter changing
   underneath them.
+- **The sidebar's session filter is not a chip in this box** (owner, 2026-09-26, placed here
+  2026-09-27): moving the active filter into the search box was declined because the filter "needs
+  more direct exposure" — it stays the sidebar's own glyph and drop-down (and, collapsed, the rail's
+  flyout, #300). This was once filed under the in-session search by mistake; there, chips are
+  wanted (`in-session-search.md` §8).
 - **The two entry points stay two** (measured 2026-09-26): `searchBtn` belongs to the expanded
   sidebar and `sidebarMiniSearch` to the collapsed 64px rail (`.app.sidebar-off`), so they are one
   control in two sidebar states, not a duplicate.

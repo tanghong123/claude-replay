@@ -109,13 +109,12 @@ as a level above the tools, is left for the owner; nothing here forecloses it.
   goes. `reference-shell.html` is generated: remove it in `design/agent-monitor-codex-demo.html`
   and re-run `scripts/extract-agent-monitor-demo.mjs`.
 
-**Decided against, and held** (owner, 2026-09-26): active facets as chips inside the box are NOT
-wanted — a filter "needs more direct exposure" than a token in a text field, which is what the
-popover and its badge are for. The "only matches" toggle is on hold.
+**Held** (owner, 2026-09-26): the "only matches" toggle is on hold.
 
-What §3 keeps is the typed FORM of a facet, not a chip: a reader may type `tool:Bash`, and ticking
-a row writes that token into the box the way ticking a scope already writes `ub:` there (#101). The
-popover stays the control.
+**Corrected 2026-09-27.** This section used to record "active facets as chips inside the box are NOT
+wanted". The owner has since said that decision was about the LEFT BAR — the sidebar's session
+filter and the ⌘K box (`global-search.md`) — not this box: "chips are good for the latter". §8
+builds the in-session chips; the popover stays as well.
 
 ## 6. The classic page
 
@@ -183,9 +182,8 @@ The owner answered the escape rule (per token, a space ends it) and accepted per
 these two were proposed and not yet confirmed:
 
 - **The popover stays**, mirrored both ways: ticking a row adds or removes its chip, and a chip
-  ticks its row. This reconciles §5's "a filter needs more direct exposure than a token in a text
-  field" — the popover and its badge remain the direct exposure; the chip is the typed form made
-  visible.
+  ticks its row. (Chips here are the owner's own proposal; the earlier "no chips" decision was
+  about the left bar, see §5's correction.)
 - **Reach.** The app shell gets the drop-downs and chips. The classic page (the reference) and the
   TUI's `/` get the typed grammar only — `tools:Bash,Read` by NAME (letters need the drop-down that
   shows them) and `scope:ub` — and keep the bare `ub:` prefix.
