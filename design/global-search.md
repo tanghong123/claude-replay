@@ -1,6 +1,6 @@
 # The ⌘K search: a jump-to, sharing the in-session grammar
 
-> **Status: DECIDED (owner, 2026-09-26), not built.** Task #138. §2 is the owner's decisions; §4
+> **Status: DECIDED (owner, 2026-09-26; amended 2026-09-27), built in #294.** Task #138. §2 is the owner's decisions; §4
 > works them out and is open to amendment. Related: `design/in-session-search.md` (#137).
 
 ## 1. What it is today
@@ -34,7 +34,8 @@ is what the Transcript tab was.
 
 ## 4. Working it out
 
-- **Tabs**: All / Agent / Project / Session.
+- **No tabs** (owner, 2026-09-27: tabs on this box are "pointless"). The qualifiers below narrow
+  the list, and each row names its kind.
 - **Placeholder** says what it does: "Go to an agent, project or session…" (today's reads
   "Search agents、Projects、Session or transcripts…", with a Chinese comma and a promise it does
   not keep).
@@ -47,9 +48,12 @@ is what the Transcript tab was.
 - **A project row opens its own most recent session** (owner): the project is the address, its
   newest session is where the reader lands. It does not filter the sidebar.
 - **The sidebar's session filter does not narrow this list** (owner), but a row the sidebar is
-  currently hiding is drawn in a **dimmed shade**, and choosing it **clears the sidebar filter to
-  All** — otherwise the reader would be dropped into a session the list beside them does not show.
-  That clearing is the reader's own act (they picked the row), so it is not a filter changing
+  currently not showing is drawn in a **dimmed shade** and **says why** in the sidebar's own words
+  (owner, 2026-09-27): `hidden` for a session the reader hid (or whose project they hid), and the
+  filter bucket they have unticked (`idle`, `blocked`, `active recently`) — both when both apply.
+  Choosing it **clears what hides it**: the bucket filter to All, and Include hidden on for a
+  hidden one — otherwise the reader would be dropped into a session the list beside them does not
+  show. That clearing is the reader's own act (they picked the row), so it is not a filter changing
   underneath them.
 - **The two entry points stay two** (measured 2026-09-26): `searchBtn` belongs to the expanded
   sidebar and `sidebarMiniSearch` to the collapsed 64px rail (`.app.sidebar-off`), so they are one
@@ -57,8 +61,8 @@ is what the Transcript tab was.
 
 ## 5. Implementation (filed as a task)
 
-Remove the Transcript tab and its note, reword the placeholder, parse qualifiers through the
-shared grammar module, rank by recency, land a project row on its newest session, and dim the rows
-the sidebar is hiding — choosing one clears that filter to All. A scenario on the app shell (the
-classic rail has no such dialog): the tab is gone, a name query jumps, `project:` narrows, a hidden
-session reads as dimmed and picking it leaves the sidebar showing everything.
+Remove the tabs, reword the placeholder, parse qualifiers through the shared grammar module, rank
+by recency, land a project row on its newest session, and dim the rows the sidebar is not showing
+with the reason — choosing one clears what hides it. A scenario on the app shell (the classic rail
+has no such dialog): no tabs, a name query jumps, `project:` narrows, a filtered-out session reads
+as dimmed with `idle` and a hidden one with `hidden`, and picking each leaves the sidebar showing it.

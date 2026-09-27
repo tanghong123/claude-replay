@@ -15,7 +15,7 @@ import { displayState, denoteState, sessionFilterBuckets, FILTER_BUCKETS, FILTER
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, parseScope, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt, toolMatches, writeTools, recordHasTool } from "./shared/search.js";
+import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, parseScope, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt, toolMatches, writeTools, recordHasTool, takeTokens } from "./shared/search.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -1827,23 +1827,82 @@ byId("navigatorOptions").onclick = event => { const scope = event.target.closest
 byId("selectAllScopes").onclick = () => { uiState.searchScopes = new Set(ALL_SCOPES); uiState.searchWhole = false; applyScopeFromMenu(); };
 byId("clearTranscriptFilters").onclick = () => { setToolFacets([]); };
 
-function openGlobalSearch() { byId("searchLayer").classList.add("production-open"); byId("searchInput").value = ""; uiState.searchTab = "all"; renderGlobalSearch(); byId("searchInput").focus(); }
-function globalRows(query) {
+function openGlobalSearch() { byId("searchLayer").classList.add("production-open"); byId("searchInput").value = ""; renderGlobalSearch(); byId("searchInput").focus(); }
+/** ⌘K is a JUMP-TO (#294, design/global-search.md): agents, projects and sessions by name, ranked
+ *  by recency. Finding text inside the open session is the top bar's job — the Transcript tab that
+ *  used to do it here, badly (plain substring, no scopes, no stepping, and it had to apologise for
+ *  covering one session), is gone.
+ *
+ *  A row the SIDEBAR is currently hiding is still listed — its filter does not narrow this list —
+ *  and marked `stale` so it reads dimmed; choosing one clears that filter (the reader picked the
+ *  row, so it is their own act, not a filter moving underneath them).
+ *
+ *  The query: plain words match names; `agent:` and `project:` narrow, the same `key:value` shape
+ *  as the in-session `tool:`. An in-session scope prefix and `tool:` tokens mean nothing here and
+ *  are dropped rather than matched as text. */
+function globalRows(raw) {
+  const agentQ = takeTokens(raw, "agent");
+  const projectQ = takeTokens(agentQ.rest, "project");
+  const toolQ = takeTokens(projectQ.rest, "tool");
+  // A leading `uatobrew:` run belongs to the transcript box; here it is noise.
+  const scoped = parseScope(toolQ.rest.trim());
+  const text = (scoped && scoped.set ? toolQ.rest.trim().slice(scoped.len) : toolQ.rest).trim().toLowerCase();
+  const now = Date.now() / 1000;
+  // Why the sidebar is not showing a session right now, in the words of its own controls: "hidden"
+  // (the reader hid it, or its project) and the filter bucket the reader has unticked ("idle").
+  // Empty when the sidebar shows it. The row is listed either way, dimmed, with these words.
+  const concealed = (row, project) => {
+    const why = [];
+    if (!indexState.showHidden && (row.hidden || project.hidden)) why.push("hidden");
+    const buckets = sessionFilterBuckets(row, now);
+    if (bucketFilterActive() && !buckets.some(bucket => indexState.buckets.has(bucket))) why.push(FILTER_LABELS[buckets[0]].toLowerCase());
+    return why;
+  };
+  const ts = row => Number(row.activityTs) || 0;
   const rows = [];
-  for (const agent of groupedSessions()) { const firstAgentSession = agent.projects.flatMap(project => project.sessions)[0]; rows.push({ kind: "agent", label: agent.name, meta: `${agent.projects.length} projects`, sid: firstAgentSession?.id }); for (const project of agent.projects) { rows.push({ kind: "project", label: project.name, meta: agent.name, sid: project.sessions[0]?.id }); for (const session of project.sessions) rows.push({ kind: "session", label: session.name || session.id, meta: `${agent.name} · ${project.name}`, sid: session.id }); } }
-  if (query) recordState.records.forEach((record, index) => { if (plainText(record).toLowerCase().includes(query)) rows.push({ kind: "transcript", label: record.label || record.head?.summary || record.kind, meta: "current session", record: index, searchHit: true }); });
-  return rows;
+  for (const agent of groupedSessions()) {
+    const agentSessions = agent.projects.flatMap(project => project.sessions);
+    const newest = list => [...list].sort((a, b) => ts(b) - ts(a))[0];
+    const projectOf = new Map(agent.projects.flatMap(project => project.sessions.map(session => [session.id, project])));
+    const agentAsked = !agentQ.values.length || agentQ.values.some(v => agent.name.toLowerCase().includes(v) || agent.id.toLowerCase().includes(v));
+    // A `project:` query is about projects and what is in them, so the agent row is not an answer
+    // to it — listing it would put a row above the rows the reader narrowed to.
+    if (agentAsked && !projectQ.values.length) {
+      const top = newest(agentSessions);
+      if (top) rows.push({ kind: "agent", label: agent.name, meta: `${agent.projects.length} project${agent.projects.length === 1 ? "" : "s"}`, sid: top.id, ts: ts(top), why: concealed(top, projectOf.get(top.id)) });
+    }
+    for (const project of agent.projects) {
+      if (projectQ.values.length && !projectQ.values.some(v => project.name.toLowerCase().includes(v) || (project.path || "").toLowerCase().includes(v))) continue;
+      if (!agentAsked) continue;
+      // A project row lands on its OWN most recent session (owner, 2026-09-26): the project is the
+      // address, its newest session is where the reader means to be.
+      const top = newest(project.sessions);
+      if (top) rows.push({ kind: "project", label: project.name, meta: agent.name, sid: top.id, ts: ts(top), why: concealed(top, project) });
+      for (const session of project.sessions) {
+        rows.push({ kind: "session", label: session.name || session.id, meta: `${agent.name} · ${project.name}`, sid: session.id, ts: ts(session), why: concealed(session, project) });
+      }
+    }
+  }
+  const match = row => !text || `${row.label} ${row.meta}`.toLowerCase().includes(text);
+  // Most recently active first — the list opens on what the reader was just doing — and a row with
+  // no activity stamp sorts by name rather than by chance.
+  return rows.filter(match).sort((a, b) => b.ts - a.ts || a.label.localeCompare(b.label));
 }
 function renderGlobalSearch() {
-  const query = byId("searchInput").value.trim().toLowerCase();
-  const rows = globalRows(query).filter(row => (uiState.searchTab === "all" || row.kind === uiState.searchTab) && (!query || row.searchHit || `${row.label} ${row.meta}`.toLowerCase().includes(query))).slice(0, 80);
+  const query = byId("searchInput").value.trim();
+  const rows = globalRows(query).slice(0, 80);
   uiState.globalResults = rows; uiState.globalIndex = Math.min(uiState.globalIndex, Math.max(0, rows.length - 1));
-  byId("searchResults").innerHTML = `${uiState.searchTab === "transcript" ? '<div class="search-scope-note">Transcript search covers the current session only</div>' : ""}${rows.map((row, index) => `<button class="search-result ${index === uiState.globalIndex ? "active" : ""}" data-global-index="${index}"><span class="result-copy"><b>${escapeText(row.label)}</b><small>${escapeText(row.meta)}</small></span><span class="result-kind">${escapeText(row.kind)}</span></button>`).join("") || '<div class="no-results">No matches</div>'}`;
+  byId("searchResults").innerHTML = rows.map((row, index) => `<button class="search-result ${index === uiState.globalIndex ? "active" : ""}${row.why.length ? " search-result-stale" : ""}" data-global-index="${index}"${row.why.length ? ` title="The sidebar is not showing this (${escapeText(row.why.join(", "))}) — opening it shows it there again"` : ""}><span class="result-copy"><b>${escapeText(row.label)}</b><small>${escapeText(row.meta)}</small></span>${row.why.length ? `<span class="result-why">${escapeText(row.why.join(" · "))}</span>` : ""}<span class="result-kind">${escapeText(row.kind)}</span></button>`).join("") || '<div class="no-results">No matches</div>';
 }
 byId("searchBtn").onclick = openGlobalSearch; byId("sidebarMiniSearch").onclick = openGlobalSearch;
 byId("searchInput").oninput = () => { uiState.globalIndex = 0; renderGlobalSearch(); };
-byId("searchTabs").onclick = event => { const tab = event.target.closest("[data-search-tab]"); if (!tab) return; uiState.searchTab = tab.dataset.searchTab; byId("searchTabs").querySelectorAll("[data-search-tab]").forEach(item => item.setAttribute("aria-selected", String(item === tab))); renderGlobalSearch(); };
-byId("searchResults").onclick = event => { const item = event.target.closest("[data-global-index]"); if (!item) return; const row = uiState.globalResults[Number(item.dataset.globalIndex)]; byId("searchLayer").classList.remove("production-open"); if (row.sid) selectSession(row.sid, true); else if (row.record != null) viewport.jumpToRecord(row.record, "search"); };
+byId("searchResults").onclick = event => { const item = event.target.closest("[data-global-index]"); if (!item) return; const row = uiState.globalResults[Number(item.dataset.globalIndex)]; byId("searchLayer").classList.remove("production-open");
+  // A row the sidebar is not showing: opening it clears what hides it — the bucket filter to All
+  // (owner, 2026-09-26), and Include hidden for a hidden one — or the reader lands in a session
+  // the list beside them does not show.
+  if (row.why.includes("hidden")) { indexState.showHidden = true; renderTree(); }
+  if (row.why.some(why => why !== "hidden")) setBuckets(FILTER_BUCKETS);
+  if (row.sid) selectSession(row.sid, true); };
 byId("searchLayer").onclick = event => { if (event.target === byId("searchLayer")) byId("searchLayer").classList.remove("production-open"); };
 
 /** `shown` is what the CLICKED card was already displaying (#144). The card rendered from data

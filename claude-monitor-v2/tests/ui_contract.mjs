@@ -14,7 +14,7 @@ import { recordTextSize, LIVE_SEARCH_LIMIT, recordText, recordTextParts, parseSc
 import { fmtTime, fmtDur } from "../../claude-monitor/src/codex-ui/shared/time.js";
 import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/shared/parts.js";
 import { isInteraction, interactionCard, interactionHtml } from "../../claude-replay-html/src/html/shared/interaction.js";
-import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE, takeTools, toolMatches, writeTools, recordHasTool } from "../../claude-replay-html/src/html/shared/search.js";
+import { splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, MIN_NEEDLE, takeTools, takeTokens, toolMatches, writeTools, recordHasTool } from "../../claude-replay-html/src/html/shared/search.js";
 import { chainWalk, toolTree } from "../../claude-replay-html/src/html/shared/filter.js";
 import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, traceWanted } from "../../claude-replay-html/src/html/shared/virtual-window.js";
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
@@ -1605,7 +1605,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /data-scope-count="\$\{key\}"/, "the scope rows carry counts");
   assert.match(app, /function applyScopeFromMenu\(\) \{/, "the buttons rewrite the box's prefix");
   const search = readFileSync(new URL("../../claude-replay-html/src/html/shared/search.js", import.meta.url), "utf8");
-  assert.match(search, /^export \{ CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, takeTools, toolMatches, writeTools, recordHasTool, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc \};\s*$/m);
+  assert.match(search, /^export \{ CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, takeTools, takeTokens, toolMatches, writeTools, recordHasTool, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc \};\s*$/m);
   console.log("#101 scope cases passed");
 }
 
@@ -3019,4 +3019,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     "a session of nothing but MCP calls is still one family"
   );
   console.log("#293 tool-tree shape cases passed");
+}
+
+// #294 — ⌘K's qualifiers are the same `key:value` token shape as the in-session `tool:`, read by
+// the same module: one grammar for both boxes, so what a reader learns in one works in the other.
+{
+  const q = (raw, key) => takeTokens(raw, key);
+  assert.deepEqual(q("knack", "project"), { values: [], rest: "knack" }, "plain words are plain words");
+  assert.deepEqual(q("project:knack", "project"), { values: ["knack"], rest: "" }, "a qualifier alone");
+  assert.deepEqual(q("agent:codex project:knack notes", "project"), { values: ["knack"], rest: "agent:codex notes" },
+    "one key at a time — the caller peels each, and what is left is the text");
+  assert.deepEqual(q("PROJECT:Knack", "project"), { values: ["knack"], rest: "" },
+    "typed by hand, so case-insensitive on both halves");
+  assert.deepEqual(q("project:a project:a project:b", "project"), { values: ["a", "b"], rest: "" },
+    "repeats collapse, order kept");
+  assert.deepEqual(q("project:", "project"), { values: [], rest: "project:" },
+    "an empty value is not a token: a reader mid-type is not suddenly filtering by nothing");
+  assert.deepEqual(q("a project:x b", "project").rest, "a b", "the token's own space goes with it");
+  assert.deepEqual(q("a  b", "project").rest, "a  b", "…and the reader's own spacing does not");
+  console.log("#294 qualifier grammar cases passed");
 }

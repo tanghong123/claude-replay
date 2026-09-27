@@ -14430,3 +14430,229 @@ fn mcp_fixture(name: &str) -> Fixture {
         turns: 11,
     }
 }
+
+// ── scenario: ⌘K is a jump-to, ranked by recency (#294) ──────────────────────────────────────
+
+/// design/global-search.md §2 and §4, the owner's decisions of 2026-09-26. ⌘K used to be a name
+/// switcher plus a weaker copy of the top bar's search — a "Transcript" tab that covered only the
+/// session already open and said so in a note. It is a jump-to now: agents, projects and sessions,
+/// most recently active first, and a row the sidebar's own filter is hiding is still listed but
+/// DIMMED, with choosing it clearing that filter (the reader picked the row, so the clearing is
+/// their own act). `project:` narrows. The app shell only: the classic rail has no such dialog.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_command_k_is_a_jump_to_ranked_by_recency() {
+    let _serial = serial();
+    let base = base("jumpto-app");
+    let stores = Stores::new(&base);
+    // Two projects, so `project:` has something to choose between: one session busy a moment ago
+    // (the Active bucket, which the shell shows by default) and one from a past hour (Idle, which
+    // it does not) — the recency order and the dimming both follow from that.
+    let fresh = {
+        let mut t = long_session(4, Shape::default());
+        t += &user_at("question 5: the fresh one", &harness::rfc3339_secs_ago(90));
+        t += &assistant_at("answer fresh", &harness::rfc3339_secs_ago(60));
+        t
+    };
+    stores.claude_session("aaaa1111-0000-4000-8000-000000000294", &fresh);
+    // The index groups a session by the cwd its records RECORD, not by the slug directory, so the
+    // second session says it ran somewhere else — otherwise both land in one project and there is
+    // nothing for `project:` to choose between.
+    let old_proj = stores.root.join("claude").join("-elsewhere");
+    std::fs::create_dir_all(&old_proj).unwrap();
+    std::fs::write(
+        old_proj.join("bbbb2222-0000-4000-8000-000000000294.jsonl"),
+        long_session(4, Shape::default()).replace("\"cwd\":\"/r\"", "\"cwd\":\"/elsewhere\""),
+    )
+    .unwrap();
+
+    let m = Monitor::spawn(Kind::V2, 3044, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    m.pair(&tab);
+    m.open(&tab, "?ui=app");
+    // `Monitor::open` seeds EVERY bucket so an ordinary case can see its fixture (#202). This case
+    // is about the sidebar's filter actually filtering, so it puts the shell's own default back —
+    // Active recently + Blocked — and reloads, which is where the shell reads it.
+    eval(
+        &tab,
+        "(function(){ try { localStorage.setItem('am-prod-session-filter', JSON.stringify(['recent','blocked'])); } catch (e) {} return 'ok'; })()",
+    );
+    tab.navigate_to(&m.url("?ui=app")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "document.querySelectorAll('.tree-row, .session-row, [data-session-id]').length >= 1",
+        "the sidebar to list a session",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    settle();
+
+    // The dialog: no tabs at all (owner, 2026-09-27: "pointless" — qualifiers narrow instead), and
+    // a placeholder that says what the box does.
+    assert_eq!(
+        eval(
+            &tab,
+            "document.querySelectorAll('#searchTabs, [data-search-tab]').length"
+        ),
+        0,
+        "the dialog carries no tabs"
+    );
+    let placeholder = eval(&tab, "document.getElementById('searchInput').placeholder");
+    assert!(
+        placeholder.as_str().unwrap_or("").starts_with("Go to"),
+        "the placeholder says what it does: {placeholder}"
+    );
+
+    let open_k = "(function(){ document.dispatchEvent(new KeyboardEvent('keydown', {key: 'k', metaKey: true, bubbles: true, cancelable: true})); return document.getElementById('searchLayer').classList.contains('production-open') ? 'open' : 'shut'; })()";
+    assert_eq!(eval(&tab, open_k), "open", "⌘K opens the dialog");
+    settle();
+    let type_in = |q: &str| {
+        eval(
+            &tab,
+            &format!("(function(){{ var b = document.getElementById('searchInput'); b.value = {q:?}; b.dispatchEvent(new Event('input', {{bubbles: true}})); return 'typed'; }})()"),
+        );
+        settle();
+    };
+    let rows = "JSON.stringify([...document.querySelectorAll('#searchResults .search-result')].map(function (r) { var why = r.querySelector('.result-why'); return [r.querySelector('.result-kind').textContent, r.querySelector('b').textContent, r.classList.contains('search-result-stale'), why ? why.textContent : '']; }))";
+    let read4 = || -> Vec<(String, String, bool, String)> {
+        serde_json::from_str(eval(&tab, rows).as_str().unwrap_or("[]")).unwrap_or_default()
+    };
+    let read = || -> Vec<(String, String, bool)> {
+        read4().into_iter().map(|(k, l, s, _)| (k, l, s)).collect()
+    };
+
+    type_in("");
+    let all = read();
+    let sessions: Vec<_> = all
+        .iter()
+        .filter(|(kind, _, _)| kind == "session")
+        .collect();
+    assert!(
+        sessions.len() >= 2,
+        "both sessions are listed, whatever the sidebar is filtering: {all:?}"
+    );
+    let fresh_at = sessions.iter().position(|(_, _, stale)| !*stale);
+    let stale_at = sessions.iter().position(|(_, _, stale)| *stale);
+    assert!(
+        matches!((fresh_at, stale_at), (Some(f), Some(s)) if f < s),
+        "the recently active session ranks first, and the one the sidebar hides is DIMMED and \
+         below it: {sessions:?}"
+    );
+    // A dimmed row says WHY, in the sidebar's own words, and an undimmed one says nothing.
+    let whys: Vec<(bool, String)> = read4()
+        .into_iter()
+        .filter(|(kind, ..)| kind == "session")
+        .map(|(_, _, stale, why)| (stale, why))
+        .collect();
+    assert!(
+        whys.iter().all(|(stale, why)| if *stale {
+            why == "idle"
+        } else {
+            why.is_empty()
+        }),
+        "the filtered-out session reads `idle`, the shown one reads nothing: {whys:?}"
+    );
+
+    // What the projects are actually called here, before narrowing by one.
+    type_in("");
+    let projects: Vec<_> = read()
+        .into_iter()
+        .filter(|(kind, _, _)| kind == "project")
+        .collect();
+    assert!(projects.len() >= 2, "two projects are listed: {projects:?}");
+    let pick = projects[0].1.clone();
+    // `project:` narrows to one project's rows.
+    type_in(&format!("project:{pick}"));
+    let narrowed = read();
+    assert!(
+        !narrowed.is_empty()
+            && narrowed
+                .iter()
+                .any(|(kind, label, _)| kind == "project" && *label == pick),
+        "project: keeps that project: {narrowed:?}"
+    );
+    assert!(
+        !narrowed.iter().any(|(kind, _, _)| kind == "agent"),
+        "…and an agent row is not an answer to a question about projects: {narrowed:?}"
+    );
+    assert!(
+        narrowed.len() < all.len(),
+        "…and it narrowed: {} of {}",
+        narrowed.len(),
+        all.len()
+    );
+    // A scope prefix belongs to the transcript box; here it is dropped, not matched as text.
+    type_in("ub:");
+    assert!(
+        !read().is_empty(),
+        "an in-session scope prefix is ignored here rather than searched for"
+    );
+
+    // A session the reader HID reads `hidden`, and choosing it turns Include hidden on.
+    eval(
+        &tab,
+        "(function(){ document.getElementById('searchLayer').classList.remove('production-open'); var b = document.querySelector('.tree-row.session[data-session=\"aaaa1111-0000-4000-8000-000000000294\"] [data-ignore-op]'); if (b) b.click(); return b ? 'hid' : 'none'; })()",
+    );
+    harness::until(
+        &tab,
+        "!document.querySelector('.tree-row.session[data-session=\"aaaa1111-0000-4000-8000-000000000294\"]')",
+        "the hidden session to leave the sidebar",
+        Duration::from_secs(10),
+        "document.querySelector('.sidebar') ? document.querySelector('.sidebar').innerText.slice(0, 300) : ''",
+    );
+    assert_eq!(eval(&tab, open_k), "open", "⌘K opens the dialog again");
+    settle();
+    type_in("");
+    let hidden_rows = read4();
+    assert!(
+        hidden_rows
+            .iter()
+            .any(|(kind, _, stale, why)| kind == "session" && *stale && why == "hidden"),
+        "a session the reader hid is dimmed and says `hidden`: {hidden_rows:?}"
+    );
+    let hidden_index = hidden_rows
+        .iter()
+        .position(|(kind, _, _, why)| kind == "session" && why == "hidden")
+        .unwrap();
+    eval(
+        &tab,
+        &format!("document.querySelector('#searchResults [data-global-index=\"{hidden_index}\"]').click(); 'ok'"),
+    );
+    settle();
+    assert_eq!(
+        eval(&tab, "document.querySelector('.tree-row.session[data-session=\"aaaa1111-0000-4000-8000-000000000294\"]') ? 'shown' : 'absent'"),
+        "shown",
+        "choosing a hidden session turns Include hidden on, so the sidebar shows it"
+    );
+
+    // Choosing the dimmed row clears the sidebar's filter, so the reader is not dropped into a
+    // session the list beside them does not show.
+    assert_eq!(eval(&tab, open_k), "open", "⌘K opens the dialog once more");
+    settle();
+    type_in("");
+    let stale_index = read()
+        .iter()
+        .position(|(kind, _, stale)| kind == "session" && *stale)
+        .expect("a dimmed row to choose");
+    eval(
+        &tab,
+        &format!("document.querySelector('#searchResults [data-global-index=\"{stale_index}\"]').click(); 'ok'"),
+    );
+    settle();
+    settle();
+    let buckets = eval(
+        &tab,
+        "(function(){ try { return localStorage.getItem('am-prod-session-filter') || '[]'; } catch (e) { return '[]'; } })()",
+    );
+    let set: Vec<String> =
+        serde_json::from_str(buckets.as_str().unwrap_or("[]")).unwrap_or_default();
+    assert!(
+        ["recent", "blocked", "idle"]
+            .iter()
+            .all(|b| set.iter().any(|s| s == b)),
+        "choosing a row the sidebar was hiding shows everything again: {buckets}"
+    );
+    drop(m);
+}

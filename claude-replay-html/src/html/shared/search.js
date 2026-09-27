@@ -213,6 +213,27 @@ function splitQuery(raw, minLen = MIN_NEEDLE) {
  *  today either. */
 const TOOL_TOKEN = /(?:^|\s)tool:([^\s]+)/gi;
 
+/** Pull every `<key>:<value>` token for `key` out of `raw` (#294), the same token shape as
+ *  `tool:` — the one grammar both boxes read. Returns `{values, rest}`: the values in the order
+ *  typed, lowercased and deduplicated, and what is left of the box for a plain-text match. An
+ *  empty value (`project:`) is not a token and stays in the text, so a reader mid-type is not
+ *  suddenly searching nothing; the token's own leading space goes with it. */
+function takeTokens(raw, key) {
+  const values = [];
+  const seen = new Set();
+  const rx = new RegExp(`(?:^|\\s)${key}:([^\\s]+)`, "gi");
+  const rest = String(raw ?? "").replace(rx, (whole, value) => {
+    const v = value.toLowerCase();
+    if (!v.length) return whole;
+    if (!seen.has(v)) {
+      seen.add(v);
+      values.push(v);
+    }
+    return "";
+  });
+  return { values, rest };
+}
+
 /** Pull every `tool:` token out of `raw`, newest rules in `splitQuery`. Returns an array of
  *  `{name, prefix}` — `prefix` true for the `*` form, with the star removed — carrying `rest`:
  *  what is left of the box for the text search. Duplicates collapse; an empty value (`tool:`)
@@ -308,4 +329,4 @@ function writePrefix(raw, letters) {
   return (letters.length ? letters.join("") + ":" : "") + rest;
 }
 
-export { CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, takeTools, toolMatches, writeTools, recordHasTool, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };
+export { CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, takeTools, takeTokens, toolMatches, writeTools, recordHasTool, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };

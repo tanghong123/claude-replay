@@ -84,7 +84,7 @@ export const uiState = {
   // The keys are the pane's own group keys, so the filter and the grouping cannot drift. Running
   // and pending by default, which is exactly what the one box used to mean.
   taskGroupsShown: new Set(json("am-prod-task-groups", ["in_progress", "pending"])),
-  searchTab: "all", searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), searchWhole: false, toolFilters: new Set(),
+  searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), searchWhole: false, toolFilters: new Set(),
   // #293: which branches of the tool tree are expanded (`mcp`, `mcp/<server>`). Survives the
   // rebuilds a live session forces, as the classic page's `mcpOpen` does.
   toolTreeOpen: new Set(),

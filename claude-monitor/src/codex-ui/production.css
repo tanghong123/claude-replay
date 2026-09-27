@@ -899,3 +899,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    the scope rows' ticks. */
 .header-searchbox .find-whole{font:9.5px/1 var(--mono);letter-spacing:.02em;padding:0 5px;color:var(--faint)}
 .header-searchbox .find-whole.on{color:var(--primary);background:color-mix(in srgb,var(--primary) 12%,transparent)}
+
+/* #294 — a ⌘K row the sidebar is not showing (hidden, or outside the session filter): still
+   listed (the filter does not narrow this list), dimmed, and saying why in the sidebar's own words.
+   Choosing it clears what hides it. */
+.search-result-stale .result-copy b,.search-result-stale .result-copy small{opacity:.55}
+.search-result-stale .result-kind{opacity:.5}
+.result-why{flex:none;margin-left:auto;color:var(--faint);font:10px var(--mono);white-space:nowrap}
