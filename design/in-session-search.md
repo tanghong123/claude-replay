@@ -1,6 +1,7 @@
 # In-session search: one query, one facet tree
 
-> **Status: DECIDED (owner, 2026-09-26), not built.** Task #137. §2 is the owner's decisions; the
+> **Status: DECIDED (owner, 2026-09-26); §1–7 BUILT (v1.314.0–v1.316.0); §8 DECIDED 2026-09-27, not
+> built.** Task #137. §2 is the owner's decisions; the
 > rest — the `tool:` token, the count wording, "a tool implies its class", the sort order — works
 > them out and is open to amendment until the implementation starts. The implementation is filed
 > as its own tasks (see §7). Related: `design/global-search.md` (#138), the ⌘K box that shares this
@@ -132,3 +133,70 @@ match shows, never in what matches.
 
 Each with a scenario on both pages (`claude-replay-browser-tests/tests/scenarios.rs`), confirmed
 red on the old code, and unit cases for the parser and the combination table in the node contract.
+
+## 8. Filters as tokens: one shape for tools and scopes (owner, 2026-09-27)
+
+### 8.1 Why
+
+§3 left the two filters with two different treatments, and the owner named that as the problem:
+"both tools and scopes are filters but somehow their treatment is very different". The scope is a
+POSITIONAL, SILENT prefix — a run of `uatobrew` letters that counts only at the very start and
+parses without a word, so ordinary text beginning `route:`, `about:`, `bar:` or `tab:` is quietly
+read as a scope (measured on the shared parser: `route: add` searches "add" in five classes). The
+tool filter is a `key:value` token allowed anywhere. `tool:Read ub:x` searches the literal `ub:x`,
+because the prefix is not at the start.
+
+### 8.2 The model
+
+Both filters become the same thing: a **named token**, anywhere in the box, completed from a list
+and then frozen.
+
+- **Keys.** `tools:` (and `tool:`, its synonym) and `scope:`. A key is recognised only at the start
+  of the box or after a space, so `about:blank` is text — `about` is not a key.
+- **Completion.** Typing a key opens a drop-down under the box listing what can follow it, with
+  counts for the current text:
+  - `tools:` — every tool in the session, each with a **letter**. Letters are case-sensitive (52
+    slots) and assigned per session: a tool gets its initial when free (Bash `B`, AskUserQuestion
+    `A`, advisor `a`), the most-used tools claiming first. MCP tools take one letter per SERVER —
+    the family tree the popover already draws — and digits follow the letters. Typing letters
+    ticks rows: `tools:BaA` is Bash, advisor and AskUserQuestion. The drop-down shows the
+    assignment, so nothing is memorised.
+  - `scope:` — the seven classes and `w`, with today's letters (`u a t o b r e`, `w` whole words):
+    `scope:ub`.
+- **Commit.** A SPACE closes the drop-down and freezes the token into a **chip**: deletable, not
+  editable (Backspace at its edge removes it whole). Letters differing between sessions is fine
+  (owner, 2026-09-27); a chip still stores tool NAMES, not letters, which costs nothing and lets it
+  survive a session switch and a pasted query mean the same.
+- **Where chips sit.** At the left of the box, whatever position the token was typed in: every
+  filter ANDs with the text and with the others, so position carries no meaning, and chips beside a
+  plain input are sturdier than chips inline in editable text.
+- **Escape (owner).** A leading colon escapes ONE token, up to the next space: `:tools:` searches
+  the literal text `tools:`, and the rest of the box parses normally. This replaces §3's rule, where
+  `:` escaped the whole query.
+- **Compatibility.** The bare `ub:` prefix is still accepted (the TUI's `/` shares the parser, and
+  hands know it); in the app shell a space turns it into the chip `scope:ub`, so it is never silent.
+  `tool:Name` keeps working and becomes a chip the same way.
+
+### 8.3 Defaults taken, open to amendment
+
+The owner answered the escape rule (per token, a space ends it) and accepted per-session letters;
+these two were proposed and not yet confirmed:
+
+- **The popover stays**, mirrored both ways: ticking a row adds or removes its chip, and a chip
+  ticks its row. This reconciles §5's "a filter needs more direct exposure than a token in a text
+  field" — the popover and its badge remain the direct exposure; the chip is the typed form made
+  visible.
+- **Reach.** The app shell gets the drop-downs and chips. The classic page (the reference) and the
+  TUI's `/` get the typed grammar only — `tools:Bash,Read` by NAME (letters need the drop-down that
+  shows them) and `scope:ub` — and keep the bare `ub:` prefix.
+
+### 8.4 Implementation (to be filed)
+
+1. **The shared grammar** (`shared/search.js`, used by both pages and mirrored by the TUI):
+   `tools:`/`tool:` and `scope:` tokens anywhere, names comma-separated, the per-token `:` escape,
+   the bare prefix still accepted; the TUI parser follows. Node contract cases for every row of
+   §8.2 and the §8.1 collisions.
+2. **The app shell's token field**: the key-triggered drop-downs, the per-session letter
+   assignment, space-to-chip, Backspace-deletes-chip, chips mirrored with the popover and its
+   badge. Browser scenarios, red on the old code, at a narrow window too.
+
