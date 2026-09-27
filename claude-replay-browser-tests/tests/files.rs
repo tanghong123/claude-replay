@@ -73,7 +73,7 @@ const PANE: &str = "(function(){ var b = document.getElementById('previewBody');
 
 /// The pane head's reveal control, as `shown` (visible AND the thing a click at its centre hits —
 /// a rect alone is not visibility), `hidden`, or `covered`.
-const HEAD_REVEAL: &str = "(function(){ var b = document.querySelector('#previewHead .preview-reveal'); if (!b || b.hidden || !b.offsetWidth) return 'hidden'; var r = b.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return hit && b.contains(hit) ? 'shown' : 'covered'; })()";
+const HEAD_REVEAL: &str = "(function(){ var b = document.querySelector('#previewHead .preview-reveal'); if (!b || b.hidden || !b.offsetWidth) return 'hidden'; var r = b.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return hit && b.contains(hit) ? 'shown' : 'covered by ' + (hit ? hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + (hit.className && hit.className.baseVal === undefined ? '.' + String(hit.className).trim().split(/\\s+/).join('.') : '') : 'nothing'); })()";
 
 fn open_shell(m: &Monitor, tab: &headless_chrome::Tab, paired: bool) {
     if paired {
@@ -271,7 +271,16 @@ fn the_app_shell_preview_offers_the_file_manager_when_it_cannot_read_the_file() 
     .unwrap_or("")
     .to_string();
     assert!(said.contains("requires pairing"), "says why: {said}");
-    assert_eq!(eval(&tab, HEAD_REVEAL).as_str(), Some("shown"));
+    // A wait, as the other files cases use (#295): the pane may still be opening when the refusal
+    // lands, and one hit test then reads whatever the pane has not yet slid clear of. A cover that
+    // lasts is still a failure, and the probe names what covers it.
+    until(
+        &tab,
+        &format!("{HEAD_REVEAL} === 'shown'"),
+        "the file manager offered in the pane's head beside the refusal",
+        Duration::from_secs(5),
+        HEAD_REVEAL,
+    );
     assert!(
         reveals(&tab).is_empty(),
         "nothing revealed until the reader asks"
