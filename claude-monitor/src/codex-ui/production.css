@@ -922,8 +922,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    in the sidebar row too. */
 .session-heading>.crumb{min-width:0;flex-shrink:8;overflow:hidden;text-overflow:ellipsis}
 .session-heading>.status-chip{min-width:0;flex-shrink:4}
-@media(min-width:1181px){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)){width:min(460px,36vw)}}
-@media(min-width:901px) and (max-width:1180px){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)){width:min(400px,40vw)}}
+@media(min-width:1181px){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)),.header-searchbox:has(.search-chips.has-chips){width:min(460px,36vw)}}
+/* #303 widened this: the box may hold chips now (`scope:o`, `tool:Read`), and at 1100px a 400px box
+   left the text 34px — "needle" needs 43. */
+@media(min-width:901px) and (max-width:1180px){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)),.header-searchbox:has(.search-chips.has-chips){width:min(460px,42vw)}}
 /* Below 900px the bar has no room for both (about 520px beside the sidebar), and a box sharing it
    left the title 10px wide: there the box takes the heading's place while the reader TYPES, and at
    rest — a query held, the reader clicked away — gives it back at its resting width. There the
@@ -954,6 +956,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    line, never wider than a third of the box; its value ellipsises, its full meaning is its title. */
 .search-chips{display:none;flex:0 1 auto;min-width:0;max-width:34%;gap:4px;align-items:center;overflow:hidden}
 .search-chips.has-chips{display:flex}
+/* Below 900px a focused box with chips has no room for its count as well: 360px less the chips, the
+   steps and the filter left the text 7px. The count steps aside while the reader types there. */
+@media(min-width:701px) and (max-width:900px){.header-searchbox:focus-within:has(.search-chips.has-chips) .find-count{display:none}}
 .search-chip{display:inline-flex;align-items:center;min-width:0;height:22px;padding:0 2px 0 7px;border-radius:6px;background:color-mix(in srgb,var(--primary) 10%,var(--panel));color:var(--ink);font:10.5px/1 var(--mono);white-space:nowrap}
 .search-chip-key{color:var(--primary);flex:none}
 .search-chip-value{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:2px}

@@ -3661,7 +3661,7 @@ fn scenario_every_hit_marked_and_text_haystack(
             "document.querySelectorAll('#stream mark.hl.cur').length",
         ),
         Surface::AppShell => (
-            "(function(q){ var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(q){ document.querySelectorAll('#searchChips [data-chip-remove]').forEach(function (c) { c.click(); }); var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
             "(function(){ document.getElementById('findNext').click(); return 'next'; })()",
             "document.querySelectorAll('.virtual-window mark.search-mark').length",
             "document.querySelectorAll('.virtual-window mark.search-mark.current').length",
@@ -4278,7 +4278,7 @@ fn scenario_hit_stepping_shows_the_term_and_reenters(
             "(function(){ var m = document.querySelector('#stream mark.hl.cur'); if (!m) return 'no current'; var r = m.getBoundingClientRect(); var blk = m.closest('.blk'); return (r.top >= 0 && r.bottom <= innerHeight ? 'inview' : 'offscreen') + ':' + (blk ? (blk.classList.contains('uturn') ? 'prompt' : blk.dataset.kind || blk.className.split(' ')[0]) : '?'); })()",
         ),
         Surface::AppShell => (
-            "(function(q){ var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(q){ document.querySelectorAll('#searchChips [data-chip-remove]').forEach(function (c) { c.click(); }); var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
             "(function(){ document.getElementById('findNext').click(); return 'next'; })()",
             "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); if (!m) return 'no current'; var r = m.getBoundingClientRect(); var s = document.querySelector('.transcript').getBoundingClientRect(); var turn = m.closest('.turn'); return (r.top >= s.top && r.bottom <= s.bottom ? 'inview' : 'offscreen') + ':' + (turn ? (turn.classList.contains('user') ? 'prompt' : turn.dataset.kind || turn.className.split(' ')[0]) : '?'); })()",
         ),
@@ -4415,7 +4415,7 @@ fn scenario_scope_edges_count_mark_and_reenter(
             "(function(){ var m = document.querySelector('#stream mark.hl.cur'); if (!m) return -1; var blk = m.closest('.blk'); return blk ? Number(blk.dataset.idx) : -1; })()",
         ),
         Surface::AppShell => (
-            "(function(q){ var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(q){ document.querySelectorAll('#searchChips [data-chip-remove]').forEach(function (c) { c.click(); }); var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
             "(function(){ var e = document.getElementById('transcriptSearchCount'); return e ? e.textContent.trim() : 'none'; })()",
             "(function(){ document.getElementById('findNext').click(); return 'next'; })()",
             "document.querySelectorAll('.virtual-window [data-record-kind=\"edit\"] mark.search-mark').length",
@@ -5790,7 +5790,7 @@ fn scenario_large_session_searches_on_enter(
             "document.querySelectorAll('#stream mark.hl').length",
         ),
         Surface::AppShell => (
-            "(function(q){ var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            "(function(q){ document.querySelectorAll('#searchChips [data-chip-remove]').forEach(function (c) { c.click(); }); var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
             "(function(){ var i = document.getElementById('transcriptSearchInput'); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return 'enter'; })()",
             "document.getElementById('transcriptSearchCount').textContent.trim()",
             "document.querySelectorAll('.virtual-window mark.search-mark').length",
@@ -13517,17 +13517,19 @@ fn scenario_a_restored_file_names_itself_and_stays_in_its_box() {
         // anything inside it stick out of it.
         let js = match surface {
             Surface::Classic => "(function(){ var rows = [...document.querySelectorAll('.amark')]; \
+                 function drawn(e, r){ var b = e.getBoundingClientRect(); var left = b.left, right = b.right; for (var p = e.parentElement; p && p !== r; p = p.parentElement) { if (getComputedStyle(p).overflowX !== 'visible') { var q = p.getBoundingClientRect(); left = Math.max(left, q.left); right = Math.min(right, q.right); } } return { left: left, right: right, width: Math.max(0, right - left) }; } \
                  return JSON.stringify({ n: rows.length, rows: rows.map(function(r){ \
                    var rb = r.getBoundingClientRect(); \
-                   var out = [...r.querySelectorAll('*')].filter(function(e){ var b = e.getBoundingClientRect(); \
+                   var out = [...r.querySelectorAll('*')].filter(function(e){ var b = drawn(e, r); \
                      return b.width > 0 && (b.right > rb.right + 1 || b.left < rb.left - 1); }).length; \
                    var k = r.querySelector('.akind'), s = r.querySelector('.asize'); \
                    return { kind: k ? k.textContent.trim() : '', size: s ? s.textContent.trim() : '', \
                      text: r.textContent.trim(), outside: out }; }) }); })()",
             Surface::AppShell => "(function(){ var rows = [...document.querySelectorAll('[data-record-kind=\"attachment\"]')]; \
+                 function drawn(e, r){ var b = e.getBoundingClientRect(); var left = b.left, right = b.right; for (var p = e.parentElement; p && p !== r; p = p.parentElement) { if (getComputedStyle(p).overflowX !== 'visible') { var q = p.getBoundingClientRect(); left = Math.max(left, q.left); right = Math.min(right, q.right); } } return { left: left, right: right, width: Math.max(0, right - left) }; } \
                  return JSON.stringify({ n: rows.length, rows: rows.map(function(r){ \
                    var rb = r.getBoundingClientRect(); \
-                   var out = [...r.querySelectorAll('*')].filter(function(e){ var b = e.getBoundingClientRect(); \
+                   var out = [...r.querySelectorAll('*')].filter(function(e){ var b = drawn(e, r); \
                      return b.width > 0 && (b.right > rb.right + 1 || b.left < rb.left - 1); }).length; \
                    var k = r.querySelector('.renderer-title'), s = r.querySelector('.renderer-state'); \
                    return { kind: k ? k.textContent.trim() : '', size: s ? s.textContent.trim() : '', \
