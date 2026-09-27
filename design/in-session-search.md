@@ -178,13 +178,14 @@ and then frozen.
 
 ### 8.3 Defaults taken, open to amendment
 
-The owner answered the escape rule (per token, a space ends it) and accepted per-session letters;
-these two were proposed and not yet confirmed:
+The owner answered the escape rule (per token, a space ends it), accepted per-session letters, and
+confirmed the reach (2026-09-27: "just do it in app shell, and accept your recommendation for TUI",
+"classic just do typed grammar"). The popover mirror is the one default not yet confirmed:
 
 - **The popover stays**, mirrored both ways: ticking a row adds or removes its chip, and a chip
   ticks its row. (Chips here are the owner's own proposal; the earlier "no chips" decision was
   about the left bar, see §5's correction.)
-- **Reach.** The app shell gets the drop-downs and chips. The classic page (the reference) and the
+- **Reach (DECIDED, owner).** The app shell gets the drop-downs and chips. The classic page (the reference) and the
   TUI's `/` get the typed grammar only — `tools:Bash,Read` by NAME (letters need the drop-down that
   shows them) and `scope:ub` — and keep the bare `ub:` prefix.
 
