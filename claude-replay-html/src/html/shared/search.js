@@ -186,7 +186,7 @@ function scopeSetOf(run) {
   return activeLetters(set).length ? set : null;
 }
 
-/** A `tools:` value → `[{name, prefix}]`: comma-separated names, a trailing `*` for a family. */
+/** A `tool:` value → `[{name, prefix}]`: comma-separated names, a trailing `*` for a family. */
 function toolsOf(value) {
   const out = [];
   for (const piece of String(value).split(",")) {
@@ -204,7 +204,7 @@ const BARE_SCOPE = /^([uatobrew+]{1,15}):/i;
  *  SCOPE facet or a TOOLS facet, with its offsets in `raw`, so the readers (`splitQuery`) and the
  *  writers (`writePrefix`, `writeTools`) share one reading and a writer can replace facets without
  *  touching a character of the reader's own text.
- *  - `tools:A,B` (`tool:` too) and `scope:ub` are facets ANYWHERE — at the start or after a space,
+ *  - `tool:A,B` (`tools:` too) and `scope:ub` are facets ANYWHERE — at the start or after a space,
  *    so `about:blank` is text: `about` is not a key. An empty or invalid value is text (a reader
  *    mid-type is not suddenly searching nothing; `scope:xyz` is not a scope).
  *  - A leading `:` escapes ONE token, up to the next space (owner, 2026-09-27): `:tools:` is the
@@ -372,13 +372,13 @@ function toolMatches(tool, tools) {
   return tools.some(t => (t.prefix ? lc.startsWith(t.name.toLowerCase()) : lc === t.name.toLowerCase()));
 }
 
-/** The `tools:` token for a set of names, as the box would hold them — what a menu writes when
+/** The `tool:` token for a set of names, as the box would hold them — what a menu writes when
  *  the reader ticks rows (#292: the box is the truth, so a click and a typed token are one
  *  thing). Every tools facet already in the box, wherever it sat, is replaced by ONE comma-joined
- *  `tools:A,B` token at the front (§8). A name ending in `*` is passed through as the family form. */
+ *  `tool:A,B` token at the front (§8; owner: `tool:`, the singular, is the written form). A name ending in `*` is passed through as the family form. */
 function writeTools(raw, names) {
   const rest = withoutSpans(raw, querySpans(raw), ["tools"]);
-  const token = (names || []).length ? "tools:" + names.join(",") : "";
+  const token = (names || []).length ? "tool:" + names.join(",") : "";
   return [token, rest].filter(Boolean).join(" ");
 }
 

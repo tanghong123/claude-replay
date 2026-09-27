@@ -1616,8 +1616,8 @@ wholeWords.textContent = "ab|";
 byId("filterTranscriptBtn").insertAdjacentElement("beforebegin", wholeWords);
 
 // ---- The search box's tokens (#303, design/in-session-search.md §8) ------------------------------
-// `tools:` and `scope:` are named facets typed anywhere in the box. Typing one opens a drop-down of
-// what can follow it — each tool with a per-session LETTER (`tools:BaA`), each scope class with its
+// `tool:` and `scope:` are named facets typed anywhere in the box (`tools:` is read too). Typing one opens a drop-down of
+// what can follow it — each tool with a per-session LETTER (`tool:BaA`), each scope class with its
 // letter — and a SPACE freezes the token into a chip at the box's left: deletable (its ×, or
 // Backspace at the start of the text), not editable. A chip is the token it was, so `updateSearch`
 // parses chips and text together (`boxQuery`); the filter popover sets the chips directly, and a
@@ -1636,7 +1636,7 @@ const SCOPE_ROWS = [["u", "User messages"], ["a", "Agent replies"], ["t", "Think
 function chipTokens() {
   const out = [];
   if (uiState.chips.scope) out.push(`scope:${uiState.chips.scope}`);
-  if (uiState.chips.tools.length) out.push(`tools:${uiState.chips.tools.join(",")}`);
+  if (uiState.chips.tools.length) out.push(`tool:${uiState.chips.tools.join(",")}`);
   return out;
 }
 /** What `updateSearch` parses: the chips, then the typed text. */
@@ -1671,7 +1671,7 @@ function toolLetters() {
   }
   return out;
 }
-/** A typed `tools:` value → the names it means: the NAMES when every comma-separated part names a
+/** A typed `tool:` value → the names it means: the NAMES when every comma-separated part names a
  *  tool of this session (or a family), else the LETTERS when every character is one, else the value
  *  as names — the shared grammar's own reading. */
 function resolveTools(value) {
@@ -1688,7 +1688,7 @@ function renderChips() {
   if (!searchChips) return;
   const scope = uiState.chips.scope, tools = uiState.chips.tools;
   const label = key => key.endsWith("*") ? key.replace(/^mcp__|__\*$/g, "") + "/*" : key;
-  const chip = (kind, text, title) => `<span class="search-chip" data-chip="${kind}" title="${escapeText(title)}"><span class="search-chip-key">${kind}:</span><span class="search-chip-value">${escapeText(text)}</span><button class="search-chip-remove" type="button" data-chip-remove="${kind}" aria-label="Remove the ${kind} filter">×</button></span>`;
+  const chip = (kind, text, title) => `<span class="search-chip" data-chip="${kind}" title="${escapeText(title)}"><span class="search-chip-key">${kind === "tools" ? "tool" : kind}:</span><span class="search-chip-value">${escapeText(text)}</span><button class="search-chip-remove" type="button" data-chip-remove="${kind}" aria-label="Remove the ${kind} filter">×</button></span>`;
   searchChips.innerHTML = (scope ? chip("scope", scope, SCOPE_ROWS.filter(([k]) => scope.includes(k)).map(([, l]) => l).join(", ")) : "")
     + (tools.length ? chip("tools", tools.map(label).join(", "), tools.join(", ")) : "");
   searchChips.classList.toggle("has-chips", !!(scope || tools.length));

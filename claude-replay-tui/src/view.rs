@@ -2241,8 +2241,8 @@ fn render_help(f: &mut Frame, area: Rect, can_go_back: bool, can_open_picker: bo
             "scope: you/agent/think/tools/bash/reads/edits · w=whole word",
         ),
         (
-            "/tools:Bash,Read x",
-            "only those calls · scope:ub anywhere · :tools: is literal",
+            "/tool:Bash,Read x",
+            "only those calls · scope:ub anywhere · :tool: is literal",
         ),
         ("t", "task/todo panel (session task queue)"),
         (
@@ -2506,7 +2506,7 @@ impl SearchScope {
     }
 }
 
-/// A `tools:` value: a tool's display name (the name the pages match, so an Edit is `Update`), or
+/// A `tool:` value: a tool's display name (the name the pages match, so an Edit is `Update`), or
 /// a family ending in `*` (`mcp__github__*`). Case-insensitive, as it is typed by hand.
 #[derive(Clone, Debug, PartialEq)]
 struct ToolPat {
@@ -2621,7 +2621,7 @@ fn union(a: SearchScope, b: SearchScope) -> SearchScope {
 }
 
 /// Parse a `/` query (design/in-session-search.md §8), the same reading as the pages:
-/// - `tools:A,B` (`tool:` too) and `scope:ub` are facets ANYWHERE — a whitespace-separated token
+/// - `tool:A,B` (`tools:` too) and `scope:ub` are facets ANYWHERE — a whitespace-separated token
 ///   whose key is exactly that; `about:blank` is text, `about` being no key. An empty or invalid
 ///   value is text.
 /// - A leading `:` escapes ONE token, up to the next space: `:tools:` is the literal `tools:`.

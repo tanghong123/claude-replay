@@ -5649,11 +5649,13 @@ fn scenario_scope_counts_prefix_and_gating(
             "(function(){ var q = document.getElementById('qscope'); if (q) q.click(); return 'ok'; })()",
         ),
         Surface::AppShell => (
-            "(function(q){ var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
+            // #303: a fresh query starts from a box with no chips — a chip outlives the text it came from.
+            "(function(q){ document.querySelectorAll('#searchChips [data-chip-remove]').forEach(function (b) { b.click(); }); var i = document.getElementById('transcriptSearchInput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })",
             "(function(k){ var e = document.querySelector('[data-scope-count=\"' + k + '\"]'); return e ? e.textContent.trim() : 'none'; })",
             "(function(){ document.getElementById('findNext').click(); return 'next'; })()",
             "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); if (!m) return 'no current'; var t = m.closest('.turn'); return t && t.classList.contains('user') ? 'prompt' : 'other'; })()",
-            "document.getElementById('transcriptSearchInput').value",
+            // The box as a whole: its chips as the tokens they were, then its text (#303).
+            "(function(){ var c = [...document.querySelectorAll('#searchChips [data-chip]')].map(function (e) { return e.querySelector('.search-chip-key').textContent + e.querySelector('.search-chip-value').textContent; }); c.push(document.getElementById('transcriptSearchInput').value); return c.join(' ').trim(); })()",
             "(function(k){ var b = document.querySelector('.scope-option[data-scope=\"' + k + '\"]'); return b ? b.classList.contains('on') : null; })",
             "(function(k){ var b = document.querySelector('.scope-option[data-scope=\"' + k + '\"]'); if (!b) return 'none'; b.click(); return 'clicked'; })",
             "(function(){ var b = document.getElementById('filterTranscriptBtn'); if (b && !document.getElementById('navigatorOptions').classList.contains('open')) b.click(); return 'ok'; })()",
@@ -14001,7 +14003,7 @@ fn scenario_a_query_and_a_tool_facet_narrow_each_other(
             eval(
                 tab,
                 &format!(
-                    "(function(){{ var b = {box_sel}; b.value = {value:?}; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true}})); return 'typed'; }})()"
+                    "(function(){{ document.querySelectorAll('#searchChips [data-chip-remove]').forEach(function (c) {{ c.click(); }}); var b = {box_sel}; b.value = {value:?}; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true}})); return 'typed'; }})()"
                 ),
             ),
             "typed",
@@ -15219,10 +15221,16 @@ fn scenario_mcp_calls_are_one_family_in_the_filter(
         }
         // The app shell's is a search by kind (#133), typed into the box as a family facet (#292).
         Surface::AppShell => {
+            // #303: the row sets the box's tool CHIP (the family), and the typed text stays empty.
+            assert_eq!(
+                eval(tab, "(function(){ var c = document.querySelector('#searchChips [data-chip=\"tools\"]'); return c ? c.title + ' | ' + c.querySelector('.search-chip-key').textContent : 'no chip'; })()").as_str(),
+                Some("mcp__github__* | tool:"),
+                "AppShell: the row made a `tool:` chip for the family"
+            );
             assert_eq!(
                 box_value.as_str(),
-                Some("tools:mcp__github__*"),
-                "AppShell: the row wrote the family facet into the box (the `tools:` token, #302)"
+                Some(""),
+                "AppShell: …and wrote no text into the box"
             );
             let said = eval(
                 tab,

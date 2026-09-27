@@ -2953,8 +2953,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(toolMatches("Bash", []), true, "an empty facet asks nothing");
   assert.equal(toolMatches("", [{ name: "Bash", prefix: false }]), false, "a record with no tool answers no tool facet");
 
-  assert.equal(writeTools("tool:Read timeout", ["Bash", "mcp__github__*"]), "tools:Bash,mcp__github__* timeout",
-    "the menu writes the box (#101): the reader's words are kept, the old tokens replaced by ONE `tools:` token (§8)");
+  assert.equal(writeTools("tool:Read timeout", ["Bash", "mcp__github__*"]), "tool:Bash,mcp__github__* timeout",
+    "the menu writes the box (#101): the reader's words are kept, the old tokens replaced by ONE `tool:` token (§8; the singular is the written form, owner)");
   assert.equal(writeTools("tool:Bash timeout", []), "timeout", "unticking the last tool leaves the text alone");
 
   // #302 — design/in-session-search.md §8: `tools:` and `scope:` are one shape, a named facet

@@ -150,7 +150,8 @@ because the prefix is not at the start.
 Both filters become the same thing: a **named token**, anywhere in the box, completed from a list
 and then frozen.
 
-- **Keys.** `tools:` (and `tool:`, its synonym) and `scope:`. A key is recognised only at the start
+- **Keys.** `tool:` and `scope:` — `tool:` is the canonical form, the one the popover writes and a
+  chip shows; `tools:` is accepted for convenience (owner, 2026-09-28). A key is recognised only at the start
   of the box or after a space, so `about:blank` is text — `about` is not a key.
 - **Completion.** Typing a key opens a drop-down under the box listing what can follow it, with
   counts for the current text:
