@@ -940,3 +940,26 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .rail-flyout.rail-flyout-filter{width:260px;padding:0}
 .rail-flyout .session-filter-options{position:static;left:auto;right:auto;top:auto;border:0;box-shadow:none;background:transparent}
 @media(prefers-reduced-motion:reduce){.rail-flyout{animation:none}}
+
+/* #303 — the search box's tokens (design/in-session-search.md §8): frozen facets as chips at the
+   box's left, and the drop-down a `tools:` / `scope:` token opens under it. A chip is small, one
+   line, never wider than a third of the box; its value ellipsises, its full meaning is its title. */
+.search-chips{display:none;flex:0 1 auto;min-width:0;max-width:34%;gap:4px;align-items:center;overflow:hidden}
+.search-chips.has-chips{display:flex}
+.search-chip{display:inline-flex;align-items:center;min-width:0;height:22px;padding:0 2px 0 7px;border-radius:6px;background:color-mix(in srgb,var(--primary) 10%,var(--panel));color:var(--ink);font:10.5px/1 var(--mono);white-space:nowrap}
+.search-chip-key{color:var(--primary);flex:none}
+.search-chip-value{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:2px}
+.search-chip-remove{flex:none;width:18px;height:18px;margin-left:2px;border-radius:4px;background:transparent;color:var(--faint);font-size:12px;line-height:1;cursor:pointer}
+.search-chip-remove:hover,.search-chip-remove:focus-visible{background:var(--hover);color:var(--ink)}
+.search-suggest{position:absolute;left:0;top:44px;z-index:49;width:min(320px,calc(100vw - 24px));max-height:min(360px,calc(100vh - 120px));overflow-y:auto;padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--bg);box-shadow:0 13px 36px rgba(32,43,72,.13)}
+.search-suggest[hidden]{display:none}
+.search-suggest-head{display:flex;justify-content:space-between;padding:4px 8px 6px;color:var(--faint);font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.search-suggest-head span{font-weight:500;letter-spacing:0;text-transform:none}
+.search-suggest-row{width:100%;height:28px;padding:0 8px;border-radius:7px;background:transparent;display:grid;grid-template-columns:16px 15px minmax(0,1fr) auto;align-items:center;gap:8px;text-align:left;color:var(--sub);font-size:11.5px;cursor:pointer}
+.search-suggest-row.active,.search-suggest-row:hover{background:var(--hover);color:var(--ink)}
+.search-suggest-letter{font:11px var(--mono);color:var(--primary);text-align:center}
+.search-suggest-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.search-suggest-count{color:var(--faint);font:10px var(--mono)}
+.search-suggest-row.on .scope-check{border-color:var(--primary);background:var(--primary)}
+.search-suggest-row.on .scope-check:after{opacity:1}
+.search-suggest-empty{padding:8px;color:var(--faint);font-size:11px}

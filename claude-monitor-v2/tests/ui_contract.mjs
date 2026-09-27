@@ -1462,7 +1462,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // the query's hits when there is text and the facets' own when there is not.
   assert.match(app, /function activeMatches\(\) \{[\s\S]{0,400}?return queryTools\(\)\.length \? recordState\.filterMatches \|\| \[\] : \[\];/, "…which is what the step control walks when there is no query");
   assert.match(app, /const inScope = countRecord\(text, parts, query, whole, wanted, classCounts, tools\);/, "a text query is counted INSIDE the tools the box names (#292)");
-  assert.match(app, /input\.value = writeTools\(input\.value, names\);\n\s*updateSearch\(true\);/, "…and ticking a tool writes the box, which is the query (#101, #292)");
+  // #303: ticking a tool sets the box's tools CHIP — part of the box, parsed with its text.
+  assert.match(app, /uiState\.chips\.tools = names\.slice\(\);\n\s*updateSearch\(true\);/, "…and ticking a tool sets the box's chip, which is part of the query (#101, #292, #303)");
+  assert.match(app, /const raw = boxQuery\(\);/, "…because the query is the chips and the text together (#303)");
   assert.match(app, /recordState\.landed = matches\[recordState\.match\];\s*\n\s*viewport\.jumpToRecord\(recordState\.landed, textual \? "search" : "filter"\);/, "…landing each one in its surroundings");
   assert.match(app, /const already = matches\[nearest\] === recordState\.landed;/, "pressing next where a jump already landed moves on — while the first step after a fresh query still lands on the first hit");
   assert.match(app, /byId\("transcriptSearchCount"\)\.textContent = text \|\| \(hits \? `\$\{hits\} \$\{hits === 1 \? "match" : "matches"\}` : ""\);/, "the box counts what the filter found, the way it counts a search");
@@ -1863,7 +1865,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /const q = splitQuery\(raw\);/, "the app shell splits the query through the module");
   assert.match(app, /paintMatchCount\(query \? countLabel\(total, set, whole\) : ""\);/);
-  assert.match(app, /input\.value = writePrefix\(input\.value, set \? activeLetters\(set\) : \[\]\);/);
+  // #303: the scope buttons set the box's scope CHIP; the typed text keeps no scope token.
+  assert.match(app, /input\.value = writePrefix\(input\.value, \[\]\);\n\s*uiState\.chips\.scope = set \? activeLetters\(set\)\.join\(""\) : "";/);
   assert.match(app, /return chainWalk\(/, "…and walks the filter chain through the module");
   assert.doesNotMatch(app, /function elementMask|function wholeAtText/, "its own copies are gone");
   // The mark gate is the record's KIND through the shared class table — the classic page's rule.

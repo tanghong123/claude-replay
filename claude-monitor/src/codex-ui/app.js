@@ -15,7 +15,7 @@ import { displayState, denoteState, sessionFilterBuckets, FILTER_BUCKETS, FILTER
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt, toolMatches, writeTools, recordHasTool, takeTokens } from "./shared/search.js";
+import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, querySpans, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt, toolMatches, writeTools, recordHasTool, takeTokens } from "./shared/search.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 
@@ -242,7 +242,7 @@ const sessionIndex = new SessionIndexStore({
   error: () => toast("Session scan failed — retrying")
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   // #221: a first open with no cache waits on the server folding the whole transcript. Say so,
   // rather than leaving a blank page a reader cannot tell from a hang, and say that it is a
@@ -1394,7 +1394,9 @@ function activeScopeSet() {
  *  scope buttons; a leading `:` escapes; a pure run searches itself. Counts per class fill the
  *  scope rows; stepping and marks honour the scope; the total reads "N hits in ub". */
 function updateSearch(reset) {
-  const raw = byId("transcriptSearchInput").value.trim();
+  // The chips and the typed text together are the query (#303): a chip is a facet frozen out of
+  // the text, so it is parsed exactly as the token it was.
+  const raw = boxQuery();
   // The split, the per-record count, the label: the shared rules (#118, shared/search.js), so a
   // query means the same thing on both pages — including the two-character floor, which this
   // shell did not have.
@@ -1424,6 +1426,7 @@ function updateSearch(reset) {
   // Drawn only now that both halves of the state follow the box: drawn above the line before, the
   // menu and its badge showed the PREVIOUS query's tools, so a ticked tool read as unticked (#297).
   renderFilterMenu();
+  renderChips();
   recordState.matches = [];
   const classCounts = zeroCounts();
   let total = 0;
@@ -1449,9 +1452,11 @@ function paintMatchCount(text) {
 }
 /** The scope buttons rewrite the box's prefix (the classic page's applyScopeFromMenu). */
 function applyScopeFromMenu() {
+  // #303: the menu sets the scope CHIP (the typed text keeps no scope token of its own).
   const input = byId("transcriptSearchInput");
   const set = activeScopeSet();
-  input.value = writePrefix(input.value, set ? activeLetters(set) : []);
+  input.value = writePrefix(input.value, []);
+  uiState.chips.scope = set ? activeLetters(set).join("") : "";
   updateSearch(true);
 }
 /** Whether a marked text node's nearest row is in scope — the RECORD's kind through the shared
@@ -1609,6 +1614,201 @@ wholeWords.title = "Whole words only  ·  w:"; wholeWords.setAttribute("aria-lab
 wholeWords.setAttribute("aria-pressed", "false");
 wholeWords.textContent = "ab|";
 byId("filterTranscriptBtn").insertAdjacentElement("beforebegin", wholeWords);
+
+// ---- The search box's tokens (#303, design/in-session-search.md §8) ------------------------------
+// `tools:` and `scope:` are named facets typed anywhere in the box. Typing one opens a drop-down of
+// what can follow it — each tool with a per-session LETTER (`tools:BaA`), each scope class with its
+// letter — and a SPACE freezes the token into a chip at the box's left: deletable (its ×, or
+// Backspace at the start of the text), not editable. A chip is the token it was, so `updateSearch`
+// parses chips and text together (`boxQuery`); the filter popover sets the chips directly, and a
+// chip ticks its rows. `var`: updateSearch can run during module evaluation, before this block.
+var searchChips = null, searchSuggest = null, suggestState = null;
+searchChips = document.createElement("span");
+searchChips.className = "search-chips"; searchChips.id = "searchChips";
+byId("transcriptSearchInput").insertAdjacentElement("beforebegin", searchChips);
+searchSuggest = document.createElement("div");
+searchSuggest.className = "search-suggest"; searchSuggest.id = "searchSuggest"; searchSuggest.hidden = true;
+searchSuggest.setAttribute("role", "listbox");
+document.querySelector(".header-search-cluster").appendChild(searchSuggest);
+const SCOPE_ROWS = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "All tools"], ["b", "Bash output"], ["r", "Reads"], ["e", "Edits"], ["w", "Whole words"]];
+
+/** The chips as the tokens they were, for the parser. */
+function chipTokens() {
+  const out = [];
+  if (uiState.chips.scope) out.push(`scope:${uiState.chips.scope}`);
+  if (uiState.chips.tools.length) out.push(`tools:${uiState.chips.tools.join(",")}`);
+  return out;
+}
+/** What `updateSearch` parses: the chips, then the typed text. */
+function boxQuery() {
+  const input = byId("transcriptSearchInput");
+  return [...chipTokens(), input ? input.value : ""].join(" ").trim();
+}
+/** The session's tools, each with its LETTER (§8.2): most-used first; a tool takes its initial when
+ *  free (Bash `B`, advisor `a`, AskUserQuestion `A`), else the other case, else another letter of
+ *  its name, else any free letter, then a digit. MCP tools take ONE letter per server, as the
+ *  family `mcp__<server>__*`. Letters differ between sessions by design (owner). */
+function toolLetters() {
+  const counts = toolCounts(recordState.records);
+  const entries = new Map();
+  for (const [name, n] of Object.entries(counts)) {
+    const mcp = /^mcp__([^_]+(?:_[^_]+)*)__/.exec(name);
+    const key = mcp ? `mcp__${mcp[1]}__*` : name;
+    const label = mcp ? mcp[1] : name;
+    const e = entries.get(key) || { key, label, count: 0, family: !!mcp };
+    e.count += n; entries.set(key, e);
+  }
+  const ordered = [...entries.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  const used = new Set(), out = [];
+  const pool = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const swap = c => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase());
+  for (const e of ordered) {
+    const own = [...e.label].filter(c => /[A-Za-z0-9]/.test(c));
+    const tries = [own[0], own[0] && swap(own[0]), ...own.slice(1), ...own.slice(1).map(swap), ...pool];
+    const letter = tries.find(c => c && !used.has(c));
+    if (!letter) continue;
+    used.add(letter); out.push({ ...e, letter });
+  }
+  return out;
+}
+/** A typed `tools:` value → the names it means: the NAMES when every comma-separated part names a
+ *  tool of this session (or a family), else the LETTERS when every character is one, else the value
+ *  as names — the shared grammar's own reading. */
+function resolveTools(value) {
+  const letters = toolLetters();
+  const byName = new Map(letters.map(e => [e.key.toLowerCase(), e.key]));
+  for (const name of Object.keys(toolCounts(recordState.records))) byName.set(name.toLowerCase(), name);
+  const parts = value.split(",").filter(Boolean);
+  if (parts.length && parts.every(p => byName.has(p.toLowerCase()))) return parts.map(p => byName.get(p.toLowerCase()));
+  const byLetter = new Map(letters.map(e => [e.letter, e.key]));
+  if (!value.includes(",") && [...value].every(c => byLetter.has(c))) return [...new Set([...value].map(c => byLetter.get(c)))];
+  return parts;
+}
+function renderChips() {
+  if (!searchChips) return;
+  const scope = uiState.chips.scope, tools = uiState.chips.tools;
+  const label = key => key.endsWith("*") ? key.replace(/^mcp__|__\*$/g, "") + "/*" : key;
+  const chip = (kind, text, title) => `<span class="search-chip" data-chip="${kind}" title="${escapeText(title)}"><span class="search-chip-key">${kind}:</span><span class="search-chip-value">${escapeText(text)}</span><button class="search-chip-remove" type="button" data-chip-remove="${kind}" aria-label="Remove the ${kind} filter">×</button></span>`;
+  searchChips.innerHTML = (scope ? chip("scope", scope, SCOPE_ROWS.filter(([k]) => scope.includes(k)).map(([, l]) => l).join(", ")) : "")
+    + (tools.length ? chip("tools", tools.map(label).join(", "), tools.join(", ")) : "");
+  searchChips.classList.toggle("has-chips", !!(scope || tools.length));
+}
+/** Freeze every COMPLETE facet token in the text into a chip — one followed by a space, or the bare
+ *  scope prefix once something follows its colon — and take it out of the text. */
+function absorbFacets() {
+  const input = byId("transcriptSearchInput");
+  const value = input.value;
+  const spans = querySpans(value);
+  let text = value, cut = 0, changed = false;
+  for (const span of spans) {
+    if (span.kind === "text") continue;
+    const complete = span.bare ? value.length > span.end : /\s/.test(value.charAt(span.end));
+    if (!complete) continue;
+    if (span.kind === "scope") {
+      const letters = new Set([...uiState.chips.scope, ...activeLetters(span.set)]);
+      uiState.chips.scope = SCOPE_ROWS.map(([k]) => k).filter(k => letters.has(k)).join("");
+    } else {
+      const raw = value.slice(span.start, span.end).replace(/^tools?:/i, "");
+      uiState.chips.tools = [...new Set([...uiState.chips.tools, ...resolveTools(raw)])];
+    }
+    // Out of the text, with the space that committed it.
+    const from = span.start - cut, to = span.end - cut + (span.bare ? 0 : 1);
+    text = text.slice(0, from) + text.slice(to);
+    cut += to - from; changed = true;
+  }
+  if (!changed) return false;
+  const caret = input.selectionStart === value.length;
+  input.value = text.replace(/^\s+/, "");
+  if (caret) input.setSelectionRange(input.value.length, input.value.length);
+  return true;
+}
+/** The facet token the caret is in, if any: `{kind, start, end, value}`. */
+function tokenAtCaret() {
+  const input = byId("transcriptSearchInput");
+  const value = input.value, at = input.selectionStart ?? value.length;
+  let start = at; while (start > 0 && !/\s/.test(value.charAt(start - 1))) start--;
+  let end = at; while (end < value.length && !/\s/.test(value.charAt(end))) end++;
+  const token = value.slice(start, end);
+  const m = /^(tools?|scope):(\S*)$/i.exec(token);
+  if (!m) return null;
+  return { kind: m[1].toLowerCase() === "scope" ? "scope" : "tools", start, end, value: m[2] };
+}
+function suggestRows(kind) {
+  if (kind === "scope") return SCOPE_ROWS.map(([letter, label]) => ({ letter, label, count: null }));
+  return toolLetters().map(e => ({ letter: e.letter, label: e.family ? `${e.label}/*` : e.label, count: e.count, key: e.key }));
+}
+function renderSuggest() {
+  if (!searchSuggest) return;
+  const tok = document.activeElement === byId("transcriptSearchInput") ? tokenAtCaret() : null;
+  if (!tok) { searchSuggest.hidden = true; suggestState = null; return; }
+  const rows = suggestRows(tok.kind);
+  const chosen = tok.kind === "scope" ? new Set([...tok.value.toLowerCase()]) : new Set(resolveTools(tok.value));
+  const active = suggestState && suggestState.kind === tok.kind ? Math.min(suggestState.active, rows.length - 1) : 0;
+  suggestState = { kind: tok.kind, rows, active };
+  searchSuggest.innerHTML = `<div class="search-suggest-head">${tok.kind === "scope" ? "Scope — type letters" : "Tools — type letters"}<span>space to apply</span></div>`
+    + (rows.map((r, i) => {
+      const on = tok.kind === "scope" ? chosen.has(r.letter) : chosen.has(r.key);
+      return `<button class="search-suggest-row${on ? " on" : ""}${i === active ? " active" : ""}" type="button" role="option" aria-selected="${on}" data-suggest="${i}"><span class="search-suggest-letter">${escapeText(r.letter)}</span><span class="scope-check"></span><span class="search-suggest-label">${escapeText(r.label)}</span><span class="search-suggest-count">${r.count ?? ""}</span></button>`;
+    }).join("") || '<div class="search-suggest-empty">No tool calls in this session</div>');
+  searchSuggest.hidden = false;
+}
+/** Add or remove one row's letter in the token at the caret. */
+function toggleSuggest(index) {
+  const tok = tokenAtCaret(); if (!tok || !suggestState) return;
+  const row = suggestState.rows[index]; if (!row) return;
+  const input = byId("transcriptSearchInput");
+  let value = tok.value;
+  // A value typed by NAME starts over as letters once a row is toggled, so the two never mix.
+  const letters = new Set(toolLetters().map(e => e.letter));
+  if (tok.kind === "tools" && ![...value].every(c => letters.has(c))) value = "";
+  value = value.includes(row.letter) ? value.replace(row.letter, "") : value + row.letter;
+  const key = input.value.slice(tok.start, tok.end).split(":")[0];
+  input.value = input.value.slice(0, tok.start) + `${key}:${value}` + input.value.slice(tok.end);
+  const caret = tok.start + key.length + 1 + value.length;
+  input.setSelectionRange(caret, caret);
+  suggestState.active = index;
+  renderSuggest();
+  afterFacetChange();
+}
+searchChips.addEventListener("click", event => {
+  const remove = event.target.closest("[data-chip-remove]"); if (!remove) return;
+  if (remove.dataset.chipRemove === "scope") uiState.chips.scope = ""; else uiState.chips.tools = [];
+  updateSearch(true);
+  byId("transcriptSearchInput").focus();
+});
+searchSuggest.addEventListener("mousedown", event => event.preventDefault());
+searchSuggest.addEventListener("click", event => { const row = event.target.closest("[data-suggest]"); if (row) toggleSuggest(Number(row.dataset.suggest)); });
+// A commit re-runs the search only where the box searches live; a large session waits for Enter
+// (#104), and the chip alone shows at once.
+function afterFacetChange() {
+  if (searchIsLive()) updateSearch(true);
+  else { recordState.pendingSearch = true; renderChips(); byId("transcriptSearchCount").textContent = "⏎ to search"; }
+}
+byId("transcriptSearchInput").addEventListener("input", () => { if (absorbFacets()) afterFacetChange(); renderSuggest(); });
+for (const kind of ["click", "keyup", "focus"]) byId("transcriptSearchInput").addEventListener(kind, event => { if (kind !== "keyup" || !["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) renderSuggest(); });
+byId("transcriptSearchInput").addEventListener("blur", () => { if (searchSuggest) searchSuggest.hidden = true; suggestState = null; });
+// The drop-down's keys, ahead of the box's own (Escape closes it before it blurs the box, #298).
+byId("transcriptSearchInput").addEventListener("keydown", event => {
+  const input = event.currentTarget;
+  if (event.key === "Backspace" && input.selectionStart === 0 && input.selectionEnd === 0 && (uiState.chips.tools.length || uiState.chips.scope)) {
+    event.preventDefault();
+    if (uiState.chips.tools.length) uiState.chips.tools = []; else uiState.chips.scope = "";
+    updateSearch(true); return;
+  }
+  if (!suggestState || searchSuggest.hidden) return;
+  const n = suggestState.rows.length;
+  if ((event.key === "ArrowDown" || event.key === "ArrowUp") && n) {
+    event.preventDefault(); event.stopImmediatePropagation();
+    suggestState.active = (suggestState.active + (event.key === "ArrowDown" ? 1 : n - 1)) % n;
+    renderSuggest();
+  } else if ((event.key === "Enter" || event.key === "Tab") && n) {
+    event.preventDefault(); event.stopImmediatePropagation();
+    toggleSuggest(suggestState.active);
+  } else if (event.key === "Escape") {
+    event.preventDefault(); event.stopImmediatePropagation();
+    searchSuggest.hidden = true; suggestState = null;
+  }
+}, true);
 wholeWords.onclick = () => { uiState.searchWhole = !uiState.searchWhole; applyScopeFromMenu(); renderFilterMenu(); };
 byId("findNext").onclick = () => stepSearch(1); byId("findPrev").onclick = () => stepSearch(-1);
 
@@ -1681,8 +1881,10 @@ function toggleToolFacet(name) {
   setToolFacets([...next]);
 }
 function setToolFacets(names) {
+  // #303: the menu sets the tools CHIP (the typed text keeps no tools token of its own).
   const input = byId("transcriptSearchInput");
-  input.value = writeTools(input.value, names);
+  input.value = writeTools(input.value, []);
+  uiState.chips.tools = names.slice();
   updateSearch(true);
 }
 function applyFilters() {
@@ -1984,7 +2186,10 @@ function globalRows(raw) {
   const projectQ = takeTokens(agentQ.rest, "project");
   // The in-session facets — `tools:`, `scope:`, the bare `ub:` — belong to the transcript box; here
   // they are dropped, not matched as text, and an escaped token reads as the literal it names (§8).
-  const text = splitQuery(projectQ.rest).lc;
+  // A bare letter run with nothing after it (`ub:`) is literal text to the in-session grammar, but
+  // here it is a reader starting an in-session query in the wrong box: dropped, not searched for.
+  const parsed = splitQuery(projectQ.rest).lc;
+  const text = /^[uatobrew+]{1,15}:$/.test(parsed) ? "" : parsed;
   const now = Date.now() / 1000;
   // Why the sidebar is not showing a session right now, in the words of its own controls: "hidden"
   // (the reader hid it, or its project) and the filter bucket the reader has unticked ("idle").

@@ -85,6 +85,9 @@ export const uiState = {
   // and pending by default, which is exactly what the one box used to mean.
   taskGroupsShown: new Set(json("am-prod-task-groups", ["in_progress", "pending"])),
   searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), searchWhole: false, toolFilters: new Set(),
+  // #303: the search box's frozen facets (design/in-session-search.md §8) — one scope chip (its
+  // letters) and one tools chip (tool NAMES or `family*` keys, never the per-session letters).
+  chips: { scope: "", tools: [] },
   // #293: which branches of the tool tree are expanded (`mcp`, `mcp/<server>`). Survives the
   // rebuilds a live session forces, as the classic page's `mcpOpen` does.
   toolTreeOpen: new Set(),

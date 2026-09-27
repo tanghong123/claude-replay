@@ -14637,6 +14637,212 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
     drop(m);
 }
 
+/// #303 — design/in-session-search.md §8, the app shell's token field. The owner: "I would type
+/// `tool:` ... a tools selection box shows ... type single letters to combine tools ... I type a
+/// space, the drop down closes, and [the token] becomes a chip that can no longer be edited (but can
+/// be deleted)", the same for `scope:`, and a leading `:` for the literal. Every drop-down sits
+/// inside the window and answers its own hit test; a chip and the filter popover mirror each other.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_facets_are_typed_from_a_drop_down_and_frozen_into_chips() {
+    let _serial = serial();
+    let fx = needle_fixture("facet-chips-app");
+    let page = open(Surface::AppShell, &fx, 3056);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    // Type as a reader does: the box focused, the caret at the end, the page's own input handlers.
+    let type_box = |value: &str| {
+        eval(
+            tab,
+            &format!("(function(){{ var b = document.getElementById('transcriptSearchInput'); b.focus(); b.value = {value:?}; b.setSelectionRange(b.value.length, b.value.length); b.dispatchEvent(new Event('input', {{bubbles: true}})); b.dispatchEvent(new KeyboardEvent('keyup', {{key: 'x', bubbles: true}})); return 'typed'; }})()"),
+        );
+        settle();
+    };
+    let suggest = "(function(){ var s = document.getElementById('searchSuggest'); if (!s || s.hidden) return JSON.stringify({ open: false }); var r = s.getBoundingClientRect(); var first = s.querySelector('[data-suggest]'); var hit = true; if (first) { var q = first.getBoundingClientRect(); var h = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2); hit = !!h && first.contains(h); } return JSON.stringify({ open: true, inside: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, hit: hit, rows: [...s.querySelectorAll('[data-suggest]')].map(function (e) { return [e.querySelector('.search-suggest-letter').textContent, e.querySelector('.search-suggest-label').textContent, e.classList.contains('on')]; }) }); })()";
+    let read_suggest = || -> serde_json::Value {
+        serde_json::from_str(eval(tab, suggest).as_str().unwrap_or("{}")).unwrap()
+    };
+    let chips = "JSON.stringify([...document.querySelectorAll('#searchChips [data-chip]')].map(function (c) { return [c.dataset.chip, c.title]; }))";
+    let box_text = "document.getElementById('transcriptSearchInput').value";
+    let count = || -> i64 {
+        eval(
+            tab,
+            "document.getElementById('transcriptSearchCount').textContent.trim()",
+        )
+        .as_str()
+        .unwrap_or("")
+        .split_whitespace()
+        .next()
+        .and_then(|w| w.parse::<i64>().ok())
+        .unwrap_or(-1)
+    };
+    let letter_of = |rows: &serde_json::Value, label: &str| -> String {
+        rows.as_array()
+            .and_then(|a| a.iter().find(|r| r[1] == label))
+            .and_then(|r| r[0].as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+
+    for (width, height) in [(1440.0, 900.0), (820.0, 700.0)] {
+        harness::resize(tab, width, height);
+        harness::until(
+            tab,
+            &format!("innerWidth <= {width} && innerWidth > {width} - 40"),
+            "the window to take its new width",
+            Duration::from_secs(10),
+            "innerWidth",
+        );
+        harness::until_preview_parked(tab);
+        settle();
+
+        // `tools:` opens the drop-down: the session's tools, each with its letter.
+        type_box("tools:");
+        let seen = read_suggest();
+        assert!(
+            seen["open"] == true && seen["inside"] == true && seen["hit"] == true,
+            "at {width}px: `tools:` opens a drop-down inside the window, its rows hit-testable: {seen}"
+        );
+        let bash = letter_of(&seen["rows"], "Bash");
+        let read = letter_of(&seen["rows"], "Read");
+        assert!(
+            bash == "B" && read == "R",
+            "at {width}px: a tool takes its initial (Bash B, Read R): {seen}"
+        );
+        // Letters tick rows.
+        type_box(&format!("tools:{bash}{read}"));
+        let seen = read_suggest();
+        let on: Vec<&str> = seen["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r[2] == true)
+            .filter_map(|r| r[1].as_str())
+            .collect();
+        assert_eq!(
+            on,
+            vec!["Bash", "Read"],
+            "at {width}px: `tools:BR` ticks Bash and Read: {seen}"
+        );
+        // A space freezes the token into a chip; the drop-down closes; the text is empty.
+        type_box(&format!("tools:{bash}{read} "));
+        let got = eval(tab, chips);
+        assert!(
+            got.as_str()
+                .is_some_and(|c| c.contains("tools") && c.contains("Bash") && c.contains("Read")),
+            "at {width}px: a space makes a tools chip naming Bash and Read: {got}"
+        );
+        assert_eq!(
+            read_suggest()["open"],
+            false,
+            "at {width}px: …and closes the drop-down"
+        );
+        assert_eq!(
+            eval(tab, box_text),
+            "",
+            "at {width}px: …and the token left the text"
+        );
+        // The chip and the popover mirror each other.
+        eval(tab, "(function(){ if (!document.getElementById('navigatorOptions').classList.contains('open')) document.getElementById('filterTranscriptBtn').click(); return 'open'; })()");
+        settle();
+        let ticked = eval(tab, "JSON.stringify([...document.querySelectorAll('#filterOptions .tool-type-option.on')].map(function (e) { return e.dataset.label; }).sort())");
+        assert_eq!(
+            ticked.as_str(),
+            Some("[\"Bash\",\"Read\"]"),
+            "at {width}px: the chip ticks its rows in the popover"
+        );
+        eval(tab, "(function(){ document.querySelector('#filterOptions .tool-type-option[data-tool-filter=\"Read\"]').click(); return 'ok'; })()");
+        settle();
+        let got = eval(tab, chips);
+        assert!(
+            got.as_str()
+                .is_some_and(|c| c.contains("Bash") && !c.contains("Read")),
+            "at {width}px: unticking Read in the popover takes it out of the chip: {got}"
+        );
+        eval(
+            tab,
+            "document.getElementById('filterTranscriptBtn').click(); 'ok'",
+        );
+        settle();
+        // Text narrows within the chip; Backspace at the start of the text removes the chip whole.
+        type_box("needle");
+        let within = count();
+        assert!(
+            within >= 1,
+            "at {width}px: the Bash calls' needles are counted: {within}"
+        );
+        eval(tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.focus(); b.setSelectionRange(0, 0); b.dispatchEvent(new KeyboardEvent('keydown', {key: 'Backspace', bubbles: true, cancelable: true})); return 'ok'; })()");
+        settle();
+        assert_eq!(
+            eval(tab, chips),
+            "[]",
+            "at {width}px: Backspace at the start removes the chip"
+        );
+        assert!(
+            count() > within,
+            "at {width}px: …and every needle is counted again"
+        );
+
+        // `scope:` — the classes by letter; a row click toggles its letter; a space makes the chip.
+        type_box("needle scope:");
+        let seen = read_suggest();
+        assert_eq!(
+            seen["rows"].as_array().map(|r| r.len()),
+            Some(8),
+            "at {width}px: the seven classes and whole words: {seen}"
+        );
+        eval(tab, "(function(){ var r = [...document.querySelectorAll('#searchSuggest [data-suggest]')].find(function (e) { return e.querySelector('.search-suggest-letter').textContent === 'u'; }); r.click(); return 'ok'; })()");
+        settle();
+        assert_eq!(
+            eval(tab, box_text),
+            "needle scope:u",
+            "at {width}px: a click writes the letter"
+        );
+        type_box("needle scope:u ");
+        let got = eval(tab, chips);
+        assert!(
+            got.as_str()
+                .is_some_and(|c| c.contains("scope") && c.contains("User messages")),
+            "at {width}px: a scope chip: {got}"
+        );
+        // The token and the space that committed it leave; the reader's own space before it stays,
+        // so they can keep typing — the search trims it.
+        assert_eq!(
+            eval(tab, box_text).as_str().map(str::trim_end),
+            Some("needle"),
+            "at {width}px: the text keeps its own words"
+        );
+        // Its × removes it.
+        eval(
+            tab,
+            "document.querySelector('#searchChips [data-chip-remove=\"scope\"]').click(); 'ok'",
+        );
+        settle();
+        assert_eq!(
+            eval(tab, chips),
+            "[]",
+            "at {width}px: a chip's × removes it"
+        );
+
+        // A leading colon: the literal, no drop-down, no chip.
+        type_box(":tools: ");
+        assert_eq!(
+            read_suggest()["open"],
+            false,
+            "at {width}px: `:tools:` opens nothing"
+        );
+        assert_eq!(eval(tab, chips), "[]", "at {width}px: …and makes no chip");
+        assert_eq!(
+            eval(tab, box_text),
+            ":tools: ",
+            "at {width}px: …and stays text as typed"
+        );
+        type_box("");
+    }
+}
+
 /// One word, "needle", in three places one facet can tell apart: a Bash command, a Read's target
 /// and an assistant's prose. Prose between the calls so each is its own record.
 fn needle_fixture(name: &str) -> Fixture {
