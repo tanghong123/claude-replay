@@ -15,3 +15,15 @@
 
 Where code is adapted rather than merely inspired, the upstream MIT notice is
 preserved in the relevant source file.
+
+## Brand marks
+
+- **Claude** — the path of the Claude mark drawn for Claude Code sessions in the agent monitor
+  (`agentLogo` in `design/agent-monitor-codex-demo.html`, extracted into
+  `claude-monitor/src/codex-ui/icons.js`) is taken unmodified from **Simple Icons** 16.32.0,
+  released under CC0-1.0 (<https://simpleicons.org>, slug `claude`, colour `#D97757`, source
+  <https://claude.ai>). The mark itself is Anthropic's trademark and is used only to say which
+  agent wrote a session.
+- **Codex** has no official mark here on purpose: Simple Icons removed OpenAI's in v16 because
+  OpenAI's brand guidelines require permission (simple-icons#13944, #12739, #14096). Codex sessions
+  show a plain terminal-prompt glyph drawn for this project until that permission exists.

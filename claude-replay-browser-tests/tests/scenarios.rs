@@ -14277,6 +14277,91 @@ fn app_shell_escape_leaves_the_search_box() {
     scenario_escape_leaves_the_search_box(&page.tab, Surface::AppShell);
 }
 
+/// #299 — the owner: "the icons for various agents are hardly recognizable, please use the
+/// official ones" (a screenshot of the collapsed rail: an asterisk, a knot, a robot). Claude
+/// sessions wear the official Claude mark (Simple Icons, CC0), filled in its brand orange; Codex
+/// wears a plain terminal-prompt glyph drawn here, because OpenAI's mark needs permission this
+/// public repository does not have (ATTRIBUTION.md). In both themes each mark is drawn, is its own
+/// button's hit target, and stands off the ground it sits on.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_rail_wears_each_agent_s_mark() {
+    let _serial = serial();
+    let base = base("agent-marks-app");
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        "aaaa1111-0000-4000-8000-000000000299",
+        &long_session(3, Shape::default()),
+    );
+    stores.codex_session(
+        "019a0000-0000-7000-8000-000000000299",
+        &harness::codex_tool_session("019a0000-0000-7000-8000-000000000299", 2),
+    );
+    let m = Monitor::spawn(Kind::V2, 3052, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    m.pair(&tab);
+    m.open(&tab, "?ui=app");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#sidebarMiniAgents .sidebar-mini-agent').length >= 2",
+        "a rail button for each agent",
+        Duration::from_secs(30),
+        "document.getElementById('sidebarMiniAgents').innerHTML.slice(0, 300)",
+    );
+    eval(
+        &tab,
+        "document.getElementById('sidebarCollapse').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('sidebar-off') && document.getElementById('sidebarMiniAgents').getBoundingClientRect().width > 0",
+        "the collapsed rail",
+        Duration::from_secs(10),
+        "document.getElementById('app').className",
+    );
+    settle();
+    // Each mark: its button, whether it is the button's hit target, its drawn size, the colour it
+    // paints with, and the contrast of that colour against the first opaque ground behind it.
+    let probe = "(function(){ function rgb(c){ var m = String(c).match(/[\\d.]+/g); if (!m) return null; var v = m.slice(0, 4).map(Number); if (/^color\\(srgb/.test(String(c))) { v = v.map(function (x, i) { return i < 3 ? x * 255 : x; }); } return v; } function lum(c){ var a = c.slice(0, 3).map(function (v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2]; } function ground(el){ for (var e = el; e; e = e.parentElement) { var c = rgb(getComputedStyle(e).backgroundColor); if (c && (c.length < 4 || c[3] > 0.5)) return c; } return [255, 255, 255]; } return JSON.stringify([...document.querySelectorAll('#sidebarMiniAgents .sidebar-mini-agent')].map(function (b) { var svg = b.querySelector('svg'); var shape = svg.querySelector('path, rect'); var cs = getComputedStyle(shape); var paint = rgb(cs.fill !== 'none' ? cs.fill : cs.stroke); var r = svg.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); var g = ground(b); var L1 = lum(paint), L2 = lum(g); return { agent: b.title, claude: !!svg.querySelector('path[fill=\"#D97757\"]'), prompt: !!svg.querySelector('rect'), size: Math.round(r.width), hit: !!hit && b.contains(hit), paint: paint.slice(0, 3).map(Math.round).join(','), ground: g.slice(0, 3).map(Math.round).join(','), contrast: Math.round(((Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05)) * 10) / 10 }; })); })()";
+    for theme in ["light", "dark"] {
+        eval(
+            &tab,
+            &format!("document.documentElement.setAttribute('data-theme', '{theme}'); 'ok'"),
+        );
+        settle();
+        let marks: Vec<serde_json::Value> =
+            serde_json::from_str(eval(&tab, probe).as_str().unwrap_or("[]")).unwrap();
+        let claude = marks
+            .iter()
+            .find(|m| m["agent"] == "Claude Code")
+            .unwrap_or_else(|| panic!("{theme}: a Claude Code rail button: {marks:?}"));
+        let codex = marks
+            .iter()
+            .find(|m| m["agent"] == "Codex")
+            .unwrap_or_else(|| panic!("{theme}: a Codex rail button: {marks:?}"));
+        assert!(
+            claude["claude"] == true && claude["paint"] == "217,119,87",
+            "{theme}: Claude wears the official mark in its brand orange: {claude}"
+        );
+        assert!(
+            codex["prompt"] == true && codex["claude"] == false,
+            "{theme}: Codex wears the terminal-prompt glyph: {codex}"
+        );
+        for mark in [claude, codex] {
+            assert!(
+                mark["size"].as_i64() >= Some(14) && mark["hit"] == true,
+                "{theme}: the mark is drawn and is its button's target: {mark}"
+            );
+            assert!(
+                mark["contrast"].as_f64() >= Some(2.5),
+                "{theme}: the mark stands off its ground: {mark}"
+            );
+        }
+    }
+    drop(m);
+}
+
 /// One word, "needle", in three places one facet can tell apart: a Bash command, a Read's target
 /// and an assistant's prose. Prose between the calls so each is its own record.
 fn needle_fixture(name: &str) -> Fixture {
