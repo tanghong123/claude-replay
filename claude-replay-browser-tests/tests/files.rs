@@ -73,7 +73,7 @@ const PANE: &str = "(function(){ var b = document.getElementById('previewBody');
 
 /// The pane head's reveal control, as `shown` (visible AND the thing a click at its centre hits —
 /// a rect alone is not visibility), `hidden`, or `covered`.
-const HEAD_REVEAL: &str = "(function(){ var b = document.querySelector('#previewHead .preview-reveal'); if (!b || b.hidden || !b.offsetWidth) return 'hidden'; var r = b.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return hit && b.contains(hit) ? 'shown' : 'covered by ' + (hit ? hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + (hit.className && hit.className.baseVal === undefined ? '.' + String(hit.className).trim().split(/\\s+/).join('.') : '') : 'nothing'); })()";
+const HEAD_REVEAL: &str = "(function(){ var b = document.querySelector('#previewHead .preview-reveal'); if (!b || b.hidden || !b.offsetWidth) return 'hidden'; var r = b.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (!hit) return 'off-screen at ' + Math.round(r.left) + ',' + Math.round(r.top) + ' in ' + innerWidth + 'x' + innerHeight; return b.contains(hit) ? 'shown' : 'covered by ' + (hit ? hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + (hit.className && hit.className.baseVal === undefined ? '.' + String(hit.className).trim().split(/\\s+/).join('.') : '') : 'nothing'); })()";
 
 fn open_shell(m: &Monitor, tab: &headless_chrome::Tab, paired: bool) {
     if paired {
@@ -273,7 +273,13 @@ fn the_app_shell_preview_offers_the_file_manager_when_it_cannot_read_the_file() 
     assert!(said.contains("requires pairing"), "says why: {said}");
     // A wait, as the other files cases use (#295): the pane may still be opening when the refusal
     // lands, and one hit test then reads whatever the pane has not yet slid clear of. A cover that
-    // lasts is still a failure, and the probe names what covers it.
+    // lasts is still a failure, and the probe names what covers it. The first sample is reported
+    // when it is not `shown`, so a transient cover is recorded even on a run that passes.
+    let first = eval(&tab, HEAD_REVEAL);
+    if first.as_str() != Some("shown") {
+        let pane = eval(&tab, "(function(){ var p = document.querySelector('.preview'); var r = p ? p.getBoundingClientRect() : null; return JSON.stringify({ w: innerWidth, pane: r ? [Math.round(r.left), Math.round(r.width)] : null, transform: p ? getComputedStyle(p).transform : null, app: document.getElementById('app').className }); })()");
+        eprintln!("#295 first sample: {first} — {pane}");
+    }
     until(
         &tab,
         &format!("{HEAD_REVEAL} === 'shown'"),
