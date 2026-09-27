@@ -293,6 +293,32 @@ function sessionTreeRow(row, fam = null, member = false) {
   return `<div class="tree-row session ${row.id === indexState.selected ? "selected" : ""} ${row.hidden ? "is-hidden" : ""} ${member ? "is-member" : ""}" role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}"><span class="tree-title">${escapeText(row.name || row.id)}</span><span class="session-end">${chip}${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(newest.activity || row.activity || "")}</span></span></div>`;
 }
 
+/** One agent's projects and their session rows, as the tree draws them — the sidebar and the
+ *  collapsed rail's flyout (#300) both render from here, so the two cannot drift. `agent` is an
+ *  entry of `visibleTree` (its projects carry the filtered `rows`). */
+function agentProjectsHtml(agent) {
+  let html = "";
+  for (const project of agent.projects) {
+    const rows = project.rows;
+    const projectKey = `p:${project.id}`, openProject = !indexState.collapsed.has(projectKey);
+    html += `<div class="tree-row project ${project.hidden ? "is-hidden" : ""}" role="treeitem" tabindex="0" data-toggle="${escapeText(projectKey)}" aria-expanded="${openProject}" title="${escapeText(project.path)}">${svg("folder")}<span class="tree-title">${escapeText(project.name)}</span>${project.ignoreKey ? treeAction(project, project.kind) : ""}</div>`;
+    if (!openProject) continue;
+    const overflowKey = `${agent.id}:${project.id}`;
+    const expanded = indexState.expandedProjects.has(overflowKey);
+    const fams = families(rows);
+    let shown = expanded ? fams : fams.slice(0, SIDEBAR_SESSION_LIMIT);
+    const selectedFam = fams.find(fam => fam.members.some(row => row.id === indexState.selected));
+    if (!expanded && selectedFam && !shown.includes(selectedFam)) shown = shown.concat(selectedFam);
+    for (const fam of shown) {
+      html += sessionTreeRow(fam.rep, fam);
+      const open = fam.forks.length && (indexState.openFamilies.has(fam.key) || fam.forks.some(row => row.id === indexState.selected));
+      if (open) for (const fork of fam.forks) html += sessionTreeRow(fork, null, true);
+    }
+    const hidden = fams.filter(fam => !shown.includes(fam)).length;
+    if (fams.length > SIDEBAR_SESSION_LIMIT) html += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
+  }
+  return html;
+}
 function renderTree() {
   const agents = groupedSessions(); let html = "";
   // The filter's buckets over the rows in view (hidden rows count only under Include hidden;
@@ -305,34 +331,22 @@ function renderTree() {
   const filtered = bucketFilterActive();
   const shownAgents = visibleTree(agents, { showHidden: indexState.showHidden, buckets: filtered ? indexState.buckets : null, bucketsOf });
   const shown = shownAgents.reduce((n, agent) => n + agent.projects.reduce((m, project) => m + project.rows.length, 0), 0);
+  lastShownAgents = shownAgents;
   for (const agent of shownAgents) {
     const agentKey = `a:${agent.id}`, openAgent = !indexState.collapsed.has(agentKey);
     html += `<div class="agent-label" role="treeitem" tabindex="0" data-toggle="${escapeText(agentKey)}" aria-expanded="${openAgent}">${escapeText(agent.name)}</div>`;
     if (!openAgent) continue;
-    for (const project of agent.projects) {
-      const rows = project.rows;
-      const projectKey = `p:${project.id}`, openProject = !indexState.collapsed.has(projectKey);
-      html += `<div class="tree-row project ${project.hidden ? "is-hidden" : ""}" role="treeitem" tabindex="0" data-toggle="${escapeText(projectKey)}" aria-expanded="${openProject}" title="${escapeText(project.path)}">${svg("folder")}<span class="tree-title">${escapeText(project.name)}</span>${project.ignoreKey ? treeAction(project, project.kind) : ""}</div>`;
-      if (!openProject) continue;
-      const overflowKey = `${agent.id}:${project.id}`;
-      const expanded = indexState.expandedProjects.has(overflowKey);
-      const fams = families(rows);
-      let shown = expanded ? fams : fams.slice(0, SIDEBAR_SESSION_LIMIT);
-      const selectedFam = fams.find(fam => fam.members.some(row => row.id === indexState.selected));
-      if (!expanded && selectedFam && !shown.includes(selectedFam)) shown = shown.concat(selectedFam);
-      for (const fam of shown) {
-        html += sessionTreeRow(fam.rep, fam);
-        const open = fam.forks.length && (indexState.openFamilies.has(fam.key) || fam.forks.some(row => row.id === indexState.selected));
-        if (open) for (const fork of fam.forks) html += sessionTreeRow(fork, null, true);
-      }
-      const hidden = fams.filter(fam => !shown.includes(fam)).length;
-      if (fams.length > SIDEBAR_SESSION_LIMIT) html += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
-    }
+    html += agentProjectsHtml(agent);
   }
   tree.innerHTML = html || `<div class="no-results">${filtered ? "No sessions in this filter — Everything, in the filter, shows them all" : "No sessions"}</div>`;
   renderFilterControl(counts, shown, total);
+  refreshRailFlyout();
 
-  byId("sidebarMiniAgents").innerHTML = agents.map(agent => { const first = agent.projects.flatMap(project => project.sessions).find(row => !row.hidden); return first ? `<button class="sidebar-mini-agent ${first.id === indexState.selected ? "selected" : ""}" data-mini-agent-session="${escapeText(first.id)}" title="${escapeText(agent.name)}">${agentLogo(agent.id)}</button>` : ""; }).join("");
+  // Redrawn on every index refresh; a focused mark would be replaced under the reader and the focus
+  // dropped to <body> (#300 caught it handing focus back after Escape), so it is carried across.
+  const focusedMark = document.activeElement?.closest?.("#sidebarMiniAgents [data-mini-agent]")?.dataset.miniAgent;
+  byId("sidebarMiniAgents").innerHTML = agents.map(agent => { const first = agent.projects.flatMap(project => project.sessions).find(row => !row.hidden); return first ? `<button class="sidebar-mini-agent ${agent.projects.some(project => project.sessions.some(row => row.id === indexState.selected)) ? "selected" : ""}" data-mini-agent="${escapeText(agent.id)}" title="${escapeText(agent.name)}" aria-haspopup="true" aria-expanded="${railFlyoutFor === agent.id}">${agentLogo(agent.id)}</button>` : ""; }).join("");
+  if (focusedMark) byId("sidebarMiniAgents").querySelector(`[data-mini-agent="${CSS.escape(focusedMark)}"]`)?.focus();
 }
 
 // The session filter (#202, the owner's shape): a glyph in the head-actions row — between
@@ -373,6 +387,7 @@ document.querySelector(".side-head").appendChild(filterSheet);
 const filterMini = document.createElement("button");
 filterMini.className = "sidebar-mini-button filter-mini"; filterMini.id = "sidebarMiniFilter"; filterMini.type = "button"; filterMini.title = "Filter the sessions";
 filterMini.setAttribute("aria-label", "Filter the sessions");
+filterMini.setAttribute("aria-haspopup", "true"); filterMini.setAttribute("aria-expanded", "false");
 filterMini.innerHTML = svg("filterLines");
 byId("sidebarMiniSearch").insertAdjacentElement("afterend", filterMini);
 /** Whether the bucket set leaves anything out. */
@@ -384,10 +399,11 @@ function setBuckets(next) {
   persist(); renderTree();
 }
 function toggleFilterSheet(open) {
+  if (!open && railFlyoutFor === "filter") { closeRailFlyout(false); return; }
   filterSheet.hidden = !open; filterBtn.setAttribute("aria-expanded", String(open));
 }
 filterBtn.onclick = () => toggleFilterSheet(filterSheet.hidden);
-filterMini.onclick = () => { byId("sidebarMiniExpand").click(); toggleFilterSheet(true); };
+filterMini.onclick = () => { if (railFlyoutFor === "filter" && railFlyoutPinned) closeRailFlyout(false); else openRailFlyout("filter", filterMini, true); };
 filterSheet.addEventListener("click", event => {
   if (event.target.closest("[data-filter-reset]")) { setBuckets(FILTER_BUCKETS); return; }
   if (event.target.closest("[data-include-hidden]")) { indexState.showHidden = !indexState.showHidden; renderTree(); return; }
@@ -398,6 +414,109 @@ filterSheet.addEventListener("click", event => {
 });
 document.addEventListener("click", event => { if (!filterSheet.hidden && !filterSheet.contains(event.target) && !filterBtn.contains(event.target) && !filterMini.contains(event.target)) toggleFilterSheet(false); });
 document.addEventListener("keydown", event => { if (event.key === "Escape" && !filterSheet.hidden) toggleFilterSheet(false); });
+
+// The collapsed rail's flyouts (#300, the owner: "only showing the agent icon is point-less, please
+// show the projects and sessions for the agent in a float window", and the same for the filter).
+// ONE floating panel beside the rail. For an agent it draws `agentProjectsHtml` — the rows the
+// expanded tree draws, under the same filter — and answers clicks with the tree's own handler; for
+// the filter it HOSTS the sidebar's filter sheet (the element itself, moved in and back), so there
+// is one menu, one set of handlers and one remembered choice. Pointing opens it after a beat and it
+// survives the trip from the mark into it (a grace period on leaving either); a click pins it;
+// Escape, a click outside, or expanding the sidebar closes it. `var`, not `const`: renderTree runs
+// during module evaluation and reaches `refreshRailFlyout` before this block has run.
+var lastShownAgents = [];
+var railFlyout = null, railFlyoutFor = null, railFlyoutAnchor = null, railFlyoutPinned = false, railOpenTimer = 0, railCloseTimer = 0;
+const RAIL_OPEN_MS = 140, RAIL_GRACE_MS = 280;
+railFlyout = document.createElement("div");
+railFlyout.className = "rail-flyout"; railFlyout.id = "railFlyout"; railFlyout.hidden = true;
+railFlyout.setAttribute("role", "group");
+document.body.appendChild(railFlyout);
+function railFlyoutBody() {
+  if (railFlyoutFor === "filter") return null;
+  const agent = lastShownAgents.find(item => item.id === railFlyoutFor);
+  const name = agentName(railFlyoutFor);
+  const rows = agent ? agentProjectsHtml(agent) : "";
+  return `<div class="rail-flyout-head">${escapeText(name)}</div><div class="rail-flyout-tree" role="tree" aria-label="${escapeText(name)} sessions">${rows || `<div class="no-results">${bucketFilterActive() ? "No sessions in this filter" : "No sessions"}</div>`}</div>`;
+}
+function placeRailFlyout() {
+  if (!railFlyoutAnchor) return;
+  const r = railFlyoutAnchor.getBoundingClientRect();
+  railFlyout.style.left = `${Math.round(r.right + 8)}px`;
+  const h = railFlyout.offsetHeight;
+  railFlyout.style.top = `${Math.round(Math.max(8, Math.min(r.top - 6, innerHeight - h - 8)))}px`;
+}
+function refreshRailFlyout() {
+  if (!railFlyout || railFlyout.hidden || railFlyoutFor === "filter") return;
+  const keep = railFlyout.querySelector(".rail-flyout-tree")?.scrollTop || 0;
+  railFlyout.innerHTML = railFlyoutBody();
+  const list = railFlyout.querySelector(".rail-flyout-tree"); if (list) list.scrollTop = keep;
+  placeRailFlyout();
+}
+function openRailFlyout(kind, anchor, pinned) {
+  clearTimeout(railOpenTimer); clearTimeout(railCloseTimer);
+  if (!app.classList.contains("sidebar-off")) return;
+  if (railFlyoutFor !== kind) closeRailFlyout(false);
+  railFlyoutFor = kind; railFlyoutAnchor = anchor; railFlyoutPinned = railFlyoutPinned || !!pinned;
+  railFlyout.setAttribute("aria-label", kind === "filter" ? "Show sessions" : `${agentName(kind)} sessions`);
+  if (kind === "filter") {
+    if (filterSheet.parentElement !== railFlyout) { railFlyout.innerHTML = ""; railFlyout.appendChild(filterSheet); }
+    filterSheet.hidden = false; filterMini.setAttribute("aria-expanded", "true");
+  } else {
+    railFlyout.innerHTML = railFlyoutBody();
+  }
+  railFlyout.classList.toggle("rail-flyout-filter", kind === "filter");
+  railFlyout.hidden = false; anchor.setAttribute("aria-expanded", "true");
+  placeRailFlyout();
+}
+function closeRailFlyout(refocus) {
+  clearTimeout(railOpenTimer); clearTimeout(railCloseTimer);
+  if (railFlyoutFor === "filter" && filterSheet.parentElement === railFlyout) {
+    filterSheet.hidden = true; document.querySelector(".side-head").appendChild(filterSheet);
+    filterMini.setAttribute("aria-expanded", "false");
+  }
+  // The marks are redrawn whenever the index refreshes, so the element that opened the flyout may
+  // be gone: hand the focus to the CURRENT mark for what it showed.
+  const kind = railFlyoutFor;
+  const anchor = kind === "filter" ? filterMini : (railMarks.querySelector(`[data-mini-agent="${CSS.escape(kind || "")}"]`) || railFlyoutAnchor);
+  if (anchor) anchor.setAttribute("aria-expanded", "false");
+  railFlyout.hidden = true; railFlyout.innerHTML = ""; railFlyoutFor = null; railFlyoutAnchor = null; railFlyoutPinned = false;
+  if (refocus && anchor && anchor.isConnected) anchor.focus();
+}
+function railFlyoutHover(kind, anchor) {
+  clearTimeout(railCloseTimer);
+  if (!railFlyout.hidden && railFlyoutFor === kind) return;
+  clearTimeout(railOpenTimer);
+  railOpenTimer = setTimeout(() => openRailFlyout(kind, anchor, false), railFlyout.hidden ? RAIL_OPEN_MS : 0);
+}
+function railFlyoutLeave() {
+  clearTimeout(railOpenTimer);
+  if (railFlyout.hidden || railFlyoutPinned) return;
+  clearTimeout(railCloseTimer);
+  railCloseTimer = setTimeout(() => closeRailFlyout(false), RAIL_GRACE_MS);
+}
+const railMarks = byId("sidebarMiniAgents");
+railMarks.addEventListener("pointerover", event => { const mark = event.target.closest("[data-mini-agent]"); if (mark) railFlyoutHover(mark.dataset.miniAgent, mark); });
+railMarks.addEventListener("pointerenter", event => { const mark = event.target.closest?.("[data-mini-agent]"); if (mark) railFlyoutHover(mark.dataset.miniAgent, mark); }, true);
+railMarks.addEventListener("pointerleave", railFlyoutLeave, true);
+filterMini.addEventListener("pointerenter", () => railFlyoutHover("filter", filterMini));
+filterMini.addEventListener("pointerleave", railFlyoutLeave);
+railFlyout.addEventListener("pointerenter", () => clearTimeout(railCloseTimer));
+railFlyout.addEventListener("pointerleave", railFlyoutLeave);
+// Rows answer as the tree's rows do; choosing a session is the end of the errand.
+railFlyout.addEventListener("click", event => {
+  if (railFlyoutFor === "filter") return;
+  railFlyoutPinned = true;
+  const chose = event.target.closest("[data-session]") && !event.target.closest("[data-ignore-op], [data-family-toggle]");
+  tree.onclick(event);
+  if (chose) closeRailFlyout(false);
+});
+railFlyout.addEventListener("keydown", event => {
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeRailFlyout(true); return; }
+  if (railFlyoutFor !== "filter" && ["Enter", " "].includes(event.key) && event.target.closest("[role=treeitem]")) { event.preventDefault(); event.target.click(); }
+});
+document.addEventListener("keydown", event => { if (event.key === "Escape" && !railFlyout.hidden) { event.stopPropagation(); closeRailFlyout(true); } }, true);
+document.addEventListener("pointerdown", event => { if (!railFlyout.hidden && !railFlyout.contains(event.target) && !railMarks.contains(event.target) && !filterMini.contains(event.target)) closeRailFlyout(false); }, true);
+addEventListener("resize", () => { if (!railFlyout.hidden) placeRailFlyout(); });
 /** Paint the glyphs and the sheet from the one state. */
 function renderFilterControl(counts, shown, total) {
   if (!indexState.ignoredCount) indexState.showHidden = false;
@@ -433,7 +552,15 @@ tree.onclick = event => {
   const toggle = event.target.closest("[data-toggle]"); if (toggle) { const key = toggle.dataset.toggle; indexState.collapsed.has(key) ? indexState.collapsed.delete(key) : indexState.collapsed.add(key); persist(); renderTree(); }
 };
 tree.onkeydown = event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); event.target.click(); } };
-byId("sidebarMiniAgents").onclick = event => { const button = event.target.closest("[data-mini-agent-session]"); if (button) selectSession(button.dataset.miniAgentSession, true); };
+// A mark's click PINS its flyout (#300) — it used to jump to the agent's newest session, which the
+// flyout now lists first under its project. Enter and Space are the same click; ArrowRight too.
+byId("sidebarMiniAgents").onclick = event => {
+  const mark = event.target.closest("[data-mini-agent]"); if (!mark) return;
+  if (!railFlyout.hidden && railFlyoutFor === mark.dataset.miniAgent && railFlyoutPinned) { closeRailFlyout(false); return; }
+  openRailFlyout(mark.dataset.miniAgent, mark, true);
+  if (event.detail === 0) railFlyout.querySelector("[role=treeitem]")?.focus();
+};
+byId("sidebarMiniAgents").onkeydown = event => { if (event.key === "ArrowRight") { const mark = event.target.closest("[data-mini-agent]"); if (mark) { event.preventDefault(); mark.click(); } } };
 
 function sessionUrl(id) {
   const url = new URL(location.href); url.searchParams.set("session", id);
@@ -2018,7 +2145,7 @@ function updateStickyHeaders() { const top = transcript.getBoundingClientRect().
 
 byId("themeBtn").onclick = () => { const dark = document.documentElement.dataset.theme !== "dark"; document.documentElement.dataset.theme = dark ? "dark" : ""; localStorage.setItem("am-demo-theme", dark ? "dark" : "light"); };
 if (localStorage.getItem("am-demo-theme") === "dark") document.documentElement.dataset.theme = "dark";
-function toggleSidebar(open) { indexState.sidebarOpen = open; app.classList.toggle("sidebar-off", !open); persist(); viewport.remeasure(); }
+function toggleSidebar(open) { if (open && !railFlyout.hidden) closeRailFlyout(false); indexState.sidebarOpen = open; app.classList.toggle("sidebar-off", !open); persist(); viewport.remeasure(); }
 byId("sidebarCollapse").onclick = () => toggleSidebar(false); byId("sidebarMiniExpand").onclick = () => toggleSidebar(true); byId("sidebarReopen").onclick = () => toggleSidebar(true);
 // The rail's write button reaches the write switch itself (#54): the demo clicks the write
 // BUTTON, whose handler ignores a click that lands on a button — a programmatic click does.

@@ -929,3 +929,14 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .search-result-stale .result-copy b,.search-result-stale .result-copy small{opacity:.55}
 .search-result-stale .result-kind{opacity:.5}
 .result-why{flex:none;margin-left:auto;color:var(--faint);font:10px var(--mono);white-space:nowrap}
+
+/* #300 — the collapsed rail's flyout: beside the 64px rail, over the transcript, holding either one
+   agent's projects and sessions (the tree's own rows) or the sidebar's filter sheet. It keeps inside
+   the window and scrolls within itself; the rows are the tree's, so only the frame is styled here. */
+.rail-flyout{position:fixed;z-index:60;width:292px;max-width:calc(100vw - 80px);max-height:calc(100vh - 16px);display:flex;flex-direction:column;padding:8px 6px;border:1px solid var(--line);border-radius:12px;background:var(--bg);box-shadow:0 16px 44px rgba(34,43,73,.16);animation:pop .12s ease-out}
+.rail-flyout[hidden]{display:none}
+.rail-flyout-head{flex:none;padding:3px 8px 7px;color:var(--faint);font-size:9.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.rail-flyout-tree{min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.rail-flyout.rail-flyout-filter{width:260px;padding:0}
+.rail-flyout .session-filter-options{position:static;left:auto;right:auto;top:auto;border:0;box-shadow:none;background:transparent}
+@media(prefers-reduced-motion:reduce){.rail-flyout{animation:none}}

@@ -603,7 +603,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /title="\$\{BLOCKED_SUMMARY\}"/, "the Blocked checkbox explains itself with the predicate's sentence");
   assert.match(appSource, /\$\{FILTER_LABELS\.recent\}/, "the checkbox is labelled from the shared table (Active recently)");
   assert.match(appSource, /byId\("sidebarMiniSearch"\)\.insertAdjacentElement\("afterend", filterMini\)/, "the rail's filter glyph sits after search");
-  assert.match(appSource, /filterMini\.onclick = \(\) => \{ byId\("sidebarMiniExpand"\)\.click\(\); toggleFilterSheet\(true\); \};/, "…and opens the sidebar and the sheet");
+  // #300 (the owner): collapsed, the glyph opens the sidebar's own sheet in a flyout beside the rail
+  // rather than expanding the sidebar — pointed at, or clicked to pin it.
+  assert.match(appSource, /filterMini\.onclick = \(\) => \{ [^\n]*openRailFlyout\("filter", filterMini, true\)/, "…and a click opens the sheet in the rail's flyout");
+  assert.match(appSource, /filterMini\.addEventListener\("pointerenter", \(\) => railFlyoutHover\("filter", filterMini\)\)/, "…as pointing at it does");
+  assert.match(appSource, /railFlyout\.appendChild\(filterSheet\)/, "…hosting THE sheet, not a copy");
   console.log("#202 bucket cases passed");
 }
 
@@ -910,7 +914,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /"sidebar-toggle": \(\) => toggleSidebar\(!indexState\.sidebarOpen\)/, "the shell acts on it");
   assert.match(appSource, /byId\("sidebarMiniWrite"\)\.onclick = \(\) => byId\("writeSwitch"\)\.click\(\);/, "the rail's write button reaches the switch");
   assert.match(appSource, /byId\("sidebarMiniSearch"\)\.onclick = openGlobalSearch;/, "…its search button the global search");
-  assert.match(appSource, /filterMini\.onclick = \(\) => \{ byId\("sidebarMiniExpand"\)\.click\(\); toggleFilterSheet\(true\); \};/, "…its filter glyph the session filter (#202 replaced the attention button)");
+  assert.match(appSource, /filterMini\.onclick = \(\) => \{ [^\n]*openRailFlyout\("filter", filterMini, true\)/, "…its filter glyph the session filter, in the rail's flyout (#202 replaced the attention button; #300 the flyout)");
   const prodCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   // #91 → #202: the one control that changes what the list shows is lit when it does — the
   // session filter's glyph takes the primary tint, where the shell's own `.iconbtn:hover` is

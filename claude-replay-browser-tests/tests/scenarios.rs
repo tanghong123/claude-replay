@@ -14362,6 +14362,247 @@ fn app_shell_the_rail_wears_each_agent_s_mark() {
     drop(m);
 }
 
+/// #300 — the owner: "only showing the agent icon is point-less, please show the projects and
+/// sessions for the agent in a float window", and "Same for the session filter, when collapsed and
+/// mouse hover over the filter will lead to the opening of a float window (same drop down menu)".
+/// In the collapsed rail, pointing at an agent's mark opens a flyout of THAT agent's projects and
+/// sessions — the rows the expanded tree draws — which survives the trip from the mark into it;
+/// choosing a session selects it and closes it; a click pins one open and Escape closes it, handing
+/// the focus back. Pointing at the filter glyph opens the sidebar's own filter menu beside the rail;
+/// a choice made there is the sidebar's choice, and the menu is back in its place once the sidebar
+/// is expanded. Every flyout sits inside the window and answers its own hit test, at a narrow
+/// window too.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
+    let _serial = serial();
+    let base = base("rail-flyouts-app");
+    let stores = Stores::new(&base);
+    let near = |n: u32| {
+        let mut t = long_session(2, Shape::default());
+        t += &user_at(
+            &format!("question {n}: recent"),
+            &harness::rfc3339_secs_ago(120 + n as u64),
+        );
+        t += &assistant_at("answer recent", &harness::rfc3339_secs_ago(100 + n as u64));
+        t
+    };
+    let claude_a = "aaaa1111-0000-4000-8000-000000000300";
+    let claude_b = "bbbb2222-0000-4000-8000-000000000300";
+    let codex = "019a0000-0000-7000-8000-000000000300";
+    stores.claude_session(claude_a, &near(1));
+    let other = stores.root.join("claude").join("-elsewhere");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(
+        other.join(format!("{claude_b}.jsonl")),
+        near(2).replace("\"cwd\":\"/r\"", "\"cwd\":\"/elsewhere\""),
+    )
+    .unwrap();
+    stores.codex_session(codex, &harness::codex_tool_session(codex, 2));
+    let m = Monitor::spawn(Kind::V2, 3054, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    m.pair(&tab);
+    m.open(&tab, "?ui=app");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#sidebarMiniAgents .sidebar-mini-agent').length >= 2 && document.querySelectorAll('#tree [data-session]').length >= 3",
+        "the tree and a rail mark for each agent",
+        Duration::from_secs(30),
+        "document.getElementById('tree').innerText.slice(0, 300)",
+    );
+    eval(
+        &tab,
+        "document.getElementById('sidebarCollapse').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('sidebar-off') && Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 64",
+        "the collapsed rail",
+        Duration::from_secs(10),
+        "document.getElementById('app').className",
+    );
+    settle();
+    let mark = |agent: &str| {
+        format!(
+            "document.querySelector('#sidebarMiniAgents .sidebar-mini-agent[title=\"{agent}\"]')"
+        )
+    };
+    let fire = |target: &str, kind: &str| {
+        eval(
+            &tab,
+            &format!("(function(){{ var t = {target}; t.dispatchEvent(new PointerEvent({kind:?}, {{bubbles: {bubbles}, pointerType: 'mouse'}})); return 'ok'; }})()", bubbles = !kind.ends_with("enter") && !kind.ends_with("leave")),
+        );
+    };
+    // Open, inside the window, answering its own hit test; the session ids it lists.
+    let flyout = "(function(){ var f = document.getElementById('railFlyout'); if (!f || f.hidden) return JSON.stringify({ open: false }); var r = f.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 40)); return JSON.stringify({ open: true, inside: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, hits: !!hit && f.contains(hit), sessions: [...f.querySelectorAll('[data-session]')].map(function (e) { return e.dataset.session; }).sort(), projects: [...f.querySelectorAll('.tree-row.project .tree-title')].map(function (e) { return e.textContent; }).sort(), filter: !!f.querySelector('#sessionFilter') && !f.querySelector('#sessionFilter').hidden, rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(eval(&tab, flyout).as_str().unwrap_or("{}")).unwrap()
+    };
+    let until_open = |what: &str| {
+        harness::until(
+            &tab,
+            &format!("JSON.parse({flyout}).open === true"),
+            what,
+            Duration::from_secs(5),
+            flyout,
+        );
+        settle();
+    };
+
+    for (width, height) in [(1440.0, 900.0), (820.0, 640.0)] {
+        harness::resize(&tab, width, height);
+        harness::until(
+            &tab,
+            &format!("innerWidth <= {width} && innerWidth > {width} - 40"),
+            "the window to take its new width",
+            Duration::from_secs(10),
+            "innerWidth",
+        );
+        harness::until_preview_parked(&tab);
+        settle();
+
+        // Pointing at Claude's mark opens Claude's projects and sessions, and nothing of Codex's.
+        fire(&mark("Claude Code"), "pointerenter");
+        until_open("the flyout for Claude Code");
+        let seen = read();
+        assert!(
+            seen["inside"] == true && seen["hits"] == true,
+            "at {width}px: the flyout sits inside the window and answers its own hit test: {seen}"
+        );
+        let mut want = vec![claude_a, claude_b];
+        want.sort();
+        assert_eq!(
+            seen["sessions"],
+            serde_json::json!(want),
+            "at {width}px: Claude's sessions, and none of Codex's: {seen}"
+        );
+        assert_eq!(
+            seen["projects"].as_array().map(|p| p.len()),
+            Some(2),
+            "at {width}px: grouped by project, as the tree is: {seen}"
+        );
+        // The trip from the mark into the flyout does not close it.
+        fire(&mark("Claude Code"), "pointerleave");
+        fire("document.getElementById('railFlyout')", "pointerenter");
+        std::thread::sleep(Duration::from_millis(600));
+        assert_eq!(
+            read()["open"],
+            true,
+            "at {width}px: moving from the mark into the flyout keeps it open"
+        );
+        // Leaving both closes it.
+        fire("document.getElementById('railFlyout')", "pointerleave");
+        harness::until(
+            &tab,
+            &format!("JSON.parse({flyout}).open === false"),
+            "the flyout to close once the pointer has left both",
+            Duration::from_secs(5),
+            flyout,
+        );
+
+        // Choosing a session there selects it and closes the flyout.
+        fire(&mark("Claude Code"), "pointerenter");
+        until_open("the flyout again");
+        eval(
+            &tab,
+            &format!("(function(){{ document.querySelector('#railFlyout [data-session=\"{claude_b}\"]').click(); return 'ok'; }})()"),
+        );
+        harness::until(
+            &tab,
+            &format!("!!document.querySelector('#tree .tree-row.session.selected[data-session=\"{claude_b}\"]') && JSON.parse({flyout}).open === false"),
+            "the chosen session selected and the flyout closed",
+            Duration::from_secs(10),
+            flyout,
+        );
+
+        // A click pins Codex's flyout; Escape closes it and gives the focus back to the mark.
+        eval(&tab, &format!("{}.click(); 'ok'", mark("Codex")));
+        until_open("the pinned flyout for Codex");
+        let seen = read();
+        let ids: Vec<&str> = seen["sessions"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            ids.len() == 1 && ids[0].contains(codex),
+            "at {width}px: Codex's flyout lists Codex's session only: {seen}"
+        );
+        fire(&mark("Codex"), "pointerleave");
+        std::thread::sleep(Duration::from_millis(600));
+        assert_eq!(
+            read()["open"],
+            true,
+            "at {width}px: a pinned flyout stays when the pointer leaves"
+        );
+        eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true})); 'ok'");
+        settle();
+        assert_eq!(read()["open"], false, "at {width}px: Escape closes it");
+        assert_eq!(
+            eval(
+                &tab,
+                &format!("document.activeElement === {}", mark("Codex"))
+            ),
+            true,
+            "at {width}px: …and hands the focus back to the mark (focus on {})",
+            eval(&tab, "(function(){ var a = document.activeElement; return a ? a.tagName + '#' + a.id + '.' + a.className + ' ' + (a.title || '') : 'none'; })()")
+        );
+
+        // The filter glyph opens the sidebar's own filter menu beside the rail.
+        fire(
+            "document.getElementById('sidebarMiniFilter')",
+            "pointerenter",
+        );
+        until_open("the filter flyout");
+        let seen = read();
+        assert!(
+            seen["filter"] == true && seen["inside"] == true && seen["hits"] == true,
+            "at {width}px: the filter menu opens beside the rail, inside the window, hit-testable: {seen}"
+        );
+        let idle = eval(&tab, "(function(){ var o = document.querySelector('#railFlyout [data-bucket=\"idle\"]'); var r = o.getBoundingClientRect(); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return h && o.contains(h) ? 'hit' : 'covered'; })()");
+        assert_eq!(
+            idle, "hit",
+            "at {width}px: the Idle choice answers its own hit test"
+        );
+        eval(
+            &tab,
+            "document.querySelector('#railFlyout [data-bucket=\"idle\"]').click(); 'ok'",
+        );
+        settle();
+        let remembered = eval(&tab, "(function(){ try { return localStorage.getItem('am-prod-session-filter') || ''; } catch (e) { return ''; } })()");
+        assert!(
+            !remembered.as_str().unwrap_or("").contains("idle"),
+            "at {width}px: a choice made in the flyout is the sidebar's choice: {remembered}"
+        );
+        eval(
+            &tab,
+            "document.querySelector('#railFlyout [data-bucket=\"idle\"]').click(); 'ok'",
+        );
+        settle();
+        eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true})); 'ok'");
+        settle();
+        assert_eq!(
+            read()["open"],
+            false,
+            "at {width}px: Escape closes the filter flyout"
+        );
+    }
+
+    // Expanded again, the filter menu is back under the sidebar's head, shut, working as before.
+    eval(
+        &tab,
+        "document.getElementById('sidebarMiniExpand').click(); 'ok'",
+    );
+    settle();
+    let home = eval(&tab, "(function(){ var s = document.getElementById('sessionFilter'); return JSON.stringify([!!s.closest('.side-head'), s.hidden]); })()");
+    assert_eq!(
+        home.as_str(),
+        Some("[true,true]"),
+        "the filter menu is back in the sidebar's head, shut: {home}"
+    );
+    drop(m);
+}
+
 /// One word, "needle", in three places one facet can tell apart: a Bash command, a Read's target
 /// and an assistant's prose. Prose between the calls so each is its own record.
 fn needle_fixture(name: &str) -> Fixture {
