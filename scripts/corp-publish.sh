@@ -212,7 +212,20 @@ for t in $TOOLS; do for p in $PLATFORMS; do
   [ -f "$D/$t-$tri.tar.gz" ] && [ -f "$D/$t-$tri.sha256" ] && have=$((have+1))
 done; done
 if [ "$have" = "16" ]; then say "  reusing 16 tarballs already in $D"; else
-  ( cd "$D" && gh release download "v$V" -R "$GH_REPO" -p '*.tar.gz' -p '*.sha256' --clobber >/dev/null 2>&1 ) || stop "tarballs: gh release download failed"
+  # One pair at a time, each retried, keeping what already arrived: through this machine's proxy a
+  # single 32-file download failed whole twice in a row for 1.317.0 (each attempt ~25 minutes, all
+  # of it thrown away). With --work <dir> a rerun resumes from the pairs on disk.
+  for t in $TOOLS; do for p in $PLATFORMS; do
+    tri=$(triple_for "$p")
+    [ -f "$D/$t-$tri.tar.gz" ] && [ -f "$D/$t-$tri.sha256" ] && continue
+    GH_ERR=""
+    for _try in 1 2 3 4; do
+      if GH_ERR=$( cd "$D" && gh release download "v$V" -R "$GH_REPO" -p "$t-$tri.tar.gz" -p "$t-$tri.sha256" --clobber 2>&1 >/dev/null ); then GH_ERR=""; break; fi
+      rm -f "$D/$t-$tri.tar.gz" "$D/$t-$tri.sha256"; sleep 5
+    done
+    [ -z "$GH_ERR" ] || stop "tarballs: $t-$tri would not download after four tries (gh: $GH_ERR)"
+    say "  downloaded $t-$tri"
+  done; done
 fi
 ok=0
 for t in $TOOLS; do for p in $PLATFORMS; do
