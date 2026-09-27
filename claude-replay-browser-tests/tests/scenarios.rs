@@ -11714,10 +11714,12 @@ fn client_cost_fixture(name: &str) -> Fixture {
     // Traffic BEFORE the client ever started counting.
     t += &user_at("question: what did this cost", &now_minus(600));
     t += &assistant_at("answer: let me total it up", &now_minus(599));
-    // 2026-08-27T00:00:00Z for two hours, then a second run a day later for one hour. Fixed
-    // instants, not `now_minus`: the assertion is about the DATES the page prints.
-    const RUN_ONE: i64 = 1_787_788_800_000;
-    const RUN_TWO: i64 = 1_787_788_800_000 + 86_400_000;
+    // 2026-08-27T10:00:00Z for two hours, then a second run a day later for one hour. Fixed
+    // instants, not `now_minus`: the assertion is about the DATES the page prints, in the VIEWER's
+    // timezone — so not at midnight UTC, which printed Aug 26 on a machine in PDT. At 10:00Z the
+    // two dates read 27 and 28 from UTC−10 to UTC+12.
+    const RUN_ONE: i64 = 1_787_788_800_000 + 36_000_000;
+    const RUN_TWO: i64 = RUN_ONE + 86_400_000;
     for (start, usd, dur) in [
         (RUN_ONE, 3.10_f64, 3_600_000_i64),
         (RUN_ONE, 7.50, 7_200_000),
