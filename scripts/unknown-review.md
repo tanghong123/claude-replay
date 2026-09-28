@@ -29,6 +29,13 @@ a task must not carry a prompt, a file's text or an identifier out of it. Before
 the open tasks (`{{TASKQ}} list --running`): if one already covers the same finding, do not queue a
 second.
 
+A `--check` must be a command that FINISHES within taskq's limit of 600 seconds per check, or the
+task can never be closed: never the whole browser suite (`cargo test -p claude-replay-browser-tests
+-- --ignored`, about an hour — task #306 carried it and timed out). Name the specific browser cases
+(`cargo test -p claude-replay-browser-tests --test scenarios -- --ignored <case name>`), and state
+the full-suite requirement in `--accept` or the description, where the executing agent meets it
+before its release.
+
 ## 1. New transcript shapes (rows below whose `where` is not `model.unpriced`)
 
 1. **Find it.** `example` is a session id: `agent-replay --paths <id>` prints the transcript's
