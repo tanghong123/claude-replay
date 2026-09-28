@@ -2577,3 +2577,59 @@ pub fn codex_tool_session(id: &str, turns: u32) -> String {
     }
     out
 }
+
+/// Make `tab` a phone (#310): a mobile viewport of `width`×`height` CSS pixels at device-pixel
+/// ratio 3, with touch — what `tailscale serve` hands a phone after #11. Chrome's own emulation,
+/// so media queries, `pointer: coarse` and the visual viewport all answer as they would there.
+pub fn phone(tab: &headless_chrome::Tab, width: u32, height: u32) {
+    use headless_chrome::protocol::cdp::Emulation;
+    tab.call_method(Emulation::SetDeviceMetricsOverride {
+        width,
+        height,
+        device_scale_factor: 3.0,
+        mobile: true,
+        scale: None,
+        screen_width: Some(width),
+        screen_height: Some(height),
+        position_x: None,
+        position_y: None,
+        dont_set_visible_size: None,
+        screen_orientation: None,
+        viewport: None,
+        display_feature: None,
+        device_posture: None,
+    })
+    .expect("phone metrics");
+    tab.call_method(Emulation::SetTouchEmulationEnabled {
+        enabled: true,
+        max_touch_points: Some(5),
+    })
+    .expect("touch emulation");
+}
+
+/// What a phone-width page gets wrong, measured (#310): horizontal page scroll, visible elements
+/// that run past the right edge, and visible controls that are smaller than a 44px tap target or
+/// that another element covers at their centre. JSON, for a case to assert on or an audit to read.
+pub const PHONE_PROBE: &str = r#"(function(){
+  var W = innerWidth, H = innerHeight;
+  function visible(e){ var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; var s = getComputedStyle(e); if (s.visibility === 'hidden' || s.display === 'none' || Number(s.opacity) === 0) return false; return r.bottom > 0 && r.top < H && r.right > 0 && r.left < W + 400; }
+  function label(e){ return (e.id ? '#' + e.id : e.tagName.toLowerCase() + (e.className && typeof e.className === 'string' ? '.' + e.className.trim().split(/\s+/).slice(0, 2).join('.') : '')) + (e.getAttribute('aria-label') ? ' [' + e.getAttribute('aria-label').slice(0, 30) + ']' : (e.textContent || '').trim() ? ' "' + (e.textContent || '').trim().slice(0, 24) + '"' : ''); }
+  var past = [], small = [], covered = [];
+  document.querySelectorAll('body *').forEach(function(e){
+    if (!visible(e)) return;
+    var r = e.getBoundingClientRect();
+    if (r.right > W + 1 && getComputedStyle(e).position !== 'fixed') {
+      var clipped = false; for (var p = e.parentElement; p; p = p.parentElement) { var o = getComputedStyle(p).overflowX; if (o !== 'visible') { var q = p.getBoundingClientRect(); if (q.right <= W + 1) { clipped = true; break; } } }
+      if (!clipped) past.push(label(e) + ' right=' + Math.round(r.right));
+    }
+  });
+  document.querySelectorAll('button, a[href], input, select, textarea, [role=button], [role=treeitem], [role=checkbox], [data-session]').forEach(function(e){
+    if (!visible(e)) return;
+    var r = e.getBoundingClientRect(); if (r.top >= H || r.left >= W) return;
+    if (Math.min(r.width, r.height) < 44) small.push(label(e) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height));
+    var x = Math.min(Math.max(r.left + r.width / 2, 0), W - 1), y = Math.min(Math.max(r.top + r.height / 2, 0), H - 1);
+    var hit = document.elementFromPoint(x, y);
+    if (hit && !e.contains(hit) && !hit.contains(e)) covered.push(label(e) + ' under ' + label(hit));
+  });
+  return JSON.stringify({ viewport: W + 'x' + H, pageScrollX: document.documentElement.scrollWidth - W, bodyFont: getComputedStyle(document.body).fontSize, pastRight: past.slice(0, 25), pastRightCount: past.length, smallTargets: small.slice(0, 40), smallCount: small.length, covered: covered.slice(0, 25), coveredCount: covered.length });
+})()"#;

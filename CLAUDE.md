@@ -40,6 +40,13 @@ so all six stay inside the sidebar at its 232px minimum (#210); the switch is ex
 glyph width there, since shaving a word is what clipped it. Nothing is hidden at any width; a new
 control in that row is measured against the minimum, not the default, and the case hit-tests the
 switch against the brand and the theme glyph rather than eyeballing it.
+**On a phone (≤700px, #310) the app shell is a reader**, the owner's rule: the transcript runs edge
+to edge (a 13px gutter), controls may FLOAT over the text, and controls of little use on a phone are
+hidden. So the outline rail is one floating button, the per-block `#`/`{}` chips are not drawn, the
+search icon opens a box across the top bar, and the list and the session are two SCREENS
+(`mobile-detail`), never layers. Controls are at least 44px tall. The rules live in
+`production.css` under `#310`; the cases are `a_phone*` in `browser_follow.rs`, driven by
+`harness::phone` (emulated BEFORE the first load, since the page stores its outline default).
 **Sessions sort into three buckets** (#202, `design/agent-states.md` §10): active (busy),
 blocked (a wait, or an idle reason that cut the work short — this is what "needs attention"
 means and counts) and idle (`done`, `exited`); `sessionBucket` in `shared/state-labels.js` is

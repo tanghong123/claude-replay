@@ -7510,3 +7510,282 @@ fn a_phone_pairs_by_a_one_time_code() {
     );
     drop(m);
 }
+
+/// TEMPORARY (#310 audit, not for commit): screenshots and phone-probe measurements of the app
+/// shell's main states at two phone sizes, into target/phone-audit/.
+/// #310's world: a session with a hit to search for and a second one to go back to, served by v2's
+/// app shell to a phone (390×844 unless the case says otherwise). The phone is emulated BEFORE the
+/// first page loads, as a real phone would be — a page first loaded at desktop width stores the
+/// desktop's outline setting.
+fn phone_world(
+    port: u16,
+    case: &str,
+    w: u32,
+    h: u32,
+) -> (
+    harness::Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    let base = harness::base(case);
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(8, harness::Shape::default());
+    t += &harness::user_at("question 9: build and check", &harness::now_minus(90));
+    t += &harness::assistant_at("answer 9: it builds; here is a table\\n\\n| a | b | c |\\n|---|---|---|\\n| one long cell value here | two | three |", &harness::now_minus(60));
+    stores.claude_session("aaaa1111-0000-4000-8000-000000000310", &t);
+    stores.claude_session(
+        "bbbb2222-0000-4000-8000-000000000310",
+        &harness::long_session(4, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let (browser, tab) = phone_tab(&m, w, h);
+    (m, browser, tab)
+}
+
+/// A fresh phone (its own browser, so nothing is remembered) on `m`, open on a session.
+fn phone_tab(
+    m: &harness::Monitor,
+    w: u32,
+    h: u32,
+) -> (
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    harness::phone(&tab, w, h);
+    m.pair(&tab);
+    m.open(&tab, "?ui=app");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('mobile-detail') && !!document.querySelector('.transcript .turn.user')",
+        "the phone to open on a session",
+        Duration::from_secs(20),
+        "document.getElementById('app').className",
+    );
+    (browser, tab)
+}
+
+/// A real tap (CDP mouse events at the element's centre) on `sel`, found afresh until it lands: the
+/// session tree re-renders its rows as the index refreshes, which detaches a row found a moment ago.
+fn phone_tap(tab: &headless_chrome::Tab, sel: &str) {
+    let mut last = String::new();
+    for _ in 0..10 {
+        match tab.find_element(sel).and_then(|e| e.click().map(|_| ())) {
+            Ok(()) => return,
+            Err(e) => last = e.to_string(),
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    panic!("could not tap {sel}: {last}");
+}
+
+/// True when the element `sel` names is where a finger lands: its centre hit-tests to it.
+const PHONE_HITTABLE: &str = "function (el) { if (!el) return false; var r = el.getBoundingClientRect(); if (r.width < 4 || r.height < 4 || r.right <= 0 || r.left >= innerWidth) return false; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(hit && (hit === el || el.contains(hit))); }";
+
+/// #310: on a phone the session list and the session are two screens. After Back the list was
+/// drawn UNDER the session's turn bar, outline and header (a transparent sheet at z-index 20), so
+/// its rows took no taps; and a tap on the session just left did nothing, because it was still
+/// the one open. Every row is reachable after Back, and the same row goes back into the session.
+#[test]
+#[ignore]
+fn a_phone_goes_back_to_the_list_and_into_the_session_again() {
+    let (_m, _b, tab) = phone_world(2830, "phone-list", 390, 844);
+    tab.find_element("#mobileBack").unwrap().click().unwrap();
+    let rows_hittable = format!(
+        "(function(){{ var ok = {PHONE_HITTABLE}; var rows = [].slice.call(document.querySelectorAll('.tree-row.session, .side-head .iconbtn')); return !document.getElementById('app').classList.contains('mobile-detail') && rows.length >= 2 && rows.every(ok) && ok(document.getElementById('searchBtn')); }})()"
+    );
+    harness::until(
+        &tab,
+        &rows_hittable,
+        "every session row, the head's controls and ⌘K to take a tap after Back",
+        Duration::from_secs(10),
+        "(function(){ return [].slice.call(document.querySelectorAll('.tree-row.session, .side-head .iconbtn')).map(function(e){ var r = e.getBoundingClientRect(), h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return (h && (h.id || h.className)) + ''; }).join(' | '); })()",
+    );
+    let probe: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, harness::PHONE_PROBE).as_str().unwrap()).unwrap();
+    assert_eq!(
+        probe["coveredCount"], 0,
+        "nothing in the list view is covered: {probe}"
+    );
+    phone_tap(&tab, ".tree-row.session.selected");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('mobile-detail')",
+        "a tap on the session left by Back to go back into it",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+}
+
+/// #310: below 700px the search box is an icon whose input is `display:none`, so a phone could not
+/// search at all. A tap opens it across the bar, typed text searches, a step keeps it open (a touch
+/// browser does not focus a tapped button, so a close-on-blur box would vanish under the finger),
+/// and a tap outside closes it with the query kept.
+#[test]
+#[ignore]
+fn a_phone_can_search_the_session() {
+    let (_m, _b, tab) = phone_world(2817, "phone-search", 390, 844);
+    tab.find_element(".header-searchbox")
+        .unwrap()
+        .click()
+        .unwrap();
+    let open = format!(
+        "(function(){{ var i = document.getElementById('transcriptSearchInput'), r = i.getBoundingClientRect(); return document.activeElement === i && r.width >= 150 && r.right <= innerWidth && ({PHONE_HITTABLE})(i); }})()"
+    );
+    harness::until(
+        &tab,
+        &open,
+        "a tap to open the search box, focused and at least 150px wide",
+        Duration::from_secs(5),
+        "(function(){ var i = document.getElementById('transcriptSearchInput'), r = i.getBoundingClientRect(); return [document.activeElement && document.activeElement.id, Math.round(r.left), Math.round(r.width), getComputedStyle(i).display].join(','); })()",
+    );
+    tab.type_str("answer").unwrap();
+    tab.press_key("Enter").unwrap();
+    harness::until(
+        &tab,
+        "/[1-9]/.test(document.getElementById('transcriptSearchCount').textContent) && !!document.querySelector('.transcript mark, .transcript .search-hit, .transcript [data-hit]')",
+        "the typed query to find its hit",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent + ' / ' + document.getElementById('transcriptSearchInput').value",
+    );
+    let next = format!("({PHONE_HITTABLE})(document.getElementById('findNext'))");
+    assert_eq!(
+        harness::eval(&tab, &next),
+        true,
+        "the next-match step is on screen and takes a tap"
+    );
+    tab.find_element("#findNext").unwrap().click().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "document.querySelector('.header-searchbox').classList.contains('phone-open')"
+        ),
+        true,
+        "a step leaves the box open"
+    );
+    tab.find_element(".transcript .turn.user")
+        .unwrap()
+        .click()
+        .unwrap();
+    harness::until(
+        &tab,
+        "!document.querySelector('.header-searchbox').classList.contains('phone-open') && getComputedStyle(document.getElementById('transcriptSearchInput')).display === 'none' && document.getElementById('transcriptSearchInput').value === 'answer'",
+        "a tap outside to close the box and keep the query",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+}
+
+/// #310: the outline's default was open everywhere, and on a phone it is an overlay across most of
+/// the transcript. A phone that has not chosen opens on the transcript; the outline is a tap away.
+#[test]
+#[ignore]
+fn a_phone_opens_on_the_transcript_not_the_outline() {
+    let (_m, _b, tab) = phone_world(2818, "phone-outline", 390, 844);
+    harness::until(
+        &tab,
+        "(function(){ var h = document.elementFromPoint(innerWidth / 2, innerHeight / 2); return document.querySelector('.workspace').classList.contains('navigator-off') && !!h && !!h.closest('.transcript'); })()",
+        "the middle of the screen to be the transcript, with the outline shut",
+        Duration::from_secs(5),
+        "(function(){ var h = document.elementFromPoint(innerWidth / 2, innerHeight / 2); return document.querySelector('.workspace').className + ' / ' + (h && (h.id || h.className)); })()",
+    );
+}
+
+/// #310: a finger, not a pointer. At 390 and 360 the controls a reader moves around with are at
+/// least 44px tall and 40px wide (they were 28–34px), the page never scrolls sideways, and
+/// nothing visible runs past the right edge — in the session and in the list.
+#[test]
+#[ignore]
+fn a_phones_controls_are_finger_sized() {
+    let (m, _b, _t) = phone_world(2840, "phone-targets", 390, 844);
+    for (w, h) in [(390u32, 844u32), (360, 780)] {
+        let (_browser, tab) = phone_tab(&m, w, h);
+        let measure = "(function(){ function sz(e){ var r = e.getBoundingClientRect(); return (e.id || e.className.split(' ')[0]) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height); } function under(e){ var r = e.getBoundingClientRect(); return r.width > 0 && (r.height < 44 || r.width < 40); } var sel = VIEW; return JSON.stringify([].slice.call(document.querySelectorAll(sel)).filter(function(e){ var r = e.getBoundingClientRect(); return r.width > 0 && r.left < innerWidth && r.right > 0; }).filter(under).map(sz)); })()";
+        let session = measure.replace(
+            "VIEW",
+            "'#mobileBack, .topbar .iconbtn, .topbar .header-searchbox'",
+        );
+        let list = measure.replace("VIEW", "'.side-head .iconbtn, .tree-row.session'");
+        let check = |what: &str| {
+            let probe: serde_json::Value =
+                serde_json::from_str(harness::eval(&tab, harness::PHONE_PROBE).as_str().unwrap())
+                    .unwrap();
+            assert_eq!(
+                probe["pageScrollX"], 0,
+                "{w}px {what}: no sideways page scroll: {probe}"
+            );
+            assert_eq!(
+                probe["pastRightCount"], 0,
+                "{w}px {what}: nothing runs past the right edge: {probe}"
+            );
+        };
+        let small = harness::eval(&tab, &session);
+        assert_eq!(
+            small.as_str().unwrap(),
+            "[]",
+            "{w}px: the session view's bar controls are finger-sized"
+        );
+        check("session");
+        tab.find_element("#mobileBack").unwrap().click().unwrap();
+        harness::until(
+            &tab,
+            "!document.getElementById('app').classList.contains('mobile-detail') && getComputedStyle(document.querySelector('.workspace')).visibility === 'hidden'",
+            "the list view",
+            Duration::from_secs(5),
+            "document.getElementById('app').className",
+        );
+        let small = harness::eval(&tab, &list);
+        assert_eq!(
+            small.as_str().unwrap(),
+            "[]",
+            "{w}px: the list's head controls and rows are finger-sized"
+        );
+        check("list");
+    }
+}
+
+/// #310, the owner: on a phone "the transcript view should go edge to edge … push some controls as
+/// floating on top of the text … okay to hide some controls whose utility may be very limited".
+/// At 390px the text had 248px (a user prompt 146px): a 56px outline rail column, 32px margins,
+/// and a bubble sharing its row with its time. Now the text runs to a 16px gutter, the outline is
+/// one floating button that opens it, and the per-block link / raw chips are not drawn.
+#[test]
+#[ignore]
+fn a_phone_reads_edge_to_edge() {
+    let (_m, _b, tab) = phone_world(2810, "phone-edge", 390, 844);
+    let geo = "(function(){ function box(s){ var e = document.querySelector(s); if (!e) return null; var r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right), Math.round(r.width)]; } var chips = [].slice.call(document.querySelectorAll('.spot-link, .renderer-spot')).filter(function(e){ return e.getBoundingClientRect().width > 0; }).length; return JSON.stringify({ inner: box('.transcript-inner'), prompt: box('.turn.user .user-prompt'), chips: chips }); })()";
+    let seen: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, geo).as_str().unwrap()).unwrap();
+    let inner = &seen["inner"];
+    assert!(
+        inner[0].as_i64().unwrap() <= 16 && inner[1].as_i64().unwrap() >= 390 - 16,
+        "the transcript runs to a 16px gutter on both sides: {seen}"
+    );
+    assert!(
+        seen["prompt"][2].as_i64().unwrap() >= 300,
+        "a long user prompt takes the row: {seen}"
+    );
+    assert_eq!(
+        seen["chips"], 0,
+        "no per-block link or raw chips on a phone: {seen}"
+    );
+    let fab = format!("({PHONE_HITTABLE})(document.getElementById('navigatorRailExpand'))");
+    assert_eq!(
+        harness::eval(&tab, &fab),
+        true,
+        "the outline's floating button takes a tap"
+    );
+    tab.find_element("#navigatorRailExpand")
+        .unwrap()
+        .click()
+        .unwrap();
+    harness::until(
+        &tab,
+        "!document.querySelector('.workspace').classList.contains('navigator-off') && !!document.querySelector('.outline-turn-row')",
+        "the floating button to open the outline",
+        Duration::from_secs(5),
+        "document.querySelector('.workspace').className",
+    );
+}

@@ -403,6 +403,16 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .sidebar-resizer.dragging:after{content:"";position:fixed;inset:0;cursor:col-resize;z-index:9999}
 .app.sidebar-off .sidebar-resizer{display:none}
 @media(max-width:760px){.sidebar-resizer{display:none}}
+/* #310: on a phone the list and the session are two SCREENS, never layers. The reference makes the
+   sidebar a full-screen sheet with a transparent ground and z-index 20, below the transcript's own
+   layers, so after Back the turn bar, the outline and the header drew over the session list and
+   took its taps. The list view is opaque and the session behind it is hidden once the sheet has
+   slid in (the delay lets the slide show); the session view needs nothing, since the sheet is off
+   screen. */
+@media(max-width:760px){
+  .app:not(.mobile-detail)>.sidebar{background:var(--side)}
+  .app:not(.mobile-detail)>.workspace,.app:not(.mobile-detail)>.preview{visibility:hidden;transition:visibility 0s linear .22s}
+}
 /* #78 / #95: the published-artifact roster — the right pane's pinned first tab, and the
    count on the pane's button so a closed pane still says there is something to see. */
 #previewBtn{position:relative}
@@ -932,6 +942,58 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    count and the steps fold away until the box is focused again: at 180px they pushed the filter
    button out past the box's edge, and a wider resting box took the same pixels from the title. */
 @media(min-width:701px) and (max-width:900px){.header-searchbox:focus-within{width:min(360px,48vw)}.topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}.header-searchbox:not(:focus-within) input~:is(.find-count,.find-nav){display:none}}
+
+/* #310 — a finger, not a pointer: at phone width the controls a reader uses to move around (back,
+   the bar's buttons, the list's rows, the sidebar head, the outline rail) are at least 44px to the
+   touch, where they were 28–34px. The session list's rows and the head grow; the bar is 57px tall
+   and holds 44px buttons as it is. Row text and icon sizes are unchanged: only the target grows. */
+@media(max-width:760px){
+  .app .topbar .iconbtn,.app .topbar .mobile-back{width:44px;height:44px;flex:none}
+  .app .topbar .header-searchbox:not(.phone-open){height:44px}
+  .app .topbar .header-filter{width:36px;height:36px}
+  .app .side-head .iconbtn{height:44px}
+  .app .side-head .iconbtn:not(#shellToggle){width:40px}
+  .app .side-head{height:auto;min-height:52px}
+  .app .tree-row.session,.app .tree-row.project,.app .agent-label{min-height:44px}
+  .app .outline-rail>button{width:40px;height:44px}
+  .app .outline-rail{width:48px}
+}
+
+/* #310 — a phone READS (the owner: "the transcript view should go edge to edge … push some controls
+   as floating on top of the text … okay to hide some controls whose utility may be very limited").
+   At 390px the transcript had 248px: a 56px outline rail column, 32px margins and a user bubble
+   sharing its row with its time left a prompt 146px wide. Here the text runs to a 13px gutter; the
+   rail is ONE floating button (open the outline — its panes, the cost and the session details are
+   all inside it) over the bottom-right of the text; a user turn's time drops under the bubble so
+   the bubble can take the row; and the per-block link and raw-view chips, drawn permanently on a
+   touch screen where hover cannot reveal them, are hidden. */
+@media(max-width:700px){
+  .app .workspace.navigator-off .session-main{grid-template-columns:0 minmax(0,1fr)}
+  .app .workspace.navigator-off .session-navigator{position:fixed;left:auto;top:auto;right:12px;bottom:18px;width:auto;height:auto;padding:0;z-index:30;background:transparent;overflow:visible}
+  .app .workspace.navigator-off .outline-rail{width:auto;padding:0;border-radius:50%;box-shadow:0 0 0 1px var(--line),0 10px 24px -10px rgba(34,43,73,.35)}
+  .app .workspace.navigator-off .outline-rail>:not(#navigatorRailExpand),.app .workspace.navigator-off .outline-footer{display:none!important}
+  .app .workspace.navigator-off #navigatorRailExpand{width:48px;height:48px;border-radius:50%;background:var(--bg);color:var(--ink)}
+  #app .session-main .transcript-inner{width:calc(100% - 26px);padding-top:16px}
+  .app .topbar{padding:0 8px 0 4px;gap:4px}
+  .app .turn-stickybar{margin:0 8px}
+  .app .turn.user{flex-wrap:wrap}
+  .app .turn.user .user-prompt{max-width:100%}
+  .app .turn.user .turn-time{flex-basis:100%;order:2;margin:4px 2px 0 0;text-align:right}
+  .app .spot-link,.app .renderer>.renderer-spot{display:none!important}
+}
+
+/* #310 — below 700px the box is an icon with its input hidden (reference.css), which left a phone no
+   way to search at all. A tap opens it across the top bar, over the heading and the controls, with
+   its input, count and steps; the drop-down and the filter popover hang from the bar's edges. */
+@media(max-width:700px){
+  .topbar{position:relative}
+  .topbar .header-search-cluster{position:static}
+  .header-searchbox.phone-open{position:absolute;left:10px;right:10px;top:9px;width:auto;z-index:6;padding:0 5px 0 12px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 8px 20px -12px rgba(34,43,73,.25)}
+  .header-searchbox.phone-open input{display:block!important;flex:1 1 auto;min-width:0}
+  .header-searchbox.phone-open .find-count{display:block!important;flex:none}
+  .header-searchbox.phone-open .find-nav{display:grid!important;flex:none}
+  .header-search-cluster>.search-suggest{position:fixed;left:10px;right:10px;top:58px;width:auto}
+}
 
 /* #294 — a ⌘K row the sidebar is not showing (hidden, or outside the session filter): still
    listed (the filter does not narrow this list), dimmed, and saying why in the sidebar's own words.

@@ -569,8 +569,12 @@ function sessionUrl(id) {
   url.hash = ""; return url;
 }
 function selectSession(id, push) {
-  if (!id || (id === indexState.selected && recordStore.session === id)) return;
-  indexState.selected = id; indexState.selectedWasRow = indexState.rows.has(id); app.classList.add("mobile-detail");
+  if (!id) return;
+  // On a phone a tap on the session just left by Back must bring it back (#310), even though it is
+  // still the one open.
+  app.classList.add("mobile-detail");
+  if (id === indexState.selected && recordStore.session === id) return;
+  indexState.selected = id; indexState.selectedWasRow = indexState.rows.has(id);
   preview.setSession(id);
   const row = selectedRow(); if (row) { indexState.read[id] = row.activityTs || Date.now() / 1000; persist(); }
   renderTree(); renderHeader(); controls.paint();
@@ -1602,7 +1606,7 @@ byId("transcriptSearchInput").onkeydown = event => {
   // Escape leaves the box as a click outside would (#298, the owner; the classic page's `q.blur()`):
   // the query, its count and its marks stay, and the next key is the page's keymap's again. An open
   // filter popover closes with it, as the page-wide Escape closes it.
-  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); return; }
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); return; }
   if (event.key !== "Enter") return;
   event.preventDefault(); event.stopPropagation();
   // A large session searches on Enter (#104): that Enter also MOVES — to the nearest hit below the
@@ -1636,6 +1640,24 @@ searchSuggest = document.createElement("div");
 searchSuggest.className = "search-suggest"; searchSuggest.id = "searchSuggest"; searchSuggest.hidden = true;
 searchSuggest.setAttribute("role", "listbox");
 document.querySelector(".header-search-cluster").appendChild(searchSuggest);
+// #310: below 700px the search box is an icon (reference.css), with its input hidden. A tap on it
+// OPENS it across the top bar, and it stays open until a tap lands outside the search's own
+// surfaces (the box, the drop-down, the filter popover) or Escape — never on blur, since a touch
+// browser does not focus a tapped button and the steps would vanish under the finger. The query,
+// its count and its marks outlive the box closing, as they outlive a blur on a wider window.
+const phoneSearch = matchMedia("(max-width:700px)"), searchBox = document.querySelector(".header-searchbox");
+function setPhoneSearch(open) {
+  searchBox.classList.toggle("phone-open", open && phoneSearch.matches);
+  if (open && phoneSearch.matches) byId("transcriptSearchInput").focus();
+}
+searchBox.addEventListener("click", event => {
+  if (!phoneSearch.matches || searchBox.classList.contains("phone-open") || event.target.closest("#filterTranscriptBtn")) return;
+  setPhoneSearch(true);
+});
+document.addEventListener("pointerdown", event => {
+  if (searchBox.classList.contains("phone-open") && !event.target.closest(".header-search-cluster")) setPhoneSearch(false);
+}, true);
+phoneSearch.addEventListener("change", () => { if (!phoneSearch.matches) setPhoneSearch(false); });
 const SCOPE_ROWS = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "All tools"], ["b", "Bash output"], ["r", "Reads"], ["e", "Edits"], ["w", "Whole words"]];
 
 /** The chips as the tokens they were, for the parser. */
@@ -2891,7 +2913,7 @@ function pageTranscript(direction) {
   viewport.pageBy(direction, { intent: true });
 }
 const keyActions = {
-  "search": () => { if (indexState.selected) byId("transcriptSearchInput").focus(); else openGlobalSearch(); },
+  "search": () => { if (indexState.selected) { setPhoneSearch(true); byId("transcriptSearchInput").focus(); } else openGlobalSearch(); },
   "turn-next": () => stepTurn(1), "turn-prev": () => stepTurn(-1),
   "head-next": () => stepHead(1), "head-prev": () => stepHead(-1),
   "hit-next": () => stepSearch(1), "hit-prev": () => stepSearch(-1),
