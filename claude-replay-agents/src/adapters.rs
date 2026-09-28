@@ -28,6 +28,11 @@ impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
     fn push(&mut self, v: &Value) {
         agents::claude::metrics::MetricsAcc::push(self, v)
     }
+    /// The API call (`message.id/requestId`) — shared by the Qoder family, whose records
+    /// carry the same ids.
+    fn usage_id(&self) -> Option<String> {
+        agents::claude::metrics::MetricsAcc::usage_id(self)
+    }
     fn bump_extra(&mut self, key: &str, n: u64) {
         self.bump(key, n)
     }
@@ -60,6 +65,10 @@ impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
 impl MetricsAccumulator for agents::codex::metrics::CodexMetricsAcc {
     fn request_pricing(&self) -> Option<claude_replay_engine::seam::RequestPricing> {
         self.request_pricing
+    }
+    /// The running counter's reading (Codex names no request).
+    fn usage_id(&self) -> Option<String> {
+        self.usage_id.clone()
     }
     fn push(&mut self, v: &Value) {
         agents::codex::metrics::CodexMetricsAcc::push(self, v)

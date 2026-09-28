@@ -1028,6 +1028,125 @@ fn metrics_events_sum_to_the_final_totals() {
     assert!(saw_ts, "events carry the line timestamps");
 }
 
+/// #u173: every token-bearing event names its usage unit, and the name survives a rewrite of
+/// the transcript — so a consumer holding two readings of a rewritten file merges them EXACTLY
+/// (per id: sum within a reading, per-field maximum across readings), where the per-bucket
+/// maximum it had to use undercounts a bucket holding both retained calls and new ones.
+#[test]
+fn a_rewritten_transcript_merges_exactly_by_usage_id() {
+    use claude_replay_engine::metrics::TokenCounts;
+    use claude_replay_engine::metrics_fold::MetricsFold;
+    use std::collections::BTreeMap;
+    fn call(id: &str, out: u64, ts: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","sessionId":"s","timestamp":"{ts}","requestId":"req_{id}","message":{{"role":"assistant","id":"msg_{id}","model":"claude-opus-4-8","content":[{{"type":"text","text":"x"}}],"usage":{{"input_tokens":10,"output_tokens":{out},"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}}}}"#
+        )
+    }
+    // Call a is two lines (a streamed repeat that grew 5 -> 40); then b and c.
+    let before = [
+        call("a", 5, "2026-08-05T10:00:01Z"),
+        call("a", 40, "2026-08-05T10:00:02Z"),
+        call("b", 30, "2026-08-05T10:00:03Z"),
+        call("c", 20, "2026-08-05T10:00:04Z"),
+    ];
+    // The rewrite keeps a and b verbatim and drops c; the session goes on with d — all inside
+    // one 5-minute bucket.
+    let after = [
+        before[0].clone(),
+        before[1].clone(),
+        before[2].clone(),
+        call("d", 25, "2026-08-05T10:00:05Z"),
+    ];
+    let read = |lines: &[String]| -> BTreeMap<String, TokenCounts> {
+        let p = tmp1(&(lines.join("\n") + "\n"));
+        let mut f = MetricsFold::open(&ClaudeAdapter, &p, None).unwrap();
+        let mut per: BTreeMap<String, TokenCounts> = BTreeMap::new();
+        while let Some(ev) = f.next_event().unwrap() {
+            let id = ev.id.expect("a token-bearing event names its unit");
+            for (_, d) in ev.tokens {
+                *per.entry(id.clone()).or_default() += d;
+            }
+        }
+        per
+    };
+    let (a, b) = (read(&before), read(&after));
+    assert_eq!(
+        a.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["msg_a/req_a", "msg_b/req_b", "msg_c/req_c"],
+        "one id per API call — the repeat line is the same call"
+    );
+    assert_eq!(
+        a["msg_a/req_a"].output, 40,
+        "the call's two lines credit 40, not 45"
+    );
+    assert_eq!(
+        a["msg_a/req_a"], b["msg_a/req_a"],
+        "a retained call keeps its id and its credit"
+    );
+    let mut merged = a.clone();
+    for (id, t) in &b {
+        let e = merged.entry(id.clone()).or_default();
+        *e = TokenCounts {
+            input: e.input.max(t.input),
+            cache_creation: e.cache_creation.max(t.cache_creation),
+            cache_read: e.cache_read.max(t.cache_read),
+            output: e.output.max(t.output),
+        };
+    }
+    let output = |m: &BTreeMap<String, TokenCounts>| m.values().map(|t| t.output).sum::<u64>();
+    assert_eq!(output(&merged), 40 + 30 + 20 + 25, "every call once: exact");
+    assert_eq!(
+        output(&a).max(output(&b)),
+        95,
+        "the per-bucket maximum (90 vs 95) loses call c's 20"
+    );
+}
+
+/// #u173 for Codex, which names no request: the unit is the counter READING. Each credited
+/// reading has its own id, a verbatim copy of the rollout reproduces them, and neither a
+/// reading that credited nothing nor a counters-only event (a malformed line) names one.
+#[test]
+fn a_codex_counter_reading_is_its_own_usage_unit() {
+    use claude_replay_engine::metrics_fold::MetricsFold;
+    let mut body = CODEX_CHILD_LINES.join("\n") + "\n";
+    // The same cumulative reading again: no growth, so no unit.
+    body.push_str(r#"{"timestamp":"2026-08-09T22:48:11.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":60,"cached_input_tokens":3,"output_tokens":14}}}}"#);
+    body.push('\n');
+    body.push_str("not json at all\n");
+    let read = |body: &str| {
+        let p = tmp1(body);
+        let mut f = MetricsFold::open(&CodexAdapter, &p, None).unwrap();
+        let mut seen = Vec::new();
+        while let Some(ev) = f.next_event().unwrap() {
+            seen.push((ev.tokens.is_empty(), ev.id));
+        }
+        seen
+    };
+    let events = read(&body);
+    let ids: Vec<&str> = events
+        .iter()
+        .filter(|(counters_only, _)| !counters_only)
+        .map(|(_, id)| id.as_deref().expect("a token event names its reading"))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "2026-08-09T22:48:06.000Z/20/5",
+            "2026-08-09T22:48:07.000Z/45/11",
+            "2026-08-09T22:48:09.000Z/60/14"
+        ],
+        "one id per credited reading; the copied parent reading is not the child's"
+    );
+    assert!(
+        events
+            .iter()
+            .filter(|(counters_only, _)| *counters_only)
+            .all(|(_, id)| id.is_none()),
+        "a counters-only event names no unit: {events:?}"
+    );
+    assert_eq!(read(&body), events, "a verbatim copy reproduces every id");
+}
+
 /// A rewritten prefix is detected and answered with a cold restart, not silent miscounting:
 /// same length, different bytes below the cursor ⇒ the window CRC mismatches.
 #[test]

@@ -91,6 +91,10 @@ pub struct MetricsEvent {
     pub tokens: BTreeMap<String, TokenCounts>,
     /// Extension-bag counters this event moved (e.g. a skipped-record diagnostic), as deltas.
     pub extra: BTreeMap<String, u64>,
+    /// The stable identity of the usage unit these tokens belong to —
+    /// [`MetricsAccumulator::usage_id`], with its merge rule. `None` for an event that moved
+    /// only counters, and for an adapter that names no unit.
+    pub id: Option<String>,
 }
 
 /// A metrics fold over one transcript, resumable at a [`MetricsCursor`].
@@ -195,7 +199,7 @@ impl MetricsFold {
                 continue;
             }
             let (tokens_before, extra_before, _) = self.acc.totals();
-            let ts = match serde_json::from_str::<Value>(body) {
+            let (ts, id) = match serde_json::from_str::<Value>(body) {
                 Ok(v) => {
                     let ts = v
                         .get("timestamp")
@@ -203,18 +207,25 @@ impl MetricsFold {
                         .and_then(crate::metrics::parse_ts)
                         .map(|secs| secs as EpochSeconds);
                     self.acc.push(&v);
-                    ts
+                    (ts, self.acc.usage_id())
                 }
+                // Not a push: the accumulator's `usage_id` still names the PREVIOUS line's unit.
                 Err(_) => {
                     self.acc.malformed_line();
-                    None
+                    (None, None)
                 }
             };
             let (tokens_after, extra_after, _) = self.acc.totals();
             let tokens = diff_tokens(&tokens_before, &tokens_after);
             let extra = diff_extra(&extra_before, &extra_after);
             if !tokens.is_empty() || !extra.is_empty() {
-                return Ok(Some(MetricsEvent { ts, tokens, extra }));
+                let id = if tokens.is_empty() { None } else { id };
+                return Ok(Some(MetricsEvent {
+                    ts,
+                    tokens,
+                    extra,
+                    id,
+                }));
             }
         }
     }

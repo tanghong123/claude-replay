@@ -41,6 +41,9 @@ pub(crate) struct MetricsAcc {
     /// growth. Identical repeats add nothing; a streamed/retried group that grows
     /// (`output` 6,6,6,6,6,478) credits 478 in total, never the 508 a sum would give.
     credited: TokenCounts,
+    /// The API call the most recent push's usage belonged to, as `message.id/requestId` —
+    /// the seam's `usage_id`, cleared on every push. Transient: never in the cursor.
+    usage_id: Option<String>,
     /// The latest runtime facts the transcript recorded (#62): Claude Code writes the reasoning
     /// `effort` on each assistant record, a `permission-mode` record whenever the mode is set,
     /// and its `version` on every record — each changes mid-session (effort per request, the
@@ -76,6 +79,7 @@ impl MetricsAcc {
     }
 
     pub(crate) fn push(&mut self, v: &Value) {
+        self.usage_id = None;
         let field = |u: &Value, k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
         // The runtime snapshot (#62): last value wins. `permission-mode` is its own record type
         // (`{"type":"permission-mode","permissionMode":"bypassPermissions"}`); `effort` rides on
@@ -167,6 +171,14 @@ impl MetricsAcc {
                     None => id.to_string(),
                 }
             });
+            // The same call, printable: the key above keeps its NUL form because parked
+            // cursors compare against it.
+            self.usage_id = v.pointer("/message/id").and_then(|x| x.as_str()).map(|id| {
+                match v.get("requestId").and_then(|x| x.as_str()) {
+                    Some(r) => format!("{id}/{r}"),
+                    None => id.to_string(),
+                }
+            });
             let repeat = key.is_some()
                 && self.last_usage_key == key
                 && self.last_usage_model.as_deref() == Some(m.as_str());
@@ -240,6 +252,11 @@ impl MetricsAcc {
     /// boundary: park a cursor between lines 2 and 3 of one message's group and a guard
     /// that reset to `None` would treat line 3 as a fresh call and credit it again —
     /// turning the 2x over-count into a smaller, harder-to-spot one.
+    /// The seam's `usage_id` for the most recent push.
+    pub(crate) fn usage_id(&self) -> Option<String> {
+        self.usage_id.clone()
+    }
+
     pub(crate) fn state(&self) -> Value {
         serde_json::json!({
             "totals": self.totals(),
@@ -407,6 +424,29 @@ mod tests {
                "timestamp":"2026-08-05T10:00:00Z"}}"#
         ))
         .unwrap()
+    }
+
+    /// #u173: the seam's `usage_id` names the call a push's usage belonged to — the same id on
+    /// every line of it — and a push with no usage clears it, so a consumer never files one
+    /// line's delta under the previous line's call.
+    #[test]
+    fn usage_id_names_the_call_and_clears_on_a_push_without_usage() {
+        let mut acc = MetricsAcc::default();
+        acc.push(&msg_line("msg_01A", "req_01A", 5, 0));
+        assert_eq!(acc.usage_id().as_deref(), Some("msg_01A/req_01A"));
+        acc.push(&msg_line("msg_01A", "req_01A", 40, 0));
+        assert_eq!(acc.usage_id().as_deref(), Some("msg_01A/req_01A"));
+        acc.push(
+            &serde_json::json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+        );
+        assert_eq!(acc.usage_id(), None);
+        acc.push(&msg_line("msg_01B", "req_01B", 7, 0));
+        assert_eq!(acc.usage_id().as_deref(), Some("msg_01B/req_01B"));
+        let parked = acc.state();
+        assert!(
+            !parked.to_string().contains("msg_01B/req_01B"),
+            "the id is transient, never in the cursor"
+        );
     }
 
     /// One API call written as three lines must be charged ONCE. Summing per line

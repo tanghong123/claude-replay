@@ -19,6 +19,12 @@ pub(crate) struct CodexMetricsAcc {
     /// done here in the adapter because only it knows its agent reports totals at all.
     last_total: TokenCounts,
     pub(crate) request_pricing: Option<RequestPricing>,
+    /// The counter reading the most recent push credited, as `<timestamp>/<input>/<output>` of
+    /// the raw cumulative `total_token_usage` — the seam's `usage_id`. Codex names no request,
+    /// so the reading is the unit: a credited reading always stands above the last, so no two
+    /// share one, and a copied or rewritten rollout keeps the record verbatim. Cleared on every
+    /// push; transient, never in the cursor.
+    pub(crate) usage_id: Option<String>,
     /// Whether any `token_count` was folded yet. A forked or sub-agent thread's cumulative
     /// counter INHERITS the parent's pre-fork history — its first reading can stand at
     /// hundreds of millions of tokens that live (and are priced) in the PARENT's rollout.
@@ -67,6 +73,7 @@ impl CodexMetricsAcc {
 
     pub(crate) fn push(&mut self, value: &Value) {
         self.request_pricing = None;
+        self.usage_id = None;
         if let Some(timestamp) = value
             .get("timestamp")
             .and_then(Value::as_str)
@@ -278,6 +285,14 @@ impl CodexMetricsAcc {
                         tier_confirmed: false,
                     });
                 }
+            }
+            if delta != TokenCounts::default() {
+                self.usage_id = Some(format!(
+                    "{}/{}/{}",
+                    value.get("timestamp").and_then(Value::as_str).unwrap_or(""),
+                    field("input_tokens"),
+                    field("output_tokens")
+                ));
             }
             let e = self.per_model.entry(self.model.clone()).or_default();
             e.input += now.input.saturating_sub(self.last_total.input);

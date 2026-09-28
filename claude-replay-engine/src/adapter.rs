@@ -85,6 +85,22 @@ pub trait MetricsAccumulator: Send {
         None
     }
 
+    /// The STABLE identity of the usage unit the most recent push belonged to: one API call,
+    /// or one reading of an agent's running counter. The same unit carries the same id in any
+    /// copy or rewrite of the transcript, and two units of one transcript never share one — so
+    /// a consumer that reads a transcript more than once (a rewrite epoch, a copied or diverged
+    /// file) can merge the readings EXACTLY: within one reading sum each id's deltas (one call
+    /// may be credited over several lines), then across readings take each id's per-field
+    /// maximum, since the same call seen twice is one call. A per-bucket maximum instead
+    /// undercounts a bucket holding both a rewrite's retained calls and new ones.
+    ///
+    /// `None` when the push credited no usage, or the format names no unit. Valid only after a
+    /// push: the adapter clears it on every push (as [`request_pricing`](Self::request_pricing)),
+    /// and a line that could not be parsed is not a push. Never part of [`state`](Self::state).
+    fn usage_id(&self) -> Option<String> {
+        None
+    }
+
     /// Fold a machinery-side counter into the accumulating [`Metrics::extra`] bag (#193:
     /// the elision gauges — `elided_lines` / `elided_bytes` / `skipped_lines` — banked by
     /// the read layer, which owns the counts the accumulator cannot see). Default no-op so
