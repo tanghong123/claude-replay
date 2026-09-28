@@ -15041,6 +15041,18 @@ fn scenario_an_artifact_created_from_a_type_is_a_link(
     jump_to_end(tab, surface);
     await_tail(tab, surface, "a fresh open to land at the tail");
     settle();
+    // The app shell lists what a session published in its right pane's roster (#78/#95), not
+    // inline; open it, as a reader would, so its links are on the page.
+    if surface == Surface::AppShell {
+        eval(tab, "(function(){ if (document.getElementById('app').classList.contains('preview-off')) document.getElementById('previewBtn').click(); return 'ok'; })()");
+        harness::until(
+            tab,
+            "!!document.querySelector('#previewBody .artifacts-row a[href]')",
+            "the pane's roster of what the session published",
+            Duration::from_secs(10),
+            "(document.getElementById('previewBody') || {}).innerText",
+        );
+    }
     let seen = eval(
         tab,
         "JSON.stringify({ links: [...document.querySelectorAll('a[href]')].map(function (a) { return a.getAttribute('href'); }).filter(function (h) { return /example\\.test/.test(h); }), titled: document.body.innerText.indexOf('Launch notes') >= 0, instructions: document.body.innerText.indexOf('SENTINEL-AGENT-INSTRUCTIONS') >= 0, bare: /Artifact\\s*\\(?publish\\)?/.test(document.body.innerText) })",
