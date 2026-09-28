@@ -632,11 +632,18 @@ const TOOL_RESULT_READ: &[&str] = &[
     "annotations",
     "answers",
     "bashEditDiff",
+    // #306: an Artifact create from a type — whether it created, and what it warned.
+    "created_from_type",
     "outputFile",
     "state",
     "stderr",
     "stdout",
     "structuredPatch",
+    // #306: moved OFF the ignored list, deliberately — an Artifact result's `url` is the artifact's
+    // own address, preferred over the first link in the prose (which a create from a type opens
+    // with the TYPE's URL).
+    "url",
+    "warnings",
     "workflowName",
 ];
 
@@ -793,7 +800,6 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "type",
     "updated",
     "updatedFields",
-    "url",
     "usage",
     "userModified",
     "version",
@@ -808,6 +814,23 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
 /// ignored list would silence it from every tool Claude Code adds after this. So each name here
 /// is known only when EVERY key of the result belongs to the shape it was judged in, and is
 /// reported anywhere else exactly like a key nobody has met.
+/// Every key an Artifact create-from-type result was met with (#306, client 2.1.280).
+const ARTIFACT_CREATE_SHAPE: &[&str] = &[
+    "auto_open",
+    "created_from_type",
+    "instructions",
+    "instructions_chars",
+    "liveSubscription",
+    "own_files",
+    "provisioned",
+    "title",
+    "type",
+    "type_files",
+    "url",
+    "version",
+    "warnings",
+];
+
 const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // CronCreate returns all four and CronDelete `{id}` alone; the result text already states the
     // job id, its schedule in words, whether it recurs and whether it is session-only.
@@ -819,6 +842,23 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     ("source", &["file", "source", "type"]),
     // CronList (#290): its whole result is `{jobs}`, and its text states every job with its id.
     ("jobs", &["jobs"]),
+    // Artifact's `quickstart` action (#307): its whole result is `{quickstart: {intent, match:
+    // {title, type_url, description, tier}}}`, and the result TEXT the page draws states each of
+    // those in prose. In-shape rather than the flat list: `quickstart` is a generic word, and a
+    // later tool that carries it BESIDE something else is reported again.
+    ("quickstart", &["quickstart"]),
+    // Artifact's create from a type (#306): the six keys nothing renders, each silent only in
+    // this result's own shape — `instructions` in particular is a generic word. `auto_open` is
+    // when the client opened it in its own UI; `instructions` (+`_chars`) the type's instructions
+    // file, addressed to the agent and repeated in the result text; `own_files` what the instance
+    // owns (none for a doc); `provisioned` the service ids the text also states; `type_files` the
+    // type release's bundled chunks, fonts and thumbnails.
+    ("auto_open", ARTIFACT_CREATE_SHAPE),
+    ("instructions", ARTIFACT_CREATE_SHAPE),
+    ("instructions_chars", ARTIFACT_CREATE_SHAPE),
+    ("own_files", ARTIFACT_CREATE_SHAPE),
+    ("provisioned", ARTIFACT_CREATE_SHAPE),
+    ("type_files", ARTIFACT_CREATE_SHAPE),
     // Grep (#285), in both modes it has been met in — `content` (the lines, `appliedLimit` when a
     // head_limit cut them) and `count` (`numMatches`). The page draws the result TEXT, which shows
     // the lines or states the counts and the limit. `files_with_matches` was never seen: its keys
@@ -1406,13 +1446,36 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
             // private), not information about the artifact, and the `{}` raw toggle still has
             // the original. Without a URL the call published nothing, so the fact goes away and
             // an ordinary tool block is what is left.
+            //
+            // #306: a create from a type RECORDS the outcome — `created_from_type` and the new
+            // artifact's `url` — so the fact rests on that rather than on the prose, whose first
+            // link can be the TYPE's. `created_from_type: false` created nothing. Its `warnings`
+            // (that the input description was not applied) take the description's place.
             if let Some(p) = published.as_deref_mut() {
-                match artifact_url(txt) {
-                    Some(url) => {
+                let created = tur.get("created_from_type").and_then(Value::as_bool);
+                let recorded = tur
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .filter(|u| u.starts_with("https://") && u.len() > "https://".len())
+                    .map(str::to_string);
+                match (created, recorded.or_else(|| artifact_url(txt))) {
+                    (Some(false), _) | (_, None) => *published = None,
+                    (created, Some(url)) => {
                         p.url = url;
                         *output = None;
+                        if created == Some(true) {
+                            p.description = tur
+                                .get("warnings")
+                                .and_then(|v| v.as_array())
+                                .map(|w| {
+                                    w.iter()
+                                        .filter_map(|x| x.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(" · ")
+                                })
+                                .unwrap_or_default();
+                        }
                     }
-                    None => *published = None,
                 }
             }
         }
@@ -2277,30 +2340,49 @@ fn artifact_publish(name: &str, input: &Value) -> Option<Published> {
     if action != "publish" {
         return None;
     }
-    let file = input.get("file_path").and_then(|v| v.as_str())?;
-    // The name the reader will see. A `title` was given for it; otherwise the file's stem,
-    // which is what the terminal shows and what an owner calls it ("rowt-deck").
-    let name = input
+    let file = input.get("file_path").and_then(|v| v.as_str());
+    // #306: a publish may instead CREATE an artifact from a type — `type_url`, a title, no file.
+    let from_type = file.is_none()
+        && input
+            .get("type_url")
+            .and_then(|v| v.as_str())
+            .is_some_and(|t| !t.is_empty());
+    if file.is_none() && !from_type {
+        return None;
+    }
+    let title = input
         .get("title")
         .and_then(|v| v.as_str())
         .filter(|t| !t.trim().is_empty())
-        .map(decode_entities)
-        .unwrap_or_else(|| {
-            std::path::Path::new(file)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(file)
-                .to_string()
-        });
+        .map(decode_entities);
+    // The name the reader will see. A `title` was given for it; otherwise the file's stem,
+    // which is what the terminal shows and what an owner calls it ("rowt-deck"). A create from
+    // a type has no file to fall back to, and the type refuses an untitled create.
+    let name = match (title, file) {
+        (Some(t), _) => t,
+        (None, Some(file)) => std::path::Path::new(file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(file)
+            .to_string(),
+        (None, None) => return None,
+    };
     Some(Published {
         name,
         url: String::new(), // filled from the result
-        description: decode_entities(
-            input
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default(),
-        ),
+        // A create from a type IGNORES the description it was given — the new artifact starts
+        // with its type's, and the result warns so. Showing it would describe an artifact that
+        // does not carry it; the result's warnings take its place (#306).
+        description: if from_type {
+            String::new()
+        } else {
+            decode_entities(
+                input
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
+            )
+        },
         icon: input
             .get("favicon")
             .and_then(|v| v.as_str())
@@ -4746,6 +4828,21 @@ mod tests {
             vec!["aKeyFromTheFuture".to_string(), "jobs".to_string()],
             "`jobs` beside a key nobody has met is reported with it"
         );
+        // #307: an Artifact `quickstart` result is that one key; beside another it is reported.
+        // Hand-written values: the real record's names and URLs are private.
+        let quickstart = serde_json::json!({"quickstart": {"intent": "doc", "match": {
+            "title": "A type", "type_url": "https://example.test/type", "description": "One line.",
+            "tier": "standard"}}});
+        assert_eq!(
+            unknown(&quickstart),
+            Vec::<String>::new(),
+            "Artifact quickstart, known: {quickstart}"
+        );
+        assert_eq!(
+            unknown(&serde_json::json!({"quickstart": {}, "aKeyFromTheFuture": 1})),
+            vec!["aKeyFromTheFuture".to_string(), "quickstart".to_string()],
+            "`quickstart` beside a key nobody has met is reported with it"
+        );
 
         let jsonl = r##"
 {"type":"agent-setting","agentSetting":"claude","sessionId":"s-290"}
@@ -5221,6 +5318,84 @@ mod tests {
         assert!(
             output.as_deref().is_some_and(|o| o.contains("Refused")),
             "and its result is kept, being a real one: {output:?}"
+        );
+
+        // #306 — a publish that CREATES an artifact from a type: `type_url`, a title, no file. Its
+        // result records `created_from_type` and the new artifact's `url`, WARNS that the create
+        // ignored the input description, and carries the type's whole instructions file for the
+        // agent. Hand-written: the real record's names, URLs and ids are private. The prose names
+        // the TYPE's URL first here on purpose — the recorded `url` is the fact, not the prose.
+        let jsonl = r#"
+{"type":"user","timestamp":"2026-09-27T10:00:00.000Z","message":{"content":"make a doc"}}
+{"type":"assistant","timestamp":"2026-09-27T10:00:01.000Z","message":{"content":[{"type":"tool_use","id":"t1","name":"Artifact","input":{"action":"publish","type_url":"https://example.test/types/doc","title":"Launch notes","description":"What we shipped."}}]}}
+{"type":"user","timestamp":"2026-09-27T10:00:03.000Z","toolUseResult":{"created_from_type":true,"url":"https://example.test/artifact/new-1","title":"Launch notes","version":"1","type":{},"own_files":[],"type_files":["a.js"],"provisioned":{},"auto_open":"opened","warnings":["The description was not applied: a new artifact starts with its type's."],"liveSubscription":"none","instructions":"Agent: edit only through the docs tools.","instructions_chars":40},"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"From the Artifact type https://example.test/types/doc, created a new Artifact at https://example.test/artifact/new-1\n\n<artifact-type-instructions>Agent: edit only through the docs tools.</artifact-type-instructions>"}]}}
+{"type":"assistant","timestamp":"2026-09-27T10:00:04.000Z","message":{"content":[{"type":"tool_use","id":"t2","name":"Artifact","input":{"action":"publish","type_url":"https://example.test/types/doc","title":"Second try"}}]}}
+{"type":"user","timestamp":"2026-09-27T10:00:05.000Z","toolUseResult":{"created_from_type":false,"url":"https://example.test/types/doc","warnings":[]},"message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Could not create from https://example.test/types/doc: quota."}]}}
+{"type":"assistant","timestamp":"2026-09-27T10:00:06.000Z","message":{"content":[{"type":"tool_use","id":"t3","name":"Artifact","input":{"action":"publish","type_url":"https://example.test/types/doc","title":"Quiet"}}]}}
+{"type":"user","timestamp":"2026-09-27T10:00:07.000Z","toolUseResult":{"created_from_type":true,"url":"https://example.test/artifact/new-3"},"message":{"content":[{"type":"tool_result","tool_use_id":"t3","content":"Created a new Artifact at https://example.test/artifact/new-3"}]}}
+"#;
+        let blocks = parse(jsonl);
+        let tools: Vec<&Block> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::ToolUse { name, .. } if name == "Artifact"))
+            .collect();
+        assert_eq!(tools.len(), 3, "{blocks:?}");
+        let Block::ToolUse {
+            target,
+            output,
+            published,
+            ..
+        } = tools[0]
+        else {
+            unreachable!()
+        };
+        let p = published
+            .as_deref()
+            .expect("a create from a type carries its artifact");
+        assert_eq!(
+            p.name, "Launch notes",
+            "named by the title — there is no file"
+        );
+        assert_eq!(
+            target, "Launch notes",
+            "…and labelled by it, not by `publish`"
+        );
+        assert_eq!(
+            p.url, "https://example.test/artifact/new-1",
+            "the RECORDED url, not the first link in the prose (that is the type's)"
+        );
+        assert_eq!(
+            p.description, "The description was not applied: a new artifact starts with its type's.",
+            "the card says what the create did with the description, not the description it ignored"
+        );
+        assert!(
+            output.is_none(),
+            "the result was the type's instructions to the agent: {output:?}"
+        );
+        // A create the result says did not happen is an ordinary tool call, result kept.
+        let Block::ToolUse {
+            published, output, ..
+        } = tools[1]
+        else {
+            unreachable!()
+        };
+        assert!(
+            published.is_none(),
+            "created_from_type: false ⇒ nothing was created"
+        );
+        assert!(
+            output.as_deref().is_some_and(|o| o.contains("quota")),
+            "…and its result is kept: {output:?}"
+        );
+        // No warnings: no description, rather than the input's (which a create ignores).
+        let Block::ToolUse { published, .. } = tools[2] else {
+            unreachable!()
+        };
+        let p = published.as_deref().expect("created");
+        assert_eq!(p.url, "https://example.test/artifact/new-3");
+        assert_eq!(
+            p.description, "",
+            "a create never shows the description it ignored"
         );
     }
 

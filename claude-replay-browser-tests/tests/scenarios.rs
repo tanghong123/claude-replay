@@ -15029,6 +15029,84 @@ fn app_shell_enter_searches_and_lands_on_the_nearest_hit() {
     scenario_enter_searches_and_lands_on_the_nearest_hit(&page.tab, Surface::AppShell);
 }
 
+/// #306 — an `Artifact` publish that CREATES an artifact from a type (`type_url`, a title, no file)
+/// rendered as `Artifact(publish)` with the whole result as its body: the type's instructions to
+/// the agent, thousands of characters, and no link to what was made. On both pages it is now the
+/// fact a file publish is: labelled by its title, linking the NEW artifact (not the type, whose URL
+/// the result text names first), and none of the agent's instructions on the page.
+fn scenario_an_artifact_created_from_a_type_is_a_link(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let seen = eval(
+        tab,
+        "JSON.stringify({ links: [...document.querySelectorAll('a[href]')].map(function (a) { return a.getAttribute('href'); }).filter(function (h) { return /example\\.test/.test(h); }), titled: document.body.innerText.indexOf('Launch notes') >= 0, instructions: document.body.innerText.indexOf('SENTINEL-AGENT-INSTRUCTIONS') >= 0, bare: /Artifact\\s*\\(?publish\\)?/.test(document.body.innerText) })",
+    );
+    let seen: serde_json::Value = serde_json::from_str(seen.as_str().unwrap_or("{}")).unwrap();
+    let links = seen["links"].as_array().cloned().unwrap_or_default();
+    assert!(
+        links
+            .iter()
+            .any(|l| l == "https://example.test/artifact/new-1"),
+        "{surface:?}: the new artifact is a link: {seen}"
+    );
+    assert!(
+        !links.iter().any(|l| l == "https://example.test/types/doc"),
+        "{surface:?}: …and the TYPE is not what it links to: {seen}"
+    );
+    assert_eq!(
+        seen["titled"], true,
+        "{surface:?}: labelled by its title: {seen}"
+    );
+    assert_eq!(
+        seen["instructions"], false,
+        "{surface:?}: the type's instructions to the agent are not drawn: {seen}"
+    );
+}
+
+fn type_publish_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(10, Shape::default());
+    t += &user_at("question 11: make a doc", &now_minus(90));
+    t += &harness::artifact_type_publish_at(
+        "t-type-1",
+        "https://example.test/types/doc",
+        "Launch notes",
+        "https://example.test/artifact/new-1",
+        "SENTINEL-AGENT-INSTRUCTIONS edit only through the docs tools.",
+        &now_minus(80),
+    );
+    t += &assistant_at("answer type: made it.", &now_minus(60));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 11,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_an_artifact_created_from_a_type_is_a_link() {
+    let _serial = serial();
+    let fx = type_publish_fixture("type-publish-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_an_artifact_created_from_a_type_is_a_link(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_an_artifact_created_from_a_type_is_a_link() {
+    let _serial = serial();
+    let fx = type_publish_fixture("type-publish-app");
+    let page = open(Surface::AppShell, &fx, 3062);
+    scenario_an_artifact_created_from_a_type_is_a_link(&page.tab, Surface::AppShell);
+}
+
 /// One word, "needle", in three places one facet can tell apart: a Bash command, a Read's target
 /// and an assistant's prose. Prose between the calls so each is its own record.
 fn needle_fixture(name: &str) -> Fixture {

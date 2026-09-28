@@ -387,6 +387,23 @@ pub fn artifact_publish_at(
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{call_id}\",\"name\":\"Artifact\",\"input\":{{\"file_path\":\"{path}\",\"title\":\"{title}\",\"favicon\":\"{icon}\",\"description\":\"a page\"}}}}]}},\"timestamp\":\"{ts}\"}}\n{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":\"Published {path} at {url}\"}}]}},\"timestamp\":\"{ts}\"}}\n"
     )
 }
+/// An artifact CREATED FROM A TYPE (#306), as Claude Code 2.1.280 records it: an `Artifact`
+/// publish with `type_url` and a title and no file, whose result records `created_from_type`, the
+/// new artifact's `url`, a warning, and the type's `instructions` for the agent (repeated in the
+/// result text, which also names the TYPE's URL first). Hand-written, like every fixture here.
+pub fn artifact_type_publish_at(
+    call_id: &str,
+    type_url: &str,
+    title: &str,
+    url: &str,
+    instructions: &str,
+    ts: &str,
+) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{call_id}\",\"name\":\"Artifact\",\"input\":{{\"action\":\"publish\",\"type_url\":\"{type_url}\",\"title\":\"{title}\",\"description\":\"ignored by a create\"}}}}]}},\"timestamp\":\"{ts}\"}}\n{{\"type\":\"user\",\"toolUseResult\":{{\"created_from_type\":true,\"url\":\"{url}\",\"title\":\"{title}\",\"warnings\":[\"The description was not applied.\"],\"instructions\":\"{instructions}\",\"instructions_chars\":{n},\"own_files\":[],\"type_files\":[],\"provisioned\":{{}},\"auto_open\":\"opened\"}},\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{call_id}\",\"content\":\"From the Artifact type {type_url}, created a new Artifact at {url}. {instructions}\"}}]}},\"timestamp\":\"{ts}\"}}\n",
+        n = instructions.len()
+    )
+}
 pub fn assistant_at(t: &str, ts: &str) -> String {
     assert!(
         !t.contains('\n'),

@@ -209,11 +209,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// (`AskedOption::preview`). A v34 stream has none, so the card lists the options without the
 /// mockups that were the point of offering them.
 ///
+/// v36: #306 — an `Artifact` publish that CREATES an artifact from a type (`type_url`, no file)
+/// becomes the same `ToolUse::published` fact a file publish is, its result prose dropped. A v35
+/// stream kept the whole result — the type's instructions to the agent — and no link.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 35;
+pub const FOLD_VERSION: u16 = 36;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
