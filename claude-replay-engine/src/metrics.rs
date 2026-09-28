@@ -205,6 +205,152 @@ impl TokenCounts {
     }
 }
 
+/// Billing evidence for one request. Missing evidence is never a standard-tier assertion.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub struct RequestPricing {
+    pub tier: ServiceTier,
+    pub long_context: Option<bool>,
+    /// False for a client setting rather than the tier returned by the provider.
+    pub tier_confirmed: bool,
+}
+
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceTier {
+    #[default]
+    Unknown,
+    Standard,
+    Fast,
+    Flex,
+    Batch,
+}
+
+impl ServiceTier {
+    /// Closed vocabulary: never persist arbitrary transcript text as a billing dimension.
+    pub fn from_recorded(value: &str) -> Self {
+        match value {
+            "default" | "standard" => Self::Standard,
+            "priority" | "fast" => Self::Fast,
+            "flex" => Self::Flex,
+            "batch" => Self::Batch,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// One billing class within a model's token bucket. Classes can be merged without
+/// losing the original token counts or committing to today's prices.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PricedTokens {
+    pub context: RequestPricing,
+    pub tokens: TokenCounts,
+}
+
+impl RequestPricing {
+    /// Compatibility projection for callers that display USD. Keep `price_with`
+    /// exact while combining classes and project only after the final sum.
+    pub fn cost_with(
+        &self,
+        prices: &PriceTable,
+        model: &str,
+        tokens: TokenCounts,
+    ) -> (Option<UsdCost>, bool) {
+        let (price, estimated) = self.price_with(prices, model, tokens);
+        (price.and_then(|p| p.amount_in("USD")), estimated)
+    }
+
+    /// Model-specific request pricing from the catalog; absent rules remain estimates.
+    /// Standard short-context catalog rates are the base, including host overrides.
+    /// Source (2026-09-28): <https://developers.openai.com/api/docs/pricing> and
+    /// <https://developers.openai.com/api/docs/models/gpt-6-astra>.
+    /// The boolean marks an estimate with incomplete billing evidence, not a lower bound.
+    pub fn price_with(
+        &self,
+        prices: &PriceTable,
+        model: &str,
+        tokens: TokenCounts,
+    ) -> (Option<PriceEstimate>, bool) {
+        let normalized = prices.normalizer.normalize(&ModelContext::new(model));
+        let policy = builtin_request_policies().get(&normalized);
+        let Some(base) = prices.resolve(&ModelContext::new(model)) else {
+            return (None, true);
+        };
+        let long = policy.is_some_and(|p| p.long_context) && self.long_context == Some(true);
+        let factor = policy.and_then(|p| match self.tier {
+            ServiceTier::Fast if long => p.fast_long,
+            ServiceTier::Fast => p.fast,
+            ServiceTier::Flex => p.flex,
+            ServiceTier::Batch => p.batch,
+            _ => Some([1, 1]),
+        });
+        let [tier_num, tier_den] = factor.unwrap_or([1, 1]).map(u128::from);
+        let mut numerator = 0u128;
+        for (count, rate, output) in [
+            (tokens.input, base.input(), false),
+            (tokens.cache_creation, base.cache_write(), false),
+            (tokens.cache_read, base.cache_read(), false),
+            (tokens.output, base.output(), true),
+        ] {
+            let context_num = if long {
+                if output {
+                    3
+                } else {
+                    4
+                }
+            } else {
+                2
+            };
+            let Some(n) = u128::from(count)
+                .checked_mul(u128::from(rate.amount_micros()))
+                .and_then(|n| n.checked_mul(tier_num))
+                .and_then(|n| n.checked_mul(context_num))
+                .and_then(|n| numerator.checked_add(n))
+            else {
+                return (None, true);
+            };
+            numerator = n;
+        }
+        let denominator =
+            u128::from(base.unit().tokens()) * u128::from(AMOUNT_MICROS_PER_UNIT) * tier_den * 2;
+        let price = PriceEstimate::new(
+            numerator,
+            denominator,
+            base.unit().currency().map(str::to_string),
+        );
+        (
+            Some(price),
+            policy.is_some_and(|p| {
+                self.tier == ServiceTier::Unknown
+                    || !self.tier_confirmed
+                    || (p.long_context && self.long_context.is_none())
+                    || factor.is_none()
+            }) || (policy.is_none() && normalized.starts_with("gpt-")),
+        )
+    }
+}
+
 /// The resumable form of any agent's metrics accumulator (#96 §7): per-model token totals, the
 /// agent-specific counter bag, and the observed time span. Named because it crosses the seam in
 /// both directions and an anonymous tuple there reads as noise.
@@ -733,6 +879,39 @@ struct PricingEntry {
     output_micros: u64,
     #[serde(default)]
     evidence: Vec<PricingEvidence>,
+    #[serde(default)]
+    request_pricing: Option<RequestPolicy>,
+}
+
+/// Rational multipliers relative to standard catalog rates. None is unsupported
+/// or unverified, never an assertion that the standard rate was billed.
+#[derive(Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestPolicy {
+    long_context: bool,
+    fast: Option<[u64; 2]>,
+    fast_long: Option<[u64; 2]>,
+    flex: Option<[u64; 2]>,
+    batch: Option<[u64; 2]>,
+}
+
+fn builtin_request_policies() -> &'static BTreeMap<String, RequestPolicy> {
+    static POLICIES: OnceLock<BTreeMap<String, RequestPolicy>> = OnceLock::new();
+    POLICIES.get_or_init(|| {
+        // Validate policies along with prices, including nonzero denominators.
+        builtin_prices();
+        let catalog: PricingCatalog = serde_json::from_str(PRICING_JSON).unwrap();
+        catalog
+            .models
+            .into_iter()
+            .flat_map(|entry| {
+                entry
+                    .ids
+                    .into_iter()
+                    .filter_map(move |id| entry.request_pricing.clone().map(|policy| (id, policy)))
+            })
+            .collect()
+    })
 }
 
 impl PricingEntry {
@@ -809,6 +988,16 @@ fn parse_pricing_catalog(json: &str) -> Result<BTreeMap<String, ModelPrice>, Str
             }
             if !evidenced.insert(evidence.id.clone()) {
                 return Err(format!("duplicate pricing evidence for {}", evidence.id));
+            }
+        }
+        if let Some(policy) = &entry.request_pricing {
+            for factor in [policy.fast, policy.fast_long, policy.flex, policy.batch]
+                .into_iter()
+                .flatten()
+            {
+                if factor[0] == 0 || factor[1] == 0 || factor[0] > 100 || factor[1] > 100 {
+                    return Err("request pricing factors must be in 1..=100".into());
+                }
             }
         }
         let price = entry.price(unit);
@@ -1775,5 +1964,173 @@ mod tests {
     fn short_model_formats() {
         assert_eq!(short_model("claude-opus-4-8"), "opus4.8");
         assert_eq!(short_model("claude-sonnet-4-6"), "sonnet4.6");
+    }
+}
+
+#[cfg(test)]
+mod request_pricing_tests {
+    use super::*;
+    #[test]
+    fn every_catalogued_long_context_model_prices_the_whole_request() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            cache_creation: 1_000_000,
+            cache_read: 1_000_000,
+            output: 1_000_000,
+        };
+        for (model, standard) in [
+            ("gpt-6-astra", 122.0),
+            ("gpt-6-sol", 24.4),
+            ("gpt-6-luna", 1.22),
+            ("gpt-5.6-sol", 48.8),
+            ("gpt-5.6", 48.8),
+            ("gpt-daybreak-blue-latest", 48.8),
+            ("gpt-5.6-terra", 27.4),
+            ("gpt-5.6-luna", 2.74),
+            ("gpt-5.5", 66.0),
+            ("gpt-5.4", 33.0),
+        ] {
+            for (tier, factor) in [
+                (ServiceTier::Standard, 1.0),
+                (ServiceTier::Flex, 0.5),
+                (ServiceTier::Batch, 0.5),
+            ] {
+                let context = RequestPricing {
+                    tier,
+                    long_context: Some(true),
+                    tier_confirmed: true,
+                };
+                let (cost, estimated) = context.cost_with(&table, model, tokens);
+                assert!(
+                    (cost.unwrap() - standard * factor).abs() < 1e-10,
+                    "{model} {tier:?}"
+                );
+                assert!(!estimated, "{model} {tier:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn fast_rules_and_unknown_evidence_are_model_specific() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            ..Default::default()
+        };
+        for (model, long, expected, estimated) in [
+            ("gpt-5.5", false, 12.5, false),
+            // No published long-context Fast rate: show standard estimate, not 2.5x.
+            ("gpt-5.5", true, 10.0, true),
+            ("gpt-5.4", true, 5.0, false),
+            ("gpt-5.4", false, 5.0, false),
+            ("gpt-6-sol", true, 8.0, false),
+            ("gpt-5.6-terra", true, 8.0, false),
+            ("gpt-5.4-mini", true, 1.5, false),
+            ("gpt-5.3-codex", true, 3.5, false),
+            ("gpt-5.2-codex", true, 1.75, true),
+        ] {
+            let context = RequestPricing {
+                tier: ServiceTier::Fast,
+                long_context: Some(long),
+                tier_confirmed: true,
+            };
+            assert_eq!(
+                context.cost_with(&table, model, tokens),
+                (Some(expected), estimated),
+                "{model}"
+            );
+        }
+        for model in [
+            "gpt-6-sol",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.2-codex",
+        ] {
+            assert!(RequestPricing::default().cost_with(&table, model, tokens).1);
+        }
+        assert_eq!(
+            RequestPricing::default().cost_with(&table, "gpt-6-sol-unknown", tokens),
+            (None, true)
+        );
+    }
+
+    #[test]
+    fn request_rules_use_the_hosts_model_normalizer() {
+        struct Alias;
+        impl ModelNormalizer for Alias {
+            fn normalize(&self, _: &ModelContext) -> String {
+                "gpt-6-sol".into()
+            }
+        }
+        let table = PriceTable::with_normalizer(Alias);
+        let context = RequestPricing {
+            tier: ServiceTier::Fast,
+            long_context: Some(true),
+            tier_confirmed: true,
+        };
+        assert_eq!(
+            context.cost_with(
+                &table,
+                "custom-alias",
+                TokenCounts {
+                    input: 1_000_000,
+                    ..Default::default()
+                }
+            ),
+            (Some(8.0), false)
+        );
+    }
+
+    #[test]
+    fn catalog_rejects_invalid_request_factors() {
+        let mut catalog: serde_json::Value = serde_json::from_str(PRICING_JSON).unwrap();
+        let entry = catalog["models"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["ids"][0] == "gpt-6-sol")
+            .unwrap();
+        entry["request_pricing"]["fast"] = serde_json::json!([2, 0]);
+        assert!(parse_pricing_catalog(&catalog.to_string())
+            .unwrap_err()
+            .contains("factors"));
+    }
+
+    #[test]
+    fn astra_rates_compose_and_keep_cache_categories_distinct() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            cache_creation: 1_000_000,
+            cache_read: 1_000_000,
+            output: 1_000_000,
+        };
+        for (tier, long, expected) in [
+            (ServiceTier::Standard, false, 73.5),
+            (ServiceTier::Standard, true, 122.0),
+            (ServiceTier::Fast, false, 147.0),
+            (ServiceTier::Fast, true, 244.0),
+            (ServiceTier::Flex, true, 61.0),
+        ] {
+            let context = RequestPricing {
+                tier,
+                long_context: Some(long),
+                tier_confirmed: true,
+            };
+            assert_eq!(
+                context.cost_with(&table, "GPT-6-ASTRA", tokens),
+                (Some(expected), false)
+            );
+        }
+        assert_eq!(
+            RequestPricing::default().cost_with(&table, "gpt-6-astra", tokens),
+            (Some(73.5), true)
+        );
+        assert_eq!(
+            RequestPricing::default().cost_with(&table, "unknown", tokens),
+            (None, true)
+        );
     }
 }
