@@ -297,6 +297,25 @@ Corp servers never know any of this exists. The one case a relay inside the corp
 would serve — phone without corp VPN reaching corp-hosted state — is exactly the case
 D1 already routes through the primary Mac's ssh tunnels instead.
 
+### 6.1 What shipped instead: a one-time code over `tailscale serve` (#11, 2026-09-28)
+
+The owner re-scoped Phase 2 before it was built: the phone is on the tailnet, so no relay is
+needed; the monitor is served with `tailscale serve` on the host (HTTPS on the tailnet name,
+proxied to the loopback port, nothing new listening). The missing piece was getting a phone PAIRED
+without typing or copying the token — "typing the address won't work", and a URL carrying the
+token is "awkward … and not secure". `tailscaled` runs as root, so a request through it is never the
+same-user bypass: every tailnet device must pair.
+
+`agent-monitor --pair-phone` finds the serve entry that relays to this monitor (`tailscale serve
+status --json`; if none, it prints `tailscale serve --bg <port>` and stops), confirms it with the
+user, mints a single-use code valid for five minutes into `<state>/pair-codes` (0600), and prints a
+terminal QR code for `<address>/pair#code=<CODE>` plus the code to type. The listener answers
+`/pair` and `POST /api/pair` ahead of the gate, on a paired monitor only, and swaps the code for the
+usual `cmauth` cookie; five wrong attempts burn every outstanding code. The code travels in a
+fragment (client side) and a POST body (server side), never a URL a server or proxy logs, and the
+long-lived token is never displayed. `claude-replay-html` `pairing.rs` and `claude-monitor`
+`pair_phone.rs` are the whole of it.
+
 ## 7. Phasing and acceptance
 
 | Phase | Ships | Accept |

@@ -151,6 +151,7 @@ agent-monitor — every agent session on this machine, one page over loopback HT
 USAGE:
   agent-monitor [--pair] [--port N] [--agents LIST] [--no-open]
   agent-monitor --set-passcode
+  agent-monitor --pair-phone [--port N] [--url ADDRESS] [--yes]
   agent-monitor --version
 
   --pair            Require a token to reach the monitor — a 0600 secret, minted
@@ -159,6 +160,12 @@ USAGE:
   --port N          Serve on N instead of {DEFAULT_PORT}.
   --agents LIST     Only these agents: claude, codex, qoder, qoderwork.
   --no-open         Print the URL instead of opening a browser.
+  --pair-phone      Let a phone on your tailnet into a PAIRED monitor. Finds
+                    the `tailscale serve` address for this monitor (or says
+                    how to serve it), confirms it, then prints a QR code and
+                    a short code: single-use, for five minutes. The token
+                    itself is never shown. --url ADDRESS names the address;
+                    --yes skips the question.
   --set-passcode    Set (or clear) the passcode that granting injection into a
                     live session requires — a speed bump for an unlocked,
                     unattended machine. Terminal-only on purpose, so an open
@@ -206,6 +213,7 @@ fn main() -> Result<()> {
     let mut only: Vec<Agent> = Vec::new();
     let mut open_browser = true;
     let mut do_pair = false;
+    let mut pair_phone: Option<(Option<String>, bool)> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -218,6 +226,18 @@ fn main() -> Result<()> {
             // terminal-only action ON PURPOSE: setting it needs shell access, so an open
             // browser cannot reset the gate it is meant to defend against.
             "--set-passcode" | "set-passcode" => return set_passcode_interactive(),
+            // #11: pair a phone through `tailscale serve` by a one-time code, and EXIT. Runs
+            // after the loop, since `--port` says which serve entry is this monitor's.
+            "--pair-phone" | "pair-phone" => pair_phone = Some(pair_phone.unwrap_or((None, false))),
+            "--url" => {
+                let u = args
+                    .next()
+                    .context("--url needs the address the phone should open")?;
+                pair_phone = Some((Some(u), pair_phone.map(|p| p.1).unwrap_or(false)));
+            }
+            "--yes" | "-y" => {
+                pair_phone = Some((pair_phone.and_then(|p| p.0), true));
+            }
             "--port" => {
                 port = args
                     .next()
@@ -247,6 +267,9 @@ fn main() -> Result<()> {
     }
 
     let root = index::default_root()?;
+    if let Some((url, yes)) = pair_phone {
+        return claude_monitor::pair_phone::run(read_token(&root).as_deref(), port, url, yes);
+    }
     // `pair` mints the token before anything else, so both a fresh start and a hand-off to
     // an already-running monitor below can print the tokened URL.
     if do_pair {
@@ -360,7 +383,8 @@ fn main() -> Result<()> {
 
     // #196 §4.2: paired ⇒ the token gate (same-user OR the token); unpaired ⇒ D3b same-user.
     let gate = match &token {
-        Some(t) => claude_replay_html::AuthGate::with_token(t.as_str()),
+        Some(t) => claude_replay_html::AuthGate::with_token(t.as_str())
+            .with_pair_codes(index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE)),
         None => claude_replay_html::AuthGate::same_user(),
     };
     let bound = claude_replay_html::spawn_listener_gated(port, handler, gate)

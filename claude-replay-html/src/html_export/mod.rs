@@ -33,6 +33,7 @@ use std::path::Path;
 pub mod audit; // the derived rendering-audit corpus (#174 P1)
 mod bundle;
 pub(crate) mod mdrev; // mdrev's embedded viewer in the app shell's preview pane (#270)
+pub mod pairing;
 mod record_store;
 mod serve;
 pub mod shared;

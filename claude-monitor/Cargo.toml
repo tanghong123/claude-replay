@@ -29,3 +29,6 @@ serde_json = "1"
 # Salted hash for the optional injection passcode (#133 grant gate). Small, audited; a
 # security feature earns a crypto primitive rather than a hand-rolled hash.
 sha2 = "0.10"
+# The terminal QR code `--pair-phone` prints for a phone to scan (#11). Unicode rendering only:
+# no image features, so no image dependencies.
+qrcode = { version = "0.14", default-features = false }

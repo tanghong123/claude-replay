@@ -1410,6 +1410,9 @@ pub struct AuthGate {
     euid: Option<u32>,
     /// The bearer token when paired; `None` = unpaired (D3b behavior).
     token: Option<std::sync::Arc<str>>,
+    /// Where one-time pairing codes live (#11), when the host offers phone pairing: a PAIRED
+    /// gate with this set answers `/pair` and `/api/pair` before deciding anything else.
+    pair_codes: Option<std::sync::Arc<std::path::Path>>,
 }
 
 /// The gate's ruling on one request.
@@ -1429,6 +1432,7 @@ impl AuthGate {
         Self {
             euid: current_euid(),
             token: None,
+            pair_codes: None,
         }
     }
 
@@ -1437,7 +1441,15 @@ impl AuthGate {
         Self {
             euid: current_euid(),
             token: Some(token.into()),
+            pair_codes: None,
         }
+    }
+
+    /// Offer one-time phone pairing (#11) from the codes file at `path` — a no-op on an unpaired
+    /// gate, which has no token to hand out and no need of one.
+    pub fn with_pair_codes(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.pair_codes = Some(std::sync::Arc::from(path.into().into_boxed_path()));
+        self
     }
 
     /// Test constructor: a FOREIGN euid, so the same-user leg is deterministically false
@@ -1448,6 +1460,7 @@ impl AuthGate {
         Self {
             euid: Some(u32::MAX), // never a real uid → same-user never matches
             token: token.map(std::sync::Arc::from),
+            pair_codes: None,
         }
     }
 
@@ -1809,6 +1822,18 @@ fn serve_connection(
         reader.read_exact(&mut body)?;
     }
 
+    // #11: phone pairing is the way IN, so it is answered before the gate — and only by a paired
+    // gate that offers it. The code arrives in a POST body, never a URL.
+    if let (Some(tok), Some(codes)) = (gate.token.as_deref(), gate.pair_codes.as_deref()) {
+        if name == "pair" || name == "api/pair" {
+            let (r, cookie) = pairing_route(&method, name, &body, tok, codes);
+            let head = response_head(&r, &cookie);
+            return stream
+                .write_all(head.as_bytes())
+                .and_then(|_| stream.write_all(&r.body));
+        }
+    }
+
     // #196 §4.2: same-user OR a valid token (query / Authorization: Bearer / cmauth cookie).
     let (presented, from_cookie) = extract_token(query, &headers);
     let peer = stream.peer_addr().ok();
@@ -1894,6 +1919,49 @@ fn serve_connection(
     stream
         .write_all(head.as_bytes())
         .and_then(|_| stream.write_all(&r.body))
+}
+
+/// `/pair` (the page) and `/api/pair` (redeem a code for the `cmauth` cookie), #11. Returns the
+/// reply and the `Set-Cookie` line, empty unless a code was redeemed.
+fn pairing_route(
+    method: &str,
+    name: &str,
+    body: &[u8],
+    token: &str,
+    codes: &std::path::Path,
+) -> (HttpResponse, String) {
+    match (name, method) {
+        ("pair", "GET") => (
+            HttpResponse::html(super::pairing::PAIR_PAGE.to_string()),
+            String::new(),
+        ),
+        ("api/pair", "POST") => {
+            let typed = String::from_utf8_lossy(body);
+            if super::pairing::redeem_pair_code(codes, &typed, super::pairing::now_secs()) {
+                (
+                    HttpResponse::json(r#"{"ok":true}"#.into()),
+                    format!(
+                        "Set-Cookie: cmauth={token}; Path=/; Max-Age={COOKIE_MAX_AGE_SECS}; \
+                         HttpOnly; SameSite=Strict\r\n"
+                    ),
+                )
+            } else {
+                (
+                    HttpResponse {
+                        code: "403 Forbidden",
+                        content_type: "application/json; charset=utf-8",
+                        body: br#"{"ok":false,"message":"wrong, used or expired code"}"#.to_vec(),
+                        headers: Vec::new(),
+                    },
+                    String::new(),
+                )
+            }
+        }
+        _ => (
+            HttpResponse::method_not_allowed("GET /pair, POST /api/pair"),
+            String::new(),
+        ),
+    }
 }
 
 /// The status line and headers for a reply. `no-store` unless the route set its own
@@ -2376,6 +2444,89 @@ mod tests {
         // Here the matcher finds no /proc row → unverifiable → unpaired admits, paired denies.
         let unpaired = AuthGate::for_test(None);
         assert!(matches!(unpaired.decide(lo, srv, None, false), Access::Ok));
+    }
+
+    /// #11: a phone pairs by a one-time code, over HTTP, against the foreign-euid test gate (so the
+    /// same-user leg can admit nothing on any OS). Without the cookie `/` is refused; `/pair` is
+    /// served; a wrong code is refused; the right code sets the `cmauth` cookie; the same code
+    /// again is refused; and the cookie then reaches `/`.
+    #[test]
+    fn a_one_time_code_pairs_a_device_once() {
+        use std::io::{Read, Write};
+        let dir = std::env::temp_dir().join(format!("cr-pair-http-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let codes = dir.join("pair-codes");
+        let code = super::super::pairing::mint_pair_code(&codes, super::super::pairing::now_secs())
+            .unwrap();
+        let handler: RouteHandler =
+            std::sync::Arc::new(|_: &Request| HttpResponse::html("the monitor".to_string()));
+        let gate = AuthGate::for_test(Some("secret-token")).with_pair_codes(&codes);
+        let port = spawn_listener_gated(0, handler, gate).unwrap();
+        let send = |req: String| -> String {
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(req.as_bytes()).unwrap();
+            let mut raw = String::new();
+            s.read_to_string(&mut raw).unwrap();
+            raw
+        };
+        let get = |path: &str, cookie: &str| {
+            send(format!(
+                "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{cookie}Connection: close\r\n\r\n"
+            ))
+        };
+        let post = |body: &str| {
+            send(format!(
+                "POST /api/pair HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            ))
+        };
+        assert!(
+            get("/", "").starts_with("HTTP/1.1 401"),
+            "unpaired, / is refused"
+        );
+        let page = get("/pair", "");
+        assert!(
+            page.starts_with("HTTP/1.1 200") && page.contains("Pair this device"),
+            "the pairing page needs no cookie: {}",
+            &page[..page.len().min(200)]
+        );
+        let wrong = post("ZZZZ-ZZZZ");
+        assert!(
+            wrong.starts_with("HTTP/1.1 403") && !wrong.contains("Set-Cookie"),
+            "{wrong}"
+        );
+        let right = post(&super::super::pairing::display_code(&code).to_lowercase());
+        assert!(right.starts_with("HTTP/1.1 200"), "{right}");
+        assert!(
+            right.contains("Set-Cookie: cmauth=secret-token;") && right.contains("HttpOnly"),
+            "the code is swapped for the usual cookie: {right}"
+        );
+        let again = post(&code);
+        assert!(
+            again.starts_with("HTTP/1.1 403"),
+            "a code works once: {again}"
+        );
+        let home = get("/", "Cookie: cmauth=secret-token\r\n");
+        assert!(
+            home.starts_with("HTTP/1.1 200") && home.contains("the monitor"),
+            "{home}"
+        );
+        // An unpaired gate offers no pairing: it has no token to hand out.
+        let plain: RouteHandler =
+            std::sync::Arc::new(|_: &Request| HttpResponse::not_found("no route"));
+        let port2 =
+            spawn_listener_gated(0, plain, AuthGate::for_test(None).with_pair_codes(&codes))
+                .unwrap();
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port2)).unwrap();
+        s.write_all(b"GET /pair HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut raw = String::new();
+        s.read_to_string(&mut raw).unwrap();
+        assert!(
+            !raw.contains("Pair this device"),
+            "unpaired: no pairing page: {raw}"
+        );
     }
 
     /// #133 wire hardening: `deny_write` gates a write on POST + same-origin + a real

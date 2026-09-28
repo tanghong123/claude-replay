@@ -9,6 +9,8 @@ pub mod html_export;
 
 pub use html_export::shared::{inline_all as shared_inline_all, shared_source, SHARED};
 
+/// One-time phone pairing codes (#11) — the monitor CLI mints them; the listener redeems them.
+pub use html_export::pairing;
 pub use html_export::{
     display_title, dump_all_html, dump_html, existing_server, get_request, handoff_url,
     install_mdrev, mdrev_version, mint_token, query_get, serve, service_routes, spawn_listener,

@@ -231,7 +231,9 @@ fn main() -> Result<()> {
     // Paired, the listener enforces the token; unpaired it is D3b (same-user on Linux,
     // same-machine on macOS) — v1's rule exactly, from the same gate.
     let gate = match token.as_deref() {
-        Some(t) => AuthGate::with_token(t),
+        Some(t) => AuthGate::with_token(t).with_pair_codes(
+            claude_monitor::index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE),
+        ),
         None => AuthGate::same_user(),
     };
     let bound = claude_replay_html::spawn_listener_gated(port, handler, gate)

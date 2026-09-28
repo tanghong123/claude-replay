@@ -7426,3 +7426,87 @@ fn a_fresh_monitor_serves_a_session_before_any_page_lists_them() {
     );
     drop(m);
 }
+
+/// #11 — a phone pairs with a PAIRED monitor by a one-time code, end to end: the real
+/// `agent-monitor --pair-phone` mints it against a spawned paired monitor, and a fresh browser (no
+/// cookie) opening `/pair#code=…` lands on the monitor with the code gone from its address. A second
+/// fresh browser with the same code is refused: a code works once.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_pairs_by_a_one_time_code() {
+    let base = harness::base("pair-phone");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        "aaaa1111-0000-4000-8000-000000000011",
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    let port = 2820u16;
+    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
+    // The CLI, in the monitor's own state and cache (where its token and the codes file live).
+    let bin =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/release/agent-monitor");
+    assert!(
+        bin.exists(),
+        "build it: cargo build --release -p claude-monitor"
+    );
+    let out = std::process::Command::new(&bin)
+        .args([
+            "--pair-phone",
+            "--port",
+            &port.to_string(),
+            "--yes",
+            "--url",
+        ])
+        .arg(format!("http://127.0.0.1:{port}/"))
+        .env("XDG_CACHE_HOME", &base)
+        .env("CLAUDE_MONITOR_CACHE", base.join(format!("cache-{port}")))
+        .env("CLAUDE_MONITOR_STATE", base.join(format!("state-{port}")))
+        .output()
+        .expect("run agent-monitor --pair-phone");
+    let printed = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        out.status.success(),
+        "{printed}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let code = printed
+        .lines()
+        .map(str::trim)
+        .find(|l| l.len() == 9 && l.as_bytes()[4] == b'-')
+        .unwrap_or_else(|| panic!("the short code is printed: {printed}"))
+        .to_string();
+    assert!(
+        printed.contains('▀') || printed.contains('▄') || printed.contains('█'),
+        "a QR code is drawn"
+    );
+    let token = std::fs::read_to_string(base.join(format!("state-{port}")).join("auth-token"))
+        .expect("a paired monitor has a token");
+    assert!(
+        !token.trim().is_empty() && !printed.contains(token.trim()),
+        "the long-lived token is never shown: {printed}"
+    );
+    let link = format!("http://127.0.0.1:{port}/pair#code={code}");
+    // A fresh browser: no cookie, so only the code can let it in.
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    tab.navigate_to(&link).unwrap();
+    harness::until(
+        &tab,
+        "location.pathname === '/' && !location.hash && !!document.querySelector('#tree, .rail, .session-row, [data-session]')",
+        "the code to be redeemed and the monitor to load",
+        Duration::from_secs(20),
+        "location.href + ' | ' + document.body.innerText.slice(0, 200)",
+    );
+    // The same code in another fresh browser is refused, and the page says so.
+    let other = harness::chrome();
+    let tab2 = other.new_tab().unwrap();
+    tab2.navigate_to(&link).unwrap();
+    harness::until(
+        &tab2,
+        "/wrong, used or expired/.test((document.getElementById('msg') || {}).textContent || '')",
+        "a used code to be refused",
+        Duration::from_secs(20),
+        "location.href + ' | ' + document.body.innerText.slice(0, 200)",
+    );
+    drop(m);
+}
