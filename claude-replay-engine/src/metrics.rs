@@ -205,6 +205,150 @@ impl TokenCounts {
     }
 }
 
+/// Billing evidence for one request. Missing evidence is never a standard-tier assertion.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub struct RequestPricing {
+    pub tier: ServiceTier,
+    pub long_context: Option<bool>,
+    /// False for a client setting rather than the tier returned by the provider.
+    pub tier_confirmed: bool,
+}
+
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceTier {
+    #[default]
+    Unknown,
+    Standard,
+    Fast,
+    Flex,
+    Batch,
+}
+
+impl ServiceTier {
+    /// Closed vocabulary: never persist arbitrary transcript text as a billing dimension.
+    pub fn from_recorded(value: &str) -> Self {
+        match value {
+            "default" | "standard" => Self::Standard,
+            "priority" | "fast" => Self::Fast,
+            "flex" => Self::Flex,
+            "batch" => Self::Batch,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// One billing class within a model's token bucket. Classes can be merged without
+/// losing the original token counts or committing to today's prices.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PricedTokens {
+    pub context: RequestPricing,
+    pub tokens: TokenCounts,
+}
+
+impl RequestPricing {
+    /// Compatibility projection for callers that display USD. Keep `price_with`
+    /// exact while combining classes and project only after the final sum.
+    pub fn cost_with(
+        &self,
+        prices: &PriceTable,
+        model: &str,
+        tokens: TokenCounts,
+    ) -> (Option<UsdCost>, bool) {
+        let (price, estimated) = self.price_with(prices, model, tokens);
+        (price.and_then(|p| p.amount_in("USD")), estimated)
+    }
+
+    /// GPT-6 Astra request pricing; other models retain the model catalog's rates.
+    /// Standard short-context catalog rates are the base, including host overrides.
+    /// Source (2026-09-28): <https://developers.openai.com/api/docs/pricing> and
+    /// <https://developers.openai.com/api/docs/models/gpt-6-astra>.
+    /// The boolean marks an estimate with incomplete billing evidence, not a lower bound.
+    pub fn price_with(
+        &self,
+        prices: &PriceTable,
+        model: &str,
+        tokens: TokenCounts,
+    ) -> (Option<PriceEstimate>, bool) {
+        let astra = normalize_model_name(model) == "gpt-6-astra";
+        let Some(base) = prices.resolve(&ModelContext::new(model)) else {
+            return (None, true);
+        };
+        let (tier_num, tier_den) = if astra {
+            match self.tier {
+                ServiceTier::Fast => (2u128, 1u128),
+                ServiceTier::Flex | ServiceTier::Batch => (1, 2),
+                _ => (1, 1),
+            }
+        } else {
+            (1, 1)
+        };
+        let long = astra && self.long_context == Some(true);
+        let mut numerator = 0u128;
+        for (count, rate, output) in [
+            (tokens.input, base.input(), false),
+            (tokens.cache_creation, base.cache_write(), false),
+            (tokens.cache_read, base.cache_read(), false),
+            (tokens.output, base.output(), true),
+        ] {
+            let context_num = if long {
+                if output {
+                    3
+                } else {
+                    4
+                }
+            } else {
+                2
+            };
+            let Some(n) = u128::from(count)
+                .checked_mul(u128::from(rate.amount_micros()))
+                .and_then(|n| n.checked_mul(tier_num))
+                .and_then(|n| n.checked_mul(context_num))
+                .and_then(|n| numerator.checked_add(n))
+            else {
+                return (None, true);
+            };
+            numerator = n;
+        }
+        let denominator =
+            u128::from(base.unit().tokens()) * u128::from(AMOUNT_MICROS_PER_UNIT) * tier_den * 2;
+        let price = PriceEstimate::new(
+            numerator,
+            denominator,
+            base.unit().currency().map(str::to_string),
+        );
+        (
+            Some(price),
+            astra
+                && (self.tier == ServiceTier::Unknown
+                    || !self.tier_confirmed
+                    || self.long_context.is_none()),
+        )
+    }
+}
+
 /// The resumable form of any agent's metrics accumulator (#96 §7): per-model token totals, the
 /// agent-specific counter bag, and the observed time span. Named because it crosses the seam in
 /// both directions and an anonymous tuple there reads as noise.
@@ -1775,5 +1919,45 @@ mod tests {
     fn short_model_formats() {
         assert_eq!(short_model("claude-opus-4-8"), "opus4.8");
         assert_eq!(short_model("claude-sonnet-4-6"), "sonnet4.6");
+    }
+}
+
+#[cfg(test)]
+mod request_pricing_tests {
+    use super::*;
+    #[test]
+    fn astra_rates_compose_and_keep_cache_categories_distinct() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            cache_creation: 1_000_000,
+            cache_read: 1_000_000,
+            output: 1_000_000,
+        };
+        for (tier, long, expected) in [
+            (ServiceTier::Standard, false, 73.5),
+            (ServiceTier::Standard, true, 122.0),
+            (ServiceTier::Fast, false, 147.0),
+            (ServiceTier::Fast, true, 244.0),
+            (ServiceTier::Flex, true, 61.0),
+        ] {
+            let context = RequestPricing {
+                tier,
+                long_context: Some(long),
+                tier_confirmed: true,
+            };
+            assert_eq!(
+                context.cost_with(&table, "GPT-6-ASTRA", tokens),
+                (Some(expected), false)
+            );
+        }
+        assert_eq!(
+            RequestPricing::default().cost_with(&table, "gpt-6-astra", tokens),
+            (Some(73.5), true)
+        );
+        assert_eq!(
+            RequestPricing::default().cost_with(&table, "unknown", tokens),
+            (None, true)
+        );
     }
 }

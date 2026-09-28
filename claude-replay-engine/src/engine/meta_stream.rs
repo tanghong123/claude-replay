@@ -213,7 +213,7 @@ pub const COMPACT_AFTER: usize = 256;
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 35;
+pub const FOLD_VERSION: u16 = 36;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

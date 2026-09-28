@@ -79,6 +79,12 @@ pub trait MetricsAccumulator: Send {
     /// One raw JSONL record could not be parsed. Default no-op for adapters that deliberately
     /// expose no schema diagnostics; adapters with an observability counter record it here.
     fn malformed_line(&mut self) {}
+    /// Billing context for the most recent push, only when its token delta is one request.
+    /// The adapter must clear it on every push; consumers must not reuse a previous request.
+    fn request_pricing(&self) -> Option<crate::metrics::RequestPricing> {
+        None
+    }
+
     /// Fold a machinery-side counter into the accumulating [`Metrics::extra`] bag (#193:
     /// the elision gauges — `elided_lines` / `elided_bytes` / `skipped_lines` — banked by
     /// the read layer, which owns the counts the accumulator cannot see). Default no-op so

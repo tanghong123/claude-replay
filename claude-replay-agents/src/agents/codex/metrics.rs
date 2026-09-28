@@ -1,6 +1,6 @@
 use claude_replay_engine::seam::{
-    parse_ts, total_cost, Metrics, MetricsTotals, RateLimitWindow, RateLimits, RuntimeInfo,
-    TimeSpan, TokenCounts,
+    parse_ts, total_cost, Metrics, MetricsTotals, RateLimitWindow, RateLimits, RequestPricing,
+    RuntimeInfo, ServiceTier, TimeSpan, TokenCounts,
 };
 use serde_json::Value;
 
@@ -18,6 +18,7 @@ pub(crate) struct CodexMetricsAcc {
     /// is its difference from this — the totals→increments conversion the record format wants,
     /// done here in the adapter because only it knows its agent reports totals at all.
     last_total: TokenCounts,
+    pub(crate) request_pricing: Option<RequestPricing>,
     /// Whether any `token_count` was folded yet. A forked or sub-agent thread's cumulative
     /// counter INHERITS the parent's pre-fork history — its first reading can stand at
     /// hundreds of millions of tokens that live (and are priced) in the PARENT's rollout.
@@ -65,6 +66,7 @@ impl CodexMetricsAcc {
     }
 
     pub(crate) fn push(&mut self, value: &Value) {
+        self.request_pricing = None;
         if let Some(timestamp) = value
             .get("timestamp")
             .and_then(Value::as_str)
@@ -82,6 +84,10 @@ impl CodexMetricsAcc {
                     self.first_model = next.to_string();
                 }
                 self.model = next.to_string();
+            }
+            if let Some(tier) = value.pointer("/payload/service_tier") {
+                self.runtime.service_tier =
+                    tier.as_str().filter(|s| !s.is_empty()).map(str::to_string);
             }
             remember_string(
                 &mut self.runtime.reasoning_effort,
@@ -125,10 +131,10 @@ impl CodexMetricsAcc {
                 &mut self.runtime.collaboration_mode,
                 settings.and_then(|v| v.pointer("/collaboration_mode/mode")),
             );
-            remember_string(
-                &mut self.runtime.service_tier,
-                settings.and_then(|v| v.get("service_tier")),
-            );
+            if let Some(tier) = settings.and_then(|v| v.get("service_tier")) {
+                self.runtime.service_tier =
+                    tier.as_str().filter(|s| !s.is_empty()).map(str::to_string);
+            }
         }
         if value.get("type").and_then(Value::as_str) == Some("response_item") {
             let supported = matches!(
@@ -237,6 +243,42 @@ impl CodexMetricsAcc {
             }
             // Bank the increment against the CURRENT model. `saturating_sub` because a total
             // that goes backwards (a reset) must contribute nothing, never wrap.
+            let delta = TokenCounts {
+                input: now.input.saturating_sub(self.last_total.input),
+                cache_creation: now
+                    .cache_creation
+                    .saturating_sub(self.last_total.cache_creation),
+                cache_read: now.cache_read.saturating_sub(self.last_total.cache_read),
+                output: now.output.saturating_sub(self.last_total.output),
+            };
+            // A cumulative jump can cover several unseen requests. Only the last request
+            // matching the entire increment establishes a context threshold for this delta.
+            if let Some(last) = value.pointer("/payload/info/last_token_usage") {
+                let n = |key: &str| last.get(key).and_then(Value::as_u64).unwrap_or(0);
+                let request = TokenCounts {
+                    input: n("input_tokens")
+                        .saturating_sub(n("cached_input_tokens"))
+                        .saturating_sub(n("cache_write_input_tokens")),
+                    cache_creation: n("cache_write_input_tokens"),
+                    cache_read: n("cached_input_tokens"),
+                    output: n("output_tokens"),
+                };
+                if request == delta && delta != TokenCounts::default() {
+                    self.request_pricing = Some(RequestPricing {
+                        tier: self
+                            .runtime
+                            .service_tier
+                            .as_deref()
+                            .map(ServiceTier::from_recorded)
+                            .unwrap_or_default(),
+                        long_context: last
+                            .get("input_tokens")
+                            .and_then(Value::as_u64)
+                            .map(|n| n > 272_000),
+                        tier_confirmed: false,
+                    });
+                }
+            }
             let e = self.per_model.entry(self.model.clone()).or_default();
             e.input += now.input.saturating_sub(self.last_total.input);
             e.cache_creation += now
@@ -914,5 +956,50 @@ mod tests {
         assert_eq!(before, after, "naming a model moves no counter");
         // Only the finished metrics attribute — once, at the end.
         assert_eq!(acc.finish().per_model["gpt-5.6"].output, 30);
+    }
+}
+
+#[cfg(test)]
+mod request_pricing_tests {
+    use super::*;
+    use serde_json::json;
+    fn usage(total: u64, input: u64, cached: u64) -> Value {
+        json!({"type":"event_msg","payload":{"type":"token_count","info":{
+            "total_token_usage":{"input_tokens":total,"cached_input_tokens":cached,"output_tokens":10},
+            "last_token_usage":{"input_tokens":input,"cached_input_tokens":cached,"output_tokens":10}
+        }}})
+    }
+    #[test]
+    fn threshold_uses_full_request_input_and_duplicate_usage_has_no_context() {
+        for (input, long) in [(272_000, false), (272_001, true)] {
+            let mut acc = CodexMetricsAcc::default();
+            acc.push(&json!({"type":"turn_context","payload":{"model":"gpt-6-astra","service_tier":"priority"}}));
+            let event = usage(input + 1_000_000, input, 270_000);
+            acc.push(&event);
+            assert_eq!(
+                acc.request_pricing,
+                Some(RequestPricing {
+                    tier: ServiceTier::Fast,
+                    long_context: Some(long),
+                    tier_confirmed: false
+                })
+            );
+            let mut resumed = CodexMetricsAcc::default();
+            resumed.restore(&acc.state());
+            resumed.push(&event);
+            assert_eq!(resumed.request_pricing, None);
+            assert_eq!(resumed.totals(), acc.totals());
+            resumed.push(&json!({"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":null}}}));
+            assert_eq!(resumed.runtime.service_tier, None);
+        }
+    }
+    #[test]
+    fn missing_last_usage_and_multi_request_jumps_are_unknown() {
+        let mut acc = CodexMetricsAcc::default();
+        acc.push(&usage(100, 100, 0));
+        acc.push(&usage(900_000, 300_000, 0));
+        assert_eq!(acc.request_pricing, None);
+        acc.push(&json!({"type":"turn_context","payload":{"model":"gpt-6-astra"}}));
+        assert_eq!(acc.request_pricing, None);
     }
 }
