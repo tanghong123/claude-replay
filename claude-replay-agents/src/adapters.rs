@@ -237,6 +237,9 @@ impl TranscriptAdapter for CodexAdapter {
     fn turn_ended(&self, raw_line: &str) -> Option<bool> {
         agents::codex::model::turn_ended(raw_line)
     }
+    fn tool_is_call(&self, name: &str) -> bool {
+        agents::codex::model::tool_is_call(name)
+    }
     fn enrich(&self, path: &Path, blocks: &mut [Block]) {
         agents::codex::model::enrich_tree(path, blocks)
     }
@@ -545,6 +548,31 @@ mod sniff_tests {
             for tool in ["Bash", "Edit", "Read", "Agent", ""] {
                 assert!(!a.tool_is_interactive(tool), "{:?} / {tool:?}", a.agent());
             }
+        }
+    }
+
+    /// Every ToolUse a Claude-format adapter decodes is a call; Codex's exploration-detail
+    /// carrier is the one it declares is not (it rides beside the read/search/list actions
+    /// that are, and never reaches a block).
+    #[test]
+    fn non_call_tools_are_declared_by_the_adapter() {
+        for a in REGISTRY {
+            for tool in [
+                "Bash",
+                "Read",
+                "exec_command",
+                "apply_patch",
+                "__codex_explore_read",
+                "",
+            ] {
+                assert!(a.tool_is_call(tool), "{:?} / {tool:?}", a.agent());
+            }
+            assert_eq!(
+                a.tool_is_call("__codex_explore_detail"),
+                a.agent() != Agent::CODEX,
+                "{:?}",
+                a.agent()
+            );
         }
     }
 

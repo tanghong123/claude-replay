@@ -21,7 +21,8 @@ const SUBAGENT_THREAD_RESULT_PREFIX: &str = "\0codex-subagent-thread:";
 // `parsed_cmd` actions through the ordinary ToolUse join; `codex_finish` consumes every one and
 // emits only the canonical Read/Grep/LS activity vocabulary, with the command detail attached to
 // the final action's output.
-// They must never reach a Session or a presenter.
+// They must never reach a Session or a presenter. The per-line `Message` stream a collector
+// reads DOES carry them; `tool_is_call` tells it the detail is not a call.
 const EXPLORE_READ: &str = "__codex_explore_read";
 const EXPLORE_SEARCH: &str = "__codex_explore_search";
 const EXPLORE_LIST: &str = "__codex_explore_list";
@@ -871,6 +872,16 @@ fn command_execution_failed(item: &Value) -> bool {
             .get("status")
             .and_then(Value::as_str)
             .is_some_and(|status| status != "completed")
+}
+
+/// Whether a decoded `ToolUse` is an action (see `TranscriptAdapter::tool_is_call`). The
+/// exploration-detail carrier is not: `semantic_exec_messages` emits it beside the parsed
+/// read/search/list actions only so the command and its output ride the ToolUse/ToolResult
+/// join, and `codex_finish` folds it into the final action — the block stream never has it.
+/// A collector counting `ToolUse`s from the per-line stream would count it once per explored
+/// command.
+pub(crate) fn tool_is_call(name: &str) -> bool {
+    name != EXPLORE_DETAIL
 }
 
 /// Whether this raw rollout line says the TURN is over (#194), Codex-format: the turn

@@ -389,6 +389,18 @@ pub trait TranscriptAdapter: Sync {
     fn tool_is_interactive(&self, _name: &str) -> bool {
         false
     }
+    /// Whether a [`Message::ToolUse`] of this `name`, as
+    /// [`decode_line`](Self::decode_line) and the [`line_preprocessor`](Self::line_preprocessor)
+    /// emit it, is an ACTION the agent took — something a consumer counting tool calls should
+    /// count. An adapter may carry private plumbing through the ordinary ToolUse/ToolResult
+    /// join that its own block pass folds into a neighbouring action and never shows (Codex's
+    /// exploration-detail carrier: one per command, beside the read/search/list actions that
+    /// ARE the calls). The per-line stream is the consumer's view, so without this a
+    /// collector counts the carrier as a call — +1 per explored command. Default `true`, the
+    /// #21 mold: the vocabulary belongs to the adapter, never to a name list downstream.
+    fn tool_is_call(&self, _name: &str) -> bool {
+        true
+    }
     /// Whether this raw transcript line says the assistant's TURN is over (#194) —
     /// `Some(true)` for an end-of-turn marker (Claude's `stop_reason: end_turn`, Codex's
     /// `task_complete`), `Some(false)` for a line that proves the turn is still open (a
