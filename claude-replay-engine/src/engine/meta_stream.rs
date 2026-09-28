@@ -213,11 +213,16 @@ pub const COMPACT_AFTER: usize = 256;
 /// becomes the same `ToolUse::published` fact a file publish is, its result prose dropped. A v35
 /// stream kept the whole result — the type's instructions to the agent — and no link.
 ///
+/// v37: PR #39 — a Codex accumulator carries each request's billing context (its service tier and
+/// whether it crossed 272K input tokens) through a cursor restore, and a `service_tier: null`
+/// setting now CLEARS the recorded tier instead of keeping the last one. A v36 cursor resumed with
+/// the old tier semantics and no context.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 36;
+pub const FOLD_VERSION: u16 = 37;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
