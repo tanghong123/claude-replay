@@ -501,7 +501,10 @@
   // Enter, not on every keystroke — a 200 MB session cannot be searched live.
   var recSize = [];
   function haystackChars() { var n = 0; for (var i = 0; i < records.length; i++) n += recSize[i] || 0; return n; }
-  function searchIsLive() { return haystackChars() <= shared.LIVE_SEARCH_LIMIT; }
+  // `?liveSearchLimit=<chars>` lowers the limit for one page — a case's way onto the
+  // large-session path (#308) without a ten-megabyte fixture, in the manner of `?historyMs`.
+  var liveSearchLimit = Number(new URLSearchParams(location.search).get("liveSearchLimit")) || shared.LIVE_SEARCH_LIMIT;
+  function searchIsLive() { return haystackChars() <= liveSearchLimit; }
   var pendingSearch = false;
   function pushRecord(b) {
     applyUserFolds(b);
@@ -3613,8 +3616,11 @@
   });
   q.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && pendingSearch) {
+      // A large session searches on Enter (#104): that Enter also MOVES — to the nearest hit
+      // below the reader (above, with Shift), wrapping — rather than only counting (#308).
       pendingSearch = false;
       search(q.value); syncQScope();
+      if (totalHits) stepHit(e.shiftKey ? -1 : 1);
       e.stopPropagation();
       return;
     }

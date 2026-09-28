@@ -23,6 +23,36 @@ pub struct Backend {
     pub idx: Arc<Index>,
     pub scratch: PathBuf,
     pub attempts: Mutex<Attempts>,
+    /// When the last on-demand rescan ran (#309): a request for an id the service has not been
+    /// shown rescans at most once per [`RESCAN_COOLDOWN`], so a truly unknown id polled every
+    /// second does not walk every store every second.
+    pub rescanned: Mutex<Option<std::time::Instant>>,
+}
+
+/// How often an unknown id may trigger a rescan (#309).
+pub const RESCAN_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Before the session service answers a request for `id`, make sure it has been SHOWN that id.
+/// The service knows only the sessions a scan registered — `/api/sessions` registers each row it
+/// lists — so right after a restart a tab left open on a session polled before any page had
+/// fetched the list, and a valid transcript read "no such transcript" (#309, the owner). On a miss
+/// this runs the same scan `/api/sessions` does, which widens nothing: it registers exactly the
+/// transcripts the index lists.
+fn ensure_known(backend: &Backend, id: &str) {
+    if id.is_empty() || backend.service.knows(id) {
+        return;
+    }
+    {
+        let mut last = backend.rescanned.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|at| at.elapsed() < RESCAN_COOLDOWN) {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    let service = &backend.service;
+    let _ = backend.idx.sessions_json(|path| {
+        service.register_root(path);
+    });
 }
 
 /// The page `/` serves when the classic shell is wanted, given the request's query.
@@ -122,8 +152,16 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
             (front.session.as_ref().expect("checked"))(req, backend)
         }
         // Everything else is the session service's own wire surface — /session, /pull,
-        // /records, /__reveal, static assets (§6.3).
-        _ => service_routes(Some(&backend.service), &backend.scratch, req),
+        // /records, /__reveal, static assets (§6.3). A session's feed is asked for by id, and the
+        // service must have been shown that id first (#309).
+        _ => {
+            if matches!(name, "pull" | "records") {
+                if let Some(id) = query_get(query, "session") {
+                    ensure_known(backend, &index::percent_decode(id));
+                }
+            }
+            service_routes(Some(&backend.service), &backend.scratch, req)
+        }
     }
 }
 
@@ -153,6 +191,7 @@ mod tests {
             idx: Arc::new(Index::new(root.clone(), root.join("state"), Vec::new())),
             scratch,
             attempts: Mutex::new(Attempts::default()),
+            rescanned: Mutex::new(None),
         })
     }
 

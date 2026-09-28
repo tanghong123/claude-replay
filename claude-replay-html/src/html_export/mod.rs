@@ -4081,9 +4081,13 @@ mod tests {
     /// #104: above the shared haystack limit the classic page searches on Enter.
     #[test]
     fn a_large_session_searches_on_enter() {
-        assert!(JS.contains(
-            "function searchIsLive() { return haystackChars() <= shared.LIVE_SEARCH_LIMIT; }"
-        ));
+        // The shared limit, which a case may lower for one page with `?liveSearchLimit` (#308).
+        assert!(
+            JS.contains("function searchIsLive() { return haystackChars() <= liveSearchLimit; }")
+        );
+        assert!(JS.contains("|| shared.LIVE_SEARCH_LIMIT;"));
+        // #308: the Enter that runs a pending search also steps.
+        assert!(JS.contains("if (totalHits) stepHit(e.shiftKey ? -1 : 1);"));
         assert!(JS.contains("recSize.push(shared.recordTextSize(b));"));
         assert!(JS.contains("if (e.key === \"Enter\" && pendingSearch) {"));
     }

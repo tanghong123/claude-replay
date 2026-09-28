@@ -339,6 +339,17 @@ impl SessionService {
         })
     }
 
+    /// Whether this service can resolve `id` without discovery: a registered root, or a session
+    /// its cache already holds (a child a parent's pull registered). A host whose ids come from its
+    /// own scan asks this before a request for an id it may not have shown the service yet (#309).
+    pub fn knows(&self, id: &str) -> bool {
+        if self.cache.resolve(id).is_some() {
+            return true;
+        }
+        let roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+        roots.iter().any(|r| r.id == id)
+    }
+
     /// Register a ROOT session this service hosts (children register themselves as their
     /// parents' pulls discover them). Safe to call any time — the monitor registers new
     /// sessions as its scans find them. Returns the session id.

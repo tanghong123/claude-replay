@@ -1589,7 +1589,10 @@ function markSearch() {
   }
 }
 /** Live search while the haystack is small; above the shared limit the box searches on Enter (#104). */
-function searchIsLive() { let n = 0; for (const s of recordState.recSizes) n += s; return n <= LIVE_SEARCH_LIMIT; }
+// `?liveSearchLimit=<chars>` lowers the limit for one page — a case's way onto the large-session
+// path (#308) without a ten-megabyte fixture, in the manner of `?historyMs`.
+const liveSearchLimit = Number(new URLSearchParams(location.search).get("liveSearchLimit")) || LIVE_SEARCH_LIMIT;
+function searchIsLive() { let n = 0; for (const s of recordState.recSizes) n += s; return n <= liveSearchLimit; }
 byId("transcriptSearchInput").oninput = () => {
   if (searchIsLive()) { recordState.pendingSearch = false; updateSearch(true); return; }
   recordState.pendingSearch = true;
@@ -1602,7 +1605,9 @@ byId("transcriptSearchInput").onkeydown = event => {
   if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); return; }
   if (event.key !== "Enter") return;
   event.preventDefault(); event.stopPropagation();
-  if (recordState.pendingSearch) { recordState.pendingSearch = false; updateSearch(true); return; }
+  // A large session searches on Enter (#104): that Enter also MOVES — to the nearest hit below the
+  // reader (above, with Shift), wrapping — rather than only counting (#308, the owner).
+  if (recordState.pendingSearch) { recordState.pendingSearch = false; updateSearch(true); }
   stepSearch(event.shiftKey ? -1 : 1);
 };
 // Whole words: production-only chrome, layered beside the box at runtime so the extracted demo

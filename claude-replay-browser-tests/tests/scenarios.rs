@@ -14923,6 +14923,112 @@ fn app_shell_a_head_target_reads_in_its_own_order() {
     );
 }
 
+/// #308 — the owner: "hitting enter in the search box only shows how many hits, ideally page should
+/// move to the closest next match (or wrap around)". A large session searches on Enter rather than
+/// live (#104), and that Enter ran the search and stopped. One Enter now counts AND lands on the
+/// nearest hit below the reader; at the tail, with none below, it wraps to the first; Shift+Enter
+/// lands on the nearest above. `?liveSearchLimit=1` puts a small fixture on the large-session path.
+fn scenario_enter_searches_and_lands_on_the_nearest_hit(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    let box_id = match surface {
+        Surface::Classic => "q",
+        Surface::AppShell => "transcriptSearchInput",
+    };
+    // Hits recur at turns 5, 15, 25 and 35 ("question 5:", "answer 15:", …).
+    let enter = |shift: bool| {
+        eval(
+            tab,
+            &format!("(function(){{ document.querySelectorAll('#searchChips [data-chip-remove]').forEach(function (c) {{ c.click(); }}); var b = document.getElementById({box_id:?}); b.focus(); b.value = '5: '; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', shiftKey: {shift}, bubbles: true, cancelable: true}})); return 'entered'; }})()"),
+        );
+        settle();
+        settle();
+        settle();
+    };
+    // The reader in the middle, about turn 20.
+    scroll_by(tab, surface, -400000);
+    settle();
+    for _ in 0..200 {
+        if turn_at_top(tab, surface) >= 19 {
+            break;
+        }
+        scroll_by(tab, surface, 500);
+        settle();
+    }
+    let reader = turn_at_top(tab, surface);
+    assert!(
+        (17..=22).contains(&reader),
+        "{surface:?}: the reader sits mid-session: turn {reader}"
+    );
+    enter(false);
+    let landed = turn_at_top(tab, surface);
+    assert!(
+        (24..=26).contains(&landed),
+        "{surface:?}: one Enter from turn {reader} lands on the nearest hit below (turn 25), not \
+         just a count — landed at turn {landed}"
+    );
+    // At the tail nothing is below: Enter wraps to the first hit.
+    jump_to_end(tab, surface);
+    settle();
+    settle();
+    enter(false);
+    let wrapped = turn_at_top(tab, surface);
+    assert!(
+        (4..=6).contains(&wrapped),
+        "{surface:?}: from the tail, Enter wraps to the first hit (turn 5) — landed at {wrapped}"
+    );
+    // Shift+Enter from the middle: the nearest hit above.
+    scroll_by(tab, surface, -400000);
+    settle();
+    for _ in 0..200 {
+        if turn_at_top(tab, surface) >= 19 {
+            break;
+        }
+        scroll_by(tab, surface, 500);
+        settle();
+    }
+    let before = turn_at_top(tab, surface);
+    enter(true);
+    let back = turn_at_top(tab, surface);
+    // The fixture's own text may hold a "5: " between turns 15 and the reader (a numbered tool
+    // line); the rule is "the nearest hit ABOVE", so the landing is above the reader and no
+    // earlier than turn 15's hit.
+    assert!(
+        back < before && back >= 14,
+        "{surface:?}: Shift+Enter from turn {before} lands on the nearest hit above it — landed at {back}"
+    );
+}
+
+fn enter_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let path = stores.claude_session(SID, &long_session(40, Shape::default()));
+    Fixture {
+        base,
+        path,
+        turns: 40,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_enter_searches_and_lands_on_the_nearest_hit() {
+    let _serial = serial();
+    let fx = enter_fixture("enter-lands-classic");
+    let page = open_with(Surface::Classic, &fx, 0, "liveSearchLimit=1");
+    scenario_enter_searches_and_lands_on_the_nearest_hit(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_enter_searches_and_lands_on_the_nearest_hit() {
+    let _serial = serial();
+    let fx = enter_fixture("enter-lands-app");
+    let page = open_with(Surface::AppShell, &fx, 3060, "liveSearchLimit=1");
+    scenario_enter_searches_and_lands_on_the_nearest_hit(&page.tab, Surface::AppShell);
+}
+
 /// One word, "needle", in three places one facet can tell apart: a Bash command, a Read's target
 /// and an assistant's prose. Prose between the calls so each is its own record.
 fn needle_fixture(name: &str) -> Fixture {

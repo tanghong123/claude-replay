@@ -1622,8 +1622,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const record = { kind: "act", head: { name: "Bash" }, body: [{ p: "md", h: "<p>hi</p>" }, { p: "blocks", items: [{ kind: "bash", head: {}, body: [{ p: "pre", x: "x".repeat(100) }] }] }] };
   assert.equal(recordTextSize(record), 4 + 9 + 100, "head strings, part strings, nested records — without building the text");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
-  assert.match(app, /function searchIsLive\(\) \{ let n = 0; for \(const s of recordState\.recSizes\) n \+= s; return n <= LIVE_SEARCH_LIMIT; \}/, "live while small");
-  assert.match(app, /if \(recordState\.pendingSearch\) \{ recordState\.pendingSearch = false; updateSearch\(true\); return; \}\n\s*stepSearch\(event\.shiftKey \? -1 : 1\);/, "Enter runs a pending search, else steps");
+  assert.match(app, /const liveSearchLimit = Number\(new URLSearchParams\(location\.search\)\.get\("liveSearchLimit"\)\) \|\| LIVE_SEARCH_LIMIT;/, "the shared limit, which a case may lower for one page (#308)");
+  assert.match(app, /function searchIsLive\(\) \{ let n = 0; for \(const s of recordState\.recSizes\) n \+= s; return n <= liveSearchLimit; \}/, "live while small");
+  // #308: the Enter that runs a pending search also steps — to the nearest hit from the reader.
+  assert.match(app, /if \(recordState\.pendingSearch\) \{ recordState\.pendingSearch = false; updateSearch\(true\); \}\n\s*stepSearch\(event\.shiftKey \? -1 : 1\);/, "Enter runs a pending search AND steps (#308)");
   console.log("#104 large-session search cases passed");
 }
 

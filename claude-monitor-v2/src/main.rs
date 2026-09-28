@@ -177,6 +177,7 @@ fn main() -> Result<()> {
         scratch: scratch.clone(),
         // The passcode lockout counter, owned by the handler — one per process, one user.
         attempts: std::sync::Mutex::new(Attempts::default()),
+        rescanned: std::sync::Mutex::new(None),
     });
     let handler = claude_monitor::routes::handler(
         backend,

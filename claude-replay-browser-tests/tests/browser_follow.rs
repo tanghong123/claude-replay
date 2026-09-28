@@ -7372,3 +7372,57 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     drop(monitor);
     drop(world);
 }
+
+/// #309 — the owner saw `agent-monitor --pair` print `session 72b570af…: no such transcript` right
+/// after it started, for a valid transcript: a tab left open on it polled before any page had
+/// fetched the session list, and the service can only serve ids a scan has SHOWN it. A `/pull` for
+/// a real session, asked before any `/api/sessions`, is now served; an unknown id is still refused.
+#[test]
+#[ignore = "needs a built agent-monitor-v2"]
+fn a_fresh_monitor_serves_a_session_before_any_page_lists_them() {
+    let base = harness::base("fresh-monitor-pull");
+    let stores = harness::Stores::new(&base);
+    let sid = "aaaa1111-0000-4000-8000-000000000309";
+    stores.claude_session(sid, &harness::long_session(3, harness::Shape::default()));
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2819, &base, Some(&stores), false);
+    let get = |path: &str| -> (u16, String) {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", 2819)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        write!(
+            s,
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        let code = out
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
+        (code, out)
+    };
+    // The monitor may still be starting; wait until it answers at all.
+    let started = Instant::now();
+    while get("/favicon.svg").0 != 200 {
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the monitor never answered"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let (code, reply) = get(&format!("/pull?session={sid}&cursor=0"));
+    assert!(
+        code == 200 && reply.contains("\"t\":\"pull\""),
+        "a real session is served before any page has listed the sessions: {code} {}",
+        &reply[..reply.len().min(300)]
+    );
+    let (code, reply) = get("/pull?session=bbbb2222-0000-4000-8000-000000000999&cursor=0");
+    assert!(
+        code == 404 && reply.contains("no such transcript"),
+        "an id no store holds is still refused: {code} {}",
+        &reply[..reply.len().min(300)]
+    );
+    drop(m);
+}
