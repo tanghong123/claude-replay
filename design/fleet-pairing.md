@@ -300,16 +300,23 @@ D1 already routes through the primary Mac's ssh tunnels instead.
 ### 6.1 What shipped instead: a one-time code over `tailscale serve` (#11, 2026-09-28)
 
 The owner re-scoped Phase 2 before it was built: the phone is on the tailnet, so no relay is
-needed; the monitor is served with `tailscale serve` on the host (HTTPS on the tailnet name,
-proxied to the loopback port, nothing new listening). The missing piece was getting a phone PAIRED
+needed; the monitor is served with `tailscale serve` on the host, on its OWN port — `tailscale serve
+--bg --https 2727 2727`, the tailnet name's 2727 proxied to the loopback 2727 (`--http` on a tailnet
+without certificates), nothing new listening. Never the name's root on 443 (#311): every tool on
+the machine shares that one handler, and serving the monitor there once silently unserved another
+tool's page. The missing piece was getting a phone PAIRED
 without typing or copying the token — "typing the address won't work", and a URL carrying the
 token is "awkward … and not secure". `tailscaled` runs as root, so a request through it is never the
 same-user bypass: every tailnet device must pair.
 
 `agent-monitor --pair-phone` finds the serve entry that relays to this monitor (`tailscale serve
-status --json`; if none, it prints `tailscale serve --bg <port>` and stops), confirms it with the
+status --json`, background and foreground serves, the monitor's own port first, `http://` or
+`https://` as the entry says; if none, it prints `tailscale serve --bg --https <port> <port>` and
+stops), confirms it with the
 user, mints a single-use code valid for five minutes into `<state>/pair-codes` (0600), and prints a
-terminal QR code for `<address>/pair#code=<CODE>` plus the code to type. The listener answers
+terminal QR code for `<address>/pair#code=<CODE>` (black on white whatever the terminal's theme —
+a light-on-dark code is a negative a camera may not read) plus the code to type, then asks the
+running monitor for `/pair` with the tailnet name as `Host` and says so if nothing answers. The listener answers
 `/pair` and `POST /api/pair` ahead of the gate, on a paired monitor only, and swaps the code for the
 usual `cmauth` cookie; five wrong attempts burn every outstanding code. The code travels in a
 fragment (client side) and a POST body (server side), never a URL a server or proxy logs, and the

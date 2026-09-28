@@ -1,8 +1,9 @@
 //! One-time pairing codes (#11): how a phone joins a PAIRED monitor without anyone typing, copying
 //! or showing the long-lived token.
 //!
-//! The owner serves the monitor to their tailnet with `tailscale serve` (HTTPS on the tailnet name,
-//! proxied to the loopback listener). `tailscaled` runs as root, so a request through it is never
+//! The owner serves the monitor to their tailnet with `tailscale serve` on the monitor's own port
+//! (`tailscale serve --bg --https 2727 2727`: the tailnet name's port 2727, proxied to the loopback
+//! listener). `tailscaled` runs as root, so a request through it is never
 //! the same-user loopback bypass: a paired monitor demands the token from every tailnet device.
 //! Handing a phone that token was the problem — "typing the address won't work", and "it would be
 //! awkward to copy the raw url with pairing code on it (and not secure)" (the owner, 2026-09-28).
