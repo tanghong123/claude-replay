@@ -2638,7 +2638,9 @@ mod tests {
     }
 
     /// The same, end to end through a real listener: the head names the encoding and the
-    /// COMPRESSED length, so the client reads exactly the gzip stream.
+    /// COMPRESSED length, so the client reads exactly the gzip stream. The gate is PAIRED and the
+    /// request carries the token: an unpaired test gate admits a same-machine peer on macOS but
+    /// no one on Linux, where it would demand a same-user uid it cannot verify (CI's 401).
     #[test]
     fn a_remote_client_reads_a_gzipped_reply_whole() {
         use std::io::{Read, Write};
@@ -2647,11 +2649,11 @@ mod tests {
         let handler: RouteHandler = std::sync::Arc::new(move |_: &Request| {
             HttpResponse::ok("text/plain; charset=utf-8", served.clone().into_bytes())
         });
-        let port = spawn_listener_gated(0, handler, AuthGate::for_test(None)).unwrap();
+        let port = spawn_listener_gated(0, handler, AuthGate::for_test(Some("t0k"))).unwrap();
         let get = |host: &str| {
             let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
             s.write_all(
-                format!("GET /records HTTP/1.1\r\nHost: {host}\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n")
+                format!("GET /records HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer t0k\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n")
                     .as_bytes(),
             )
             .unwrap();
