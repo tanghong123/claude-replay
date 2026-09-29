@@ -1232,6 +1232,10 @@ fn spawn_http_server(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StaleEpoch;
 
+/// Every plain-text reply's type (#317): WITH its charset. The refusal and error texts carry an em
+/// dash, and a browser in a zh locale decodes charset-less text as GBK, showing mojibake.
+pub const TEXT_PLAIN: &str = "text/plain; charset=utf-8";
+
 /// One HTTP reply — what a [`spawn_listener`] handler returns. Plain data so a host's own
 /// routes and [`service_routes`] compose without either knowing the socket.
 pub struct HttpResponse {
@@ -1264,7 +1268,7 @@ impl HttpResponse {
     pub fn not_found(msg: &'static str) -> Self {
         Self {
             code: "404 Not Found",
-            content_type: "text/plain",
+            content_type: TEXT_PLAIN,
             body: msg.as_bytes().to_vec(),
             headers: Vec::new(),
         }
@@ -1272,7 +1276,7 @@ impl HttpResponse {
     pub fn unauthorized(msg: &'static str) -> Self {
         Self {
             code: "401 Unauthorized",
-            content_type: "text/plain",
+            content_type: TEXT_PLAIN,
             body: msg.as_bytes().to_vec(),
             headers: Vec::new(),
         }
@@ -1280,7 +1284,7 @@ impl HttpResponse {
     pub fn forbidden(msg: &'static str) -> Self {
         Self {
             code: "403 Forbidden",
-            content_type: "text/plain",
+            content_type: TEXT_PLAIN,
             body: msg.as_bytes().to_vec(),
             headers: Vec::new(),
         }
@@ -1288,7 +1292,7 @@ impl HttpResponse {
     pub fn method_not_allowed(msg: &'static str) -> Self {
         Self {
             code: "405 Method Not Allowed",
-            content_type: "text/plain",
+            content_type: TEXT_PLAIN,
             body: msg.as_bytes().to_vec(),
             headers: Vec::new(),
         }
@@ -1413,7 +1417,15 @@ pub struct AuthGate {
     /// Where one-time pairing codes live (#11), when the host offers phone pairing: a PAIRED
     /// gate with this set answers `/pair` and `/api/pair` before deciding anything else.
     pair_codes: Option<std::sync::Arc<std::path::Path>>,
+    /// What a refused request is told (#317) — the HOST's words, since the gate is shared: a host
+    /// other than the monitor (agent-metrics serves its dashboard through this listener) names
+    /// its own way in. [`DEFAULT_REFUSAL`] unless [`with_refusal`](Self::with_refusal) says.
+    refusal: &'static str,
 }
+
+/// The refusal a gate gives when its host sets none — the monitor's own.
+pub const DEFAULT_REFUSAL: &str =
+    "not paired — run `claude-monitor --pair` and open the printed URL";
 
 /// The gate's ruling on one request.
 pub(crate) enum Access {
@@ -1433,6 +1445,7 @@ impl AuthGate {
             euid: current_euid(),
             token: None,
             pair_codes: None,
+            refusal: DEFAULT_REFUSAL,
         }
     }
 
@@ -1442,7 +1455,15 @@ impl AuthGate {
             euid: current_euid(),
             token: Some(token.into()),
             pair_codes: None,
+            refusal: DEFAULT_REFUSAL,
         }
+    }
+
+    /// Tell a refused request `text` instead of the monitor's own words (#317): the gate is shared,
+    /// and a host names its own way in.
+    pub fn with_refusal(mut self, text: &'static str) -> Self {
+        self.refusal = text;
+        self
     }
 
     /// Offer one-time phone pairing (#11) from the codes file at `path` — a no-op on an unpaired
@@ -1461,6 +1482,7 @@ impl AuthGate {
             euid: Some(u32::MAX), // never a real uid → same-user never matches
             token: token.map(std::sync::Arc::from),
             pair_codes: None,
+            refusal: DEFAULT_REFUSAL,
         }
     }
 
@@ -1760,7 +1782,7 @@ pub(super) fn artifact_headers() -> Vec<String> {
 fn too_large() -> HttpResponse {
     HttpResponse {
         code: "413 Content Too Large",
-        content_type: "text/plain",
+        content_type: TEXT_PLAIN,
         body: b"request body too large".to_vec(),
         headers: Vec::new(),
     }
@@ -1771,7 +1793,7 @@ fn too_large() -> HttpResponse {
 fn artifact_refused(code: &'static str, why: &'static str) -> HttpResponse {
     HttpResponse {
         code,
-        content_type: "text/plain",
+        content_type: TEXT_PLAIN,
         body: why.as_bytes().to_vec(),
         headers: artifact_headers(),
     }
@@ -1875,9 +1897,7 @@ fn serve_connection(
         Access::Denied => (
             // A 401 is a well-formed reply: the fleet's `status_code` probe reads a gated
             // remote monitor as "serving" (and its own tunnel passes same-user anyway).
-            HttpResponse::unauthorized(
-                "not paired — run `claude-monitor --pair` and open the printed URL",
-            ),
+            HttpResponse::unauthorized(gate.refusal),
             None,
             false,
         ),
@@ -1891,7 +1911,7 @@ fn serve_connection(
             // redirect the design forbids — a fresh GET, not a cursor'd stream.
             let root_nav = name.is_empty() || name == "index.html" || name == "index";
             if root_nav && !from_cookie {
-                (HttpResponse::ok("text/plain", Vec::new()), Some(tok), true)
+                (HttpResponse::ok(TEXT_PLAIN, Vec::new()), Some(tok), true)
             } else if oversized {
                 (too_large(), Some(tok), false)
             } else {
@@ -2194,7 +2214,7 @@ pub fn service_routes(
             Ok(bytes) => HttpResponse::ok("application/json; charset=utf-8", bytes),
             Err(StaleEpoch) => HttpResponse {
                 code: "409 Conflict",
-                content_type: "text/plain",
+                content_type: TEXT_PLAIN,
                 body: b"stale epoch".to_vec(),
                 headers: Vec::new(),
             },
@@ -2313,7 +2333,7 @@ pub fn service_routes(
             if let Some(live) = live {
                 if let Some(real) = live.revealable(path) {
                     crate::sys::reveal_in_file_manager(&real);
-                    return HttpResponse::ok("text/plain", b"revealed".to_vec());
+                    return HttpResponse::ok(TEXT_PLAIN, b"revealed".to_vec());
                 }
             }
         }
@@ -2330,7 +2350,7 @@ pub fn service_routes(
     if !allowed {
         return HttpResponse {
             code: "403 Forbidden",
-            content_type: "text/plain",
+            content_type: TEXT_PLAIN,
             body: b"forbidden".to_vec(),
             headers: Vec::new(),
         };
@@ -2531,6 +2551,58 @@ mod tests {
         // Here the matcher finds no /proc row → unverifiable → unpaired admits, paired denies.
         let unpaired = AuthGate::for_test(None);
         assert!(matches!(unpaired.decide(lo, srv, None, false), Access::Ok));
+    }
+
+    /// #317: every plain-text reply names its charset — the refusal and the error texts carry an
+    /// em dash, which a zh-locale browser decoded as GBK. Held on the constructors and on the
+    /// source: no reply in this file spells a bare `"text/plain"`.
+    #[test]
+    fn every_plain_text_reply_says_utf8() {
+        for r in [
+            HttpResponse::not_found("x"),
+            HttpResponse::unauthorized("x"),
+            HttpResponse::forbidden("x"),
+            HttpResponse::method_not_allowed("x"),
+        ] {
+            assert_eq!(r.content_type, "text/plain; charset=utf-8", "{}", r.code);
+        }
+        let source = include_str!("serve.rs");
+        let production = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        let bare = production.matches(concat!("\"text/plain", "\"")).count();
+        assert_eq!(bare, 0, "a plain-text reply without its charset");
+    }
+
+    /// #317: the gate is shared — agent-metrics serves its dashboard through this listener — so a
+    /// refused request is told the HOST's way in, not the monitor's; a gate whose host says nothing
+    /// keeps the monitor's words.
+    #[test]
+    fn a_refused_request_is_told_the_hosts_way_in() {
+        use std::io::{Read, Write};
+        let handler: RouteHandler =
+            std::sync::Arc::new(|_: &Request| HttpResponse::html("the page".to_string()));
+        let refuse = |gate: AuthGate| {
+            let port = spawn_listener_gated(0, handler.clone(), gate).unwrap();
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let mut raw = String::new();
+            s.read_to_string(&mut raw).unwrap();
+            raw
+        };
+        let host = refuse(
+            AuthGate::for_test(Some("t0k")).with_refusal("open the dashboard with `agent-metrics`"),
+        );
+        assert!(host.starts_with("HTTP/1.1 401"), "{host}");
+        assert!(
+            host.contains("Content-Type: text/plain; charset=utf-8"),
+            "{host}"
+        );
+        assert!(
+            host.ends_with("open the dashboard with `agent-metrics`"),
+            "{host}"
+        );
+        let monitor = refuse(AuthGate::for_test(Some("t0k")));
+        assert!(monitor.ends_with(DEFAULT_REFUSAL), "{monitor}");
     }
 
     /// #313: a client across a network (the phone through `tailscale serve`, whose `Host` is the
