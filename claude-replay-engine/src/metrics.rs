@@ -205,6 +205,28 @@ impl TokenCounts {
     }
 }
 
+/// What a usage unit IS (#316) — the unit [`MetricsAccumulator::usage_id`] names — which decides
+/// how a consumer merges two readings of one transcript (its rewrite epochs, a copied or diverged
+/// file). Constant for an adapter; declared by [`MetricsAccumulator::usage_kind`], so a consumer
+/// never has to infer it from an agent's name.
+///
+/// [`MetricsAccumulator::usage_id`]: crate::adapter::MetricsAccumulator::usage_id
+/// [`MetricsAccumulator::usage_kind`]: crate::adapter::MetricsAccumulator::usage_kind
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum UsageKind {
+    /// One API call (Claude and the Qoder family: `message.id/requestId`). Its usage only GROWS
+    /// across the lines that carry it within one reading, and a copy keeps it verbatim, so the
+    /// merge is exact: within a reading sum each id's deltas; across readings place each call
+    /// once, taking its per-field maximum.
+    Call,
+    /// One reading of a running counter (Codex: the cumulative `total_token_usage`). Its DELTA is
+    /// the difference from the reading before it IN THAT FILE, so a rewrite that drops readings
+    /// re-differences the counter and the same reading can carry a different delta in two
+    /// readings of the file. The id still names the reading, but only a per-bucket maximum across
+    /// readings is a safe merge.
+    CounterReading,
+}
+
 /// Billing evidence for one request. Missing evidence is never a standard-tier assertion.
 #[derive(
     Debug,

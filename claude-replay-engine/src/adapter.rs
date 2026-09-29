@@ -89,15 +89,26 @@ pub trait MetricsAccumulator: Send {
     /// or one reading of an agent's running counter. The same unit carries the same id in any
     /// copy or rewrite of the transcript, and two units of one transcript never share one — so
     /// a consumer that reads a transcript more than once (a rewrite epoch, a copied or diverged
-    /// file) can merge the readings EXACTLY: within one reading sum each id's deltas (one call
-    /// may be credited over several lines), then across readings take each id's per-field
-    /// maximum, since the same call seen twice is one call. A per-bucket maximum instead
-    /// undercounts a bucket holding both a rewrite's retained calls and new ones.
+    /// file) can merge the readings by id. HOW depends on what the id names, which
+    /// [`usage_kind`](Self::usage_kind) declares: an API call merges exactly (within one reading
+    /// sum each id's deltas — one call may be credited over several lines — then across readings
+    /// take each id's per-field maximum, since the same call seen twice is one call; a per-bucket
+    /// maximum instead undercounts a bucket holding both a rewrite's retained calls and new ones),
+    /// while a counter reading's delta can change when a rewrite drops the readings before it,
+    /// so there only a per-bucket maximum is safe. See [`UsageKind`](crate::metrics::UsageKind).
     ///
     /// `None` when the push credited no usage, or the format names no unit. Valid only after a
     /// push: the adapter clears it on every push (as [`request_pricing`](Self::request_pricing)),
     /// and a line that could not be parsed is not a push. Never part of [`state`](Self::state).
     fn usage_id(&self) -> Option<String> {
+        None
+    }
+
+    /// What kind of unit [`usage_id`](Self::usage_id) names (#316) — constant for an adapter, so a
+    /// consumer merging readings of one transcript never infers it from an agent's name. `None`,
+    /// the default, is unknown: a consumer treats it as a counter reading, the merge that is safe
+    /// for either kind.
+    fn usage_kind(&self) -> Option<crate::metrics::UsageKind> {
         None
     }
 

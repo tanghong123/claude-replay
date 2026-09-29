@@ -33,6 +33,10 @@ impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
     fn usage_id(&self) -> Option<String> {
         agents::claude::metrics::MetricsAcc::usage_id(self)
     }
+    /// An API call, whose usage only grows across its lines (#316).
+    fn usage_kind(&self) -> Option<claude_replay_engine::seam::UsageKind> {
+        Some(claude_replay_engine::seam::UsageKind::Call)
+    }
     fn bump_extra(&mut self, key: &str, n: u64) {
         self.bump(key, n)
     }
@@ -69,6 +73,10 @@ impl MetricsAccumulator for agents::codex::metrics::CodexMetricsAcc {
     /// The running counter's reading (Codex names no request).
     fn usage_id(&self) -> Option<String> {
         self.usage_id.clone()
+    }
+    /// A reading of the cumulative counter, whose delta a rewrite can change (#316).
+    fn usage_kind(&self) -> Option<claude_replay_engine::seam::UsageKind> {
+        Some(claude_replay_engine::seam::UsageKind::CounterReading)
     }
     fn push(&mut self, v: &Value) {
         agents::codex::metrics::CodexMetricsAcc::push(self, v)
@@ -548,6 +556,23 @@ mod sniff_tests {
             for tool in ["Bash", "Edit", "Read", "Agent", ""] {
                 assert!(!a.tool_is_interactive(tool), "{:?} / {tool:?}", a.agent());
             }
+        }
+    }
+
+    /// #316: every adapter declares what its usage ids name, so a consumer merges readings of a
+    /// transcript by the unit's kind and never by the agent's name — an API call for the Claude
+    /// format (Claude, Qoder, QoderWork), a counter reading for Codex. An adapter added to the
+    /// registry must say which, and this test names it.
+    #[test]
+    fn every_adapter_declares_what_its_usage_ids_name() {
+        use claude_replay_engine::seam::UsageKind;
+        for a in REGISTRY {
+            let want = match a.agent() {
+                Agent::CODEX => Some(UsageKind::CounterReading),
+                Agent::CLAUDE | Agent::QODER | Agent::QODERWORK => Some(UsageKind::Call),
+                other => panic!("{other:?} is registered: declare what its usage ids name"),
+            };
+            assert_eq!(a.metrics_acc().usage_kind(), want, "{:?}", a.agent());
         }
     }
 

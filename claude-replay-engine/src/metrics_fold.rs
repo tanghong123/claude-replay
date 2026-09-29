@@ -92,8 +92,9 @@ pub struct MetricsEvent {
     /// Extension-bag counters this event moved (e.g. a skipped-record diagnostic), as deltas.
     pub extra: BTreeMap<String, u64>,
     /// The stable identity of the usage unit these tokens belong to —
-    /// [`MetricsAccumulator::usage_id`], with its merge rule. `None` for an event that moved
-    /// only counters, and for an adapter that names no unit.
+    /// [`MetricsAccumulator::usage_id`], whose merge rule depends on the adapter's
+    /// [`MetricsAccumulator::usage_kind`]. `None` for an event that moved only counters, and for
+    /// an adapter that names no unit.
     pub id: Option<String>,
 }
 

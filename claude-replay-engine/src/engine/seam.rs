@@ -59,7 +59,7 @@ pub use crate::metrics::human_tokens;
 pub use crate::metrics::{
     credits_cost, estimate_cost, parse_reader_with, parse_ts, total_cost, Metrics, MetricsTotals,
     RateLimitWindow, RateLimits, ReportedCost, RequestPricing, RuntimeInfo, ServiceTier, TimeSpan,
-    TokenCounts,
+    TokenCounts, UsageKind,
 };
 #[doc(hidden)]
 pub use crate::model::attach_skill_body;
