@@ -996,7 +996,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      per-block link / raw chips, which a touch screen draws permanently since hover cannot reveal them.
    - Targets are at least 44px tall; inputs are 16px, the size under which iOS zooms the page into a
      focused field (the search box zoomed the page and pushed the filter off the edge). */
-.drawer-handle,.drawer-scrim,.phone-only,.phone-row-break,.phone-pane-menu{display:none}
+.drawer-handle,.drawer-scrim,.phone-only,.phone-row-break,.phone-pane-menu,.task-scrim{display:none}
 @media(max-width:760px) and (hover:hover){.drawer-handle:hover{background:var(--hover)}}
 @media(max-width:760px){
   :root{--sidebar:min(86vw,360px)}
@@ -1045,9 +1045,32 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   .phone-pane-head{display:flex;align-items:center;justify-content:space-between;flex:none;padding:0 2px 0 16px;border-bottom:1px solid var(--line)}
   .phone-pane-head strong{font-size:14px;color:var(--ink)}
   .phone-pane-close{width:44px;height:44px;border-radius:10px;background:transparent;color:var(--sub);font-size:17px;cursor:pointer}
-  .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:6px}
+  .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
   .phone-pane-body .outline-turn-row,.phone-pane-body .work-task-head,.phone-pane-body .outline-agent{min-height:44px}
   .phone-pane-body .outline-turn-row .outline-label{font-size:14px}
+  /* #319 — the Tasks drop-down, on the owner's report. The list is not a scroller of its own here
+     (the drop-down's body is), or a state's head would pin to a box that never scrolls. */
+  .phone-pane-body .navigator-list{overflow:visible}
+  /* A row's own layout: out of the outline's card a task row fell back to a four-column grid made
+     for another list, and its title took a 12px column — a circle, one letter and an ellipsis. */
+  .phone-pane-body .work-task-head{grid-template-columns:15px minmax(0,1fr) auto;gap:10px;align-items:center;padding:6px 9px}
+  .phone-pane-body .work-copy strong{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;font-size:14px;line-height:1.3}
+  .phone-pane-body .work-task-meta{font-size:12px}
+  .phone-pane-body .work-tail{font-size:12px}
+  /* Every state is listed (the phone cannot reach the outline's state filter), so the state's head
+     stays pinned at the top while its rows pass under it, and the head of the drop-down jumps to
+     each state. */
+  .phone-pane-body .work-group{position:sticky;top:0;z-index:2;margin:0;padding:10px 8px 7px;border-top:0;border-bottom:1px solid var(--line);background:var(--bg);font-size:11px}
+  .phone-pane-body .work-group:not(:first-child){margin-top:8px}
+  .phone-pane-head:has(+.phone-pane-jumps:not([hidden])){border-bottom:0}
+  .phone-pane-jumps:not([hidden]){display:flex;gap:4px;flex:none;padding:0 6px 4px;border-bottom:1px solid var(--line)}
+  .phone-pane-jump{flex:1 1 0;min-width:0;height:44px;display:flex;align-items:center;justify-content:center;gap:6px;border-radius:10px;background:transparent;color:var(--sub);font:600 12.5px/1 var(--sans);white-space:nowrap;cursor:pointer}
+  .phone-pane-jump:active,.phone-pane-jump:focus-visible{background:var(--hover);outline:0}
+  .phone-pane-jump .task-state{flex:none}
+  .phone-pane-jump-count{font:500 11.5px/1 var(--mono);color:var(--faint)}
+  /* The task's card is a sheet over the session and over the list it was chosen from; the scrim
+     dims both, and a tap on it closes the card. */
+  .task-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:rgba(14,19,31,.42)}
 
   #app .session-main,#app .workspace.navigator-off .session-main{grid-template-columns:0 minmax(0,1fr)}
   #app .session-navigator{display:none!important}

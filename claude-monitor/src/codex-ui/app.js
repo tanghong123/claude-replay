@@ -1210,7 +1210,10 @@ function renderNavigator() {
   // #218: the pane shows the task states the reader checked. "other" (cancelled, or a status the
   // stream never classified) is always shown — it is neither live nor done, and a box that does not
   // exist would hide it for good.
-  const shownGroups = uiState.taskGroupsShown;
+  // #319: except on a phone, which has no way to reach that filter (it lives in the outline's
+  // menu) — its Tasks drop-down lists every state, and its head jumps between them. The reader's
+  // remembered choice is left as it is, for the desktop.
+  const shownGroups = matchMedia("(max-width:760px)").matches ? new Set(TASK_GROUP_ROWS.map(g => g.key)) : uiState.taskGroupsShown;
   const liveTasksOnly = !TASK_GROUP_ROWS.every(g => shownGroups.has(g.key));
   // Filter the GROUPS, never the list. Each row carries `index`, the position in `meta.tasks`,
   // and `data-task-open` hands that index straight to `openTaskPopover`, which reads the FULL
@@ -1240,6 +1243,7 @@ function renderNavigator() {
       ? `<div class="activity-empty">No session tasks${escapeText(untitledNote)}</div>`
       : '<div class="activity-empty">No session tasks</div>';
   byId("navigatorWork").innerHTML = taskShown.map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("") || noTasks;
+  mobileShell?.tasksChanged(); // the phone drop-down's jumps name the groups just drawn (#319)
   const agents = directAgents(), activeAgents = agents.filter(agent => agent.running).length;
   byId("navigatorAgentCount").innerHTML = outlineSummary(activeAgents, agents.length - activeAgents, agents.length);
   // A sub-agent row (#61): the click opens the sub-agent's OWN transcript — the whole view
@@ -2699,11 +2703,20 @@ taskPopover.id = "taskPopover";
 taskPopover.setAttribute("role", "dialog");
 taskPopover.setAttribute("aria-modal", "false");
 taskPopover.hidden = true;
-document.body.append(taskPopover);
+// #319: on a phone the card is a sheet over the session (and over the Tasks drop-down it was chosen
+// from), which read as one muddle — the owner: "it is very hard to read, suggest to dim the
+// background". The scrim dims everything behind the card, and a tap on it closes the card. It is
+// drawn on a phone only (production.css); elsewhere the card is a popover beside its row.
+const taskScrim = document.createElement("div");
+taskScrim.className = "task-scrim";
+taskScrim.id = "taskScrim";
+taskScrim.hidden = true;
+document.body.append(taskScrim, taskPopover);
 let taskPopoverOpener = null;
 function closeTaskPopover(restoreFocus = true) {
   if (taskPopover.hidden) return;
   taskPopover.hidden = true;
+  taskScrim.hidden = true;
   taskPopover.innerHTML = "";
   if (restoreFocus && taskPopoverOpener?.isConnected) taskPopoverOpener.focus();
   taskPopoverOpener = null;
@@ -2726,6 +2739,7 @@ function openTaskPopover(index, opener) {
     <div class="task-popover-actions">${jump}</div>`;
   taskPopoverOpener = opener;
   taskPopover.hidden = false;
+  taskScrim.hidden = false;
   const r = opener.getBoundingClientRect(), w = Math.min(440, window.innerWidth - 24);
   const left = Math.min(window.innerWidth - w - 12, r.right + 8);
   taskPopover.style.left = `${Math.max(12, left)}px`;
@@ -3061,10 +3075,32 @@ var infoPopoverToggle;
   menu.id = "phonePaneMenu";
   menu.hidden = true;
   menu.setAttribute("role", "dialog");
-  menu.innerHTML = '<div class="phone-pane-head"><strong></strong><button type="button" class="phone-pane-close" aria-label="Close">✕</button></div><div class="phone-pane-body"></div>';
+  menu.innerHTML = '<div class="phone-pane-head"><strong></strong><button type="button" class="phone-pane-close" aria-label="Close">✕</button></div><div class="phone-pane-jumps" role="toolbar" aria-label="Jump to a state" hidden></div><div class="phone-pane-body"></div>';
   app.append(menu);
   const menuBody = menu.querySelector(".phone-pane-body");
+  const jumps = menu.querySelector(".phone-pane-jumps");
   let openPane = null, home = null;
+  // #319: the Tasks drop-down lists every state (a phone cannot reach the outline's state filter),
+  // so its head jumps between them — each named and counted as the state's own head in the list,
+  // which stays pinned at the top while its rows scroll under it (production.css).
+  const renderJumps = () => {
+    const heads = openPane?.key === "tasks" ? [...menuBody.querySelectorAll(".work-group[data-task-group]")] : [];
+    jumps.hidden = !heads.length;
+    jumps.innerHTML = heads.map(head => {
+      const key = head.dataset.taskGroup, state = key === "in_progress" ? "running" : key;
+      const label = head.firstElementChild?.textContent || key, count = head.querySelector(".work-group-count")?.textContent || "";
+      return `<button type="button" class="phone-pane-jump" data-jump-group="${escapeText(key)}"><span class="task-state ${escapeText(state)}" aria-hidden="true"></span>${escapeText(label)} <span class="phone-pane-jump-count">${escapeText(count)}</span></button>`;
+    }).join("");
+  };
+  // A state's head at the top of the list, its first task right under it. Measured from that
+  // first ROW, since a head that is pinned reads where it is held, not where it stands.
+  const jumpTo = key => {
+    const head = menuBody.querySelector(`.work-group[data-task-group="${CSS.escape(key)}"]`);
+    if (!head) return;
+    const first = head.nextElementSibling;
+    if (!head.previousElementSibling || !first) { menuBody.scrollTop = 0; return; }
+    menuBody.scrollTop += first.getBoundingClientRect().top - menuBody.getBoundingClientRect().top - head.offsetHeight;
+  };
   const closePane = () => {
     if (!openPane) return;
     const node = byId(openPane.body);
@@ -3073,6 +3109,7 @@ var infoPopoverToggle;
     openPane = null;
     home = null;
     menu.hidden = true;
+    renderJumps();
   };
   const showPane = pane => {
     closePane();
@@ -3084,6 +3121,8 @@ var infoPopoverToggle;
     openPane = pane;
     pane.button.setAttribute("aria-expanded", "true");
     menu.hidden = false;
+    renderJumps();
+    menuBody.scrollTop = 0;
     // The current turn in the middle of the list — by moving the drop-down's OWN scroller, never
     // by asking the browser to scroll something into view (the contract's rule for this module).
     const current = node.querySelector(".outline-turn-row.current");
@@ -3091,17 +3130,29 @@ var infoPopoverToggle;
       const box = menuBody.getBoundingClientRect(), row = current.getBoundingClientRect();
       menuBody.scrollTop += row.top - box.top - (box.height - row.height) / 2;
     }
+    // Tasks opens on what is still moving (#186's default, now that the finished ones are listed
+    // above it): the first state after Completed, at the top.
+    const moving = [...node.querySelectorAll(".work-group[data-task-group]")].find(head => head.dataset.taskGroup !== "completed");
+    if (pane.key === "tasks" && moving) jumpTo(moving.dataset.taskGroup);
   };
   panes.forEach(pane => pane.button.addEventListener("click", () => (openPane === pane ? closePane() : showPane(pane))));
   menu.addEventListener("click", event => {
     if (event.target.closest(".phone-pane-close")) { closePane(); return; }
+    const jump = event.target.closest("[data-jump-group]");
+    if (jump) { jumpTo(jump.dataset.jumpGroup); return; }
     navigatorClick(event);
-    if (event.target.closest("[data-turn-record], [data-task-open], [data-task-record], [data-agent-record], [data-child-outline]")) closePane();
+    // A task's card opens OVER the list, which stays open under it (#319, the owner): closing the
+    // card goes back to the list, where the next task is one tap away.
+    if (event.target.closest("[data-turn-record], [data-task-record], [data-agent-record], [data-child-outline]")) closePane();
   });
+  // A tap outside closes the list — unless a task's card is open over it, when the tap is the
+  // card's (it closes the card; its own handler), and the list is still there after it.
   addEventListener("pointerdown", event => {
-    if (openPane && !menu.contains(event.target) && !event.target.closest?.("[data-phone-pane], #taskPopover")) closePane();
+    if (openPane && taskPopover.hidden && !menu.contains(event.target) && !event.target.closest?.("[data-phone-pane]")) closePane();
   }, true);
   addEventListener("keydown", event => { if (event.key === "Escape") closePane(); });
+  // The card's own jump to the turn leaves for the transcript: the list goes with the card.
+  taskPopover.addEventListener("click", event => { if (event.target.closest("[data-task-record]")) closePane(); });
 
   const setDrawer = open => {
     app.classList.toggle("mobile-detail", !open);
@@ -3120,7 +3171,8 @@ var infoPopoverToggle;
     if (bottom > 0) document.documentElement.style.setProperty("--phone-top", `${bottom}px`);
   };
   new ResizeObserver(place).observe(topbar);
-  PHONE.addEventListener("change", () => { place(); if (!PHONE.matches) closePane(); });
+  // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone).
+  PHONE.addEventListener("change", () => { place(); if (!PHONE.matches) closePane(); renderNavigator(); });
   place();
 
   mobileShell = {
@@ -3132,6 +3184,7 @@ var infoPopoverToggle;
         badge.textContent = n > 99 ? "99+" : String(n);
       }
     },
+    tasksChanged: renderJumps,
   };
 }
 

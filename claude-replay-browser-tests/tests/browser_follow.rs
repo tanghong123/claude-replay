@@ -7511,8 +7511,6 @@ fn a_phone_pairs_by_a_one_time_code() {
     drop(m);
 }
 
-/// TEMPORARY (#310 audit, not for commit): screenshots and phone-probe measurements of the app
-/// shell's main states at two phone sizes, into target/phone-audit/.
 /// The phone's world (#310, #313): a session with a hit to search for, two open tasks and a finished
 /// one, a running sub-agent, and a second session to switch to — served by v2's app shell to a
 /// phone (390×844 unless the case says otherwise). The phone is emulated BEFORE the first page
@@ -7810,7 +7808,8 @@ fn a_phone_header_is_title_then_controls_then_the_turn() {
 /// #313, the owner: "the control of outline pane selection is not usable via fingers … move the
 /// controls of the three panes to the top area (showing the icons, press-open drop down for
 /// selection)". Each pane opens from its icon as a drop-down of finger-sized rows; choosing a row
-/// acts as it does in the outline and closes the drop-down; a tap elsewhere closes it too.
+/// acts as it does in the outline and closes the drop-down — except a task, whose card opens OVER
+/// the Tasks drop-down, which stays open under it (#319) — and a tap elsewhere closes it too.
 #[test]
 #[ignore]
 fn a_phone_opens_each_outline_pane_from_its_icon() {
@@ -7867,15 +7866,15 @@ fn a_phone_opens_each_outline_pane_from_its_icon() {
     );
     let tasks = read(".work-task-head");
     assert_eq!(
-        tasks["rows"], 2,
-        "the running and the pending task: {tasks}"
+        tasks["rows"], 3,
+        "every task, the finished one too — a phone has no way to reach the state filter (#319): {tasks}"
     );
     assert_eq!(tasks["tall"], true, "{tasks}");
     phone_tap(&tab, "#phonePaneMenu .work-task-head");
     harness::until(
         &tab,
-        &format!("{menu_shut} && !document.getElementById('taskPopover').hidden"),
-        "choosing a task to open its card and close the drop-down",
+        &format!("!({menu_shut}) && !document.getElementById('taskPopover').hidden"),
+        "choosing a task to open its card over the still-open drop-down",
         Duration::from_secs(5),
         "document.getElementById('taskPopover').hidden",
     );
@@ -7887,8 +7886,8 @@ fn a_phone_opens_each_outline_pane_from_its_icon() {
     phone_tap(&tab, "#taskPopover .task-popover-close");
     harness::until(
         &tab,
-        "document.getElementById('taskPopover').hidden",
-        "the card to close",
+        &format!("document.getElementById('taskPopover').hidden && !({menu_shut})"),
+        "the card to close, back to the still-open drop-down",
         Duration::from_secs(5),
         "1",
     );
@@ -8317,6 +8316,328 @@ fn a_phone_can_search_the_session() {
         Duration::from_secs(5),
         "document.querySelector('.header-searchbox').className",
     );
+}
+
+/// #319's world: a phone on a session whose board is long enough to scroll — thirty finished
+/// tasks, three running, twenty pending — each titled at the length a real one runs to.
+fn phone_tasks_world(
+    port: u16,
+    case: &str,
+) -> (
+    harness::Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    let base = harness::base(case);
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(8, harness::Shape::default()),
+    );
+    let tasks: Vec<(String, String, &str)> = (1..=53)
+        .map(|i| {
+            let status = match i {
+                1..=30 => "completed",
+                31..=33 => "in_progress",
+                _ => "pending",
+            };
+            (
+                i.to_string(),
+                format!("task {i}: a subject as long as a real one, needing the row's width"),
+                status,
+            )
+        })
+        .collect();
+    let borrowed: Vec<(&str, &str, &str)> = tasks
+        .iter()
+        .map(|(id, subject, status)| (id.as_str(), subject.as_str(), *status))
+        .collect();
+    stores.claude_tasks(PHONE_SID, &borrowed);
+    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let (browser, tab) = phone_tab(&m, 390, 844);
+    (m, browser, tab)
+}
+
+/// Open the phone's Tasks drop-down and wait for its rows.
+fn open_phone_tasks(tab: &headless_chrome::Tab) {
+    phone_tap(tab, "#phonePane-tasks");
+    harness::until(
+        tab,
+        "!document.getElementById('phonePaneMenu').hidden && document.querySelectorAll('#phonePaneMenu .work-task-head').length > 0",
+        "the Tasks drop-down to open on its rows",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').hidden",
+    );
+}
+
+/// What sits at the top of the Tasks drop-down's scroller: the state head there (null when a row
+/// is), and the state of the first row below it.
+const PHONE_TASKS_TOP: &str = "(function(){ var body = document.querySelector('#phonePaneMenu .phone-pane-body'), b = body.getBoundingClientRect(); var at = document.elementFromPoint(b.left + 60, b.top + 8); var head = at && at.closest('.work-group'); var below = head ? head.getBoundingClientRect().bottom + 10 : b.top + 10; var row = document.elementFromPoint(b.left + 60, below); row = row && row.closest('.work-task'); var state = row ? (row.querySelector('.task-state').className.replace('task-state', '').trim()) : null; return JSON.stringify({ head: head ? head.dataset.taskGroup : null, headTop: head ? Math.round(head.getBoundingClientRect().top - b.top) : null, row: state, firstOfItsGroup: !!(row && head && head.nextElementSibling === row), scrollTop: Math.round(body.scrollTop) }); })()";
+
+fn phone_tasks_top(tab: &headless_chrome::Tab) -> serde_json::Value {
+    serde_json::from_str(harness::eval(tab, PHONE_TASKS_TOP).as_str().unwrap_or("{}")).unwrap()
+}
+
+/// The rows of the drop-down a finger can reach where it is scrolled: each row whose centre
+/// hit-tests to itself (not scrolled away, not under a pinned state head), in order.
+const PHONE_TAPPABLE_TASKS: &str = "[].slice.call(document.querySelectorAll('#phonePaneMenu .work-task-head')).filter(function (h) { var r = h.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!hit && h.contains(hit); })";
+
+/// Open the card of the `nth` task row a finger can reach, and wait for it.
+fn open_phone_task_card(tab: &headless_chrome::Tab, nth: usize) -> String {
+    let subject = harness::eval(
+        tab,
+        &format!("({PHONE_TAPPABLE_TASKS})[{nth}].querySelector('.work-copy strong').textContent"),
+    );
+    let (x, y) = phone_point(
+        tab,
+        &format!("(function(){{ var r = ({PHONE_TAPPABLE_TASKS})[{nth}].getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"),
+    );
+    phone_tap_at(tab, x, y);
+    harness::until(
+        tab,
+        "!document.getElementById('taskPopover').hidden",
+        "the task's card to open",
+        Duration::from_secs(5),
+        "document.getElementById('taskPopover').hidden",
+    );
+    subject.as_str().unwrap_or("").to_string()
+}
+
+/// A point on the view above the card and below the bar: where a tap lands on what the card is
+/// laid over, and nothing of the card.
+const PHONE_ABOVE_THE_CARD: &str = "(function(){ var top = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--phone-top')) || 0; var card = document.getElementById('taskPopover').getBoundingClientRect(); return [innerWidth / 2, (top + card.top) / 2]; })()";
+
+/// #319, the owner: "the tasks drop down did not show task title". Out of the outline's card, a
+/// task row fell back to a four-column grid made for another layout, and the title took a 12px
+/// column: a circle, one letter and an ellipsis. On a phone the title has the row's width, at a
+/// size a phone can read.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_tasks_drop_down_shows_each_title() {
+    let (_m, _b, tab) = phone_tasks_world(2701, "phone-task-titles");
+    open_phone_tasks(&tab);
+    let seen = harness::probe(&tab, "(function(){ var heads = [].slice.call(document.querySelectorAll('#phonePaneMenu .work-task-head')); var worst = null; heads.forEach(function (h) { var s = h.querySelector('.work-copy strong'), sw = s.getBoundingClientRect().width, hw = h.getBoundingClientRect().width; var ratio = Math.round(sw / hw * 100) / 100; if (!worst || ratio < worst.ratio) worst = { ratio: ratio, title: Math.round(sw), row: Math.round(hw), size: parseFloat(getComputedStyle(s).fontSize), text: s.textContent.slice(0, 24) }; }); return { rows: heads.length, worst: worst }; })()");
+    assert!(
+        seen["rows"].as_i64().unwrap_or(0) > 0,
+        "the drop-down lists tasks: {seen}"
+    );
+    assert!(
+        seen["worst"]["ratio"].as_f64().unwrap_or(0.0) >= 0.6,
+        "every row's title has most of the row's width: {seen}"
+    );
+    assert!(
+        seen["worst"]["size"].as_f64().unwrap_or(0.0) >= 13.0,
+        "…at a size a phone can read: {seen}"
+    );
+}
+
+/// #319, the owner: "choosing a task from the task pane, the card overlays on top the session view,
+/// it is very hard to read, suggest to dim the background". Behind the card everything is dimmed,
+/// and a tap on the dimmed part closes the card.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_task_card_dims_what_is_behind_it() {
+    let (_m, _b, tab) = phone_tasks_world(2702, "phone-task-dim");
+    open_phone_tasks(&tab);
+    open_phone_task_card(&tab, 0);
+    let seen = harness::probe(
+        &tab,
+        &format!("(function(){{ var p = {PHONE_ABOVE_THE_CARD}; var s = document.getElementById('taskScrim'); var hit = document.elementFromPoint(p[0], p[1]); var r = s ? s.getBoundingClientRect() : null; var bg = s ? getComputedStyle(s).backgroundColor : ''; var parts = (/rgba?\\(([^)]+)\\)/.exec(bg) || [0, ''])[1].split(','); var alpha = parts.length === 4 ? parseFloat(parts[3]) : (parts.length === 3 ? 1 : 0); var card = document.getElementById('taskPopover').getBoundingClientRect(); var mid = document.elementFromPoint(card.left + card.width / 2, card.top + card.height / 2); return {{ scrim: !!s, covers: !!r && r.left <= 0 && r.top <= 0 && r.right >= innerWidth && r.bottom >= innerHeight, hit: hit ? (hit.id || hit.className) : null, onScrim: !!s && hit === s, alpha: alpha, room: Math.round(card.top - p[1]), cardOnTop: !!mid && !!mid.closest('#taskPopover') }}; }})()"),
+    );
+    assert_eq!(
+        seen["scrim"], true,
+        "a scrim stands behind the card: {seen}"
+    );
+    assert_eq!(seen["covers"], true, "…over the whole view: {seen}");
+    assert_eq!(
+        seen["onScrim"], true,
+        "what is behind the card is under the scrim: {seen}"
+    );
+    assert!(
+        seen["alpha"].as_f64().unwrap_or(0.0) >= 0.25,
+        "…and dimmed by it: {seen}"
+    );
+    assert!(
+        seen["room"].as_i64().unwrap_or(0) > 10,
+        "the point tested is above the card, not on it: {seen}"
+    );
+    assert_eq!(
+        seen["cardOnTop"], true,
+        "the card itself is above the scrim: {seen}"
+    );
+    let (x, y) = phone_point(&tab, PHONE_ABOVE_THE_CARD);
+    phone_tap_at(&tab, x, y);
+    harness::until(
+        &tab,
+        "document.getElementById('taskPopover').hidden && (!document.getElementById('taskScrim') || getComputedStyle(document.getElementById('taskScrim')).display === 'none')",
+        "a tap on the dimmed view to close the card and lift the scrim",
+        Duration::from_secs(5),
+        "document.getElementById('taskPopover').hidden",
+    );
+}
+
+/// #319, the owner: "the opened task card should be laid over the still open task pane, currently
+/// the task pane is closed right after the task is selected". The card opens OVER the pane, which
+/// stays open under it: closing the card — a tap beside it, its ✕ or Escape — goes back to the
+/// list, where the next task is one tap away; only a second Escape closes the list.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_task_card_lies_over_the_open_tasks_pane() {
+    let (_m, _b, tab) = phone_tasks_world(2703, "phone-task-over-pane");
+    open_phone_tasks(&tab);
+    let pane_open = "!document.getElementById('phonePaneMenu').hidden";
+    let card_open = "!document.getElementById('taskPopover').hidden";
+    let card_subject =
+        "document.querySelector('#taskPopover .task-popover-head strong').textContent";
+
+    let first = open_phone_task_card(&tab, 0);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        harness::eval(&tab, pane_open),
+        true,
+        "the Tasks pane stays open under the card"
+    );
+    assert_eq!(
+        harness::eval(&tab, card_subject).as_str(),
+        Some(first.as_str()),
+        "the card is the chosen task's"
+    );
+    let over = harness::eval(&tab, "(function(){ var c = document.getElementById('taskPopover').getBoundingClientRect(), m = document.getElementById('phonePaneMenu').getBoundingClientRect(); var x = c.left + c.width / 2, y = Math.max(c.top, m.top) + 30; var hit = document.elementFromPoint(x, y); return y < m.bottom && !!hit && !!hit.closest('#taskPopover'); })()");
+    assert_eq!(over, true, "where the two overlap, the card is on top");
+
+    let (x, y) = phone_point(&tab, PHONE_ABOVE_THE_CARD);
+    phone_tap_at(&tab, x, y);
+    harness::until(
+        &tab,
+        &format!("!({card_open}) && {pane_open}"),
+        "a tap beside the card to close it and leave the pane open",
+        Duration::from_secs(5),
+        &format!("JSON.stringify([{card_open}, {pane_open}])"),
+    );
+
+    let second = open_phone_task_card(&tab, 1);
+    assert_ne!(first, second, "the fixture's rows are distinct");
+    assert_eq!(
+        harness::eval(&tab, card_subject).as_str(),
+        Some(second.as_str()),
+        "the next task is one tap away, and its card opens over the same pane"
+    );
+    let escape = "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 'ok'";
+    harness::eval(&tab, escape);
+    harness::until(
+        &tab,
+        &format!("!({card_open}) && {pane_open}"),
+        "Escape to close the card only",
+        Duration::from_secs(5),
+        &format!("JSON.stringify([{card_open}, {pane_open}])"),
+    );
+    harness::eval(&tab, escape);
+    harness::until(
+        &tab,
+        &format!("!({pane_open})"),
+        "a second Escape to close the pane",
+        Duration::from_secs(5),
+        pane_open,
+    );
+}
+
+/// #319, the owner: "since we don't have control to select done tasks now, we should also have them
+/// on the pane, and on the head of the Tasks pane, provide quick jump to done/running/pending tasks".
+/// The phone cannot reach the outline's per-state filter, so its Tasks drop-down lists every state,
+/// in the pane's order; it opens on what is still moving (Running), and its head jumps to each
+/// state, named and counted as the state's own head is.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_tasks_drop_down_lists_every_state_with_jumps() {
+    let (_m, _b, tab) = phone_tasks_world(2704, "phone-task-states");
+    open_phone_tasks(&tab);
+    let seen = harness::probe(&tab, &format!("(function(){{ var ok = {PHONE_HITTABLE}; var m = document.getElementById('phonePaneMenu'); var groups = [].slice.call(m.querySelectorAll('.phone-pane-body .work-group')).map(function (g) {{ return g.dataset.taskGroup + ' ' + g.firstElementChild.textContent.trim() + ' ' + g.querySelector('.work-group-count').textContent.trim(); }}); var jumps = [].slice.call(m.querySelectorAll('[data-jump-group]')); var list = m.querySelector('.phone-pane-body').getBoundingClientRect(); return {{ groups: groups, jumps: jumps.map(function (b) {{ return b.dataset.jumpGroup + ' ' + b.textContent.replace(/\\s+/g, ' ').trim(); }}), tappable: jumps.length > 0 && jumps.every(function (b) {{ return ok(b) && b.getBoundingClientRect().height >= 44; }}), inTheHead: jumps.length > 0 && jumps.every(function (b) {{ return !m.querySelector('.phone-pane-body').contains(b) && b.getBoundingClientRect().bottom <= list.top + 1; }}) }}; }})()"));
+    assert_eq!(
+        seen["groups"],
+        serde_json::json!([
+            "completed Completed 30",
+            "in_progress Running 3",
+            "pending Pending 20"
+        ]),
+        "every state is listed, in the pane's order: {seen}"
+    );
+    assert_eq!(
+        seen["jumps"],
+        serde_json::json!([
+            "completed Completed 30",
+            "in_progress Running 3",
+            "pending Pending 20"
+        ]),
+        "the head jumps to each state, named and counted as its head is: {seen}"
+    );
+    assert_eq!(seen["tappable"], true, "each jump takes a finger: {seen}");
+    assert_eq!(
+        seen["inTheHead"], true,
+        "the jumps are the drop-down's head, above the list, never scrolled with it: {seen}"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let opened = phone_tasks_top(&tab);
+    assert_eq!(
+        (opened["head"].as_str(), opened["row"].as_str()),
+        (Some("in_progress"), Some("running")),
+        "the drop-down opens on what is still moving: {opened}"
+    );
+    for (key, state) in [
+        ("completed", "completed"),
+        ("pending", "pending"),
+        ("in_progress", "running"),
+    ] {
+        phone_tap(&tab, &format!("#phonePaneMenu [data-jump-group=\"{key}\"]"));
+        std::thread::sleep(Duration::from_millis(300));
+        let top = phone_tasks_top(&tab);
+        assert_eq!(
+            (
+                top["head"].as_str(),
+                top["row"].as_str(),
+                top["firstOfItsGroup"].as_bool()
+            ),
+            (Some(key), Some(state), Some(true)),
+            "the {key} jump puts that state's head at the top with its first task below it: {top}"
+        );
+    }
+}
+
+/// #319, the owner: "keep the done/running/pending line (a floating header) when we scroll so user
+/// knows the tasks are in what state". Scrolled into the middle of any state, that state's head is
+/// held at the top of the list, over the rows passing under it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_tasks_drop_down_keeps_the_state_line_in_view() {
+    let (_m, _b, tab) = phone_tasks_world(2705, "phone-task-sticky");
+    open_phone_tasks(&tab);
+    for (nth, key, state) in [
+        (40usize, "pending", "pending"),
+        (12, "completed", "completed"),
+        (31, "in_progress", "running"),
+    ] {
+        harness::eval(
+            &tab,
+            &format!("(function(){{ var body = document.querySelector('#phonePaneMenu .phone-pane-body'); var row = document.querySelectorAll('#phonePaneMenu .work-task')[{nth}]; if (!row) return 'no row'; body.scrollTop += row.getBoundingClientRect().top - body.getBoundingClientRect().top; return 'ok'; }})()"),
+        );
+        std::thread::sleep(Duration::from_millis(250));
+        let top = phone_tasks_top(&tab);
+        assert_eq!(
+            (top["head"].as_str(), top["row"].as_str()),
+            (Some(key), Some(state)),
+            "scrolled into the middle of {key}, its head is held at the top over its rows: {top}"
+        );
+        assert!(
+            top["headTop"]
+                .as_i64()
+                .map(|t| t.abs() <= 2)
+                .unwrap_or(false),
+            "…flush with the top of the list: {top}"
+        );
+        assert_eq!(
+            top["firstOfItsGroup"], false,
+            "…while the rows under it are from the middle of the state, not its start: {top}"
+        );
+    }
 }
 
 /// #314's world: a 60-turn session served to the app shell with a small tail budget, so the head
