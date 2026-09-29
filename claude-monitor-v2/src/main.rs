@@ -235,7 +235,9 @@ fn main() -> Result<()> {
             claude_monitor::index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE),
         ),
         None => AuthGate::same_user(),
-    };
+    }
+    // #320: the icons and the manifest, which a phone reads to put the page on its Home Screen.
+    .with_public(claude_monitor::ui::PUBLIC_ASSETS);
     let bound = claude_replay_html::spawn_listener_gated(port, handler, gate)
         .with_context(|| format!("binding 127.0.0.1:{port}"))?;
     let url = tokened_url(&format!("http://127.0.0.1:{bound}/"), token.as_deref());

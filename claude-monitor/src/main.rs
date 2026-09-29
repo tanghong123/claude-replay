@@ -386,7 +386,9 @@ fn main() -> Result<()> {
         Some(t) => claude_replay_html::AuthGate::with_token(t.as_str())
             .with_pair_codes(index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE)),
         None => claude_replay_html::AuthGate::same_user(),
-    };
+    }
+    // #320: the icons and the manifest, which a phone reads to put the page on its Home Screen.
+    .with_public(claude_monitor::ui::PUBLIC_ASSETS);
     let bound = claude_replay_html::spawn_listener_gated(port, handler, gate)
         .with_context(|| format!("bind 127.0.0.1:{port} (is another monitor running?)"))?;
     service.set_port(bound);

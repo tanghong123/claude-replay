@@ -58,6 +58,13 @@ default), `harness::pinch` and `harness::chrome_with`. **Gzip** (#313, `serve.rs
 client ACROSS A NETWORK only — a `Host` that is not the loopback, as `tailscale serve` hands the
 monitor — so the local desktop is byte-for-byte what it was; the case
 `a_phone_over_the_tailnet_reads_the_session_gzipped` reaches it as `phone.test`.
+**The page saves to a Home Screen as itself** (#320): the tab icon's green mark, square and opaque
+(`claude-monitor/src/icons/`, rendered from `app-icon.svg` by `scripts/render-app-icon.sh`), named by
+the app shell's and v1's classic heads with a manifest and the label "Agent Monitor"; iOS asks the root
+for `apple-touch-icon.png` on its own, which covers v2's classic page. Those files are the ONLY paths
+the gate answers unpaired (`ui::PUBLIC_ASSETS` → `AuthGate::with_public`, GET only), because a phone
+fetches the icon itself and may not carry the pairing cookie. The manifest says `display: browser` on
+purpose: an iOS standalone Home Screen app keeps cookies of its own and would open unpaired.
 **Sessions sort into three buckets** (#202, `design/agent-states.md` §10): active (busy),
 blocked (a wait, or an idle reason that cut the work short — this is what "needs attention"
 means and counts) and idle (`done`, `exited`); `sessionBucket` in `shared/state-labels.js` is

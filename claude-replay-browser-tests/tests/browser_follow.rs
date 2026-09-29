@@ -6892,6 +6892,108 @@ fn app_shell_favicon(kind: Kind, port: u16, label: &str) {
     }
 }
 
+/// #320, the owner: "add an app-icon for the page so when saving the page to my Home Screen, I can
+/// identify it clearly". The page names an apple-touch-icon, a manifest and a short label; each
+/// icon it names loads at its size; and a browser that has never paired reads the icon and the
+/// manifest all the same — a phone saving the page fetches the icon on its own, and may not
+/// carry the pairing cookie when it does. (Refusing everything else unpaired is the gate's own
+/// unit test, against a foreign uid: on Linux a same-user loopback peer is admitted anyway.)
+fn home_screen_icon(kind: Kind, port: u16, label: &str) {
+    let _serial = serial();
+    let base = base(&format!("home-screen-icon-{label}"));
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        "cccccccc-0000-4000-8000-0000000003a0",
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    let monitor = Monitor::spawn(kind, port, &base, Some(&stores), true);
+
+    // Never paired: the icon and the manifest are read, as the bytes they are.
+    let stranger = harness::chrome();
+    let tab = stranger.new_tab().unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/apple-touch-icon.png"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!document.images[0] && document.images[0].complete && document.images[0].naturalWidth === 180",
+        "an unpaired browser to read the 180px Home Screen icon",
+        std::time::Duration::from_secs(20),
+        "document.body ? document.body.innerText.slice(0, 120) : ''",
+    );
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/manifest.webmanifest"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let name = harness::eval(
+        &tab,
+        "(function(){ try { return JSON.parse(document.body.innerText).name; } catch (e) { return document.body.innerText.slice(0, 120); } })()",
+    );
+    assert_eq!(
+        name, "Agent Monitor",
+        "{label}: an unpaired browser reads the manifest"
+    );
+
+    // Paired, on each page this binary draws with its own head: the tags, and what they name.
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    monitor.pair(&tab);
+    let pages: &[&str] = if matches!(kind, Kind::V1) {
+        &["app", "classic"]
+    } else {
+        &["app"]
+    };
+    for ui in pages {
+        tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui={ui}"))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(
+            &tab,
+            "!!document.querySelector('link[rel=\"apple-touch-icon\"]')",
+            "the page to name its Home Screen icon",
+            std::time::Duration::from_secs(30),
+            "document.head.innerHTML.slice(0, 300)",
+        );
+        let seen = harness::eval(
+            &tab,
+            "(async function(){ var q = function (s) { var e = document.querySelector(s); return e ? (e.getAttribute('href') || e.getAttribute('content')) : null; }; var load = function (src) { return new Promise(function (ok) { var i = new Image(); i.onload = function () { ok(i.naturalWidth + 'x' + i.naturalHeight); }; i.onerror = function () { ok('error'); }; i.src = src; }); }; var touch = q('link[rel=\"apple-touch-icon\"]'), manifest = q('link[rel=\"manifest\"]'); var m = manifest ? await (await fetch(manifest)).json() : null; var sizes = []; for (var icon of (m ? m.icons : [])) sizes.push(icon.sizes + '=' + await load(icon.src)); return JSON.stringify({ touch: touch, touchLoads: touch ? await load(touch) : null, manifest: manifest, name: m && m.name, display: m && m.display, icons: sizes, title: q('meta[name=\"apple-mobile-web-app-title\"]'), standalone: !!document.querySelector('meta[name=\"apple-mobile-web-app-capable\"], meta[name=\"mobile-web-app-capable\"]') }); })()",
+        );
+        let seen: serde_json::Value = serde_json::from_str(seen.as_str().unwrap()).unwrap();
+        assert_eq!(
+            seen["touch"], "/apple-touch-icon.png",
+            "{label} {ui}: {seen}"
+        );
+        assert_eq!(seen["touchLoads"], "180x180", "{label} {ui}: {seen}");
+        assert_eq!(
+            seen["manifest"], "/manifest.webmanifest",
+            "{label} {ui}: {seen}"
+        );
+        assert_eq!(seen["name"], "Agent Monitor", "{label} {ui}: {seen}");
+        assert_eq!(
+            seen["display"], "browser",
+            "{label} {ui}: the shortcut opens in the browser, where the phone is paired: {seen}"
+        );
+        assert_eq!(
+            seen["icons"],
+            serde_json::json!(["192x192=192x192", "512x512=512x512"]),
+            "{label} {ui}: every icon the manifest names loads at its size: {seen}"
+        );
+        assert_eq!(seen["title"], "Agent Monitor", "{label} {ui}: {seen}");
+        assert_eq!(seen["standalone"], false, "{label} {ui}: {seen}");
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_saved_page_has_the_monitors_home_screen_icon_on_v1() {
+    home_screen_icon(Kind::V1, 2707, "v1");
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_saved_page_has_the_monitors_home_screen_icon_on_v2() {
+    home_screen_icon(Kind::V2, 2708, "v2");
+}
+
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_has_the_monitors_favicon_on_v1() {

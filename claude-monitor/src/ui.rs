@@ -131,6 +131,41 @@ pub fn markdown_page() -> String {
 /// source for both shells and both binaries.
 pub const FAVICON_SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='#2e7d55'/><g fill='#fff'><circle cx='9' cy='10' r='2'/><rect x='13' y='9' width='11' height='2' rx='1'/><circle cx='9' cy='16' r='2'/><rect x='13' y='15' width='11' height='2' rx='1'/><circle cx='9' cy='22' r='2'/><rect x='13' y='21' width='11' height='2' rx='1'/></g></svg>";
 
+/// The page as an app on a phone's Home Screen, or installed from a browser (#320, the owner: "add
+/// an app-icon for the page so when saving the page to my Home Screen, I can identify it
+/// clearly"). The icons are the tab icon's mark, square and opaque — a phone masks the corners
+/// itself and draws any transparency black — rendered from `icons/app-icon.svg` by
+/// `scripts/render-app-icon.sh`. `display: browser` is deliberate: an iOS Home Screen app that
+/// runs standalone keeps cookies of its own, so it would open unpaired; in the browser the
+/// shortcut reaches the page the phone already paired.
+pub const MANIFEST: &str = r##"{
+  "name": "Agent Monitor",
+  "short_name": "Agent Monitor",
+  "start_url": "/",
+  "display": "browser",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
+"##;
+
+/// What a device may read before, or without, pairing (#320): the icons and the manifest, which
+/// say nothing of the machine. A phone fetches the icon on its own when the page is saved to its
+/// Home Screen, and iOS asks the root for `apple-touch-icon.png` (and its `-precomposed` twin)
+/// when a page declares none — v2's classic page, whose head is the session viewer's. Both
+/// binaries hand this to their gate (`AuthGate::with_public`); every name here is served by
+/// [`asset`].
+pub const PUBLIC_ASSETS: &[&str] = &[
+    "favicon.svg",
+    "favicon.ico",
+    "apple-touch-icon.png",
+    "apple-touch-icon-precomposed.png",
+    "icon-192.png",
+    "icon-512.png",
+    "manifest.webmanifest",
+];
+
 pub fn asset(name: &str) -> Option<HttpResponse> {
     // Shared modules (seam 0): ONE source in the html crate, served here unchanged as ES
     // modules and inlined by that crate into its own pages. Anything under `shared/` the html
@@ -146,6 +181,14 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
     let (content_type, bytes) = match name {
         // The tab icon under both names the browser may ask for (#203).
         "favicon.svg" | "favicon.ico" => ("image/svg+xml", FAVICON_SVG.as_bytes()),
+        // The Home Screen and install icons, and the manifest that names them (#320).
+        "apple-touch-icon.png" | "apple-touch-icon-precomposed.png" => (
+            "image/png",
+            include_bytes!("icons/apple-touch-icon.png").as_slice(),
+        ),
+        "icon-192.png" => ("image/png", include_bytes!("icons/icon-192.png").as_slice()),
+        "icon-512.png" => ("image/png", include_bytes!("icons/icon-512.png").as_slice()),
+        "manifest.webmanifest" => ("application/manifest+json", MANIFEST.as_bytes()),
         "monitor-ui/reference.css" => (
             "text/css; charset=utf-8",
             include_bytes!("codex-ui/reference.css").as_slice(),
@@ -232,6 +275,90 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A PNG's width, height and colour type, read from its IHDR chunk.
+    fn png_header(bytes: &[u8]) -> (u32, u32, u8) {
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "a PNG");
+        assert_eq!(&bytes[12..16], b"IHDR", "IHDR first");
+        let be = |at: usize| {
+            u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        (be(16), be(20), bytes[25])
+    }
+
+    /// #320: every path a device may read unpaired is one this table serves — a name in
+    /// `PUBLIC_ASSETS` with no asset behind it would be a hole the gate opens onto nothing, and the
+    /// icons are what they claim: the size the name and the manifest give, and OPAQUE (colour type
+    /// 2, RGB — no alpha channel at all), because iOS draws a Home Screen icon's transparency black.
+    #[test]
+    fn the_home_screen_icons_are_served_opaque_at_their_sizes() {
+        for name in PUBLIC_ASSETS {
+            let served = asset(name).unwrap_or_else(|| panic!("{name} is public but not served"));
+            assert!(served.code.starts_with("200"), "{name}");
+        }
+        for (name, size) in [
+            ("apple-touch-icon.png", 180),
+            ("apple-touch-icon-precomposed.png", 180),
+            ("icon-192.png", 192),
+            ("icon-512.png", 512),
+        ] {
+            let icon = asset(name).unwrap();
+            assert_eq!(icon.content_type, "image/png", "{name}");
+            assert_eq!(
+                png_header(&icon.body),
+                (size, size, 2),
+                "{name}: square, {size}px, opaque RGB"
+            );
+        }
+        let manifest: serde_json::Value =
+            serde_json::from_str(MANIFEST).expect("the manifest is JSON");
+        assert_eq!(manifest["name"], "Agent Monitor");
+        assert_eq!(
+            manifest["display"], "browser",
+            "an iOS standalone app keeps cookies of its own and would open unpaired"
+        );
+        let icons = manifest["icons"].as_array().expect("icons");
+        assert!(!icons.is_empty());
+        for icon in icons {
+            let src = icon["src"].as_str().unwrap();
+            let name = src.strip_prefix('/').unwrap();
+            assert!(PUBLIC_ASSETS.contains(&name), "{src} is readable unpaired");
+            let size: u32 = icon["sizes"]
+                .as_str()
+                .unwrap()
+                .split('x')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(
+                png_header(&asset(name).unwrap().body).0,
+                size,
+                "{src} is the size the manifest says"
+            );
+        }
+        assert_eq!(
+            asset("manifest.webmanifest").unwrap().content_type,
+            "application/manifest+json"
+        );
+    }
+
+    /// #320: the app shell's page names its icons, its manifest and a short Home Screen label — and
+    /// asks for no standalone mode, which on iOS would open with cookies of its own, unpaired.
+    #[test]
+    fn the_page_names_its_home_screen_icon() {
+        let page = page("test", false, true);
+        for tag in [
+            r#"<link rel="icon" type="image/svg+xml" href="/favicon.svg">"#,
+            r#"<link rel="apple-touch-icon" href="/apple-touch-icon.png">"#,
+            r#"<link rel="manifest" href="/manifest.webmanifest">"#,
+            r#"<meta name="apple-mobile-web-app-title" content="Agent Monitor">"#,
+        ] {
+            assert!(page.contains(tag), "{tag}");
+        }
+        assert!(!page.contains("apple-mobile-web-app-capable"));
+        assert!(!page.contains("mobile-web-app-capable"));
+    }
 
     #[test]
     fn page_is_the_reference_shell_without_mock_runtime() {

@@ -1447,6 +1447,11 @@ pub struct AuthGate {
     /// other than the monitor (agent-metrics serves its dashboard through this listener) names
     /// its own way in. [`DEFAULT_REFUSAL`] unless [`with_refusal`](Self::with_refusal) says.
     refusal: &'static str,
+    /// Paths a GET may read without passing the gate (#320): bytes that say nothing about the
+    /// host, which a device fetches before — or without — being paired. A phone saving the page
+    /// to its Home Screen fetches the icon on its own, and may do so without the pairing cookie.
+    /// Empty unless [`with_public`](Self::with_public) names them.
+    public: &'static [&'static str],
 }
 
 /// The refusal a gate gives when its host sets none — the monitor's own.
@@ -1472,6 +1477,7 @@ impl AuthGate {
             token: None,
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
+            public: &[],
         }
     }
 
@@ -1482,6 +1488,7 @@ impl AuthGate {
             token: Some(token.into()),
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
+            public: &[],
         }
     }
 
@@ -1489,6 +1496,14 @@ impl AuthGate {
     /// and a host names its own way in.
     pub fn with_refusal(mut self, text: &'static str) -> Self {
         self.refusal = text;
+        self
+    }
+
+    /// Let a GET of any of `paths` through without a token or a same-user peer (#320). For
+    /// static bytes that carry nothing of the host — an icon, a manifest — and nothing else: a
+    /// path named here is answered to anyone who can reach the listener.
+    pub fn with_public(mut self, paths: &'static [&'static str]) -> Self {
+        self.public = paths;
         self
     }
 
@@ -1509,6 +1524,7 @@ impl AuthGate {
             token: token.map(std::sync::Arc::from),
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
+            public: &[],
         }
     }
 
@@ -1882,11 +1898,14 @@ fn serve_connection(
         }
     }
 
-    // #196 §4.2: same-user OR a valid token (query / Authorization: Bearer / cmauth cookie).
+    // #196 §4.2: same-user OR a valid token (query / Authorization: Bearer / cmauth cookie) —
+    // except a GET of a path the host made public (#320), which needs neither.
     let (presented, from_cookie) = extract_token(query, &headers);
     let peer = stream.peer_addr().ok();
     let local = stream.local_addr().ok();
+    let public = method == "GET" && gate.public.contains(&name);
     let access = match (peer, local) {
+        _ if public => Access::Ok,
         (Some(p), Some(l)) => gate.decide(p, l, presented.as_deref(), from_cookie),
         // No socket identity to check — deny unless a token was presented and matches.
         _ => match presented.as_deref() {
@@ -2778,6 +2797,50 @@ mod tests {
         let (head, plain) = get(&format!("127.0.0.1:{port}"));
         assert!(!head.contains("Content-Encoding"), "{head}");
         assert_eq!(plain, body.as_bytes());
+    }
+
+    /// #320: a path the host made public is read without passing the gate — a phone fetches the
+    /// page's icon to put it on its Home Screen, and may not carry the pairing cookie when it
+    /// does — while everything else, and anything but a GET of that path, is refused as before.
+    /// Against the foreign-euid test gate, so the same-user leg admits nothing on any OS.
+    #[test]
+    fn a_public_path_is_read_without_the_gate() {
+        use std::io::{Read, Write};
+        let handler: RouteHandler = std::sync::Arc::new(|req: &Request| {
+            HttpResponse::ok("text/plain; charset=utf-8", req.name.as_bytes().to_vec())
+        });
+        let gate = AuthGate::for_test(Some("t0k")).with_public(&["icon.png"]);
+        let port = spawn_listener_gated(0, handler, gate).unwrap();
+        let send = |line: &str| -> String {
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(
+                format!("{line} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+            let mut raw = String::new();
+            s.read_to_string(&mut raw).unwrap();
+            raw
+        };
+        let icon = send("GET /icon.png");
+        assert!(icon.starts_with("HTTP/1.1 200"), "{icon}");
+        assert!(
+            icon.ends_with("icon.png"),
+            "the host's route answered it: {icon}"
+        );
+        assert!(
+            !icon.contains("Set-Cookie"),
+            "a public read pairs nobody: {icon}"
+        );
+        for refused in [
+            "GET /",
+            "GET /icon.png.bak",
+            "GET /api/sessions",
+            "POST /icon.png",
+        ] {
+            let reply = send(refused);
+            assert!(reply.starts_with("HTTP/1.1 401"), "{refused}: {reply}");
+        }
     }
 
     /// #11: a phone pairs by a one-time code, over HTTP, against the foreign-euid test gate (so the

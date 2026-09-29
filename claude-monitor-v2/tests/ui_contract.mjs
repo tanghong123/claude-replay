@@ -2793,7 +2793,18 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const ui = readFileSync(new URL("../../claude-monitor/src/ui.rs", import.meta.url), "utf8");
   const rail = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
   assert.doesNotMatch(referenceShell, /rel="icon"/, "the extracted shell declares no icon (the demo stays byte-identical)");
-  assert.match(app, /if \(!document\.querySelector\('link\[rel~="icon"\]'\)\) \{\n\s*const icon = document\.createElement\("link"\);\n\s*icon\.rel = "icon";\n\s*icon\.type = "image\/svg\+xml";\n\s*icon\.href = "\/favicon\.svg";/, "…so the production layer injects the link to the served icon");
+  // #320 moved the link from a runtime injection into the production page head, which is where
+  // iOS looks for a Home Screen icon; the property — the production layer, not the extracted
+  // shell, points at the served icon — is the same.
+  const head = readFileSync(new URL("../../claude-monitor/src/codex-ui/page-head.html", import.meta.url), "utf8");
+  assert.match(head, /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg">/, "…so the production page head links the served icon");
+  assert.doesNotMatch(app, /icon\.href = "\/favicon\.svg"/, "…and nothing injects a second one");
+  for (const [page, text] of [["page-head.html", head], ["rail.html", rail]]) {
+    assert.match(text, /<link rel="apple-touch-icon" href="\/apple-touch-icon\.png">/, `#320: ${page} names the Home Screen icon`);
+    assert.match(text, /<link rel="manifest" href="\/manifest\.webmanifest">/, `#320: ${page} names the manifest`);
+    assert.match(text, /<meta name="apple-mobile-web-app-title" content="Agent Monitor">/, `#320: ${page} gives the Home Screen label`);
+    assert.doesNotMatch(text, /web-app-capable/, `#320: ${page} asks for no standalone mode (it would open unpaired on iOS)`);
+  }
   assert.match(ui, /"favicon\.svg" \| "favicon\.ico" => \("image\/svg\+xml", FAVICON_SVG\.as_bytes\(\)\),/, "the route table serves it under both names");
   const served = /pub const FAVICON_SVG: &str = "([^"]+)";/.exec(ui)?.[1];
   const inline = /<link rel="icon" href="data:image\/svg\+xml,([^"]+)">/.exec(rail)?.[1];
