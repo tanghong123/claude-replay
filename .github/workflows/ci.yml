@@ -24,8 +24,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
+      # `--all`, as the test step below: the browser-test crate sits outside default-members so the
+      # LOCAL gates never compile its heavy Chrome dep, which also kept it out of this lint, and three
+      # lints went unseen in its scenarios (#318). CI compiles it anyway, so it is linted here.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all --all-targets -- -D warnings
       - name: Test
         run: cargo test --all
       # The frontend's own contract checks. `cargo test` runs these too (via

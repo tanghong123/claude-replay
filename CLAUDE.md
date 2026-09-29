@@ -253,8 +253,9 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   import-closure test walks the graph and checks every named import exists). The crate sits
   OUTSIDE `default-members` — its `headless_chrome` dep is the heaviest thing the workspace
   compiles, so the LOCAL root gates (`cargo test`, `cargo clippy --all-targets`) never resolve
-  it; CI's `cargo test --all` compiles it, and the `browser` job runs it (visible, not yet a
-  required check — it becomes one once it has been stable for a while). Read Chrome's console
+  it; CI's `cargo test --all` compiles it, its clippy step lints it with `--all` (#318), and the
+  `browser` job runs it (visible, not yet a required check — it becomes one once it has been
+  stable for a while). Read Chrome's console
   before diagnosing a "timed out waiting for …" on a shell:
   `chrome --headless=new --enable-logging=stderr --v=0 <url>` prints `CONSOLE … Uncaught …`.
   **The viewport trace (#192)** is how a scroll/blank-space report carries its own geometry:

@@ -11012,7 +11012,7 @@ fn rendered_facts(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::V
         Surface::Classic => "(function(){ var out = []; document.querySelectorAll('#stream .fold').forEach(function (f) { var h = f.querySelector('.fold-h'); if (!h) return; out.push({ kind: f.dataset.kind || '', head: (h.textContent || '').replace(/\\s+/g, ' ').trim() }); }); return JSON.stringify(out); })()",
         Surface::AppShell => "(function(){ var out = []; document.querySelectorAll('.renderer[data-renderer]').forEach(function (r) { var h = r.querySelector('.renderer-head'); if (!h) return; out.push({ kind: r.dataset.rendererKind || '', head: (h.textContent || '').replace(/\\s+/g, ' ').trim() }); }); return JSON.stringify(out); })()",
     };
-    serde_json::from_str(eval(tab, &js).as_str().unwrap_or("[]")).unwrap_or(serde_json::Value::Null)
+    serde_json::from_str(eval(tab, js).as_str().unwrap_or("[]")).unwrap_or(serde_json::Value::Null)
 }
 
 /// A throwaway reporter: prints what each page says about the same records, side by side.
@@ -11391,7 +11391,7 @@ fn head_facts(tab: &headless_chrome::Tab, surface: Surface) -> Vec<(String, Stri
         Surface::AppShell => "(function(){ var out = []; document.querySelectorAll('.renderer[data-renderer]').forEach(function (r) { var h = r.querySelector('.renderer-head'); if (!h) return; out.push([r.dataset.rendererKind || '', (h.textContent || '').replace(/\\s+/g, ' ').trim()]); }); return JSON.stringify(out); })()",
     };
     let raw: Vec<Vec<String>> =
-        serde_json::from_str(eval(tab, &js).as_str().unwrap_or("[]")).unwrap_or_default();
+        serde_json::from_str(eval(tab, js).as_str().unwrap_or("[]")).unwrap_or_default();
     raw.into_iter()
         .filter_map(|row| Some((row.first()?.clone(), row.get(1)?.clone())))
         .collect()
@@ -14022,7 +14022,7 @@ fn scenario_a_query_and_a_tool_facet_narrow_each_other(
         let n = text
             .split_whitespace()
             .next()
-            .and_then(|w| w.split('/').last())
+            .and_then(|w| w.split('/').next_back())
             .and_then(|w| w.parse::<i64>().ok())
             .unwrap_or(-1);
         assert!(
