@@ -40,13 +40,24 @@ so all six stay inside the sidebar at its 232px minimum (#210); the switch is ex
 glyph width there, since shaving a word is what clipped it. Nothing is hidden at any width; a new
 control in that row is measured against the minimum, not the default, and the case hit-tests the
 switch against the brand and the theme glyph rather than eyeballing it.
-**On a phone (≤700px, #310) the app shell is a reader**, the owner's rule: the transcript runs edge
-to edge (a 13px gutter), controls may FLOAT over the text, and controls of little use on a phone are
-hidden. So the outline rail is one floating button, the per-block `#`/`{}` chips are not drawn, the
-search icon opens a box across the top bar, and the list and the session are two SCREENS
-(`mobile-detail`), never layers. Controls are at least 44px tall. The rules live in
-`production.css` under `#310`; the cases are `a_phone*` in `browser_follow.rs`, driven by
-`harness::phone` (emulated BEFORE the first load, since the page stores its outline default).
+**On a phone (≤760px, #310 then #313) the app shell is a reader and a native-feeling app**, the
+owner's rules: the transcript runs edge to edge (a 13px gutter), controls may FLOAT, and controls of
+little use on a phone are hidden. The session list is a DRAWER over part of the view (a scrim over the
+rest closes it on a tap; `mobile-detail` = shut), opened and closed by a handle fixed at the top left —
+a sibling of the drawer in `#app`, because the workspace is isolated under the scrim and anything in
+the top bar would sit under the drawer. The top bar is two rows: handle slot, title, Info, right pane;
+then Turns, Tasks, Agents, search/filter, Aa; the turn header is the third. The outline column does not
+exist there: each pane opens from its icon as a drop-down that holds the outline's OWN live list (moved
+in while open, back after), so one renderer and one click handler (`navigatorClick`) serve both. Every
+sheet hangs at `--phone-top` (the bar's measured bottom). Inputs are 16px (iOS zooms into anything
+smaller), targets 44px. Choosing a session shuts the drawer at once and a veil (`sessionLoading`, every
+width) dims the session area with how much of the records has arrived. The rules are `production.css`
+under `#313`; the cases are `a_phone*` in `browser_follow.rs` and the preview pinch in `files.rs`,
+driven by `harness::phone` (emulated BEFORE the first load, since the page stores its outline
+default), `harness::pinch` and `harness::chrome_with`. **Gzip** (#313, `serve.rs` `gzip_for`) is for a
+client ACROSS A NETWORK only — a `Host` that is not the loopback, as `tailscale serve` hands the
+monitor — so the local desktop is byte-for-byte what it was; the case
+`a_phone_over_the_tailnet_reads_the_session_gzipped` reaches it as `phone.test`.
 **Sessions sort into three buckets** (#202, `design/agent-states.md` §10): active (busy),
 blocked (a wait, or an idle reason that cut the work short — this is what "needs attention"
 means and counts) and idle (`done`, `exited`); `sessionBucket` in `shared/state-labels.js` is

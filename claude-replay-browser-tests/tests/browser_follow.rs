@@ -7513,10 +7513,13 @@ fn a_phone_pairs_by_a_one_time_code() {
 
 /// TEMPORARY (#310 audit, not for commit): screenshots and phone-probe measurements of the app
 /// shell's main states at two phone sizes, into target/phone-audit/.
-/// #310's world: a session with a hit to search for and a second one to go back to, served by v2's
-/// app shell to a phone (390×844 unless the case says otherwise). The phone is emulated BEFORE the
-/// first page loads, as a real phone would be — a page first loaded at desktop width stores the
-/// desktop's outline setting.
+/// The phone's world (#310, #313): a session with a hit to search for, two open tasks and a finished
+/// one, a running sub-agent, and a second session to switch to — served by v2's app shell to a
+/// phone (390×844 unless the case says otherwise). The phone is emulated BEFORE the first page
+/// loads, as a real phone would be: a page first loaded at desktop width stores the desktop's
+/// outline setting.
+const PHONE_SID: &str = "aaaa1111-0000-4000-8000-000000000310";
+const PHONE_OTHER: &str = "bbbb2222-0000-4000-8000-000000000310";
 fn phone_world(
     port: u16,
     case: &str,
@@ -7530,11 +7533,26 @@ fn phone_world(
     let base = harness::base(case);
     let stores = harness::Stores::new(&base);
     let mut t = harness::long_session(8, harness::Shape::default());
+    t += &harness::agent_spawn("call_p1", "Explore", 90);
+    t += &harness::agent_result("call_p1", "aExplore-313", "Explore", 91);
     t += &harness::user_at("question 9: build and check", &harness::now_minus(90));
     t += &harness::assistant_at("answer 9: it builds; here is a table\\n\\n| a | b | c |\\n|---|---|---|\\n| one long cell value here | two | three |", &harness::now_minus(60));
-    stores.claude_session("aaaa1111-0000-4000-8000-000000000310", &t);
+    stores.claude_session(PHONE_SID, &t);
+    stores.claude_child(
+        PHONE_SID,
+        "aExplore-313",
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    stores.claude_tasks(
+        PHONE_SID,
+        &[
+            ("1", "draw the drawer", "in_progress"),
+            ("2", "pinch the image", "pending"),
+            ("3", "gzip the records", "completed"),
+        ],
+    );
     stores.claude_session(
-        "bbbb2222-0000-4000-8000-000000000310",
+        PHONE_OTHER,
         &harness::long_session(4, harness::Shape::default()),
     );
     let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
@@ -7542,7 +7560,7 @@ fn phone_world(
     (m, browser, tab)
 }
 
-/// A fresh phone (its own browser, so nothing is remembered) on `m`, open on a session.
+/// A fresh phone (its own browser, so nothing is remembered) on `m`, open on the phone's session.
 fn phone_tab(
     m: &harness::Monitor,
     w: u32,
@@ -7555,7 +7573,7 @@ fn phone_tab(
     let tab = browser.new_tab().unwrap();
     harness::phone(&tab, w, h);
     m.pair(&tab);
-    m.open(&tab, "?ui=app");
+    m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
     harness::until(
         &tab,
         "document.getElementById('app').classList.contains('mobile-detail') && !!document.querySelector('.transcript .turn.user')",
@@ -7580,122 +7598,593 @@ fn phone_tap(tab: &headless_chrome::Tab, sel: &str) {
     panic!("could not tap {sel}: {last}");
 }
 
+/// A point the page computes, as `(x, y)`: `expr` evaluates to `[x, y]`, sent back as JSON text
+/// because `eval` hands an array back by reference, not by value.
+fn phone_point(tab: &headless_chrome::Tab, expr: &str) -> (f64, f64) {
+    let text = harness::eval(tab, &format!("JSON.stringify({expr})"));
+    let v: Vec<f64> = serde_json::from_str(text.as_str().unwrap_or("[]")).unwrap_or_default();
+    assert_eq!(v.len(), 2, "a point from {expr}: {text}");
+    (v[0], v[1])
+}
+
+/// A real tap at a point of the viewport.
+fn phone_tap_at(tab: &headless_chrome::Tab, x: f64, y: f64) {
+    tab.click_point(headless_chrome::browser::tab::point::Point { x, y })
+        .expect("tap at a point");
+}
+
 /// True when the element `sel` names is where a finger lands: its centre hit-tests to it.
 const PHONE_HITTABLE: &str = "function (el) { if (!el) return false; var r = el.getBoundingClientRect(); if (r.width < 4 || r.height < 4 || r.right <= 0 || r.left >= innerWidth) return false; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(hit && (hit === el || el.contains(hit))); }";
 
-/// #310: on a phone the session list and the session are two screens. After Back the list was
-/// drawn UNDER the session's turn bar, outline and header (a transparent sheet at z-index 20), so
-/// its rows took no taps; and a tap on the session just left did nothing, because it was still
-/// the one open. Every row is reachable after Back, and the same row goes back into the session.
+/// Whether the drawer is shut (`mobile-detail`) and done moving.
+const DRAWER_SHUT: &str = "(function(){ var s = document.querySelector('#app > .sidebar').getBoundingClientRect(); return document.getElementById('app').classList.contains('mobile-detail') && s.right <= 1; })()";
+/// Whether the drawer is open and done moving.
+const DRAWER_OPEN: &str = "(function(){ var s = document.querySelector('#app > .sidebar').getBoundingClientRect(); return !document.getElementById('app').classList.contains('mobile-detail') && Math.abs(s.left) <= 1; })()";
+const DRAWER_STATE: &str = "(function(){ var s = document.querySelector('#app > .sidebar').getBoundingClientRect(); return document.getElementById('app').className + ' | sidebar ' + Math.round(s.left) + '..' + Math.round(s.right); })()";
+
+/// #313, the owner: "Make the left bar work as a drawer that does not cover the whole session view,
+/// and have a 'sticky' button at the top left to open or close it (typical mobile app style); also
+/// allow user to hit the uncovered portion of the session view to close the drawer." #310 had made
+/// the list and the session two full screens with a Back button. Here: the drawer covers part of
+/// the view, the handle stays where it is and works both ways, a tap on the dimmed rest closes it,
+/// and choosing a session closes it and opens that session.
 #[test]
 #[ignore]
-fn a_phone_goes_back_to_the_list_and_into_the_session_again() {
-    let (_m, _b, tab) = phone_world(2830, "phone-list", 390, 844);
-    tab.find_element("#mobileBack").unwrap().click().unwrap();
-    let rows_hittable = format!(
-        "(function(){{ var ok = {PHONE_HITTABLE}; var rows = [].slice.call(document.querySelectorAll('.tree-row.session, .side-head .iconbtn')); return !document.getElementById('app').classList.contains('mobile-detail') && rows.length >= 2 && rows.every(ok) && ok(document.getElementById('searchBtn')); }})()"
+fn a_phone_session_list_is_a_drawer_over_part_of_the_view() {
+    let (_m, _b, tab) = phone_world(2830, "phone-drawer", 390, 844);
+    let handle = "(function(){ var h = document.getElementById('drawerHandle'); var r = h.getBoundingClientRect(); return JSON.stringify({ at: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], expanded: h.getAttribute('aria-expanded') }); })()";
+    let hittable = |sel: &str| {
+        harness::eval(
+            &tab,
+            &format!("({PHONE_HITTABLE})(document.querySelector({sel:?}))"),
+        ) == true
+    };
+    assert!(
+        hittable("#drawerHandle"),
+        "the handle is at the top left of the session view"
     );
+    let shut: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, handle).as_str().unwrap()).unwrap();
+    assert_eq!(shut["expanded"], "false", "{shut}");
+    assert!(
+        shut["at"][0].as_i64().unwrap() <= 12 && shut["at"][1].as_i64().unwrap() <= 12,
+        "top left: {shut}"
+    );
+
+    phone_tap(&tab, "#drawerHandle");
     harness::until(
         &tab,
-        &rows_hittable,
-        "every session row, the head's controls and ⌘K to take a tap after Back",
-        Duration::from_secs(10),
-        "(function(){ return [].slice.call(document.querySelectorAll('.tree-row.session, .side-head .iconbtn')).map(function(e){ var r = e.getBoundingClientRect(), h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return (h && (h.id || h.className)) + ''; }).join(' | '); })()",
-    );
-    let probe: serde_json::Value =
-        serde_json::from_str(harness::eval(&tab, harness::PHONE_PROBE).as_str().unwrap()).unwrap();
-    assert_eq!(
-        probe["coveredCount"], 0,
-        "nothing in the list view is covered: {probe}"
-    );
-    phone_tap(&tab, ".tree-row.session.selected");
-    harness::until(
-        &tab,
-        "document.getElementById('app').classList.contains('mobile-detail')",
-        "a tap on the session left by Back to go back into it",
+        DRAWER_OPEN,
+        "the handle to open the drawer",
         Duration::from_secs(5),
-        "document.getElementById('app').className",
+        DRAWER_STATE,
+    );
+    let open = harness::eval(&tab, &format!("(function(){{ var ok = {PHONE_HITTABLE}; var s = document.querySelector('#app > .sidebar').getBoundingClientRect(); var edge = document.elementFromPoint(innerWidth - 16, innerHeight / 2); return JSON.stringify({{ right: Math.round(s.right), width: innerWidth, scrim: !!edge && edge.id === 'drawerScrim', rows: [].slice.call(document.querySelectorAll('.tree-row.session, .side-head .iconbtn')).filter(function(e){{ return e.offsetWidth; }}).every(ok) }}); }})()"));
+    let open: serde_json::Value = serde_json::from_str(open.as_str().unwrap()).unwrap();
+    let (right, width) = (
+        open["right"].as_f64().unwrap(),
+        open["width"].as_f64().unwrap(),
+    );
+    assert!(
+        right <= width * 0.9 && right >= width * 0.6,
+        "the drawer covers PART of the view: {open}"
+    );
+    assert_eq!(
+        open["scrim"], true,
+        "the uncovered part is the dimmed scrim: {open}"
+    );
+    assert_eq!(
+        open["rows"], true,
+        "every session row and the head's controls take a tap: {open}"
+    );
+    let opened: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, handle).as_str().unwrap()).unwrap();
+    assert_eq!(opened["at"], shut["at"], "the handle stays where it is");
+    assert_eq!(opened["expanded"], "true", "{opened}");
+    assert!(
+        hittable("#drawerHandle"),
+        "…and still takes a tap over the open drawer"
+    );
+
+    phone_tap_at(&tab, width - 16.0, 422.0);
+    harness::until(
+        &tab,
+        DRAWER_SHUT,
+        "a tap on the uncovered view to close the drawer",
+        Duration::from_secs(5),
+        DRAWER_STATE,
+    );
+
+    phone_tap(&tab, "#drawerHandle");
+    harness::until(
+        &tab,
+        DRAWER_OPEN,
+        "the handle to open it again",
+        Duration::from_secs(5),
+        DRAWER_STATE,
+    );
+    phone_tap(&tab, "#drawerHandle");
+    harness::until(
+        &tab,
+        DRAWER_SHUT,
+        "the handle to close it",
+        Duration::from_secs(5),
+        DRAWER_STATE,
+    );
+
+    phone_tap(&tab, "#drawerHandle");
+    harness::until(
+        &tab,
+        DRAWER_OPEN,
+        "the handle to open it",
+        Duration::from_secs(5),
+        DRAWER_STATE,
+    );
+    phone_tap(
+        &tab,
+        &format!(".tree-row.session[data-session=\"{PHONE_OTHER}\"]"),
+    );
+    harness::until(
+        &tab,
+        &format!("{DRAWER_SHUT} && location.search.indexOf('{PHONE_OTHER}') >= 0"),
+        "choosing a session to close the drawer and open that session",
+        Duration::from_secs(5),
+        "location.search + ' | ' + document.getElementById('app').className",
     );
 }
 
-/// #310: below 700px the search box is an icon whose input is `display:none`, so a phone could not
-/// search at all. A tap opens it across the bar, typed text searches, a step keeps it open (a touch
-/// browser does not focus a tapped button, so a close-on-blur box would vanish under the finger),
-/// and a tap outside closes it with the query kept.
+/// #313, the owner: the session title on its own line at the top, with the drawer's handle, Info
+/// and the right pane; the second row Turns, Tasks, Agents, search/filter and Aa; the turn header
+/// third. At 390 and 360: in that order, every control reachable, nothing past the right edge.
 #[test]
 #[ignore]
-fn a_phone_can_search_the_session() {
-    let (_m, _b, tab) = phone_world(2817, "phone-search", 390, 844);
-    tab.find_element(".header-searchbox")
-        .unwrap()
-        .click()
-        .unwrap();
-    let open = format!(
-        "(function(){{ var i = document.getElementById('transcriptSearchInput'), r = i.getBoundingClientRect(); return document.activeElement === i && r.width >= 150 && r.right <= innerWidth && ({PHONE_HITTABLE})(i); }})()"
-    );
+fn a_phone_header_is_title_then_controls_then_the_turn() {
+    let (m, _b, _t) = phone_world(2809, "phone-header", 390, 844);
+    for (w, h) in [(390u32, 844u32), (360, 780)] {
+        let (_browser, tab) = phone_tab(&m, w, h);
+        let js = format!("(function(){{ var ok = {PHONE_HITTABLE}; var ids = ['#drawerHandle', '#sessionTitle', '#phoneInfo', '#previewBtn', '#phonePane-turns', '#phonePane-tasks', '#phonePane-agents', '.header-searchbox', '#readingBtn', '#turnStickyBar']; var out = {{}}; ids.forEach(function(sel){{ var e = document.querySelector(sel); var r = e ? e.getBoundingClientRect() : null; out[sel] = r ? {{ l: Math.round(r.left), r: Math.round(r.right), t: Math.round(r.top), b: Math.round(r.bottom), cy: Math.round(r.top + r.height / 2), hit: sel === '#sessionTitle' || sel === '#turnStickyBar' ? true : ok(e) }} : null; }}); return JSON.stringify(out); }})()");
+        let at: serde_json::Value =
+            serde_json::from_str(harness::eval(&tab, &js).as_str().unwrap()).unwrap();
+        let get = |sel: &str, k: &str| {
+            at[sel][k]
+                .as_i64()
+                .unwrap_or_else(|| panic!("{w}px: {sel} missing: {at}"))
+        };
+        let row1 = [
+            "#drawerHandle",
+            "#sessionTitle",
+            "#phoneInfo",
+            "#previewBtn",
+        ];
+        let row2 = [
+            "#phonePane-turns",
+            "#phonePane-tasks",
+            "#phonePane-agents",
+            ".header-searchbox",
+            "#readingBtn",
+        ];
+        for row in [&row1[..], &row2[..]] {
+            for pair in row.windows(2) {
+                assert!(
+                    (get(pair[0], "cy") - get(pair[1], "cy")).abs() <= 6,
+                    "{w}px: {} and {} share a row: {at}",
+                    pair[0],
+                    pair[1]
+                );
+                assert!(
+                    get(pair[0], "l") < get(pair[1], "l"),
+                    "{w}px: {} before {}: {at}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            for sel in row {
+                assert_eq!(at[*sel]["hit"], true, "{w}px: {sel} takes a tap: {at}");
+                assert!(
+                    get(sel, "r") <= w as i64,
+                    "{w}px: {sel} inside the screen: {at}"
+                );
+            }
+        }
+        assert!(
+            get("#phonePane-turns", "cy") > get("#sessionTitle", "cy") + 30,
+            "{w}px: the controls are the SECOND row: {at}"
+        );
+        assert!(
+            get("#turnStickyBar", "t") >= get("#readingBtn", "b") - 1,
+            "{w}px: the turn header is the third: {at}"
+        );
+        let probe: serde_json::Value =
+            serde_json::from_str(harness::eval(&tab, harness::PHONE_PROBE).as_str().unwrap())
+                .unwrap();
+        assert_eq!(probe["pageScrollX"], 0, "{w}px: {probe}");
+        assert_eq!(probe["pastRightCount"], 0, "{w}px: {probe}");
+        assert_eq!(
+            harness::eval(&tab, "(function(){ var c = document.getElementById('outlineFooterCost'); var n = document.querySelector('.session-navigator'); return (!c || !c.offsetWidth) && getComputedStyle(n).display === 'none'; })()"),
+            true,
+            "{w}px: no outline column, and no cost line drawn over the text"
+        );
+    }
+}
+
+/// #313, the owner: "the control of outline pane selection is not usable via fingers … move the
+/// controls of the three panes to the top area (showing the icons, press-open drop down for
+/// selection)". Each pane opens from its icon as a drop-down of finger-sized rows; choosing a row
+/// acts as it does in the outline and closes the drop-down; a tap elsewhere closes it too.
+#[test]
+#[ignore]
+fn a_phone_opens_each_outline_pane_from_its_icon() {
+    let (_m, _b, tab) = phone_world(2818, "phone-panes", 390, 844);
+    let menu_rows = |sel: &str| {
+        format!("(function(){{ var ok = {PHONE_HITTABLE}; var m = document.getElementById('phonePaneMenu'); if (!m || m.hidden) return JSON.stringify({{ open: false }}); var rows = [].slice.call(m.querySelectorAll('{sel}')); var top = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--phone-top')); return JSON.stringify({{ open: true, rows: rows.length, tall: rows.every(function(r){{ return r.getBoundingClientRect().height >= 44; }}), first: rows.length ? ok(rows[0]) : false, below: m.getBoundingClientRect().top >= top }}); }})()")
+    };
+    let read = |sel: &str| -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, &menu_rows(sel)).as_str().unwrap()).unwrap()
+    };
+    let menu_shut = "document.getElementById('phonePaneMenu').hidden";
+
+    phone_tap(&tab, "#phonePane-turns");
     harness::until(
         &tab,
-        &open,
-        "a tap to open the search box, focused and at least 150px wide",
+        "!document.getElementById('phonePaneMenu').hidden",
+        "the Turns icon to open its drop-down",
         Duration::from_secs(5),
-        "(function(){ var i = document.getElementById('transcriptSearchInput'), r = i.getBoundingClientRect(); return [document.activeElement && document.activeElement.id, Math.round(r.left), Math.round(r.width), getComputedStyle(i).display].join(','); })()",
+        "document.getElementById('phonePaneMenu').outerHTML.slice(0, 200)",
     );
-    tab.type_str("answer").unwrap();
-    tab.press_key("Enter").unwrap();
+    let turns = read(".outline-turn-row");
+    assert_eq!(turns["rows"], 9, "every turn: {turns}");
+    assert_eq!(turns["tall"], true, "finger-sized rows: {turns}");
+    assert_eq!(turns["first"], true, "a row takes a tap: {turns}");
+    assert_eq!(
+        turns["below"], true,
+        "the drop-down hangs below the bar: {turns}"
+    );
+    let third = harness::eval(&tab, "(function(){ var r = [].slice.call(document.querySelectorAll('#phonePaneMenu .outline-turn-row'))[2]; return r.dataset.turnRecord; })()");
+    phone_tap(
+        &tab,
+        &format!(
+            "#phonePaneMenu [data-turn-record=\"{}\"]",
+            third.as_str().unwrap()
+        ),
+    );
     harness::until(
         &tab,
-        "/[1-9]/.test(document.getElementById('transcriptSearchCount').textContent) && !!document.querySelector('.transcript mark, .transcript .search-hit, .transcript [data-hit]')",
-        "the typed query to find its hit",
-        Duration::from_secs(10),
-        "document.getElementById('transcriptSearchCount').textContent + ' / ' + document.getElementById('transcriptSearchInput').value",
+        &format!(
+            "{menu_shut} && /Turn 3\\b/.test(document.getElementById('turnStickyBar').textContent)"
+        ),
+        "choosing turn 3 to jump there and close the drop-down",
+        Duration::from_secs(5),
+        "document.getElementById('turnStickyBar').textContent",
     );
-    let next = format!("({PHONE_HITTABLE})(document.getElementById('findNext'))");
+
+    phone_tap(&tab, "#phonePane-tasks");
+    harness::until(
+        &tab,
+        "!document.getElementById('phonePaneMenu').hidden",
+        "the Tasks icon to open its drop-down",
+        Duration::from_secs(5),
+        "1",
+    );
+    let tasks = read(".work-task-head");
     assert_eq!(
-        harness::eval(&tab, &next),
+        tasks["rows"], 2,
+        "the running and the pending task: {tasks}"
+    );
+    assert_eq!(tasks["tall"], true, "{tasks}");
+    phone_tap(&tab, "#phonePaneMenu .work-task-head");
+    harness::until(
+        &tab,
+        &format!("{menu_shut} && !document.getElementById('taskPopover').hidden"),
+        "choosing a task to open its card and close the drop-down",
+        Duration::from_secs(5),
+        "document.getElementById('taskPopover').hidden",
+    );
+    let sheet = harness::eval(&tab, "(function(){ var r = document.getElementById('taskPopover').getBoundingClientRect(); return r.left <= 10 && innerWidth - r.right <= 10 && innerHeight - r.bottom <= 40; })()");
+    assert_eq!(
+        sheet, true,
+        "on a phone the card is a bottom sheet, not a popover beside a row"
+    );
+    phone_tap(&tab, "#taskPopover .task-popover-close");
+    harness::until(
+        &tab,
+        "document.getElementById('taskPopover').hidden",
+        "the card to close",
+        Duration::from_secs(5),
+        "1",
+    );
+
+    phone_tap(&tab, "#phonePane-agents");
+    harness::until(
+        &tab,
+        "!document.getElementById('phonePaneMenu').hidden",
+        "the Agents icon to open its drop-down",
+        Duration::from_secs(5),
+        "1",
+    );
+    let agents = read(".outline-agent");
+    assert_eq!(agents["rows"], 1, "the running sub-agent: {agents}");
+    assert_eq!(agents["tall"], true, "{agents}");
+
+    phone_tap_at(&tab, 195.0, 700.0);
+    harness::until(
+        &tab,
+        menu_shut,
+        "a tap outside to close the drop-down",
+        Duration::from_secs(5),
+        "1",
+    );
+    assert_eq!(
+        harness::eval(&tab, "!!document.querySelector('.session-navigator #navigatorTurns') && !!document.querySelector('.session-navigator #navigatorWork') && !!document.querySelector('.session-navigator #navigatorAgents')"),
         true,
-        "the next-match step is on screen and takes a tap"
+        "the lists go back to the outline once the drop-down closes"
     );
-    tab.find_element("#findNext").unwrap().click().unwrap();
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(
+}
+
+/// #313: tapping the search box zoomed the page and pushed the filter off the edge — iOS zooms into
+/// any focused text field under 16px, and the box's was 12.5px. Every text field a phone can reach
+/// is 16px: the session search, and ⌘K's from the drawer.
+#[test]
+#[ignore]
+fn a_phone_text_field_never_zooms_the_page() {
+    let (_m, _b, tab) = phone_world(2808, "phone-zoom", 390, 844);
+    let size = |sel: &str| {
         harness::eval(
             &tab,
-            "document.querySelector('.header-searchbox').classList.contains('phone-open')"
-        ),
-        true,
-        "a step leaves the box open"
-    );
-    tab.find_element(".transcript .turn.user")
+            &format!("parseFloat(getComputedStyle(document.querySelector({sel:?})).fontSize)"),
+        )
+        .as_f64()
         .unwrap()
-        .click()
-        .unwrap();
+    };
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
     harness::until(
         &tab,
-        "!document.querySelector('.header-searchbox').classList.contains('phone-open') && getComputedStyle(document.getElementById('transcriptSearchInput')).display === 'none' && document.getElementById('transcriptSearchInput').value === 'answer'",
-        "a tap outside to close the box and keep the query",
+        "document.querySelector('.header-searchbox').classList.contains('phone-open')",
+        "the search box to open",
         Duration::from_secs(5),
         "document.querySelector('.header-searchbox').className",
     );
-}
-
-/// #310: the outline's default was open everywhere, and on a phone it is an overlay across most of
-/// the transcript. A phone that has not chosen opens on the transcript; the outline is a tap away.
-#[test]
-#[ignore]
-fn a_phone_opens_on_the_transcript_not_the_outline() {
-    let (_m, _b, tab) = phone_world(2818, "phone-outline", 390, 844);
+    assert!(
+        size("#transcriptSearchInput") >= 16.0,
+        "the session search: {}px",
+        size("#transcriptSearchInput")
+    );
+    harness::eval(
+        &tab,
+        "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); 1",
+    );
+    phone_tap(&tab, "#drawerHandle");
     harness::until(
         &tab,
-        "(function(){ var h = document.elementFromPoint(innerWidth / 2, innerHeight / 2); return document.querySelector('.workspace').classList.contains('navigator-off') && !!h && !!h.closest('.transcript'); })()",
-        "the middle of the screen to be the transcript, with the outline shut",
+        DRAWER_OPEN,
+        "the drawer",
         Duration::from_secs(5),
-        "(function(){ var h = document.elementFromPoint(innerWidth / 2, innerHeight / 2); return document.querySelector('.workspace').className + ' / ' + (h && (h.id || h.className)); })()",
+        DRAWER_STATE,
+    );
+    phone_tap(&tab, "#searchBtn");
+    harness::until(
+        &tab,
+        "document.getElementById('searchLayer').classList.contains('production-open')",
+        "⌘K's search",
+        Duration::from_secs(5),
+        "document.getElementById('searchLayer').className",
+    );
+    assert!(
+        size("#searchInput") >= 16.0,
+        "⌘K's field: {}px",
+        size("#searchInput")
     );
 }
 
-/// #310: a finger, not a pointer. At 390 and 360 the controls a reader moves around with are at
-/// least 44px tall and 40px wide (they were 28–34px), the page never scrolls sideways, and
-/// nothing visible runs past the right edge — in the session and in the list.
+/// #313, the owner: "immediately close the drawer when a session is selected, show the top bars, and
+/// dim the remaining area with some UX feedback showing we are loading" — and the measured reason a
+/// phone waited: a session's records arrive in one reply of up to tens of MB. On a slow link the
+/// drawer is shut at once, a veil dims the session area saying how much has arrived, and it goes
+/// when the session is there.
+#[test]
+#[ignore]
+fn a_phone_switch_closes_the_drawer_and_veils_the_load() {
+    use headless_chrome::protocol::cdp::Network;
+    let (_m, _b, tab) = phone_world(2807, "phone-veil", 390, 844);
+    phone_tap(&tab, "#drawerHandle");
+    harness::until(
+        &tab,
+        DRAWER_OPEN,
+        "the drawer",
+        Duration::from_secs(5),
+        DRAWER_STATE,
+    );
+    tab.call_method(Network::Enable {
+        max_total_buffer_size: None,
+        max_resource_buffer_size: None,
+        max_post_data_size: None,
+        enable_durable_messages: None,
+        report_direct_socket_traffic: None,
+    })
+    .unwrap();
+    tab.call_method(Network::EmulateNetworkConditions {
+        offline: false,
+        latency: 250.0,
+        download_throughput: 12_000.0,
+        upload_throughput: -1.0,
+        connection_Type: None,
+        packet_loss: None,
+        packet_queue_length: None,
+        packet_reordering: None,
+    })
+    .unwrap();
+    phone_tap(
+        &tab,
+        &format!(".tree-row.session[data-session=\"{PHONE_OTHER}\"]"),
+    );
+    let now = harness::eval(&tab, "(function(){ var v = document.getElementById('sessionLoading'); return JSON.stringify({ shut: document.getElementById('app').classList.contains('mobile-detail'), veil: !!v && !v.hidden }); })()");
+    let now: serde_json::Value = serde_json::from_str(now.as_str().unwrap()).unwrap();
+    assert_eq!(
+        now["shut"], true,
+        "the drawer shuts on the tap itself: {now}"
+    );
+    assert_eq!(now["veil"], true, "…and the veil is up at once: {now}");
+    harness::until(
+        &tab,
+        "/Loading \\d+% of/.test(document.getElementById('sessionLoading').textContent)",
+        "the veil to say how much has arrived",
+        Duration::from_secs(20),
+        "document.getElementById('sessionLoading').textContent",
+    );
+    tab.call_method(Network::EmulateNetworkConditions {
+        offline: false,
+        latency: 0.0,
+        download_throughput: -1.0,
+        upload_throughput: -1.0,
+        connection_Type: None,
+        packet_loss: None,
+        packet_queue_length: None,
+        packet_reordering: None,
+    })
+    .unwrap();
+    harness::until(
+        &tab,
+        "document.getElementById('sessionLoading').hidden && !!document.querySelector('.transcript .turn.user')",
+        "the veil to go when the session is there",
+        Duration::from_secs(30),
+        "document.getElementById('sessionLoading').textContent",
+    );
+}
+
+/// #313, the owner: images "can not pinch zoom … (on mac both supports pinch zoom)". A Mac's pinch
+/// arrives as ctrl+wheel; a phone's is two touch pointers, which the viewer never read, and the
+/// stage's `touch-action:none` kept the browser's own pinch off it. Two fingers spreading zoom the
+/// enlarged image in; a double tap goes back to fit.
+#[test]
+#[ignore]
+fn a_phone_pinches_an_image_to_zoom() {
+    let base = harness::base("phone-pinch");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(4, harness::Shape::default());
+    t += &harness::user_at("question 5: read the screenshot", &harness::now_minus(40));
+    t += &harness::assistant_at("answer 5a: let me look at it", &harness::now_minus(39));
+    t += &harness::tool_open_at("t-pre", &harness::now_minus(38));
+    t += &harness::tool_result_at("t-pre", &harness::now_minus(37));
+    t += &harness::read_tool_at("t-img", "/tmp/shot.png", &harness::now_minus(36));
+    t += &harness::image_result_sized("t-img", &harness::now_minus(32), harness::WIDE_PNG_B64);
+    t += &harness::assistant_at(
+        "answer 5: the screenshot shows the deck",
+        &harness::now_minus(28),
+    );
+    let sid = "cccc3333-0000-4000-8000-000000000313";
+    stores.claude_session(sid, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2806, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    harness::phone(&tab, 390, 844);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('[data-image-toggle]')",
+        "the image row",
+        Duration::from_secs(20),
+        "1",
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-image-toggle]').click(); 1",
+    );
+    harness::until(&tab, "(function(){ var i = document.querySelector('.renderer-image-thumb img'); return !!i && i.naturalWidth >= 1; })()", "the thumbnail", Duration::from_secs(10), "1");
+    harness::eval(
+        &tab,
+        "document.querySelector('.renderer-image-thumb').click(); 1",
+    );
+    let stage = ".image-lightbox .image-lightbox-stage";
+    let zoom = |tab: &headless_chrome::Tab| {
+        harness::eval(
+            tab,
+            &format!("Number(document.querySelector('{stage}').dataset.zoom || 0)"),
+        )
+        .as_f64()
+        .unwrap()
+    };
+    harness::until(&tab, &format!("Number((document.querySelector('{stage}') || {{ dataset: {{}} }}).dataset.zoom || 0) > 0"), "the enlarged image", Duration::from_secs(10), "1");
+    std::thread::sleep(Duration::from_millis(300));
+    let fit = zoom(&tab);
+    let (cx, cy) = phone_point(&tab, &format!("(function(){{ var r = document.querySelector('{stage}').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"));
+    harness::pinch(&tab, cx, cy, 60.0, 240.0, 10);
+    harness::until(
+        &tab,
+        &format!(
+            "Number(document.querySelector('{stage}').dataset.zoom) >= {}",
+            fit * 2.5
+        ),
+        "two fingers spreading to zoom the image in",
+        Duration::from_secs(5),
+        &format!("document.querySelector('{stage}').dataset.zoom + ' from {fit}'"),
+    );
+    phone_tap_at(&tab, cx, cy);
+    std::thread::sleep(Duration::from_millis(80));
+    phone_tap_at(&tab, cx, cy);
+    harness::until(
+        &tab,
+        &format!("Math.abs(Number(document.querySelector('{stage}').dataset.zoom) - {fit}) <= 1"),
+        "a double tap to go back to fit",
+        Duration::from_secs(5),
+        &format!("document.querySelector('{stage}').dataset.zoom + ' vs {fit}'"),
+    );
+}
+
+/// #313: a phone reaches the monitor through `tailscale serve`, by the tailnet NAME, and paid for
+/// every byte of a session's records — measured at 24 MB for a 70 MB transcript. A client that is
+/// not on this machine gets them gzipped; the page reads the same records. (`phone.test` is mapped
+/// to the loopback, so the request carries a non-local `Host`, as the phone's does.)
+#[test]
+#[ignore]
+fn a_phone_over_the_tailnet_reads_the_session_gzipped() {
+    let base = harness::base("phone-gzip");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(40, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2805, &base, Some(&stores), true);
+    // `phone.test` is not a loopback name, so Chrome would hand it to the machine's proxy (which
+    // cannot resolve it, and answers with an empty error): no proxy, and the name mapped here.
+    let browser = harness::chrome_with(&[
+        "--host-resolver-rules=MAP phone.test 127.0.0.1",
+        "--no-proxy-server",
+    ]);
+    let tab = browser.new_tab().unwrap();
+    harness::phone(&tab, 390, 844);
+    let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
+    tab.navigate_to(&format!("http://phone.test:2805/{token}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    tab.navigate_to(&format!(
+        "http://phone.test:2805/?ui=app&session={PHONE_SID}"
+    ))
+    .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user')",
+        "the session over the tailnet name",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let sizes = harness::eval(&tab, "JSON.stringify(performance.getEntriesByType('resource').filter(function(e){ return /\\/records\\?/.test(e.name); }).map(function(e){ return [e.encodedBodySize, e.decodedBodySize]; }))");
+    let sizes: Vec<(u64, u64)> = serde_json::from_str(sizes.as_str().unwrap()).unwrap();
+    let (encoded, decoded) = *sizes.first().unwrap_or_else(|| panic!("no /records read"));
+    assert!(
+        decoded > 16 * 1024,
+        "the fixture's records are big enough to compress: {decoded}"
+    );
+    assert!(
+        encoded * 2 < decoded,
+        "the records crossed the network gzipped: {encoded} of {decoded} bytes"
+    );
+}
+
+/// #310, #313: a finger, not a pointer. At 390 and 360 the controls a reader moves around with are
+/// at least 44px tall and 40px wide, the page never scrolls sideways, and nothing visible runs past
+/// the right edge — in the session and with the drawer open.
 #[test]
 #[ignore]
 fn a_phones_controls_are_finger_sized() {
@@ -7705,7 +8194,7 @@ fn a_phones_controls_are_finger_sized() {
         let measure = "(function(){ function sz(e){ var r = e.getBoundingClientRect(); return (e.id || e.className.split(' ')[0]) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height); } function under(e){ var r = e.getBoundingClientRect(); return r.width > 0 && (r.height < 44 || r.width < 40); } var sel = VIEW; return JSON.stringify([].slice.call(document.querySelectorAll(sel)).filter(function(e){ var r = e.getBoundingClientRect(); return r.width > 0 && r.left < innerWidth && r.right > 0; }).filter(under).map(sz)); })()";
         let session = measure.replace(
             "VIEW",
-            "'#mobileBack, .topbar .iconbtn, .topbar .header-searchbox'",
+            "'#drawerHandle, .topbar .iconbtn, .topbar .header-searchbox'",
         );
         let list = measure.replace("VIEW", "'.side-head .iconbtn, .tree-row.session'");
         let check = |what: &str| {
@@ -7728,34 +8217,32 @@ fn a_phones_controls_are_finger_sized() {
             "{w}px: the session view's bar controls are finger-sized"
         );
         check("session");
-        tab.find_element("#mobileBack").unwrap().click().unwrap();
+        phone_tap(&tab, "#drawerHandle");
         harness::until(
             &tab,
-            "!document.getElementById('app').classList.contains('mobile-detail') && getComputedStyle(document.querySelector('.workspace')).visibility === 'hidden'",
-            "the list view",
+            DRAWER_OPEN,
+            "the drawer",
             Duration::from_secs(5),
-            "document.getElementById('app').className",
+            DRAWER_STATE,
         );
         let small = harness::eval(&tab, &list);
         assert_eq!(
             small.as_str().unwrap(),
             "[]",
-            "{w}px: the list's head controls and rows are finger-sized"
+            "{w}px: the drawer's head controls and rows are finger-sized"
         );
-        check("list");
+        check("drawer");
     }
 }
 
-/// #310, the owner: on a phone "the transcript view should go edge to edge … push some controls as
-/// floating on top of the text … okay to hide some controls whose utility may be very limited".
-/// At 390px the text had 248px (a user prompt 146px): a 56px outline rail column, 32px margins,
-/// and a bubble sharing its row with its time. Now the text runs to a 16px gutter, the outline is
-/// one floating button that opens it, and the per-block link / raw chips are not drawn.
+/// #310, #313: a phone READS. The text runs to a 16px gutter on both sides, a long prompt takes the
+/// row, the per-block link / raw chips are not drawn, and nothing of the outline sits over the
+/// text — its panes open from the bar.
 #[test]
 #[ignore]
 fn a_phone_reads_edge_to_edge() {
     let (_m, _b, tab) = phone_world(2810, "phone-edge", 390, 844);
-    let geo = "(function(){ function box(s){ var e = document.querySelector(s); if (!e) return null; var r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right), Math.round(r.width)]; } var chips = [].slice.call(document.querySelectorAll('.spot-link, .renderer-spot')).filter(function(e){ return e.getBoundingClientRect().width > 0; }).length; return JSON.stringify({ inner: box('.transcript-inner'), prompt: box('.turn.user .user-prompt'), chips: chips }); })()";
+    let geo = "(function(){ function box(s){ var e = document.querySelector(s); if (!e) return null; var r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right), Math.round(r.width)]; } var chips = [].slice.call(document.querySelectorAll('.spot-link, .renderer-spot')).filter(function(e){ return e.getBoundingClientRect().width > 0; }).length; var floating = [].slice.call(document.querySelectorAll('.session-navigator, .outline-rail, #navigatorRailExpand, #outlineFooterCost')).filter(function(e){ return e.getBoundingClientRect().width > 0; }).length; return JSON.stringify({ inner: box('.transcript-inner'), prompt: box('.turn.user .user-prompt'), chips: chips, floating: floating }); })()";
     let seen: serde_json::Value =
         serde_json::from_str(harness::eval(&tab, geo).as_str().unwrap()).unwrap();
     let inner = &seen["inner"];
@@ -7771,21 +8258,63 @@ fn a_phone_reads_edge_to_edge() {
         seen["chips"], 0,
         "no per-block link or raw chips on a phone: {seen}"
     );
-    let fab = format!("({PHONE_HITTABLE})(document.getElementById('navigatorRailExpand'))");
     assert_eq!(
-        harness::eval(&tab, &fab),
-        true,
-        "the outline's floating button takes a tap"
+        seen["floating"], 0,
+        "nothing of the outline floats over the text: {seen}"
     );
-    tab.find_element("#navigatorRailExpand")
-        .unwrap()
-        .click()
-        .unwrap();
+}
+
+/// #310, #313: search on a phone. The box is an icon at rest; a tap on the glass opens it across the
+/// bar's second row, typed text searches, a step keeps it open (a touch browser does not focus a
+/// tapped button, so a close-on-blur box would vanish under the finger), and a tap outside closes
+/// it with the query kept.
+#[test]
+#[ignore]
+fn a_phone_can_search_the_session() {
+    let (_m, _b, tab) = phone_world(2817, "phone-search", 390, 844);
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    let open = format!(
+        "(function(){{ var i = document.getElementById('transcriptSearchInput'), r = i.getBoundingClientRect(), t = document.getElementById('sessionTitle').getBoundingClientRect(); return document.activeElement === i && r.width >= 150 && r.right <= innerWidth && r.top >= t.bottom && ({PHONE_HITTABLE})(i); }})()"
+    );
     harness::until(
         &tab,
-        "!document.querySelector('.workspace').classList.contains('navigator-off') && !!document.querySelector('.outline-turn-row')",
-        "the floating button to open the outline",
+        &open,
+        "a tap on the glass to open the box across the second row, focused and at least 150px wide",
         Duration::from_secs(5),
-        "document.querySelector('.workspace').className",
+        "(function(){ var i = document.getElementById('transcriptSearchInput'), r = i.getBoundingClientRect(); return [document.activeElement && document.activeElement.id, Math.round(r.left), Math.round(r.top), Math.round(r.width), getComputedStyle(i).display].join(','); })()",
+    );
+    tab.type_str("answer").unwrap();
+    tab.press_key("Enter").unwrap();
+    harness::until(
+        &tab,
+        "/[1-9]/.test(document.getElementById('transcriptSearchCount').textContent) && !!document.querySelector('.transcript mark, .transcript .search-hit, .transcript [data-hit]')",
+        "the typed query to find its hit",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent + ' / ' + document.getElementById('transcriptSearchInput').value",
+    );
+    let next = format!("({PHONE_HITTABLE})(document.getElementById('findNext'))");
+    assert_eq!(
+        harness::eval(&tab, &next),
+        true,
+        "the next-match step is on screen and takes a tap"
+    );
+    phone_tap(&tab, "#findNext");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "document.querySelector('.header-searchbox').classList.contains('phone-open')"
+        ),
+        true,
+        "a step leaves the box open"
+    );
+    phone_tap_at(&tab, 195.0, 700.0);
+    harness::until(
+        &tab,
+        "!document.querySelector('.header-searchbox').classList.contains('phone-open') && getComputedStyle(document.getElementById('transcriptSearchInput')).display === 'none' && document.getElementById('transcriptSearchInput').value === 'answer'",
+        "a tap outside to close the box and keep the query",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
     );
 }

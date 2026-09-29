@@ -363,6 +363,7 @@ dependencies = [
  "clap",
  "claude-replay-core",
  "claude-replay-present",
+ "flate2",
  "pulldown-cmark",
  "rusqlite",
  "serde",

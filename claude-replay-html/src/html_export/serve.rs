@@ -1908,6 +1908,11 @@ fn serve_connection(
             )
         })
         .unwrap_or_default();
+    let r = if redirect_root {
+        r
+    } else {
+        gzip_for(r, &method, &headers)
+    };
     let head = if redirect_root {
         format!(
             "HTTP/1.1 302 Found\r\nLocation: /\r\n{cookie}\
@@ -1962,6 +1967,88 @@ fn pairing_route(
             String::new(),
         ),
     }
+}
+
+/// Below this a body goes out as it is: the gzip frame and the CPU are not worth it.
+const GZIP_MIN_BYTES: usize = 16 * 1024;
+
+/// Measured on a real 32.3 MB `/records` reply (#313): level 1 makes it 37% in 127 ms, level 3
+/// 28% in 256 ms, level 6 27% in 501 ms. Where the bytes cross a network, transfer dominates —
+/// at 5 MB/s level 3 saves ~0.6 s over level 1 for 0.13 s more CPU — so level 3.
+const GZIP_LEVEL: u32 = 3;
+
+/// Gzip a reply for a client ACROSS A NETWORK (#313). Opening a session sends every record it
+/// has — 3 MB for an 8 MB transcript, 24 MB for 70 MB, 32 MB for 107 MB — and a phone reaching
+/// the monitor through `tailscale serve` paid for each byte; gzip makes them 25-43%, and the
+/// session index the page re-reads every 5 s goes from 80 KB to 13 KB. A client on this machine
+/// gains nothing (the loopback moves 32 MB in ~50 ms) and would pay the CPU, so a request whose
+/// `Host` names the loopback — or names nothing — is answered as it always was. Only whole
+/// successful text bodies over [`GZIP_MIN_BYTES`] of a GET, to a client that accepts gzip, and
+/// never a body a route already encoded.
+fn gzip_for(mut r: HttpResponse, method: &str, headers: &str) -> HttpResponse {
+    use std::io::Write;
+    let text = r.content_type.starts_with("text/")
+        || r.content_type.starts_with("application/json")
+        || r.content_type.starts_with("application/javascript");
+    let encoded = r
+        .headers
+        .iter()
+        .any(|h| h.to_ascii_lowercase().starts_with("content-encoding:"));
+    if method != "GET"
+        || !r.code.starts_with("200")
+        || r.body.len() < GZIP_MIN_BYTES
+        || !text
+        || encoded
+        || !accepts_gzip(headers)
+        || host_is_local(header_value(headers, "host"))
+    {
+        return r;
+    }
+    let mut enc = flate2::write::GzEncoder::new(
+        Vec::with_capacity(r.body.len() / 3),
+        flate2::Compression::new(GZIP_LEVEL),
+    );
+    let Ok(gz) = enc.write_all(&r.body).and_then(|_| enc.finish()) else {
+        return r;
+    };
+    if gz.len() >= r.body.len() {
+        return r;
+    }
+    r.body = gz;
+    r.headers.push("Content-Encoding: gzip".to_string());
+    r.headers.push("Vary: Accept-Encoding".to_string());
+    r
+}
+
+/// Whether `Accept-Encoding` lists gzip at a non-zero quality.
+fn accepts_gzip(headers: &str) -> bool {
+    header_value(headers, "accept-encoding").is_some_and(|v| {
+        v.split(',').any(|coding| {
+            let mut parts = coding.split(';').map(str::trim);
+            let name = parts.next().unwrap_or("");
+            (name.eq_ignore_ascii_case("gzip") || name == "*")
+                && parts.all(|p| {
+                    p.strip_prefix("q=")
+                        .and_then(|q| q.trim().parse::<f32>().ok())
+                        .is_none_or(|q| q > 0.0)
+                })
+        })
+    })
+}
+
+/// Whether a `Host` header names this machine's loopback (or is absent): such a client is on
+/// this machine, and the bytes never cross a network.
+fn host_is_local(host: Option<&str>) -> bool {
+    let Some(host) = host.map(str::trim).filter(|h| !h.is_empty()) else {
+        return true;
+    };
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        host.rsplit_once(':').map_or(host, |(n, _)| n)
+    };
+    let name = name.to_ascii_lowercase();
+    name == "localhost" || name.ends_with(".localhost") || name == "::1" || name.starts_with("127.")
 }
 
 /// The status line and headers for a reply. `no-store` unless the route set its own
@@ -2444,6 +2531,152 @@ mod tests {
         // Here the matcher finds no /proc row → unverifiable → unpaired admits, paired denies.
         let unpaired = AuthGate::for_test(None);
         assert!(matches!(unpaired.decide(lo, srv, None, false), Access::Ok));
+    }
+
+    /// #313: a client across a network (the phone through `tailscale serve`, whose `Host` is the
+    /// tailnet name) gets a big text reply gzipped; a client on this machine, a small body, a
+    /// binary body, a non-GET, a refused coding and an already-encoded body are sent as they were.
+    #[test]
+    fn gzip_is_for_a_client_across_a_network() {
+        use std::io::Read;
+        let body = "{\"k\":\"a record, repeated\"}\n".repeat(2000).into_bytes();
+        let remote = "Host: box.tail0.ts.net\r\nAccept-Encoding: gzip, deflate, br\r\n";
+        let gz = gzip_for(
+            HttpResponse::ok("text/plain; charset=utf-8", body.clone()),
+            "GET",
+            remote,
+        );
+        assert!(
+            gz.headers.iter().any(|h| h == "Content-Encoding: gzip"),
+            "{:?}",
+            gz.headers
+        );
+        assert!(gz.headers.iter().any(|h| h == "Vary: Accept-Encoding"));
+        assert!(
+            gz.body.len() * 4 < body.len(),
+            "{} of {}",
+            gz.body.len(),
+            body.len()
+        );
+        let mut back = Vec::new();
+        flate2::read::GzDecoder::new(&gz.body[..])
+            .read_to_end(&mut back)
+            .unwrap();
+        assert_eq!(
+            back, body,
+            "the bytes the page reads are the bytes the route wrote"
+        );
+        let json = gzip_for(
+            HttpResponse::json(String::from_utf8(body.clone()).unwrap()),
+            "GET",
+            remote,
+        );
+        assert!(
+            json.headers.iter().any(|h| h == "Content-Encoding: gzip"),
+            "JSON too"
+        );
+
+        let unchanged = |r: HttpResponse, method: &str, headers: &str| {
+            let before = r.body.clone();
+            let after = gzip_for(r, method, headers);
+            after.body == before
+                && !after
+                    .headers
+                    .iter()
+                    .any(|h| h.starts_with("Content-Encoding"))
+        };
+        let text = || HttpResponse::ok("text/plain; charset=utf-8", body.clone());
+        for local in [
+            "127.0.0.1:2727",
+            "localhost:2727",
+            "[::1]:2727",
+            "app.localhost",
+        ] {
+            assert!(
+                unchanged(
+                    text(),
+                    "GET",
+                    &format!("Host: {local}\r\nAccept-Encoding: gzip\r\n")
+                ),
+                "{local} is this machine"
+            );
+        }
+        assert!(
+            unchanged(text(), "GET", "Accept-Encoding: gzip\r\n"),
+            "no Host: local"
+        );
+        assert!(
+            unchanged(text(), "GET", "Host: box.tail0.ts.net\r\n"),
+            "gzip not accepted"
+        );
+        assert!(
+            unchanged(
+                text(),
+                "GET",
+                "Host: box.tail0.ts.net\r\nAccept-Encoding: gzip;q=0, br\r\n"
+            ),
+            "gzip refused"
+        );
+        assert!(unchanged(text(), "HEAD", remote), "HEAD");
+        assert!(unchanged(text(), "POST", remote), "POST");
+        assert!(
+            unchanged(
+                HttpResponse::ok("text/plain", b"small".to_vec()),
+                "GET",
+                remote
+            ),
+            "under the threshold"
+        );
+        assert!(
+            unchanged(HttpResponse::ok("image/png", body.clone()), "GET", remote),
+            "not text"
+        );
+        let mut done = text();
+        done.headers.push("Content-Encoding: br".to_string());
+        let kept = gzip_for(done, "GET", remote);
+        assert_eq!(kept.body, body, "a body a route already encoded");
+    }
+
+    /// The same, end to end through a real listener: the head names the encoding and the
+    /// COMPRESSED length, so the client reads exactly the gzip stream.
+    #[test]
+    fn a_remote_client_reads_a_gzipped_reply_whole() {
+        use std::io::{Read, Write};
+        let body = "{\"k\":\"a record, repeated\"}\n".repeat(2000);
+        let served = body.clone();
+        let handler: RouteHandler = std::sync::Arc::new(move |_: &Request| {
+            HttpResponse::ok("text/plain; charset=utf-8", served.clone().into_bytes())
+        });
+        let port = spawn_listener_gated(0, handler, AuthGate::for_test(None)).unwrap();
+        let get = |host: &str| {
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(
+                format!("GET /records HTTP/1.1\r\nHost: {host}\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+            let mut raw = Vec::new();
+            s.read_to_end(&mut raw).unwrap();
+            let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+            (
+                String::from_utf8_lossy(&raw[..split]).to_string(),
+                raw[split + 4..].to_vec(),
+            )
+        };
+        let (head, gz) = get("box.tail0.ts.net:2727");
+        assert!(head.contains("Content-Encoding: gzip"), "{head}");
+        assert!(
+            head.contains(&format!("Content-Length: {}", gz.len())),
+            "{head}"
+        );
+        let mut back = String::new();
+        flate2::read::GzDecoder::new(&gz[..])
+            .read_to_string(&mut back)
+            .unwrap();
+        assert_eq!(back, body);
+        let (head, plain) = get(&format!("127.0.0.1:{port}"));
+        assert!(!head.contains("Content-Encoding"), "{head}");
+        assert_eq!(plain, body.as_bytes());
     }
 
     /// #11: a phone pairs by a one-time code, over HTTP, against the foreign-euid test gate (so the

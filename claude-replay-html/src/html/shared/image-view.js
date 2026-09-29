@@ -131,15 +131,53 @@ function createImageView(stage, img, options = {}) {
     zoomAt(state.scale * step, event.clientX, event.clientY);
   }
 
+  // Every pointer down on the stage, by id — one is a pan (where there is room), two are a PINCH
+  // (#313: a phone has no trackpad, so the ctrl+wheel a Mac's pinch sends never comes, and the
+  // stage's `touch-action:none` keeps the browser's own pinch off it; a viewer that tracked one
+  // pointer could not be zoomed on a phone at all).
+  const pointers = new Map();
   let pointer = null;
+  let pinch = null;
+  let lastTap = null;
+  const spread = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   function onPointerDown(event) {
-    if (stage.dataset.pannable !== "yes" || event.button !== 0) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    // A new interaction's first pointer: whatever an earlier one left (released off the stage,
+    // uncaptured) is gone, or it would pair with this finger into a pinch nobody is making.
+    if (event.isPrimary) { pointers.clear(); pinch = null; }
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.size === 2) {
+      // A second finger makes it a pinch, at any scale — zooming IN from fit is what a pinch is for.
+      const [a, b] = [...pointers.values()];
+      pinch = { d0: spread(a, b) || 1, s0: state.scale, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, moved: false };
+      pointer = null;
+      for (const id of pointers.keys()) { try { stage.setPointerCapture(id); } catch (_) {} }
+      stage.classList.add("dragging");
+      event.preventDefault();
+      return;
+    }
+    if (pointers.size > 2 || stage.dataset.pannable !== "yes") return;
     pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
     stage.classList.add("dragging");
     try { stage.setPointerCapture(event.pointerId); } catch (_) {}
     event.preventDefault();
   }
   function onPointerMove(event) {
+    const held = pointers.get(event.pointerId);
+    if (held) { held.x = event.clientX; held.y = event.clientY; }
+    if (pinch && pointers.size >= 2) {
+      const [a, b] = [...pointers.values()];
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      // The midpoint moving is a two-finger pan; the spread changing is the zoom about it.
+      state.x += mx - pinch.mx;
+      state.y += my - pinch.my;
+      pinch.mx = mx;
+      pinch.my = my;
+      pinch.moved = true;
+      zoomAt(pinch.s0 * spread(a, b) / pinch.d0, mx, my);
+      apply();
+      return;
+    }
     if (!pointer || event.pointerId !== pointer.id) return;
     state.x += event.clientX - pointer.x;
     state.y += event.clientY - pointer.y;
@@ -149,14 +187,48 @@ function createImageView(stage, img, options = {}) {
     apply();
   }
   function onPointerUp(event) {
-    if (!pointer || event.pointerId !== pointer.id) return;
-    // A drag that moved is not a click: swallow the click that follows it, or a viewer whose
-    // backdrop closes on click would close the moment the reader releases the image.
-    const moved = pointer.moved;
-    pointer = null;
-    stage.classList.remove("dragging");
-    try { stage.releasePointerCapture(event.pointerId); } catch (_) {}
-    if (moved) stage.addEventListener("click", swallow, { capture: true, once: true });
+    const had = pointers.get(event.pointerId);
+    pointers.delete(event.pointerId);
+    if (pinch) {
+      try { stage.releasePointerCapture(event.pointerId); } catch (_) {}
+      if (pointers.size < 2) {
+        const moved = pinch.moved;
+        pinch = null;
+        lastTap = null;
+        stage.classList.remove("dragging");
+        if (moved) stage.addEventListener("click", swallow, { capture: true, once: true });
+        // The finger still down carries on as a pan, where there is somewhere to go.
+        const rest = [...pointers.entries()][0];
+        if (rest && stage.dataset.pannable === "yes") {
+          pointer = { id: rest[0], x: rest[1].x, y: rest[1].y, moved: true };
+          stage.classList.add("dragging");
+        }
+      }
+      return;
+    }
+    let moved = false;
+    if (pointer && event.pointerId === pointer.id) {
+      // A drag that moved is not a click: swallow the click that follows it, or a viewer whose
+      // backdrop closes on click would close the moment the reader releases the image.
+      moved = pointer.moved;
+      pointer = null;
+      stage.classList.remove("dragging");
+      try { stage.releasePointerCapture(event.pointerId); } catch (_) {}
+      if (moved) stage.addEventListener("click", swallow, { capture: true, once: true });
+    }
+    if (event.pointerType === "touch" && had && !moved) doubleTap(event);
+  }
+  /** A touch screen's double click: two taps close in time and place. A browser that honours
+   *  `touch-action:none` sends no `dblclick` for them, so the gesture is read here. */
+  function doubleTap(event) {
+    const now = event.timeStamp || performance.now();
+    if (lastTap && now - lastTap.t < 320 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 32) {
+      lastTap = null;
+      if (state.scale > state.fit + 0.001) toFit();
+      else zoomAt(Math.max(1, state.fit * 2.5), event.clientX, event.clientY);
+      return;
+    }
+    lastTap = { t: now, x: event.clientX, y: event.clientY };
   }
   /** Eat the click that ends a drag — but never a click on a CONTROL.
    *

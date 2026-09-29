@@ -403,16 +403,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .sidebar-resizer.dragging:after{content:"";position:fixed;inset:0;cursor:col-resize;z-index:9999}
 .app.sidebar-off .sidebar-resizer{display:none}
 @media(max-width:760px){.sidebar-resizer{display:none}}
-/* #310: on a phone the list and the session are two SCREENS, never layers. The reference makes the
-   sidebar a full-screen sheet with a transparent ground and z-index 20, below the transcript's own
-   layers, so after Back the turn bar, the outline and the header drew over the session list and
-   took its taps. The list view is opaque and the session behind it is hidden once the sheet has
-   slid in (the delay lets the slide show); the session view needs nothing, since the sheet is off
-   screen. */
-@media(max-width:760px){
-  .app:not(.mobile-detail)>.sidebar{background:var(--side)}
-  .app:not(.mobile-detail)>.workspace,.app:not(.mobile-detail)>.preview{visibility:hidden;transition:visibility 0s linear .22s}
-}
 /* #78 / #95: the published-artifact roster — the right pane's pinned first tab, and the
    count on the pane's button so a closed pane still says there is something to see. */
 #previewBtn{position:relative}
@@ -943,57 +933,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    button out past the box's edge, and a wider resting box took the same pixels from the title. */
 @media(min-width:701px) and (max-width:900px){.header-searchbox:focus-within{width:min(360px,48vw)}.topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}.header-searchbox:not(:focus-within) input~:is(.find-count,.find-nav){display:none}}
 
-/* #310 — a finger, not a pointer: at phone width the controls a reader uses to move around (back,
-   the bar's buttons, the list's rows, the sidebar head, the outline rail) are at least 44px to the
-   touch, where they were 28–34px. The session list's rows and the head grow; the bar is 57px tall
-   and holds 44px buttons as it is. Row text and icon sizes are unchanged: only the target grows. */
-@media(max-width:760px){
-  .app .topbar .iconbtn,.app .topbar .mobile-back{width:44px;height:44px;flex:none}
-  .app .topbar .header-searchbox:not(.phone-open){height:44px}
-  .app .topbar .header-filter{width:36px;height:36px}
-  .app .side-head .iconbtn{height:44px}
-  .app .side-head .iconbtn:not(#shellToggle){width:40px}
-  .app .side-head{height:auto;min-height:52px}
-  .app .tree-row.session,.app .tree-row.project,.app .agent-label{min-height:44px}
-  .app .outline-rail>button{width:40px;height:44px}
-  .app .outline-rail{width:48px}
-}
 
-/* #310 — a phone READS (the owner: "the transcript view should go edge to edge … push some controls
-   as floating on top of the text … okay to hide some controls whose utility may be very limited").
-   At 390px the transcript had 248px: a 56px outline rail column, 32px margins and a user bubble
-   sharing its row with its time left a prompt 146px wide. Here the text runs to a 13px gutter; the
-   rail is ONE floating button (open the outline — its panes, the cost and the session details are
-   all inside it) over the bottom-right of the text; a user turn's time drops under the bubble so
-   the bubble can take the row; and the per-block link and raw-view chips, drawn permanently on a
-   touch screen where hover cannot reveal them, are hidden. */
-@media(max-width:700px){
-  .app .workspace.navigator-off .session-main{grid-template-columns:0 minmax(0,1fr)}
-  .app .workspace.navigator-off .session-navigator{position:fixed;left:auto;top:auto;right:12px;bottom:18px;width:auto;height:auto;padding:0;z-index:30;background:transparent;overflow:visible}
-  .app .workspace.navigator-off .outline-rail{width:auto;padding:0;border-radius:50%;box-shadow:0 0 0 1px var(--line),0 10px 24px -10px rgba(34,43,73,.35)}
-  .app .workspace.navigator-off .outline-rail>:not(#navigatorRailExpand),.app .workspace.navigator-off .outline-footer{display:none!important}
-  .app .workspace.navigator-off #navigatorRailExpand{width:48px;height:48px;border-radius:50%;background:var(--bg);color:var(--ink)}
-  #app .session-main .transcript-inner{width:calc(100% - 26px);padding-top:16px}
-  .app .topbar{padding:0 8px 0 4px;gap:4px}
-  .app .turn-stickybar{margin:0 8px}
-  .app .turn.user{flex-wrap:wrap}
-  .app .turn.user .user-prompt{max-width:100%}
-  .app .turn.user .turn-time{flex-basis:100%;order:2;margin:4px 2px 0 0;text-align:right}
-  .app .spot-link,.app .renderer>.renderer-spot{display:none!important}
-}
 
-/* #310 — below 700px the box is an icon with its input hidden (reference.css), which left a phone no
-   way to search at all. A tap opens it across the top bar, over the heading and the controls, with
-   its input, count and steps; the drop-down and the filter popover hang from the bar's edges. */
-@media(max-width:700px){
-  .topbar{position:relative}
-  .topbar .header-search-cluster{position:static}
-  .header-searchbox.phone-open{position:absolute;left:10px;right:10px;top:9px;width:auto;z-index:6;padding:0 5px 0 12px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 8px 20px -12px rgba(34,43,73,.25)}
-  .header-searchbox.phone-open input{display:block!important;flex:1 1 auto;min-width:0}
-  .header-searchbox.phone-open .find-count{display:block!important;flex:none}
-  .header-searchbox.phone-open .find-nav{display:grid!important;flex:none}
-  .header-search-cluster>.search-suggest{position:fixed;left:10px;right:10px;top:58px;width:auto}
-}
 
 /* #294 — a ⌘K row the sidebar is not showing (hidden, or outside the session filter): still
    listed (the filter does not narrow this list), dimmed, and saying why in the sidebar's own words.
@@ -1038,3 +979,109 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .search-suggest-row.on .scope-check{border-color:var(--primary);background:var(--primary)}
 .search-suggest-row.on .scope-check:after{opacity:1}
 .search-suggest-empty{padding:8px;color:var(--faint);font-size:11px}
+
+/* #313 — the phone shell (the owner: "it does not feel native at all"), one breakpoint: 760px.
+   - The session list is a DRAWER over part of the session view, never all of it, with a scrim over
+     the rest that closes it on a tap and a handle fixed at the top left that opens and closes it.
+     The workspace is isolated so its own layers (the turn bar, sticky heads, popovers) stay under
+     the scrim and the drawer — #310's list sat under them and took no taps. A remembered desktop
+     collapse (`sidebar-off`) must not make the drawer invisible, and the rail, the collapse, the
+     resizer, Back and the shell switch have no job in a drawer.
+   - The top bar is two rows: the handle's slot, the title, Info and the right pane; then Turns,
+     Tasks, Agents, search and Aa. The turn header is the third row (the transcript's sticky bar).
+     Every sheet that hangs from the bar is placed at `--phone-top`, its measured bottom.
+   - The outline column does not exist here; its panes open from their icons as drop-downs, and its
+     footer's cost line goes, its Info opening from the bar.
+   - The text reads edge to edge (#310): a 13px gutter, a user turn's time under its bubble, and no
+     per-block link / raw chips, which a touch screen draws permanently since hover cannot reveal them.
+   - Targets are at least 44px tall; inputs are 16px, the size under which iOS zooms the page into a
+     focused field (the search box zoomed the page and pushed the filter off the edge). */
+.drawer-handle,.drawer-scrim,.phone-only,.phone-row-break,.phone-pane-menu{display:none}
+@media(max-width:760px) and (hover:hover){.drawer-handle:hover{background:var(--hover)}}
+@media(max-width:760px){
+  :root{--sidebar:min(86vw,360px)}
+  #app>.sidebar{right:auto;width:min(86vw,360px);background:var(--side);box-shadow:1px 0 0 var(--line),14px 0 36px -20px rgba(20,26,40,.5)}
+  #app.mobile-detail>.sidebar{box-shadow:none}
+  #app.sidebar-off>.sidebar{visibility:visible;opacity:1;pointer-events:auto}
+  #app .sidebar-mini,#app .sidebar-resizer,#app #mobileBack,#app #sidebarReopen,#app #sidebarCollapse,#app #shellToggle{display:none!important}
+  #app>.workspace{isolation:isolate}
+  .drawer-scrim{display:block;position:fixed;inset:0;z-index:15;background:rgba(14,19,31,.42);opacity:0;pointer-events:none;transition:opacity .22s}
+  #app:not(.mobile-detail)>.drawer-scrim{opacity:1;pointer-events:auto}
+  .drawer-handle{display:grid;place-items:center;position:fixed;z-index:22;left:4px;top:calc(env(safe-area-inset-top,0px) + 2px);width:44px;height:44px;border-radius:10px;background:transparent;color:var(--ink);cursor:pointer}
+  .drawer-handle:focus-visible{background:var(--hover)}
+  .drawer-handle .icon{width:22px;height:22px}
+  #app .side-head{height:auto;min-height:52px;padding-left:52px}
+  #app .side-head .iconbtn{width:40px;height:44px}
+  #app .tree-row.session,#app .tree-row.project,#app .agent-label{min-height:44px}
+
+  #app .workspace{grid-template-rows:auto minmax(0,1fr)}
+  #app .workspace.info-open{grid-template-rows:auto minmax(210px,44vh) minmax(0,1fr)}
+  #app .topbar{height:auto;min-height:0;flex-wrap:wrap;align-items:center;justify-content:space-between;column-gap:2px;row-gap:0;padding:env(safe-area-inset-top,0px) 6px 2px;position:relative}
+  #app .topbar>.top-spacer,#app .topbar>.header-divider,#app #sessionFoldAll{display:none}
+  #app .topbar>.session-heading{order:1;flex:1 1 0;min-width:0;max-width:none;height:48px;padding-left:44px;gap:8px}
+  #app .topbar>.session-heading>#sessionTitle{max-width:none;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}
+  #app .topbar>.phone-info{order:2}
+  #app .topbar>#previewBtn{order:3}
+  #app .topbar>.phone-row-break{display:block;order:4;flex:0 0 100%;height:0}
+  #app .topbar>.phone-pane{order:5}
+  #app .topbar>.header-search-cluster{order:6;position:static}
+  #app .topbar>.reading-cluster{order:7}
+  #app .phone-only{display:grid}
+  #app .topbar .iconbtn{width:44px;height:44px;flex:none}
+  #app .phone-pane{position:relative}
+  #app .phone-pane-count{position:absolute;right:1px;top:3px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--hover);color:var(--sub);font:600 9.5px/16px var(--mono);text-align:center}
+  #app .header-searchbox:not(.phone-open){width:80px;height:44px;padding:0 4px 0 12px}
+  #app .header-searchbox:not(.phone-open) input,#app .header-searchbox:not(.phone-open) .find-count,#app .header-searchbox:not(.phone-open) .find-nav{display:none!important}
+  #app .header-searchbox.phone-open{position:absolute;left:6px;right:6px;bottom:2px;top:auto;width:auto;height:44px;z-index:6;padding:0 4px 0 12px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 8px 20px -12px rgba(34,43,73,.25)}
+  #app .header-searchbox.phone-open input{display:block!important;flex:1 1 auto;min-width:0}
+  #app .header-searchbox.phone-open .find-count{display:block!important;flex:none}
+  #app .header-searchbox.phone-open .find-nav{display:grid!important;flex:none;width:34px;height:40px}
+  #app .header-filter{width:40px;height:40px}
+  #app .header-search-cluster>.navigator-options,#app .reading-cluster>.reading-options,#app .header-search-cluster>.search-suggest{position:fixed;left:8px;right:8px;top:calc(var(--phone-top,100px) + 4px);width:auto;max-height:calc(100dvh - var(--phone-top,100px) - 16px);overflow:auto;background:var(--bg);transition:none;animation:none}
+  #app .navigator-options .scope-option,#app .navigator-options .tool-type-option,#app .reading-options .reading-row{height:44px;font-size:14px}
+  #app .navigator-options .scope-menu-action{min-height:36px;padding:0 8px}
+
+  .phone-pane-menu:not([hidden]){display:flex;flex-direction:column;position:fixed;z-index:17;left:8px;right:8px;top:calc(var(--phone-top,100px) + 4px);max-height:calc(100dvh - var(--phone-top,100px) - 16px);border:1px solid var(--line);border-radius:14px;background:var(--bg);box-shadow:0 18px 44px -12px rgba(20,26,40,.35);overflow:hidden}
+  .phone-pane-head{display:flex;align-items:center;justify-content:space-between;flex:none;padding:0 2px 0 16px;border-bottom:1px solid var(--line)}
+  .phone-pane-head strong{font-size:14px;color:var(--ink)}
+  .phone-pane-close{width:44px;height:44px;border-radius:10px;background:transparent;color:var(--sub);font-size:17px;cursor:pointer}
+  .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:6px}
+  .phone-pane-body .outline-turn-row,.phone-pane-body .work-task-head,.phone-pane-body .outline-agent{min-height:44px}
+  .phone-pane-body .outline-turn-row .outline-label{font-size:14px}
+
+  #app .session-main,#app .workspace.navigator-off .session-main{grid-template-columns:0 minmax(0,1fr)}
+  #app .session-navigator{display:none!important}
+  #app .outline-footer{position:fixed;left:0;top:0;z-index:30;width:0;height:0;min-height:0;padding:0;margin:0;overflow:visible}
+  #app .outline-footer>:not(.info-popover){display:none!important}
+  #app .info-popover{position:fixed;left:8px;right:8px;top:calc(var(--phone-top,100px) + 4px);bottom:auto;width:auto;max-height:calc(100dvh - var(--phone-top,100px) - 16px);font-size:13px;background:var(--bg);transition:none}
+  #app .info-popover:before{display:none}
+  #taskPopover.task-popover{left:8px!important;right:8px;top:auto!important;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;max-height:70dvh}
+  #taskPopover .task-popover-close{width:44px;height:44px}
+
+  #app .session-main .transcript-inner{width:calc(100% - 26px);padding-top:16px}
+  #app .turn-stickybar{margin:0 8px}
+  #app .turn.user{flex-wrap:wrap}
+  #app .turn.user .user-prompt{max-width:100%}
+  #app .turn.user .turn-time{flex-basis:100%;order:2;margin:4px 2px 0 0;text-align:right}
+  #app .spot-link,#app .renderer>.renderer-spot{display:none!important}
+
+  input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{font-size:16px!important}
+}
+
+/* #313 — while a session loads: a veil over the session area (below the top bars, which already
+   name it), with what it is waiting on and how far along it is. Feedback, never a lock: it takes no
+   pointer. It fades in after a beat, so a warm local open never flashes it; the page's own empty
+   state under it steps aside while it speaks. */
+.session-loading{position:absolute;inset:0;z-index:12;display:grid;align-content:start;justify-items:center;padding-top:18vh;background:color-mix(in srgb,var(--bg) 58%,transparent);pointer-events:none;animation:session-loading-in .18s ease .12s both}
+.session-loading-card{display:grid;justify-items:center;gap:10px;min-width:210px;padding:16px 22px;border-radius:14px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 12px 32px -14px rgba(20,26,40,.3)}
+.session-loading-spinner{width:22px;height:22px;border-radius:50%;border:2.5px solid color-mix(in srgb,var(--primary) 22%,transparent);border-top-color:var(--primary);animation:session-loading-spin .8s linear infinite}
+.session-loading-text{font:13px/1.35 var(--sans);color:var(--sub);font-variant-numeric:tabular-nums;text-align:center}
+.session-loading-bar{display:block;width:180px;height:4px;border-radius:2px;background:var(--hover);overflow:hidden}
+/* This stylesheet has no global `[hidden]` rule — each component states its own — and `display:grid`
+   above would otherwise keep a hidden veil on screen over a session that has long since loaded. */
+.session-loading[hidden],.session-loading-bar[hidden],.phone-pane-count[hidden]{display:none}
+.session-loading-bar>i{display:block;width:0;height:100%;background:var(--primary);transition:width .15s linear}
+.session-main:has(>.session-loading:not([hidden])) .monitor-empty{visibility:hidden}
+@keyframes session-loading-in{from{opacity:0}to{opacity:1}}
+@keyframes session-loading-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.session-loading{animation:none}.session-loading-spinner{animation:none}}

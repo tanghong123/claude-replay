@@ -635,3 +635,54 @@ fn the_app_shell_preview_fits_a_large_image_to_the_pane() {
         "a wider pane draws the image wider: {first} → {wider}"
     );
 }
+
+/// #313, the owner: images "can not pinch zoom … in either the popup float window or in preview pane
+/// (on mac both supports pinch zoom)". The preview pane's image is drawn by the same shared viewer
+/// as the floating one (`shared/image-view.js`), which read one pointer and the ctrl+wheel a Mac's
+/// pinch sends — never a phone's two fingers. On a phone, two fingers spreading on the pane's image
+/// zoom it in.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_preview_pinch_zooms_an_image_on_a_phone() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("files-pinch");
+    std::fs::write(repo.join("shot.png"), big_png(1200, 800)).unwrap();
+    let m = Monitor::spawn(Kind::V2, 2804, &base, Some(&stores), true);
+    let browser = chrome();
+    let tab = browser.new_tab().unwrap();
+    harness::phone(&tab, 390, 844);
+    open_shell(&m, &tab, true);
+    click_path(&tab, &repo, "shot.png");
+    let stage = "#previewBody .artifact-stage";
+    until(
+        &tab,
+        &format!("(function(){{ var s = document.querySelector('{stage}'); var i = s && s.querySelector('img'); return !!i && i.complete && i.naturalWidth === 1200 && Number(s.dataset.zoom || 0) > 0 && s.getBoundingClientRect().width > 200; }})()"),
+        "the image in the pane, fitted",
+        Duration::from_secs(20),
+        PANE,
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let zoom = || {
+        eval(
+            &tab,
+            &format!("Number(document.querySelector('{stage}').dataset.zoom)"),
+        )
+        .as_f64()
+        .unwrap()
+    };
+    let fit = zoom();
+    // As JSON text: `eval` hands an array back by reference, not by value.
+    let centre: Vec<f64> = serde_json::from_str(eval(&tab, &format!("JSON.stringify((function(){{ var r = document.querySelector('{stage}').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})())")).as_str().unwrap_or("[]")).unwrap_or_default();
+    harness::pinch(&tab, centre[0], centre[1], 60.0, 240.0, 10);
+    until(
+        &tab,
+        &format!(
+            "Number(document.querySelector('{stage}').dataset.zoom) >= {}",
+            fit * 2.5
+        ),
+        "two fingers spreading on the pane's image to zoom it in",
+        Duration::from_secs(5),
+        &format!("document.querySelector('{stage}').dataset.zoom + ' from {fit}'"),
+    );
+    assert!(zoom() > fit, "zoomed in from {fit}");
+}

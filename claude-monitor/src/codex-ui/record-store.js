@@ -16,6 +16,8 @@ export class RecordStore {
     this.cursor = freshCursor();
     this.generation = 0;
     this.timer = 0;
+    // Whether this session's first reply has been applied — `handlers.opened` fires once per open.
+    this.shown = false;
   }
 
   open(session) {
@@ -24,6 +26,7 @@ export class RecordStore {
     this.records = [];
     this.meta = null;
     this.cursor = freshCursor();
+    this.shown = false;
     const generation = ++this.generation;
     this.handlers.reset?.();
     this.poll(generation);
@@ -64,15 +67,37 @@ export class RecordStore {
         // cursor; the next pull sees the epoch bump and resynchronizes atomically.
         if (records.status === 409) return;
         if (!records.ok) throw new Error(`records HTTP ${records.status}`);
-        reply.committed = parseRecords(await records.text());
+        reply.committed = parseRecords(await this.read(records, ext.len, generation));
       } else reply.committed = [];
-      if (generation === this.generation) this.apply(reply);
+      if (generation === this.generation) {
+        this.apply(reply);
+        if (!this.shown) { this.shown = true; this.handlers.opened?.(); }
+      }
     } catch (error) {
       if (generation === this.generation) this.handlers.error?.(error, this.records.length > 0);
     } finally {
       clearTimeout(waited);
       if (generation === this.generation) this.timer = setTimeout(() => this.poll(generation), 1000);
     }
+  }
+
+  /** The `/records` body as text. On a FIRST read it reports how much of `total` (the range's own
+   *  length, so a gzipped reply is measured in the bytes it decodes to) has arrived: a session
+   *  opened over a slow link — a phone on the tailnet, #313 — reads tens of MB, and the page can
+   *  say how far along it is instead of only that it is waiting. */
+  async read(response, total, generation) {
+    if (this.records.length || !response.body || !this.handlers.progress) return response.text();
+    const reader = response.body.getReader(), decoder = new TextDecoder(), parts = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      got += value.byteLength;
+      parts.push(decoder.decode(value, { stream: true }));
+      if (generation === this.generation) this.handlers.progress(got, total);
+    }
+    parts.push(decoder.decode());
+    return parts.join("");
   }
 
   apply(reply) {

@@ -252,7 +252,11 @@ const recordStore = new RecordStore({
     "Reading this session for the first time",
     "The whole transcript is being folded and cached. A long one takes a while; every open after this is immediate.",
   ),
-  error: (error, hasRecords) => hasRecords ? toast(`${error.message}；retrying`) : viewport.showEmpty("Cannot read this session", `${error.message}；The monitor will retry.`, true)
+  error: (error, hasRecords) => { sessionLoading?.hide(); if (hasRecords) toast(`${error.message}；retrying`); else viewport.showEmpty("Cannot read this session", `${error.message}；The monitor will retry.`, true); },
+  // #313: how much of a first open has arrived, and that it has — the veil over the session
+  // area says the first and goes on the second.
+  progress: (got, total) => sessionLoading?.progress(got, total),
+  opened: () => sessionLoading?.hide()
 });
 
 function toast(message) {
@@ -570,10 +574,11 @@ function sessionUrl(id) {
 }
 function selectSession(id, push) {
   if (!id) return;
-  // On a phone a tap on the session just left by Back must bring it back (#310), even though it is
-  // still the one open.
-  app.classList.add("mobile-detail");
+  // On a phone choosing a session closes the drawer AT ONCE (#313) — the one already open too —
+  // and the top bars take the new session before a byte of it has arrived.
+  mobileShell?.setDrawer(false);
   if (id === indexState.selected && recordStore.session === id) return;
+  sessionLoading?.show();
   indexState.selected = id; indexState.selectedWasRow = indexState.rows.has(id);
   preview.setSession(id);
   const row = selectedRow(); if (row) { indexState.read[id] = row.activityTs || Date.now() / 1000; persist(); }
@@ -581,7 +586,7 @@ function selectSession(id, push) {
   const url = new URL(location.href); url.searchParams.set("session", id); if (document.body.dataset.uiDefault === "true") url.searchParams.delete("ui"); else url.searchParams.set("ui", "app"); if (push) url.hash = ""; history[push ? "pushState" : "replaceState"]({}, "", url);
   recordState.session = id; viewport.beginSession(id); recordStore.open(id);
 }
-function sessionGone() { recordStore.stop(); preview.setSession(""); indexState.selected = ""; recordState.session = ""; viewport.showEmpty("Session is gone", "It may have been deleted or moved. The list keeps scanning.", true); }
+function sessionGone() { sessionLoading?.hide(); recordStore.stop(); preview.setSession(""); indexState.selected = ""; recordState.session = ""; viewport.showEmpty("Session is gone", "It may have been deleted or moved. The list keeps scanning.", true); }
 
 // The parent control (parity #3): live only while the open session has an ancestor in its
 // meta — a sub-agent child, which is never a list row. Back IS the parent: clicking it selects
@@ -1252,6 +1257,7 @@ function renderNavigator() {
   document.querySelectorAll("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   stackOutlineHeads();
   document.querySelector(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
+  mobileShell?.counts(turns.length, counted.length, agents.length);
 }
 const outlineSummary = (active, done, total) => !total ? "0" : `${active ? `<span class="outline-stat-item active"><i class="outline-stat-dot"></i>${active} active</span>` : ""}<span class="outline-stat-item done"><i class="outline-stat-dot"></i>${done}/${total} done</span>`;
 // The info pane (#67, #68): only what the shell does not already show — the title, the agent and
@@ -1640,12 +1646,12 @@ searchSuggest = document.createElement("div");
 searchSuggest.className = "search-suggest"; searchSuggest.id = "searchSuggest"; searchSuggest.hidden = true;
 searchSuggest.setAttribute("role", "listbox");
 document.querySelector(".header-search-cluster").appendChild(searchSuggest);
-// #310: below 700px the search box is an icon (reference.css), with its input hidden. A tap on it
-// OPENS it across the top bar, and it stays open until a tap lands outside the search's own
+// #310, #313: at phone width (760px, the shell's one breakpoint) the search box is an icon with its
+// input hidden. A tap on it OPENS it across the bar's second row, and it stays open until a tap lands outside the search's own
 // surfaces (the box, the drop-down, the filter popover) or Escape — never on blur, since a touch
 // browser does not focus a tapped button and the steps would vanish under the finger. The query,
 // its count and its marks outlive the box closing, as they outlive a blur on a wider window.
-const phoneSearch = matchMedia("(max-width:700px)"), searchBox = document.querySelector(".header-searchbox");
+const phoneSearch = matchMedia("(max-width:760px)"), searchBox = document.querySelector(".header-searchbox");
 function setPhoneSearch(open) {
   searchBox.classList.toggle("phone-open", open && phoneSearch.matches);
   if (open && phoneSearch.matches) byId("transcriptSearchInput").focus();
@@ -2634,8 +2640,11 @@ panesMenu.onclick = event => {
   popover.addEventListener("pointerenter", () => clearTimeout(closeTimer));
   // Click PINS it, so the reader can read inside it, fold a group, or select a value to copy.
   trigger.addEventListener("click", () => { pinned = !pinned; show(pinned || true); if (!pinned) leave(); });
+  // The phone's "i" in the top bar (#313) is this same control: a tap pins or unpins, and there is
+  // no hover to peek with, so an unpin closes at once.
+  infoPopoverToggle = () => { pinned = !pinned; show(pinned); };
   addEventListener("pointerdown", event => {
-    if (pinned && !popover.contains(event.target) && !trigger.contains(event.target)) { pinned = false; show(false); }
+    if (pinned && !popover.contains(event.target) && !trigger.contains(event.target) && !event.target.closest?.("[data-info-trigger]")) { pinned = false; show(false); }
   }, true);
   addEventListener("keydown", event => { if (event.key === "Escape" && pinned) { pinned = false; show(false); } });
   // The collapsed rail's Info button is the SAME control now — one gesture in both states,
@@ -2934,6 +2943,183 @@ byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNe
 // The header's own turn steppers were in the design but never bound; they step the same way the keys do.
 byId("turnPrev").onclick = () => stepTurn(-1); byId("turnNext").onclick = () => stepTurn(1);
 addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openGlobalSearch(); } else if (event.key === "Escape") { setSessionCopyMenu(false); byId("searchLayer").classList.remove("production-open"); setPopover(null); } });
+
+// #313 — while a session loads, a veil over the session area says so. It dims what is below the top
+// bars, which already name the new session, and speaks in three phases: loading; after
+// WAITING_AFTER_MS with nothing downloaded yet, that the server is reading the session for the first
+// time (the same wait `waiting` explains, in the veil's own voice); then how much of the records has
+// arrived. The owner, choosing sessions on a phone: "dim the remaining area with some UX feedback
+// showing we are loading". It never takes a tap (it is feedback, not a lock), it fades in only
+// after a beat so a warm local open does not flash, and it goes the moment the first reply is
+// applied — or on an error, which the page states itself.
+var sessionLoading;
+{
+  const veil = document.createElement("div");
+  veil.className = "session-loading";
+  veil.id = "sessionLoading";
+  veil.hidden = true;
+  veil.setAttribute("role", "status");
+  veil.innerHTML = '<div class="session-loading-card"><span class="session-loading-spinner" aria-hidden="true"></span><span class="session-loading-text">Loading session…</span><span class="session-loading-bar" hidden><i></i></span></div>';
+  document.querySelector(".session-main").append(veil);
+  const text = veil.querySelector(".session-loading-text"), bar = veil.querySelector(".session-loading-bar"), fill = bar.querySelector("i");
+  let slow = 0, downloading = false;
+  const size = n => (n >= 1e6 ? `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
+  sessionLoading = {
+    show() {
+      clearTimeout(slow);
+      downloading = false;
+      text.textContent = "Loading session…";
+      bar.hidden = true;
+      veil.hidden = false;
+      slow = setTimeout(() => { if (!downloading && !veil.hidden) text.textContent = "Reading this session for the first time…"; }, 1200);
+    },
+    progress(got, total) {
+      if (veil.hidden) return;
+      downloading = true;
+      const share = total > 0 ? Math.min(1, got / total) : 0;
+      text.textContent = total > 0 ? `Loading ${Math.round(share * 100)}% of ${size(total)}` : `Loading ${size(got)}`;
+      bar.hidden = !(total > 0);
+      fill.style.width = `${(share * 100).toFixed(1)}%`;
+    },
+    hide() { clearTimeout(slow); veil.hidden = true; },
+  };
+}
+
+// #313 — the phone shell (the owner: "it does not feel native at all"). One breakpoint, 760px:
+//  - The session list is a DRAWER over part of the session view, never all of it. A handle fixed at
+//    the top left opens and closes it, and stays where it is either way — it is a sibling of the
+//    drawer in #app, not inside the top bar, whose layer sits under the drawer. A tap on the dimmed
+//    part of the view closes it; choosing a session closes it at once (`selectSession`).
+//    `mobile-detail` keeps its meaning from #310: present = the drawer is shut.
+//  - The top bar is two rows: the handle's slot, the session's title, Info and the right pane; then
+//    Turns, Tasks, Agents, search and Aa. The turn header is the third row, as the transcript's own
+//    sticky bar. The outline column does not exist at this width; its three panes open from their
+//    icons as drop-downs holding the SAME live lists (moved in while open, moved back after), so
+//    the outline's rendering, its filters and its one click handler serve both.
+//  - `--phone-top`, the bar's measured bottom, places every sheet that hangs from it.
+var mobileShell;
+var infoPopoverToggle;
+{
+  const PHONE = matchMedia("(max-width:760px)");
+  const topbar = document.querySelector(".topbar");
+  const handle = document.createElement("button");
+  handle.type = "button";
+  handle.className = "drawer-handle";
+  handle.id = "drawerHandle";
+  handle.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>';
+  const scrim = document.createElement("div");
+  scrim.className = "drawer-scrim";
+  scrim.id = "drawerScrim";
+  app.append(scrim, handle);
+
+  const info = document.createElement("button");
+  info.type = "button";
+  info.className = "iconbtn phone-only phone-info";
+  info.id = "phoneInfo";
+  info.dataset.infoTrigger = "";
+  info.title = "Session details";
+  info.setAttribute("aria-label", "Session details");
+  info.innerHTML = svg("info");
+  info.onclick = () => infoPopoverToggle?.();
+  const rowBreak = document.createElement("span");
+  rowBreak.className = "phone-row-break";
+  rowBreak.setAttribute("aria-hidden", "true");
+  const panes = [["turns", "Turns", "navigatorTurns"], ["tasks", "Tasks", "navigatorWork"], ["agents", "Agents", "navigatorAgents"]].map(([key, label, body]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "iconbtn phone-only phone-pane";
+    button.id = `phonePane-${key}`;
+    button.dataset.phonePane = key;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-haspopup", "true");
+    button.setAttribute("aria-expanded", "false");
+    button.innerHTML = `${svg(key)}<span class="phone-pane-count" hidden></span>`;
+    return { key, label, body, button };
+  });
+  const previewButton = byId("previewBtn");
+  previewButton.before(info);
+  previewButton.after(rowBreak);
+  rowBreak.after(...panes.map(p => p.button));
+
+  const menu = document.createElement("div");
+  menu.className = "phone-pane-menu";
+  menu.id = "phonePaneMenu";
+  menu.hidden = true;
+  menu.setAttribute("role", "dialog");
+  menu.innerHTML = '<div class="phone-pane-head"><strong></strong><button type="button" class="phone-pane-close" aria-label="Close">✕</button></div><div class="phone-pane-body"></div>';
+  app.append(menu);
+  const menuBody = menu.querySelector(".phone-pane-body");
+  let openPane = null, home = null;
+  const closePane = () => {
+    if (!openPane) return;
+    const node = byId(openPane.body);
+    if (node && home) home.parent.insertBefore(node, home.next && home.next.parentNode === home.parent ? home.next : null);
+    openPane.button.setAttribute("aria-expanded", "false");
+    openPane = null;
+    home = null;
+    menu.hidden = true;
+  };
+  const showPane = pane => {
+    closePane();
+    const node = byId(pane.body);
+    if (!node) return;
+    home = { parent: node.parentNode, next: node.nextSibling };
+    menuBody.append(node);
+    menu.querySelector(".phone-pane-head strong").textContent = pane.label;
+    openPane = pane;
+    pane.button.setAttribute("aria-expanded", "true");
+    menu.hidden = false;
+    // The current turn in the middle of the list — by moving the drop-down's OWN scroller, never
+    // by asking the browser to scroll something into view (the contract's rule for this module).
+    const current = node.querySelector(".outline-turn-row.current");
+    if (current) {
+      const box = menuBody.getBoundingClientRect(), row = current.getBoundingClientRect();
+      menuBody.scrollTop += row.top - box.top - (box.height - row.height) / 2;
+    }
+  };
+  panes.forEach(pane => pane.button.addEventListener("click", () => (openPane === pane ? closePane() : showPane(pane))));
+  menu.addEventListener("click", event => {
+    if (event.target.closest(".phone-pane-close")) { closePane(); return; }
+    navigatorClick(event);
+    if (event.target.closest("[data-turn-record], [data-task-open], [data-task-record], [data-agent-record], [data-child-outline]")) closePane();
+  });
+  addEventListener("pointerdown", event => {
+    if (openPane && !menu.contains(event.target) && !event.target.closest?.("[data-phone-pane], #taskPopover")) closePane();
+  }, true);
+  addEventListener("keydown", event => { if (event.key === "Escape") closePane(); });
+
+  const setDrawer = open => {
+    app.classList.toggle("mobile-detail", !open);
+    handle.setAttribute("aria-expanded", String(open));
+    const words = open ? "Close the session list" : "Open the session list";
+    handle.title = words;
+    handle.setAttribute("aria-label", words);
+    if (open) closePane();
+  };
+  handle.onclick = () => setDrawer(app.classList.contains("mobile-detail"));
+  scrim.addEventListener("click", () => setDrawer(false));
+  setDrawer(!app.classList.contains("mobile-detail"));
+
+  const place = () => {
+    const bottom = Math.round(topbar.getBoundingClientRect().bottom);
+    if (bottom > 0) document.documentElement.style.setProperty("--phone-top", `${bottom}px`);
+  };
+  new ResizeObserver(place).observe(topbar);
+  PHONE.addEventListener("change", () => { place(); if (!PHONE.matches) closePane(); });
+  place();
+
+  mobileShell = {
+    setDrawer,
+    counts(turns, tasks, agents) {
+      for (const [pane, n] of [[panes[0], turns], [panes[1], tasks], [panes[2], agents]]) {
+        const badge = pane.button.querySelector(".phone-pane-count");
+        badge.hidden = !n;
+        badge.textContent = n > 99 ? "99+" : String(n);
+      }
+    },
+  };
+}
 
 app.classList.toggle("sidebar-off", !indexState.sidebarOpen);
 tree.innerHTML = '<div class="no-results">Scanning sessions…</div>';

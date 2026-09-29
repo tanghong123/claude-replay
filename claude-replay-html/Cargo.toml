@@ -16,6 +16,9 @@ serde_json = "1"
 # Already in this workspace's tree (claude-monitor), so the file-signature MAC adds no new
 # third-party code — see html_export/sig.rs.
 sha2 = "0.10"
+# Gzip for a client across a network (#313, `serve.rs` `gzip_for`). Already in this workspace's
+# tree (syntect's dumps), so it adds no new third-party code either.
+flate2 = "1"
 
 [dev-dependencies]
 # Tests drive the exporters through the real CLI surface (`Args::parse_from`).

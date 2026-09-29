@@ -1414,18 +1414,27 @@ fn browser_path() -> Option<std::path::PathBuf> {
 }
 
 pub fn chrome() -> headless_chrome::Browser {
+    chrome_with(&[])
+}
+
+/// [`chrome`], with extra command-line switches — e.g. `--host-resolver-rules=MAP phone.test
+/// 127.0.0.1`, which lets a case reach a monitor by a name that is NOT the loopback, as a phone
+/// through `tailscale serve` does (#313's gzip is only for such a client).
+pub fn chrome_with(extra: &[&str]) -> headless_chrome::Browser {
     reap_stranded_browsers();
+    let mut args = vec![
+        std::ffi::OsStr::new("--disable-background-timer-throttling"),
+        std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
+        std::ffi::OsStr::new("--disable-renderer-backgrounding"),
+    ];
+    args.extend(extra.iter().map(std::ffi::OsStr::new));
     headless_chrome::Browser::new(
         headless_chrome::LaunchOptions::default_builder()
             .path(browser_path())
             .headless(true)
             .window_size(Some((1400, 900)))
             .user_data_dir(Some(browser_profile()))
-            .args(vec![
-                std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-            ])
+            .args(args)
             .build()
             .unwrap(),
     )
@@ -2605,6 +2614,46 @@ pub fn phone(tab: &headless_chrome::Tab, width: u32, height: u32) {
         max_touch_points: Some(5),
     })
     .expect("touch emulation");
+}
+
+/// A two-finger pinch on a phone (#313): both fingers down on either side of `(cx, cy)`, `from`
+/// px apart, spread to `to` px over `steps` moves, then lifted. Chrome's touch emulation (see
+/// [`phone`]) delivers these as the touch POINTER events a real phone sends — two pointers at
+/// once, which is exactly what a trackpad's ctrl+wheel pinch never exercises.
+pub fn pinch(tab: &headless_chrome::Tab, cx: f64, cy: f64, from: f64, to: f64, steps: u32) {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchTouchEvent, DispatchTouchEventTypeOption as Kind, TouchPoint,
+    };
+    let point = |x: f64, id: f64| TouchPoint {
+        x,
+        y: cy,
+        radius_x: None,
+        radius_y: None,
+        rotation_angle: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        id: Some(id),
+    };
+    let at = |d: f64| vec![point(cx - d / 2.0, 0.0), point(cx + d / 2.0, 1.0)];
+    let send = |kind: Kind, points: Vec<TouchPoint>| {
+        tab.call_method(DispatchTouchEvent {
+            Type: kind,
+            touch_points: points,
+            modifiers: None,
+            timestamp: None,
+        })
+        .expect("touch event");
+    };
+    send(Kind::TouchStart, at(from));
+    for i in 1..=steps {
+        let d = from + (to - from) * f64::from(i) / f64::from(steps.max(1));
+        send(Kind::TouchMove, at(d));
+        std::thread::sleep(Duration::from_millis(16));
+    }
+    send(Kind::TouchEnd, Vec::new());
 }
 
 /// What a phone-width page gets wrong, measured (#310): horizontal page scroll, visible elements
