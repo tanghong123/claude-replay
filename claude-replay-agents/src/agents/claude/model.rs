@@ -814,6 +814,23 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
 /// ignored list would silence it from every tool Claude Code adds after this. So each name here
 /// is known only when EVERY key of the result belongs to the shape it was judged in, and is
 /// reported anywhere else exactly like a key nobody has met.
+/// Every key a Grep result was met with (#285, #315), in every mode — `content` (the lines,
+/// `appliedLimit` when a head_limit cut them), `count` (`numMatches`) and, since client 2.1.283,
+/// `files_with_matches` (`mode`, `filenames`, `numFiles`, and `totalFiles`: the matching files
+/// before any head_limit cut, which the text states as "Found N files" and a pagination line when
+/// a limit cut it). The page draws the result TEXT, which shows the lines or states the counts and
+/// the limit.
+const GREP_SHAPE: &[&str] = &[
+    "appliedLimit",
+    "content",
+    "filenames",
+    "mode",
+    "numFiles",
+    "numLines",
+    "numMatches",
+    "totalFiles",
+    "totalLines",
+];
 /// Every key an Artifact create-from-type result was met with (#306, client 2.1.280).
 const ARTIFACT_CREATE_SHAPE: &[&str] = &[
     "auto_open",
@@ -859,23 +876,11 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     ("own_files", ARTIFACT_CREATE_SHAPE),
     ("provisioned", ARTIFACT_CREATE_SHAPE),
     ("type_files", ARTIFACT_CREATE_SHAPE),
-    // Grep (#285), in both modes it has been met in — `content` (the lines, `appliedLimit` when a
-    // head_limit cut them) and `count` (`numMatches`). The page draws the result TEXT, which shows
-    // the lines or states the counts and the limit. `files_with_matches` was never seen: its keys
-    // are presumably these too, and if not, `mode` is reported beside the new one.
-    (
-        "mode",
-        &[
-            "appliedLimit",
-            "content",
-            "filenames",
-            "mode",
-            "numFiles",
-            "numLines",
-            "numMatches",
-            "totalLines",
-        ],
-    ),
+    // Grep (#285, #315): `mode` is a generic word, and `totalFiles` could mean anything in another
+    // tool, so each is known only when every key of the result is Grep's; a key that is not is
+    // reported with them beside it.
+    ("mode", GREP_SHAPE),
+    ("totalFiles", GREP_SHAPE),
 ];
 
 /// The `toolUseResult` keys this adapter neither reads nor has already met (#264), in the
@@ -4888,11 +4893,13 @@ mod tests {
             vec!["source".to_string()],
             "…and so is `source` outside Read's file_unchanged"
         );
-        // #285: Grep, in each shape it was met in — content mode, limited and not, and count mode.
+        // #285, #315: Grep, in each shape it was met in — content mode, limited and not, count mode,
+        // and files_with_matches (client 2.1.283).
         for grep in [
             serde_json::json!({"mode": "content", "numFiles": 0, "filenames": [], "content": "a.rs:1:x", "numLines": 1, "totalLines": 1}),
             serde_json::json!({"mode": "content", "numFiles": 0, "filenames": [], "content": "a.rs:1:x", "numLines": 400, "totalLines": 3027, "appliedLimit": 400}),
             serde_json::json!({"mode": "count", "numFiles": 1, "filenames": [], "content": "a.rs:27", "numMatches": 27}),
+            serde_json::json!({"mode": "files_with_matches", "filenames": ["src/a.rs"], "numFiles": 1, "totalFiles": 1}),
         ] {
             assert_eq!(unknown(&grep), Vec::<String>::new(), "Grep, known: {grep}");
         }
@@ -4900,6 +4907,11 @@ mod tests {
             unknown(&serde_json::json!({"mode": "content", "numFiles": 0, "appliedOffset": 20})),
             vec!["appliedOffset".to_string(), "mode".to_string()],
             "a Grep key nobody has met brings `mode` back with it"
+        );
+        assert_eq!(
+            unknown(&serde_json::json!({"totalFiles": 3, "stdout": "ok"})),
+            vec!["totalFiles".to_string()],
+            "`totalFiles` is known only in Grep's shape (#315), never from another tool"
         );
         assert_eq!(
             unknown(&serde_json::json!({"mode": "plan", "stdout": "ok"})),
