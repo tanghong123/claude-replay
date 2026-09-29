@@ -401,6 +401,22 @@ function buildUnits(records, from, turn) {
   const flush = () => { if (process) units.push(process); process = null; };
   for (let i = from; i < records.length; i++) {
     const record = records[i];
+    if (record?.kind === "pending") {
+      // #314: the head of a tail-first open, not arrived yet — ONE unit for the whole run, the
+      // "loading earlier turns" card. It takes in the tail's leading records up to its first user
+      // turn, so the first real unit on screen is a turn with its own number; a tail with no user
+      // turn at all keeps them, since hiding everything would leave nothing to read.
+      let end = i;
+      while (end + 1 < records.length && records[end + 1]?.kind === "pending") end++;
+      const pendingTo = end;
+      let user = end + 1;
+      while (user < records.length && !(records[user].kind === "user" || records[user].kind === "command")) user++;
+      if (user < records.length) end = user - 1;
+      flush();
+      units.push({ type: "pending", key: "pending:head", from: i, to: end, turn: null, records: pendingTo - i + 1 });
+      i = end;
+      continue;
+    }
     const view = viewRecord(record);
     if (record.kind === "user" || record.kind === "command") {
       flush(); turn = Number(record.turn || turn + 1);

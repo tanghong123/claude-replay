@@ -692,6 +692,18 @@ after that rewrite the SAME id names a DIFFERENT record — an anchor held acros
 the wrong thing, rather than failing loudly. Anything that assumes the tail only grows (a
 viewport anchor, a height cache, an incremental index) has to survive this.
 
+**A tail-first open is the other way the records change** (#314, `design/tail-first-open.md`, the
+owner chose option A): the app shell's first pull asks for the last 512 KB of the committed log
+(`tail=`, honoured on a log over twice that), draws it, and reads the head behind it. Until it lands,
+the head's slots hold the one `PENDING` placeholder and the projection shows them as a short "Loading
+earlier turns" card — the page goes no further up, as a chat app's history does. The head replaces
+the placeholders IN PLACE (record indices never move), but the engine's items are UNITS, so the
+landing is a PREPEND: `recordsChanged` takes `{from, shift}` and translates the reader's `P0` to the
+moved index space (a reader on the card re-anchors on the turn below it). Without that, the anchor's
+key is found at a new index, which reads as the #165 identity shift and falls back to a position
+`shift` units wrong. The history records the shift, and the sandbox counts the landing as part of the
+open. The classic page never asks for a tail and is unchanged.
+
 **`claude-replay`** (root) — the thin assembly crate: clap CLI (`run_viewer`), `jdi/` the
 **`agent-jdi`** binary (unattended-run supervisor; see `src/jdi/DESIGN.md`), and compat
 re-exports so `claude_replay::model`, `claude_replay::tui::app`, … keep their old paths.

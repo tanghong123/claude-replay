@@ -263,7 +263,22 @@ function turnTime(unit) {
   return when + took;
 }
 
+/** The pending head's words (#314): how much of the earlier turns has arrived, when it is known. */
+export function pendingHeadText(progress) {
+  if (!progress || !progress.total) return "Loading earlier turns…";
+  return `Loading earlier turns — ${Math.min(100, Math.round((progress.got * 100) / progress.total))}%`;
+}
+
 export function renderUnit(unit, state) {
+  if (unit.type === "pending") {
+    // #314: the head of a tail-first open that has not arrived yet — a short card at the top of
+    // what has, which the reader scrolls up to and waits at, as a chat app's "loading earlier
+    // messages" row; never a tall blank standing in for the turns' height.
+    const root = element(`<div class="turn pending-head" data-kind="pending" role="status"><span class="pending-head-spinner" aria-hidden="true"></span><span class="pending-head-text" data-pending-text>${escapeText(pendingHeadText(state.headProgress))}</span></div>`);
+    root.dataset.unitKey = unit.key;
+    root.dataset.unitFrom = unit.from;
+    return root;
+  }
   const spot = unit.view?.id
     ? `<button class="spot-link" type="button" data-spot-link="${escapeText(unit.view.id)}" aria-label="Copy a link to here" title="Copy a link to here"><span aria-hidden="true">#</span></button>`
     : "";

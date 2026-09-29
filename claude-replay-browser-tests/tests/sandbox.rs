@@ -494,3 +494,32 @@ fn history_fixtures_carry_no_content() {
     }
     assert!(seen >= 2, "the walk's two exports are the first fixtures");
 }
+
+/// #314: a tail-first open's head LANDING is part of the open, never growth. The export's session
+/// is the final one (every unit), the first delta brought in the tail (with the pending card), and
+/// the one that carries a `shift` is the head landing in front of it; what came after is growth.
+/// A replay that took the first delta as the open would replay the head as thousands of records
+/// appended later.
+#[test]
+fn a_tail_first_open_ends_where_its_head_lands() {
+    let items: Vec<serde_json::Value> = (0..31)
+        .map(|i| serde_json::json!(["user", 40.0, i + 1, i, i]))
+        .collect();
+    let export = harness::history::Export::from_value(serde_json::json!({
+        "format": "viewport-history/1",
+        "page": "app",
+        "session": { "items": items },
+        "actions": [],
+        "states": [],
+        "deltas": [
+            { "t": 10.0, "count0": 0, "count1": 4, "from": 0 },
+            { "t": 900.0, "count0": 4, "count1": 30, "from": 0, "shift": 26 },
+            { "t": 2000.0, "count0": 30, "count1": 31, "from": 30 }
+        ]
+    }));
+    assert_eq!(
+        export.opened_records(),
+        30,
+        "the open ends where the head landed, not at the first batch"
+    );
+}

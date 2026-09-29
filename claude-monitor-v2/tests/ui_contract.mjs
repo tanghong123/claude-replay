@@ -180,6 +180,66 @@ store.recover();
 assert.deepEqual(store.records, [], "409 recovery drops records tied to the stale epoch");
 assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
 
+// #314 (design/tail-first-open.md): a tail-first open. The shared plan leaves the head the pull
+// skipped as empty slots; the store fills them with the one PENDING placeholder before anyone
+// hears of the records, the projection folds them into ONE pending unit (taking the tail's leading
+// records up to its first user turn), and the head, read behind the tail, replaces them IN PLACE
+// and is reported as a prepend. A head that does not fit starts the session over.
+{
+  const { PENDING } = await import("../../claude-monitor/src/codex-ui/record-store.js");
+  const tail = () => ({ epoch: 3, committed_from: 3, committed: [
+    { kind: "bash", id: "b3", head: { name: "Bash" }, body: [] },
+    { kind: "user", id: "u4", turn: 5, label: "Fifth", body: [] },
+    { kind: "assistant", id: "a5", phase: "final", body: [] }
+  ], provisional_gen: 0, provisional_from: 0, provisional: [], meta: { tasks: [], children: [] } });
+  const seen = [];
+  const tailStore = new RecordStore({ update: update => seen.push(update) }, { tailBudget: 1024 });
+  tailStore.apply(tail(), 3);
+  assert.equal(tailStore.records.length, 6, "the head's slots count");
+  assert.ok(tailStore.records.slice(0, 3).every(record => record === PENDING), "…and hold the placeholder, never holes");
+  assert.deepEqual(tailStore.records.slice(3).map(record => record.id), ["b3", "u4", "a5"]);
+  assert.equal(seen.at(-1).changedFrom, 0);
+
+  const pendingProjection = new Projection();
+  pendingProjection.rebuild(tailStore.records, 0);
+  assert.equal(pendingProjection.units[0].type, "pending", "one unit stands for the head");
+  assert.deepEqual([pendingProjection.units[0].from, pendingProjection.units[0].to], [0, 3], "…taking the tail's leading records up to its first user turn");
+  assert.equal(pendingProjection.units[1].type, "user");
+  assert.equal(pendingProjection.units[1].turn, 5, "the first real unit is a turn, with its own number");
+  const noTurn = new Projection();
+  noTurn.rebuild([PENDING, PENDING, { kind: "bash", id: "x", head: { name: "Bash" }, body: [] }], 0);
+  assert.deepEqual([noTurn.units[0].from, noTurn.units[0].to], [0, 1], "a tail with no user turn keeps its records to read");
+  assert.equal(noTurn.units[1].type, "process");
+
+  const realFetch = globalThis.fetch;
+  const lines = records => new Response(records.map(record => JSON.stringify(record)).join("\n") + "\n", { status: 200 });
+  const head = [{ kind: "user", id: "u1", turn: 1, body: [] }, { kind: "assistant", id: "a1", phase: "final", body: [] }, { kind: "user", id: "u2", turn: 2, body: [] }];
+  try {
+    globalThis.fetch = async () => lines(head);
+    tailStore.session = "s";
+    const pending = { count: 3, len: 300, epoch: 3 };
+    tailStore.head = pending;
+    await tailStore.loadHead(tailStore.generation, pending);
+    assert.deepEqual(tailStore.records.map(record => record.id), ["u1", "a1", "u2", "b3", "u4", "a5"], "the head replaces its placeholders in place");
+    assert.equal(seen.at(-1).prepended, 3, "…and is reported as a prepend");
+    assert.equal(tailStore.head, null);
+
+    let resets = 0;
+    const misfit = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
+    misfit.apply(tail(), 3);
+    misfit.session = "s";
+    const owed = { count: 3, len: 300, epoch: 3 };
+    misfit.head = owed;
+    globalThis.fetch = async () => lines(head.slice(0, 1));
+    await misfit.loadHead(misfit.generation, owed);
+    assert.equal(resets, 1, "a head whose count is not the one the pull named starts the session over");
+    assert.deepEqual(misfit.records, [], "…and is never spliced in");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log("#314 tail-first open cases passed");
+}
+
 const fixtures = [
   "user", "assistant", "think", "act", "bash", "read", "write", "edit", "skill", "tool",
   "agent", "task", "queue", "command", "compaction", "attachment", "unknown-kind"
@@ -1388,7 +1448,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // `{from: true, to: false}`, on a `records` transaction, in two runs of three.
   assert.match(src, /this\.confirmFollow\(startTop\);\n\s*const following0 = this\.following;/, "…as the deferred half of the scroll handler, outside what I13 measures (#213)");
   assert.match(src, /syncPosition\(\) \{\n    if \(this\.following \|\| this\.dragging \|\| !this\.count\) \{ this\.position = null; return; \}\n(?:.*\n){0,3}?    this\.position = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…and every transaction re-reads it where it left the reader (a landing the reader asked for excepted, #196 stage 4)");
-  assert.match(src, /const startTop = this\.frame\.scrollTop\(\);\n\s*this\.confirmFollow\(startTop\);\n\s*const following0 = this\.following;\n\s*try \{\n\s*const p0 = this\.positionFor\(options\);\n(?:\s*\/\/.*\n)*\s*const drift = p0 && p0\.at != null && !this\.inFlight\(\) \? startTop - p0\.at : 0;/, "the placement adds what the reader scrolled since `P` was read, computed once at the transaction's start (and not while a smooth write travels, #196 stage 4)");
+  assert.match(src, /const startTop = this\.frame\.scrollTop\(\);\n\s*this\.confirmFollow\(startTop\);\n\s*const following0 = this\.following;\n\s*try \{\n\s*(?:const|let) p0 = this\.positionFor\(options\);\n(?:\s*\/\/.*\n)*\s*const drift = p0 && p0\.at != null && !this\.inFlight\(\) \? startTop - p0\.at : 0;/, "the placement adds what the reader scrolled since `P` was read, computed once at the transaction's start (and not while a smooth write travels, #196 stage 4)");
   assert.match(src, /place\(position, drift = 0, smooth = false\) \{\n(?:.*\n){0,6}?    const want = base \+ drift;/, "…so a clamp inside the transaction or the engine's own write is never counted as theirs (measured: 1,882px of clamp placed twice)");
   assert.match(src, /transact\("update", \{ range: p0 => this\.rangeFor\(p0\), tail: false/, "the deferred window update is one transaction, ranged around `P` (framework I11), and leaves the tail alone on the reader's own scroll batch");
   assert.match(src, /if \(position\.source === "model"\) return this\.documentTopOf\(position\.index\) \+ position\.offset;/, "#191: the model form is the record the offset named plus how far into it — the sums' own position, not a replay");
@@ -2567,8 +2627,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   const pages = classic + shell + app;
   assert.doesNotMatch(pages, /\b(reconcile|rangeAround|rangeForScroll|mountRange|clearWindow|applyWindow|replaceMounted|setWindow)\(/, "no page names a window: the range is the engine's, from P0 (framework I11)");
-  assert.match(engine, /recordsChanged\(mutate\) \{\n\s*return this\.transact\("records", \{\n\s*mutate: \(\) => \{\n(?:\s*\/\/.*\n)*\s*const count0 = this\.count;\n\s*const tail0 = this\.tailSnapshot\(\);\n\s*const from = mutate \? mutate\(\) : undefined;\n\s*const first = from == null \? Infinity : from;\n\s*this\.pendingDelta = \{ count0, count1: this\.count, from: Math\.min\(first, count0\), tail0 \};\n\s*return first;\n\s*\},\n\s*dirtyFrom: from => from,\n\s*range: p0 => this\.count \? this\.rangeFor\(p0\) : \{ lo: 0, hi: 0 \},/, "the records transaction: the page's mutation, its return as dirtyFrom, the window from P0, an empty count empties the window — and the delta's shape taken around the mutation (#197)");
-  assert.match(engine, /const changed = options\.mutate \? options\.mutate\(\) : undefined;\n(?:.*\n){0,2}?\s*const dirtyFrom = typeof options\.dirtyFrom === "function" \? options\.dirtyFrom\(changed\) : options\.dirtyFrom;/, "…and `dirtyFrom` may be a function of what the mutation returned");
+  assert.match(engine, /recordsChanged\(mutate\) \{\n(?:\s*\/\/.*\n)*\s*let moved = null;\n\s*return this\.transact\("records", \{\n\s*mutate: \(\) => \{\n(?:\s*\/\/.*\n)*\s*const count0 = this\.count;\n\s*const tail0 = this\.tailSnapshot\(\);\n\s*const result = mutate \? mutate\(\) : undefined;\n(?:.*\n){0,3}?\s*const first = from == null \? Infinity : from;\n(?:.*\n){0,1}?\s*this\.pendingDelta = \{ count0, count1: this\.count, from: Math\.min\(first, count0\), tail0 \};\n(?:.*\n){0,1}?\s*return first;\n\s*\},\n\s*translate: p0 => \(moved \? this\.shiftPosition\(p0, moved\.from, moved\.shift\) : p0\),\n\s*dirtyFrom: from => from,\n\s*range: p0 => this\.count \? this\.rangeFor\(p0\) : \{ lo: 0, hi: 0 \},/, "the records transaction: the page's mutation, its return as dirtyFrom, the window from P0, an empty count empties the window — and the delta's shape taken around the mutation (#197), a prepend's shift in it (#314)");
+  assert.match(engine, /const changed = options\.mutate \? options\.mutate\(\) : undefined;\n(?:.*\n){0,6}?\s*const dirtyFrom = typeof options\.dirtyFrom === "function" \? options\.dirtyFrom\(changed\) : options\.dirtyFrom;/, "…and `dirtyFrom` may be a function of what the mutation returned");
+  // #314: a prepend moves the index space, not the reader — P0 is translated after the mutation and
+  // before the window is chosen from it or the placement is derived from it.
+  assert.match(engine, /const changed = options\.mutate \? options\.mutate\(\) : undefined;\n(?:\s*\/\/.*\n)*\s*if \(options\.translate\) p0 = options\.translate\(p0\);\n(?:.*\n)*?\s*const range = typeof options\.range === "function" \? options\.range\(p0\) : options\.range;/, "a prepend translates P0 before the range and the placement (#314)");
+  assert.match(engine, /shiftPosition\(p, from, shift\) \{\n\s*if \(!p \|\| p\.source === "tail" \|\| p\.source === "offset"\) return p;/, "…the tail stays the tail (#314)");
   assert.match(engine, /if \(options\.place === false \|\| options\.position === null\) return null;\n(?:.*\n){0,3}?\s*if \(this\.following\) return options\.tail === false \? null : TAIL;\n\s*if \(!this\.count \|\| this\.dragging\) return null;/, "the tail is P0 before the count is asked: a records change that fills an empty page while following starts from the tail");
   assert.doesNotMatch(engine, /options\.refresh|refresh: |, refresh[,)]|forceIndex|reconcile\(lo, hi|\bclearWindow\(/, "the `refresh` option, `forceIndex`, the page-facing reconcile and clearWindow are gone");
   assert.match(engine, /mountRange\(lo, hi, dirtyFrom = Infinity, p0 = null\) \{/, "mountRange takes the dirty index and P0 only");
@@ -2632,7 +2696,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: GOTO_Y \}, \{ decide: false \}\);/, "the search walk materializes a record as an undecided landing");
   assert.match(classic, /function refreshWindow\(\) \{ vw\.rerender\(\); \}/, "the classic re-render is the engine's");
   // The shell: the swap is the mutation; the restore stays a command with the swap before it.
-  assert.match(shell, /const swap = \(\) => \{\n(?:.*\n){0,12}?\s*this\.units = units;\n(?:\s*\/\/.*\n)*\s*for \(const child of this\.window\.children\) this\.stampNeighbours\(child, Number\(child\.dataset\.unitIndex\)\);\n\s*return changedUnit;\n\s*\};/, "the units swap re-stamps the kept elements' neighbours (#201) and returns the first rebuilt unit");
+  assert.match(shell, /const swap = \(\) => \{\n(?:.*\n){0,12}?\s*this\.units = units;\n(?:\s*\/\/.*\n)*\s*for \(const child of this\.window\.children\) this\.stampNeighbours\(child, Number\(child\.dataset\.unitIndex\)\);\n(?:\s*\/\/.*\n)*\s*return shift \? \{ from: changedUnit, shift \} : changedUnit;\n\s*\};/, "the units swap re-stamps the kept elements' neighbours (#201) and returns the first rebuilt unit — with the shift when a tail-first head landed (#314)");
   assert.match(shell, /swap\(\);\n\s*this\.rebuildPrefix\(\);\n(?:.*\n){0,3}?\s*this\.jumpTo\(\{ key: memory\.key, index, top: memory\.top \}, \{ dirtyFrom: changedUnit \}\);/, "a restore swaps first and jumps, with no mount before it");
   assert.equal((shell.match(/this\.recordsChanged\(swap\);/g) || []).length, 2, "an empty list and a plain delta are the one transaction");
   assert.doesNotMatch(shell + app, /\.render\(\)/, "the shell re-renders through rerender()");

@@ -199,7 +199,7 @@ export class Viewport extends VirtualWindow {
    *  heights are this shell's, so it says). A remembered position, once its unit has streamed in,
    *  is the command it already was: the swap first — `jumpTo` checks the index against the count
    *  — and no mount before it, so the estimator learns nothing a restore never taught it. */
-  setUnits(units, changedUnit = 0) {
+  setUnits(units, changedUnit = 0, shift = 0) {
     this.empty.hidden = true;
     if (this.pendingView) { applyViewChoices(this.state, this.pendingView); this.pendingView = null; }
     const swap = () => {
@@ -216,7 +216,9 @@ export class Viewport extends VirtualWindow {
       // A kept element's neighbours may have changed under it (the unit that was last has a
       // successor now; a rewrite renamed the one after it): the stamps follow the model.
       for (const child of this.window.children) this.stampNeighbours(child, Number(child.dataset.unitIndex));
-      return changedUnit;
+      // #314: a tail-first open's head landed — `shift` more units stand where its pending card
+      // stood, and the engine moves the reader's position with the index space, not the reader.
+      return shift ? { from: changedUnit, shift } : changedUnit;
     };
     if (!units.length) {
       this.recordsChanged(swap);
@@ -236,8 +238,10 @@ export class Viewport extends VirtualWindow {
         return;
       }
       // Not streamed in yet — keep waiting a few batches, then give the tail up as lost: the
-      // transaction below reads `following` at its start and begins from the tail.
-      if (++this.pendingTries > 12) { this.pending = null; this.state.following = true; }
+      // transaction below reads `following` at its start and begins from the tail. While the head
+      // of a tail-first open is still coming (#314) the unit may well be in it: the wait counts
+      // only once everything has arrived.
+      if (units[0]?.type !== "pending" && ++this.pendingTries > 12) { this.pending = null; this.state.following = true; }
     }
     this.recordsChanged(swap);
   }
@@ -252,7 +256,9 @@ export class Viewport extends VirtualWindow {
 
   jumpToRecord(recordIndex, reveal = "record") {
     const index = this.units.findIndex(unit => recordIndex >= unit.from && recordIndex <= unit.to);
-    if (index < 0) return false;
+    // A record the head of a tail-first open still owes is not a place to land (#314): the caller
+    // tries again once it has arrived, as a link to it does.
+    if (index < 0 || this.units[index].type === "pending") return false;
     // Outline navigation reveals one deliberate level of context. A turn opens its following
     // process list (including progressive items), while a task/agent/search hit additionally
     // opens the exact execution block. These are monotonic opens: an existing Expand all state

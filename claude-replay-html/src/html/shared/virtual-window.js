@@ -1095,6 +1095,12 @@ class VirtualWindow {
    *  callback: the transaction would be queued and the page would read a model that has not
    *  changed yet. */
   recordsChanged(mutate) {
+    // #314 (design/tail-first-open.md): a page that put `shift` more items where ONE stood at
+    // `from` — a tail-first open's pending head replaced by the records it stood for — returns
+    // `{ from, shift }` instead of a bare index. Every item after it keeps its identity and moves
+    // by `shift`; the transaction translates `P0` accordingly (`shiftPosition`), because the
+    // reader did not move — the index space did.
+    let moved = null;
     return this.transact("records", {
       mutate: () => {
         // The delta's shape for the history (design/viewport-history.md §2.3): the count and the
@@ -1102,14 +1108,43 @@ class VirtualWindow {
         // appended. Closed by `closeDelta` once the mount has measured what it brought in.
         const count0 = this.count;
         const tail0 = this.tailSnapshot();
-        const from = mutate ? mutate() : undefined;
+        const result = mutate ? mutate() : undefined;
+        const prepend = result != null && typeof result === "object";
+        const from = prepend ? result.from : result;
         const first = from == null ? Infinity : from;
+        if (prepend && result.shift) moved = { from: first, shift: result.shift };
         this.pendingDelta = { count0, count1: this.count, from: Math.min(first, count0), tail0 };
+        if (moved) this.pendingDelta.shift = moved.shift;
         return first;
       },
+      translate: p0 => (moved ? this.shiftPosition(p0, moved.from, moved.shift) : p0),
       dirtyFrom: from => from,
       range: p0 => this.count ? this.rangeFor(p0) : { lo: 0, hi: 0 },
     });
+  }
+
+  /** `P0` across a prepend (#314): `shift` items now stand where the ONE at `from` stood. A
+   *  position past it names the same item at its index plus `shift` — the anchor's index, its
+   *  fallback's, a model index; the tail is the tail. A position ON the replaced item (the
+   *  pending head's card, which the reader can scroll to) re-anchors on the item that followed
+   *  it, read from the DOM the mount has not replaced yet: the content they could see below the
+   *  card stays where it was, and what arrived goes above it. */
+  shiftPosition(p, from, shift) {
+    if (!p || p.source === "tail" || p.source === "offset") return p;
+    const index = p.index;
+    if (index == null) return p;
+    if (index <= from) return this.anchorAfter(from, shift) || p;
+    const translated = { ...p, index: index + shift };
+    if (p.fallback) translated.fallback = { ...p.fallback, index: p.fallback.index > from ? p.fallback.index + shift : p.fallback.index };
+    return translated;
+  }
+
+  /** An anchor on the mounted item that followed `from`, at the index it will have once `shift`
+   *  items stand where `from` did — or null when it is not mounted. */
+  anchorAfter(from, shift) {
+    const next = [...this.mount.children].find(child => Number(child.dataset.unitIndex) === from + 1);
+    if (!next) return null;
+    return { source: "anchor", key: next.dataset.unitKey, index: from + 1 + shift, top: next.getBoundingClientRect().top - this.frame.viewportTop(), block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: null };
   }
 
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
@@ -1249,7 +1284,7 @@ class VirtualWindow {
     this.confirmFollow(startTop);
     const following0 = this.following;
     try {
-      const p0 = this.positionFor(options);
+      let p0 = this.positionFor(options);
       // The reader's scroll since `P` was read — everything the offset moved between the last
       // transaction and this one's start (see `place`). Zero after a re-read, and for a page's own
       // capture; the reader's motion for a spontaneous change; zero while a smooth write is in
@@ -1260,6 +1295,9 @@ class VirtualWindow {
       // cancelling it with an instant write.
       const smooth = !!options.smooth || this.inFlight();
       const changed = options.mutate ? options.mutate() : undefined;
+      // A mutation that moved the index space (a prepend, #314) translates `P0` to it — the same
+      // item, the same place on screen, under its new index. Not a move: I1 holds.
+      if (options.translate) p0 = options.translate(p0);
       // What the mount rebuilds from: given, or a function of what the mutation returned (§4.11).
       const dirtyFrom = typeof options.dirtyFrom === "function" ? options.dirtyFrom(changed) : options.dirtyFrom;
       this.rebuildPrefix();

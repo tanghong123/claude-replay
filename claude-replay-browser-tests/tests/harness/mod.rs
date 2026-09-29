@@ -2616,6 +2616,21 @@ pub fn phone(tab: &headless_chrome::Tab, width: u32, height: u32) {
     .expect("touch emulation");
 }
 
+/// Hold the HEAD of a tail-first open (#314) until the case lets it go: every `/records` read
+/// from byte 0 waits on `window.__releaseHead()` (a tail-first open reads its tail from past 0, so
+/// the only such read is the head), and `window.__headRequested` counts them. Installed before the
+/// page's own scripts, so call it BEFORE navigating.
+pub fn hold_the_head(tab: &headless_chrome::Tab) {
+    use headless_chrome::protocol::cdp::Page;
+    tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+        source: r#"(function(){ var real = window.fetch, release, held = new Promise(function(r){ release = r; }); window.__headRequested = 0; window.__releaseHead = function(){ release(); }; window.fetch = function(input, init){ var url = String(input && input.url || input); if (/\/records\?/.test(url) && /[?&]from=0(&|$)/.test(url)) { window.__headRequested++; var self = this; return held.then(function(){ return real.call(self, input, init); }); } return real.call(this, input, init); }; })();"#.to_string(),
+        world_name: None,
+        include_command_line_api: None,
+        run_immediately: None,
+    })
+    .expect("the head is held");
+}
+
 /// A two-finger pinch on a phone (#313): both fingers down on either side of `(cx, cy)`, `from`
 /// px apart, spread to `to` px over `steps` moves, then lifted. Chrome's touch emulation (see
 /// [`phone`]) delivers these as the touch POINTER events a real phone sends — two pointers at

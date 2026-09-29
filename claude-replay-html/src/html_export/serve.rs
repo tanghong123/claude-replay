@@ -800,7 +800,12 @@ impl SessionService {
     /// `Err` for a session this server will not serve: [`Unserved::Elsewhere`] carries the owner's
     /// URL for the client to navigate to, [`Unserved::Nowhere`] the reason there is nothing to go
     /// to. Both reach the client — a blank page that says nothing is the bug (#163).
-    fn pull_response_for(&self, id: &str, cursor: Cursor) -> Result<String, Unserved> {
+    fn pull_response_for(
+        &self,
+        id: &str,
+        cursor: Cursor,
+        tail: Option<u64>,
+    ) -> Result<String, Unserved> {
         let unknown = || Unserved::Nowhere(format!("session {id}: no such transcript"));
         let (src, title) = self.resolve_id(id).ok_or_else(unknown)?;
         if !src.path().exists() {
@@ -859,21 +864,33 @@ impl SessionService {
         // projection. One consistent read (a single lock) hands back the open-turn delta plus
         // the two store-derived facts this reply needs: the committed byte range for this
         // cursor and the render continuation the open turn resumes from.
-        let (d, (committed_ext, mut open_emit)) = shared.open_delta_with(|store, committed, d| {
-            let (cfx, _) = pull_indices(
-                d.epoch,
-                committed.len(),
-                d.provisional.len(),
-                d.provisional_gen,
-                cursor,
-            );
-            let start = committed
-                .get(cfx)
-                .map(|l| l.offset)
-                .unwrap_or_else(|| store.log_len());
-            let ext = (store.log_len() > start).then_some((start, store.log_len() - start));
-            (ext, store.emit_snapshot())
-        });
+        let (d, (committed_ext, mut open_emit, tail_from)) =
+            shared.open_delta_with(|store, committed, d| {
+                let (mut cfx, _) = pull_indices(
+                    d.epoch,
+                    committed.len(),
+                    d.provisional.len(),
+                    d.provisional_gen,
+                    cursor,
+                );
+                // #314: a pull that would send EVERYTHING (a fresh open, or a resync) may ask for
+                // the tail only — the last `tail` bytes of the committed log, from the first
+                // record starting inside them. The reply is an ordinary one whose committed zone
+                // starts at `k`; the client reads the head `[0, offset(k))` itself, behind what it
+                // has already drawn. A log under twice the budget is sent whole, so a small session
+                // never waits on a second read.
+                let log_len = store.log_len();
+                let tail_from = tail
+                    .filter(|&budget| cfx == 0 && budget > 0 && log_len > budget.saturating_mul(2))
+                    .map(|budget| committed.partition_point(|l| l.offset < log_len - budget))
+                    .filter(|&k| k > 0 && k < committed.len());
+                if let Some(k) = tail_from {
+                    cfx = k;
+                }
+                let start = committed.get(cfx).map(|l| l.offset).unwrap_or(log_len);
+                let ext = (log_len > start).then_some((start, log_len - start));
+                (ext, store.emit_snapshot(), tail_from)
+            });
         let prov_key = (d.epoch, d.provisional_gen, d.provisional.len());
         let cached = self.cache.aux_with(id, |a| {
             a.prov_render
@@ -902,13 +919,16 @@ impl SessionService {
         // POINTER `{offset, len}` into the on-disk `<id>.records` log — the client range-reads
         // it via `/records`: the reply never carries the committed bytes, so the server renders
         // and buffers none of them.
-        let (cf, pf) = pull_indices(
+        let (mut cf, pf) = pull_indices(
             d.epoch,
             d.n_committed,
             provisional_lines.len(),
             d.provisional_gen,
             cursor,
         );
+        if let Some(k) = tail_from {
+            cf = k;
+        }
         // The meta wire record from the maintained header (no block scan) + this agent's
         // presentation info. Children get a one-time source+parent-pointer note so their
         // `?session=` links resolve; their titles derive lazily on THEIR first pull
@@ -967,7 +987,13 @@ impl SessionService {
     /// that cannot be served at all is 404. The body is JSON either way, so a client that
     /// switches on `t` never has to look.
     pub fn pull_response(&self, id: &str, cursor: Cursor) -> HttpResponse {
-        match self.pull_response_for(id, cursor) {
+        self.pull_response_tail(id, cursor, None)
+    }
+
+    /// [`pull_response`](Self::pull_response), for a client that asks for the TAIL of a fresh
+    /// open first (#314): `tail` bytes of the committed log, when the log is over twice that.
+    pub fn pull_response_tail(&self, id: &str, cursor: Cursor, tail: Option<u64>) -> HttpResponse {
+        match self.pull_response_for(id, cursor, tail) {
             Ok(body) => {
                 // A session that recovers may fail again later, and THAT one deserves a line too.
                 self.cache.aux_with(id, |a| a.unserved = false);
@@ -2192,7 +2218,8 @@ pub fn service_routes(
         if id.is_empty() || id.contains('/') || id.contains("..") {
             return HttpResponse::not_found("no such agent");
         }
-        return live.pull_response(id, cursor);
+        let tail = query_get(query, "tail").and_then(|t| t.parse::<u64>().ok());
+        return live.pull_response_tail(id, cursor, tail);
     }
     // `/records?session=<id>&from=<off>&len=<n>&epoch=<e>` — the committed range read backing a
     // pull reply's `committed_ext` pointer. 409 on a stale epoch (the log was recreated by a
@@ -3509,6 +3536,116 @@ mod tests {
 
         // A pointer issued before a reset must not read a recreated log: stale epoch ⇒ Err (409).
         assert!(live.records_bytes("sid", from, len, epoch + 1).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #314: a first pull may ask for the TAIL of the committed log. On a log over twice the budget
+    /// the reply's committed zone starts at the first record inside the last `budget` bytes, and
+    /// the head `[0, offset)` read on its own holds exactly the records before it — so tail + head
+    /// is the whole log, in order. Under the threshold, or without the hint, the reply is whole.
+    #[test]
+    fn a_first_pull_may_start_at_the_tail() {
+        use crate::cache::Cursor;
+        use crate::Transcript;
+        let base = std::env::temp_dir().join(format!("cr-serve-tail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let sess = base.join("sid.jsonl");
+        let mut jsonl = String::new();
+        for t in 0..30 {
+            jsonl += &format!(
+                "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"question {t}\"}}]}},\"timestamp\":\"2026-07-26T10:{t:02}:00Z\"}}\n{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"answer {t}: {}\"}}]}},\"timestamp\":\"2026-07-26T10:{t:02}:30Z\"}}\n",
+                "lorem ipsum ".repeat(20)
+            );
+        }
+        std::fs::write(&sess, jsonl).unwrap();
+        let live = SessionService {
+            fold: FoldPolicy::default(),
+            roots: std::sync::Mutex::new(vec![Root {
+                id: "sid".into(),
+                agent: Agent::CLAUDE,
+                path: sess.clone(),
+                cwd: "/r".into(),
+            }]),
+            cache: test_cache(&base),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
+        };
+        live.cache
+            .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
+        let pull = |tail: Option<u64>| -> Value {
+            serde_json::from_str(&body(live.pull_response_tail(
+                "sid",
+                Cursor::default(),
+                tail,
+            )))
+            .unwrap()
+        };
+        let records = |v: &Value, from: u64, len: u64| -> Vec<Value> {
+            let bytes = live
+                .records_bytes("sid", from, len, v["epoch"].as_u64().unwrap())
+                .expect("current epoch serves");
+            std::str::from_utf8(&bytes)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect()
+        };
+        let whole = pull(None);
+        assert_eq!(whole["committed_from"], 0, "no hint: the whole log");
+        let log_len = whole["committed_ext"]["len"].as_u64().unwrap();
+        let all = records(&whole, 0, log_len);
+        assert!(
+            all.len() > 20,
+            "a log worth trimming: {} records",
+            all.len()
+        );
+
+        let budget = log_len / 5;
+        let tail = pull(Some(budget));
+        let k = tail["committed_from"].as_u64().unwrap();
+        let ext = &tail["committed_ext"];
+        let (offset, len) = (
+            ext["offset"].as_u64().unwrap(),
+            ext["len"].as_u64().unwrap(),
+        );
+        assert!(k > 0, "the tail starts past the head: {tail}");
+        assert_eq!(offset + len, log_len, "the tail runs to the end of the log");
+        assert!(
+            len <= budget + 2048,
+            "about the budget, never the whole log: {len} of {log_len}"
+        );
+        let (head, rest) = (records(&tail, 0, offset), records(&tail, offset, len));
+        assert_eq!(
+            head.len() as u64,
+            k,
+            "the head holds exactly the records before `committed_from`"
+        );
+        assert_eq!(
+            head.iter().chain(rest.iter()).cloned().collect::<Vec<_>>(),
+            all,
+            "head then tail is the whole log, in order"
+        );
+
+        assert_eq!(
+            pull(Some(log_len))["committed_from"],
+            0,
+            "a log under twice the budget is sent whole"
+        );
+        let next = Cursor {
+            epoch: tail["epoch"].as_u64().unwrap(),
+            committed_id: (k as usize) + rest.len(),
+            provisional_gen: tail["provisional_gen"].as_u64().unwrap(),
+            provisional_index: tail["provisional_from"].as_u64().unwrap() as usize
+                + tail["provisional"].as_array().unwrap().len(),
+        };
+        let idle: Value =
+            serde_json::from_str(&body(live.pull_response_tail("sid", next, Some(budget))))
+                .unwrap();
+        assert!(
+            idle["committed_ext"].is_null(),
+            "after a tail-first open the next pull is idle: {idle}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

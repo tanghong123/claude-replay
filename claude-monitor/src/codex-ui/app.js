@@ -1,6 +1,6 @@
 import { agentLogo, svg } from "./icons.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
-import { bindComponentEvents, fleetHtml } from "./components.js";
+import { bindComponentEvents, fleetHtml, pendingHeadText } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "./shared/cost-display.js";
 import { chainWalk, toolTree } from "./shared/filter.js";
@@ -243,7 +243,7 @@ const sessionIndex = new SessionIndexStore({
   error: () => toast("Session scan failed — retrying")
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; recordState.headProgress = null; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   // #221: a first open with no cache waits on the server folding the whole transcript. Say so,
   // rather than leaving a blank page a reader cannot tell from a hang, and say that it is a
@@ -256,8 +256,17 @@ const recordStore = new RecordStore({
   // #313: how much of a first open has arrived, and that it has — the veil over the session
   // area says the first and goes on the second.
   progress: (got, total) => sessionLoading?.progress(got, total),
-  opened: () => sessionLoading?.hide()
-});
+  opened: () => sessionLoading?.hide(),
+  // #314: how much of a tail-first open's head has arrived — the pending card says it in place,
+  // without a render (its height is its own and does not change).
+  headProgress: (got, total) => {
+    recordState.headProgress = { got, total };
+    for (const text of viewport.window.querySelectorAll("[data-pending-text]")) text.textContent = pendingHeadText(recordState.headProgress);
+  },
+// #314 (design/tail-first-open.md): a first open asks for the last 512 KB of the committed log and
+// draws it, then reads the head behind it; the server sends a log under twice that whole. A case
+// sets `?tailBudget=` so a small fixture exercises it, as `?trace=` and `?historyMs=` serve cases.
+}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024 });
 
 function toast(message) {
   const element = byId("toast"); element.textContent = message; element.classList.add("show");
@@ -669,7 +678,7 @@ function renderHeader() {
 }
 
 let lastRecordCount = -1; // -1: nothing applied since the last reset — the next apply is the open, not growth
-function updateRecords({ records, meta, changedFrom }) {
+function updateRecords({ records, meta, changedFrom, prepended }) {
   const before = lastRecordCount; const wasFollowing = recordState.following;
   const metaArrived = meta && meta !== recordState.meta;
   recordState.records = records; recordState.meta = meta;
@@ -680,9 +689,14 @@ function updateRecords({ records, meta, changedFrom }) {
   if (metaArrived) { renderHeader(); refreshFleets(); }
   recordState.taskTargets = taskRecordTargets(meta?.tasks || [], records);
   recordState.agentTargets = agentRecordTargets(directAgents(meta), records);
+  // #314: a tail-first open's head landed in front of the tail. The first unit after the pending
+  // card keeps its key; how far it moved is how many units now stand where the card stood.
+  const after = prepended ? projection.units.find(unit => unit.type !== "pending")?.key : null;
+  const was = after ? projection.units.findIndex(unit => unit.key === after) : -1;
   const changedUnit = projection.rebuild(records, changedFrom);
   recordState.units = projection.units;
-  viewport.setUnits(recordState.units, changedUnit);
+  const shift = after ? Math.max(0, projection.units.findIndex(unit => unit.key === after) - was) : 0;
+  viewport.setUnits(recordState.units, changedUnit, shift);
   landOnHash();
   // What arrived since the last apply is "new" only once the session is OPEN (#84): the first
   // apply after a reset is the session's own content — a re-open restored to a remembered

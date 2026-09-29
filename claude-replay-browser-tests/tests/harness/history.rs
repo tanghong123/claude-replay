@@ -117,14 +117,21 @@ impl Export {
     }
 
     /// The engine index the open ended at (the first delta that brought records in), in
-    /// RECORD terms: everything before it is the initial transcript, the rest is growth.
+    /// RECORD terms: everything before it is the initial transcript, the rest is growth. A
+    /// tail-first open (#314) ends where its head LANDED — the delta that carries a `shift` —
+    /// since what came in there is the session's own history, not growth.
     pub fn opened_records(&self) -> usize {
-        let count1 = self
+        let first = self
             .deltas
             .iter()
             .find(|d| d["count1"].as_i64().unwrap_or(0) > 0)
-            .and_then(|d| d["count1"].as_i64())
-            .unwrap_or(self.items.len() as i64) as usize;
+            .and_then(|d| d["count1"].as_i64());
+        let landed = self
+            .deltas
+            .iter()
+            .find(|d| d["shift"].as_i64().unwrap_or(0) > 0)
+            .and_then(|d| d["count1"].as_i64());
+        let count1 = landed.or(first).unwrap_or(self.items.len() as i64) as usize;
         self.record_index(count1)
     }
 
@@ -536,6 +543,11 @@ pub fn growth(export: &Export, profile: &[Rec], calib: &Calib) -> Vec<(Duration,
             delta["count1"].as_i64().unwrap_or(0),
         );
         let t = delta["t"].as_f64().unwrap_or(0.0);
+        // A tail-first open's head landing (#314) is part of the open, never growth.
+        if delta["shift"].as_i64().unwrap_or(0) > 0 {
+            last_t = t;
+            continue;
+        }
         if !seen_open {
             if count1 > 0 {
                 seen_open = true;

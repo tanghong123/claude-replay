@@ -1085,3 +1085,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 @keyframes session-loading-in{from{opacity:0}to{opacity:1}}
 @keyframes session-loading-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.session-loading{animation:none}.session-loading-spinner{animation:none}}
+
+/* #314 — the head of a tail-first open, still arriving: a short card at the top of what has, where
+   a reader who scrolls up waits for the earlier turns, as in a chat app. Its height is its own, not
+   the missing turns' — the turns arrive above it and the reader stays where they are. */
+.turn.pending-head{display:flex;align-items:center;justify-content:center;gap:10px;min-height:64px;margin:6px 0 14px;padding:14px;border-radius:12px;background:var(--panel);box-shadow:0 0 0 1px var(--line);color:var(--sub);font:13px/1.35 var(--sans);font-variant-numeric:tabular-nums}
+.pending-head-spinner{flex:none;width:18px;height:18px;border-radius:50%;border:2px solid color-mix(in srgb,var(--primary) 22%,transparent);border-top-color:var(--primary);animation:session-loading-spin .8s linear infinite}
+@media(prefers-reduced-motion:reduce){.pending-head-spinner{animation:none}}

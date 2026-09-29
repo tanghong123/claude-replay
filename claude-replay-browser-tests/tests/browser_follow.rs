@@ -8318,3 +8318,210 @@ fn a_phone_can_search_the_session() {
         "document.querySelector('.header-searchbox').className",
     );
 }
+
+/// #314's world: a 60-turn session served to the app shell with a small tail budget, so the head
+/// is most of it, and the head HELD until the case lets it go (`harness::hold_the_head`).
+const TAIL_SID: &str = "dddd4444-0000-4000-8000-000000000314";
+fn tail_first_world(
+    port: u16,
+    case: &str,
+) -> (
+    harness::Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    let base = harness::base(case);
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        TAIL_SID,
+        &harness::long_session(60, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    m.pair(&tab);
+    harness::hold_the_head(&tab);
+    m.open(&tab, &format!("?ui=app&session={TAIL_SID}&tailBudget=8192"));
+    harness::until(
+        &tab,
+        "window.__headRequested >= 1 && !!document.querySelector('.transcript .turn.user')",
+        "the tail drawn, and the head asked for behind it",
+        Duration::from_secs(20),
+        "JSON.stringify({ asked: window.__headRequested, turns: document.querySelectorAll('.transcript .turn.user').length })",
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    (m, browser, tab)
+}
+
+const OUTLINE_TURNS: &str = "document.querySelectorAll('#navigatorTurns .outline-turn-row').length";
+const HEAD_LANDED: &str = "document.querySelectorAll('#navigatorTurns .outline-turn-row').length === 60 && !document.querySelector('.turn.pending-head')";
+const VIOLATIONS: &str = "JSON.stringify(window.__viewportViolations || [])";
+
+/// #314 (design/tail-first-open.md; the owner chose option A — "this may help the desktop case as
+/// well"): a long session opens at its TAIL. While the head is still coming the reader is at the
+/// end, reading the true turn numbers; when it lands in front of the tail the reader is still at
+/// the end, following, the engine broke none of its invariants, and the history records the
+/// landing as a prepend (with its shift), which the sandbox treats as part of the open.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_opens_a_long_session_at_its_tail_first() {
+    let (_m, _b, tab) = tail_first_world(2801, "tail-first-open");
+    let loaded = harness::eval(&tab, OUTLINE_TURNS).as_i64().unwrap_or(0);
+    assert!(
+        loaded > 0 && loaded < 60,
+        "only the tail's turns before the head lands: {loaded}"
+    );
+    assert_eq!(
+        harness::sticky_turn(&tab, harness::Surface::AppShell).map(|t| t.0),
+        Some(60),
+        "the turn numbers are the true ones from the first moment"
+    );
+    assert!(
+        harness::at_tail(&tab, harness::Surface::AppShell),
+        "a fresh open lands at the tail"
+    );
+    harness::eval(&tab, "window.__releaseHead(); 1");
+    harness::until(
+        &tab,
+        HEAD_LANDED,
+        "the head to land in front of the tail",
+        Duration::from_secs(20),
+        OUTLINE_TURNS,
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(
+        harness::at_tail(&tab, harness::Surface::AppShell),
+        "still at the end once the head has landed"
+    );
+    assert_eq!(
+        harness::sticky_turn(&tab, harness::Surface::AppShell).map(|t| t.0),
+        Some(60)
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken across the landing"
+    );
+    let shift = harness::eval(&tab, "(function(){ var d = (window.__viewportHistory.export().deltas || []).find(function(d){ return d.shift > 0; }); return d ? d.shift : 0; })()");
+    assert!(
+        shift.as_i64().unwrap_or(0) > 0,
+        "the history records the landing as a prepend, with its shift: {shift}"
+    );
+}
+
+/// #314: a reader who has scrolled up INSIDE the tail keeps their place when the head lands in
+/// front of it — the same unit at the same pixel, ±1 — because the engine moves their position
+/// with the index space (option A), and the landing is not a move of theirs: they stay unpinned.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_reader_in_the_tail_keeps_their_place_when_the_head_lands() {
+    let (_m, _b, tab) = tail_first_world(2802, "tail-first-reader");
+    harness::scroll_by(&tab, harness::Surface::AppShell, -500);
+    std::thread::sleep(Duration::from_millis(700));
+    let s = harness::Surface::AppShell.scroller();
+    let top_unit = format!("(function(){{ var s = {s}; var t = s.getBoundingClientRect().top; var u = [].slice.call(document.querySelector('.virtual-window').children).find(function(e){{ var r = e.getBoundingClientRect(); return r.height > 0 && r.bottom > t + 1 && e.dataset.unitKey !== 'pending:head'; }}); return u ? JSON.stringify({{ key: u.dataset.unitKey, top: u.getBoundingClientRect().top - t }}) : 'null'; }})()");
+    let before: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, &top_unit).as_str().unwrap()).unwrap();
+    let key = before["key"]
+        .as_str()
+        .expect("a unit under the reader")
+        .to_string();
+    assert_ne!(key, "", "{before}");
+    assert!(
+        !harness::at_tail(&tab, harness::Surface::AppShell),
+        "the reader has left the tail"
+    );
+    harness::eval(&tab, "window.__releaseHead(); 1");
+    harness::until(
+        &tab,
+        HEAD_LANDED,
+        "the head to land in front of the tail",
+        Duration::from_secs(20),
+        OUTLINE_TURNS,
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    let after = harness::eval(&tab, &format!("(function(){{ var s = {s}; var t = s.getBoundingClientRect().top; var u = document.querySelector('[data-unit-key=\"{key}\"]'); return u ? u.getBoundingClientRect().top - t : null; }})()"));
+    let (was, now) = (
+        before["top"].as_f64().unwrap(),
+        after.as_f64().unwrap_or(f64::NAN),
+    );
+    assert!(
+        (now - was).abs() <= 1.0,
+        "the same unit at the same place across the landing: {was} -> {now}"
+    );
+    assert!(
+        !harness::at_tail(&tab, harness::Surface::AppShell),
+        "…and the reader is not pulled back to the end"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken across the landing"
+    );
+}
+
+/// #314, the owner: "what happens when user tries to scroll up but the records have not arrived
+/// yet". They reach the top of what has, where a short "Loading earlier turns" card waits — the
+/// page goes no further, as a chat app's history does — and when the turns arrive above it, the
+/// turn they could see below the card stays where it was.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_scrolling_above_the_tail_waits_at_the_loading_card() {
+    let (_m, _b, tab) = tail_first_world(2803, "tail-first-top");
+    let s = harness::Surface::AppShell.scroller();
+    for _ in 0..4 {
+        harness::scroll_by(&tab, harness::Surface::AppShell, -100_000);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let card = format!("(function(){{ var s = {s}; var t = s.getBoundingClientRect().top; var c = document.querySelector('.turn.pending-head'); if (!c) return 'null'; var r = c.getBoundingClientRect(); var next = c.nextElementSibling; return JSON.stringify({{ visible: r.bottom > t && r.top < t + s.clientHeight, text: c.textContent, scrollTop: s.scrollTop, next: next ? next.dataset.unitKey : null, nextTop: next ? next.getBoundingClientRect().top - t : null }}); }})()");
+    harness::until(
+        &tab,
+        &format!(
+            "(function(){{ var v = {card}; return v !== 'null' && JSON.parse(v).visible; }})()"
+        ),
+        "the loading card at the top of what has arrived",
+        Duration::from_secs(10),
+        &card,
+    );
+    let at: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, &card).as_str().unwrap()).unwrap();
+    assert!(
+        at["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Loading earlier turns"),
+        "{at}"
+    );
+    assert!(
+        at["scrollTop"].as_f64().unwrap() <= 2.0,
+        "the page goes no further than the card: {at}"
+    );
+    let next = at["next"]
+        .as_str()
+        .expect("a turn below the card")
+        .to_string();
+    harness::eval(&tab, "window.__releaseHead(); 1");
+    harness::until(
+        &tab,
+        HEAD_LANDED,
+        "the head to land above the card",
+        Duration::from_secs(20),
+        OUTLINE_TURNS,
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    let now = harness::eval(&tab, &format!("(function(){{ var s = {s}; var t = s.getBoundingClientRect().top; var u = document.querySelector('[data-unit-key=\"{next}\"]'); return JSON.stringify({{ top: u ? u.getBoundingClientRect().top - t : null, scrollTop: s.scrollTop }}); }})()"));
+    let now: serde_json::Value = serde_json::from_str(now.as_str().unwrap()).unwrap();
+    assert!(
+        (now["top"].as_f64().unwrap_or(f64::NAN) - at["nextTop"].as_f64().unwrap()).abs() <= 1.0,
+        "the turn below the card stays where it was: {at} -> {now}"
+    );
+    assert!(
+        now["scrollTop"].as_f64().unwrap() > 100.0,
+        "the earlier turns arrived ABOVE the reader: {now}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken across the landing"
+    );
+}

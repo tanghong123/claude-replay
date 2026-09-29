@@ -1,9 +1,9 @@
 # Opening a session tail-first (#314)
 
-**Status: proposal — the owner decides before any engine code.** Filed by the agent, not the owner,
-while measuring #313; it adds one seam to the viewport engine (`design/virtual-window-framework.md`),
-and after #313's gzip what it buys is modest. This note is the question: build it (option A below),
-build the smaller option B, or leave it.
+**Status: the owner chose option A (2026-09-29: "Yes, I'd choose A. This may help the desktop case
+as well").** Filed by the agent while measuring #313; it adds one seam to the viewport engine
+(`design/virtual-window-framework.md`). §3's card is short, not tall — settled by the owner's
+question below.
 
 ## 1. What it would fix, and what it would not
 
@@ -55,9 +55,16 @@ count is not `k`, is a resync — never a splice.
   single `pending` unit (key `pending:head`), extended over any leading non-user records of the
   tail, so the first real unit on screen is a user turn with its own `record.turn` — turn numbers
   come from the records (`buildUnits` reads `record.turn`), so the sticky bar is true in phase 1.
-- **Its height** is `k × the applied estimate`, so `prefix[count]` barely moves when the head lands;
-  and it has its own `kindOf`, which the estimator never learns from (it would be a sample of the
-  wrong shape). It draws "Loading earlier turns — 42 %".
+- **It is a SHORT card**, "Loading earlier turns — 42 %", not a blank as tall as the missing turns.
+  The owner asked "what happens when user tries to scroll up but the records have not arrived yet":
+  with a short card they reach the top of what has arrived and wait there — the page goes no
+  further, as a chat app's history does — and when the turns land above it, the turn they could
+  see below the card stays where it was (§4). A tall stand-in would give a true scrollbar from the
+  first moment, but a fling up would land in blank space and, when the turns arrived, somewhere at
+  that depth rather than on anything the reader had seen. The card has its own `kindOf`, which the
+  estimator never learns from (it would be a sample of the wrong shape).
+- **A remembered position, or a link, into the head waits for it**: the restore does not count its
+  batches while the head is pending, and a jump never lands on the card.
 - **Search, the outline and the filters** work on what is loaded: in phase 1 the Turns drop-down
   and the outline list the tail's turns, and they gain the head's when it lands. Stated, not hidden.
 
@@ -101,7 +108,7 @@ following reader stays at the end through the prepend, with `following` unchange
 
 The classic page is unchanged and held by its existing scenarios.
 
-## 6. The question
+## 6. Decided
 
-Build A, build B, or leave it at #313's gzip and veil. The agent's recommendation is A if the phone
-still waits noticeably on warm opens of large sessions after 1.326.0, and to leave it otherwise.
+Option A (2026-09-29). The app shell asks every first open for a 512 KB tail (`?tailBudget=` sets it
+for a case); the server honours it on a log over twice that, so a small session is sent whole.
