@@ -8525,3 +8525,51 @@ fn app_shell_scrolling_above_the_tail_waits_at_the_loading_card() {
         "no invariant broken across the landing"
     );
 }
+
+/// #314's "search correct once complete": a reader who searches while the head is still coming
+/// finds only what has arrived — stated, not hidden (design §3) — and when the head lands the SAME
+/// query finds the head's matches too, without being typed again. Each user turn says "question
+/// <n>" once, so the count is the number of user turns the search can see.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_search_typed_before_the_head_lands_finds_it_after() {
+    let (_m, _b, tab) = tail_first_world(2800, "tail-first-search");
+    let count = "parseInt(document.getElementById('transcriptSearchCount').textContent, 10) || 0";
+    harness::eval(
+        &tab,
+        "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'question'; b.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()",
+    );
+    let loaded = harness::eval(&tab, OUTLINE_TURNS).as_i64().unwrap_or(0);
+    harness::until(
+        &tab,
+        &format!("({count}) > 0"),
+        "the search to count what has arrived",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    let before = harness::eval(&tab, count).as_i64().unwrap_or(-1);
+    assert_eq!(
+        before, loaded,
+        "before the head lands the search sees the tail's turns, and only those"
+    );
+    harness::eval(&tab, "window.__releaseHead(); 1");
+    harness::until(
+        &tab,
+        HEAD_LANDED,
+        "the head to land in front of the tail",
+        Duration::from_secs(20),
+        OUTLINE_TURNS,
+    );
+    harness::until(
+        &tab,
+        &format!("({count}) === 60"),
+        "the same query to find the head's turns as well",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken across the landing"
+    );
+}
