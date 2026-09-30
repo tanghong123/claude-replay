@@ -6788,6 +6788,141 @@ fn app_shell_a_pasted_image_carries_its_saved_original() {
     scenario_a_pasted_image_carries_its_saved_original(&page.tab, Surface::AppShell, &original);
 }
 
+// ── scenario: an Artifact icon WORD is drawn as its emoji (#325) ───────────────────────────────
+
+/// #325's fixture: "Deck" published with an emoji favicon and republished with no icon at all (a
+/// redeploy), and "Sales" published once with only an icon WORD, as client 2.1.283's Artifact
+/// tool asks for it.
+fn fixture_artifact_icons(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(6, Shape::default());
+    let publish = |id: &str, ts: &str, input: &str, path: &str, url: &str| {
+        format!(
+            "{{\"type\":\"assistant\",\"timestamp\":\"{ts}\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Artifact\",\"input\":{input}}}]}}}}\n{{\"type\":\"user\",\"timestamp\":\"{ts}\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"Published {path} at {url}\"}}]}}}}\n"
+        )
+    };
+    jsonl += &user_at("question 6: publish the pages", "2026-09-01T04:00:00.000Z");
+    jsonl += &publish(
+        "d1",
+        "2026-09-01T04:00:01.000Z",
+        r#"{"file_path":"/w/deck.html","title":"Deck","favicon":"🧭","icon":"slides"}"#,
+        "/w/deck.html",
+        "https://claude.ai/code/artifact/bbbb-325",
+    );
+    jsonl += &publish(
+        "d2",
+        "2026-09-01T04:00:02.000Z",
+        r#"{"file_path":"/w/deck.html"}"#,
+        "/w/deck.html",
+        "https://claude.ai/code/artifact/bbbb-325",
+    );
+    jsonl += &publish(
+        "s1",
+        "2026-09-01T04:00:03.000Z",
+        r#"{"file_path":"/w/sales.html","title":"Sales","icon":"chart"}"#,
+        "/w/sales.html",
+        "https://claude.ai/code/artifact/aaaa-325",
+    );
+    jsonl += &assistant_at("answer 6: both published", "2026-09-01T04:00:05.000Z");
+    for i in 7..12u32 {
+        jsonl += &user_at(
+            &format!("question {i}: {}", "lorem ipsum dolor sit amet. ".repeat(6)),
+            &format!("2026-09-01T04:0{}:00.000Z", i - 6),
+        );
+        jsonl += &assistant_at(
+            &format!("answer {i}: {}", "sed do eiusmod tempor. ".repeat(8)),
+            &format!("2026-09-01T04:0{}:05.000Z", i - 6),
+        );
+    }
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture {
+        base,
+        path,
+        turns: 12,
+    }
+}
+
+/// #325: an Artifact publish that names its bullet with a WORD (client 2.1.283 deprecated the emoji
+/// `favicon` for `icon`) is drawn as that word's emoji, in the roster and in its own header — never
+/// as the word. An emoji favicon reads as it always has, and a redeploy that carries no icon keeps
+/// the first publish's.
+fn scenario_an_artifact_icon_word_is_drawn_as_its_emoji(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    let rows_js = match surface {
+        Surface::Classic => "JSON.stringify([...document.querySelectorAll('.artifact-item')].map(function (r) { return [(r.querySelector('.artifact-icon') || {}).textContent || '', r.querySelector('.artifact-name').textContent]; }))",
+        Surface::AppShell => "JSON.stringify([...document.querySelectorAll('#previewBody .artifacts-row')].map(function (r) { return [(r.querySelector('.artifacts-icon') || {}).textContent || '', r.querySelector('.artifacts-name').textContent]; }))",
+    };
+    if surface == Surface::AppShell {
+        eval(tab, "document.getElementById('previewBtn').click(); 'ok'");
+    }
+    until(
+        tab,
+        &format!("JSON.parse({rows_js}).length === 2"),
+        "the roster to list both artifacts",
+        Duration::from_secs(20),
+        rows_js,
+    );
+    let rows: serde_json::Value =
+        serde_json::from_str(eval(tab, rows_js).as_str().unwrap()).unwrap();
+    assert_eq!(
+        rows,
+        // The name is the LATEST publish's, as a roster row always is: the redeploy gave no title,
+        // so it is named by its file's stem.
+        serde_json::json!([["🧭", "deck"], ["📊", "Sales"]]),
+        "{surface:?}: the favicon as it always was, kept through a redeploy with no icon; the word chart drawn as its emoji"
+    );
+    // The icon-word publish's own header: the classic page draws every header it holds; the app
+    // shell folds a publish into its process, so the roster's jump opens the chain onto it.
+    let header = match surface {
+        Surface::Classic => eval(
+            tab,
+            "document.getElementById('stream').textContent.indexOf('📊 Sales') >= 0",
+        ),
+        Surface::AppShell => {
+            eval(tab, "document.querySelectorAll('#previewBody .artifacts-row .artifacts-jump')[1].click(); 'ok'");
+            let at = eval(tab, "document.querySelectorAll('#previewBody .artifacts-row .artifacts-jump')[1].dataset.artifactRecord");
+            let at = at.as_str().unwrap_or("").to_string();
+            let landed = format!("(function(){{ var e = document.querySelector('[data-block-index=\"{at}\"]'); return !!e && e.textContent.indexOf('📊 Sales') >= 0; }})()");
+            until(tab, &landed, "the jump to land on the Sales publish, headed by its emoji", Duration::from_secs(10), &format!("(function(){{ var e = document.querySelector('[data-block-index=\"{at}\"]'); return e ? e.textContent.slice(0, 160) : 'not rendered'; }})()"));
+            eval(tab, &landed)
+        }
+    };
+    assert_eq!(
+        header, true,
+        "{surface:?}: the Sales publish is headed by its emoji"
+    );
+    // The page's TEXT, never its own script source (the classic page inlines its JS, whose comments
+    // happen to say "slides").
+    let words = eval(tab, "(function(){ var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, { acceptNode: function (n) { return n.parentElement && n.parentElement.closest('script, style') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT; } }); var n; while ((n = w.nextNode())) { if (/\\bchart\\b|\\bslides\\b/.test(n.textContent)) return true; } return false; })()");
+    assert_eq!(
+        words, false,
+        "{surface:?}: the icon words themselves are never shown"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_an_artifact_icon_word_is_drawn_as_its_emoji() {
+    let _serial = serial();
+    let fx = fixture_artifact_icons("scenario-art-icon-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_an_artifact_icon_word_is_drawn_as_its_emoji(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_an_artifact_icon_word_is_drawn_as_its_emoji() {
+    let _serial = serial();
+    let fx = fixture_artifact_icons("scenario-art-icon-app");
+    let page = open(Surface::AppShell, &fx, 2713);
+    scenario_an_artifact_icon_word_is_drawn_as_its_emoji(&page.tab, Surface::AppShell);
+}
+
 // ── scenario: descending from a fleet row leaves a way back (#143) ────────────────────────────
 
 /// #143: the app shell navigates IN-PAGE, so the way back to a parent is a hint recorded at the
