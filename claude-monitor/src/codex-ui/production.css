@@ -1020,6 +1020,14 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .topbar>.top-spacer,#app .topbar>.header-divider,#app #sessionFoldAll{display:none}
   #app .topbar>.session-heading{order:1;flex:1 1 0;min-width:0;max-width:none;height:48px;padding-left:44px;gap:8px}
   #app .topbar>.session-heading>#sessionTitle{max-width:none;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}
+  /* #322: the way back to a parent session was the one control the rows did not place, so it kept
+     order 0 and sat under the handle. It takes the slot after the handle — the heading gives up the
+     room it held there, keeping 6px so the title's box (drawn 5px outside its text) stays clear —
+     as a 44px back arrow without its words, so the title keeps its room. */
+  #app .topbar>#sessionParent.is-live{order:0;margin-left:44px;width:44px;height:44px;padding:0;border:0;justify-content:center}
+  #app .topbar>#sessionParent.is-live .session-parent-label{display:none}
+  #app .topbar>#sessionParent.is-live .icon{width:20px;height:20px}
+  #app .topbar:has(>#sessionParent.is-live)>.session-heading{padding-left:6px}
   #app .topbar>.phone-info{order:2}
   #app .topbar>#previewBtn{order:3}
   #app .topbar>.phone-row-break{display:block;order:4;flex:0 0 100%;height:0}

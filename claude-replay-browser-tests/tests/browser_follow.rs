@@ -8336,6 +8336,58 @@ fn a_phones_controls_are_finger_sized() {
     }
 }
 
+/// #322, the owner, with a screenshot: "the back to parent button overlaps with the handle for the
+/// left pane drawer". The phone's rows placed every control but the way back to a parent session,
+/// which kept its place first in the row — under the handle fixed at the top left. In a sub-agent's
+/// session it takes the slot after the handle, a finger-sized back arrow clear of the title, and a
+/// tap on it goes back to the parent.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_parent_button_clears_the_drawer_handle() {
+    let (_m, _b, tab) = phone_world(2709, "phone-parent", 390, 844);
+    phone_tap(&tab, "#phonePane-agents");
+    harness::until(
+        &tab,
+        "!document.getElementById('phonePaneMenu').hidden && !!document.querySelector('#phonePaneMenu [data-child-outline]')",
+        "the Agents drop-down to list the sub-agent",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').hidden",
+    );
+    phone_tap(&tab, "#phonePaneMenu [data-child-outline]");
+    harness::until(
+        &tab,
+        "document.getElementById('sessionParent').classList.contains('is-live') && document.getElementById('phonePaneMenu').hidden",
+        "the sub-agent's session to open, with its way back",
+        Duration::from_secs(20),
+        "document.getElementById('sessionParent').className",
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let seen = harness::probe(&tab, &format!("(function(){{ var ok = {PHONE_HITTABLE}; var box = function (el) {{ var r = el.getBoundingClientRect(); return {{ l: Math.round(r.left), r: Math.round(r.right), t: Math.round(r.top), b: Math.round(r.bottom) }}; }}; var p = document.getElementById('sessionParent'), h = document.getElementById('drawerHandle'), t = document.getElementById('sessionTitle'); var pb = box(p), hb = box(h), tb = box(t); var apart = function (a, b) {{ return a.r <= b.l || b.r <= a.l || a.b <= b.t || b.b <= a.t; }}; return {{ parent: pb, handle: hb, title: tb, clearOfHandle: apart(pb, hb), clearOfTitle: apart(pb, tb), parentHit: ok(p), handleHit: ok(h), size: [pb.r - pb.l, pb.b - pb.t] }}; }})()"));
+    assert_eq!(
+        seen["clearOfHandle"], true,
+        "the Parent button is clear of the drawer handle: {seen}"
+    );
+    assert_eq!(seen["clearOfTitle"], true, "…and of the title: {seen}");
+    assert_eq!(seen["parentHit"], true, "a finger lands on it: {seen}");
+    assert_eq!(
+        seen["handleHit"], true,
+        "…and still on the handle beside it: {seen}"
+    );
+    let size = seen["size"].as_array().unwrap();
+    assert!(
+        size.iter().all(|v| v.as_i64().unwrap_or(0) >= 44),
+        "a finger-sized target: {seen}"
+    );
+    phone_tap(&tab, "#sessionParent");
+    harness::until(
+        &tab,
+        &format!("!document.getElementById('sessionParent').classList.contains('is-live') && new URLSearchParams(location.search).get('session') === '{PHONE_SID}'"),
+        "a tap on it to go back to the parent session",
+        Duration::from_secs(20),
+        "location.search",
+    );
+}
+
 /// #310, #313: a phone READS. The text runs to a 16px gutter on both sides, a long prompt takes the
 /// row, the per-block link / raw chips are not drawn, and nothing of the outline sits over the
 /// text — its panes open from the bar.
