@@ -463,7 +463,7 @@ taken, `400` for one that is not a batch of page lines.
 
 ### `GET {prefix}/events?path=` — optional
 
-Live reload. Either a `text/event-stream` that sends an event named `change` when the document changes, or **204**, which tells the viewer to poll `/text` every few seconds while its tab is visible. Answer 204 unless you already have push.
+Live reload. Either a `text/event-stream` that sends an event named `change` when the document changes, or **204**, which tells the viewer to poll `/text` every few seconds while its tab is visible. Answer 204 unless you already have push. A stream is a promise that changes arrive — the viewer does not poll while it holds one — so a signal that can fail silently needs a backstop: `mdrev-v2`'s file watcher is backed by a look at the file every two seconds while a page is following it.
 
 ## The note record
 

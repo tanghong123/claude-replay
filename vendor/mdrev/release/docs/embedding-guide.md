@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.13/
+mdrev-embed-1.1.15/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.13`, with two tarballs: `mdrev-1.1.13-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.13.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.15`, with two tarballs: `mdrev-1.1.15-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.15.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.13/mdrev-embed-1.1.13.tar.gz
-tar xzf mdrev-embed-1.1.13.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.13
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.15/mdrev-embed-1.1.15.tar.gz
+tar xzf mdrev-embed-1.1.15.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.15
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.13/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.15/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.13/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.13.tar.gz
-cd mdrev-embed-1.1.13
+tar xzf mdrev-embed-1.1.15.tar.gz
+cd mdrev-embed-1.1.15
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -215,7 +215,7 @@ Open the address it printed — it carries a **one-time code**, good for ten min
 
 That listing is what an agent reads; if the `mdrev` application is installed on the same machine, `mdrev --notes` in that checkout shows the same note, because both read the same file: `~/src/your-docs/.mdrev/annotations/<path>.jsonl`. This is the whole point of the arrangement — a note filed in your page is a note in mdrev everywhere the checkout goes, and the other way round.
 
-**The modes, one page.** The sample host mounts the guest with everything on. To see the other ways a host can take mdrev — a plain reader, review without notes, notes without history, no toolbar, a collapsed toolbar with three controls, a dark host, a Chinese one, a document in the page's own flow — open the gallery:
+**The modes, one page.** The sample host mounts the guest with everything on. To see the other ways a host can take mdrev — a plain reader, review without notes, notes without history, no toolbar, a collapsed toolbar with three controls, a dark host, a Chinese one, a phone, a document in the page's own flow — open the gallery:
 
 ```bash
 ./mdrev-v2 ~/src/your-docs/README.md --modes
@@ -320,6 +320,7 @@ The options, all of them:
 | `reloadToken` | bump it to re-read the document. For a shell where the file changes under the reader's own hand — an editor — because refetching keeps their scroll, their open notes and their range where remounting would lose all three | — |
 | `client` | answer the contract in-process instead of over HTTP, for a shell that already HAS the documents: an editor plugin, a desktop application, anything embedding the core. It replaces every fetch; `contract` is then unused | fetches |
 | `scrollParent` | the element that scrolls, when the viewer is one section of a page you scroll: an element, or `'page'` for the document itself. Left out, the viewer fills its element and scrolls inside it | own pane |
+| `phone` | the phone's layout (below, **On a phone**): `'auto'` gives it to a finger on a phone-sized screen, `'always'` whatever the device, `'never'` keeps the desktop layout | `'auto'` |
 | `onPrint()` | you print your own way. The toolbar keeps its print control either way — putting THIS document on paper is what you embedded the viewer for; this says only who carries it out. Left out, the guest prints the document alone (below) | the guest prints |
 | `credentials` | the `fetch` credentials mode; `'same-origin'` sends your session cookie | `'same-origin'` |
 | `root` | **which collection these documents belong to**, your own opaque string, sent with every request. A host that holds more than one store of anything needs it: a path stops identifying a document as soon as two projects each have a `README.md`. One store, leave it out | none |
@@ -331,6 +332,37 @@ The options, all of them:
 | `cap` | the capability your routes will check for `path`, if you gate reads (§8) | none |
 
 **Sizing.** Without `scrollParent`, the viewer is `height: 100%` of its element and scrolls its own pane, so the element needs a height: in a flex column, `#review { flex: 1; min-height: 0 }` (that is `mdrev-v2`'s page). With `scrollParent`, the element grows to its content and your container scrolls; the viewer measures against that container for its change bars and note chips.
+
+**On a phone.** Your mount has mdrev's phone layout without asking for it:
+wherever the reader's primary pointer is a finger and one side of the screen
+is a phone's (either way up), the viewer lays itself out for it —
+
+- the text takes the screen's width, and the change bars and note chips stand
+  just off either side, an arrow away: ‹ › at the bottom right move the page a
+  side at a time, and nothing else moves it sideways, so a scroll down never
+  drifts;
+- the toolbar is two rows, without the controls a phone cannot use (print, the
+  width setting, every note open at once; full screen where the browser has
+  none), and the reader can put it away and bring it back — remembered on the
+  device;
+- notes stay chips until tapped, the outline is a peek, and your `fileRail`, if
+  you pass it, is a drawer behind a folder button rather than a column;
+- a mount with no document says to pick one from the files, with a button that
+  opens that drawer.
+
+`phone: 'never'` keeps the desktop layout, for a host whose own shell answers
+small screens; `phone: 'always'` gives the phone layout on any screen — a kiosk,
+a tablet shell, or the gallery's **On a phone** tab showing it on a desktop.
+
+What stays yours: **the lists** — leave `fileRail` out and answer no `/recents`
+for a reader that should see this one document and nothing else; **the page's
+head** — mdrev cannot set your `<link rel="apple-touch-icon">` or
+`apple-mobile-web-app-title`, which are what an iPhone's Add to Home Screen
+shows, and a Home Screen web app keeps its own cookies, apart from Safari's;
+and a `<meta name="viewport" content="width=device-width, initial-scale=1">`,
+without which a phone lays your page out at desktop width and the viewer never
+sees a phone-sized screen. Where you scroll the page yourself (`scrollParent`),
+the arrows are fixed to the screen's bottom right rather than to the mount.
 
 **Printing.** The toolbar has a print control, and `mounted.print()` is the same
 action for your own menu or shortcut. It borrows the document's name for the
@@ -486,7 +518,7 @@ Two more verbs for a host that would rather not read git itself: `mdrev-cli text
 
 While an agent rewrites a document, the reader's redline follows it. Two ways to provide that, and the viewer takes whichever you offer:
 
-- **Push.** `GET /events?path=` returns a `text/event-stream` and sends `event: change` (any data) when the document changes. `mdrev-v2` watches the directory and does this in thirty lines.
+- **Push.** `GET /events?path=` returns a `text/event-stream` and sends `event: change` (any data) when the document changes. `mdrev-v2` watches the directory — and, because a file watcher can go quiet (macOS's did, for eight seconds and more, on a loaded machine), also looks at the file every two seconds while a page is following it. A stream promises that changes arrive; back your signal the same way if it can fail silently.
 - **Poll.** `GET /events` returns **204**. The viewer then re-fetches `/text?rev=current` every few seconds while its tab is visible, with `If-None-Match`; your `ETag` turns each poll into a 304.
 
 Start with 204. Add the stream when you have a change signal to hand.

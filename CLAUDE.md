@@ -101,7 +101,7 @@ link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.12), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.15), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor both binaries go through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on

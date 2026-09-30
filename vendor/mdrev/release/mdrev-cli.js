@@ -30869,6 +30869,7 @@ function sharedSuffixLen(a, b) {
   return i;
 }
 var FUZZY_FLOOR = 0.6;
+var WALK_FLOOR = 0.35;
 var HEIR_FLOOR = 0.8;
 var WEDGE = 400;
 var REFINE_BUDGET = 48;
@@ -31005,6 +31006,8 @@ function mapAnchor(fromText, toText, given) {
         return around.state === "exact" ? { ...around, state: "moved" } : around;
     }
   }
+  if (similarity2 < WALK_FLOOR)
+    return { state: "orphaned", at: mappedStart };
   return { state: "changed", start: mappedStart, end: mappedEnd, similarity: similarity2 };
 }
 

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" role="img" aria-label="mdrev">
+  <!--
+    The Home Screen icon (Hong, 2026-09-29: "add an app-icon for the page so
+    when saving the page to my Home Screen, I can identify it clearly"): the
+    favicon's mark — one line removed above one line added — drawn full bleed,
+    because iOS rounds the corners itself and turns any transparency black.
+    scripts/make-icons.mjs renders it to apple-touch-icon.png; edit this, then
+    run that.
+  -->
+  <rect width="180" height="180" fill="#1b4f96"/>
+  <rect x="38" y="54" width="104" height="30" rx="15" fill="#ff8a8a"/>
+  <rect x="38" y="98" width="78" height="30" rx="15" fill="#69d569"/>
+</svg>
