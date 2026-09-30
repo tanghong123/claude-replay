@@ -7349,11 +7349,28 @@ fn grow_above_js(surface: Surface, px: i64) -> String {
     }
 }
 
+/// Grow an element above the reader by `px`, and return only once the page has RENDERED a frame
+/// since (#321). The engine hears a growth from a ResizeObserver, which the browser delivers in
+/// the rendering step of the next frame — before that frame paints, so a reader never sees the
+/// growth uncompensated. A read between the growth and that frame does: it forces the new layout
+/// and finds the reader's record moved by the growth, with the engine not yet told. Headless
+/// Chrome makes frames lazily under load (#204), and the settles that follow a growth wait for the
+/// engine's history to stop changing — which it does, since nothing has been delivered. Measured
+/// (#321): one run in 13 at machine load, the record 190px down and no transaction in the history
+/// after the growth. The second frame's callbacks run after the first frame's observer deliveries,
+/// so awaiting two frames guarantees the engine has heard it.
 fn grow_above(tab: &headless_chrome::Tab, surface: Surface, px: i64) -> bool {
-    eval(tab, &grow_above_js(surface, px))
+    let grown = eval(tab, &grow_above_js(surface, px))
         .as_bool()
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if grown {
+        eval(tab, TWO_FRAMES);
+    }
+    grown
 }
+
+/// Resolves once the page has rendered two frames — after the first frame's observer deliveries.
+const TWO_FRAMES: &str = "new Promise(function (done) { requestAnimationFrame(function () { requestAnimationFrame(function () { done(true); }); }); })";
 
 /// Every mounted record root's top (px from the viewport's top), by identity.
 fn roots_map(
@@ -7485,7 +7502,12 @@ fn wheel_then_grow_above(tab: &headless_chrome::Tab, surface: Surface, dy: i64, 
     let js = format!(
         "(function(){{ var s = {scroller}; s.dispatchEvent(new WheelEvent('wheel', {{deltaY: {dy}, bubbles: true}})); s.scrollTop += {dy}; return {grow}; }})()"
     );
-    eval(tab, &js).as_bool().unwrap_or(false)
+    let grown = eval(tab, &js).as_bool().unwrap_or(false);
+    if grown {
+        // As `grow_above` (#321): nothing is read until a frame has delivered the growth.
+        eval(tab, TWO_FRAMES);
+    }
+    grown
 }
 
 /// R5. A jump lands a turn at the top of the view, and something ABOVE it then grows — an image
