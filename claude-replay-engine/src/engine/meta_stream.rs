@@ -218,11 +218,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// setting now CLEARS the recorded tier instead of keeping the last one. A v36 cursor resumed with
 /// the old tier semantics and no context.
 ///
+/// v38: #325 — an `Artifact` publish that names its bullet with an `icon` WORD (client 2.1.283,
+/// which deprecated the emoji `favicon`) carries the emoji for that word (`Published::icon`). A v37
+/// stream has no icon on any of them, so the roster draws those artifacts with no bullet.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 37;
+pub const FOLD_VERSION: u16 = 38;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

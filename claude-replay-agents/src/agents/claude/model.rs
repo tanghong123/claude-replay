@@ -848,6 +848,23 @@ const ARTIFACT_CREATE_SHAPE: &[&str] = &[
     "warnings",
 ];
 
+/// Every key an Artifact publish-from-a-file result was met with (#325, client 2.1.283): the URL
+/// the page links (read from the result TEXT, which states it too), and ten facts nothing renders —
+/// `icon` echoes the word the call gave, which the adapter reads from the call's input.
+const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
+    "artifact_id",
+    "audience",
+    "contract",
+    "icon",
+    "liveSubscription",
+    "path",
+    "seq",
+    "title",
+    "updated",
+    "url",
+    "version",
+];
+
 const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // CronCreate returns all four and CronDelete `{id}` alone; the result text already states the
     // job id, its schedule in words, whether it recurs and whether it is session-only.
@@ -881,6 +898,9 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // reported with them beside it.
     ("mode", GREP_SHAPE),
     ("totalFiles", GREP_SHAPE),
+    // Artifact's publish result (#325): `icon` is a generic word, so it is known only in the
+    // publish's own shape; the adapter takes the word from the call's input, not from here.
+    ("icon", ARTIFACT_PUBLISH_SHAPE),
 ];
 
 /// The `toolUseResult` keys this adapter neither reads nor has already met (#264), in the
@@ -2388,12 +2408,73 @@ fn artifact_publish(name: &str, input: &Value) -> Option<Published> {
                     .unwrap_or_default(),
             )
         },
-        icon: input
-            .get("favicon")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
+        icon: artifact_icon(input),
     })
+}
+
+/// The bullet an artifact is drawn with (#325). The Artifact tool asked for `favicon`, one or two
+/// emoji, until client 2.1.283 deprecated it for `icon`, one short generic WORD ("chart",
+/// "slides"). A word is not a bullet — shown as it is, it would read as part of the title — so a
+/// word is drawn as the emoji for it, or a page for a word this table does not know. The emoji wins
+/// when a call carries both: it is what older sessions show. A redeploy carries neither, and the
+/// rosters keep the first publish's.
+fn artifact_icon(input: &Value) -> String {
+    let field = |k: &str| {
+        input
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    if let Some(emoji) = field("favicon") {
+        return emoji.to_string();
+    }
+    field("icon")
+        .map(|word| artifact_icon_glyph(word).to_string())
+        .unwrap_or_default()
+}
+
+/// The emoji for an Artifact `icon` word (#325): the words the tool's schema names (chart,
+/// calendar, recipe, code, map), the ones met in transcripts (slides), and the everyday kinds of
+/// page they sit among; any other word is a page.
+fn artifact_icon_glyph(word: &str) -> &'static str {
+    match word.to_ascii_lowercase().as_str() {
+        "chart" | "dashboard" | "data" | "stats" | "metrics" => "📊",
+        "graph" | "analytics" | "trend" | "growth" => "📈",
+        "calendar" | "schedule" | "event" | "events" | "timeline" => "📅",
+        "recipe" | "cooking" | "food" | "menu" => "🍳",
+        "code" | "program" | "terminal" | "api" => "💻",
+        "map" | "location" | "route" => "🗺️",
+        "slides" | "deck" | "presentation" => "📽️",
+        "doc" | "document" | "report" | "notes" | "note" | "article" | "text" | "memo" | "plan" => {
+            "📝"
+        }
+        "list" | "todo" | "tasks" | "checklist" | "tracker" => "✅",
+        "table" | "sheet" | "spreadsheet" | "form" | "survey" | "quiz" => "📋",
+        "game" | "games" | "puzzle" => "🎮",
+        "music" | "audio" | "song" | "playlist" => "🎵",
+        "video" | "movie" | "film" => "🎬",
+        "photo" | "image" | "images" | "gallery" | "picture" => "🖼️",
+        "book" | "books" | "reading" | "guide" | "manual" => "📖",
+        "mail" | "email" | "letter" | "newsletter" => "✉️",
+        "chat" | "message" | "messages" | "conversation" => "💬",
+        "money" | "budget" | "finance" | "invoice" | "pricing" => "💰",
+        "shop" | "store" | "cart" | "shopping" => "🛒",
+        "travel" | "trip" | "flight" => "✈️",
+        "weather" => "🌤️",
+        "clock" | "time" | "timer" => "⏱️",
+        "search" => "🔍",
+        "settings" | "tool" | "tools" | "config" => "🛠️",
+        "design" | "art" | "palette" | "color" => "🎨",
+        "team" | "people" | "users" | "contacts" => "👥",
+        "home" | "house" => "🏠",
+        "science" | "lab" | "experiment" => "🔬",
+        "math" | "calculator" => "🧮",
+        "health" | "fitness" | "medical" => "🩺",
+        "idea" | "ideas" | "brainstorm" => "💡",
+        "diagram" | "flow" | "flowchart" | "architecture" => "🧭",
+        _ => "📄",
+    }
 }
 
 /// Undo ONE level of HTML escaping in an artifact's title or description.
@@ -5260,6 +5341,73 @@ mod tests {
     /// The two negatives are the ones that keep this honest: a non-publish action (the tool also
     /// lists, reads and comments) is an ordinary tool call, and so is a publish whose result
     /// announced no URL — it published nothing, so there is nothing to link.
+    /// #325: client 2.1.283 deprecated the Artifact tool's `favicon` (an emoji) for `icon` (one
+    /// short generic word). A word is drawn as the emoji for it — never shown as a word in front of
+    /// the title — or as a page when the table does not know it; an emoji `favicon` still wins when
+    /// a call carries both (what older sessions show), and a call with neither has no bullet.
+    #[test]
+    fn an_artifact_icon_word_is_drawn_as_its_emoji() {
+        let jsonl = r#"
+{"type":"user","timestamp":"2026-09-29T10:00:00.000Z","message":{"content":"publish them"}}
+{"type":"assistant","timestamp":"2026-09-29T10:00:01.000Z","message":{"content":[{"type":"tool_use","id":"w1","name":"Artifact","input":{"file_path":"/w/sales.html","title":"Sales","icon":"chart"}}]}}
+{"type":"user","timestamp":"2026-09-29T10:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"w1","content":"Published /w/sales.html at https://claude.ai/code/artifact/aaaa-1111"}]}}
+{"type":"assistant","timestamp":"2026-09-29T10:00:03.000Z","message":{"content":[{"type":"tool_use","id":"w2","name":"Artifact","input":{"file_path":"/w/deck.html","title":"Deck","favicon":"🧭","icon":"slides"}}]}}
+{"type":"user","timestamp":"2026-09-29T10:00:04.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"w2","content":"Published /w/deck.html at https://claude.ai/code/artifact/bbbb-2222"}]}}
+{"type":"assistant","timestamp":"2026-09-29T10:00:05.000Z","message":{"content":[{"type":"tool_use","id":"w3","name":"Artifact","input":{"file_path":"/w/odd.html","title":"Odd","icon":"Widget"}}]}}
+{"type":"user","timestamp":"2026-09-29T10:00:06.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"w3","content":"Published /w/odd.html at https://claude.ai/code/artifact/cccc-3333"}]}}
+{"type":"assistant","timestamp":"2026-09-29T10:00:07.000Z","message":{"content":[{"type":"tool_use","id":"w4","name":"Artifact","input":{"file_path":"/w/plain.html","title":"Plain"}}]}}
+{"type":"user","timestamp":"2026-09-29T10:00:08.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"w4","content":"Published /w/plain.html at https://claude.ai/code/artifact/dddd-4444"}]}}
+"#;
+        let blocks = parse(jsonl);
+        let seen: Vec<(String, String)> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolUse {
+                    published: Some(p), ..
+                } => Some((p.icon.clone(), p.label())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("📊".to_string(), "📊 Sales".to_string()),
+                ("🧭".to_string(), "🧭 Deck".to_string()),
+                ("📄".to_string(), "📄 Odd".to_string()),
+                (String::new(), "Plain".to_string()),
+            ],
+            "the word chart is its emoji; an emoji favicon wins over a word; an unknown word is a page; neither is no bullet"
+        );
+        assert!(
+            seen.iter()
+                .all(|(_, label)| !label.contains("chart") && !label.contains("Widget")),
+            "the word itself is never shown: {seen:?}"
+        );
+    }
+
+    /// #325: an Artifact publish-from-a-file result carries `icon` (the word, echoed) beside ten
+    /// keys already met. `icon` is a generic word, so it is known only when every key of the result
+    /// is the publish's; beside anything else it is reported with it.
+    #[test]
+    fn an_artifact_publish_result_icon_is_known_in_its_own_shape() {
+        let publish = serde_json::json!({
+            "url": "https://example.test/artifact/x", "path": "/w/x.html", "artifact_id": "x",
+            "title": "X", "updated": false, "icon": "chart", "audience": "private", "seq": 1,
+            "version": "v1", "contract": "1.0.0", "liveSubscription": "none"
+        });
+        assert!(
+            unknown_tool_result_keys(&publish).is_empty(),
+            "a whole publish result is known: {:?}",
+            unknown_tool_result_keys(&publish)
+        );
+        let elsewhere = serde_json::json!({ "icon": "chart", "somethingNew": 1 });
+        assert_eq!(
+            unknown_tool_result_keys(&elsewhere),
+            vec!["icon", "somethingNew"],
+            "outside the publish shape, icon is reported with what it came beside"
+        );
+    }
+
     #[test]
     fn an_artifact_publish_becomes_a_linkable_fact() {
         let jsonl = r#"
