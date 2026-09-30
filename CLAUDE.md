@@ -57,7 +57,12 @@ driven by `harness::phone` (emulated BEFORE the first load, since the page store
 default), `harness::pinch` and `harness::chrome_with`. **Gzip** (#313, `serve.rs` `gzip_for`) is for a
 client ACROSS A NETWORK only — a `Host` that is not the loopback, as `tailscale serve` hands the
 monitor — so the local desktop is byte-for-byte what it was; the case
-`a_phone_over_the_tailnet_reads_the_session_gzipped` reaches it as `phone.test`.
+`a_phone_over_the_tailnet_reads_the_session_gzipped` reaches it as `phone.test`. That same `Host` is
+why the gate must know the tailnet name (#331): `origin_ok` (the DNS-rebinding and cross-site guard
+every file read and every write asks) knew only the loopback, so a PAIRED phone was told "reading
+local files requires pairing". Both binaries now hand the gate `pair_phone::trusted_hosts(port)`: the
+names this machine's `tailscale serve` relays to THIS port (read lazily, again on a miss at most every
+30 s), plus any `AGENT_MONITOR_TRUSTED_HOSTS` lists — never a `*.ts.net` wildcard.
 **The page saves to a Home Screen as itself** (#320): the tab icon's green mark, square and opaque
 (`claude-monitor/src/icons/`, rendered from `app-icon.svg` by `scripts/render-app-icon.sh`), named by
 the app shell's and v1's classic heads with a manifest and the label "Agent Monitor"; iOS asks the root

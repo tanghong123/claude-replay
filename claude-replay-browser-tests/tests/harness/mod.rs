@@ -2654,6 +2654,21 @@ pub fn hold_the_head(tab: &headless_chrome::Tab) {
     .expect("the head is held");
 }
 
+/// A finger's TAP at `(x, y)` (#330): Chrome's own synthesized touch tap, so the page sees what a
+/// phone sends — touch pointer events (down, up, and the LEAVE a lifted finger makes) and then the
+/// click — where a CDP mouse click is a mouse that never leaves.
+pub fn finger_tap(tab: &headless_chrome::Tab, x: f64, y: f64) {
+    use headless_chrome::protocol::cdp::Input::{GestureSourceType, SynthesizeTapGesture};
+    tab.call_method(SynthesizeTapGesture {
+        x,
+        y,
+        duration: Some(80),
+        tap_count: Some(1),
+        gesture_source_Type: Some(GestureSourceType::Touch),
+    })
+    .expect("a synthesized finger tap");
+}
+
 /// A two-finger pinch on a phone (#313): both fingers down on either side of `(cx, cy)`, `from`
 /// px apart, spread to `to` px over `steps` moves, then lifted. Chrome's touch emulation (see
 /// [`phone`]) delivers these as the touch POINTER events a real phone sends — two pointers at

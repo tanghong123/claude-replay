@@ -1396,16 +1396,24 @@ fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-/// Whether the request's `Host`/`Origin` are the monitor's own loopback origin at `port`
-/// (or absent) — §3.2. A foreign `Host` is DNS rebinding; a foreign `Origin` is a
-/// cross-site fetch; either is refused.
-fn origin_ok(headers: &str, port: u16) -> bool {
+/// Hosts other than the loopback that a server trusts as its OWN (#331) — asked with a `Host`
+/// value, or an `Origin` without its scheme: `name:port`, or `name` alone on a default port. A
+/// monitor served to its tailnet by `tailscale serve` is reached under the machine's tailnet name,
+/// and that name is as much its own as `127.0.0.1` is.
+pub type HostCheck = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// Whether the request's `Host`/`Origin` are the server's own origin at `port` — the loopback,
+/// or a host `trusted` says is its own (#331) — or absent (§3.2). A foreign `Host` is DNS
+/// rebinding; a foreign `Origin` is a cross-site fetch; either is refused.
+fn origin_ok(headers: &str, port: u16, trusted: Option<&HostCheck>) -> bool {
     let ours = |raw: &str| {
         let v = raw
             .trim()
             .trim_start_matches("http://")
             .trim_start_matches("https://");
-        v == format!("127.0.0.1:{port}") || v == format!("localhost:{port}")
+        v == format!("127.0.0.1:{port}")
+            || v == format!("localhost:{port}")
+            || trusted.is_some_and(|t| t(&v.to_ascii_lowercase()))
     };
     header_value(headers, "host").is_none_or(ours)
         && header_value(headers, "origin").is_none_or(ours)
@@ -1452,6 +1460,10 @@ pub struct AuthGate {
     /// to its Home Screen fetches the icon on its own, and may do so without the pairing cookie.
     /// Empty unless [`with_public`](Self::with_public) names them.
     public: &'static [&'static str],
+    /// Hosts besides the loopback that this server answers to as its own (#331): `origin_ok`
+    /// admits a `Host`/`Origin` this says yes to. None unless
+    /// [`with_trusted_hosts`](Self::with_trusted_hosts) gives one.
+    trusted_hosts: Option<HostCheck>,
 }
 
 /// The refusal a gate gives when its host sets none — the monitor's own.
@@ -1478,6 +1490,7 @@ impl AuthGate {
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
             public: &[],
+            trusted_hosts: None,
         }
     }
 
@@ -1489,6 +1502,7 @@ impl AuthGate {
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
             public: &[],
+            trusted_hosts: None,
         }
     }
 
@@ -1504,6 +1518,14 @@ impl AuthGate {
     /// path named here is answered to anyone who can reach the listener.
     pub fn with_public(mut self, paths: &'static [&'static str]) -> Self {
         self.public = paths;
+        self
+    }
+
+    /// Trust `check`'s hosts as this server's own (#331), beside the loopback: a monitor that
+    /// `tailscale serve` relays to its tailnet is reached under the machine's tailnet name, and
+    /// every route that asks `origin_ok` (reading a file, every write) refused it as foreign.
+    pub fn with_trusted_hosts(mut self, check: HostCheck) -> Self {
+        self.trusted_hosts = Some(check);
         self
     }
 
@@ -1525,6 +1547,7 @@ impl AuthGate {
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
             public: &[],
+            trusted_hosts: None,
         }
     }
 
@@ -1935,7 +1958,7 @@ fn serve_connection(
         query,
         body: &body,
         authenticated: gate.token_ok(presented.as_deref()),
-        origin_ok: origin_ok(&headers, local_port),
+        origin_ok: origin_ok(&headers, local_port, gate.trusted_hosts.as_ref()),
     };
 
     let (r, set_cookie, redirect_root) = match access {
@@ -2963,28 +2986,80 @@ mod tests {
     /// foreign Host (DNS rebinding) or Origin (cross-site fetch) is refused.
     #[test]
     fn origin_allowlist_admits_ours_refuses_foreign() {
-        assert!(origin_ok("Host: 127.0.0.1:2727\r\n", 2727), "our host");
         assert!(
-            origin_ok("Host: localhost:2727\r\n", 2727),
+            origin_ok("Host: 127.0.0.1:2727\r\n", 2727, None),
+            "our host"
+        );
+        assert!(
+            origin_ok("Host: localhost:2727\r\n", 2727, None),
             "localhost alias"
         );
         assert!(
             origin_ok(
                 "Host: 127.0.0.1:2727\r\nOrigin: http://127.0.0.1:2727\r\n",
-                2727
+                2727,
+                None
             ),
             "our host + our origin (a same-origin POST)"
         );
-        assert!(origin_ok("", 2727), "absent headers rely on the token");
+        assert!(
+            origin_ok("", 2727, None),
+            "absent headers rely on the token"
+        );
         // DNS rebinding: the page is evil.com (rebound to 127.0.0.1), Host says evil.com.
-        assert!(!origin_ok("Host: evil.com:2727\r\n", 2727), "foreign host");
+        assert!(
+            !origin_ok("Host: evil.com:2727\r\n", 2727, None),
+            "foreign host"
+        );
         // Cross-site fetch: Host is ours, but the initiating page's Origin is evil.com.
         assert!(
-            !origin_ok("Host: 127.0.0.1:2727\r\nOrigin: http://evil.com\r\n", 2727),
+            !origin_ok(
+                "Host: 127.0.0.1:2727\r\nOrigin: http://evil.com\r\n",
+                2727,
+                None
+            ),
             "foreign origin"
         );
         // Right host, wrong port — a different local service, not us.
-        assert!(!origin_ok("Host: 127.0.0.1:9999\r\n", 2727), "wrong port");
+        assert!(
+            !origin_ok("Host: 127.0.0.1:9999\r\n", 2727, None),
+            "wrong port"
+        );
+        // #331: a host the server trusts as its own — the machine's tailnet name that
+        // `tailscale serve` relays to this port — passes as Host and as Origin; any other does not.
+        let tailnet: HostCheck = std::sync::Arc::new(|h: &str| h == "box.tail0.ts.net:2727");
+        assert!(
+            origin_ok(
+                "Host: box.tail0.ts.net:2727\r\nOrigin: https://box.tail0.ts.net:2727\r\n",
+                2727,
+                Some(&tailnet)
+            ),
+            "the trusted tailnet name, as Host and Origin"
+        );
+        assert!(
+            origin_ok("Host: BOX.tail0.ts.net:2727\r\n", 2727, Some(&tailnet)),
+            "a host name is case-insensitive"
+        );
+        assert!(
+            !origin_ok("Host: box.tail0.ts.net:2727\r\n", 2727, None),
+            "…and only when the server trusts it"
+        );
+        assert!(
+            !origin_ok("Host: other.tail0.ts.net:2727\r\n", 2727, Some(&tailnet)),
+            "another tailnet name is not ours"
+        );
+        assert!(
+            !origin_ok(
+                "Host: box.tail0.ts.net:2727\r\nOrigin: http://evil.com\r\n",
+                2727,
+                Some(&tailnet)
+            ),
+            "a trusted Host with a foreign Origin is still a cross-site fetch"
+        );
+        assert!(
+            origin_ok("Host: 127.0.0.1:2727\r\n", 2727, Some(&tailnet)),
+            "the loopback stays ours"
+        );
     }
 
     /// `extract_token` reads all three carriers with the right precedence and parses a

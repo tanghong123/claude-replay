@@ -8485,6 +8485,215 @@ fn a_phone_can_search_the_session() {
     );
 }
 
+/// #331, the owner: "Unable to read the file on mobile". A phone reaches the monitor through
+/// `tailscale serve`, whose requests carry the machine's tailnet name as `Host`, and the gate's
+/// origin check knew only the loopback: a PAIRED phone was refused every file ("reading local files
+/// requires pairing") and every write. The monitor now trusts the names relayed to its port; here
+/// `phone.test` stands for the tailnet name (listed in `AGENT_MONITOR_TRUSTED_HOSTS`, mapped to
+/// the loopback in Chrome), and a paired phone reads a file the session offered — by the route,
+/// and in the preview pane.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_paired_phone_over_the_tailnet_reads_a_file() {
+    let _serial = serial();
+    let base = harness::base("phone-file");
+    let stores = harness::Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let notes = repo.join("notes.txt");
+    std::fs::write(&notes, "the file the phone could not read\n").unwrap();
+    let path = notes.display().to_string();
+    let transcript = [
+        harness::user_at("question 1: read the notes", "2026-09-01T04:00:00.000Z"),
+        harness::read_tool_at("r1", &path, "2026-09-01T04:00:01.000Z"),
+        harness::tool_result_at("r1", "2026-09-01T04:00:02.000Z"),
+        harness::assistant_at("answer 1: read it", "2026-09-01T04:00:03.000Z"),
+    ]
+    .concat()
+    .replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(PHONE_SID, &transcript);
+    let m = harness::Monitor::spawn_with(
+        harness::Kind::V2,
+        2714,
+        &base,
+        Some(&stores),
+        true,
+        &[("AGENT_MONITOR_TRUSTED_HOSTS", "phone.test:2714")],
+    );
+    let browser = harness::chrome_with(&[
+        "--host-resolver-rules=MAP phone.test 127.0.0.1",
+        "--no-proxy-server",
+    ]);
+    let tab = browser.new_tab().unwrap();
+    harness::phone(&tab, 390, 844);
+    let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
+    tab.navigate_to(&format!("http://phone.test:2714/{token}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    tab.navigate_to(&format!(
+        "http://phone.test:2714/?ui=app&session={PHONE_SID}"
+    ))
+    .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let offered = "document.querySelector('[data-reference-path][data-reference-fsig]:not([data-reference-fsig=\"\"])')";
+    harness::until(
+        &tab,
+        &format!("!!{offered}"),
+        "the session to offer the file, stamped",
+        Duration::from_secs(20),
+        "document.querySelectorAll('[data-reference-path]').length + ' file links'",
+    );
+    let read = harness::eval(
+        &tab,
+        &format!("(function(){{ var e = {offered}; return fetch('/file?path=' + encodeURIComponent(e.dataset.referencePath) + '&sig=' + encodeURIComponent(e.dataset.referenceFsig)).then(function (r) {{ return r.text().then(function (t) {{ return r.status + ' ' + t.trim(); }}); }}); }})()"),
+    );
+    assert_eq!(
+        read.as_str(),
+        Some("200 the file the phone could not read"),
+        "a paired phone over the tailnet name reads the file"
+    );
+    harness::eval(&tab, &format!("{offered}.click(); 'ok'"));
+    harness::until(
+        &tab,
+        "(document.getElementById('previewBody') || {}).textContent.indexOf('the file the phone could not read') >= 0",
+        "the preview pane to show the file",
+        Duration::from_secs(10),
+        "(document.getElementById('previewBody') || {textContent: 'no pane'}).textContent.slice(0, 160)",
+    );
+}
+
+/// #330, the owner: "there is no way to copy session id or transcript path on mobile. The drop
+/// down do not stay when my finger leaves the title". The title's copy menu opened on the pointer
+/// entering and closed on it leaving 120 ms later unless the title had focus — and a finger LEAVES
+/// when it lifts. Measured in Chrome: after the touch pointer's leave come the compatibility mouse
+/// events, whose `mousedown` focuses the title (and so cancels the close) and whose click opens the
+/// menu again. iOS Safari sends none of them for a tap that revealed content on hover (WebKit's
+/// content-change observer takes such a tap for a hover), so on the owner's phone nothing focused
+/// the title and the lift closed the menu for good. The case withholds those mouse events on the
+/// title to stand for that. A finger's tap now leaves the menu open, with finger-sized rows; a copy
+/// closes it, as does a tap anywhere else.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_taps_the_title_and_copies_the_session_id() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(2715, "phone-copy-id", 390, 844);
+    harness::eval(&tab, "(function(){ window.__copied = []; var fake = { writeText: function (t) { window.__copied.push(t); return Promise.resolve(); } }; try { Object.defineProperty(navigator, 'clipboard', { value: fake, configurable: true }); } catch (e) { navigator.clipboard.writeText = fake.writeText; } return 1; })()");
+    // iOS: no compatibility mouse events for a tap on the title (see above) — the touch pointer
+    // events are all the page gets. A cancelled `mousedown` also focuses nothing.
+    harness::eval(&tab, "['mousedown', 'mouseup', 'click'].forEach(function (k) { document.addEventListener(k, function (e) { if (e.target.closest && e.target.closest('#sessionTitle')) { e.stopImmediatePropagation(); e.preventDefault(); } }, true); }); 1");
+    let menu_open = "document.getElementById('sessionCopyMenu').classList.contains('open')";
+    let (x, y) = phone_point(&tab, "(function(){ var r = document.getElementById('sessionTitle').getBoundingClientRect(); return [r.left + Math.min(40, r.width / 2), r.top + r.height / 2]; })()");
+    harness::finger_tap(&tab, x, y);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        harness::eval(&tab, menu_open),
+        true,
+        "the menu is still open after the finger lifts"
+    );
+    let rows = harness::probe(&tab, &format!("(function(){{ var ok = {PHONE_HITTABLE}; return [].slice.call(document.querySelectorAll('#sessionCopyMenu [data-copy-session]')).map(function (b) {{ var r = b.getBoundingClientRect(); return {{ kind: b.dataset.copySession, hit: ok(b), tall: r.height >= 44, inside: r.left >= 0 && r.right <= innerWidth }}; }}); }})()"));
+    for row in rows.as_array().unwrap() {
+        assert_eq!(
+            (
+                row["hit"].as_bool(),
+                row["tall"].as_bool(),
+                row["inside"].as_bool()
+            ),
+            (Some(true), Some(true), Some(true)),
+            "each row takes a finger, inside the screen: {rows}"
+        );
+    }
+    let (x, y) = phone_point(&tab, "(function(){ var r = document.querySelector('#sessionCopyMenu [data-copy-session=\"id\"]').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    harness::finger_tap(&tab, x, y);
+    harness::until(
+        &tab,
+        &format!("window.__copied.length === 1 && !({menu_open})"),
+        "the session id to be copied, and the menu to close",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__copied)",
+    );
+    assert_eq!(
+        harness::eval(&tab, "window.__copied[0]").as_str(),
+        Some(PHONE_SID),
+        "the session id is what was copied"
+    );
+    let (x, y) = phone_point(&tab, "(function(){ var r = document.getElementById('sessionTitle').getBoundingClientRect(); return [r.left + Math.min(40, r.width / 2), r.top + r.height / 2]; })()");
+    harness::finger_tap(&tab, x, y);
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(
+        harness::eval(&tab, menu_open),
+        true,
+        "a second tap opens it again"
+    );
+    harness::finger_tap(&tab, 195.0, 700.0);
+    harness::until(
+        &tab,
+        &format!("!({menu_open})"),
+        "a tap elsewhere to close it",
+        Duration::from_secs(5),
+        menu_open,
+    );
+}
+
+/// #329, the owner, with a screenshot: in a Write's numbered lines on the phone, the LONG lines —
+/// the ones cut at the screen's edge — were drawn far larger than the short ones. That is the
+/// browser's text autosizer (iOS Safari's text inflation; Chrome for Android's font boosting),
+/// which enlarges text in blocks wider than the screen, and the page never opted out. Chrome's
+/// emulated phone does not autosize, so the enlargement itself cannot be drawn here; what can be
+/// held is its cause — both pages now declare `text-size-adjust: 100%` — and that every line of the
+/// block, the 129-character one included, is drawn at one size.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_draws_every_line_of_a_wide_code_block_at_one_size() {
+    let _serial = serial();
+    let base = harness::base("phone-autosize");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(4, harness::Shape::default());
+    t += &harness::write_tool_at("wr1", "/tmp/Cargo.toml", 21, &harness::now_minus(60));
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2718, &base, Some(&stores), true);
+    let (_b, tab) = phone_tab(&m, 390, 844);
+    let adjust = "(function(){ var s = getComputedStyle(document.documentElement); return (s.webkitTextSizeAdjust || '') + '|' + (s.textSizeAdjust || ''); })()";
+    let seen = harness::eval(&tab, adjust);
+    let seen = seen.as_str().unwrap_or("");
+    assert!(
+        seen.split('|').any(|v| v == "100%"),
+        "the app shell opts out of the text autosizer: {seen}"
+    );
+    harness::eval(&tab, "(function(){ var h = [...document.querySelectorAll('button.renderer-head')].find(function (b) { return /Write/.test(b.textContent); }); h.click(); return 1; })()");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('.codebox .line').length >= 5",
+        "the Write's numbered lines",
+        Duration::from_secs(10),
+        "document.querySelectorAll('.codebox .line').length",
+    );
+    let sizes = harness::eval(&tab, "JSON.stringify([...new Set([...document.querySelectorAll('.codebox .line')].map(function (r) { return getComputedStyle(r.querySelector('.codecell') || r).fontSize; }))])");
+    assert_eq!(
+        sizes.as_str(),
+        Some("[\"12px\"]"),
+        "every line of the block at one size"
+    );
+    // The classic page is served its own stylesheet; it opts out too.
+    tab.navigate_to(&format!(
+        "http://127.0.0.1:2718/?ui=classic&session={PHONE_SID}"
+    ))
+    .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('#stream .blk')",
+        "the classic page to render the session",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let seen = harness::eval(&tab, adjust);
+    let seen = seen.as_str().unwrap_or("");
+    assert!(
+        seen.split('|').any(|v| v == "100%"),
+        "the classic page opts out too: {seen}"
+    );
+}
+
 /// #319's world: a phone on a session whose board is long enough to scroll — thirty finished
 /// tasks, three running, twenty pending — each titled at the length a real one runs to.
 fn phone_tasks_world(

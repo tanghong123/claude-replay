@@ -100,8 +100,13 @@ function scheduleSessionCopyClose() {
     if (!sessionCopyMenu.contains(document.activeElement) && document.activeElement !== sessionTitle) setSessionCopyMenu(false);
   }, 120);
 }
+// #330: a finger or a pen LEAVES when it lifts, so its leave is no reason to close — on iOS the
+// tap brings no mouse events after it (the tap revealed content, so WebKit takes it for a hover),
+// nothing gives the title focus, and the lift closed the menu for good. A tap elsewhere, a copy or
+// Escape closes it; a mouse still closes it by leaving.
+const leftByHover = event => event.pointerType === "mouse";
 sessionTitle.addEventListener("pointerenter", () => setSessionCopyMenu(true));
-sessionTitle.addEventListener("pointerleave", scheduleSessionCopyClose);
+sessionTitle.addEventListener("pointerleave", event => { if (leftByHover(event)) scheduleSessionCopyClose(); });
 sessionTitle.addEventListener("focus", () => setSessionCopyMenu(true));
 sessionTitle.addEventListener("blur", scheduleSessionCopyClose);
 sessionTitle.addEventListener("click", () => setSessionCopyMenu(true));
@@ -112,7 +117,7 @@ sessionTitle.addEventListener("keydown", event => {
   }
 });
 sessionCopyMenu.addEventListener("pointerenter", () => clearTimeout(sessionCopyCloseTimer));
-sessionCopyMenu.addEventListener("pointerleave", scheduleSessionCopyClose);
+sessionCopyMenu.addEventListener("pointerleave", event => { if (leftByHover(event)) scheduleSessionCopyClose(); });
 sessionCopyMenu.addEventListener("focusout", scheduleSessionCopyClose);
 document.addEventListener("pointerdown", event => {
   if (event.target !== sessionTitle && !sessionCopyMenu.contains(event.target)) setSessionCopyMenu(false);

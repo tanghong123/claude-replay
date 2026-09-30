@@ -109,6 +109,87 @@ fn serve_bases_of(cfg: &Value, dns_name: &str, port: u16, out: &mut Vec<String>)
     }
 }
 
+/// The hosts a request relayed by `tailscale serve` arrives under (#331), from the addresses
+/// [`serve_bases`] found: `name:port`, or `name` alone on the scheme's default port — the `Host` a
+/// browser sends for each, lower-cased.
+pub fn hosts_of(bases: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = bases
+        .iter()
+        .map(|b| {
+            b.trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .trim_end_matches('/')
+                .to_ascii_lowercase()
+        })
+        .filter(|h| !h.is_empty())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The hosts `AGENT_MONITOR_TRUSTED_HOSTS` names (#331): a comma-separated list of `host[:port]`
+/// the monitor answers to as its own beside the loopback and its tailnet name — for a proxy other
+/// than `tailscale serve` that hands the monitor its own name, and for the cases that stand one up.
+pub fn listed_hosts(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|h| h.trim().to_ascii_lowercase())
+        .filter(|h| !h.is_empty())
+        .collect()
+}
+
+/// The monitor's own hosts beyond the loopback (#331), for [`claude_replay_html::AuthGate`]'s
+/// `origin_ok`, which refused every request a phone made through `tailscale serve` (Host: the
+/// machine's tailnet name) to read a file or to write: the names `tailscale serve` relays to THIS
+/// port, and any `AGENT_MONITOR_TRUSTED_HOSTS` lists — nothing broader (no `*.ts.net`), since the
+/// check is the DNS-rebinding and cross-site guard. The serve can be set up after the monitor
+/// starts, so the tailnet's names are read lazily and read again on a miss, at most every 30 s:
+/// a stranger's Host costs one `tailscale` call per half-minute, whatever the rate.
+pub fn trusted_hosts(port: u16) -> claude_replay_html::HostCheck {
+    let listed = std::env::var("AGENT_MONITOR_TRUSTED_HOSTS")
+        .map(|v| listed_hosts(&v))
+        .unwrap_or_default();
+    let tailnet = std::sync::Mutex::new((Vec::<String>::new(), None::<std::time::Instant>));
+    std::sync::Arc::new(move |host: &str| {
+        if listed.iter().any(|h| h == host) {
+            return true;
+        }
+        let mut cache = tailnet.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.0.iter().any(|h| h == host) {
+            return true;
+        }
+        if cache
+            .1
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(30))
+        {
+            return false;
+        }
+        cache.0 = tailnet_hosts(port);
+        cache.1 = Some(std::time::Instant::now());
+        cache.0.iter().any(|h| h == host)
+    })
+}
+
+/// The hosts this machine's `tailscale serve` relays to 127.0.0.1:`port` — none when Tailscale is
+/// not here, not running, or serves nothing to this port.
+fn tailnet_hosts(port: u16) -> Vec<String> {
+    let Some(bin) = tailscale() else {
+        return Vec::new();
+    };
+    let status = tailscale_json(&bin, &["status", "--json"]).unwrap_or(Value::Null);
+    let dns = status
+        .pointer("/Self/DNSName")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if dns.is_empty() {
+        return Vec::new();
+    }
+    let serve = tailscale_json(&bin, &["serve", "status", "--json"]).unwrap_or(Value::Null);
+    hosts_of(&serve_bases(&serve, &dns, port))
+}
+
 /// The serve this tool recommends: tailnet `port` → localhost `port`, over HTTPS when the tailnet
 /// can issue this machine a certificate (`https`), plain HTTP otherwise — never the root on 443.
 pub fn serve_command(port: u16, https: bool) -> String {
@@ -319,6 +400,36 @@ pub const PAIR_CODES_FILE: &str = "pair-codes";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #331: the hosts a relayed request carries — the `Host` a browser sends for each address the
+    /// serve relays to this port, `name:port` or `name` on a default port — and the names an
+    /// operator lists, all lower-cased. Nothing else becomes a trusted host.
+    #[test]
+    fn the_serve_s_addresses_become_the_hosts_the_gate_trusts() {
+        let serve = serde_json::json!({
+            "TCP": {"2727": {"HTTPS": true}, "443": {"HTTPS": true}},
+            "Web": {
+                "Box.tail0.ts.net:2727": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:2727"}}},
+                "box.tail0.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:2727"}}},
+                "box.tail0.ts.net:4600": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:4600"}}}
+            }
+        });
+        assert_eq!(
+            hosts_of(&serve_bases(&serve, "box.tail0.ts.net.", 2727)),
+            vec![
+                "box.tail0.ts.net".to_string(),
+                "box.tail0.ts.net:2727".to_string()
+            ],
+            "this port's handlers only; another tool's port is not the monitor's"
+        );
+        assert_eq!(
+            listed_hosts(" phone.test:2805 ,, Proxy.Example:8443"),
+            vec![
+                "phone.test:2805".to_string(),
+                "proxy.example:8443".to_string()
+            ]
+        );
+    }
 
     #[test]
     fn an_https_handler_for_this_port_is_the_address() {

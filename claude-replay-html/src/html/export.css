@@ -87,6 +87,8 @@ body {
    page owns all anchoring (captureAnchor/restoreAnchor/toBottom); the browser's
    must be off on the element that actually scrolls. */
 html { overflow-anchor: none; }
+/* #329: no text autosizing on a phone — a long code line was drawn larger than its neighbours. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }

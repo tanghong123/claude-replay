@@ -237,7 +237,9 @@ fn main() -> Result<()> {
         None => AuthGate::same_user(),
     }
     // #320: the icons and the manifest, which a phone reads to put the page on its Home Screen.
-    .with_public(claude_monitor::ui::PUBLIC_ASSETS);
+    .with_public(claude_monitor::ui::PUBLIC_ASSETS)
+    // #331: the tailnet name `tailscale serve` relays to this port is the monitor's own too.
+    .with_trusted_hosts(claude_monitor::pair_phone::trusted_hosts(port));
     let bound = claude_replay_html::spawn_listener_gated(port, handler, gate)
         .with_context(|| format!("binding 127.0.0.1:{port}"))?;
     let url = tokened_url(&format!("http://127.0.0.1:{bound}/"), token.as_deref());
