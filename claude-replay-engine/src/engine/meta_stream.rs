@@ -222,11 +222,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// which deprecated the emoji `favicon`) carries the emoji for that word (`Published::icon`). A v37
 /// stream has no icon on any of them, so the roster draws those artifacts with no bullet.
 ///
+/// v39: #324 — a pasted image carries where Claude Code saved its original (`Attachment::path`,
+/// from the `inlined_image_paths` record of client 2.1.283). A v38 stream has no path on any
+/// pasted image, so it offers no reveal and the lightbox opens only the downscaled inline copy.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 38;
+pub const FOLD_VERSION: u16 = 39;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

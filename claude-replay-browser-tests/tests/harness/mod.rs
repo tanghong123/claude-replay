@@ -285,6 +285,29 @@ pub const BIG_PNG_B64: &str = include_str!("big-image.b64");
 /// one axis and not the other is where a centring bug hides.
 pub const WIDE_PNG_B64: &str = include_str!("wide-image.b64");
 
+/// The bytes a base64 text stands for (standard alphabet, padding and whitespace ignored) — so a
+/// case can put one of the image constants on disk, as a client saves what was pasted (#324).
+pub fn base64_bytes(text: &str) -> Vec<u8> {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let (mut out, mut acc, mut bits) = (Vec::new(), 0u32, 0u32);
+    for v in text.bytes().filter_map(value) {
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    out
+}
+
 /// A user turn with a PASTED image: text plus an inline base64 image in the SAME message, which
 /// is how a screenshot dropped into the prompt is recorded. The engine surfaces it as an
 /// `attachment` record right after the turn, and the pages attach it to the prompt — a different

@@ -144,6 +144,12 @@ pub enum Message {
     AttachmentPrompt { text: String },
     /// A file / plan / image attachment to surface as-is.
     Attachment(Attachment),
+    /// Where the images of the latest user prompt were saved on disk, in the order the prompt
+    /// carried them (#324: Claude's `inlined_image_paths`, written a record or two after a prompt
+    /// with pasted images). The fold back-patches each onto its image's `Attachment::path`, as it
+    /// does a `TurnDuration` onto the turn head, and only when the counts agree: a path on the
+    /// wrong image would offer the wrong file.
+    ImagePaths { paths: Vec<String> },
     /// A task-queue operation (#15) — emitted by an agent's L1 ALONGSIDE the
     /// `ToolUse` when it sees a `TaskCreate`/`TaskUpdate` call (only the tokenizer
     /// sees tool inputs; the built `ToolUse` block doesn't retain them). Folded by

@@ -427,6 +427,7 @@ impl<'a> Replayer<'a> {
                 Message::Attachment(att) => {
                     self.out.push(Block::Attachment(att.clone()));
                 }
+                Message::ImagePaths { paths } => self.patch_image_paths(paths),
                 Message::Completion {
                     tool_use_id,
                     task_id,
@@ -630,6 +631,43 @@ impl<'a> Replayer<'a> {
     /// dropped and the marker commits; a pickup after that cannot un-draw it, so a stale
     /// `⧗ queued:` line stays visible. That is a local, one-line artifact in a rare case, against
     /// a frontier that never advances again in a case that is not rare at all.
+    /// #324: the saved originals of the latest prompt's images, onto those images. The prompt is
+    /// the last user-text block still in the open window (the turn it opened has not committed:
+    /// the paths arrive a record or two after it), and its images are the image attachments
+    /// written with it — the run directly before and after its text, in order. A path goes onto
+    /// an image only when the counts agree and the image has none; otherwise nothing is patched,
+    /// since a path on the wrong image would offer the wrong file.
+    fn patch_image_paths(&mut self, paths: &[String]) {
+        let is_image =
+            |b: &Block| matches!(b, Block::Attachment(a) if a.kind == AttachmentKind::Image);
+        let Some(prompt) = self
+            .out
+            .iter()
+            .rposition(|b| matches!(b, Block::UserText(_)))
+        else {
+            return;
+        };
+        let mut first = prompt;
+        while first > 0 && is_image(&self.out[first - 1]) {
+            first -= 1;
+        }
+        let mut last = prompt;
+        while last + 1 < self.out.len() && is_image(&self.out[last + 1]) {
+            last += 1;
+        }
+        let images: Vec<usize> = (first..=last).filter(|&i| is_image(&self.out[i])).collect();
+        if images.len() != paths.len() {
+            return;
+        }
+        for (i, path) in images.into_iter().zip(paths) {
+            if let Block::Attachment(a) = &mut self.out[i] {
+                if a.path.is_none() {
+                    a.path = Some(path.clone());
+                }
+            }
+        }
+    }
+
     fn queue_pin(&self, k: usize) -> Option<usize> {
         let oldest = self
             .queue

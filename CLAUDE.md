@@ -185,8 +185,13 @@ characters are a PREFIX, so the job's `state.json` must name that session (`sess
 `resumeSessionId`) before its tmp counts; a sub-agent gets its ROOT session's, which is where its
 parent works. The home comes from the transcript's own path — the parent of the store holding the
 project slugs — never from `$HOME`, so a relocated store is followed and a test's store stays
-hermetic. So an allowlist entry for a directory no session explains mints stamps that `/file`
-still refuses.
+hermetic. **A session explains its pasted images' originals too** (#324): Claude Code 2.1.283 saves
+each to `<claude home>/uploads/<whole session id>/` and names the paths in an `inlined_image_paths`
+record a record or two after the prompt; the fold puts each path on its image, in order and only when
+the counts agree (the inline copy is a re-encoded, downscaled JPEG — 921×2000 against a 1320×2868
+PNG, measured), so the image gets reveal and the app shell's lightbox opens the original, falling back
+to the embedded copy if the original is gone. A sub-agent gets its root's uploads. So an allowlist
+entry for a directory no session explains mints stamps that `/file` still refuses.
 
 **Every file view offers BOTH halves** (#272, the owner: "offering both for now"): showing the file
 in the page — or downloading it, for bytes the page does not show (`/file`'s `Content-Disposition:

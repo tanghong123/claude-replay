@@ -479,7 +479,8 @@ pub trait TranscriptAdapter: Sync {
     /// background tasks' output and the pasted images its own transcript names. A served page
     /// may render a file under one of these when the render policy allows it, exactly as it
     /// renders one under the session's cwd — containment asks whether a hosted session explains a
-    /// path, and a session explains its own scratch. Default: none.
+    /// path, and a session explains its own scratch — including where the client SAVED what was
+    /// pasted into it (#324: Claude's `<home>/uploads/<session id>/`). Default: none.
     fn scratch_dirs(&self, _path: &Path) -> Vec<std::path::PathBuf> {
         Vec::new()
     }

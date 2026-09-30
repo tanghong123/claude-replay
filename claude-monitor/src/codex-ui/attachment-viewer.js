@@ -53,6 +53,14 @@ export class AttachmentViewer {
       this.view.fit();
     };
     this.image.onerror = () => {
+      // #324: the original is gone, but the session kept a copy: show that instead, and say so.
+      if (this.item?.fallback && !this.fellBack) {
+        this.fellBack = true;
+        const status = this.root.querySelector("[data-lightbox-status]");
+        status.textContent = "saved with the session"; status.className = "image-lightbox-status embedded";
+        this.image.src = this.item.fallback;
+        return;
+      }
       this.root.dataset.state = "unavailable";
       this.image.hidden = true;
       this.zoomBar.hidden = true;
@@ -71,7 +79,9 @@ export class AttachmentViewer {
     this.root.dataset.state = "loading";
     this.root.querySelector("[data-lightbox-name]").textContent = item.name || "image";
     const status = this.root.querySelector("[data-lightbox-status]");
-    status.textContent = item.embedded ? "saved with the session" : "temporary file";
+    this.fellBack = false;
+    // #324: the file on disk, when the image is opened from it with the session's copy behind it.
+    status.textContent = item.fallback ? "original" : item.embedded ? "saved with the session" : "temporary file";
     status.className = `image-lightbox-status ${item.embedded ? "embedded" : "temporary"}`;
     this.root.querySelector("[data-lightbox-sidebar]").hidden = !item.source;
     this.root.querySelector("[data-lightbox-reveal]").hidden = !canReveal(item);

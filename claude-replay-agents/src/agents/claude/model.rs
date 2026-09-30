@@ -566,6 +566,9 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "hook_cancelled",
     "hook_non_blocking_error",
     "hook_system_message",
+    // #324 (client 2.1.283): where a prompt's pasted images were saved. Read above, into each
+    // image's path; listed so a record the arm skips (no paths) is not reported as new.
+    "inlined_image_paths",
     "instructions",
     "invoked_skills",
     "mcp_instructions_delta",
@@ -2014,6 +2017,10 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                 && a.and_then(|a| a.get("commandMode"))
                     .and_then(|m| m.as_str())
                     == Some("prompt");
+            let image_paths = (a.and_then(|a| a.get("type")).and_then(|t| t.as_str())
+                == Some("inlined_image_paths"))
+            .then(|| a.and_then(|a| a.get("paths")).and_then(|p| p.as_array()))
+            .flatten();
             if is_prompt {
                 if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
                     if !p.trim().is_empty() {
@@ -2021,6 +2028,19 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                             text: p.to_string(),
                         });
                     }
+                }
+            } else if let Some(paths) = image_paths {
+                // #324 (client 2.1.283): where the latest prompt's pasted images were saved, in
+                // the order it carried them. Its `rendered` reminder is addressed to the model and
+                // is never drawn; the fold puts each path on its image.
+                let paths: Vec<String> = paths
+                    .iter()
+                    .filter_map(|p| p.as_str())
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if !paths.is_empty() {
+                    msgs.push(Message::ImagePaths { paths });
                 }
             } else if let Some(note) = a.and_then(attachment_note) {
                 // A hook that FAILED or TIMED OUT (#236). Both arrive as attachments, but neither
@@ -5182,6 +5202,67 @@ mod tests {
             ],
             "numLines wins over totalLines, totalLines stands in, and a file that states \
              neither carries no count rather than a made-up one"
+        );
+    }
+
+    /// #324 (client 2.1.283): an `inlined_image_paths` attachment, written a record or two after a
+    /// prompt with pasted images, says where each was saved — in the order the prompt carried
+    /// them. The fold puts each path on its image, so a pasted image gets the file affordances
+    /// every other file has; its `rendered` reminder is the model's and is never drawn. A count
+    /// that does not match patches nothing (a path on the wrong image would offer the wrong
+    /// file), and an image in a TOOL result is never the prompt's.
+    #[test]
+    fn inlined_image_paths_give_a_pasted_image_its_saved_original() {
+        let one = r##"
+{"type":"user","uuid":"u1","timestamp":"2026-09-29T10:00:00.000Z","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"Zm9v"}},{"type":"text","text":"what is wrong here"}]}}
+{"type":"attachment","uuid":"a1","parentUuid":"u1","timestamp":"2026-09-29T10:00:00.100Z","attachment":{"type":"total_tokens_reminder","text":"<total_tokens>1</total_tokens>"}}
+{"type":"attachment","uuid":"a2","parentUuid":"a1","timestamp":"2026-09-29T10:00:00.200Z","attachment":{"type":"inlined_image_paths","paths":["/h/.claude/uploads/s-1/0a1b2c3d-image.png"]},"rendered":[{"content":"<system-reminder>for the model</system-reminder>"}]}
+{"type":"assistant","timestamp":"2026-09-29T10:00:01.000Z","message":{"content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/w/shot.png"}}]}}
+{"type":"user","timestamp":"2026-09-29T10:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YmFy"}}]}]}}
+"##;
+        let paths = |jsonl: &str| -> Vec<Option<String>> {
+            parse(jsonl)
+                .iter()
+                .filter_map(|b| match b {
+                    Block::Attachment(a) if a.kind == AttachmentKind::Image => Some(a.path.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            paths(one),
+            vec![Some("/h/.claude/uploads/s-1/0a1b2c3d-image.png".to_string()), None],
+            "the prompt's image carries its saved original; the tool result's image is not the prompt's"
+        );
+        let blocks = parse(one);
+        assert!(
+            !format!("{blocks:?}").contains("for the model"),
+            "the reminder addressed to the model is never drawn"
+        );
+
+        // Two images, in order — the shape is unmeasured on a real transcript, so a synthetic one.
+        let two = r##"
+{"type":"user","uuid":"u1","timestamp":"2026-09-29T10:00:00.000Z","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"Zm9v"}},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"YmFy"}},{"type":"text","text":"compare these"}]}}
+{"type":"attachment","uuid":"a2","parentUuid":"u1","timestamp":"2026-09-29T10:00:00.200Z","attachment":{"type":"inlined_image_paths","paths":["/h/.claude/uploads/s-1/first-image.png","/h/.claude/uploads/s-1/second-image.png"]}}
+"##;
+        assert_eq!(
+            paths(two),
+            vec![
+                Some("/h/.claude/uploads/s-1/first-image.png".to_string()),
+                Some("/h/.claude/uploads/s-1/second-image.png".to_string())
+            ],
+            "the N paths go to the prompt's N images, in order"
+        );
+
+        // A count that does not agree patches nothing.
+        let mismatch = two.replace(
+            r#""paths":["/h/.claude/uploads/s-1/first-image.png","/h/.claude/uploads/s-1/second-image.png"]"#,
+            r#""paths":["/h/.claude/uploads/s-1/first-image.png"]"#,
+        );
+        assert_eq!(
+            paths(&mismatch),
+            vec![None, None],
+            "one path for two images is not guessed at"
         );
     }
 

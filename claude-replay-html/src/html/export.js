@@ -648,6 +648,21 @@
             };
         }
         ac.appendChild(an);
+        // #272/#324: a file the page SHOWS from the session's copy (a pasted image, once the client
+        // named where it saved the original) is still a file on disk: the file manager beside it,
+        // wherever the server offered the reveal stamp.
+        if ((text != null || datauri != null) && path != null && sig) {
+            var rv = el("span", "adl areveal", "reveal");
+            rv.title = "reveal in file manager";
+            rv.onclick = function (ev) {
+                ev.stopPropagation();
+                fetch("__reveal?" + shared.stampQuery({ path: path, sig: sig })).then(function (r) {
+                    rv.textContent = r.ok ? "revealed \u2713" : "not found";
+                    setTimeout(function () { rv.textContent = "reveal"; }, 1000);
+                }).catch(function () { /* server gone */ });
+            };
+            ac.appendChild(rv);
+        }
         // #261: the size the transcript recorded, beside the name. It rides the same `chips`
         // the tool heads use, so the two pages read it from one place — and both show it, which
         // is what the rendering audit compares them on. A file a compaction put back into
@@ -685,6 +700,10 @@
         if (imgsrc != null) {
             var img = el("img", "aimg");
             img.src = imgsrc; img.alt = h.att_name || "image";
+            // #324: the file on disk, where the host shows files and the render policy stamped this
+            // one — for a pasted image the saved original, full size, where the inline copy is a
+            // downscaled re-encode. The lightbox opens it, and the inline copy if it is gone.
+            if (ARTIFACTS && path != null && fsig) img.dataset.original = "file?" + shared.stampQuery({ path: path, sig: fsig });
             // #139: inline images are capped at 520px, which for a screenshot means
             // unreadable. Click opens it at full size — the bytes are already here, so
             // this replaces "download it, then open Preview".
@@ -904,9 +923,11 @@
     return { stage: stage, img: img, view: view };
   }
 
-  function lightbox(src, alt) {
+  function lightbox(src, alt, fallback) {
     var box = el("div", "lightbox");
     var shown = imageStage(box, src, alt);
+    // #324: an original that is gone falls back to the copy the page already shows.
+    if (fallback) shown.img.onerror = function () { shown.img.onerror = null; shown.img.src = fallback; };
     var cap = el("div", "lb-cap", alt || "");
     box.appendChild(cap);
     function close() {
@@ -2953,7 +2974,7 @@
 
     // #139: an inline image opens full size.
     var aimg = e.target.closest(".aimg");
-    if (aimg) { lightbox(aimg.src, aimg.alt); return; }
+    if (aimg) { lightbox(aimg.dataset.original || aimg.src, aimg.alt, aimg.dataset.original ? aimg.src : null); return; }
 
 
     var sid = e.target.closest("#sid");

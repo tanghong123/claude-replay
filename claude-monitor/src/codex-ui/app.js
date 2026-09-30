@@ -2322,7 +2322,13 @@ function openAttachment(id, path, fsig, action = "preview", sig = "", card = {})
   const record = findRecord(id); const head = record?.head || {};
   const item = { id: `attachment:${id || path}`, name: head.att_name || card.name || path.split("/").pop() || "attachment", path: head.att_path || path, fsig: head.att_fsig || fsig, sig: head.att_sig || sig, text: head.att_text, data: head.att_datauri, embedded: head.att_datauri != null || head.att_text != null };
   const shown = card.src || "";
-  item.source = item.data || (item.path && item.fsig ? `/file?path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig)}` : "") || shown;
+  const fileUrl = item.path && item.fsig ? `/file?path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig)}` : "";
+  item.source = item.data || fileUrl || shown;
+  // #324: an image with its file on disk AND a stamp to show it is opened from the file — for a
+  // pasted image that is the saved original, where the copy inside the transcript is a downscaled
+  // re-encode (921×2000 against 1320×2868, measured) — and falls back to the inline copy if the
+  // file is gone.
+  if (action === "image" && fileUrl && item.data) { item.source = fileUrl; item.fallback = item.data; }
   // A card that was showing an inline payload is embedded, whatever the lookup found.
   if (!item.embedded && shown.startsWith("data:")) item.embedded = true;
   if (action === "image") attachmentViewer.openImage(item);

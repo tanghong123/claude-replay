@@ -551,6 +551,9 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 .aname { min-width: 0; color: var(--fg); }
 .aname.adl { color: var(--link); text-decoration: underline; cursor: pointer; }
 .aname.adl:hover { opacity: 0.85; }
+/* #324: the file manager beside an attachment the page shows from the session's copy. */
+.areveal { margin-left: 8px; color: var(--link); text-decoration: underline; cursor: pointer; font-size: 0.9em; }
+.areveal:hover { opacity: 0.85; }
 .aimg {
   display: block; flex-basis: 100%; max-width: min(520px, 100%); height: auto;
   margin-top: 6px; border: 1px solid var(--border); border-radius: 6px;

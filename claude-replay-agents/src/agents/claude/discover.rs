@@ -66,7 +66,21 @@ pub fn scratch_dirs(transcript: &Path) -> Vec<PathBuf> {
     if let Some(job) = job_tmp_dir(transcript) {
         out.push(job);
     }
+    if let Some(uploads) = uploads_dir(transcript) {
+        out.push(uploads);
+    }
     out
+}
+
+/// Where Claude Code saves the images pasted into a session (#324): `<claude home>/uploads/<session
+/// id>/<8 hex>-image.png`, named by an `inlined_image_paths` record right after the prompt (client
+/// 2.1.283). The directory is the WHOLE session id — unlike a job's, not a prefix — so it needs no
+/// check beyond the name. A sub-agent gets its ROOT session's, as with the job tmp: a child is
+/// handed no pasted images of its own. `<claude home>` comes from the transcript's path, never
+/// from `$HOME`.
+fn uploads_dir(transcript: &Path) -> Option<PathBuf> {
+    let (home, session) = job_home_and_session(transcript)?;
+    Some(home.join("uploads").join(session))
 }
 
 /// A BACKGROUND session's own workspace (#291): `<claude home>/jobs/<first eight characters of the
@@ -588,12 +602,50 @@ mod tests {
         std::fs::write(&transcript, "{}\n").unwrap();
         let uid = std::fs::metadata(&transcript).unwrap().uid();
         if std::env::var_os("CLAUDE_SCRATCH_ROOT").is_none() {
+            // The project's per-user scratch first; #324 added the session's uploads beside it
+            // (held by its own case below).
             assert_eq!(
-                scratch_dirs(&transcript),
-                vec![PathBuf::from(format!("/tmp/claude-{uid}")).join("-Users-dev-repo")]
+                scratch_dirs(&transcript).first(),
+                Some(&PathBuf::from(format!("/tmp/claude-{uid}")).join("-Users-dev-repo"))
             );
         }
         assert!(scratch_dirs(&project.join("absent.jsonl")).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #324: the directory Claude Code saves a session's pasted images in, `<claude home>/uploads/
+    /// <session id>/`, is that session's — for a root transcript and for its sub-agents alike — and
+    /// only that session's: another session's uploads are not.
+    #[test]
+    fn a_session_s_uploads_are_its_scratch() {
+        let root = std::env::temp_dir().join(format!("cr-uploads-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join(".claude");
+        let project = home.join("projects").join("-Users-dev-repo");
+        let sid = "1e813d86-0000-4000-8000-000000000324";
+        let transcript = project.join(format!("{sid}.jsonl"));
+        let child = project.join(sid).join("subagents").join("agent-a1.jsonl");
+        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+        std::fs::write(&transcript, "{}\n").unwrap();
+        std::fs::write(&child, "{}\n").unwrap();
+        let uploads = home.join("uploads").join(sid);
+        assert!(
+            scratch_dirs(&transcript).contains(&uploads),
+            "{:?}",
+            scratch_dirs(&transcript)
+        );
+        assert!(
+            scratch_dirs(&child).contains(&uploads),
+            "a sub-agent has its root session's uploads: {:?}",
+            scratch_dirs(&child)
+        );
+        let other = home
+            .join("uploads")
+            .join("1e813d86-0000-4000-8000-000000000999");
+        assert!(
+            !scratch_dirs(&transcript).contains(&other),
+            "another session's uploads are not this one's"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

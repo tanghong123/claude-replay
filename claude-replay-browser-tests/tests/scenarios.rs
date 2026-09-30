@@ -6635,6 +6635,159 @@ fn app_shell_a_pasted_image_opens() {
     scenario_a_pasted_image_opens(&page.tab, Surface::AppShell, &fx);
 }
 
+// ── scenario: a pasted image carries its saved original (#324) ─────────────────────────────────
+
+/// #324's fixture: a pasted image whose inline copy is the 1×1 PNG, and — as Claude Code 2.1.283
+/// writes it, two records after the prompt — an `inlined_image_paths` record naming where the client
+/// saved the original: the 1200×260 PNG, in the store's `<home>/uploads/<session id>/`. Returns the
+/// original's path, so a case can take it away.
+fn fixture_pasted_original(name: &str, turns: u32) -> (Fixture, PathBuf) {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(turns, Shape::default());
+    jsonl += &harness::pasted_image_sized(
+        "here is a screenshot",
+        "2026-09-01T04:00:00.000Z",
+        harness::TINY_PNG_B64,
+    );
+    let original = stores
+        .root
+        .join("uploads")
+        .join(SID)
+        .join("0a1b2c3d-image.png");
+    std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+    std::fs::write(&original, harness::base64_bytes(harness::WIDE_PNG_B64)).unwrap();
+    jsonl += "{\"type\":\"attachment\",\"timestamp\":\"2026-09-01T04:00:00.100Z\",\"attachment\":{\"type\":\"total_tokens_reminder\",\"text\":\"<total_tokens>1</total_tokens>\"}}\n";
+    jsonl += &format!(
+        "{{\"type\":\"attachment\",\"timestamp\":\"2026-09-01T04:00:00.200Z\",\"attachment\":{{\"type\":\"inlined_image_paths\",\"paths\":[{:?}]}},\"rendered\":[{{\"content\":\"for the model\"}}]}}\n",
+        original.display().to_string()
+    );
+    jsonl += &assistant_at("looking", "2026-09-01T04:00:05.000Z");
+    let path = stores.claude_session(SID, &jsonl);
+    (Fixture { base, path, turns }, original)
+}
+
+/// #324: a pasted image is a file on disk too. Once the client names where it saved the original,
+/// both pages offer the file manager beside the image — never sending the request here: the page's
+/// `fetch` is wrapped so `/__reveal` is recorded, because `open -R` must never run on the machine
+/// the suite runs on — and the app shell's lightbox opens the ORIGINAL (1200 px wide, where the
+/// inline copy is 1), saying so, and the inline copy once the original is gone. The classic page
+/// served with no file hosting keeps opening the copy it shows. The reminder the record carries for
+/// the model is drawn nowhere.
+fn scenario_a_pasted_image_carries_its_saved_original(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    original: &std::path::Path,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    let reveal = match surface {
+        Surface::Classic => ".amark .areveal",
+        Surface::AppShell => ".prompt-attachment-reveal",
+    };
+    until(
+        tab,
+        &format!("!!document.querySelector('{reveal}')"),
+        "the file manager offered beside the pasted image",
+        Duration::from_secs(20),
+        "document.querySelectorAll('.amark, .prompt-attachment').length + ' attachment cards'",
+    );
+    eval(tab, "window.__revealed = []; var f = window.fetch; window.fetch = function (u, o) { if (String(u).indexOf('__reveal') >= 0) { window.__revealed.push(String(u)); return Promise.resolve(new Response('', { status: 200 })); } return f.apply(this, arguments); }; 'ok'");
+    eval(
+        tab,
+        &format!("document.querySelector('{reveal}').click(); 'ok'"),
+    );
+    until(
+        tab,
+        "window.__revealed.length === 1",
+        "the reveal to ask for the original, stamped",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__revealed)",
+    );
+    let asked = eval(tab, "window.__revealed[0]");
+    let asked = asked.as_str().unwrap_or("");
+    assert!(
+        asked.contains("0a1b2c3d-image.png") && asked.contains("sig="),
+        "{surface:?}: the reveal names the saved original, with its stamp: {asked}"
+    );
+    assert_eq!(
+        eval(tab, "document.body.innerText.indexOf('for the model') < 0"),
+        true,
+        "{surface:?}: the reminder addressed to the model is not drawn"
+    );
+    let open = match surface {
+        Surface::Classic => "document.querySelector('.amark .aimg').click(); 'ok'",
+        Surface::AppShell => "document.querySelector('.prompt-image').click(); 'ok'",
+    };
+    let shown = match surface {
+        Surface::Classic => "(function(){ var i = document.querySelector('.lightbox .lb-stage img'); return i && i.complete ? i.naturalWidth : 0; })()",
+        Surface::AppShell => "(function(){ var l = document.querySelector('.image-lightbox'); var i = l && l.querySelector('img'); return l && !l.hidden && i && i.complete ? i.naturalWidth : 0; })()",
+    };
+    eval(tab, open);
+    let want = if surface == Surface::AppShell {
+        1200
+    } else {
+        1
+    };
+    until(
+        tab,
+        &format!("({shown}) === {want}"),
+        "the lightbox to show the image at the width it should",
+        Duration::from_secs(10),
+        shown,
+    );
+    if surface == Surface::AppShell {
+        assert_eq!(
+            eval(
+                tab,
+                "document.querySelector('[data-lightbox-status]').textContent"
+            ),
+            "original",
+            "the lightbox says it is showing the original"
+        );
+        eval(
+            tab,
+            "document.querySelector('.image-lightbox [data-lightbox-close]').click(); 'ok'",
+        );
+        std::fs::remove_file(original).unwrap();
+        settle();
+        eval(tab, open);
+        until(
+            tab,
+            &format!("({shown}) === 1"),
+            "the lightbox to fall back to the copy the session kept once the original is gone",
+            Duration::from_secs(10),
+            shown,
+        );
+        assert_eq!(
+            eval(
+                tab,
+                "document.querySelector('[data-lightbox-status]').textContent"
+            ),
+            "saved with the session",
+            "…and to say that is what it shows"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_pasted_image_carries_its_saved_original() {
+    let _serial = serial();
+    let (fx, original) = fixture_pasted_original("scenario-paste-original-classic", 8);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_pasted_image_carries_its_saved_original(&page.tab, Surface::Classic, &original);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_a_pasted_image_carries_its_saved_original() {
+    let _serial = serial();
+    let (fx, original) = fixture_pasted_original("scenario-paste-original-app", 8);
+    let page = open(Surface::AppShell, &fx, 2712);
+    scenario_a_pasted_image_carries_its_saved_original(&page.tab, Surface::AppShell, &original);
+}
+
 // ── scenario: descending from a fleet row leaves a way back (#143) ────────────────────────────
 
 /// #143: the app shell navigates IN-PAGE, so the way back to a parent is a hint recorded at the
