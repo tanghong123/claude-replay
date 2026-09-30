@@ -10069,3 +10069,293 @@ fn a_phone_counts_its_panes_past_ninety_nine() {
         assert_eq!(x["inside"], true, "each count stays inside its icon: {c}");
     }
 }
+
+/// #314's world on a PHONE (#340): the same 60-turn session, its head held, but a tail budget big
+/// enough that a fling from the end stays inside the tail — so what a case measures is the landing,
+/// not the loading card's own re-anchoring rule. The committed log is ~64 KB, and a tail is asked
+/// for only on a log over twice the budget. `head` goes in front of the 60 turns (so it arrives
+/// with the head), and `tasks` into the session's task store.
+fn tail_first_phone(
+    port: u16,
+    case: &str,
+    budget: u32,
+    head: &str,
+    tasks: &[(&str, &str, &str)],
+) -> (
+    harness::Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    let base = harness::base(case);
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        TAIL_SID,
+        &format!(
+            "{head}{}",
+            harness::long_session(60, harness::Shape::default())
+        ),
+    );
+    if !tasks.is_empty() {
+        stores.claude_tasks(TAIL_SID, tasks);
+    }
+    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    harness::phone(&tab, 390, 844);
+    m.pair(&tab);
+    harness::hold_the_head(&tab);
+    m.open(
+        &tab,
+        &format!("?ui=app&session={TAIL_SID}&tailBudget={budget}"),
+    );
+    harness::until(
+        &tab,
+        "window.__headRequested >= 1 && !!document.querySelector('.transcript .turn.user')",
+        "the tail drawn, and the head asked for behind it",
+        Duration::from_secs(20),
+        "JSON.stringify({ asked: window.__headRequested, turns: document.querySelectorAll('.transcript .turn.user').length })",
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    (m, browser, tab)
+}
+
+/// #340, the owner (iPhone, with a viewport history): "I just opened agent-monitor on the phone. Was
+/// at the last turn, scroll up a bit, and it jumped to some turns much earlier." The export: the
+/// finger lifted, the page glided on (iOS momentum: scroll events, no input), and 1.7s later the
+/// head of the tail-first open landed INTO the glide. The landing wrote the reader's offset in the
+/// new, 100,000px-taller page; the glide carried on from its own old offset, which the engine then
+/// read as the reader at turn 4, and it bounced to turn 82. Chrome does not drop such a write, so
+/// the glide is emulated as iOS runs it: a finger's touch, then a fling that writes the offset from
+/// ITS OWN position every 16ms, whatever else wrote in between — on a timer, as the compositor runs
+/// it, never waiting on the page's frames (a headless tab produces those lazily, #204). The head is released a few frames
+/// in. The landing now waits for a still view: it does not happen during the glide, and when it does
+/// the reader is on the turn the glide left them on, with no invariant broken.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_fling_keeps_its_turn_when_the_head_lands() {
+    let _serial = serial();
+    let (_m, _b, tab) = tail_first_phone(2722, "tail-first-fling", 24576, "", &[]);
+    let s = harness::Surface::AppShell;
+    let room = harness::eval(
+        &tab,
+        "(function(){ var t = document.querySelector('.transcript'); return Math.round(t.scrollTop); })()",
+    );
+    assert!(
+        room.as_i64().unwrap_or(0) > 2000,
+        "the tail is tall enough for the glide to stay inside it: {room}"
+    );
+    let start = harness::sticky_turn(&tab, s).map(|t| t.0).unwrap_or(0);
+    assert_eq!(start, 60, "the reader starts at the last turn");
+    harness::eval(
+        &tab,
+        r#"(function(){
+        var s = document.querySelector('.transcript');
+        window.__flingDone = false; window.__flingFrames = 0; window.__landedInGlide = false;
+        var landed = function(){ return (window.__viewportHistory.deltas || []).some(function(d){ return d.shift > 0; }); };
+        try {
+            var t = new Touch({ identifier: 1, target: s, clientX: 195, clientY: 500 });
+            s.dispatchEvent(new TouchEvent('touchstart', { touches: [t], targetTouches: [t], changedTouches: [t], bubbles: true }));
+            s.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [t], bubbles: true }));
+        } catch (e) { window.__touchError = String(e); }
+        var pos = s.scrollTop, v = 2.2, last = performance.now();
+        function step() {
+            var now = performance.now(), dt = Math.min(50, now - last); last = now;
+            pos -= v * dt; v *= Math.pow(0.9975, dt);
+            if (landed()) window.__landedInGlide = true;
+            if (v < 0.05 || pos <= 0) { window.__flingDone = true; return; }
+            s.scrollTop = pos; window.__flingFrames++;
+            setTimeout(step, 16);
+        }
+        setTimeout(step, 16);
+        return 1;
+    })()"#,
+    );
+    harness::until(
+        &tab,
+        "window.__flingFrames >= 6",
+        "the glide to be under way",
+        Duration::from_secs(5),
+        "window.__flingFrames + ' ' + (window.__touchError || '')",
+    );
+    harness::eval(&tab, "window.__releaseHead(); 1");
+    harness::until(
+        &tab,
+        "window.__flingDone",
+        "the glide to come to rest",
+        Duration::from_secs(10),
+        "window.__flingFrames",
+    );
+    assert_eq!(
+        harness::eval(&tab, "window.__landedInGlide"),
+        false,
+        "the head does not land while the view is gliding"
+    );
+    let glided = harness::sticky_turn(&tab, s).map(|t| t.0).unwrap_or(0);
+    assert!(
+        glided < start && glided >= start - 10,
+        "the glide moved the reader up a few turns inside the tail: {start} -> {glided}"
+    );
+    harness::until(
+        &tab,
+        "(window.__viewportHistory.deltas || []).some(function(d){ return d.shift > 0; })",
+        "the head to land once the view is still",
+        Duration::from_secs(10),
+        "window.__viewportHistory.deltas.length",
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    let now = harness::sticky_turn(&tab, s).map(|t| t.0).unwrap_or(0);
+    assert!(
+        (now - glided).abs() <= 1,
+        "the reader is on the turn the glide left them on: {glided} -> {now}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken across the landing"
+    );
+}
+
+/// #342, the owner (iPhone, with a screenshot): "It stopped at the end (turn 141), but the turn badge
+/// said 8. After a while, the badge shows the right counts." A tail-first open draws the last few
+/// turns first; their NUMBERS are true from the first moment, and the phone's Turns icon counted
+/// how many had been drawn. While the head is held here the icon reads the session's count (the
+/// highest turn number), the Turns list says which turns are still loading, and Tasks and Agents —
+/// from the whole session's meta, including agents spawned in the head — are whole too; once the
+/// head lands the three are the same and the note is gone.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_tail_first_open_counts_the_whole_session() {
+    let _serial = serial();
+    let mut head = String::new();
+    for i in 0..3u32 {
+        head += &harness::agent_spawn(&format!("call_h{i}"), "Explore", 10 + i * 2);
+        head += &harness::agent_result(
+            &format!("call_h{i}"),
+            &format!("aExplore-h{i}"),
+            "Explore",
+            11 + i * 2,
+        );
+    }
+    let (_m, _b, tab) = tail_first_phone(
+        2723,
+        "tail-first-counts",
+        8192,
+        &head,
+        &[
+            ("1", "draw the tail", "completed"),
+            ("2", "land the head", "in_progress"),
+            ("3", "count the turns", "pending"),
+        ],
+    );
+    let counts = "JSON.stringify([].slice.call(document.querySelectorAll('.phone-pane-count')).map(function (c) { return c.hidden ? '' : c.textContent; }))";
+    let drawn = harness::eval(
+        &tab,
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+    )
+    .as_i64()
+    .unwrap_or(0);
+    assert!(
+        drawn > 0 && drawn < 60,
+        "the head is held: only the tail's turns are drawn ({drawn})"
+    );
+    harness::until(
+        &tab,
+        &format!("{counts} === '[\"60\",\"3\",\"3\"]'"),
+        "the pane icons to count the whole session while the head is held",
+        Duration::from_secs(10),
+        counts,
+    );
+    let note = harness::eval(
+        &tab,
+        "(document.querySelector('#navigatorTurns .outline-turns-loading') || {}).textContent || ''",
+    );
+    let first = 61 - drawn;
+    assert_eq!(
+        note.as_str(),
+        Some(format!("Turns 1–{} are still loading", first - 1).as_str()),
+        "the Turns list says which turns are still to come"
+    );
+    harness::eval(&tab, "window.__releaseHead(); 1");
+    harness::until(
+        &tab,
+        HEAD_LANDED,
+        "the head to land in front of the tail",
+        Duration::from_secs(20),
+        OUTLINE_TURNS,
+    );
+    harness::until(
+        &tab,
+        &format!("{counts} === '[\"60\",\"3\",\"3\"]' && !document.querySelector('#navigatorTurns .outline-turns-loading')"),
+        "the same counts, and no note, once the head has landed",
+        Duration::from_secs(10),
+        counts,
+    );
+}
+
+/// #341, the owner (iPhone): after saving the viewport history and closing the saved log, "I got a
+/// blank screen saying my phone is not paired"; reopening the monitor worked. The pairing cookie is
+/// `SameSite=Strict`, which a browser withholds from any navigation that did not start on the site
+/// itself — a link in another page or app — and the gate then answered with its one-line refusal.
+/// A paired browser that follows a link from another origin (a `data:` page here, which is
+/// cross-site) now lands on the app: a refused PAGE navigation retries once from the page itself,
+/// which is same-site and carries the cookie. An unpaired browser still gets the refusal — after
+/// that one retry, and no loop — now as a page that says what to do.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
+    let _serial = serial();
+    let base = harness::base("paired-cross-site");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(4, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2724, &base, Some(&stores), true);
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    m.pair(&tab);
+    let target = m.url(&format!("?ui=app&session={PHONE_SID}"));
+    tab.navigate_to(&format!(
+        "data:text/html,<a id=go href=\"{target}\" style=\"font-size:40px\">open the monitor</a>"
+    ))
+    .unwrap();
+    tab.wait_until_navigated().unwrap();
+    tab.find_element("#go").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "location.port === '2724' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        "a paired browser arriving by a link from another site to land on the session",
+        Duration::from_secs(20),
+        "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
+    );
+    // A browser that was never paired: the refusal, as a page, after one retry and no more.
+    let fresh = harness::chrome();
+    let other = fresh.new_tab().unwrap();
+    other.navigate_to(&target).unwrap();
+    harness::until(
+        &other,
+        "/not paired/i.test(document.body ? document.body.innerText : '') && !document.documentElement.hidden",
+        "an unpaired browser to be told it is not paired",
+        Duration::from_secs(20),
+        "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
+    );
+    let origin = harness::eval(&other, "performance.timeOrigin");
+    std::thread::sleep(Duration::from_millis(2000));
+    assert_eq!(
+        harness::eval(&other, "performance.timeOrigin"),
+        origin,
+        "the refusal stays put: no retry loop"
+    );
+    let text = harness::eval(&other, "document.body.innerText");
+    assert!(
+        text.as_str().unwrap_or("").contains("agent-monitor --pair"),
+        "the refusal says how to pair: {text}"
+    );
+    assert!(
+        !harness::eval(&other, "document.cookie")
+            .as_str()
+            .unwrap_or("")
+            .contains("cmauth"),
+        "and no cookie was minted"
+    );
+}

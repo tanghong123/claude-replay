@@ -240,7 +240,7 @@ const sessionIndex = new SessionIndexStore({
   error: () => toast("Session scan failed — retrying")
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; recordState.headProgress = null; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; heldRecords = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   // #221: a first open with no cache waits on the server folding the whole transcript. Say so,
   // rather than leaving a blank page a reader cannot tell from a hang, and say that it is a
@@ -675,7 +675,19 @@ function renderHeader() {
 }
 
 let lastRecordCount = -1; // -1: nothing applied since the last reset — the next apply is the open, not growth
-function updateRecords({ records, meta, changedFrom, prepended }) {
+// #340: a tail-first open's head lands only on a STILL view. Landing moves the reader's offset by
+// the whole head (100,000px on the owner's 141-turn session), and on iOS a write into a fling that
+// is still gliding does not stick: the glide carries on from its old offset, which in the new page
+// is a turn near the start. So while the view moves, the snapshot waits here — every later one too,
+// since each carries the head — and the latest is applied once `whenStill` says so.
+let heldRecords = null;
+function updateRecords(update) {
+  if (!heldRecords && !(update.prepended && viewport.readerMoving())) { applyRecords(update); return; }
+  const first = !heldRecords;
+  heldRecords = first ? update : { records: update.records, meta: update.meta, changedFrom: Math.min(heldRecords.changedFrom, update.changedFrom), prepended: heldRecords.prepended || update.prepended };
+  if (first) viewport.whenStill(() => { const held = heldRecords; heldRecords = null; if (held) applyRecords(held); });
+}
+function applyRecords({ records, meta, changedFrom, prepended }) {
   const before = lastRecordCount; const wasFollowing = recordState.following;
   const metaArrived = meta && meta !== recordState.meta;
   recordState.records = records; recordState.meta = meta;
@@ -1160,7 +1172,13 @@ function toggleDrawer(key) {
 window.addEventListener("resize", stackOutlineHeads);
 function renderNavigator() {
   const turns = recordState.units.filter(unit => unit.type === "user");
-  byId("navigatorTurnCount").textContent = turns.length;
+  // #342: while a tail-first open's head is still coming (#314), the turns drawn are the last few —
+  // the owner's 141-turn session read "8" — but their NUMBERS are the true ones from the first
+  // moment, so the session's count is the highest of them. Once the head lands they are all here.
+  const loading = turns.length > 0 && recordState.units.some(unit => unit.type === "pending");
+  const turnCount = loading ? Math.max(...turns.map(unit => unit.turn || 0)) : turns.length;
+  const earlier = loading ? (turns[0].turn || 1) - 1 : 0;
+  byId("navigatorTurnCount").textContent = turnCount;
   // A compaction is an epoch tick between turns (#69, restyled in #86): a hairline with a glyph
   // for how it happened and the context size from → to, in the rows' own type, no prose — so a
   // session that compacted fifteen times reads as fifteen chapters. The tick jumps to the
@@ -1168,7 +1186,7 @@ function renderNavigator() {
   const epochs = [];
   recordState.records.forEach((record, i) => { if (record.kind === "compaction") epochs.push({ at: i, tick: compactionTick(record.head || {}) }); });
   const rows = [...turns.map(unit => ({ at: unit.from, unit })), ...epochs].sort((a, b) => a.at - b.at);
-  byId("navigatorTurns").innerHTML = rows.map(r => r.unit
+  byId("navigatorTurns").innerHTML = (earlier > 0 ? `<div class="activity-empty outline-turns-loading" role="status">Turns 1–${earlier} are still loading</div>` : "") + rows.map(r => r.unit
     ? `<button class="outline-turn-row" data-turn-record="${r.unit.from}" title="${escapeText(r.unit.label)}"><span class="outline-number">${String(r.unit.turn).padStart(2, "0")} ·</span><span class="outline-label">${escapeText(r.unit.label)}</span></button>`
     : `<button class="outline-epoch" type="button" data-turn-record="${r.at}" title="${escapeText(r.tick.title)}${r.tick.sizes ? ` · ${escapeText(r.tick.sizes)}` : ""} — jump to the compaction" aria-label="${escapeText(r.tick.title)}${r.tick.sizes ? `, ${escapeText(r.tick.sizes)}` : ""}"><span class="outline-epoch-line" aria-hidden="true"></span><span class="outline-epoch-glyph" aria-hidden="true">${r.tick.glyph}</span>${r.tick.sizes ? `<span class="outline-epoch-sizes">${escapeText(r.tick.sizes)}</span>` : ""}<span class="outline-epoch-line" aria-hidden="true"></span></button>`
   ).join("") || '<div class="activity-empty">No turns</div>';
@@ -1268,11 +1286,11 @@ function renderNavigator() {
   // only what survived the live filter (#186), the state filter (#218) and the untitled rule
   // (#217), so on any real session its target was past the end and the click did nothing at all.
   recordState.shownTaskRows = taskShown.flatMap(group => group.rows);
-  renderSessionInfo(turns.length, agents.length);
+  renderSessionInfo(turnCount, agents.length);
   document.querySelectorAll("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   stackOutlineHeads();
   document.querySelector(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
-  mobileShell?.counts(turns.length, counted.length, agents.length);
+  mobileShell?.counts(turnCount, counted.length, agents.length);
 }
 const outlineSummary = (active, done, total) => !total ? "0" : `${active ? `<span class="outline-stat-item active"><i class="outline-stat-dot"></i>${active} active</span>` : ""}<span class="outline-stat-item done"><i class="outline-stat-dot"></i>${done}/${total} done</span>`;
 // The info pane (#67, #68): only what the shell does not already show — the title, the agent and

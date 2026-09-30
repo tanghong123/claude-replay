@@ -53,6 +53,12 @@ const OVERSCAN = 1500;
 const HOLD_SLACK = 80;
 const ACQUIRE_SLACK = 2;
 const USER_INTENT_MS = 320;
+// #340: how long the view must go without a scroll event before it may be still, and how far apart
+// the two reads that confirm it are. A fling on iOS goes on for seconds after the finger lifts with
+// no input behind it — only scroll events — and the main thread can go 100ms without delivering one
+// while the glide carries on in the compositor, so quiet alone is not enough: two reads must agree.
+const STILL_MS = 200;
+const STILL_READ_MS = 50;
 
 export class Viewport extends VirtualWindow {
   constructor(scroller, inner, state, actions) {
@@ -108,6 +114,59 @@ export class Viewport extends VirtualWindow {
     this.pending = null;
     this.pendingTries = 0;
     addEventListener("pagehide", () => this.remember());
+    // #340: whether the view is still moving, by ANY means — a scroll event of any kind, or a
+    // finger on the glass — for `whenStill`. Kept here rather than in the engine: only this page
+    // makes a change that must wait for it (a tail-first open's head landing, #314).
+    this.lastScrollAt = -1e9;
+    this.touching = 0;
+    this.stillWaiters = [];
+    this.stillTimer = 0;
+    for (const type of ["touchstart", "touchend", "touchcancel"]) {
+      scroller.addEventListener(type, event => { this.touching = event.touches.length; this.lastScrollAt = performance.now(); }, { passive: true, capture: true });
+    }
+  }
+
+  /** #340: every scroll event, of any kind, is the view moving — noted on the way through to the
+   *  engine's own handler (the one scroll listener, the engine's). */
+  onScroll(event) {
+    this.lastScrollAt = performance.now();
+    super.onScroll(event);
+  }
+
+  /** #340: is the view moving under the reader — a finger down, their input within the intent
+   *  window, or a scroll event within `STILL_MS`? The last is what the engine's own rest clock
+   *  cannot see: on iOS a fling glides on for seconds after the finger lifts, and a scroll offset
+   *  written into it does not stick — the glide carries on from its own position, and the write can
+   *  surface later, out of order. The owner's export (2026-09-30) shows a head landing written into
+   *  such a glide, read back 8ms later as the reader at turn 4, and a bounce to turn 82. */
+  readerMoving() {
+    return this.touching > 0 || this.readerOwnsPosition() || performance.now() - this.lastScrollAt < STILL_MS;
+  }
+
+  /** #340: run `fn` once the view is still — `readerMoving` false, and two reads of the offset
+   *  `STILL_READ_MS` apart agreeing with no scroll event between them. */
+  whenStill(fn) {
+    this.stillWaiters.push(fn);
+    this.checkStill();
+  }
+
+  checkStill() {
+    clearTimeout(this.stillTimer);
+    if (!this.stillWaiters.length) return;
+    if (this.readerMoving()) { this.stillTimer = setTimeout(() => this.checkStill(), STILL_MS / 2); return; }
+    const top = this.scroller.scrollTop, seen = this.lastScrollAt;
+    this.stillTimer = setTimeout(() => {
+      if (this.scroller.scrollTop !== top || this.lastScrollAt !== seen || this.readerMoving()) { this.checkStill(); return; }
+      const waiters = this.stillWaiters;
+      this.stillWaiters = [];
+      for (const waiter of waiters) waiter();
+    }, STILL_READ_MS);
+  }
+
+  /** Drop whatever waits for stillness — the session it was for is gone. */
+  cancelStill() {
+    clearTimeout(this.stillTimer);
+    this.stillWaiters = [];
   }
 
   // ── what a unit is, for the engine ──────────────────────────────────────

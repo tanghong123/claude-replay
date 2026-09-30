@@ -1307,6 +1307,44 @@ impl HttpResponse {
             headers: Vec::new(),
         }
     }
+    /// #341: the refusal a browser LOADING A PAGE gets, where [`unauthorized`](Self::unauthorized)
+    /// answers everything else. The pairing cookie is `SameSite=Strict`, so a browser withholds it
+    /// from any navigation that did not start on this site — a link in another page or app, and
+    /// whatever Safari counts as one on a phone (the owner met the one-line refusal after saving a
+    /// file, and reopening the page let them straight in). The page therefore first retries ONCE
+    /// from itself: a navigation this page starts is same-site, so a paired browser's cookie comes
+    /// along and the retry lands on the app. A timestamp in sessionStorage bounds it — a browser that
+    /// really is unpaired, or that has no storage, retries at most once in ten seconds and is then
+    /// shown `msg` — the HOST's way in (#317: the gate is shared), which is why the page adds no
+    /// words of its own about how to pair. Nothing here is a secret; it is what the plain refusal
+    /// always said, as a page.
+    pub fn refusal_page(msg: &str) -> Self {
+        let msg = msg
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
+        let body = format!(
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+             <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+             <title>Not paired</title>\
+             <script>(function(){{try{{var k='cmauth-retry',t=+sessionStorage.getItem(k)||0;\
+             if(Date.now()-t>10000){{sessionStorage.setItem(k,String(Date.now()));\
+             document.documentElement.hidden=true;location.reload();}}}}catch(e){{}}}})();</script>\
+             <style>body{{margin:0;font:16px/1.5 -apple-system,system-ui,sans-serif;color:#1f2430;\
+             background:#f7f8fa}}main{{max-width:34rem;margin:18vh auto 0;padding:0 20px}}\
+             h1{{font-size:20px;margin:0 0 8px}}p{{margin:0 0 10px;color:#4a5263}}\
+             code{{font:14px ui-monospace,Menlo,monospace}}\
+             @media(prefers-color-scheme:dark){{body{{background:#15171c;color:#e6e8ee}}\
+             p{{color:#a9b0bf}}}}</style></head><body><main>\
+             <h1>This browser is not paired</h1><p>{msg}.</p></main></body></html>"
+        );
+        Self {
+            code: "401 Unauthorized",
+            content_type: "text/html; charset=utf-8",
+            body: body.into_bytes(),
+            headers: Vec::new(),
+        }
+    }
     pub fn forbidden(msg: &'static str) -> Self {
         Self {
             code: "403 Forbidden",
@@ -1389,6 +1427,19 @@ impl Request<'_> {
 }
 
 /// A header's value by case-insensitive name (`headers` is the raw block, one per line).
+/// #341: whether a request is a browser loading a PAGE — a top-level navigation — rather than the
+/// page's own fetch, a probe or a script. `Sec-Fetch-Dest` says so where the browser sends it (every
+/// current one, Safari since 16.4); without it, a GET that accepts HTML.
+fn is_page_load(method: &str, headers: &str) -> bool {
+    if method != "GET" {
+        return false;
+    }
+    match header_value(headers, "sec-fetch-dest") {
+        Some(dest) => dest.eq_ignore_ascii_case("document"),
+        None => header_value(headers, "accept").is_some_and(|a| a.contains("text/html")),
+    }
+}
+
 fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
     headers.lines().find_map(|l| {
         let (k, v) = l.split_once(':')?;
@@ -1468,7 +1519,7 @@ pub struct AuthGate {
 
 /// The refusal a gate gives when its host sets none — the monitor's own.
 pub const DEFAULT_REFUSAL: &str =
-    "not paired — run `claude-monitor --pair` and open the printed URL";
+    "not paired — run `agent-monitor --pair` and open the printed URL";
 
 /// The gate's ruling on one request.
 pub(crate) enum Access {
@@ -1962,6 +2013,19 @@ fn serve_connection(
     };
 
     let (r, set_cookie, redirect_root) = match access {
+        // #341: a refused PAGE load is said on stderr — whether a cookie came, and what the browser
+        // said the navigation's site was (never the token) — so a report of "it said not paired"
+        // has something to be read against; and it gets the refusal as a page that retries once.
+        Access::Denied if is_page_load(&method, &headers) => {
+            let cookie = match (presented.is_some(), from_cookie) {
+                (false, _) => "no cookie",
+                (true, true) => "a cookie that did not match",
+                (true, false) => "a token that did not match",
+            };
+            let site = header_value(&headers, "sec-fetch-site").unwrap_or("-");
+            eprintln!("gate: refused a page load of /{name} — {cookie}, sec-fetch-site {site}");
+            (HttpResponse::refusal_page(gate.refusal), None, false)
+        }
         Access::Denied => (
             // A 401 is a well-formed reply: the fleet's `status_code` probe reads a gated
             // remote monitor as "serving" (and its own tunnel passes same-user anyway).
@@ -2639,6 +2703,54 @@ mod tests {
         let production = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
         let bare = production.matches(concat!("\"text/plain", "\"")).count();
         assert_eq!(bare, 0, "a plain-text reply without its charset");
+    }
+
+    /// #341: a refused PAGE load gets the refusal as a page that retries once from itself (a
+    /// navigation the page starts carries the Strict cookie a cross-site link withheld), bounded by a
+    /// timestamp, and still in the host's words; any other refused request keeps the plain text.
+    #[test]
+    fn a_refused_page_load_retries_once_in_the_hosts_words() {
+        use std::io::{Read, Write};
+        let handler: RouteHandler =
+            std::sync::Arc::new(|_: &Request| HttpResponse::html("the page".to_string()));
+        let port = spawn_listener_gated(
+            0,
+            handler,
+            AuthGate::for_test(Some("t0k")).with_refusal("open the dashboard with `agent-metrics`"),
+        )
+        .unwrap();
+        let ask = |dest: &str| {
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let head = format!(
+                "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Dest: {dest}\r\nConnection: close\r\n\r\n"
+            );
+            s.write_all(head.as_bytes()).unwrap();
+            let mut raw = String::new();
+            s.read_to_string(&mut raw).unwrap();
+            raw
+        };
+        let page = ask("document");
+        assert!(page.starts_with("HTTP/1.1 401"), "{page}");
+        assert!(
+            page.contains("Content-Type: text/html; charset=utf-8"),
+            "{page}"
+        );
+        assert!(page.contains("location.reload()"), "it retries: {page}");
+        assert!(
+            page.contains("sessionStorage") && page.contains("10000"),
+            "once, bounded: {page}"
+        );
+        assert!(
+            page.contains("open the dashboard with `agent-metrics`"),
+            "in the host's words: {page}"
+        );
+        assert!(!page.contains("Set-Cookie"), "{page}");
+        let fetch = ask("empty");
+        assert!(
+            fetch.contains("Content-Type: text/plain; charset=utf-8")
+                && fetch.ends_with("open the dashboard with `agent-metrics`"),
+            "a fetch keeps the plain refusal: {fetch}"
+        );
     }
 
     /// #317: the gate is shared — agent-metrics serves its dashboard through this listener — so a

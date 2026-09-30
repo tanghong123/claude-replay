@@ -62,7 +62,12 @@ why the gate must know the tailnet name (#331): `origin_ok` (the DNS-rebinding a
 every file read and every write asks) knew only the loopback, so a PAIRED phone was told "reading
 local files requires pairing". Both binaries now hand the gate `pair_phone::trusted_hosts(port)`: the
 names this machine's `tailscale serve` relays to THIS port (read lazily, again on a miss at most every
-30 s), plus any `AGENT_MONITOR_TRUSTED_HOSTS` lists — never a `*.ts.net` wildcard.
+30 s), plus any `AGENT_MONITOR_TRUSTED_HOSTS` lists — never a `*.ts.net` wildcard. The pairing
+cookie is `SameSite=Strict`, which a browser WITHHOLDS from a navigation that did not start on the
+site (a link in another app; the owner met it on a phone after saving a file, #341), so a refused
+PAGE load gets `HttpResponse::refusal_page`: it reloads once from itself — same-site, so the cookie
+comes along — bounded by a 10 s sessionStorage stamp, then shows the host's refusal words; fetches
+keep the plain 401, and each refused page load is one stderr line (never the token).
 **The page saves to a Home Screen as itself** (#320): the tab icon's green mark, square and opaque
 (`claude-monitor/src/icons/`, rendered from `app-icon.svg` by `scripts/render-app-icon.sh`), named by
 the app shell's and v1's classic heads with a manifest and the label "Agent Monitor"; iOS asks the root
@@ -730,7 +735,14 @@ landing is a PREPEND: `recordsChanged` takes `{from, shift}` and translates the 
 moved index space (a reader on the card re-anchors on the turn below it). Without that, the anchor's
 key is found at a new index, which reads as the #165 identity shift and falls back to a position
 `shift` units wrong. The history records the shift, and the sandbox counts the landing as part of the
-open. The classic page never asks for a tail and is unchanged.
+open. **The landing waits for a STILL view** (#340): on iOS a fling glides on for seconds after the
+finger lifts — scroll events, no input — and an offset written into the glide does not stick (it
+carries on from its old offset, which in the landed page is a turn near the start; the owner's export
+read turn 4, then bounced to 82). So `updateRecords` holds a prepend, and every later snapshot with
+it, until `Viewport.whenStill` (no scroll event for 200 ms, no finger down, and two reads 50 ms apart
+agreeing); `a_phone_fling_keeps_its_turn_when_the_head_lands` emulates the glide on a 16 ms timer.
+While the head is still coming the phone's Turns count is the highest turn NUMBER drawn (#342). The
+classic page never asks for a tail and is unchanged.
 
 **`claude-replay`** (root) — the thin assembly crate: clap CLI (`run_viewer`), `jdi/` the
 **`agent-jdi`** binary (unattended-run supervisor; see `src/jdi/DESIGN.md`), and compat
