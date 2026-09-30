@@ -7482,6 +7482,7 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
 #[test]
 #[ignore = "needs a built agent-monitor-v2"]
 fn a_fresh_monitor_serves_a_session_before_any_page_lists_them() {
+    let _serial = serial();
     let base = harness::base("fresh-monitor-pull");
     let stores = harness::Stores::new(&base);
     let sid = "aaaa1111-0000-4000-8000-000000000309";
@@ -7536,6 +7537,7 @@ fn a_fresh_monitor_serves_a_session_before_any_page_lists_them() {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_pairs_by_a_one_time_code() {
+    let _serial = serial();
     let base = harness::base("pair-phone");
     let stores = harness::Stores::new(&base);
     stores.claude_session(
@@ -7731,6 +7733,7 @@ const DRAWER_STATE: &str = "(function(){ var s = document.querySelector('#app > 
 #[test]
 #[ignore]
 fn a_phone_session_list_is_a_drawer_over_part_of_the_view() {
+    let _serial = serial();
     let (_m, _b, tab) = phone_world(2830, "phone-drawer", 390, 844);
     let handle = "(function(){ var h = document.getElementById('drawerHandle'); var r = h.getBoundingClientRect(); return JSON.stringify({ at: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], expanded: h.getAttribute('aria-expanded') }); })()";
     let hittable = |sel: &str| {
@@ -7839,6 +7842,7 @@ fn a_phone_session_list_is_a_drawer_over_part_of_the_view() {
 #[test]
 #[ignore]
 fn a_phone_header_is_title_then_controls_then_the_turn() {
+    let _serial = serial();
     let (m, _b, _t) = phone_world(2809, "phone-header", 390, 844);
     for (w, h) in [(390u32, 844u32), (360, 780)] {
         let (_browser, tab) = phone_tab(&m, w, h);
@@ -7915,6 +7919,7 @@ fn a_phone_header_is_title_then_controls_then_the_turn() {
 #[test]
 #[ignore]
 fn a_phone_opens_each_outline_pane_from_its_icon() {
+    let _serial = serial();
     let (_m, _b, tab) = phone_world(2818, "phone-panes", 390, 844);
     let menu_rows = |sel: &str| {
         format!("(function(){{ var ok = {PHONE_HITTABLE}; var m = document.getElementById('phonePaneMenu'); if (!m || m.hidden) return JSON.stringify({{ open: false }}); var rows = [].slice.call(m.querySelectorAll('{sel}')); var top = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--phone-top')); return JSON.stringify({{ open: true, rows: rows.length, tall: rows.every(function(r){{ return r.getBoundingClientRect().height >= 44; }}), first: rows.length ? ok(rows[0]) : false, below: m.getBoundingClientRect().top >= top }}); }})()")
@@ -8027,6 +8032,7 @@ fn a_phone_opens_each_outline_pane_from_its_icon() {
 #[test]
 #[ignore]
 fn a_phone_text_field_never_zooms_the_page() {
+    let _serial = serial();
     let (_m, _b, tab) = phone_world(2808, "phone-zoom", 390, 844);
     let size = |sel: &str| {
         harness::eval(
@@ -8085,6 +8091,7 @@ fn a_phone_text_field_never_zooms_the_page() {
 #[test]
 #[ignore]
 fn a_phone_switch_closes_the_drawer_and_veils_the_load() {
+    let _serial = serial();
     use headless_chrome::protocol::cdp::Network;
     let (_m, _b, tab) = phone_world(2807, "phone-veil", 390, 844);
     phone_tap(&tab, "#drawerHandle");
@@ -8159,6 +8166,7 @@ fn a_phone_switch_closes_the_drawer_and_veils_the_load() {
 #[test]
 #[ignore]
 fn a_phone_pinches_an_image_to_zoom() {
+    let _serial = serial();
     let base = harness::base("phone-pinch");
     let stores = harness::Stores::new(&base);
     let mut t = harness::long_session(4, harness::Shape::default());
@@ -8239,6 +8247,7 @@ fn a_phone_pinches_an_image_to_zoom() {
 #[test]
 #[ignore]
 fn a_phone_over_the_tailnet_reads_the_session_gzipped() {
+    let _serial = serial();
     let base = harness::base("phone-gzip");
     let stores = harness::Stores::new(&base);
     stores.claude_session(
@@ -8289,6 +8298,7 @@ fn a_phone_over_the_tailnet_reads_the_session_gzipped() {
 #[test]
 #[ignore]
 fn a_phones_controls_are_finger_sized() {
+    let _serial = serial();
     let (m, _b, _t) = phone_world(2840, "phone-targets", 390, 844);
     for (w, h) in [(390u32, 844u32), (360, 780)] {
         let (_browser, tab) = phone_tab(&m, w, h);
@@ -8344,6 +8354,7 @@ fn a_phones_controls_are_finger_sized() {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_phone_parent_button_clears_the_drawer_handle() {
+    let _serial = serial();
     let (_m, _b, tab) = phone_world(2709, "phone-parent", 390, 844);
     phone_tap(&tab, "#phonePane-agents");
     harness::until(
@@ -8394,6 +8405,7 @@ fn a_phone_parent_button_clears_the_drawer_handle() {
 #[test]
 #[ignore]
 fn a_phone_reads_edge_to_edge() {
+    let _serial = serial();
     let (_m, _b, tab) = phone_world(2810, "phone-edge", 390, 844);
     let geo = "(function(){ function box(s){ var e = document.querySelector(s); if (!e) return null; var r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right), Math.round(r.width)]; } var chips = [].slice.call(document.querySelectorAll('.spot-link, .renderer-spot')).filter(function(e){ return e.getBoundingClientRect().width > 0; }).length; var floating = [].slice.call(document.querySelectorAll('.session-navigator, .outline-rail, #navigatorRailExpand, #outlineFooterCost')).filter(function(e){ return e.getBoundingClientRect().width > 0; }).length; return JSON.stringify({ inner: box('.transcript-inner'), prompt: box('.turn.user .user-prompt'), chips: chips, floating: floating }); })()";
     let seen: serde_json::Value =
@@ -8424,6 +8436,7 @@ fn a_phone_reads_edge_to_edge() {
 #[test]
 #[ignore]
 fn a_phone_can_search_the_session() {
+    let _serial = serial();
     let (_m, _b, tab) = phone_world(2817, "phone-search", 390, 844);
     let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
     phone_tap_at(&tab, gx, gy);
@@ -8568,6 +8581,7 @@ const PHONE_ABOVE_THE_CARD: &str = "(function(){ var top = parseFloat(getCompute
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_phone_tasks_drop_down_shows_each_title() {
+    let _serial = serial();
     let (_m, _b, tab) = phone_tasks_world(2701, "phone-task-titles");
     open_phone_tasks(&tab);
     let seen = harness::probe(&tab, "(function(){ var heads = [].slice.call(document.querySelectorAll('#phonePaneMenu .work-task-head')); var worst = null; heads.forEach(function (h) { var s = h.querySelector('.work-copy strong'), sw = s.getBoundingClientRect().width, hw = h.getBoundingClientRect().width; var ratio = Math.round(sw / hw * 100) / 100; if (!worst || ratio < worst.ratio) worst = { ratio: ratio, title: Math.round(sw), row: Math.round(hw), size: parseFloat(getComputedStyle(s).fontSize), text: s.textContent.slice(0, 24) }; }); return { rows: heads.length, worst: worst }; })()");
@@ -8591,6 +8605,7 @@ fn a_phone_tasks_drop_down_shows_each_title() {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_phone_task_card_dims_what_is_behind_it() {
+    let _serial = serial();
     let (_m, _b, tab) = phone_tasks_world(2702, "phone-task-dim");
     open_phone_tasks(&tab);
     open_phone_task_card(&tab, 0);
@@ -8637,6 +8652,7 @@ fn a_phone_task_card_dims_what_is_behind_it() {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_phone_task_card_lies_over_the_open_tasks_pane() {
+    let _serial = serial();
     let (_m, _b, tab) = phone_tasks_world(2703, "phone-task-over-pane");
     open_phone_tasks(&tab);
     let pane_open = "!document.getElementById('phonePaneMenu').hidden";
@@ -8703,6 +8719,7 @@ fn a_phone_task_card_lies_over_the_open_tasks_pane() {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_phone_tasks_drop_down_lists_every_state_with_jumps() {
+    let _serial = serial();
     let (_m, _b, tab) = phone_tasks_world(2704, "phone-task-states");
     open_phone_tasks(&tab);
     let seen = harness::probe(&tab, &format!("(function(){{ var ok = {PHONE_HITTABLE}; var m = document.getElementById('phonePaneMenu'); var groups = [].slice.call(m.querySelectorAll('.phone-pane-body .work-group')).map(function (g) {{ return g.dataset.taskGroup + ' ' + g.firstElementChild.textContent.trim() + ' ' + g.querySelector('.work-group-count').textContent.trim(); }}); var jumps = [].slice.call(m.querySelectorAll('[data-jump-group]')); var list = m.querySelector('.phone-pane-body').getBoundingClientRect(); return {{ groups: groups, jumps: jumps.map(function (b) {{ return b.dataset.jumpGroup + ' ' + b.textContent.replace(/\\s+/g, ' ').trim(); }}), tappable: jumps.length > 0 && jumps.every(function (b) {{ return ok(b) && b.getBoundingClientRect().height >= 44; }}), inTheHead: jumps.length > 0 && jumps.every(function (b) {{ return !m.querySelector('.phone-pane-body').contains(b) && b.getBoundingClientRect().bottom <= list.top + 1; }}) }}; }})()"));
@@ -8762,6 +8779,7 @@ fn a_phone_tasks_drop_down_lists_every_state_with_jumps() {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_phone_tasks_drop_down_keeps_the_state_line_in_view() {
+    let _serial = serial();
     let (_m, _b, tab) = phone_tasks_world(2705, "phone-task-sticky");
     open_phone_tasks(&tab);
     for (nth, key, state) in [
@@ -8840,6 +8858,7 @@ const VIOLATIONS: &str = "JSON.stringify(window.__viewportViolations || [])";
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn app_shell_opens_a_long_session_at_its_tail_first() {
+    let _serial = serial();
     let (_m, _b, tab) = tail_first_world(2801, "tail-first-open");
     let loaded = harness::eval(&tab, OUTLINE_TURNS).as_i64().unwrap_or(0);
     assert!(
@@ -8890,6 +8909,7 @@ fn app_shell_opens_a_long_session_at_its_tail_first() {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn app_shell_a_reader_in_the_tail_keeps_their_place_when_the_head_lands() {
+    let _serial = serial();
     let (_m, _b, tab) = tail_first_world(2802, "tail-first-reader");
     harness::scroll_by(&tab, harness::Surface::AppShell, -500);
     std::thread::sleep(Duration::from_millis(700));
@@ -8942,6 +8962,7 @@ fn app_shell_a_reader_in_the_tail_keeps_their_place_when_the_head_lands() {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn app_shell_scrolling_above_the_tail_waits_at_the_loading_card() {
+    let _serial = serial();
     let (_m, _b, tab) = tail_first_world(2803, "tail-first-top");
     let s = harness::Surface::AppShell.scroller();
     for _ in 0..4 {
@@ -9008,6 +9029,7 @@ fn app_shell_scrolling_above_the_tail_waits_at_the_loading_card() {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn app_shell_a_search_typed_before_the_head_lands_finds_it_after() {
+    let _serial = serial();
     let (_m, _b, tab) = tail_first_world(2800, "tail-first-search");
     let count = "parseInt(document.getElementById('transcriptSearchCount').textContent, 10) || 0";
     harness::eval(
