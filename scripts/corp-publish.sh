@@ -72,6 +72,8 @@ need() { [ -n "${2:-}" ] || stop "$1 is empty — refusing to continue (a blank 
 
 GH_REPO=tanghong123/claude-replay
 TOOLS="agent-replay agent-monitor agent-monitor-fleet agent-jdi"
+# This script's own directory, for the helpers beside it (tap-clean.sh, #327).
+HERE=$(cd "$(dirname "$0")" && pwd)
 PLATFORMS="darwin-arm64 darwin-amd64 linux-arm64 linux-amd64"
 triple_for() {
   case "$1" in
@@ -128,7 +130,9 @@ verify_published() {
   # Our commit must have LANDED on origin/main — not "HEAD equals origin/main", which another
   # team's push into this shared tap would falsify a second after ours landed.
   git -C "$TAP" merge-base --is-ancestor HEAD "$R" || stop "verify: the local tap clone holds a commit that is NOT on origin/main — the push did not land; inspect $TAP"
-  [ -z "$(git -C "$TAP" status --porcelain)" ] || { git -C "$TAP" status --short; stop "verify: the tap working tree is dirty — uncommitted formula edits are exactly how five releases went unpublished"; }
+  # #327: our formulae dirty stops at once; any other dirty path (alibrew updating its own tap) is
+  # waited out first — twice a publish that had landed stopped here on alibrew's own files.
+  TOOLS="$TOOLS" sh "$HERE/tap-clean.sh" "$TAP" verify "uncommitted formula edits are exactly how five releases went unpublished" || exit 2
 
   say "verify — reading the artifacts back from the commit the formulae name"
   A="$T/verify-artifacts"
@@ -165,7 +169,7 @@ fi
 # ---------------------------------------------------------------- 1. preflight
 say "preflight"
 for c in git gh ruby shasum tar brew; do command -v "$c" >/dev/null 2>&1 || stop "preflight: $c is not on PATH"; done
-[ -z "$(git -C "$TAP" status --porcelain)" ] || { git -C "$TAP" status --short; stop "preflight: the tap working tree is dirty before we start — a previous publish edited the formulae and never committed them. Inspect $TAP and commit or discard before publishing."; }
+TOOLS="$TOOLS" sh "$HERE/tap-clean.sh" "$TAP" preflight "a previous publish edited the formulae and never committed them. Inspect $TAP and commit or discard before publishing." || exit 2
 git -C "$TAP" fetch -q origin main || stop "preflight: git fetch origin main failed in the tap"
 TAP_REMOTE=$(git -C "$TAP" rev-parse FETCH_HEAD); need "the tap's origin/main sha" "$TAP_REMOTE"
 git -C "$TAP" merge-base --is-ancestor HEAD "$TAP_REMOTE" || stop "preflight: the local tap clone is AHEAD of origin/main — it holds an unpushed commit. Push or drop it first; that is the state five unpublished releases left behind."
@@ -261,7 +265,7 @@ already=0
 for t in $TOOLS; do for p in $PLATFORMS; do
   [ -n "$(git -C "$W" ls-tree --name-only -r origin/master -- "$t/$V-$p/" 2>/dev/null)" ] && already=$((already+1))
 done; done
-[ "$already" = "0" ] || stop "guards: alibrew/artifacts already holds $already of 16 directories for $V — this version was published before. Use --verify-only to check it, or publish a new version."
+[ "$already" = "0" ] || stop "guards: alibrew/artifacts already holds $already of 16 directories for $V — this version was published before. Prove it with: sh scripts/corp-publish.sh --verify-only $V — and if a publish stopped at its own verify, this machine missed its upgrade too: alibrew upgrade $TOOLS"
 tap_now=$(git -C "$TAP" show "$TAP_REMOTE:Formula/agent-replay.rb" 2>/dev/null | grep -m1 '^  version "' | sed 's/.*"\(.*\)".*/\1/')
 need "the version the tap currently serves" "$tap_now"
 [ "$tap_now" != "$V" ] || stop "guards: the tap's origin/main already serves $V — nothing to publish. Use --verify-only."

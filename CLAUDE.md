@@ -550,6 +550,13 @@ What it encodes, and what must still be true if it is ever bypassed:
   each push, or it is rejected as non-fast-forward — a knack release landed between clone and push
   on 2026-09-03. And `agent-metrics` belongs to another team in that same tap: stage our four
   formulae by explicit path and assert the staged set is exactly those four.
+- The installed tap clone is shared with alibrew ITSELF, which rewrites its own files there while it
+  updates (2026-09-29: an untracked `install.sh`, then `Formula/alibrew.rb`, each clean again in
+  minutes — and each stopped a publish that had already landed at its verify, before its upgrade
+  step). So the clean-tree check (`scripts/tap-clean.sh`, #327, at preflight and at verify) stops at
+  once on one of OUR four formulae and waits out any other dirty path, 15 s at a time for up to three
+  minutes. A retry that meets the already-published guard is told the way out: `--verify-only`, then
+  `alibrew upgrade` of the four tools if the stopped run never reached its own.
 - The formula (`Formula/<tool>.rb` in `alibrew/homebrew-core`, branch `main` — the installed tap at
   `$(brew --repository alibrew/core)` IS that clone, which is why `brew audit` reads it) carries
   the new version inside each `only_path:` as well, and the pushed artifacts sha as `revision:` —
