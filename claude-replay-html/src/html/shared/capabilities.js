@@ -22,7 +22,7 @@ const IMAGE_FILE = /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i;
 const RASTER_FILE = /\.(png|jpe?g|gif|webp|bmp|ico|avif)$/i;
 const TEXT_FILE = /\.(txt|md|mdx|rs|js|mjs|cjs|ts|tsx|jsx|json|jsonl|toml|ya?ml|html?|css|scss|py|rb|go|java|kt|swift|sh|zsh|fish|sql|csv|tsv|log|diff|patch|xml|svg|ini|conf)$/i;
 
-function attachmentCapability(head = {}) {
+function attachmentCapability(head = {}, { reveal = true } = {}) {
   const name = head.att_name || head.att_path || "";
   const embedded = head.att_datauri != null;
   const served = Boolean(head.att_path && head.att_fsig);
@@ -37,16 +37,18 @@ function attachmentCapability(head = {}) {
   // but the server offered the REVEAL stamp: the file manager can still show the file. This is
   // the classic view's fallback (export.js: `fsig ? openArtifact : reveal`), and it is what
   // keeps every path actionable under `render-policy.json` mode "never".
-  if (head.att_path && head.att_sig) return { action: "reveal", label: "Reveal in file manager", hint: "not readable here · opens its folder" };
+  // #335: not where the reader cannot see the file manager (a phone): the path is copied instead.
+  if (head.att_path && head.att_sig && reveal) return { action: "reveal", label: "Reveal in file manager", hint: "not readable here · opens its folder" };
   return { action: "copy", label: "Copy path", hint: head.att_path ? "path only · click to copy" : "attachment record only" };
 }
 
 /** What a clicked path reference does, from the stamps the server offered for it. The two
  *  stamps are different capabilities — a reveal stamp never authorizes `/file` — so the
  *  precedence is by what the page may DO, not by which stamp happens to be present. */
-function referenceAction({ fileSig, revealSig } = {}) {
+function referenceAction({ fileSig, revealSig, reveal = true } = {}) {
   if (fileSig) return "preview";
-  if (revealSig) return "reveal";
+  // #335: `reveal: false` where the file manager is not the reader's (a phone): copy instead.
+  if (revealSig && reveal) return "reveal";
   return "copy";
 }
 
@@ -55,6 +57,11 @@ function referenceAction({ fileSig, revealSig } = {}) {
  *  one. Every file view offers reveal beside showing or downloading (#272, the owner: "offering
  *  both for now") — until a web file browser replaces reveal, no view offers only one half. */
 const canReveal = ({ path, sig } = {}) => Boolean(path && sig);
+
+/** Whether the file manager is the reader's to see (#335): not on a phone (the shells' 760px
+ *  breakpoint), whose reader is not at the machine a reveal would open a Finder window on. Every
+ *  reveal a page offers asks this; `referenceAction`/`attachmentCapability` take it as `reveal`. */
+const revealHere = () => !(typeof matchMedia === "function" && matchMedia("(max-width:760px)").matches);
 
 /** The `/__reveal` query for a path and its reveal stamp — encoded once, verbatim. */
 const revealQuery = ({ path, sig }) => `/__reveal?path=${encodeURIComponent(path || "")}&sig=${encodeURIComponent(sig || "")}`;
@@ -115,4 +122,4 @@ function groupPointerRuns(items, headOf) {
   return out.map(g => (g.run && g.items.length === 1 ? { run: false, item: g.items[0] } : g));
 }
 
-export { attachmentCapability, canReveal, groupPointerRuns, isPointerAttachment, POINTER_KINDS, RASTER_FILE, referenceAction, revealQuery, stampQuery };
+export { attachmentCapability, canReveal, groupPointerRuns, isPointerAttachment, POINTER_KINDS, RASTER_FILE, referenceAction, revealHere, revealQuery, stampQuery };

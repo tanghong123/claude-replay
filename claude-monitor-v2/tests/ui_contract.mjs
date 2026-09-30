@@ -371,7 +371,7 @@ assert.match(appSource, /ignoreQuery\(\{ op, key \}\)/, "the shell hides and res
 assert.match(appSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden/, "the tree is filtered through the tested predicate, not ad hoc");
 assert.match(productionCss, /\.tree-action\{/, "row actions have a production treatment");
 assert.match(productionCss, /\.tree-row\.is-hidden\{/, "a revealed hidden row is visibly different");
-assert.match(appSource, /referenceAction\(\{ fileSig, revealSig \}\)/, "reference clicks dispatch on the tested precedence");
+assert.match(appSource, /referenceAction\(\{ fileSig, revealSig(, reveal: revealHere\(\))? \}\)/, "reference clicks dispatch on the tested precedence (#335: told whether the file manager is the reader's)");
 assert.match(readFileSync(new URL("../../claude-monitor/src/codex-ui/attachment-viewer.js", import.meta.url), "utf8"), /revealQuery\(\{ path: item\.path, sig: item\.sig \}\)/, "reveal calls /__reveal with the REVEAL stamp, never the file stamp");
 assert.match(productionCss, /\.renderer-target-link\{/, "stamped tool-header paths read as references");
 console.log("reveal cases passed");
@@ -1386,7 +1386,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(previewSource, /class="preview-tab pinned \$\{roster \? "on" : ""\}" data-preview-tab="\$\{ROSTER_ID\}"/, "…which pins it as a tab");
   assert.match(previewSource, /<span class="preview-tab-label">Artifacts \(\$\{this\.roster\.length\}\)<\/span>/, "…labelled with the count");
   assert.match(previewSource, /const roster = !item && this\.roster\.length > 0;/, "…and shown when no file tab is selected, so an opened pane lands on it");
-  assert.match(previewSource, /className: "preview-badge" \}\)\)\)\.textContent = String\(this\.roster\.length\)/, "the pane's button carries the count while the pane is hidden");
+  // #336, the owner: the badge counting published artifacts read "1" over a pane holding five
+  // files. It counts the DOCUMENTS open in the pane; the roster counts itself on its own tab.
+  assert.match(previewSource, /className: "preview-badge" \}\)\)\)\.textContent = String\(open\)/, "the pane's button counts the documents open in it");
+  assert.match(previewSource, /const open = uiState\.previewTabs\.length/, "…its tabs, not the published artifacts");
   assert.match(previewSource, /if \(key === this\.rosterKey\) return;/, "an unchanged roster re-renders nothing — an open file tab is not re-fetched underneath the reader");
   assert.match(previewSource, /<a href="\$\{escapeText\(r\.url\)\}" target="_blank" rel="noopener"/, "a row is a link in a new tab");
   assert.match(previewSource, /this\.actions\.jumpToRecord\?\.\(Number\(jump\.dataset\.artifactRecord\)\)/, "…with a jump to the publishing record");

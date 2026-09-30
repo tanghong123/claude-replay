@@ -5333,13 +5333,22 @@ fn the_app_shell_lists_the_published_artifacts() {
         false,
         "the header control is gone (#95)"
     );
-    // Hidden pane, and the button says there is something behind it.
+    // Hidden pane, and the button's title says what was published. Its badge counts the open
+    // DOCUMENTS (#336, which replaced #95's published count), and none are open.
     harness::until(
         &tab,
-        "(document.querySelector('#previewBtn .preview-badge') || {}).textContent === '2'",
-        "the pane's button to carry the published count",
+        "/2 published artifacts/.test(document.getElementById('previewBtn').title)",
+        "the pane's button to name the published count",
         std::time::Duration::from_secs(20),
-        "(document.querySelector('#previewBtn .preview-badge') || {textContent: 'no badge'}).textContent",
+        "document.getElementById('previewBtn').title",
+    );
+    assert_eq!(
+        harness::probe(
+            &tab,
+            "!!document.querySelector('#previewBtn .preview-badge')"
+        ),
+        false,
+        "no document is open, so no badge (#336)"
     );
     assert_eq!(
         harness::probe(
@@ -5347,7 +5356,7 @@ fn the_app_shell_lists_the_published_artifacts() {
             "document.getElementById('app').classList.contains('preview-off')"
         ),
         true,
-        "the pane is still hidden — the badge is what reaches the reader"
+        "the pane is still hidden — the title is what reaches the reader"
     );
     harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
     harness::until(
@@ -7632,6 +7641,24 @@ fn phone_world(
     headless_chrome::Browser,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
+    let (m, b, tab, _) = phone_world_at(port, case, w, h, "");
+    (m, b, tab)
+}
+
+/// The phone's world with `extra` records at the end of its session, and the session's path for a
+/// case that grows it.
+fn phone_world_at(
+    port: u16,
+    case: &str,
+    w: u32,
+    h: u32,
+    extra: &str,
+) -> (
+    harness::Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+    std::path::PathBuf,
+) {
     let base = harness::base(case);
     let stores = harness::Stores::new(&base);
     let mut t = harness::long_session(8, harness::Shape::default());
@@ -7639,7 +7666,8 @@ fn phone_world(
     t += &harness::agent_result("call_p1", "aExplore-313", "Explore", 91);
     t += &harness::user_at("question 9: build and check", &harness::now_minus(90));
     t += &harness::assistant_at("answer 9: it builds; here is a table\\n\\n| a | b | c |\\n|---|---|---|\\n| one long cell value here | two | three |", &harness::now_minus(60));
-    stores.claude_session(PHONE_SID, &t);
+    t += extra;
+    let path = stores.claude_session(PHONE_SID, &t);
     stores.claude_child(
         PHONE_SID,
         "aExplore-313",
@@ -7659,7 +7687,30 @@ fn phone_world(
     );
     let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
     let (browser, tab) = phone_tab(&m, w, h);
-    (m, browser, tab)
+    (m, browser, tab, path)
+}
+
+/// A desktop browser (1280×900, no phone emulation) on `m`, open on the phone's session in the app
+/// shell — the width a phone-only rule must leave as it was.
+fn desktop_tab(
+    m: &harness::Monitor,
+) -> (
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    let browser = harness::chrome();
+    let tab = browser.new_tab().unwrap();
+    harness::resize(&tab, 1280.0, 900.0);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && innerWidth >= 1200",
+        "the desktop to open on the session",
+        Duration::from_secs(20),
+        "innerWidth + ' ' + document.getElementById('app').className",
+    );
+    (browser, tab)
 }
 
 /// A fresh phone (its own browser, so nothing is remembered) on `m`, open on the phone's session.
@@ -9278,4 +9329,743 @@ fn app_shell_a_search_typed_before_the_head_lands_finds_it_after() {
         Some("[]"),
         "no invariant broken across the landing"
     );
+}
+
+/// #332, the owner: "move to the tail button is on the bottom right and hard to click, instead,
+/// move it to bottom center for mobile version". On a phone the jump to the latest sits at the
+/// bottom CENTRE of the view, finger-sized — and so does the pill it becomes when new messages
+/// arrive below the reader — and a tap on it follows the tail again. The desktop keeps its corner.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_jumps_to_the_latest_from_the_bottom_centre() {
+    let _serial = serial();
+    let (m, _b, tab, path) = phone_world_at(2706, "phone-jump", 390, 844, "");
+    harness::wheel_scroll(&tab, harness::APP_SCROLLER, "s.scrollTop = 0");
+    let shown = format!(
+        "(function(){{ var j = document.querySelector('.jump-to-bottom'); return j.classList.contains('show') && getComputedStyle(j).opacity === '1' && ({PHONE_HITTABLE})(j); }})()"
+    );
+    harness::until(
+        &tab,
+        &shown,
+        "the jump to the latest to show once the reader has moved up",
+        Duration::from_secs(10),
+        "document.querySelector('.jump-to-bottom').className",
+    );
+    let geometry = harness::eval(
+        &tab,
+        "(function(){ var r = document.querySelector('.jump-to-bottom').getBoundingClientRect(); return JSON.stringify({ centre: Math.round((r.left + r.right) / 2 - innerWidth / 2), w: Math.round(r.width), h: Math.round(r.height), gap: Math.round(innerHeight - r.bottom) }); })()",
+    );
+    let g: serde_json::Value = serde_json::from_str(geometry.as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        g["centre"].as_i64().unwrap_or(99).abs() <= 2,
+        "the jump sits at the bottom centre: {g}"
+    );
+    assert!(
+        g["w"].as_i64().unwrap_or(0) >= 44 && g["h"].as_i64().unwrap_or(0) >= 44,
+        "a finger-sized target: {g}"
+    );
+    assert!(
+        (8..=80).contains(&g["gap"].as_i64().unwrap_or(-1)),
+        "near the bottom edge, clear of it: {g}"
+    );
+    // New messages below the reader: the jump becomes a pill that counts them, still centred.
+    harness::append(
+        &path,
+        &[
+            harness::user_at("question 10: one more", &harness::now_minus(20)),
+            harness::assistant_at("answer 10: here it is", &harness::now_minus(10)),
+        ]
+        .concat(),
+    );
+    let pill = format!(
+        "(function(){{ var j = document.querySelector('.jump-to-bottom'), r = j.getBoundingClientRect(); return j.classList.contains('has-new') && Math.abs((r.left + r.right) / 2 - innerWidth / 2) <= 2 && r.height >= 44 && r.right <= innerWidth && ({PHONE_HITTABLE})(j); }})()"
+    );
+    harness::until(
+        &tab,
+        &pill,
+        "the pill counting new messages, at the bottom centre",
+        Duration::from_secs(15),
+        "(function(){ var j = document.querySelector('.jump-to-bottom'), r = j.getBoundingClientRect(); return j.className + ' ' + Math.round(r.left) + '..' + Math.round(r.right) + ' of ' + innerWidth; })()",
+    );
+    let (x, y) = phone_point(&tab, "(function(){ var r = document.querySelector('.jump-to-bottom').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, x, y);
+    harness::until(
+        &tab,
+        "(function(){ var t = document.querySelector('.transcript'); return t.scrollTop + t.clientHeight >= t.scrollHeight - 4 && !document.querySelector('.jump-to-bottom').classList.contains('show'); })()",
+        "a tap on it to bring the reader to the latest",
+        Duration::from_secs(10),
+        "(function(){ var t = document.querySelector('.transcript'); return t.scrollTop + '+' + t.clientHeight + ' of ' + t.scrollHeight; })()",
+    );
+    // The desktop keeps the corner.
+    let (_d, desk) = desktop_tab(&m);
+    harness::wheel_scroll(&desk, harness::APP_SCROLLER, "s.scrollTop = 0");
+    harness::until(
+        &desk,
+        "document.querySelector('.jump-to-bottom').classList.contains('show')",
+        "the desktop's jump to show",
+        Duration::from_secs(10),
+        "document.querySelector('.jump-to-bottom').className",
+    );
+    let corner = harness::eval(
+        &desk,
+        "(function(){ var r = document.querySelector('.jump-to-bottom').getBoundingClientRect(), m = document.querySelector('.session-main').getBoundingClientRect(); return JSON.stringify({ fromRight: Math.round(m.right - r.right), w: Math.round(r.width) }); })()",
+    );
+    assert_eq!(
+        corner.as_str(),
+        Some("{\"fromRight\":18,\"w\":34}"),
+        "the desktop's jump stays 34px wide, 18px in from the right"
+    );
+}
+
+/// #333, the owner: "when the search box is closed, user loses the visual cue of # of matches and
+/// the ability to navigate through matches". On a phone the box closes to its glass once the
+/// reader taps away; with a query in it, the closed box keeps the count and both arrows, which step
+/// through the matches without opening the box, and the header row stays one row. Clearing the
+/// query takes them away again.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_keeps_the_match_count_and_steps_once_the_box_closes() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(2710, "phone-search-closed", 390, 844);
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
+    let row = harness::eval(
+        &tab,
+        "Math.round(document.querySelector('.header-searchbox').getBoundingClientRect().top)",
+    );
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "a tap on the glass to open the box",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    tab.type_str("answer").unwrap();
+    tab.press_key("Enter").unwrap();
+    harness::until(
+        &tab,
+        "/[1-9]/.test(document.getElementById('transcriptSearchCount').textContent)",
+        "the typed query to find its hits",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    phone_tap_at(&tab, 195.0, 640.0);
+    harness::until(
+        &tab,
+        "!document.querySelector('.header-searchbox').classList.contains('phone-open') && getComputedStyle(document.getElementById('transcriptSearchInput')).display === 'none'",
+        "a tap outside to close the box",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    let kept = format!(
+        "(function(){{ var c = document.getElementById('transcriptSearchCount'), r = c.getBoundingClientRect(), p = document.getElementById('findPrev'), n = document.getElementById('findNext'); return JSON.stringify({{ count: c.textContent, seen: r.width > 8 && r.height > 4 && r.right <= innerWidth && getComputedStyle(c).display !== 'none', prev: ({PHONE_HITTABLE})(p), next: ({PHONE_HITTABLE})(n), ph: Math.round(p.getBoundingClientRect().height), nh: Math.round(n.getBoundingClientRect().height), row: Math.round(document.querySelector('.header-searchbox').getBoundingClientRect().top), right: Math.round(document.querySelector('.header-searchbox').getBoundingClientRect().right) }}); }})()"
+    );
+    let k: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, &kept).as_str().unwrap_or("{}")).unwrap();
+    assert_eq!(k["seen"], true, "the closed box still shows the count: {k}");
+    assert_eq!(k["prev"], true, "the previous-match arrow takes a tap: {k}");
+    assert_eq!(k["next"], true, "the next-match arrow takes a tap: {k}");
+    assert!(
+        k["ph"].as_i64().unwrap_or(0) >= 44 && k["nh"].as_i64().unwrap_or(0) >= 44,
+        "both arrows finger-sized: {k}"
+    );
+    assert_eq!(k["row"], row, "the box keeps its row: {k}");
+    assert!(
+        k["right"].as_i64().unwrap_or(9999) <= 390,
+        "and stays inside the window: {k}"
+    );
+    // Which match is current: its record and its place among that record's marks.
+    let current = "(function(){ var m = document.querySelector('.transcript mark.search-mark.current'); if (!m) return 'none'; var b = m.closest('[data-block-index]'); return (b ? b.dataset.blockIndex : '?') + ':' + [].indexOf.call((b || document).querySelectorAll('mark.search-mark'), m); })()";
+    let before = harness::eval(&tab, current);
+    phone_tap(&tab, "#findNext");
+    let stepped = format!(
+        "{current} !== 'none' && {current} !== {}",
+        serde_json::to_string(&before).unwrap()
+    );
+    harness::until(
+        &tab,
+        &stepped,
+        "a tap on the arrow to step to the next match",
+        Duration::from_secs(5),
+        current,
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "document.querySelector('.header-searchbox').classList.contains('phone-open')"
+        ),
+        false,
+        "a step through the closed box does not open it"
+    );
+    // And the steps move the transcript to the match: the hits are a turn apart, so within a few
+    // steps one lies off the screen and the step brings it on.
+    let top = "Math.round(document.querySelector('.transcript').scrollTop)";
+    let mut moved = false;
+    for _ in 0..4 {
+        let at = harness::eval(&tab, top).as_i64().unwrap_or(0);
+        phone_tap(&tab, "#findPrev");
+        std::thread::sleep(Duration::from_millis(500));
+        if (harness::eval(&tab, top).as_i64().unwrap_or(0) - at).abs() > 20 {
+            moved = true;
+            break;
+        }
+    }
+    assert!(moved, "a step through the closed box moves the transcript");
+    let on_screen = "(function(){ var m = document.querySelector('.transcript mark.search-mark.current'), t = document.querySelector('.transcript').getBoundingClientRect(); if (!m) return false; var r = m.getBoundingClientRect(); return r.top >= t.top && r.bottom <= t.bottom; })()";
+    harness::until(
+        &tab,
+        on_screen,
+        "the current match to be on screen after the step",
+        Duration::from_secs(5),
+        current,
+    );
+    // Cleared, the query takes its count and arrows with it.
+    harness::eval(&tab, "(function(){ var i = document.getElementById('transcriptSearchInput'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()");
+    harness::until(
+        &tab,
+        "getComputedStyle(document.getElementById('findNext')).display === 'none' && getComputedStyle(document.getElementById('transcriptSearchCount')).display === 'none'",
+        "an empty query to close the box down to its glass",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+}
+
+/// One `AskUserQuestion` whose options carry labels of several words and long descriptions, and the
+/// reply that answered it (#334).
+fn long_question_at(id: &str, ts: &str) -> String {
+    let ask = serde_json::json!({
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {"role": "assistant", "content": [{
+            "type": "tool_use", "id": id, "name": "AskUserQuestion",
+            "input": {"questions": [
+                {"header": "Verify", "question": "How strict should the release verification be?", "multiSelect": false,
+                 "options": [
+                    {"label": "Keep the current verification", "description": "Leave the checks as they are today and revisit them once the next release has shipped to both taps."},
+                    {"label": "Refuse unpublished digests", "description": "Stop the publish at the first artifact whose digest the release does not publish, and name it."}]}]}}]},
+    });
+    let reply = serde_json::json!({
+        "type": "user",
+        "timestamp": ts,
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": id, "content": "Your questions have been answered: \"How strict should the release verification be?\"=\"Refuse unpublished digests\". You can now continue."}]},
+    });
+    format!("{ask}\n{reply}\n")
+}
+
+/// #334, the owner's screenshot: a question card's option labels broken in the middle of a word
+/// ("Refuse unpub / lished"). On a phone an option stacks its label over its description, so a
+/// label takes the card's width and breaks, if at all, between words — never inside one, and never
+/// clipped.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_question_card_keeps_its_option_labels_whole() {
+    let _serial = serial();
+    let base = harness::base("phone-question");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(3, harness::Shape::default());
+    t += &harness::user_at("question 4: how strict", &harness::now_minus(90));
+    t += &long_question_at("ask1", &harness::now_minus(80));
+    t += &harness::assistant_at("answer 4: refusing them", &harness::now_minus(70));
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2711, &base, Some(&stores), true);
+    let (_b, tab) = phone_tab(&m, 390, 844);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('.transcript .input-answer').length >= 2",
+        "the question card to draw its options",
+        Duration::from_secs(10),
+        "document.querySelectorAll('.transcript .input-request').length + ' cards'",
+    );
+    let words = harness::eval(
+        &tab,
+        "(function(){ var out = { labels: 0, split: [], clipped: [] }; document.querySelectorAll('.transcript .input-answer > span').forEach(function (s) { out.labels++; var box = s.getBoundingClientRect(); if (s.scrollWidth > s.clientWidth + 1) out.clipped.push(s.textContent); s.childNodes.forEach(function (n) { if (n.nodeType !== 3) return; var re = /\\S+/g, m; while ((m = re.exec(n.data))) { var r = document.createRange(); r.setStart(n, m.index); r.setEnd(n, m.index + m[0].length); var rects = [].slice.call(r.getClientRects()).filter(function (x) { return x.width > 0; }); var tops = {}; rects.forEach(function (x) { tops[Math.round(x.top)] = 1; }); if (Object.keys(tops).length > 1) out.split.push(m[0]); rects.forEach(function (x) { if (x.right > box.right + 1 || x.left < box.left - 1) out.clipped.push(m[0]); }); } }); }); return JSON.stringify(out); })()",
+    );
+    let w: serde_json::Value = serde_json::from_str(words.as_str().unwrap_or("{}")).unwrap();
+    assert!(w["labels"].as_i64().unwrap_or(0) >= 2, "{w}");
+    assert_eq!(
+        w["split"].as_array().map(|a| a.len()),
+        Some(0),
+        "no word of a label breaks across lines: {w}"
+    );
+    assert_eq!(
+        w["clipped"].as_array().map(|a| a.len()),
+        Some(0),
+        "no label is cut off: {w}"
+    );
+    // Each option takes the card's width, and a label that wraps has used most of it first.
+    let widths = harness::eval(
+        &tab,
+        "JSON.stringify([].slice.call(document.querySelectorAll('.transcript .input-answer')).map(function (a) { var s = a.querySelector(':scope > span'), l = s.getBoundingClientRect(), row = a.parentElement.getBoundingClientRect(), r = document.createRange(); r.selectNodeContents(s); var tops = {}; [].slice.call(r.getClientRects()).forEach(function (x) { if (x.width > 0) tops[Math.round(x.top)] = 1; }); return { option: Math.round(a.getBoundingClientRect().width / row.width * 100), label: Math.round(l.width / a.getBoundingClientRect().width * 100), lines: Object.keys(tops).length }; }))",
+    );
+    let wv: serde_json::Value = serde_json::from_str(widths.as_str().unwrap_or("[]")).unwrap();
+    for o in wv.as_array().unwrap() {
+        assert!(
+            o["option"].as_i64().unwrap_or(0) >= 95,
+            "an option spans the card: {wv}"
+        );
+        assert!(
+            o["lines"].as_i64().unwrap_or(9) == 1 || o["label"].as_i64().unwrap_or(0) >= 70,
+            "a label wraps only once it has most of the card's width: {wv}"
+        );
+    }
+    let stacked = harness::eval(
+        &tab,
+        "(function(){ var a = document.querySelector('.transcript .input-answer'), l = a.querySelector(':scope > span').getBoundingClientRect(), d = a.querySelector('small').getBoundingClientRect(); return d.top >= l.bottom - 1; })()",
+    );
+    assert_eq!(
+        stacked, true,
+        "the description sits under its label, not beside it"
+    );
+}
+
+/// A session that read `names` from a directory it explains, the files written there, and the
+/// world served by v2 to a phone at 390×844 (#335–#337). `policy` is the render policy; with
+/// `artifact` the session also published one Artifact, so the pane has its pinned roster tab.
+fn phone_files_world(
+    port: u16,
+    case: &str,
+    names: &[&str],
+    policy: &str,
+    artifact: bool,
+) -> (
+    harness::Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+    Vec<String>,
+) {
+    let base = harness::base(case);
+    let stores = harness::Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut t = harness::user_at("question 1: read the files", "2026-09-01T04:00:00.000Z");
+    let mut paths = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let file = repo.join(name);
+        let body = if name.ends_with(".md") {
+            format!("# {name}\n\nThe document the phone reads.\n")
+        } else {
+            format!("the text of {name}\n")
+        };
+        std::fs::write(&file, body).unwrap();
+        let path = file.display().to_string();
+        t += &harness::read_tool_at(&format!("r{i}"), &path, "2026-09-01T04:00:01.000Z");
+        t += &harness::tool_result_at(&format!("r{i}"), "2026-09-01T04:00:02.000Z");
+        paths.push(path);
+    }
+    if artifact {
+        t += &harness::artifact_publish_at(
+            "art1",
+            "/w/deck.html",
+            "One Deck",
+            "📊",
+            "https://claude.ai/code/artifact/aaaa-1",
+            "2026-09-01T04:00:02.500Z",
+        );
+    }
+    t += &harness::assistant_at("answer 1: read them", "2026-09-01T04:00:03.000Z");
+    let t = t.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(PHONE_SID, &t);
+    let state = base.join(format!("state-{port}"));
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(
+        state.join("render-policy.json"),
+        format!("{{\"mode\":\"{policy}\"}}"),
+    )
+    .unwrap();
+    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let (b, tab) = phone_tab(&m, 390, 844);
+    (m, b, tab, paths)
+}
+
+/// Whether the element `sel` names is drawn at all: displayed, with a box.
+const PHONE_DRAWN: &str = "function (sel) { return [].slice.call(document.querySelectorAll(sel)).some(function (el) { var r = el.getBoundingClientRect(); return !el.hidden && getComputedStyle(el).display !== 'none' && r.width > 0 && r.height > 0; }); }";
+
+/// #335, the owner: "On mobile, do not show reveal in file manager" and "the open fullscreen is not
+/// useful at all, and can be destructive (we have no way to get back)". A phone opening a text file
+/// and a Markdown document in the pane is offered neither the pane's reveal nor its ↗, and a file
+/// the server would only let it REVEAL is copied rather than sent to `/__reveal` (the case wraps
+/// `fetch`, so a reveal is recorded and never sent).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_is_offered_no_reveal_and_no_new_tab() {
+    let _serial = serial();
+    let (m, _b, tab, paths) = phone_files_world(
+        2716,
+        "phone-no-reveal",
+        &["notes.txt", "guide.md"],
+        "offered",
+        false,
+    );
+    for (path, shown) in [
+        (&paths[0], "the text of notes.txt"),
+        (&paths[1], "The document the phone reads."),
+    ] {
+        let link = format!(
+            "document.querySelector('[data-reference-path={}][data-reference-fsig]:not([data-reference-fsig=\"\"])')",
+            serde_json::to_string(path).unwrap()
+        );
+        harness::until(
+            &tab,
+            &format!("!!{link}"),
+            "the session to offer the file, stamped",
+            Duration::from_secs(20),
+            "document.querySelectorAll('[data-reference-path]').length + ' file links'",
+        );
+        harness::eval(&tab, &format!("{link}.click(); 'ok'"));
+        harness::until(
+            &tab,
+            &format!(
+                "(document.getElementById('preview') || document.body).innerText.indexOf({}) >= 0 || [].slice.call(document.querySelectorAll('#previewBody iframe')).some(function (f) {{ try {{ return f.contentDocument.body.innerText.indexOf({}) >= 0; }} catch (e) {{ return false; }} }})",
+                serde_json::to_string(shown).unwrap(),
+                serde_json::to_string(shown).unwrap()
+            ),
+            "the pane to show the file",
+            Duration::from_secs(15),
+            "(document.getElementById('previewBody') || {innerHTML: 'no pane'}).innerHTML.slice(0, 200)",
+        );
+        std::thread::sleep(Duration::from_millis(600));
+        let drawn = harness::eval(
+            &tab,
+            &format!("JSON.stringify({{ reveal: ({PHONE_DRAWN})('.preview-reveal, [data-preview-reveal]'), newtab: ({PHONE_DRAWN})('.preview-newtab') }})"),
+        );
+        assert_eq!(
+            drawn.as_str(),
+            Some("{\"reveal\":false,\"newtab\":false}"),
+            "a phone is offered neither the reveal nor the new tab for {path}"
+        );
+    }
+    // The desktop keeps both, on the same document.
+    let (_d, desk) = desktop_tab(&m);
+    let md = format!(
+        "document.querySelector('[data-reference-path={}][data-reference-fsig]:not([data-reference-fsig=\"\"])')",
+        serde_json::to_string(&paths[1]).unwrap()
+    );
+    harness::until(
+        &desk,
+        &format!("!!{md}"),
+        "the desktop to be offered the document",
+        Duration::from_secs(20),
+        "document.querySelectorAll('[data-reference-path]').length + ' file links'",
+    );
+    harness::eval(&desk, &format!("{md}.click(); 'ok'"));
+    harness::until(
+        &desk,
+        &format!("({PHONE_DRAWN})('.preview-reveal') && ({PHONE_DRAWN})('.preview-newtab')"),
+        "the desktop to offer the reveal and the new tab",
+        Duration::from_secs(15),
+        &format!("JSON.stringify({{ reveal: ({PHONE_DRAWN})('.preview-reveal'), newtab: ({PHONE_DRAWN})('.preview-newtab') }})"),
+    );
+    drop(desk);
+    drop(m);
+    // A server that renders nothing: the file is only revealable, and a phone copies its path.
+    let (m, _b, tab, paths) =
+        phone_files_world(2717, "phone-reveal-only", &["notes.txt"], "never", false);
+    harness::eval(&tab, "(function(){ window.__revealed = []; window.__copied = []; var f = window.fetch; window.fetch = function (u, o) { if (String(u).indexOf('/__reveal') >= 0) { window.__revealed.push(String(u)); return Promise.resolve(new Response('', { status: 204 })); } return f.apply(this, arguments); }; var fake = { writeText: function (t) { window.__copied.push(t); return Promise.resolve(); } }; try { Object.defineProperty(navigator, 'clipboard', { value: fake, configurable: true }); } catch (e) { navigator.clipboard.writeText = fake.writeText; } return 1; })()");
+    let link = format!(
+        "document.querySelector('[data-reference-path={}]')",
+        serde_json::to_string(&paths[0]).unwrap()
+    );
+    harness::until(
+        &tab,
+        &format!("!!{link} && !!{link}.dataset.referenceSig && !{link}.dataset.referenceFsig"),
+        "the session to offer the file for a reveal only",
+        Duration::from_secs(20),
+        &format!(
+            "(function(){{ var e = {link}; return e ? JSON.stringify(e.dataset) : 'no link'; }})()"
+        ),
+    );
+    harness::eval(&tab, &format!("{link}.click(); 'ok'"));
+    harness::until(
+        &tab,
+        &format!(
+            "window.__copied.indexOf({}) >= 0",
+            serde_json::to_string(&paths[0]).unwrap()
+        ),
+        "the phone to copy the path",
+        Duration::from_secs(5),
+        "JSON.stringify({ copied: window.__copied, revealed: window.__revealed })",
+    );
+    assert_eq!(
+        harness::eval(&tab, "window.__revealed.length"),
+        0,
+        "nothing was sent to /__reveal"
+    );
+    drop(m);
+}
+
+/// #336 and #337, the owner: "the top right artifacts number badge does not reflect the number of
+/// docs currently being opened", and "When there are too many files opened, the right pane top bar
+/// becomes unreadable. We should give sufficient width to the title of the current file, and hold
+/// some minimum width for non-active file titles, let them overflow, and have left/right buttons to
+/// cycle through all file titles." Six files open on a phone: the pane button's badge counts them,
+/// the strip overflows rather than squeezing, the current title is whole and in view, the others
+/// keep a readable width, and ‹ › cycle through all of them — wrapping — keeping the current one in
+/// view. Closing a tab takes one off the badge; closing the last takes the badge away.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_pane_counts_its_open_files_and_steps_through_their_tabs() {
+    let _serial = serial();
+    let names = [
+        "release-notes.txt",
+        "tap-clean.txt",
+        "corp-publish.txt",
+        "vendor-mdrev.txt",
+        "unknown-review.txt",
+        "gate-readme.txt",
+    ];
+    let (_m, _b, tab, paths) = phone_files_world(2719, "phone-tabs", &names, "offered", true);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('[data-reference-path][data-reference-fsig]:not([data-reference-fsig=\"\"])').length >= 6",
+        "the session to offer the six files",
+        Duration::from_secs(20),
+        "document.querySelectorAll('[data-reference-path]').length + ' file links'",
+    );
+    // One published artifact and nothing open: the button names the artifact, and has no badge —
+    // it counts open documents, not publications.
+    harness::until(
+        &tab,
+        "/1 published artifact/.test(document.getElementById('previewBtn').title)",
+        "the pane button to name the published artifact",
+        Duration::from_secs(20),
+        "document.getElementById('previewBtn').title",
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "!!document.querySelector('#previewBtn .preview-badge')"
+        ),
+        false,
+        "nothing open, no badge"
+    );
+    for (i, path) in paths.iter().enumerate() {
+        harness::eval(
+            &tab,
+            &format!(
+                "document.querySelector('[data-reference-path={}]').click(); 'ok'",
+                serde_json::to_string(path).unwrap()
+            ),
+        );
+        harness::until(
+            &tab,
+            &format!(
+                "(document.querySelector('#previewBtn .preview-badge') || {{}}).textContent === '{}'",
+                i + 1
+            ),
+            "the badge to count the open files",
+            Duration::from_secs(10),
+            "(document.querySelector('#previewBtn .preview-badge') || {textContent: 'no badge'}).textContent",
+        );
+    }
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "document.querySelector('#previewTabs .preview-tab.pinned').innerText.trim()"
+        ),
+        "Artifacts (1)",
+        "the pinned roster tab still counts what was published"
+    );
+    let strip = "(function(){ var s = document.getElementById('previewTabs'), box = s.getBoundingClientRect(), tabs = [].slice.call(s.querySelectorAll('.preview-tab:not(.pinned)')), on = s.querySelector('.preview-tab.on'), label = on && on.querySelector('.preview-tab-label'), r = on ? on.getBoundingClientRect() : {}; return JSON.stringify({ n: tabs.length, over: s.scrollWidth > s.clientWidth + 1, narrowest: Math.round(Math.min.apply(null, tabs.filter(function (t) { return t !== on; }).map(function (t) { return t.getBoundingClientRect().width; }))), on: label ? label.textContent : '', whole: !!label && label.scrollWidth <= label.clientWidth + 1, inView: r.left >= box.left - 1 && r.right <= box.right + 1, onW: Math.round(r.width || 0) }); })()";
+    let s: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, strip).as_str().unwrap_or("{}")).unwrap();
+    assert_eq!(
+        s["n"], 6,
+        "a tab per open file, beside the pinned roster: {s}"
+    );
+    assert_eq!(s["over"], true, "six tabs overflow a phone's strip: {s}");
+    assert!(
+        s["narrowest"].as_i64().unwrap_or(0) >= 88,
+        "no other tab squeezed below a readable width: {s}"
+    );
+    assert_eq!(
+        s["on"], "gate-readme.txt",
+        "the last opened is current: {s}"
+    );
+    assert_eq!(s["whole"], true, "the current title is whole: {s}");
+    assert_eq!(s["inView"], true, "the current tab is in view: {s}");
+    let steps = format!(
+        "JSON.stringify({{ prev: ({PHONE_HITTABLE})(document.querySelector('[data-preview-tab-step=\"-1\"]')), next: ({PHONE_HITTABLE})(document.querySelector('[data-preview-tab-step=\"1\"]')) }})"
+    );
+    assert_eq!(
+        harness::eval(&tab, &steps).as_str(),
+        Some("{\"prev\":true,\"next\":true}"),
+        "both step buttons take a tap while the strip overflows"
+    );
+    // › from the last wraps to the pinned roster, then walks the files in order.
+    let mut seen = Vec::new();
+    for _ in 0..7 {
+        phone_tap(&tab, "[data-preview-tab-step=\"1\"]");
+        std::thread::sleep(Duration::from_millis(250));
+        let s: serde_json::Value =
+            serde_json::from_str(harness::eval(&tab, strip).as_str().unwrap_or("{}")).unwrap();
+        assert_eq!(s["inView"], true, "the stepped-to tab is in view: {s}");
+        assert_eq!(s["whole"], true, "and its title whole: {s}");
+        seen.push(s["on"].as_str().unwrap_or_default().to_string());
+    }
+    let mut want = vec!["Artifacts (1)"];
+    want.extend(names);
+    assert_eq!(seen, want, "› cycles through every tab, wrapping");
+    // ‹ walks back, and from the first wraps to the last.
+    for want in ["unknown-review.txt", "vendor-mdrev.txt"] {
+        phone_tap(&tab, "[data-preview-tab-step=\"-1\"]");
+        std::thread::sleep(Duration::from_millis(250));
+        let s: serde_json::Value =
+            serde_json::from_str(harness::eval(&tab, strip).as_str().unwrap_or("{}")).unwrap();
+        assert_eq!(s["on"], want, "‹ steps back: {s}");
+        assert_eq!(s["inView"], true, "the stepped-to tab is in view: {s}");
+    }
+    harness::eval(
+        &tab,
+        "document.querySelector('#previewTabs .preview-tab.pinned').click(); 'ok'",
+    );
+    phone_tap(&tab, "[data-preview-tab-step=\"-1\"]");
+    std::thread::sleep(Duration::from_millis(250));
+    let s: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, strip).as_str().unwrap_or("{}")).unwrap();
+    assert_eq!(
+        s["on"], "gate-readme.txt",
+        "‹ from the first wraps to the last: {s}"
+    );
+    assert_eq!(s["inView"], true, "the stepped-to tab is in view: {s}");
+    harness::eval(&tab, "document.querySelector('#previewTabs .preview-tab.on [data-preview-tab-close]').click(); 'ok'");
+    harness::until(
+        &tab,
+        "(document.querySelector('#previewBtn .preview-badge') || {}).textContent === '5'",
+        "a closed tab to come off the badge",
+        Duration::from_secs(5),
+        "(document.querySelector('#previewBtn .preview-badge') || {textContent: 'no badge'}).textContent",
+    );
+    harness::eval(&tab, "(function(){ var c; while ((c = document.querySelector('#previewTabs [data-preview-tab-close]'))) c.click(); return 1; })()");
+    harness::until(
+        &tab,
+        "!document.querySelector('#previewBtn .preview-badge')",
+        "the last closed tab to take the badge away",
+        Duration::from_secs(5),
+        "(document.querySelector('#previewBtn .preview-badge') || {textContent: 'no badge'}).textContent",
+    );
+}
+
+/// #338, the owner: "looks like we lose the global wrap line control for the viewing dropdown, but
+/// keeps a pointless wide transcript control." The reading drop-down carries the wrap baseline again
+/// — the one control a phone, with no `w` key, has for it — as a finger-sized switch that wraps a
+/// code block, and a phone is not offered the width switch its edge-to-edge text has no use for.
+/// The desktop's drop-down carries both.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_reading_menu_wraps_and_has_no_wide_switch() {
+    let _serial = serial();
+    let code = harness::write_tool_at("w1", "/r/long_line.py", 6, &harness::now_minus(30));
+    let (m, _b, tab, _) = phone_world_at(2720, "phone-reading", 390, 844, &code);
+    let block = "document.querySelector('.transcript [data-code]')";
+    harness::until(
+        &tab,
+        &format!("!!{block}"),
+        "the written file to draw as code",
+        Duration::from_secs(10),
+        "document.querySelectorAll('.transcript [data-code]').length + ' code blocks'",
+    );
+    let unwrapped = format!("getComputedStyle({block}).whiteSpace");
+    assert_eq!(
+        harness::eval(&tab, &unwrapped),
+        "pre",
+        "a code block starts unwrapped"
+    );
+    phone_tap(&tab, ".reading-toggle");
+    let wrap = "document.querySelector('.reading-options [data-reading-toggle=\"wrap\"]')";
+    harness::until(
+        &tab,
+        &format!("({PHONE_HITTABLE})({wrap})"),
+        "the reading drop-down to open with a wrap switch",
+        Duration::from_secs(5),
+        "(document.querySelector('.reading-options') || {innerText: 'no menu'}).innerText",
+    );
+    let rows = harness::eval(
+        &tab,
+        &format!("JSON.stringify({{ wide: ({PHONE_DRAWN})('.reading-options [data-reading-toggle=\"wide\"]'), row: Math.round({wrap}.closest('.reading-row').getBoundingClientRect().height), checked: {wrap}.getAttribute('aria-checked') }})"),
+    );
+    assert_eq!(
+        rows.as_str(),
+        Some("{\"wide\":false,\"row\":44,\"checked\":\"false\"}"),
+        "a 44px wrap row, off, and no width switch"
+    );
+    phone_tap(&tab, ".reading-options [data-reading-toggle=\"wrap\"]");
+    harness::until(
+        &tab,
+        &format!("{wrap}.getAttribute('aria-checked') === 'true' && getComputedStyle({block}).whiteSpace === 'pre-wrap' && {block}.scrollWidth <= {block}.clientWidth + 1"),
+        "a tap to wrap the code block",
+        Duration::from_secs(5),
+        &format!("{wrap}.getAttribute('aria-checked') + ' ' + getComputedStyle({block}).whiteSpace + ' ' + {block}.scrollWidth + '/' + {block}.clientWidth"),
+    );
+    // The desktop's drop-down offers both switches.
+    let (_d, desk) = desktop_tab(&m);
+    harness::eval(
+        &desk,
+        "document.querySelector('.reading-toggle').click(); 'ok'",
+    );
+    harness::until(
+        &desk,
+        &format!("({PHONE_DRAWN})('.reading-options [data-reading-toggle=\"wrap\"]') && ({PHONE_DRAWN})('.reading-options [data-reading-toggle=\"wide\"]')"),
+        "the desktop drop-down to offer wrap and width",
+        Duration::from_secs(5),
+        "(document.querySelector('.reading-options') || {innerText: 'no menu'}).innerText",
+    );
+}
+
+/// #339, the owner: "The counts for turns and tasks only go up to 99, I think we should support up
+/// to 999" — "Same for counts for agents". A phone's pane icons count past 99, and the count stays
+/// inside its icon.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_counts_its_panes_past_ninety_nine() {
+    let _serial = serial();
+    let base = harness::base("phone-counts");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(120, harness::Shape::default());
+    for i in 0..101u32 {
+        t += &harness::agent_spawn(&format!("call_c{i}"), "Explore", 4000 + i * 2);
+        t += &harness::agent_result(
+            &format!("call_c{i}"),
+            &format!("aExplore-c{i}"),
+            "Explore",
+            4001 + i * 2,
+        );
+    }
+    stores.claude_session(PHONE_SID, &t);
+    let tasks: Vec<(String, String, String)> = (1..=105)
+        .map(|i| {
+            (
+                i.to_string(),
+                format!("task number {i}"),
+                "pending".to_string(),
+            )
+        })
+        .collect();
+    let refs: Vec<(&str, &str, &str)> = tasks
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str()))
+        .collect();
+    stores.claude_tasks(PHONE_SID, &refs);
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2721, &base, Some(&stores), true);
+    let (_b, tab) = phone_tab(&m, 390, 844);
+    let counts = "JSON.stringify([].slice.call(document.querySelectorAll('.phone-pane-count')).map(function (c) { var r = c.getBoundingClientRect(), b = c.parentElement.getBoundingClientRect(); return { n: c.hidden ? '' : c.textContent, inside: r.left >= b.left - 1 && r.right <= b.right + 1 && r.top >= b.top - 1 }; }))";
+    harness::until(
+        &tab,
+        &format!("{counts}.indexOf('\"n\":\"120\"') >= 0"),
+        "the Turns icon to count 120",
+        Duration::from_secs(20),
+        counts,
+    );
+    let c: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, counts).as_str().unwrap_or("[]")).unwrap();
+    let ns: Vec<&str> = c
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["n"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(ns, ["120", "105", "101"], "turns, tasks, agents: {c}");
+    for x in c.as_array().unwrap() {
+        assert_eq!(x["inside"], true, "each count stays inside its icon: {c}");
+    }
 }

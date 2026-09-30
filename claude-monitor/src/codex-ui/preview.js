@@ -3,7 +3,7 @@ import { uiState } from "./state.js";
 import { sandboxDocument } from "./sandbox.js";
 import { createImageView } from "./shared/image-view.js";
 import { isMarkdownName, mdrevVersion, mountMarkdown } from "./mdrev-pane.js";
-import { canReveal } from "./shared/capabilities.js";
+import { canReveal, revealHere } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 
 const byId = id => document.getElementById(id);
@@ -35,6 +35,22 @@ export class Preview {
     this.revealBtn.setAttribute("aria-label", "Reveal this file in the file manager");
     this.revealBtn.onclick = () => { if (this.shown) this.actions.reveal?.(this.shown); };
     byId("closePreview").before(this.revealBtn, this.newTab);
+    // #337, the owner: with many files open the strip squeezed every tab to a few letters and the
+    // CURRENT one to nothing. The tabs now keep their width and the strip scrolls; while it
+    // overflows, ‹ and › beside it step to the previous and next tab (the pinned roster first),
+    // wrapping, and the strip brings that tab into view by its own scroller.
+    const step = (dir, label, glyph) => {
+      const button = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-tab-step", textContent: glyph, title: label, hidden: true });
+      button.setAttribute("aria-label", label);
+      button.dataset.previewTabStep = String(dir);
+      button.onclick = event => { event.stopPropagation(); this.stepTab(dir); };
+      return button;
+    };
+    this.prevTabBtn = step(-1, "Previous file", "‹");
+    this.nextTabBtn = step(1, "Next file", "›");
+    byId("previewTabs").before(this.prevTabBtn);
+    byId("previewTabs").after(this.nextTabBtn);
+    new ResizeObserver(() => this.fitTabs()).observe(byId("previewTabs"));
     byId("previewHead").onclick = event => {
       const close = event.target.closest("[data-preview-tab-close]");
       if (close) { this.closeTab(close.dataset.previewTabClose); return; }
@@ -66,12 +82,13 @@ export class Preview {
       const cacheBytes = () => [...this.sessionTabs.values()].reduce((total, entry) => total + entry.bytes, 0);
       while (this.sessionTabs.size > SESSION_CACHE_LIMIT || cacheBytes() > SESSION_CACHE_BYTES) this.sessionTabs.delete(this.sessionTabs.keys().next().value);
     }
-    this.roster = []; this.rosterKey = ""; this.rosterBadge();
+    this.roster = []; this.rosterKey = "";
     this.teardownMarkdown();
     this.sessionId = sessionId || "";
     const saved = this.sessionTabs.get(this.sessionId);
     uiState.previewTabs = saved?.tabs.slice() || [];
     uiState.previewId = saved?.active && uiState.previewTabs.some(tab => tab.id === saved.active) ? saved.active : uiState.previewTabs.at(-1)?.id || null;
+    this.paneBadge();
     this.renderGeneration++;
     if (uiState.preview) this.render();
   }
@@ -85,32 +102,61 @@ export class Preview {
     const key = list.map(r => `${r.url}\u0000${r.count}\u0000${r.at}\u0000${r.name}\u0000${r.icon}\u0000${r.desc}`).join("\u0001");
     if (key === this.rosterKey) return;
     this.rosterKey = key; this.roster = list;
-    this.rosterBadge();
+    this.paneBadge();
     if (uiState.preview) this.render();
   }
-  rosterBadge() {
+  /** The pane button's badge (#336): how many DOCUMENTS are open in the pane — its tabs, not the
+   *  pinned roster, which counts itself ("Artifacts (N)"). It used to count the published
+   *  artifacts (#95) and read "1" over a pane holding five files, which the owner found
+   *  misleading. The roster still names itself in the button's title. */
+  paneBadge() {
     const button = byId("previewBtn");
     const badge = button.querySelector(".preview-badge");
-    if (!this.roster.length) badge?.remove();
-    else (badge || button.appendChild(Object.assign(document.createElement("span"), { className: "preview-badge" }))).textContent = String(this.roster.length);
-    button.title = this.roster.length ? `Open the right panel — ${this.roster.length} published artifact${this.roster.length === 1 ? "" : "s"}` : "Open the right panel";
+    const open = uiState.previewTabs.length, published = this.roster.length;
+    if (!open) badge?.remove();
+    else (badge || button.appendChild(Object.assign(document.createElement("span"), { className: "preview-badge" }))).textContent = String(open);
+    const parts = [open ? `${open} open document${open === 1 ? "" : "s"}` : "", published ? `${published} published artifact${published === 1 ? "" : "s"}` : ""].filter(Boolean);
+    button.title = parts.length ? `Open the right panel — ${parts.join(", ")}` : "Open the right panel";
   }
   open(item) {
     if (!uiState.previewTabs.some(tab => tab.id === item.id)) uiState.previewTabs.push(item);
     if (uiState.previewTabs.length > SESSION_TAB_LIMIT) uiState.previewTabs.splice(0, uiState.previewTabs.length - SESSION_TAB_LIMIT);
-    uiState.previewId = item.id; this.setOpen(true);
+    uiState.previewId = item.id; this.paneBadge(); this.setOpen(true);
   }
-  closeTab(id) { uiState.previewTabs = uiState.previewTabs.filter(tab => tab.id !== id); if (uiState.previewId === id) uiState.previewId = uiState.previewTabs.at(-1)?.id || null; this.render(); }
+  /** #337: the previous or next tab — the pinned roster first, then the files — wrapping. */
+  stepTab(dir) {
+    const ids = [...(this.roster.length ? [ROSTER_ID] : []), ...uiState.previewTabs.map(tab => tab.id)];
+    if (ids.length < 2) return;
+    const current = uiState.previewTabs.some(tab => tab.id === uiState.previewId) ? uiState.previewId : ROSTER_ID;
+    const at = Math.max(0, ids.indexOf(current));
+    uiState.previewId = ids[(at + dir + ids.length) % ids.length];
+    this.render();
+  }
+  /** #337: the step buttons while the strip overflows, and the current tab in view — moved by the
+   *  strip's OWN scroller, never by asking the browser to scroll something into view. */
+  fitTabs() {
+    const strip = byId("previewTabs");
+    if (!strip || !this.prevTabBtn) return;
+    const over = strip.scrollWidth > strip.clientWidth + 1;
+    this.prevTabBtn.hidden = this.nextTabBtn.hidden = !over;
+    const on = strip.querySelector(".preview-tab.on");
+    if (!on || !over) return;
+    const box = strip.getBoundingClientRect(), tab = on.getBoundingClientRect();
+    if (tab.left < box.left) strip.scrollLeft += tab.left - box.left - 8;
+    else if (tab.right > box.right) strip.scrollLeft += tab.right - box.right + 8;
+  }
+  closeTab(id) { uiState.previewTabs = uiState.previewTabs.filter(tab => tab.id !== id); if (uiState.previewId === id) uiState.previewId = uiState.previewTabs.at(-1)?.id || null; this.paneBadge(); this.render(); }
   render() {
     const generation = ++this.renderGeneration;
     const item = uiState.previewTabs.find(tab => tab.id === uiState.previewId);
     this.shown = item || null;
-    this.revealBtn.hidden = !(item && canReveal(item));
+    this.revealBtn.hidden = !(item && canReveal(item) && revealHere());
     // No file tab selected and something was published: the roster is what the pane shows —
     // so it is also what a freshly opened pane lands on, without hunting for a control.
     const roster = !item && this.roster.length > 0;
     const pinned = this.roster.length ? `<button class="preview-tab pinned ${roster ? "on" : ""}" data-preview-tab="${ROSTER_ID}" title="What this session published"><span class="preview-tab-label">Artifacts (${this.roster.length})</span></button>` : "";
     byId("previewTabs").innerHTML = pinned + uiState.previewTabs.map(tab => `<button class="preview-tab ${tab.id === uiState.previewId ? "on" : ""}" data-preview-tab="${escapeText(tab.id)}"><span class="preview-tab-label">${escapeText(tab.name)}</span><span class="preview-tab-close" data-preview-tab-close="${escapeText(tab.id)}">×</span></button>`).join("");
+    this.fitTabs();
     // A Markdown tab mdrev is already showing stays as it is: the tab strip and the roster re-render
     // around it, and a remount would throw away the reader's place, range and open notes. The tab
     // OBJECT, not its id — an attachment's id is a positional record id two sessions can share.
@@ -143,7 +189,7 @@ export class Preview {
     }).catch(error => {
       if (generation !== this.renderGeneration) return;
       const body = byId("previewBody"); body.classList.remove("production-loading");
-      body.innerHTML = `<div class="preview-error"><strong>Cannot preview this file</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${canReveal(item) ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
+      body.innerHTML = `<div class="preview-error"><strong>Cannot preview this file</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${canReveal(item) && revealHere() ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
       const reveal = body.querySelector("[data-preview-reveal]");
       if (reveal) reveal.onclick = () => this.actions.reveal?.(item);
       body.querySelector("[data-copy-path]").onclick = () => {
@@ -179,7 +225,8 @@ export class Preview {
       if (this.markdownToken !== token) { handle?.unmount(); return; }
       if (!handle) throw new Error("no mdrev");
       this.markdown = handle;
-      this.newTab.hidden = false;
+      // #335: not on a phone — the new tab is a page with no way back to the monitor.
+      this.newTab.hidden = !revealHere();
     }).catch(() => {
       if (this.markdownToken !== token) return;
       this.teardownMarkdown();

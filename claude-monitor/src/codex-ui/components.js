@@ -1,6 +1,6 @@
 // The two-stamp file rule — what a clicked attachment or path may DO — is the shared module's
 // (html/shared/capabilities.js, #46), read here and by the classic page alike.
-import { attachmentCapability, canReveal, groupPointerRuns, isPointerAttachment, referenceAction, revealQuery } from "./shared/capabilities.js";
+import { attachmentCapability, canReveal, groupPointerRuns, isPointerAttachment, referenceAction, revealHere, revealQuery } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 import { fleetGroups } from "./shared/fleet.js";
 import { escapeText, partsHtml } from "./view-model.js";
@@ -54,7 +54,7 @@ function deliveredHtml(view) {
   if (!(view.files?.length > 1)) return "";
   const files = view.files.map(offer => {
     const name = String(offer.path || "").split("/").pop() || offer.path;
-    const action = referenceAction({ fileSig: offer.fsig, revealSig: offer.sig });
+    const action = referenceAction({ fileSig: offer.fsig, revealSig: offer.sig, reveal: revealHere() });
     return `<span class="renderer-delivered-file" data-reference-path="${escapeText(offer.path)}" data-reference-fsig="${escapeText(offer.fsig || "")}" data-reference-sig="${escapeText(offer.sig || "")}" title="${escapeText(`${REFERENCE_TITLES[action]}: ${offer.path}`)}">${escapeText(name)}</span>`;
   }).join("");
   return `<div class="renderer-delivered"><span class="renderer-delivered-lead">Delivered</span>${files}</div>`;
@@ -85,7 +85,7 @@ function rendererBody(view, state) {
   }
   if (view.attachment) {
     const h = view.attachment;
-    const capability = attachmentCapability(h);
+    const capability = attachmentCapability(h, { reveal: revealHere() });
     // An image attachment (#80): collapsed to a line at first — a transcript with a hundred
     // screenshots must not be a hundred images — the first click expands it to an inline
     // thumbnail, and the thumbnail opens the full-size lightbox. The classic page shows the
@@ -148,7 +148,7 @@ function renderRenderer(view, index, state, inherited) {
   // #275: a path with NO stamp is still a link — `referenceAction` answers "copy" for it, as the
   // classic page now does. It used to be plain text here, so the path could not even be copied.
   const targetHtml = view.path
-    ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${REFERENCE_TITLES[referenceAction(view)]}"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`
+    ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${REFERENCE_TITLES[referenceAction({ ...view, reveal: revealHere() })]}"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`
     : `<span class="renderer-target"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`;
   const head = noninteractive
     ? `<div class="renderer-head" aria-label="${escapeText(title)}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}<span class="renderer-state"></span></div>`
@@ -334,7 +334,7 @@ function renderPromptAttachments(attachments = []) {
   };
   const cards = attachments.map(view => {
     const h = view.attachment || {};
-    const capability = attachmentCapability(h);
+    const capability = attachmentCapability(h, { reveal: revealHere() });
     const isImage = capability.action === "image";
     const source = h.att_datauri || (h.att_path && h.att_fsig ? `/file?path=${encodeURIComponent(h.att_path)}&sig=${encodeURIComponent(h.att_fsig)}` : "");
     // `data-name` so the viewer can title itself from what the CARD says even when the record
@@ -348,7 +348,7 @@ function renderPromptAttachments(attachments = []) {
       : `<button class="prompt-attachment prompt-file" type="button" ${action}><span class="prompt-file-icon">${escapeText(ext)}</span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "Attachment")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">${glyph}</span></button>`;
     // The card's own action, and — where that is not already the file manager and the server
     // offered the reveal stamp — the file manager beside it, as the process-surface card has (#272).
-    if (capability.action === "reveal" || !canReveal({ path: h.att_path, sig: h.att_sig })) return card;
+    if (capability.action === "reveal" || !revealHere() || !canReveal({ path: h.att_path, sig: h.att_sig })) return card;
     const label = `Reveal ${escapeText(h.att_name || "this file")} in the file manager`;
     return `<span class="prompt-attachment-pair">${card}<button class="prompt-attachment-reveal" type="button" data-attachment="${escapeText(view.id || "")}" data-attachment-action="reveal" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path)}" data-sig="${escapeText(h.att_sig)}" title="${label}" aria-label="${label}">${svg("folder")}</button></span>`;
   }).join("");

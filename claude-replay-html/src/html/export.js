@@ -87,7 +87,7 @@
     a.dataset.path = offer.path;
     if (offer.sig) a.dataset.sig = offer.sig;
     if (offer.fsig) a.dataset.fsig = offer.fsig;
-    a.title = ({ preview: "Open ", reveal: "Reveal ", copy: "Copy " })[shared.referenceAction({ fileSig: ARTIFACTS ? offer.fsig : null, revealSig: offer.sig })] + offer.path;
+    a.title = ({ preview: "Open ", reveal: "Reveal ", copy: "Copy " })[shared.referenceAction({ fileSig: ARTIFACTS ? offer.fsig : null, revealSig: offer.sig, reveal: shared.revealHere() })] + offer.path;
     return a;
   }
   // hh:mm alone for TODAY's turns; older turns carry their date (and year when it differs).
@@ -626,7 +626,7 @@
             };
         } else if (path != null) {
             an.classList.add("adl");
-            var pathAction = shared.referenceAction({ fileSig: ARTIFACTS ? fsig : null, revealSig: sig });
+            var pathAction = shared.referenceAction({ fileSig: ARTIFACTS ? fsig : null, revealSig: sig, reveal: shared.revealHere() });
             an.title = ({ preview: "open", reveal: "reveal in file manager", copy: "copy path" })[pathAction];
             an.onclick = function () {
                 // Two stamps, because they permit different things: `sig` reveals the
@@ -651,7 +651,8 @@
         // #272/#324: a file the page SHOWS from the session's copy (a pasted image, once the client
         // named where it saved the original) is still a file on disk: the file manager beside it,
         // wherever the server offered the reveal stamp.
-        if ((text != null || datauri != null) && path != null && sig) {
+        // #335: not on a phone, whose reader is not at the machine a Finder window would open on.
+        if ((text != null || datauri != null) && path != null && sig && shared.revealHere()) {
             var rv = el("span", "adl areveal", "reveal");
             rv.title = "reveal in file manager";
             rv.onclick = function (ev) {
@@ -3081,7 +3082,7 @@
           .catch(function () { /* server gone */ });
       };
       // #46: the shared two-stamp rule decides, as it does for the attachment card above.
-      var action = shared.referenceAction({ fileSig: ARTIFACTS ? tp.dataset.fsig : null, revealSig: tp.dataset.sig });
+      var action = shared.referenceAction({ fileSig: ARTIFACTS ? tp.dataset.fsig : null, revealSig: tp.dataset.sig, reveal: shared.revealHere() });
       if (action === "preview") openArtifact(shared.stampQuery({ path: tp.dataset.path, sig: tp.dataset.fsig }), reveal);
       else if (action === "reveal") reveal();
       // #275: with NO stamp the server offered nothing to act on, and an unsigned `/__reveal` is

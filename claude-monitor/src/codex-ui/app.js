@@ -1,7 +1,7 @@
 import { agentLogo, svg } from "./icons.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml, pendingHeadText } from "./components.js";
-import { referenceAction } from "./shared/capabilities.js";
+import { referenceAction, revealHere } from "./shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "./shared/cost-display.js";
 import { chainWalk, toolTree } from "./shared/filter.js";
 import { taskCardHtml, taskRowMeta, TASK_NO_TITLE } from "./shared/task-card.js";
@@ -1419,10 +1419,17 @@ function activeScopeSet() {
 /** The box is the truth (#101, the classic page's rule): a typed `uatobrew:` prefix sets the
  *  scope buttons; a leading `:` escapes; a pure run searches itself. Counts per class fill the
  *  scope rows; stepping and marks honour the scope; the total reads "N hits in ub". */
+/** #333: whether the box holds a query — typed text or chips. On a phone the closed box then keeps
+ *  its count and its arrows (production.css), so the reader still sees how many and can step.
+ *  Looked up here, not held: this runs during the module's first render. */
+function markQuery() {
+  document.querySelector(".header-searchbox")?.classList.toggle("has-query", !!boxQuery());
+}
 function updateSearch(reset) {
   // The chips and the typed text together are the query (#303): a chip is a facet frozen out of
   // the text, so it is parsed exactly as the token it was.
   const raw = boxQuery();
+  markQuery();
   // The split, the per-record count, the label: the shared rules (#118, shared/search.js), so a
   // query means the same thing on both pages — including the two-character floor, which this
   // shell did not have.
@@ -1672,7 +1679,8 @@ function setPhoneSearch(open) {
   if (open && phoneSearch.matches) byId("transcriptSearchInput").focus();
 }
 searchBox.addEventListener("click", event => {
-  if (!phoneSearch.matches || searchBox.classList.contains("phone-open") || event.target.closest("#filterTranscriptBtn")) return;
+  // #333: with a query the closed box keeps its arrows, which step through the matches in place.
+  if (!phoneSearch.matches || searchBox.classList.contains("phone-open") || event.target.closest("#filterTranscriptBtn, .find-nav")) return;
   setPhoneSearch(true);
 });
 document.addEventListener("pointerdown", event => {
@@ -1833,7 +1841,7 @@ function afterFacetChange() {
   if (searchIsLive()) updateSearch(true);
   else { recordState.pendingSearch = true; renderChips(); byId("transcriptSearchCount").textContent = "⏎ to search"; }
 }
-byId("transcriptSearchInput").addEventListener("input", () => { if (absorbFacets()) afterFacetChange(); renderSuggest(); });
+byId("transcriptSearchInput").addEventListener("input", () => { if (absorbFacets()) afterFacetChange(); renderSuggest(); markQuery(); });
 for (const kind of ["click", "keyup", "focus"]) byId("transcriptSearchInput").addEventListener(kind, event => { if (kind !== "keyup" || !["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) renderSuggest(); });
 byId("transcriptSearchInput").addEventListener("blur", () => { if (searchSuggest) searchSuggest.hidden = true; suggestState = null; });
 // The drop-down's keys, ahead of the box's own (Escape closes it before it blurs the box, #298).
@@ -2057,10 +2065,14 @@ function applyToolFilter() {
 // still the baseline every block starts from and the keys still move it; the per-block bars
 // move a single block off it. What is left here is the page: its width, and how a user turn
 // is drawn.
+// #338: and the wrap BASELINE, which only the `w` key set once #173 moved the per-block bars off it —
+// a phone has no `w` key, and the owner found it gone from here, beside a wide-transcript switch a
+// phone's edge-to-edge text has no use for (production.css hides that one at 760px or below).
 const readingSection = document.createElement("div");
 readingSection.className = "reading-section";
 readingSection.innerHTML = `<div class="scope-menu-head"><strong>Reading</strong><button class="scope-menu-action" type="button" data-reading-reset>Reset</button></div>
-<div class="reading-row"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>
+<div class="reading-row reading-wide"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>
+<div class="reading-row reading-wrap"><span>Wrap long lines</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wrap" aria-label="Wrap long lines — the baseline every code block starts from" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>User turns as raw text</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="rawUser" aria-label="Show user turns as raw text — exactly as typed, whitespace intact" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>Viewport history</span><button class="scope-menu-action" type="button" data-history-save title="Save the last hour of what you did and what the page did — kinds, heights and timings, no content">Save</button></div>`;
 // Production-only chrome, built here so the extracted demo shell stays byte-identical (the
@@ -2348,7 +2360,7 @@ function openAttachment(id, path, fsig, action = "preview", sig = "", card = {})
 function openReferenceOffer({ path, fileSig = "", revealSig = "", record = null }) {
   const head = record?.head || {};
   const item = { id: `reference:${path}`, name: head.att_name || path.split("/").pop() || "file", path, fsig: fileSig, sig: revealSig, text: head.att_text, data: head.att_datauri };
-  const action = referenceAction({ fileSig, revealSig });
+  const action = referenceAction({ fileSig, revealSig, reveal: revealHere() });
   if (action === "preview") preview.open(item);
   else if (action === "reveal") attachmentViewer.reveal(item);
   else attachmentViewer.copyPath(item);
@@ -3184,7 +3196,8 @@ var infoPopoverToggle;
       for (const [pane, n] of [[panes[0], turns], [panes[1], tasks], [panes[2], agents]]) {
         const badge = pane.button.querySelector(".phone-pane-count");
         badge.hidden = !n;
-        badge.textContent = n > 99 ? "99+" : String(n);
+        // #339: a long session's turns and tasks run to hundreds; 99+ hid how many.
+        badge.textContent = n > 999 ? "999+" : String(n);
       }
     },
     tasksChanged: renderJumps,

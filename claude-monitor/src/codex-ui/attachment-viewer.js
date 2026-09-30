@@ -1,4 +1,4 @@
-import { canReveal, revealQuery } from "./shared/capabilities.js";
+import { canReveal, revealHere, revealQuery } from "./shared/capabilities.js";
 import { createImageView } from "./shared/image-view.js";
 
 const escapeName = value => String(value || "attachment").replace(/[\\/:*?"<>|]/g, "-");
@@ -84,7 +84,7 @@ export class AttachmentViewer {
     status.textContent = item.fallback ? "original" : item.embedded ? "saved with the session" : "temporary file";
     status.className = `image-lightbox-status ${item.embedded ? "embedded" : "temporary"}`;
     this.root.querySelector("[data-lightbox-sidebar]").hidden = !item.source;
-    this.root.querySelector("[data-lightbox-reveal]").hidden = !canReveal(item);
+    this.root.querySelector("[data-lightbox-reveal]").hidden = !canReveal(item) || !revealHere();
     this.error.hidden = true;
     this.root.querySelector(".image-lightbox-loading").hidden = false;
     this.image.hidden = false;

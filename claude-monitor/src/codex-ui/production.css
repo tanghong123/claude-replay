@@ -412,6 +412,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #previewBtn{position:relative}
 .preview-badge{position:absolute;right:-2px;top:-3px;min-width:14px;height:14px;padding:0 3px;border-radius:6px;background:var(--primary);color:#fff;font:9px/14px var(--mono);text-align:center;box-shadow:0 0 0 2px var(--bg)}
 .preview-tab.pinned{padding-right:11px}
+/* #337: tabs keep their width and the strip scrolls, rather than every tab squeezing to a few
+   letters and the CURRENT one to nothing: the current file takes the width its title needs (to a
+   cap that leaves the others showing), the rest a readable minimum; ‹ › step while it overflows. */
+.preview-tab{flex:none;min-width:88px}
+.preview-tab:not(.on):not(.pinned){max-width:132px}
+.preview-tab.pinned{min-width:0}
+.preview-tab.on{max-width:min(85%,360px)}
+.preview-tab-step{width:28px;height:32px;flex:none;font-size:18px;line-height:1;color:var(--sub)}
+.preview-tab-step[hidden]{display:none}
 .artifacts-list{display:flex;flex-direction:column;gap:2px;padding:12px 10px}
 .artifacts-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:2px}
 .artifacts-row>a{display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:9px;row-gap:1px;align-items:center;min-width:0;padding:7px 9px;border-radius:9px;color:var(--ink);text-decoration:none;font-size:13px}
@@ -1099,6 +1108,28 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .turn.user .user-prompt{max-width:100%}
   #app .turn.user .turn-time{flex-basis:100%;order:2;margin:4px 2px 0 0;text-align:right}
   #app .spot-link,#app .renderer>.renderer-spot{display:none!important}
+
+  /* #332: the jump to the latest at the bottom CENTRE, finger-sized, above the home indicator — the
+     corner was hard to hit. `translate`, not `transform`, which its show/hide animation owns. */
+  #app .jump-to-bottom{right:auto;left:50%;translate:-50% 0;min-width:44px;height:44px;bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+  #app .jump-to-bottom:not(.has-new){width:44px}
+  #app .jump-to-bottom.has-new{border-radius:22px}
+  /* #333: a query outlives the box closing, and so do its count and its steps — in the room the
+     scope filter and whole-words leave (both are in the open box), so the row stays one row. */
+  #app .header-searchbox.has-query:not(.phone-open){width:auto;padding:0 2px 0 12px}
+  #app .header-searchbox.has-query:not(.phone-open) .find-count{display:block!important;flex:none;max-width:64px;margin:0 2px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+  #app .header-searchbox.has-query:not(.phone-open) :is(#findPrev,#findNext){display:grid!important;flex:none;width:30px;height:44px}
+  #app .header-searchbox.has-query:not(.phone-open) :is(.find-whole,#filterTranscriptBtn){display:none!important}
+  /* #334: an option of a question card stacks — label, then description — rather than squeezing its
+     label into a column a word wide. */
+  #app .input-answer{flex-direction:column;align-items:flex-start;gap:2px;width:100%}
+  #app .input-answer span{overflow:visible;overflow-wrap:break-word}
+  /* #335: nothing a phone cannot use — a reveal opens Finder on the Mac, and the pane's ↗ opens a
+     page with no way back. (The shells also stop offering them; this is the belt.) */
+  #app .preview-reveal,#app .preview-newtab,#app .prompt-attachment-reveal,[data-lightbox-reveal],[data-preview-reveal]{display:none!important}
+  /* #338: a phone's text already runs edge to edge, so the width switch has nothing to widen. */
+  #app .reading-options .reading-row.reading-wide{display:none}
+  #app .preview-tab-step{width:40px;height:44px}
 
   input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{font-size:16px!important}
 }

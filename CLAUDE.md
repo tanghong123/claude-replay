@@ -205,7 +205,10 @@ attachment`) — AND revealing it in the file manager, wherever the server offer
 file stamp standing in). In the app shell the preview pane — where every "show me the file" click
 lands — carries ONE reveal control in its head for whatever it shows (image, page, Markdown, text,
 a download, an error), and a prompt card carries a reveal beside its own action, as the
-process-surface card did. Nothing reveals automatically, not even on a refusal (v2's fallback did):
+process-surface card did. Not on a phone (#335): its reader is not at the machine a Finder window
+would open on, so `revealHere()` (`shared/capabilities.js`, the 760px breakpoint) withholds every
+reveal — a reveal-only file is COPIED instead — and the pane's ↗, whose page has no way back.
+Nothing reveals automatically, not even on a refusal (v2's fallback did):
 a reveal is a side effect on the reader's desktop. Reveal is interim — a web file browser will
 replace it — so no new reveal-only path is added (mdrev's `/reveal` answers 501 for this reason).
 Three rules keep the offer honest (#275). A PATH is offered as an image exactly when `/file` serves
