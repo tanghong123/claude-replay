@@ -130,7 +130,7 @@ pub(crate) fn store_transcripts() -> Vec<PathBuf> {
     store_transcripts_for(&QODERWORK)
 }
 
-/// [`store_transcripts`] for any agent of the family.
+/// Every transcript in the store of any agent of the family.
 pub(crate) fn store_transcripts_for(home: &Home) -> Vec<PathBuf> {
     store_transcripts_in(&projects_dir_for(home))
 }
@@ -246,7 +246,7 @@ pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome 
     session_card_for(&QODERWORK, path, memo)
 }
 
-/// [`session_card`] for any agent of the family — its title comes from ITS database.
+/// A session's card for any agent of the family — its title comes from ITS database.
 pub(crate) fn session_card_for(home: &Home, path: &Path, memo: Option<&CardMemo>) -> CardOutcome {
     let prev: Option<Memo> = CardMemo::decode(memo).filter(|m: &Memo| m.v == MEMO_V);
 
