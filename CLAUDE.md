@@ -639,10 +639,18 @@ and the next one is still warm. `--dry-run` first if in doubt.
 
 `origin` (GitHub) is where the code is developed, where releases are cut, and
 where issues are filed. `alibaba` (git@code.alibaba-inc.com:project-h/
-claude-replay.git) is a MIRROR the owner asked restored (2026-08-21): push
-`main` and tags to BOTH remotes — `git push origin main && git push alibaba
-main` (and the tag to both on releases). It holds code only; issues and
-releases stay on GitHub.
+claude-replay.git) is a MIRROR the owner asked restored (2026-08-21): `main`
+and tags go to BOTH. It holds code only; issues and releases stay on GitHub.
+**`origin` carries two push URLs, GitHub first** (2026-10-02, the owner: a
+mirror pushed only by a separate command is one a reader of the config misses),
+so a plain `git push origin main` reaches both. The setup, in a fresh clone:
+`git remote set-url --add --push origin https://github.com/tanghong123/claude-replay.git`
+then the same with `git@code.alibaba-inc.com:project-h/claude-replay.git` (the
+first `--add --push` replaces the implicit push URL, so GitHub must be added
+too). `release.sh` still pushes GitHub BY URL (`git remote get-url origin`
+answers the fetch URL) and the mirror on its own, so an unreachable corp host —
+off VPN — never fails a release GitHub already holds; the `alibaba` remote stays
+for that.
 
 ## Merging external PRs
 CI must run and pass BEFORE the merge — a fork PR from a first-time contributor

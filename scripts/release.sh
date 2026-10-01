@@ -95,10 +95,15 @@ git commit -q -F "$T/msg" || stop "the release commit failed"
 git tag -a "v$version" -m "v$version — ${subject:-release}" || stop "the tag failed (the release commit is on main, untagged)"
 if git tag -v "v$version" >/dev/null 2>&1; then say "tag signature verifies"; else say "tag signature not verified here (allowed_signers?) — the tag is signed by config"; fi
 
-# 6. The push.
-say "push origin"
-git push origin main || stop "push origin main failed — the release commit and tag are local"
-git push origin "v$version" || stop "push origin v$version failed — main is pushed; push the tag: git push origin v$version"
+# 6. The push. To GitHub by its URL, not by the remote name: `origin` may carry a second pushurl
+# for the mirror (so a plain `git push` reaches both), and an unreachable mirror — the corp host off
+# VPN — must not fail the release after GitHub already has the commit. The mirror is pushed on its
+# own below, and its failure is only reported.
+github=$(git remote get-url origin) || stop "no origin remote"
+say "push origin ($github)"
+git push "$github" main || stop "push origin main failed — the release commit and tag are local"
+git push "$github" "v$version" || stop "push origin v$version failed — main is pushed; push the tag: git push $github v$version"
+git fetch -q origin || :   # a push by URL leaves origin/main where it was
 say "push mirror"
 run_timeout() { if command -v timeout >/dev/null 2>&1; then timeout 180 "$@"; else "$@"; fi; }
 if run_timeout git push alibaba main && run_timeout git push alibaba "v$version"; then :; else
