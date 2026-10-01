@@ -15,7 +15,7 @@ use std::time::Duration;
 
 mod harness;
 use harness::{
-    at, base, chrome, eval, mdrev_cli, mdrev_pin, read_tool_at, serial, tool_result_at, until,
+    at, base, chrome_tab, eval, mdrev_cli, mdrev_pin, read_tool_at, serial, tool_result_at, until,
     user_at, Kind, Monitor, Stores,
 };
 
@@ -150,8 +150,7 @@ fn mdrev_renders_transcript_markdown_as_a_clean_reader() {
     let _serial = serial();
     let (base, stores, _repo) = fixture("mdrev-reader");
     let m = Monitor::spawn(Kind::V2, 2821, &base, Some(&stores), true);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     assert_eq!(
         eval(&tab, "document.body.dataset.mdrev").as_str(),
@@ -210,8 +209,7 @@ fn mdrev_renders_a_local_markdown_file_with_its_toolbar() {
     drop(mdrev_cli()); // the monitor's history and notes run the pinned CLI under node
     let (base, stores, repo) = fixture("mdrev-local");
     let m = Monitor::spawn(Kind::V2, 2822, &base, Some(&stores), true);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
     until(
@@ -265,8 +263,7 @@ fn mdrev_owns_a_key_pressed_while_the_reader_is_engaged_with_it() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-keys");
     let m = Monitor::spawn(Kind::V2, 2823, &base, Some(&stores), true);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
     until(
@@ -342,8 +339,7 @@ fn without_node_a_local_markdown_file_keeps_its_history_and_takes_no_notes() {
         true,
         &[("MDREV_NODE", "/nonexistent-node")],
     );
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
     until(
@@ -391,8 +387,7 @@ fn mdrev_contract_passes_mdrev_cli_conform() {
     let (base, stores, repo) = fixture("mdrev-conform");
     let port = 2825;
     let m = Monitor::spawn(Kind::V2, port, &base, Some(&stores), true);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
     until(
@@ -510,8 +505,7 @@ fn mdrev_opens_held_text_in_a_tab_of_its_own() {
     let _serial = serial();
     let (base, stores, _repo) = fixture("mdrev-tab-held");
     let m = Monitor::spawn(Kind::V2, 2826, &base, Some(&stores), false);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = chrome_tab();
     open_shell_unpaired(&m, &tab);
     open_notes(&tab);
     until(
@@ -557,8 +551,7 @@ fn mdrev_opens_a_file_in_a_tab_where_the_reader_was() {
     drop(mdrev_cli()); // the file's history and notes run the pinned CLI under node
     let (base, stores, repo) = fixture("mdrev-tab-local");
     let m = Monitor::spawn(Kind::V2, 2827, &base, Some(&stores), true);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
     until(
@@ -677,8 +670,7 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
     let _serial = serial();
     let (base, stores, _repo) = fixture("mdrev-tab-restart");
     let m = Monitor::spawn(Kind::V2, 2828, &base, Some(&stores), false);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = chrome_tab();
     open_shell_unpaired(&m, &tab);
     open_notes(&tab);
     until(
@@ -741,8 +733,7 @@ fn mdrev_follows_the_reader_to_another_document_into_its_tab() {
     drop(mdrev_cli()); // the file's history and notes run the pinned CLI under node
     let (base, stores, repo) = fixture("mdrev-tab-follow");
     let m = Monitor::spawn(Kind::V2, 2829, &base, Some(&stores), true);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
     until(

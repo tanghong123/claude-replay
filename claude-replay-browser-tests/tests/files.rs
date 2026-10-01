@@ -16,8 +16,8 @@ use std::time::Duration;
 
 mod harness;
 use harness::{
-    at, base, chrome, edited_file_at, eval, read_tool_at, serial, tool_result_at, until, user_at,
-    Kind, Monitor, Stores,
+    at, base, chrome_tab, edited_file_at, eval, read_tool_at, serial, tool_result_at, until,
+    user_at, Kind, Monitor, Stores,
 };
 
 const SID: &str = "5e5510a1-0000-4000-8000-000000000272";
@@ -129,8 +129,7 @@ fn the_app_shell_preview_offers_the_file_manager_for_whatever_it_shows() {
     let _serial = serial();
     let (base, stores, repo) = fixture("files-pane");
     let m = Monitor::spawn(Kind::V2, 2811, &base, Some(&stores), true);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab, true);
 
     // Nothing open, nothing to reveal.
@@ -252,8 +251,7 @@ fn the_app_shell_preview_offers_the_file_manager_when_it_cannot_read_the_file() 
     let _serial = serial();
     let (base, stores, repo) = fixture("files-unpaired");
     let m = Monitor::spawn(Kind::V2, 2812, &base, Some(&stores), false);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab, false);
     let (_, sig) = click_path(&tab, &repo, "notes.txt");
     until(
@@ -316,8 +314,7 @@ fn the_app_shell_prompt_card_offers_the_file_manager_beside_its_action() {
     let _serial = serial();
     let (base, stores, _repo) = fixture("files-card");
     let m = Monitor::spawn(Kind::V2, 2813, &base, Some(&stores), true);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab, true);
     let card = ".prompt-attachment-pair .prompt-attachment";
     let reveal = ".prompt-attachment-pair .prompt-attachment-reveal";
@@ -426,8 +423,7 @@ fn the_app_shell_offers_a_path_as_an_image_exactly_when_the_server_serves_one() 
     stores.codex_session(CODEX, &jsonl);
 
     let m = Monitor::spawn(Kind::V2, 2814, &base, Some(&stores), true);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = chrome_tab();
     m.pair(&tab);
     // The monitor names a Codex session by its rollout's file stem.
     m.open(&tab, &format!("?ui=app&session=rollout-{CODEX}"));
@@ -590,8 +586,7 @@ fn the_app_shell_preview_fits_a_large_image_to_the_pane() {
     let (base, stores, repo) = fixture("files-fit");
     std::fs::write(repo.join("shot.png"), big_png(1200, 800)).unwrap();
     let m = Monitor::spawn(Kind::V2, 2816, &base, Some(&stores), true);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = chrome_tab();
     harness::resize(&tab, 1440.0, 900.0);
     open_shell(&m, &tab, true);
     click_path(&tab, &repo, "shot.png");
@@ -648,8 +643,7 @@ fn the_app_shell_preview_pinch_zooms_an_image_on_a_phone() {
     let (base, stores, repo) = fixture("files-pinch");
     std::fs::write(repo.join("shot.png"), big_png(1200, 800)).unwrap();
     let m = Monitor::spawn(Kind::V2, 2804, &base, Some(&stores), true);
-    let browser = chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 390, 844);
     open_shell(&m, &tab, true);
     click_path(&tab, &repo, "shot.png");

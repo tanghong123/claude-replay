@@ -16,7 +16,7 @@ mod harness;
 use claude_replay_html::start_server;
 use claude_replay_present::Args;
 use harness::{
-    at, base, chrome, copied_text, eval, read_tool_at, serial, stub_clipboard, tool_result_at,
+    at, base, chrome_tab, copied_text, eval, read_tool_at, serial, stub_clipboard, tool_result_at,
     until, user_at, Kind, Monitor, Stores,
 };
 use std::path::{Path, PathBuf};
@@ -79,8 +79,7 @@ fn both_shells_copy_a_path_offered_without_a_stamp() {
             ..Default::default()
         };
         let server = start_server(&args, std::slice::from_ref(&transcript)).expect("server");
-        let browser = chrome();
-        let tab = browser.new_tab().unwrap();
+        let (_browser, tab) = chrome_tab();
         tab.navigate_to(&server.url_for_root(0).expect("hosted"))
             .unwrap();
         tab.wait_until_navigated().unwrap();
@@ -126,8 +125,7 @@ fn both_shells_copy_a_path_offered_without_a_stamp() {
         let (base, stores, _, file) = fixture("unsigned-app");
         spoil_key(&base.join("state-2815"));
         let m = Monitor::spawn(Kind::V2, 2815, &base, Some(&stores), true);
-        let browser = chrome();
-        let tab = browser.new_tab().unwrap();
+        let (_browser, tab) = chrome_tab();
         m.pair(&tab);
         m.open(&tab, &format!("?ui=app&session={SID}"));
         until(

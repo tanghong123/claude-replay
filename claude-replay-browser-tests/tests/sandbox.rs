@@ -39,8 +39,7 @@ struct Opened {
 }
 
 fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::chrome_tab();
     match surface {
         Surface::Classic => {
             std::env::set_var("CLAUDE_REPLAY_CACHE", &fx.base);

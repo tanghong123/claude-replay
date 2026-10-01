@@ -280,8 +280,14 @@ fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
 /// `open`, with extra query parameters — `mountall=1` for the parity audit, which needs every
 /// record in the DOM on BOTH pages before it can compare them record by record (#232).
 fn open_with(surface: Surface, fx: &Fixture, port: u16, extra: &str) -> Opened {
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let t0 = std::time::Instant::now();
+    let opened = open_page(surface, fx, port, extra);
+    harness::profile("open", t0.elapsed());
+    opened
+}
+
+fn open_page(surface: Surface, fx: &Fixture, port: u16, extra: &str) -> Opened {
+    let (browser, tab) = harness::chrome_tab();
     match surface {
         Surface::Classic => {
             std::env::set_var("CLAUDE_REPLAY_CACHE", &fx.base);
@@ -368,8 +374,7 @@ fn open_with(surface: Surface, fx: &Fixture, port: u16, extra: &str) -> Opened {
 /// splice (`?ui=classic&session=`, the same export.js DOM in the document), the app shell is
 /// `?ui=app&session=`. The monitor is owned by the returned page and can be respawned.
 fn open_on_v2(surface: Surface, fx: &Fixture, port: u16) -> Opened {
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::chrome_tab();
     let stores = Stores {
         root: fx.base.join("stores"),
     };
@@ -413,7 +418,7 @@ fn restart_monitor(page: &mut Opened, fx: &Fixture, port: u16) {
 }
 
 fn settle() {
-    std::thread::sleep(Duration::from_millis(700));
+    harness::pause("settle", Duration::from_millis(700));
 }
 
 /// Wait for the scroller to sit at its tail (a jump may scroll smoothly), or fail saying so.
@@ -5302,6 +5307,18 @@ fn scenario_the_trace_records_what_the_engine_did(
     // The reader's own scroll is recorded as one: its verdict, and the window update it drove.
     scroll_by(tab, surface, -1200);
     settle();
+    // A scroll EVENT reaches the page only with a rendering frame, and a headless tab makes
+    // frames lazily (#204): measured on the classic page, the move had landed (scrollTop 6819 →
+    // 5619) while the trace still held no `scroll` 700 ms later — one run in four or five at a
+    // busy machine's load. So wait for the page to hear it; one that never does still fails
+    // here, with the renderer's verdict (#344).
+    harness::until(
+        tab,
+        "window.__viewportTrace.some(function (x) { return x.event === 'scroll'; }) && window.__viewportTrace.some(function (x) { return x.event === 'update'; })",
+        "the page to record the reader's scroll and the update it drove",
+        Duration::from_secs(10),
+        "window.__viewportTrace.slice(-6).map(function (x) { return x.event; }).join(',')",
+    );
     let events = eval(
         tab,
         "(function(){ return Array.from(new Set(window.__viewportTrace.map(function (x) { return x.event; }))).sort().join(','); })()",
@@ -13439,8 +13456,7 @@ fn both_shells_open_a_file_from_the_session_s_own_scratch() {
             Surface::Classic => "scratch-classic",
             _ => "scratch-app",
         });
-        let browser = harness::chrome();
-        let tab = browser.new_tab().unwrap();
+        let (_browser, tab) = harness::chrome_tab();
         let stores = Stores {
             root: fx.base.join("stores"),
         };
@@ -14646,8 +14662,7 @@ fn app_shell_the_rail_wears_each_agent_s_mark() {
         &harness::codex_tool_session("019a0000-0000-7000-8000-000000000299", 2),
     );
     let m = Monitor::spawn(Kind::V2, 3052, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     m.open(&tab, "?ui=app");
     harness::until(
@@ -14748,8 +14763,7 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
     .unwrap();
     stores.codex_session(codex, &harness::codex_tool_session(codex, 2));
     let m = Monitor::spawn(Kind::V2, 3054, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     m.open(&tab, "?ui=app");
     harness::until(
@@ -15528,8 +15542,7 @@ fn both_shells_open_a_file_from_the_session_s_job_workspace() {
             },
             sid,
         );
-        let browser = harness::chrome();
-        let tab = browser.new_tab().unwrap();
+        let (_browser, tab) = harness::chrome_tab();
         let stores = Stores {
             root: fx.base.join("stores"),
         };
@@ -15908,8 +15921,7 @@ fn app_shell_command_k_is_a_jump_to_ranked_by_recency() {
     .unwrap();
 
     let m = Monitor::spawn(Kind::V2, 3044, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     m.open(&tab, "?ui=app");
     // `Monitor::open` seeds EVERY bucket so an ordinary case can see its fixture (#202). This case

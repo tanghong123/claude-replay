@@ -112,8 +112,7 @@ struct Opened {
 /// splice (`?ui=classic`), the app shell as the default. P3 compares the two effect sets, so
 /// they must come from one server and one transcript, not two fixtures that agree by luck.
 fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::chrome_tab();
     let stores = Stores {
         root: fx.base.join("stores"),
     };

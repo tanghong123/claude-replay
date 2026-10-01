@@ -1440,6 +1440,122 @@ pub fn chrome() -> headless_chrome::Browser {
     chrome_with(&[])
 }
 
+/// [`chrome`] and its first tab — how a case opens its browser.
+pub fn chrome_tab() -> (
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    first_tab(chrome)
+}
+
+/// [`chrome_with`] and its first tab.
+pub fn chrome_with_tab(
+    extra: &[&str],
+) -> (
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    first_tab(|| chrome_with(extra))
+}
+
+/// Launch a browser with `launch` and open its first tab, launching again when the tab never
+/// comes (#343).
+///
+/// Across fifteen saved suite runs, ~220 of ~230 failures were ONE error: `new_tab()` on a
+/// browser launched a moment before answered "The event waited for never came", in unbroken
+/// runs of up to 22 cases, and everything passed again afterwards. headless_chrome registers a
+/// tab from its event thread, which makes three CDP calls per new target and STOPS for good if
+/// one fails, so such a browser is dead rather than slow — measured under a CPU spike (load
+/// ~120): the tab never registered in a further 60 s and the connection closed, while the next
+/// launch, at load 113, had its tab in 2.6 s (0.9 s is typical, 2.5 s the worst at ordinary
+/// load). Waiting longer on the same browser cannot help; a fresh one does.
+///
+/// The retry covers the launch and the first tab and nothing after it, so it cannot hide what a
+/// page does; every retry is a stderr line, and running out says it was the machine.
+pub fn first_tab(
+    launch: impl Fn() -> headless_chrome::Browser,
+) -> (
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    const LAUNCHES: u64 = 4;
+    let t0 = Instant::now();
+    let mut last = String::new();
+    for attempt in 1..=LAUNCHES {
+        let browser = launch();
+        match browser.new_tab() {
+            Ok(tab) => {
+                profile("chrome", t0.elapsed());
+                if attempt > 1 {
+                    eprintln!(
+                        "harness: chrome's first tab came on launch {attempt} after {:.1}s (load {})",
+                        t0.elapsed().as_secs_f64(),
+                        load_average()
+                    );
+                }
+                return (browser, tab);
+            }
+            Err(e) => {
+                last = e.to_string();
+                eprintln!(
+                    "harness: chrome gave no first tab on launch {attempt}/{LAUNCHES} ({last}) after {:.1}s (load {}); launching again",
+                    t0.elapsed().as_secs_f64(),
+                    load_average()
+                );
+                drop(browser);
+                std::thread::sleep(Duration::from_secs(3 * attempt));
+            }
+        }
+    }
+    panic!(
+        "chrome gave no first tab in {LAUNCHES} launches over {:.0}s (last: {last}; load {}) — the machine, not the page",
+        t0.elapsed().as_secs_f64(),
+        load_average()
+    );
+}
+
+/// `CR_PROFILE=<file>` (#348): each timed step appends `<case>\t<what>\t<ms>` to that file — the
+/// case is the test thread's name, which libtest sets — so one full run says where its time went:
+/// fixed pauses ([`pause`]), the browser ([`first_tab`]), a scenario's page open. Unset, it costs
+/// one environment lookup.
+pub fn profile(what: &str, took: Duration) {
+    let Some(path) = std::env::var_os("CR_PROFILE") else {
+        return;
+    };
+    let case = std::thread::current().name().unwrap_or("?").to_string();
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{case}\t{what}\t{}", took.as_millis());
+    }
+}
+
+/// A fixed pause, reported to [`profile`].
+pub fn pause(what: &str, d: Duration) {
+    std::thread::sleep(d);
+    profile(what, d);
+}
+
+/// The load averages as the OS reports them (Linux `/proc/loadavg`, else macOS's sysctl).
+fn load_average() -> String {
+    if let Ok(s) = std::fs::read_to_string("/proc/loadavg") {
+        return s.split_whitespace().take(3).collect::<Vec<_>>().join(" ");
+    }
+    std::process::Command::new("sysctl")
+        .args(["-n", "vm.loadavg"])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .trim_matches(|c| c == '{' || c == '}')
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_else(|_| "unknown".into())
+}
+
 /// [`chrome`], with extra command-line switches — e.g. `--host-resolver-rules=MAP phone.test
 /// 127.0.0.1`, which lets a case reach a monitor by a name that is NOT the loopback, as a phone
 /// through `tailscale serve` does (#313's gzip is only for such a client).
@@ -1928,7 +2044,7 @@ pub fn scroll_by(tab: &headless_chrome::Tab, surface: Surface, dy: i64) {
         .get(0)
         .and_then(serde_json::Value::as_f64)
         .unwrap_or(0.0);
-    std::thread::sleep(Duration::from_millis(140));
+    pause("scroll_by", Duration::from_millis(140));
     let now = eval(tab, &format!("{s}.scrollTop"))
         .as_f64()
         .unwrap_or(want);

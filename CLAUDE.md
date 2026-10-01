@@ -244,7 +244,11 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   nothing a case measures comes from this machine's sessions), record builders and
   `long_session`, `Monitor::spawn` (v1 or v2 on a fixed port, reaped on drop; a missing binary
   PANICS naming the build — never a silent skip, which is how a blank shell once passed as
-  13/16), `chrome()` with timer throttling off, `until` (panics with what it saw), and the
+  13/16), `chrome_tab()` — a browser with timer throttling off AND its first tab, the one way a
+  case opens one (#343: `first_tab` launches again, up to four times with a stderr line each,
+  when a fresh browser gives no tab — ~220 of ~230 failures across fifteen suite runs were that
+  one error, "The event waited for never came", in runs of up to 22 cases; such a browser is
+  dead, not slow, so waiting longer on it cannot help) — `until` (panics with what it saw), and the
   two-surface vocabulary (`Surface::{Classic, AppShell}`, `turn_at_top`, `at_tail`, `scroll_by`,
   `jump_to_end`, `open_last_fold`, `LiveGrowth`). `tests/browser_follow.rs` holds the
   structural cases (the html server's viewport contract; `the_app_shell_*` on ports 2831–2836;

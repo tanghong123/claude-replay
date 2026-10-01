@@ -162,21 +162,22 @@ fn live_viewport_follows_pinned_and_holds_unpinned() {
     let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
     let url = server.url_for_root(0).expect("hosted");
 
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            // Never let tab-backgrounding heuristics starve timers or rendering — the
-            // page's poll loop and the renderer's scroll events are the test subject.
-            .args(vec![
-                std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-            ])
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches (install Chrome/Chromium to run this harness)");
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::first_tab(|| {
+        headless_chrome::Browser::new(
+            headless_chrome::LaunchOptions::default_builder()
+                .headless(true)
+                // Never let tab-backgrounding heuristics starve timers or rendering — the
+                // page's poll loop and the renderer's scroll events are the test subject.
+                .args(vec![
+                    std::ffi::OsStr::new("--disable-background-timer-throttling"),
+                    std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
+                    std::ffi::OsStr::new("--disable-renderer-backgrounding"),
+                ])
+                .build()
+                .unwrap(),
+        )
+        .expect("chrome launches (install Chrome/Chromium to run this harness)")
+    });
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
 
@@ -437,20 +438,21 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
     let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
     let url = server.url_for_root(0).expect("hosted");
 
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .window_size(Some((1400, 900)))
-            .args(vec![
-                std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-            ])
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches (install Chrome/Chromium to run this harness)");
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::first_tab(|| {
+        headless_chrome::Browser::new(
+            headless_chrome::LaunchOptions::default_builder()
+                .headless(true)
+                .window_size(Some((1400, 900)))
+                .args(vec![
+                    std::ffi::OsStr::new("--disable-background-timer-throttling"),
+                    std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
+                    std::ffi::OsStr::new("--disable-renderer-backgrounding"),
+                ])
+                .build()
+                .unwrap(),
+        )
+        .expect("chrome launches (install Chrome/Chromium to run this harness)")
+    });
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
 
@@ -559,19 +561,20 @@ fn a_turn_landing_holds_through_late_reflow() {
     let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
     let url = server.url_for_root(0).expect("hosted");
 
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .args(vec![
-                std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-            ])
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches (install Chrome/Chromium to run this harness)");
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::first_tab(|| {
+        headless_chrome::Browser::new(
+            headless_chrome::LaunchOptions::default_builder()
+                .headless(true)
+                .args(vec![
+                    std::ffi::OsStr::new("--disable-background-timer-throttling"),
+                    std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
+                    std::ffi::OsStr::new("--disable-renderer-backgrounding"),
+                ])
+                .build()
+                .unwrap(),
+        )
+        .expect("chrome launches (install Chrome/Chromium to run this harness)")
+    });
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     wait_for(&tab, "initial render", Duration::from_secs(15), |s| {
@@ -661,23 +664,24 @@ fn stepping_search_hits_keeps_the_viewport_when_the_match_is_visible() {
     let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
     let url = server.url_for_root(0).expect("hosted");
 
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            // A real reading viewport: with a short window the "previous" match lands under
-            // the top chrome, where scrolling to it is the CORRECT behaviour and the test
-            // would be measuring the wrong thing.
-            .window_size(Some((1200, 900)))
-            .args(vec![
-                std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-            ])
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches (install Chrome/Chromium to run this harness)");
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::first_tab(|| {
+        headless_chrome::Browser::new(
+            headless_chrome::LaunchOptions::default_builder()
+                .headless(true)
+                // A real reading viewport: with a short window the "previous" match lands under
+                // the top chrome, where scrolling to it is the CORRECT behaviour and the test
+                // would be measuring the wrong thing.
+                .window_size(Some((1200, 900)))
+                .args(vec![
+                    std::ffi::OsStr::new("--disable-background-timer-throttling"),
+                    std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
+                    std::ffi::OsStr::new("--disable-renderer-backgrounding"),
+                ])
+                .build()
+                .unwrap(),
+        )
+        .expect("chrome launches (install Chrome/Chromium to run this harness)")
+    });
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     wait_for(&tab, "initial render", Duration::from_secs(15), |s| {
@@ -825,14 +829,15 @@ fn a_workflow_fleet_renders_under_its_launching_block() {
     };
     let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
     let url = server.url_for_root(0).expect("hosted");
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches (install Chrome/Chromium to run this harness)");
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::first_tab(|| {
+        headless_chrome::Browser::new(
+            headless_chrome::LaunchOptions::default_builder()
+                .headless(true)
+                .build()
+                .unwrap(),
+        )
+        .expect("chrome launches (install Chrome/Chromium to run this harness)")
+    });
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
 
@@ -919,8 +924,7 @@ fn the_v2_shell_keeps_the_document_scroller() {
     let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
     stores.claude_session(&sid, &harness::long_session(40, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2831, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     // Any session the machine has will do — the assertion is about LAYOUT, not content.
     let id = sid.clone();
@@ -1011,8 +1015,7 @@ fn the_app_shell_hides_and_restores_a_session() {
     );
     let store_rows = 1;
     let monitor = Monitor::spawn(Kind::V2, 2832, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to("http://127.0.0.1:2832/?ui=app").unwrap();
     tab.wait_until_navigated().unwrap();
@@ -1155,8 +1158,7 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
         &harness::long_session(6, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V2, 2833, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
@@ -1268,8 +1270,7 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
     let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
     stores.claude_session(&sid, &harness::long_session(80, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2834, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
@@ -1361,8 +1362,7 @@ fn the_app_shell_keys_step_turns_and_heads() {
         ),
     );
     let monitor = Monitor::spawn(Kind::V2, 2835, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
@@ -1445,8 +1445,7 @@ fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
     let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
     stores.claude_session(&sid, &harness::long_session(80, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2836, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
@@ -1575,14 +1574,15 @@ fn a_clicked_file_path_opens_its_content_in_the_page() {
     // comes back as the cookie every later fetch carries.
     let url = format!("http://127.0.0.1:{port}/session?id={id}&artifacts=1&token={token}");
 
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches (install Chrome/Chromium to run this harness)");
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::first_tab(|| {
+        headless_chrome::Browser::new(
+            headless_chrome::LaunchOptions::default_builder()
+                .headless(true)
+                .build()
+                .unwrap(),
+        )
+        .expect("chrome launches (install Chrome/Chromium to run this harness)")
+    });
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
 
@@ -1770,14 +1770,15 @@ fn the_artifact_roster_groups_republishes_by_url() {
     let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
     let url = server.url_for_root(0).expect("hosted");
 
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches (install Chrome/Chromium to run this harness)");
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::first_tab(|| {
+        headless_chrome::Browser::new(
+            headless_chrome::LaunchOptions::default_builder()
+                .headless(true)
+                .build()
+                .unwrap(),
+        )
+        .expect("chrome launches (install Chrome/Chromium to run this harness)")
+    });
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
 
@@ -1865,8 +1866,7 @@ fn the_classic_rail_clusters_a_family_and_hides_and_restores_a_row() {
     let stores = Stores::new(&base);
     let (root_id, fork_id) = stores.qoderwork_family();
     let monitor = Monitor::spawn(Kind::V1, 2837, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
             .ok()
@@ -2068,15 +2068,16 @@ fn the_classic_page_keys_resolve_through_the_shared_table() {
     };
     let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
     let url = server.url_for_root(0).expect("hosted");
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .headless(true)
-            .window_size(Some((1200, 800)))
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches");
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::first_tab(|| {
+        headless_chrome::Browser::new(
+            headless_chrome::LaunchOptions::default_builder()
+                .headless(true)
+                .window_size(Some((1200, 800)))
+                .build()
+                .unwrap(),
+        )
+        .expect("chrome launches")
+    });
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
             .ok()
@@ -2162,8 +2163,7 @@ fn the_classic_rail_composes_through_the_shared_protocol() {
     let stores = Stores::new(&base);
     let sid = stores.claude_finished();
     let monitor = Monitor::spawn(Kind::V1, 2838, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
             .ok()
@@ -2267,8 +2267,7 @@ fn the_classic_lightbox_reveal_carries_the_stamp() {
     ));
     stores.claude_session(sid, &jsonl);
     let monitor = Monitor::spawn(Kind::V2, 2839, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=classic&session={sid}"));
     harness::until(
@@ -2370,8 +2369,7 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
     let sid = "cccccccc-0000-4000-8000-000000000054".to_string();
     stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2843, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let url = format!("http://127.0.0.1:2843/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
@@ -2611,8 +2609,7 @@ fn the_app_shell_holds_a_scroll_a_transaction_arrives_on_top_of() {
     let sid = "cccccccc-0000-4000-8000-000000000213".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2919, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
@@ -2728,8 +2725,7 @@ fn the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing() {
         .collect();
     stores.claude_tasks(&sid, &borrowed);
     let monitor = Monitor::spawn(Kind::V2, 2920, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     // Tall enough that every card is wholly visible, which is the owner's situation: the column
     // still overflows, but only by its own bottom padding.
     tab.set_bounds(headless_chrome::types::Bounds::Normal {
@@ -2912,8 +2908,7 @@ fn the_app_shell_filters_a_pane_to_what_is_live_from_the_outline_menu() {
         ],
     );
     let monitor = Monitor::spawn(Kind::V2, 2921, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
@@ -3093,8 +3088,7 @@ fn the_app_shell_says_what_it_is_doing_while_a_session_loads() {
     let sid = "cccccccc-0000-4000-8000-000000000221".to_string();
     stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2922, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
 
@@ -3152,8 +3146,7 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
     let sid = "cccccccc-0000-4000-8000-000000000055".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2844, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let url = format!("http://127.0.0.1:2844/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
@@ -3364,8 +3357,7 @@ fn the_app_shell_orders_tasks_by_group_then_id() {
         ],
     );
     let monitor = Monitor::spawn(Kind::V2, 2845, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2845/?ui=app&session={sid}"))
         .unwrap();
@@ -3430,8 +3422,7 @@ fn the_app_shell_turns_pane_scrolls_itself() {
     let sid = "cccccccc-0000-4000-8000-000000000058".to_string();
     stores.claude_session(&sid, &harness::long_session(160, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2848, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2848/?ui=app&session={sid}"))
         .unwrap();
@@ -3514,8 +3505,7 @@ fn the_app_shell_tasks_pane_scrolls_itself() {
         .collect();
     stores.claude_tasks(&sid, &borrowed);
     let monitor = Monitor::spawn(Kind::V2, 2849, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2849/?ui=app&session={sid}"))
         .unwrap();
@@ -3588,8 +3578,7 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
         .collect();
     stores.claude_tasks(&sid, &borrowed);
     let monitor = Monitor::spawn(Kind::V2, 2846, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2846/?ui=app&session={sid}"))
         .unwrap();
@@ -3848,8 +3837,7 @@ fn the_app_shell_opens_a_task_details_popover() {
     // Give the running task a two-paragraph description and a dependency, as taskq writes them.
     std::fs::write(dir.join("2.json"), r#"{"id":"2","subject":"two, running","description":"First paragraph of the task.\n\nSecond paragraph, with detail.","activeForm":"Doing two","status":"in_progress","blocks":["3"],"blockedBy":["1"]}"#).unwrap();
     let monitor = Monitor::spawn(Kind::V2, 2867, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2867/?ui=app&session={sid}"))
         .unwrap();
@@ -3966,8 +3954,7 @@ fn the_app_shell_agents_pane_switches_to_the_sub_agent() {
         &harness::long_session(6, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V2, 2850, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let url = format!("http://127.0.0.1:2850/?ui=app&session={parent}");
     tab.navigate_to(&url).unwrap();
@@ -4048,8 +4035,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
         .collect();
     stores.claude_tasks(&sid, &borrowed);
     let monitor = Monitor::spawn(Kind::V2, 2869, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     tab.set_bounds(headless_chrome::types::Bounds::Normal {
         left: Some(0),
         top: Some(0),
@@ -4281,8 +4267,7 @@ fn the_app_shell_options_popover_fits_and_scrolls() {
     transcript += &harness::assistant_at("done with all of those", &harness::now_minus(20));
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V2, 2876, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
@@ -4428,8 +4413,7 @@ fn the_app_shell_can_bring_a_collapsed_outline_back() {
     let sid = "cccccccc-0000-4000-8000-000000000137".to_string();
     stores.claude_session(&sid, &harness::long_session(12, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2877, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
@@ -4507,8 +4491,7 @@ fn the_app_shell_outline_is_an_accordion() {
     let sid = "cccccccc-0000-4000-8000-000000000088".to_string();
     stores.claude_session(&sid, &harness::long_session(40, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2907, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
@@ -4587,8 +4570,7 @@ fn the_app_shell_info_subsections_fold_and_the_choice_persists() {
         &harness::long_session(4, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V2, 2908, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={first}"));
     let open_info = "(function(){ var t = document.querySelector('.outline-footer-info'); if (t && !document.getElementById('infoPopover').classList.contains('open')) t.click(); return 'ok'; })()";
@@ -4700,8 +4682,7 @@ fn the_app_shell_info_and_turns_panes_show_the_compaction() {
     }
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V2, 2868, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2868/?ui=app&session={sid}"))
         .unwrap();
@@ -4807,8 +4788,7 @@ fn the_app_shell_theme_toggle_is_visible_and_works() {
     let sid = "cccccccc-0000-4000-8000-000000000075".to_string();
     stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2870, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2870/?ui=app&session={sid}"))
         .unwrap();
@@ -4864,8 +4844,7 @@ fn the_app_shell_open_counts_nothing_as_new() {
     let sid = "cccccccc-0000-4000-8000-000000000084".to_string();
     let path = stores.claude_session(&sid, &harness::long_session(40, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2871, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let url = format!("http://127.0.0.1:2871/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
@@ -4972,8 +4951,7 @@ fn the_app_shell_finds_the_parent_from_a_child_opened_first() {
         &harness::long_session(6, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V2, 2872, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to("http://127.0.0.1:2872/?ui=app&session=aExplore-82")
         .unwrap();
@@ -5018,8 +4996,7 @@ fn the_app_shell_expands_every_group_again() {
         );
     }
     let monitor = Monitor::spawn(Kind::V2, 2874, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let url = "http://127.0.0.1:2874/?ui=app";
     tab.navigate_to(url).unwrap();
@@ -5090,8 +5067,7 @@ fn the_app_shell_resizes_the_session_list() {
     let sid = "cccccccc-0000-4000-8000-000000000096".to_string();
     stores.claude_session(&sid, &harness::long_session(10, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2876, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let url = format!("http://127.0.0.1:2876/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
@@ -5321,8 +5297,7 @@ fn the_app_shell_lists_the_published_artifacts() {
     }
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V2, 2875, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2875/?ui=app&session={sid}"))
         .unwrap();
@@ -5444,8 +5419,7 @@ fn the_app_shell_outline_panes_are_drawers() {
     let sid = "cccccccc-0000-4000-8000-000000000139".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2914, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     tab.set_bounds(headless_chrome::types::Bounds::Normal {
         left: Some(0),
         top: Some(0),
@@ -5601,8 +5575,7 @@ fn the_app_shell_outline_toggle_completes_the_slide() {
     let sid = "cccccccc-0000-4000-8000-000000000140".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2915, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     tab.set_bounds(headless_chrome::types::Bounds::Normal {
         left: Some(0),
         top: Some(0),
@@ -5739,8 +5712,7 @@ fn shell_with_a_session(
     transcript += &harness::assistant_at("noted", &harness::now_minus(50));
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V2, port, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
@@ -5850,8 +5822,7 @@ fn the_app_shell_size_control_reads_as_a_relative_step() {
     transcript += &harness::assistant_at("written", &harness::now_minus(50));
     stores.claude_session(&sid, &transcript);
     let _monitor = Monitor::spawn(Kind::V2, 2879, &base, Some(&stores), true);
-    let _browser = harness::chrome();
-    let tab = _browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     _monitor.pair(&tab);
     _monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
@@ -6273,8 +6244,7 @@ fn the_app_shell_a_panes_own_list_takes_the_wheel() {
     // Enough turns that the Turns list overflows its own max-height and is genuinely scrollable.
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2896, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
@@ -6364,8 +6334,7 @@ fn the_app_shell_drawers_answer_where_the_gesture_began_and_the_pressure_below()
     let sid = "cccccccc-0000-4000-8000-000000000206".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V2, 2918, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     // Tall enough that every card is wholly visible: no pressure from below.
     tab.set_bounds(headless_chrome::types::Bounds::Normal {
         left: Some(0),
@@ -6477,8 +6446,7 @@ fn the_app_shell_renders_nothing_for_a_record_with_nothing_to_show() {
     transcript += &harness::assistant_at("done", &harness::now_minus(60));
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V2, 2897, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
@@ -6539,8 +6507,7 @@ fn the_app_shell_ranks_progress_above_thinking_and_activity() {
     transcript += &harness::assistant_at("done", &harness::now_minus(70));
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V2, 2898, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
@@ -6747,8 +6714,7 @@ fn the_app_shell_panes_open_on_what_is_live() {
         ],
     );
     let monitor = Monitor::spawn(Kind::V2, 2885, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let open = |tab: &headless_chrome::Tab| {
         tab.navigate_to(&format!("http://127.0.0.1:2885/?ui=app&session={sid}"))
@@ -6847,8 +6813,7 @@ fn app_shell_favicon(kind: Kind, port: u16, label: &str) {
         &harness::long_session(3, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(kind, port, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
         .unwrap();
@@ -6918,8 +6883,7 @@ fn home_screen_icon(kind: Kind, port: u16, label: &str) {
     let monitor = Monitor::spawn(kind, port, &base, Some(&stores), true);
 
     // Never paired: the icon and the manifest are read, as the bytes they are.
-    let stranger = harness::chrome();
-    let tab = stranger.new_tab().unwrap();
+    let (_stranger, tab) = harness::chrome_tab();
     tab.navigate_to(&format!("http://127.0.0.1:{port}/apple-touch-icon.png"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
@@ -6943,8 +6907,7 @@ fn home_screen_icon(kind: Kind, port: u16, label: &str) {
     );
 
     // Paired, on each page this binary draws with its own head: the tags, and what they name.
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let pages: &[&str] = if matches!(kind, Kind::V1) {
         &["app", "classic"]
@@ -7143,8 +7106,7 @@ fn the_app_shell_counts_the_blocked_sessions() {
     let base = base("appshell-buckets");
     let world = bucket_world(&base);
     let monitor = Monitor::spawn(Kind::V2, 2916, &base, Some(&world.stores), false);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     tab.navigate_to("http://127.0.0.1:2916/?ui=app").unwrap();
     tab.wait_until_navigated().unwrap();
     // A wait publishes at once, an ended turn after one stable tick, the process probe runs
@@ -7267,8 +7229,7 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     let base = base("appshell-filter");
     let world = bucket_world(&base);
     let monitor = Monitor::spawn(Kind::V2, 2917, &base, Some(&world.stores), false);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     tab.navigate_to("http://127.0.0.1:2917/?ui=app").unwrap();
     tab.wait_until_navigated().unwrap();
     let settled = |v: &serde_json::Value| {
@@ -7600,8 +7561,7 @@ fn a_phone_pairs_by_a_one_time_code() {
     );
     let link = format!("http://127.0.0.1:{port}/pair#code={code}");
     // A fresh browser: no cookie, so only the code can let it in.
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     tab.navigate_to(&link).unwrap();
     harness::until(
         &tab,
@@ -7611,8 +7571,7 @@ fn a_phone_pairs_by_a_one_time_code() {
         "location.href + ' | ' + document.body.innerText.slice(0, 200)",
     );
     // The same code in another fresh browser is refused, and the page says so.
-    let other = harness::chrome();
-    let tab2 = other.new_tab().unwrap();
+    let (_other, tab2) = harness::chrome_tab();
     tab2.navigate_to(&link).unwrap();
     harness::until(
         &tab2,
@@ -7698,8 +7657,7 @@ fn desktop_tab(
     headless_chrome::Browser,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::chrome_tab();
     harness::resize(&tab, 1280.0, 900.0);
     m.pair(&tab);
     m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
@@ -7722,8 +7680,7 @@ fn phone_tab(
     headless_chrome::Browser,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::chrome_tab();
     harness::phone(&tab, w, h);
     m.pair(&tab);
     m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
@@ -8234,8 +8191,7 @@ fn a_phone_pinches_an_image_to_zoom() {
     let sid = "cccc3333-0000-4000-8000-000000000313";
     stores.claude_session(sid, &t);
     let m = harness::Monitor::spawn(harness::Kind::V2, 2806, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     harness::phone(&tab, 390, 844);
     m.pair(&tab);
     m.open(&tab, &format!("?ui=app&session={sid}"));
@@ -8308,11 +8264,10 @@ fn a_phone_over_the_tailnet_reads_the_session_gzipped() {
     let m = harness::Monitor::spawn(harness::Kind::V2, 2805, &base, Some(&stores), true);
     // `phone.test` is not a loopback name, so Chrome would hand it to the machine's proxy (which
     // cannot resolve it, and answers with an empty error): no proxy, and the name mapped here.
-    let browser = harness::chrome_with(&[
+    let (_browser, tab) = harness::chrome_with_tab(&[
         "--host-resolver-rules=MAP phone.test 127.0.0.1",
         "--no-proxy-server",
     ]);
-    let tab = browser.new_tab().unwrap();
     harness::phone(&tab, 390, 844);
     let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
     tab.navigate_to(&format!("http://phone.test:2805/{token}"))
@@ -8571,11 +8526,10 @@ fn a_paired_phone_over_the_tailnet_reads_a_file() {
         true,
         &[("AGENT_MONITOR_TRUSTED_HOSTS", "phone.test:2714")],
     );
-    let browser = harness::chrome_with(&[
+    let (_browser, tab) = harness::chrome_with_tab(&[
         "--host-resolver-rules=MAP phone.test 127.0.0.1",
         "--no-proxy-server",
     ]);
-    let tab = browser.new_tab().unwrap();
     harness::phone(&tab, 390, 844);
     let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
     tab.navigate_to(&format!("http://phone.test:2714/{token}"))
@@ -9090,8 +9044,7 @@ fn tail_first_world(
         &harness::long_session(60, harness::Shape::default()),
     );
     let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     harness::hold_the_head(&tab);
     m.open(&tab, &format!("?ui=app&session={TAIL_SID}&tailBudget=8192"));
@@ -10099,8 +10052,7 @@ fn tail_first_phone(
         stores.claude_tasks(TAIL_SID, tasks);
     }
     let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (browser, tab) = harness::chrome_tab();
     harness::phone(&tab, 390, 844);
     m.pair(&tab);
     harness::hold_the_head(&tab);
@@ -10311,8 +10263,7 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
         &harness::long_session(4, harness::Shape::default()),
     );
     let m = harness::Monitor::spawn(harness::Kind::V2, 2724, &base, Some(&stores), true);
-    let browser = harness::chrome();
-    let tab = browser.new_tab().unwrap();
+    let (_browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     let target = m.url(&format!("?ui=app&session={PHONE_SID}"));
     tab.navigate_to(&format!(
@@ -10329,8 +10280,7 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
     );
     // A browser that was never paired: the refusal, as a page, after one retry and no more.
-    let fresh = harness::chrome();
-    let other = fresh.new_tab().unwrap();
+    let (_fresh, other) = harness::chrome_tab();
     other.navigate_to(&target).unwrap();
     harness::until(
         &other,
@@ -10357,5 +10307,38 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
             .unwrap_or("")
             .contains("cmauth"),
         "and no cookie was minted"
+    );
+}
+
+/// A browser that gives no first tab is launched again (#343). The first launch is killed before
+/// it is asked for a tab — from here a dead browser is exactly that — and the case still gets a
+/// working tab, from a second launch. Before #343 every case called `new_tab().unwrap()` on the
+/// one browser it launched, and a dead one failed the case.
+#[test]
+#[ignore = "needs a local Chrome"]
+fn a_browser_that_gives_no_first_tab_is_launched_again() {
+    let _serial = serial();
+    let launches = std::cell::Cell::new(0u32);
+    let (_browser, tab) = harness::first_tab(|| {
+        launches.set(launches.get() + 1);
+        let browser = harness::chrome();
+        if launches.get() == 1 {
+            let pid = browser
+                .get_process_id()
+                .expect("a launched browser has a pid");
+            std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status()
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        browser
+    });
+    assert_eq!(launches.get(), 2, "the dead browser was replaced, once");
+    tab.navigate_to("about:blank").unwrap();
+    assert_eq!(
+        eval(&tab, "1 + 1", false).as_i64(),
+        Some(2),
+        "the tab from the second launch works"
     );
 }
