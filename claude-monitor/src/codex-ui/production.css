@@ -944,7 +944,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    rest — a query held, the reader clicked away — gives it back at its resting width. There the
    count and the steps fold away until the box is focused again: at 180px they pushed the filter
    button out past the box's edge, and a wider resting box took the same pixels from the title. */
-@media(min-width:701px) and (max-width:900px){.header-searchbox:focus-within{width:min(360px,48vw)}.topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}.header-searchbox:not(:focus-within) input~:is(.find-count,.find-nav){display:none}}
+@media(min-width:701px) and (max-width:900px){.header-searchbox:focus-within{width:min(392px,52vw)}.topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}.header-searchbox:not(:focus-within) input~:is(.find-count,.find-nav,.search-clear){display:none}}
 
 
 
@@ -980,6 +980,17 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .search-chip-value{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:2px}
 .search-chip-remove{flex:none;width:18px;height:18px;margin-left:2px;border-radius:4px;background:transparent;color:var(--faint);font-size:12px;line-height:1;cursor:pointer}
 .search-chip-remove:hover,.search-chip-remove:focus-visible{background:var(--hover);color:var(--ink)}
+/* #352: a chip's key is a glyph (its word visually hidden); on a phone a chip never loses its key or
+   its × (below). The clear control ends the field whenever the box holds a query. */
+.search-chip{position:relative}
+.search-chip-key{display:inline-grid;place-items:center;width:13px;height:13px}
+.search-chip-key .icon{width:12px;height:12px}
+.search-chip-word{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.search-clear{display:none;flex:none;place-items:center;width:24px;height:24px;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer}
+.search-clear .icon{width:14px;height:14px}
+.header-searchbox.has-query .search-clear{display:grid}
+/* (Between 701 and 900px the focused box is 32px wider than it was for it: min(392px, 52vw).) */
+.search-clear:hover,.search-clear:focus-visible{background:var(--hover);color:var(--ink)}
 .search-suggest{position:absolute;left:0;top:44px;z-index:49;width:min(320px,calc(100vw - 24px));max-height:min(360px,calc(100vh - 120px));overflow-y:auto;padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--bg);box-shadow:0 13px 36px rgba(32,43,72,.13)}
 .search-suggest[hidden]{display:none}
 .search-suggest-head{display:flex;justify-content:space-between;padding:4px 8px 6px;color:var(--faint);font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
@@ -1120,6 +1131,25 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .header-searchbox.has-query:not(.phone-open) .find-count{display:block!important;flex:none;max-width:64px;margin:0 2px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
   #app .header-searchbox.has-query:not(.phone-open) :is(#findPrev,#findNext){display:grid!important;flex:none;width:30px;height:44px}
   #app .header-searchbox.has-query:not(.phone-open) :is(.find-whole,#filterTranscriptBtn){display:none!important}
+  /* #352: the closed box never wraps the row (the owner's toolbar did, with a chip in it). The row's
+     other four are 44px glyphs, so the search takes at most what they leave — the box gives way,
+     its count ellipsizes — and the chips, which the count already names ("3 hits in u"), wait in
+     the open box with the clear control. */
+  #app .topbar>.header-search-cluster{min-width:0;max-width:calc(100% - 4 * 44px - 4 * 2px)}
+  #app .header-searchbox.has-query:not(.phone-open){max-width:100%;min-width:0}
+  #app .header-searchbox.has-query:not(.phone-open) .find-count{flex:0 1 auto;min-width:0;max-width:none}
+  #app .header-searchbox:not(.phone-open) :is(.search-chips,.search-clear){display:none!important}
+  #app .header-searchbox.phone-open .search-clear{width:36px;height:40px}
+  /* The open box on a phone holds the glass, the chips, the field, the clear control, the count, both
+     steps and the filter — measured, with two chips that was ~460px in a 378px box and the field got
+     4px. So the gaps tighten, whole-words leaves (the filter's Scope list carries "Whole words", and
+     `w:` types it), and the count is what gives way, never the field or a chip. */
+  #app .header-searchbox.phone-open{column-gap:2px}
+  #app .header-searchbox.phone-open .find-whole{display:none!important}
+  #app .header-searchbox.phone-open input{flex:1 1 0;min-width:48px}
+  #app .header-searchbox.phone-open .find-count{flex:0 1 auto!important;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #app .header-searchbox.phone-open .search-chip-value{max-width:8ch}
+  #app .header-searchbox.phone-open .search-chips{min-width:min-content}
   /* #334: an option of a question card stacks — label, then description — rather than squeezing its
      label into a column a word wide. */
   #app .input-answer{flex-direction:column;align-items:flex-start;gap:2px;width:100%}

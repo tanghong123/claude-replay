@@ -1670,6 +1670,25 @@ wholeWords.title = "Whole words only  ·  w:"; wholeWords.setAttribute("aria-lab
 wholeWords.setAttribute("aria-pressed", "false");
 wholeWords.textContent = "ab|";
 byId("filterTranscriptBtn").insertAdjacentElement("beforebegin", wholeWords);
+// #352: one tap clears the search — the typed text, every chip and the results, the box as fresh
+// (the owner: "no easy way to clear a search"; a chip's own × was the only way out, and on a phone
+// the chip had been clipped with it). At the end of the field, as a native search field has it,
+// whenever the box holds a query (`has-query`, markQuery). Production-only chrome, like whole-words.
+const searchClear = document.createElement("button");
+searchClear.className = "search-clear"; searchClear.id = "transcriptSearchClear"; searchClear.type = "button";
+searchClear.title = "Clear the search"; searchClear.setAttribute("aria-label", "Clear the search");
+searchClear.innerHTML = svg("x");
+byId("transcriptSearchInput").insertAdjacentElement("afterend", searchClear);
+searchClear.addEventListener("click", () => {
+  const input = byId("transcriptSearchInput");
+  input.value = "";
+  uiState.chips = { scope: "", tools: [] };
+  recordState.pendingSearch = false;
+  updateSearch(true);
+  if (searchSuggest) searchSuggest.hidden = true;
+  suggestState = null;
+  input.focus();
+});
 
 // ---- The search box's tokens (#303, design/in-session-search.md §8) ------------------------------
 // `tool:` and `scope:` are named facets typed anywhere in the box (`tools:` is read too). Typing one opens a drop-down of
@@ -1763,7 +1782,10 @@ function renderChips() {
   if (!searchChips) return;
   const scope = uiState.chips.scope, tools = uiState.chips.tools;
   const label = key => key.endsWith("*") ? key.replace(/^mcp__|__\*$/g, "") + "/*" : key;
-  const chip = (kind, text, title) => `<span class="search-chip" data-chip="${kind}" title="${escapeText(title)}"><span class="search-chip-key">${kind === "tools" ? "tool" : kind}:</span><span class="search-chip-value">${escapeText(text)}</span><button class="search-chip-remove" type="button" data-chip-remove="${kind}" aria-label="Remove the ${kind} filter">×</button></span>`;
+  // #352: the key is a GLYPH — the filter button's for a scope, a wrench for tools — so a chip fits a
+  // phone's box (the word clipped it to "scop" and took its × with it). The word stays in the chip,
+  // visually hidden, for a screen reader and for whatever reads the chip as the token it was.
+  const chip = (kind, text, title) => { const word = kind === "tools" ? "tool" : kind; return `<span class="search-chip" data-chip="${kind}" title="${escapeText(title)}"><span class="search-chip-key">${svg(kind === "tools" ? "tool" : "filterLines")}<span class="search-chip-word">${word}:</span></span><span class="search-chip-value">${escapeText(text)}</span><button class="search-chip-remove" type="button" data-chip-remove="${kind}" aria-label="Remove the ${word} filter">×</button></span>`; };
   searchChips.innerHTML = (scope ? chip("scope", scope, SCOPE_ROWS.filter(([k]) => scope.includes(k)).map(([, l]) => l).join(", ")) : "")
     + (tools.length ? chip("tools", tools.map(label).join(", "), tools.join(", ")) : "");
   searchChips.classList.toggle("has-chips", !!(scope || tools.length));

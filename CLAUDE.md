@@ -46,7 +46,11 @@ little use on a phone are hidden. The session list is a DRAWER over part of the 
 rest closes it on a tap; `mobile-detail` = shut), opened and closed by a handle fixed at the top left —
 a sibling of the drawer in `#app`, because the workspace is isolated under the scrim and anything in
 the top bar would sit under the drawer. The top bar is two rows: handle slot, title, Info, right pane;
-then Turns, Tasks, Agents, search/filter, Aa; the turn header is the third. The outline column does not
+then Turns, Tasks, Agents, search/filter, Aa; the turn header is the third. That second row never
+wraps (#352): the search takes at most what the four 44px glyphs leave, and the CLOSED box with a
+query is its count and steps only — its chips (a glyph each: the filter's for a scope, a wrench for
+tools; the word visually hidden) and the clear control (×, every width, whenever there is a query)
+wait in the open box, where the count gives way before a chip or the field. The outline column does not
 exist there: each pane opens from its icon as a drop-down that holds the outline's OWN live list (moved
 in while open, back after), so one renderer and one click handler (`navigatorClick`) serve both. Every
 sheet hangs at `--phone-top` (the bar's measured bottom). Inputs are 16px (iOS zooms into anything

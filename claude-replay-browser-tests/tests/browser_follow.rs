@@ -10378,3 +10378,170 @@ fn a_browser_paired_with_two_servers_on_one_host_stays_paired_with_both() {
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
     );
 }
+
+/// Whether `el` lies wholly inside `box` and takes a tap at its centre — a chip clipped by its
+/// container still measures its own full rectangle (`rect-is-not-visibility`).
+const PHONE_WHOLLY_IN: &str = "function (el, box) { if (!el || !box) return false; var r = el.getBoundingClientRect(), b = box.getBoundingClientRect(); if (r.width < 4 || r.height < 4) return false; if (r.left < b.left - 0.5 || r.right > b.right + 0.5 || r.top < b.top - 0.5 || r.bottom > b.bottom + 0.5) return false; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(hit && (hit === el || el.contains(hit))); }";
+
+/// #352, the owner's phone: the open search box clipped its scope chip to "scop" — the word, the
+/// value and the × all cut — and nothing else cleared a search. A chip's key is a glyph now, and a
+/// chip never loses its glyph, value or ×; the clear control at the end of the field empties the
+/// text, every chip and the results in one tap and leaves the field focused.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(2728, "phone-search-chips", 390, 844);
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "a tap on the glass to open the box",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    tab.type_str("scope:u question").unwrap();
+    tab.press_key("Enter").unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('#searchChips [data-chip=\"scope\"]') && /[1-9]/.test(document.getElementById('transcriptSearchCount').textContent) && !!document.querySelector('.transcript mark.search-mark')",
+        "the scope chip frozen and the word's hits marked",
+        Duration::from_secs(10),
+        "document.getElementById('searchChips').innerText + ' | ' + document.getElementById('transcriptSearchInput').value + ' | ' + document.getElementById('transcriptSearchCount').textContent",
+    );
+    // With one chip — the owner's case — the count keeps its room in the open box.
+    let count_w = harness::eval(
+        &tab,
+        "(function(){ var c = document.getElementById('transcriptSearchCount'); return c.scrollWidth <= c.clientWidth + 1 && c.getBoundingClientRect().width >= 30; })()",
+    );
+    assert_eq!(
+        count_w, true,
+        "with one chip the open box shows the whole count"
+    );
+    tab.type_str(" tool:Bash ").unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('#searchChips [data-chip=\"tools\"]') && document.getElementById('transcriptSearchInput').value.trim() === 'question'",
+        "a tool chip beside the scope chip, the word still typed",
+        Duration::from_secs(10),
+        "document.getElementById('searchChips').innerText + ' | ' + document.getElementById('transcriptSearchInput').value + ' | ' + document.getElementById('transcriptSearchCount').textContent",
+    );
+    let probe = format!(
+        "(function(){{ var whole = {PHONE_WHOLLY_IN}, box = document.querySelector('.header-searchbox'), chips = document.getElementById('searchChips'), out = {{}}; ['scope','tools'].forEach(function (k) {{ var c = chips.querySelector('[data-chip=\"' + k + '\"]'); var key = c.querySelector('.search-chip-key'); out[k] = {{ glyph: !!key.querySelector('svg') && whole(key, chips) && whole(key, box), word: getComputedStyle(key).width, value: whole(c.querySelector('.search-chip-value'), chips), remove: whole(c.querySelector('.search-chip-remove'), chips) && whole(c.querySelector('.search-chip-remove'), box) }}; }}); var clear = document.getElementById('transcriptSearchClear'); var cr = clear ? clear.getBoundingClientRect() : {{ width: 0, height: 0 }}; out.clear = !!clear && whole(clear, box) && cr.width >= 36 && cr.height >= 40; var i = document.getElementById('transcriptSearchInput').getBoundingClientRect(); out.input = Math.round(i.width); var mids = [].slice.call(box.children).filter(function (e) {{ return getComputedStyle(e).display !== 'none'; }}).map(function (e) {{ var r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }}); out.oneRow = Math.max.apply(null, mids) - Math.min.apply(null, mids) <= 2; out.inWindow = box.getBoundingClientRect().right <= innerWidth; return JSON.stringify(out); }})()"
+    );
+    let p: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, &probe).as_str().unwrap_or("{}")).unwrap();
+    for k in ["scope", "tools"] {
+        assert_eq!(
+            p[k]["glyph"], true,
+            "the {k} chip's key is a glyph, wholly shown: {p}"
+        );
+        assert_eq!(p[k]["value"], true, "the {k} chip's value is shown: {p}");
+        assert_eq!(p[k]["remove"], true, "the {k} chip's × takes a tap: {p}");
+    }
+    assert_eq!(
+        p["clear"], true,
+        "the clear control is finger-sized and takes a tap: {p}"
+    );
+    assert!(
+        p["input"].as_i64().unwrap_or(0) >= 40,
+        "the typed word keeps room beside them: {p}"
+    );
+    assert_eq!(p["oneRow"], true, "the box is one row: {p}");
+    assert_eq!(p["inWindow"], true, "inside the window: {p}");
+    // One tap clears it all.
+    phone_tap(&tab, "#transcriptSearchClear");
+    harness::until(
+        &tab,
+        "document.getElementById('transcriptSearchInput').value === '' && !document.querySelector('#searchChips [data-chip]') && document.getElementById('transcriptSearchCount').textContent.trim() === '' && !document.querySelector('.transcript mark.search-mark') && !document.querySelector('.header-searchbox').classList.contains('has-query')",
+        "one tap on the clear control to empty the text, the chips and the results",
+        Duration::from_secs(5),
+        "document.getElementById('searchChips').innerText + ' | ' + document.getElementById('transcriptSearchInput').value + ' | ' + document.getElementById('transcriptSearchCount').textContent + ' | ' + document.querySelectorAll('.transcript mark.search-mark').length",
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "document.activeElement === document.getElementById('transcriptSearchInput') && document.querySelector('.header-searchbox').classList.contains('phone-open')"
+        ),
+        true,
+        "the box stays open with the field focused, ready for the next query"
+    );
+}
+
+/// #352, the owner's second screenshot: with a query and a scope chip, the CLOSED phone box (#333:
+/// the count and both arrows) grew until Aa dropped to a third row. The box gives way now — the
+/// chips wait in the open box, the count ellipsizes — so the header keeps its two rows at 360px and
+/// at 390px.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_toolbar_keeps_one_row_with_a_query_and_a_chip() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(2729, "phone-search-row", 360, 780);
+    let rows = "(function(){ var t = document.querySelector('.topbar'), aa = document.querySelector('.topbar>.reading-cluster'), pane = document.querySelector('.topbar>.phone-pane'), box = document.querySelector('.header-searchbox'); var mid = function (e) { var r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }; return JSON.stringify({ height: Math.round(t.getBoundingClientRect().height), aa: mid(aa), pane: mid(pane), box: mid(box), right: Math.round(box.getBoundingClientRect().right), aaRight: Math.round(aa.getBoundingClientRect().right), w: innerWidth }); })()";
+    let before: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, rows).as_str().unwrap_or("{}")).unwrap();
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "a tap on the glass to open the box",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    tab.type_str("scope:u question").unwrap();
+    tab.press_key("Enter").unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('#searchChips [data-chip=\"scope\"]') && /[1-9]/.test(document.getElementById('transcriptSearchCount').textContent)",
+        "the scope chip and the word's hits",
+        Duration::from_secs(10),
+        "document.getElementById('searchChips').innerText + ' | ' + document.getElementById('transcriptSearchCount').textContent",
+    );
+    phone_tap_at(&tab, 180.0, 600.0);
+    harness::until(
+        &tab,
+        "!document.querySelector('.header-searchbox').classList.contains('phone-open') && document.querySelector('.header-searchbox').classList.contains('has-query')",
+        "a tap outside to close the box with its query",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    for width in [360u32, 390] {
+        if width != 360 {
+            harness::phone(&tab, width, 844);
+            harness::until(
+                &tab,
+                &format!("innerWidth === {width}"),
+                "the window to take the new width",
+                Duration::from_secs(5),
+                "innerWidth",
+            );
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        let after: serde_json::Value =
+            serde_json::from_str(harness::eval(&tab, rows).as_str().unwrap_or("{}")).unwrap();
+        assert_eq!(
+            after["height"], before["height"],
+            "{width}px: the header keeps its height — no third row ({before} → {after})"
+        );
+        assert_eq!(
+            after["aa"], after["pane"],
+            "{width}px: Aa stays on the row with the panes and the box: {after}"
+        );
+        assert_eq!(
+            after["box"], after["pane"],
+            "{width}px: so does the box: {after}"
+        );
+        let shown = format!(
+            "(function(){{ var c = document.getElementById('transcriptSearchCount'), r = c.getBoundingClientRect(); return JSON.stringify({{ count: r.width >= 12 && getComputedStyle(c).display !== 'none', prev: ({PHONE_HITTABLE})(document.getElementById('findPrev')), next: ({PHONE_HITTABLE})(document.getElementById('findNext')) }}); }})()"
+        );
+        let s: serde_json::Value =
+            serde_json::from_str(harness::eval(&tab, &shown).as_str().unwrap_or("{}")).unwrap();
+        assert_eq!(
+            s,
+            serde_json::json!({"count": true, "prev": true, "next": true}),
+            "{width}px: the closed box keeps its count and both arrows (#333): {s}"
+        );
+    }
+}
