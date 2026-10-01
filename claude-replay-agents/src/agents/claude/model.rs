@@ -674,6 +674,9 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     // #285, Grep: the head_limit that cut its output, which its text states
     // ("[Showing results with pagination = limit: N]").
     "appliedLimit",
+    // #349, Grep: the offset that skipped its first lines, which its text states
+    // ("[Showing results with pagination = offset: N]").
+    "appliedOffset",
     "artifactRead",
     "artifact_id",
     "artifacts",
@@ -711,7 +714,7 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "error",
     "file",
     "filePath",
-    // #285, Grep: the files it matched, which its result text lists.
+    // #285, Grep, and Glob (#349): the files it matched, which its result text lists.
     "filenames",
     "firstPage",
     "gitOperation",
@@ -736,7 +739,7 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "noOutputExpected",
     "notifications",
     // #285, Grep: its counts. The result text states them ("Found N total occurrences across
-    // M file(s)"), or shows the lines themselves.
+    // M file(s)"), or shows the lines themselves. Glob's `numFiles` (#349) is the files it lists.
     "numFiles",
     "numLines",
     "numMatches",
@@ -818,13 +821,15 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
 /// is known only when EVERY key of the result belongs to the shape it was judged in, and is
 /// reported anywhere else exactly like a key nobody has met.
 /// Every key a Grep result was met with (#285, #315), in every mode — `content` (the lines,
-/// `appliedLimit` when a head_limit cut them), `count` (`numMatches`) and, since client 2.1.283,
+/// `appliedLimit` when a head_limit cut them, `appliedOffset` when an offset skipped some — #349,
+/// client 2.1.285), `count` (`numMatches`) and, since client 2.1.283,
 /// `files_with_matches` (`mode`, `filenames`, `numFiles`, and `totalFiles`: the matching files
 /// before any head_limit cut, which the text states as "Found N files" and a pagination line when
 /// a limit cut it). The page draws the result TEXT, which shows the lines or states the counts and
 /// the limit.
 const GREP_SHAPE: &[&str] = &[
     "appliedLimit",
+    "appliedOffset",
     "content",
     "filenames",
     "mode",
@@ -834,6 +839,19 @@ const GREP_SHAPE: &[&str] = &[
     "totalFiles",
     "totalLines",
 ];
+/// Every key a Glob result was met with (#349, client 2.1.285): the files (`filenames`,
+/// `numFiles`, `truncated` when it listed only the first hundred), `durationMs`, and since 2.1.285
+/// `totalMatches` and `countIsComplete`. The page draws the result TEXT, which lists the files and,
+/// when it was cut, states the total ("Showing 100 of 348 matching files; 248 more are not listed").
+const GLOB_SHAPE: &[&str] = &[
+    "countIsComplete",
+    "durationMs",
+    "filenames",
+    "numFiles",
+    "totalMatches",
+    "truncated",
+];
+
 /// Every key an Artifact create-from-type result was met with (#306, client 2.1.280).
 const ARTIFACT_CREATE_SHAPE: &[&str] = &[
     "auto_open",
@@ -901,6 +919,14 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // reported with them beside it.
     ("mode", GREP_SHAPE),
     ("totalFiles", GREP_SHAPE),
+    // Glob (#349): `totalMatches` is the matching files before the hundred-file cut, which the
+    // text states when it cut ("Showing 100 of 348…") and lists when it did not; `countIsComplete`
+    // says that total is exact — true in every result met so far. Both are generic enough to mean
+    // something else in another tool, so each is known only in Glob's shape. Revisit if a Glob
+    // with `countIsComplete: false` turns up whose text does not say its count is partial: that is
+    // the one fact here the page would not show.
+    ("totalMatches", GLOB_SHAPE),
+    ("countIsComplete", GLOB_SHAPE),
     // Artifact's publish result (#325): `icon` is a generic word, so it is known only in the
     // publish's own shape; the adapter takes the word from the call's input, not from here.
     ("icon", ARTIFACT_PUBLISH_SHAPE),
@@ -4994,20 +5020,35 @@ mod tests {
             vec!["source".to_string()],
             "…and so is `source` outside Read's file_unchanged"
         );
-        // #285, #315: Grep, in each shape it was met in — content mode, limited and not, count mode,
-        // and files_with_matches (client 2.1.283).
+        // #285, #315, #349: Grep, in each shape it was met in — content mode, limited and not and
+        // paged by an offset (client 2.1.285), count mode, and files_with_matches (client 2.1.283).
         for grep in [
             serde_json::json!({"mode": "content", "numFiles": 0, "filenames": [], "content": "a.rs:1:x", "numLines": 1, "totalLines": 1}),
             serde_json::json!({"mode": "content", "numFiles": 0, "filenames": [], "content": "a.rs:1:x", "numLines": 400, "totalLines": 3027, "appliedLimit": 400}),
+            serde_json::json!({"mode": "content", "numFiles": 0, "filenames": [], "content": "a.rs:1:x", "numLines": 12, "totalLines": 37, "appliedOffset": 25}),
             serde_json::json!({"mode": "count", "numFiles": 1, "filenames": [], "content": "a.rs:27", "numMatches": 27}),
             serde_json::json!({"mode": "files_with_matches", "filenames": ["src/a.rs"], "numFiles": 1, "totalFiles": 1}),
         ] {
             assert_eq!(unknown(&grep), Vec::<String>::new(), "Grep, known: {grep}");
         }
         assert_eq!(
-            unknown(&serde_json::json!({"mode": "content", "numFiles": 0, "appliedOffset": 20})),
-            vec!["appliedOffset".to_string(), "mode".to_string()],
+            unknown(
+                &serde_json::json!({"mode": "content", "numFiles": 0, "aKeyFromTheFuture": 20})
+            ),
+            vec!["aKeyFromTheFuture".to_string(), "mode".to_string()],
             "a Grep key nobody has met brings `mode` back with it"
+        );
+        // #349: Glob, as client 2.1.285 writes it — listed whole, and cut at a hundred.
+        for glob in [
+            serde_json::json!({"filenames": ["a.rs"], "durationMs": 3, "numFiles": 1, "truncated": false, "totalMatches": 1, "countIsComplete": true}),
+            serde_json::json!({"filenames": ["a.rs"], "durationMs": 9, "numFiles": 100, "truncated": true, "totalMatches": 348, "countIsComplete": true}),
+        ] {
+            assert_eq!(unknown(&glob), Vec::<String>::new(), "Glob, known: {glob}");
+        }
+        assert_eq!(
+            unknown(&serde_json::json!({"totalMatches": 3, "countIsComplete": true, "stdout": "ok"})),
+            vec!["countIsComplete".to_string(), "totalMatches".to_string()],
+            "`totalMatches` and `countIsComplete` are known only in Glob's shape, never from another tool"
         );
         assert_eq!(
             unknown(&serde_json::json!({"totalFiles": 3, "stdout": "ok"})),
