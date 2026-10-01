@@ -48,9 +48,12 @@ a sibling of the drawer in `#app`, because the workspace is isolated under the s
 the top bar would sit under the drawer. The top bar is two rows: handle slot, title, Info, right pane;
 then Turns, Tasks, Agents, search/filter, Aa; the turn header is the third. That second row never
 wraps (#352): the search takes at most what the four 44px glyphs leave, and the CLOSED box with a
-query is its count and steps only — its chips (a glyph each: the filter's for a scope, a wrench for
-tools; the word visually hidden) and the clear control (×, every width, whenever there is a query)
-wait in the open box, where the count gives way before a chip or the field. The outline column does not
+query is its count and steps only — its chips (a scope chip is its letters alone, a tool chip wears
+a wrench; the word visually hidden, #353) and the clear control (×, every width, whenever there is a
+query) wait in the open box. There the chips and the field are ONE strip (`.search-field`, wrapped at
+load) that scrolls as a whole, the field as wide as its text, so the end being typed stays in view;
+the count hangs as a tag under the box (the open box stacks above the turn's sticky bar, z 27 > 26);
+and the step arrows are SVG, centred. The outline column does not
 exist there: each pane opens from its icon as a drop-down that holds the outline's OWN live list (moved
 in while open, back after), so one renderer and one click handler (`navigatorClick`) serve both. Every
 sheet hangs at `--phone-top` (the bar's measured bottom). Inputs are 16px (iOS zooms into anything

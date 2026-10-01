@@ -944,7 +944,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    rest — a query held, the reader clicked away — gives it back at its resting width. There the
    count and the steps fold away until the box is focused again: at 180px they pushed the filter
    button out past the box's edge, and a wider resting box took the same pixels from the title. */
-@media(min-width:701px) and (max-width:900px){.header-searchbox:focus-within{width:min(392px,52vw)}.topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}.header-searchbox:not(:focus-within) input~:is(.find-count,.find-nav,.search-clear){display:none}}
+@media(min-width:701px) and (max-width:900px){.header-searchbox:focus-within{width:min(392px,52vw)}.topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}.header-searchbox:not(:focus-within) .search-field~:is(.find-count,.find-nav,.search-clear){display:none}}
 
 
 
@@ -990,7 +990,24 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .search-clear .icon{width:14px;height:14px}
 .header-searchbox.has-query .search-clear{display:grid}
 /* (Between 701 and 900px the focused box is 32px wider than it was for it: min(392px, 52vw).) */
-.search-clear:hover,.search-clear:focus-visible{background:var(--hover);color:var(--ink)}
+/* #353: the chips and the field share one strip (app.js wraps them at load). It takes the field's old
+   place in the row; the generated rules that showed the count and the steps for a typed query
+   (`input~.find-count`, `input~.find-nav`) no longer reach past the wrapper, so they are restated with
+   :has. The step arrows are SVG, centred in their targets. */
+.search-chip[data-chip="scope"] .search-chip-key{width:0}
+.search-field{display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.search-field::-webkit-scrollbar{display:none}
+.search-field>.search-chips{max-width:70%}
+.search-field-measure{position:absolute;left:0;top:0;visibility:hidden;white-space:pre;pointer-events:none}
+.header-searchbox:has(input:not(:placeholder-shown)) .find-count{display:block}
+.header-searchbox:has(input:not(:placeholder-shown)) .find-nav{display:grid}
+.find-nav{place-items:center}
+.find-nav .icon{width:13px;height:13px}
+#findNext .icon{transform:rotate(180deg)}
+.search-clear:focus-visible{background:var(--hover);color:var(--ink)}
+/* Hover only where there is a pointer to hover with: iOS keeps :hover on a tapped button, so the ×
+   stayed grey after it had cleared the search. */
+@media(hover:hover){.search-clear:hover{background:var(--hover);color:var(--ink)}}
 .search-suggest{position:absolute;left:0;top:44px;z-index:49;width:min(320px,calc(100vw - 24px));max-height:min(360px,calc(100vh - 120px));overflow-y:auto;padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--bg);box-shadow:0 13px 36px rgba(32,43,72,.13)}
 .search-suggest[hidden]{display:none}
 .search-suggest-head{display:flex;justify-content:space-between;padding:4px 8px 6px;color:var(--faint);font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
@@ -1146,10 +1163,21 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      `w:` types it), and the count is what gives way, never the field or a chip. */
   #app .header-searchbox.phone-open{column-gap:2px}
   #app .header-searchbox.phone-open .find-whole{display:none!important}
-  #app .header-searchbox.phone-open input{flex:1 1 0;min-width:48px}
-  #app .header-searchbox.phone-open .find-count{flex:0 1 auto!important;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #app .header-searchbox.phone-open .search-chip-value{max-width:8ch}
-  #app .header-searchbox.phone-open .search-chips{min-width:min-content}
+  /* #353: the strip scrolls rather than squeezing — the chips keep their whole width, the field is as
+     wide as its text (app.js), and the count leaves the row for a tag just under the box's right edge,
+     so it is never cut ("0 hi…") and never costs the strip a pixel. It yields to the facet drop-down,
+     which hangs in the same place. */
+  #app .header-searchbox.phone-open .search-field{gap:4px}
+  /* The count's tag hangs below the box, where the turn's sticky bar (z-index 26) is: the OPEN box
+     stacks above it — still under the facet drop-down (49), the task card (59, 60) and the drawer
+     handle's own layer once a tap outside has closed the box. */
+  #app .header-searchbox.phone-open{z-index:27}
+  #app .header-searchbox.phone-open .search-field input{flex:none;min-width:48px}
+  #app .header-searchbox.phone-open .search-field>.search-chips{flex:none;max-width:none;overflow:visible}
+  #app .header-searchbox:not(.phone-open) .search-field{display:none}
+  #app .header-searchbox.phone-open .find-count{position:absolute;top:calc(100% + 4px);right:8px;max-width:calc(100% - 16px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 9px;border-radius:11px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 6px 14px -10px rgba(34,43,73,.3);color:var(--sub);font-size:11.5px;line-height:16px;z-index:7}
+  #app .header-searchbox.phone-open .find-count:empty,#app .header-search-cluster:has(#searchSuggest:not([hidden])) .header-searchbox.phone-open .find-count{display:none!important}
+  #app .header-searchbox .find-nav .icon{width:18px;height:18px}
   /* #334: an option of a question card stacks — label, then description — rather than squeezing its
      label into a column a word wide. */
   #app .input-answer{flex-direction:column;align-items:flex-start;gap:2px;width:100%}

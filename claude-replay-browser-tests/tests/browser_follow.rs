@@ -10428,14 +10428,14 @@ fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
         "document.getElementById('searchChips').innerText + ' | ' + document.getElementById('transcriptSearchInput').value + ' | ' + document.getElementById('transcriptSearchCount').textContent",
     );
     let probe = format!(
-        "(function(){{ var whole = {PHONE_WHOLLY_IN}, box = document.querySelector('.header-searchbox'), chips = document.getElementById('searchChips'), out = {{}}; ['scope','tools'].forEach(function (k) {{ var c = chips.querySelector('[data-chip=\"' + k + '\"]'); var key = c.querySelector('.search-chip-key'); out[k] = {{ glyph: !!key.querySelector('svg') && whole(key, chips) && whole(key, box), word: getComputedStyle(key).width, value: whole(c.querySelector('.search-chip-value'), chips), remove: whole(c.querySelector('.search-chip-remove'), chips) && whole(c.querySelector('.search-chip-remove'), box) }}; }}); var clear = document.getElementById('transcriptSearchClear'); var cr = clear ? clear.getBoundingClientRect() : {{ width: 0, height: 0 }}; out.clear = !!clear && whole(clear, box) && cr.width >= 36 && cr.height >= 40; var i = document.getElementById('transcriptSearchInput').getBoundingClientRect(); out.input = Math.round(i.width); var mids = [].slice.call(box.children).filter(function (e) {{ return getComputedStyle(e).display !== 'none'; }}).map(function (e) {{ var r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }}); out.oneRow = Math.max.apply(null, mids) - Math.min.apply(null, mids) <= 2; out.inWindow = box.getBoundingClientRect().right <= innerWidth; return JSON.stringify(out); }})()"
+        "(function(){{ var whole = {PHONE_WHOLLY_IN}, box = document.querySelector('.header-searchbox'), chips = document.getElementById('searchChips'), out = {{}}; ['scope','tools'].forEach(function (k) {{ var c = chips.querySelector('[data-chip=\"' + k + '\"]'); var key = c.querySelector('.search-chip-key'); out[k] = {{ glyph: k === 'scope' ? !key.querySelector('svg') : (!!key.querySelector('svg') && whole(key, chips) && whole(key, box)), word: getComputedStyle(key).width, value: whole(c.querySelector('.search-chip-value'), chips), remove: whole(c.querySelector('.search-chip-remove'), chips) && whole(c.querySelector('.search-chip-remove'), box) }}; }}); var clear = document.getElementById('transcriptSearchClear'); var cr = clear ? clear.getBoundingClientRect() : {{ width: 0, height: 0 }}; out.clear = !!clear && whole(clear, box) && cr.width >= 36 && cr.height >= 40; var i = document.getElementById('transcriptSearchInput').getBoundingClientRect(); out.input = Math.round(i.width); var mids = [].slice.call(box.children).filter(function (e) {{ var cs = getComputedStyle(e); return cs.display !== 'none' && cs.position !== 'absolute'; }}).map(function (e) {{ var r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }}); out.oneRow = Math.max.apply(null, mids) - Math.min.apply(null, mids) <= 2; out.inWindow = box.getBoundingClientRect().right <= innerWidth; return JSON.stringify(out); }})()"
     );
     let p: serde_json::Value =
         serde_json::from_str(harness::eval(&tab, &probe).as_str().unwrap_or("{}")).unwrap();
     for k in ["scope", "tools"] {
         assert_eq!(
             p[k]["glyph"], true,
-            "the {k} chip's key is a glyph, wholly shown: {p}"
+            "the tool chip's key is a glyph, wholly shown; the scope chip is its letters alone (#353): {p}"
         );
         assert_eq!(p[k]["value"], true, "the {k} chip's value is shown: {p}");
         assert_eq!(p[k]["remove"], true, "the {k} chip's × takes a tap: {p}");
@@ -10542,6 +10542,80 @@ fn a_phone_toolbar_keeps_one_row_with_a_query_and_a_chip() {
             s,
             serde_json::json!({"count": true, "prev": true, "next": true}),
             "{width}px: the closed box keeps its count and both arrows (#333): {s}"
+        );
+    }
+}
+
+/// #353, the owner's phone on 1.339.0 (typing in the open box beside a scope chip and a tool chip:
+/// "hing" for the query, "0 hi…" for the count, the arrows high): "1) only show single char selector
+/// for scope; 2) allow the whole search query to scroll left when the whole chips+query exceeds the
+/// width when entering; 3) xxx hits may be out under the search box during the query enter mode;
+/// 4) make the up/down match arrow vertically centered".
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_search_strip_scrolls_whole_and_counts_under_the_box() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(2730, "phone-search-strip", 390, 844);
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "a tap on the glass to open the box",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    tab.type_str("scope:ua tool:Bash ").unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('#searchChips [data-chip=\"scope\"]') && !!document.querySelector('#searchChips [data-chip=\"tools\"]')",
+        "both chips frozen",
+        Duration::from_secs(5),
+        "document.getElementById('searchChips').innerText",
+    );
+    // A query longer than what is left beside two chips.
+    tab.type_str("question answer lorem ipsum").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let probe = format!(
+        "(function(){{ var whole = {PHONE_WHOLLY_IN}, box = document.querySelector('.header-searchbox'), b = box.getBoundingClientRect(), input = document.getElementById('transcriptSearchInput'), ir = input.getBoundingClientRect(), strip = input.parentElement, sr = strip.getBoundingClientRect(), scope = document.querySelector('#searchChips [data-chip=\"scope\"]'), count = document.getElementById('transcriptSearchCount'), cr = count.getBoundingClientRect(); var arrow = function (id) {{ var g = document.querySelector('#' + id + ' svg'); if (!g) return null; var r = g.getBoundingClientRect(); return Math.round((r.top + r.height / 2 - (b.top + b.height / 2)) * 10) / 10; }}; return JSON.stringify({{ scopeText: scope.querySelector('.search-chip-value').innerText, scopeKey: Math.round(scope.querySelector('.search-chip-key').getBoundingClientRect().width), scopeGlyph: !!scope.querySelector('svg'), toolGlyph: !!document.querySelector('#searchChips [data-chip=\"tools\"] svg'), fieldWhole: input.scrollWidth <= input.clientWidth + 1, scrolled: strip !== box && strip.scrollLeft > 0, endInView: ir.right <= sr.right + 1 && ir.right > sr.left, count: count.textContent, countBelow: cr.top >= b.bottom - 0.5, countWhole: cr.width > 0 && count.scrollWidth <= count.clientWidth + 1 && cr.left >= 0 && cr.right <= innerWidth, countSeen: (function () {{ var h = document.elementFromPoint(cr.left + cr.width / 2, cr.top + cr.height / 2); return !!h && (h === count || count.contains(h)); }})(), prev: arrow('findPrev'), next: arrow('findNext') }}); }})()"
+    );
+    let p: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, &probe).as_str().unwrap_or("{}")).unwrap();
+    // 1) the scope chip is its letters alone; the tool chip keeps its wrench.
+    assert_eq!(
+        p["scopeText"], "ua",
+        "the scope chip reads its letters: {p}"
+    );
+    assert_eq!(p["scopeGlyph"], false, "and carries no glyph: {p}");
+    assert!(
+        p["scopeKey"].as_i64().unwrap_or(99) <= 1,
+        "nor a slot for one (its word is for a screen reader alone): {p}"
+    );
+    assert_eq!(p["toolGlyph"], true, "the tool chip keeps its wrench: {p}");
+    // 2) the field shows its whole text and the strip, chips and all, slid left to keep its end.
+    assert_eq!(
+        p["fieldWhole"], true,
+        "the field is as wide as its text: {p}"
+    );
+    assert_eq!(p["scrolled"], true, "the strip scrolled left: {p}");
+    assert_eq!(p["endInView"], true, "the end being typed is in view: {p}");
+    // 3) the count lies whole under the box while typing.
+    assert!(
+        !p["count"].as_str().unwrap_or("").is_empty(),
+        "the count says something: {p}"
+    );
+    assert_eq!(p["countBelow"], true, "the count sits under the box: {p}");
+    assert_eq!(p["countWhole"], true, "and is not cut: {p}");
+    assert_eq!(
+        p["countSeen"], true,
+        "and nothing is painted over it — the turn's sticky bar sits right there: {p}"
+    );
+    // 4) each arrow's glyph is centred on the box's centre line.
+    for k in ["prev", "next"] {
+        let off = p[k].as_f64().unwrap_or(99.0);
+        assert!(
+            off.abs() <= 1.0,
+            "the {k} arrow is a glyph centred to 1px of the box's middle ({off}px): {p}"
         );
     }
 }

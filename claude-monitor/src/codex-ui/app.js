@@ -1670,6 +1670,9 @@ wholeWords.title = "Whole words only  ·  w:"; wholeWords.setAttribute("aria-lab
 wholeWords.setAttribute("aria-pressed", "false");
 wholeWords.textContent = "ab|";
 byId("filterTranscriptBtn").insertAdjacentElement("beforebegin", wholeWords);
+// #353: the step arrows are drawn, not typed — a text "↑" sat visibly high in its 44px target on a
+// phone, where an SVG's box is its ink's (arrowUp spans y 5..19 of 24). Next is the same, turned.
+byId("findPrev").innerHTML = svg("arrowUp"); byId("findNext").innerHTML = svg("arrowUp");
 // #352: one tap clears the search — the typed text, every chip and the results, the box as fresh
 // (the owner: "no easy way to clear a search"; a chip's own × was the only way out, and on a phone
 // the chip had been clipped with it). At the end of the field, as a native search field has it,
@@ -1701,10 +1704,36 @@ var searchChips = null, searchSuggest = null, suggestState = null;
 searchChips = document.createElement("span");
 searchChips.className = "search-chips"; searchChips.id = "searchChips";
 byId("transcriptSearchInput").insertAdjacentElement("beforebegin", searchChips);
+// #353: the chips and the field are ONE strip that scrolls as a whole. On a phone the open box is
+// narrow, and two chips left the field its 48px floor to scroll its own text in ("hing" for
+// "nothing"); now the field is as wide as its text and the strip slides left, chips and all, so the
+// end being typed stays in view. Wrapped here, at module load — before anything can focus the input,
+// since moving a focused element blurs it — and measured by a hidden twin of the field's font.
+var searchField = document.createElement("span");
+searchField.className = "search-field"; searchField.id = "searchField";
+searchChips.insertAdjacentElement("beforebegin", searchField);
+searchField.append(searchChips, byId("transcriptSearchInput"));
+var fieldMeasure = document.createElement("span");
+fieldMeasure.className = "search-field-measure"; fieldMeasure.setAttribute("aria-hidden", "true");
+document.querySelector(".header-search-cluster").appendChild(fieldMeasure);
 searchSuggest = document.createElement("div");
 searchSuggest.className = "search-suggest"; searchSuggest.id = "searchSuggest"; searchSuggest.hidden = true;
 searchSuggest.setAttribute("role", "listbox");
 document.querySelector(".header-search-cluster").appendChild(searchSuggest);
+/** Size the field to its text while the phone's box is open, and keep the end in view (#353). */
+function fitSearchField() {
+  if (!searchField || !fieldMeasure) return;
+  const input = byId("transcriptSearchInput");
+  if (!document.querySelector(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; return; }
+  const cs = getComputedStyle(input);
+  fieldMeasure.style.font = cs.font; fieldMeasure.style.letterSpacing = cs.letterSpacing;
+  fieldMeasure.textContent = input.value || input.placeholder;
+  const text = Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8;
+  const chips = searchChips.classList.contains("has-chips") ? searchChips.getBoundingClientRect().width + 4 : 0;
+  input.style.width = `${Math.max(48, Math.floor(searchField.clientWidth - chips), text)}px`;
+  if (input.selectionStart === input.value.length) searchField.scrollLeft = searchField.scrollWidth;
+}
+addEventListener("resize", () => fitSearchField());
 // #310, #313: at phone width (760px, the shell's one breakpoint) the search box is an icon with its
 // input hidden. A tap on it OPENS it across the bar's second row, and it stays open until a tap lands outside the search's own
 // surfaces (the box, the drop-down, the filter popover) or Escape — never on blur, since a touch
@@ -1713,6 +1742,7 @@ document.querySelector(".header-search-cluster").appendChild(searchSuggest);
 const phoneSearch = matchMedia("(max-width:760px)"), searchBox = document.querySelector(".header-searchbox");
 function setPhoneSearch(open) {
   searchBox.classList.toggle("phone-open", open && phoneSearch.matches);
+  fitSearchField();
   if (open && phoneSearch.matches) byId("transcriptSearchInput").focus();
 }
 searchBox.addEventListener("click", event => {
@@ -1785,10 +1815,13 @@ function renderChips() {
   // #352: the key is a GLYPH — the filter button's for a scope, a wrench for tools — so a chip fits a
   // phone's box (the word clipped it to "scop" and took its × with it). The word stays in the chip,
   // visually hidden, for a screen reader and for whatever reads the chip as the token it was.
-  const chip = (kind, text, title) => { const word = kind === "tools" ? "tool" : kind; return `<span class="search-chip" data-chip="${kind}" title="${escapeText(title)}"><span class="search-chip-key">${svg(kind === "tools" ? "tool" : "filterLines")}<span class="search-chip-word">${word}:</span></span><span class="search-chip-value">${escapeText(text)}</span><button class="search-chip-remove" type="button" data-chip-remove="${kind}" aria-label="Remove the ${word} filter">×</button></span>`; };
+  // #353: a scope is already single-character selectors (u a t o b r e w), so its chip is the letters
+  // alone; a tool chip keeps its wrench, which is what tells the two apart.
+  const chip = (kind, text, title) => { const word = kind === "tools" ? "tool" : kind; return `<span class="search-chip" data-chip="${kind}" title="${escapeText(title)}"><span class="search-chip-key">${kind === "tools" ? svg("tool") : ""}<span class="search-chip-word">${word}:</span></span><span class="search-chip-value">${escapeText(text)}</span><button class="search-chip-remove" type="button" data-chip-remove="${kind}" aria-label="Remove the ${word} filter">×</button></span>`; };
   searchChips.innerHTML = (scope ? chip("scope", scope, SCOPE_ROWS.filter(([k]) => scope.includes(k)).map(([, l]) => l).join(", ")) : "")
     + (tools.length ? chip("tools", tools.map(label).join(", "), tools.join(", ")) : "");
   searchChips.classList.toggle("has-chips", !!(scope || tools.length));
+  fitSearchField();
 }
 /** Freeze every COMPLETE facet token in the text into a chip — one followed by a space, or the bare
  *  scope prefix once something follows its colon — and take it out of the text. */
@@ -1881,7 +1914,7 @@ function afterFacetChange() {
   if (searchIsLive()) updateSearch(true);
   else { recordState.pendingSearch = true; renderChips(); byId("transcriptSearchCount").textContent = "⏎ to search"; }
 }
-byId("transcriptSearchInput").addEventListener("input", () => { if (absorbFacets()) afterFacetChange(); renderSuggest(); markQuery(); });
+byId("transcriptSearchInput").addEventListener("input", () => { if (absorbFacets()) afterFacetChange(); renderSuggest(); markQuery(); fitSearchField(); });
 for (const kind of ["click", "keyup", "focus"]) byId("transcriptSearchInput").addEventListener(kind, event => { if (kind !== "keyup" || !["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) renderSuggest(); });
 byId("transcriptSearchInput").addEventListener("blur", () => { if (searchSuggest) searchSuggest.hidden = true; suggestState = null; });
 // The drop-down's keys, ahead of the box's own (Escape closes it before it blurs the box, #298).
