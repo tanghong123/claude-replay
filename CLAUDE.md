@@ -63,11 +63,17 @@ every file read and every write asks) knew only the loopback, so a PAIRED phone 
 local files requires pairing". Both binaries now hand the gate `pair_phone::trusted_hosts(port)`: the
 names this machine's `tailscale serve` relays to THIS port (read lazily, again on a miss at most every
 30 s), plus any `AGENT_MONITOR_TRUSTED_HOSTS` lists — never a `*.ts.net` wildcard. The pairing
-cookie is `SameSite=Strict`, which a browser WITHHOLDS from a navigation that did not start on the
-site (a link in another app; the owner met it on a phone after saving a file, #341), so a refused
-PAGE load gets `HttpResponse::refusal_page`: it reloads once from itself — same-site, so the cookie
-comes along — bounded by a 10 s sessionStorage stamp, then shows the host's refusal words; fetches
-keep the plain 401, and each refused page load is one stderr line (never the token).
+cookie is named for the token it carries — `cmauth-` and eight hex digits of the token's SHA-256
+(`cookie_name`, #350) — because a cookie is scoped to the HOST, not the port: while every gate wrote
+`cmauth`, agent-metrics' `serve --phone` (this gate since #317, a token of its own) replaced the
+monitor's cookie and the owner was told the monitor was not paired. The two monitors share one token
+and so one cookie; the legacy `cmauth` is still read (admitting only on this gate's token) and is
+answered with the gate's own. It is `SameSite=Strict`, which a browser WITHHOLDS from a navigation
+that did not start on the site (a link in another app; the owner met it on a phone after saving a
+file, #341), so a refused PAGE load gets `HttpResponse::refusal_page`: it reloads once from itself
+— same-site, so the cookie comes along — bounded by a 10 s sessionStorage stamp, then shows the
+host's refusal words; fetches keep the plain 401, and each refused page load is one stderr line
+(never the token), which names a legacy `cmauth` that did not match apart from the gate's own.
 **The page saves to a Home Screen as itself** (#320): the tab icon's green mark, square and opaque
 (`claude-monitor/src/icons/`, rendered from `app-icon.svg` by `scripts/render-app-icon.sh`), named by
 the app shell's and v1's classic heads with a manifest and the label "Agent Monitor"; iOS asks the root

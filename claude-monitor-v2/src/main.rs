@@ -96,10 +96,11 @@ fn main() -> Result<()> {
                     other => anyhow::bail!("unknown agent {other:?}"),
                 });
             }
-            // Pairing, shared with v1 (#196 §4.2): the SAME 0600 token file, because the
-            // `cmauth` cookie is scoped to `127.0.0.1` and not to a port — two tokens would
-            // mean whichever page loaded last clobbers the other's cookie, and the other's
-            // writes start 401ing. One token, one consent store, one passcode: one machine.
+            // Pairing, shared with v1 (#196 §4.2): the SAME 0600 token file, so one pairing
+            // admits a browser to both. The cookie is scoped to the host and not to a port, and
+            // it is named for the token it carries (#350): a shared token is a shared cookie.
+            // (Before #350 every gate wrote `cmauth`, and two tokens clobbered each other.)
+            // One token, one consent store, one passcode: one machine.
             "--pair" | "pair" => do_pair = true,
             // Terminal-only, like v1's: setting the grant passcode needs shell access, so an
             // open browser cannot reset the gate that exists to stop it.

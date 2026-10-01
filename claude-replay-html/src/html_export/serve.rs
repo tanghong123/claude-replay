@@ -1823,6 +1823,32 @@ pub(super) fn percent_decode(s: &str) -> String {
 /// as "the monitor broke".
 const COOKIE_MAX_AGE_SECS: u64 = 400 * 24 * 3600;
 
+/// The name every gate used for its cookie until #350, still READ so a browser or phone paired
+/// before it is not logged out by the upgrade (it admits only when it carries this gate's token).
+const LEGACY_COOKIE: &str = "cmauth";
+
+/// The pairing cookie's NAME for a gate holding `token` (#350): `cmauth-` and the first eight hex
+/// digits of the token's SHA-256. A cookie is scoped to a HOST, not a port, so every gated server
+/// on 127.0.0.1 used to share one `cmauth` slot and pairing one replaced another's — the owner was
+/// told the monitor was not paired because agent-metrics' `serve --phone` (this gate since #317,
+/// with a token of its own) had set it last. Named for the token, servers that share one (the two
+/// monitors, deliberately) share the cookie, and no other server can overwrite it. Thirty-two
+/// bits of a digest name the slot and say nothing usable about the token.
+fn cookie_name(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(token.as_bytes());
+    let hex: String = digest[..4].iter().map(|b| format!("{b:02x}")).collect();
+    format!("{LEGACY_COOKIE}-{hex}")
+}
+
+/// The `Set-Cookie` line that pairs a browser with the gate holding `token`.
+fn set_cookie_line(token: &str) -> String {
+    format!(
+        "Set-Cookie: {}={token}; Path=/; Max-Age={COOKIE_MAX_AGE_SECS}; HttpOnly; SameSite=Strict\r\n",
+        cookie_name(token)
+    )
+}
+
 /// The largest POST body the server will read (#133): a prompt, not a payload.
 const MAX_BODY_BYTES: usize = 64 * 1024;
 
@@ -1974,7 +2000,11 @@ fn serve_connection(
 
     // #196 §4.2: same-user OR a valid token (query / Authorization: Bearer / cmauth cookie) —
     // except a GET of a path the host made public (#320), which needs neither.
-    let (presented, from_cookie) = extract_token(query, &headers);
+    let own_cookie = gate.token.as_deref().map(cookie_name);
+    let (presented, from) = extract_token(query, &headers, own_cookie.as_deref());
+    let from_cookie = matches!(from, Some(TokenFrom::Cookie | TokenFrom::LegacyCookie));
+    // #350: a browser let in by the old shared cookie is given this gate's own as well.
+    let migrate = from == Some(TokenFrom::LegacyCookie) && gate.token_ok(presented.as_deref());
     let peer = stream.peer_addr().ok();
     let local = stream.local_addr().ok();
     let public = method == "GET" && gate.public.contains(&name);
@@ -2017,10 +2047,12 @@ fn serve_connection(
         // said the navigation's site was (never the token) — so a report of "it said not paired"
         // has something to be read against; and it gets the refusal as a page that retries once.
         Access::Denied if is_page_load(&method, &headers) => {
-            let cookie = match (presented.is_some(), from_cookie) {
-                (false, _) => "no cookie",
-                (true, true) => "a cookie that did not match",
-                (true, false) => "a token that did not match",
+            let cookie = match from {
+                None => "no cookie",
+                Some(TokenFrom::Cookie) => "a cookie that did not match",
+                // #350: the slot every gated server on this host shared — another server's token.
+                Some(TokenFrom::LegacyCookie) => "a legacy cmauth cookie that did not match",
+                Some(TokenFrom::Presented) => "a token that did not match",
             };
             let site = header_value(&headers, "sec-fetch-site").unwrap_or("-");
             eprintln!("gate: refused a page load of /{name} — {cookie}, sec-fetch-site {site}");
@@ -2034,7 +2066,11 @@ fn serve_connection(
             false,
         ),
         Access::Ok if oversized => (too_large(), None, false),
-        Access::Ok => (handler(&req), None, false),
+        Access::Ok => (
+            handler(&req),
+            if migrate { presented.clone() } else { None },
+            false,
+        ),
         Access::OkSetCookie => {
             let tok = presented.clone().unwrap_or_default();
             // A ROOT navigation that admitted via a URL token gets a one-time 302 to the
@@ -2052,14 +2088,7 @@ fn serve_connection(
         }
     };
 
-    let cookie = set_cookie
-        .map(|t| {
-            format!(
-                "Set-Cookie: cmauth={t}; Path=/; Max-Age={COOKIE_MAX_AGE_SECS}; \
-                 HttpOnly; SameSite=Strict\r\n"
-            )
-        })
-        .unwrap_or_default();
+    let cookie = set_cookie.map(|t| set_cookie_line(&t)).unwrap_or_default();
     let r = if redirect_root {
         r
     } else {
@@ -2078,7 +2107,7 @@ fn serve_connection(
         .and_then(|_| stream.write_all(&r.body))
 }
 
-/// `/pair` (the page) and `/api/pair` (redeem a code for the `cmauth` cookie), #11. Returns the
+/// `/pair` (the page) and `/api/pair` (redeem a code for the gate's cookie), #11. Returns the
 /// reply and the `Set-Cookie` line, empty unless a code was redeemed.
 fn pairing_route(
     method: &str,
@@ -2097,10 +2126,7 @@ fn pairing_route(
             if super::pairing::redeem_pair_code(codes, &typed, super::pairing::now_secs()) {
                 (
                     HttpResponse::json(r#"{"ok":true}"#.into()),
-                    format!(
-                        "Set-Cookie: cmauth={token}; Path=/; Max-Age={COOKIE_MAX_AGE_SECS}; \
-                         HttpOnly; SameSite=Strict\r\n"
-                    ),
+                    set_cookie_line(token),
                 )
             } else {
                 (
@@ -2226,19 +2252,37 @@ fn response_head(r: &HttpResponse, cookie: &str) -> String {
     )
 }
 
-/// Pull the bearer token from a request: `?token=` (query), `Authorization: Bearer`, or the
-/// `cmauth` cookie — in that precedence. Returns `(token, came_from_cookie)`.
-fn extract_token(query: &str, headers: &str) -> (Option<String>, bool) {
+/// Where a request's token came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenFrom {
+    /// `?token=` or `Authorization: Bearer` — a fresh pairing, answered with the cookie.
+    Presented,
+    /// The gate's own cookie ([`cookie_name`]).
+    Cookie,
+    /// The pre-#350 `cmauth` cookie: admits when it carries this gate's token, and is answered
+    /// with the gate's own cookie so the browser no longer depends on a slot others overwrite.
+    LegacyCookie,
+}
+
+/// Pull the bearer token from a request: `?token=` (query), `Authorization: Bearer`, the gate's
+/// own cookie (`own`, [`cookie_name`] of its token), then the legacy `cmauth` — in that
+/// precedence. A cookie named for ANOTHER token is never read: that is another server's.
+fn extract_token(
+    query: &str,
+    headers: &str,
+    own: Option<&str>,
+) -> (Option<String>, Option<TokenFrom>) {
     if let Some(t) = query_get(query, "token") {
-        return (Some(percent_decode(t)), false);
+        return (Some(percent_decode(t)), Some(TokenFrom::Presented));
     }
+    let (mut mine, mut legacy) = (None, None);
     for raw in headers.lines() {
         if let Some(v) = raw
             .strip_prefix("Authorization:")
             .or_else(|| raw.strip_prefix("authorization:"))
         {
             if let Some(bearer) = v.trim().strip_prefix("Bearer ") {
-                return (Some(bearer.trim().to_string()), false);
+                return (Some(bearer.trim().to_string()), Some(TokenFrom::Presented));
             }
         }
         if let Some(v) = raw
@@ -2247,14 +2291,21 @@ fn extract_token(query: &str, headers: &str) -> (Option<String>, bool) {
         {
             for kv in v.split(';') {
                 if let Some((k, val)) = kv.split_once('=') {
-                    if k.trim() == "cmauth" {
-                        return (Some(val.trim().to_string()), true);
+                    let k = k.trim();
+                    if own == Some(k) && mine.is_none() {
+                        mine = Some(val.trim().to_string());
+                    } else if k == LEGACY_COOKIE && legacy.is_none() {
+                        legacy = Some(val.trim().to_string());
                     }
                 }
             }
         }
     }
-    (None, false)
+    match (mine, legacy) {
+        (Some(t), _) => (Some(t), Some(TokenFrom::Cookie)),
+        (None, Some(t)) => (Some(t), Some(TokenFrom::LegacyCookie)),
+        (None, None) => (None, None),
+    }
 }
 
 /// The session service's wire surface as a ROUTE TABLE (#98 §6.3): `/session`, `/pull`,
@@ -2980,7 +3031,7 @@ mod tests {
 
     /// #11: a phone pairs by a one-time code, over HTTP, against the foreign-euid test gate (so the
     /// same-user leg can admit nothing on any OS). Without the cookie `/` is refused; `/pair` is
-    /// served; a wrong code is refused; the right code sets the `cmauth` cookie; the same code
+    /// served; a wrong code is refused; the right code sets the gate's cookie; the same code
     /// again is refused; and the cookie then reaches `/`.
     #[test]
     fn a_one_time_code_pairs_a_device_once() {
@@ -3030,8 +3081,10 @@ mod tests {
         );
         let right = post(&super::super::pairing::display_code(&code).to_lowercase());
         assert!(right.starts_with("HTTP/1.1 200"), "{right}");
+        let named = cookie_name("secret-token");
         assert!(
-            right.contains("Set-Cookie: cmauth=secret-token;") && right.contains("HttpOnly"),
+            right.contains(&format!("Set-Cookie: {named}=secret-token;"))
+                && right.contains("HttpOnly"),
             "the code is swapped for the usual cookie: {right}"
         );
         let again = post(&code);
@@ -3039,7 +3092,7 @@ mod tests {
             again.starts_with("HTTP/1.1 403"),
             "a code works once: {again}"
         );
-        let home = get("/", "Cookie: cmauth=secret-token\r\n");
+        let home = get("/", &format!("Cookie: {named}=secret-token\r\n"));
         assert!(
             home.starts_with("HTTP/1.1 200") && home.contains("the monitor"),
             "{home}"
@@ -3174,21 +3227,137 @@ mod tests {
         );
     }
 
-    /// `extract_token` reads all three carriers with the right precedence and parses a
-    /// `Cookie:` header without matching a look-alike key (`xcmauth`).
+    /// `extract_token` reads every carrier with the right precedence and parses a `Cookie:`
+    /// header without matching a look-alike key (`xcmauth`). The gate's OWN cookie wins over
+    /// the legacy `cmauth`, and a cookie named for another token is never read (#350).
     #[test]
     fn extract_token_reads_query_header_and_cookie() {
-        assert_eq!(extract_token("token=q1", "").0.as_deref(), Some("q1"));
+        let own = cookie_name("t1");
+        let own = Some(own.as_str());
         assert_eq!(
-            extract_token("", "Authorization: Bearer h1\r\n")
-                .0
-                .as_deref(),
-            Some("h1")
+            extract_token("token=q1", "", own),
+            (Some("q1".into()), Some(TokenFrom::Presented))
         );
-        let (t, from_cookie) = extract_token("", "Cookie: foo=1; cmauth=c1; bar=2\r\n");
-        assert_eq!((t.as_deref(), from_cookie), (Some("c1"), true));
+        assert_eq!(
+            extract_token("", "Authorization: Bearer h1\r\n", own),
+            (Some("h1".into()), Some(TokenFrom::Presented))
+        );
+        assert_eq!(
+            extract_token("", "Cookie: foo=1; cmauth=c1; bar=2\r\n", own),
+            (Some("c1".into()), Some(TokenFrom::LegacyCookie)),
+            "a pre-#350 cookie is still read"
+        );
+        let both = format!("Cookie: cmauth=other; {}=t1\r\n", cookie_name("t1"));
+        assert_eq!(
+            extract_token("", &both, own),
+            (Some("t1".into()), Some(TokenFrom::Cookie)),
+            "the gate's own cookie wins over the shared slot another server overwrote"
+        );
+        let foreign = format!("Cookie: {}=t2\r\n", cookie_name("t2"));
+        assert_eq!(
+            extract_token("", &foreign, own),
+            (None, None),
+            "another server's cookie is not ours to read"
+        );
         // A cookie whose name merely ends in cmauth must not match.
-        assert_eq!(extract_token("", "Cookie: xcmauth=nope\r\n").0, None);
+        assert_eq!(
+            extract_token("", "Cookie: xcmauth=nope\r\n", own),
+            (None, None)
+        );
+    }
+
+    /// #350: the cookie's name is the token's, stable and distinct per token, and it carries
+    /// nothing of the token but a 32-bit digest prefix.
+    #[test]
+    fn a_gates_cookie_is_named_for_its_token() {
+        let a = cookie_name("secret-token");
+        assert_eq!(a, cookie_name("secret-token"), "stable");
+        assert_ne!(a, cookie_name("another-token"), "distinct per token");
+        assert!(
+            a.starts_with("cmauth-") && a.len() == "cmauth-".len() + 8,
+            "{a}"
+        );
+        assert!(!a.contains("secret"), "{a}");
+        assert!(
+            set_cookie_line("secret-token").starts_with(&format!("Set-Cookie: {a}=secret-token;")),
+            "{}",
+            set_cookie_line("secret-token")
+        );
+    }
+
+    /// #350, the owner's lock-out: two gated servers with DIFFERENT tokens on one host, one
+    /// browser's cookie jar. Pairing the second must not log the browser out of the first —
+    /// it did while both wrote `cmauth` — and a browser holding only the legacy cookie is let in
+    /// and handed the gate's own.
+    #[test]
+    fn two_gates_on_one_host_keep_their_own_cookies() {
+        use std::io::{Read, Write};
+        let serve = |token: &'static str, body: &'static str| {
+            let handler: RouteHandler =
+                std::sync::Arc::new(move |_: &Request| HttpResponse::html(body.to_string()));
+            spawn_listener_gated(0, handler, AuthGate::for_test(Some(token))).unwrap()
+        };
+        let monitor = serve("monitor-token", "the monitor");
+        let metrics = serve("metrics-token", "the metrics");
+        let get = |port: u16, path: &str, cookie: &str| -> String {
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(
+                format!(
+                    "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/html\r\n{cookie}Connection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            let mut raw = String::new();
+            s.read_to_string(&mut raw).unwrap();
+            raw
+        };
+        // The one jar: every Set-Cookie either server sends, keyed by NAME (host-scoped).
+        let mut jar: Vec<(String, String)> = Vec::new();
+        let mut keep = |reply: &str| {
+            for line in reply.lines() {
+                if let Some(rest) = line.strip_prefix("Set-Cookie: ") {
+                    let (name, value) = rest.split(';').next().unwrap().split_once('=').unwrap();
+                    jar.retain(|(n, _)| n != name);
+                    jar.push((name.to_string(), value.to_string()));
+                }
+            }
+        };
+        keep(&get(monitor, "/?token=monitor-token", ""));
+        keep(&get(metrics, "/?token=metrics-token", ""));
+        assert_eq!(jar.len(), 2, "two servers, two cookies: {jar:?}");
+        let header = |jar: &[(String, String)]| {
+            format!(
+                "Cookie: {}\r\n",
+                jar.iter()
+                    .map(|(n, v)| format!("{n}={v}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        };
+        let home = get(monitor, "/", &header(&jar));
+        assert!(
+            home.starts_with("HTTP/1.1 200") && home.contains("the monitor"),
+            "pairing the second server left the first paired: {home}"
+        );
+        let other = get(metrics, "/", &header(&jar));
+        assert!(
+            other.starts_with("HTTP/1.1 200") && other.contains("the metrics"),
+            "{other}"
+        );
+        // A browser paired before #350 holds `cmauth` alone: let in, and given the gate's own.
+        let legacy = get(monitor, "/", "Cookie: cmauth=monitor-token\r\n");
+        assert!(legacy.starts_with("HTTP/1.1 200"), "{legacy}");
+        assert!(
+            legacy.contains(&format!(
+                "Set-Cookie: {}=monitor-token;",
+                cookie_name("monitor-token")
+            )),
+            "the legacy cookie is answered with the gate's own: {legacy}"
+        );
+        // ...but the shared slot holding ANOTHER server's token is still a refusal.
+        let clobbered = get(monitor, "/", "Cookie: cmauth=metrics-token\r\n");
+        assert!(clobbered.starts_with("HTTP/1.1 401"), "{clobbered}");
     }
 
     /// The gate admits our OWN loopback connection (this test process is the peer and the

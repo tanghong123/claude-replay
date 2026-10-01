@@ -10342,3 +10342,39 @@ fn a_browser_that_gives_no_first_tab_is_launched_again() {
         "the tab from the second launch works"
     );
 }
+
+/// One browser paired with two gated servers that hold DIFFERENT tokens on one host stays paired
+/// with both (#350). A cookie is scoped to the host, not the port, and every gate named its
+/// cookie `cmauth` — so the owner, paired with the monitor, was told "not paired" after
+/// agent-metrics' `serve --phone` (the same gate since #317, its own token) set the slot last.
+/// Two monitors on separate state stand in for the two servers.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_browser_paired_with_two_servers_on_one_host_stays_paired_with_both() {
+    let _serial = serial();
+    let first_base = harness::base("two-gates-first");
+    let second_base = harness::base("two-gates-second");
+    let stores = harness::Stores::new(&first_base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(4, harness::Shape::default()),
+    );
+    let first = harness::Monitor::spawn(harness::Kind::V2, 2725, &first_base, Some(&stores), true);
+    let second = harness::Monitor::spawn(harness::Kind::V2, 2726, &second_base, None, true);
+    assert_ne!(
+        first.token(),
+        second.token(),
+        "the two servers hold tokens of their own"
+    );
+    let (_browser, tab) = harness::chrome_tab();
+    first.pair(&tab);
+    second.pair(&tab);
+    first.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
+    harness::until(
+        &tab,
+        "location.port === '2725' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        "the first server to let the browser in after the second paired it",
+        Duration::from_secs(20),
+        "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
+    );
+}
