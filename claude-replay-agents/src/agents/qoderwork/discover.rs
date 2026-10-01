@@ -9,21 +9,57 @@
 use claude_replay_engine::seam::{Agent, Candidate, CardMemo, CardOutcome, SessionCard, SpawnLink};
 use std::path::{Path, PathBuf};
 
+/// Where an agent of the QoderWork family keeps everything. QoderWork is the first; an agent
+/// derived from it writes the same store layout, sidecars and title database under its own names,
+/// so the family's discovery takes a `Home` rather than hard-coding one.
+pub(crate) struct Home {
+    pub(crate) agent: Agent,
+    /// `~/<dir>/projects/<slug>/<id>.jsonl` — the transcripts.
+    dir: &'static str,
+    /// Overrides the projects root (tests, alternate installs).
+    projects_env: &'static str,
+    /// `~/Library/Application Support/<app>/data/agents.db` — the title database (macOS).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    app: &'static str,
+    /// Overrides the title database.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    db_env: &'static str,
+}
+
+/// QoderWork itself.
+pub(crate) const QODERWORK: Home = Home {
+    agent: Agent::QODERWORK,
+    dir: ".qoderwork",
+    projects_env: "QODERWORK_PROJECTS_DIR",
+    app: "QoderWork",
+    db_env: "QODERWORK_DB",
+};
+
 /// Root under which QoderWork writes per-project transcript dirs.
 pub(crate) fn projects_dir() -> PathBuf {
-    if let Ok(p) = std::env::var("QODERWORK_PROJECTS_DIR") {
+    projects_dir_for(&QODERWORK)
+}
+
+/// Root under which an agent of the family writes per-project transcript dirs.
+pub(crate) fn projects_dir_for(home: &Home) -> PathBuf {
+    if let Ok(p) = std::env::var(home.projects_env) {
         return PathBuf::from(p);
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    Path::new(&home).join(".qoderwork").join("projects")
+    let user = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    Path::new(&user).join(home.dir).join("projects")
 }
 
 /// QoderWork sessions scoped strictly to `cwd` or its nearest ancestor that has sessions —
 /// the same no-global-fallback scoping as the Claude store.
 pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
+    candidates_scoped_for(&QODERWORK, cwd)
+}
+
+/// [`candidates_scoped`] for any agent of the family.
+pub(crate) fn candidates_scoped_for(home: &Home, cwd: &Path) -> Vec<Candidate> {
     crate::agents::claude::discover::candidates_scoped_in(
-        &projects_dir(),
-        Agent::QODERWORK,
+        &projects_dir_for(home),
+        home.agent,
         cwd,
         claude_replay_engine::seam::home_dir().as_deref(),
     )
@@ -71,7 +107,12 @@ fn is_mount_slug(name: &str) -> bool {
 /// left for a later coverage pass: surfacing them would ADD rows to an already-crowded group
 /// rather than cut the noise this task targets.
 pub(crate) fn store_transcripts() -> Vec<PathBuf> {
-    store_transcripts_in(&projects_dir())
+    store_transcripts_for(&QODERWORK)
+}
+
+/// [`store_transcripts`] for any agent of the family.
+pub(crate) fn store_transcripts_for(home: &Home) -> Vec<PathBuf> {
+    store_transcripts_in(&projects_dir_for(home))
 }
 
 /// The same scan rooted at an explicit projects dir, so a caller holding an alternate store
@@ -121,7 +162,12 @@ pub(crate) fn store_transcripts_in(root: &std::path::Path) -> Vec<PathBuf> {
 
 /// Find a QoderWork transcript by session id (`<id>.jsonl`) anywhere under its projects dir.
 pub fn transcript_by_id(id: &str) -> Option<PathBuf> {
-    crate::agents::claude::discover::transcript_by_id_in(&projects_dir(), id)
+    transcript_by_id_for(&QODERWORK, id)
+}
+
+/// [`transcript_by_id`] for any agent of the family.
+pub(crate) fn transcript_by_id_for(home: &Home, id: &str) -> Option<PathBuf> {
+    crate::agents::claude::discover::transcript_by_id_in(&projects_dir_for(home), id)
 }
 
 /// Where QoderWork keeps its chat metadata. Overridable so a test — or a non-standard install —
@@ -130,12 +176,15 @@ pub fn transcript_by_id(id: &str) -> Option<PathBuf> {
 /// macOS-only because QoderWork is an Electron app that ships there; a build on another
 /// platform simply finds nothing and every session falls back to its snippet.
 #[cfg(target_os = "macos")]
-pub(crate) fn db_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("QODERWORK_DB").map(PathBuf::from) {
+pub(crate) fn db_path_for(home: &Home) -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os(home.db_env).map(PathBuf::from) {
         return p.exists().then_some(p);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let p = home.join("Library/Application Support/QoderWork/data/agents.db");
+    let user = std::env::var_os("HOME").map(PathBuf::from)?;
+    let p = user
+        .join("Library/Application Support")
+        .join(home.app)
+        .join("data/agents.db");
     p.exists().then_some(p)
 }
 
@@ -173,6 +222,11 @@ const MEMO_V: u8 = 2;
 /// when the database changes, with the transcript untouched.** Both halves are therefore checked,
 /// and `Unchanged` needs both to agree.
 pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome {
+    session_card_for(&QODERWORK, path, memo)
+}
+
+/// [`session_card`] for any agent of the family — its title comes from ITS database.
+pub(crate) fn session_card_for(home: &Home, path: &Path, memo: Option<&CardMemo>) -> CardOutcome {
     let prev: Option<Memo> = CardMemo::decode(memo).filter(|m: &Memo| m.v == MEMO_V);
 
     // The transcript half, via Claude's incremental scanner.
@@ -194,7 +248,7 @@ pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome 
     };
 
     // The title half: the sidecar first, the database as the fallback (#143).
-    let (title, title_at) = match sidecar_title(path).or_else(|| db_title(path)) {
+    let (title, title_at) = match sidecar_title(path).or_else(|| db_title(home, path)) {
         Some((t, at)) => (Some(t), Some(at)),
         None => (None, None),
     };
@@ -284,8 +338,8 @@ fn sidecar_title(path: &Path) -> Option<(String, i64)> {
 /// sessions the newer table does not know about; that title belongs to the CHAT and so may be
 /// shared by several sessions, which is still better than a bare UUID.
 #[cfg(target_os = "macos")]
-fn db_title(path: &Path) -> Option<(String, i64)> {
-    let db = db_path()?;
+fn db_title(home: &Home, path: &Path) -> Option<(String, i64)> {
+    let db = db_path_for(home)?;
     // Read-only, so a running QoderWork is never disturbed and we can never write its store.
     let conn = rusqlite::Connection::open_with_flags(
         &db,
@@ -315,10 +369,10 @@ fn db_title(path: &Path) -> Option<(String, i64)> {
     .filter(|(n, _): &(String, i64)| !n.trim().is_empty())
 }
 
-/// Off macOS there is no database to read (`db_path()` is a macOS path), so QoderWork sessions
+/// Off macOS there is no database to read (`db_path_for` is a macOS path), so QoderWork sessions
 /// carry only what the transcript and any legacy sidecar say.
 #[cfg(not(target_os = "macos"))]
-fn db_title(_path: &Path) -> Option<(String, i64)> {
+fn db_title(_home: &Home, _path: &Path) -> Option<(String, i64)> {
     None
 }
 
