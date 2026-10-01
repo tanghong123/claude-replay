@@ -10814,3 +10814,84 @@ fn the_app_shell_lists_and_opens_a_qwenwork_session() {
         "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 120) : 'no transcript'",
     );
 }
+
+/// #354, the owner's repro on 1.340.0: scope `ab`, one word, the box open, stepping — "matches
+/// don't always show up in the view". Their export showed every step landing at the right offset;
+/// their screenshot, a Bash output whose lines all run past the right edge. On a phone an output
+/// does not wrap, so a hit far along a line sat beyond its block's right edge, and the step only
+/// moved up and down. After every step the current match must be wholly visible — both axes —
+/// below the bars.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_search_step_shows_a_match_far_along_a_long_line() {
+    let _serial = serial();
+    let mut extra = String::new();
+    for i in 0..6u64 {
+        let at = |d: u64| harness::now_minus(300 - i * 40 - d);
+        extra += &harness::user_at(&format!("question {i}: list the files"), &at(0));
+        let lines: String = (1..=24)
+            .map(|k| {
+                let pad = "x".repeat(40 + (k * 7) % 160);
+                if k % 8 == (i as usize % 8) {
+                    format!("{k:>4} /private/tmp/scratch/{pad}/the-zebra-file.md\\n")
+                } else {
+                    format!("{k:>4} /private/tmp/scratch/{pad}/other.md\\n")
+                }
+            })
+            .collect();
+        extra += &harness::tool_open_at(&format!("b354l_{i}"), &at(1));
+        extra += &harness::tool_result_text(&format!("b354l_{i}"), &lines, &at(2));
+        extra += &harness::assistant_at(&format!("answer {i}: listed"), &at(3));
+    }
+    let (_m, _b, tab, _path) = phone_world_at(2736, "phone-search-long-lines", 390, 844, &extra);
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "a tap on the glass to open the box",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    tab.type_str("scope:ab zebra").unwrap();
+    tab.press_key("Enter").unwrap();
+    harness::until(
+        &tab,
+        "/[1-9]/.test(document.getElementById('transcriptSearchCount').textContent)",
+        "the word's hits in scope ab",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    let hits = harness::eval(
+        &tab,
+        "parseInt(document.getElementById('transcriptSearchCount').textContent, 10)",
+    )
+    .as_i64()
+    .unwrap_or(0);
+    assert!(hits >= 6, "the fixture's hits: {hits}");
+    let seen = "(function(){ var m = document.querySelector('.transcript mark.search-mark.current'); if (!m) return JSON.stringify({ none: true }); var r = m.getBoundingClientRect(), t = document.querySelector('.transcript').getBoundingClientRect(); var top = Math.max(t.top, document.querySelector('.topbar').getBoundingClientRect().bottom); var bar = document.getElementById('turnStickyBar'); if (bar && bar.getAttribute('aria-hidden') !== 'true') { var b = bar.getBoundingClientRect(); if (b.height > 0) top = Math.max(top, b.bottom); } var x = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return JSON.stringify({ inBand: r.top >= top - 0.5 && r.bottom <= t.bottom + 0.5, inWidth: r.left >= t.left - 0.5 && r.right <= t.right + 0.5, hit: !!h && (h === m || m.contains(h)), left: Math.round(r.left), top: Math.round(r.top) }); })()";
+    let still = "(function(){ var s = document.querySelector('.transcript'); return new Promise(function(res){ var a = s.scrollTop; setTimeout(function(){ requestAnimationFrame(function(){ requestAnimationFrame(function(){ res(Math.abs(s.scrollTop - a) < 1); }); }); }, 250); }); })()";
+    let mut misses = Vec::new();
+    for (dir, button) in [("down", "#findNext"), ("up", "#findPrev")] {
+        for step in 0..hits {
+            phone_tap(&tab, button);
+            let t0 = std::time::Instant::now();
+            while t0.elapsed() < Duration::from_secs(3)
+                && harness::eval(&tab, still) != serde_json::Value::Bool(true)
+            {}
+            let s: serde_json::Value =
+                serde_json::from_str(harness::eval(&tab, seen).as_str().unwrap_or("{}"))
+                    .unwrap_or_default();
+            if s["inBand"] != true || s["inWidth"] != true || s["hit"] != true {
+                misses.push(format!("{dir} step {step}: {s}"));
+            }
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "every stepped match is wholly visible, both axes ({} of {} steps missed):\n{}",
+        misses.len(),
+        2 * hits,
+        misses.join("\n")
+    );
+}

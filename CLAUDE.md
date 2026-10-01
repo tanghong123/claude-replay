@@ -60,7 +60,11 @@ with Read — are kept apart (#356): in the facet drop-down and the filter menu 
 combine with what the box holds is GREYED and disabled with its reason (an ON one stays live to be
 unticked); a typed contradiction marks both chips and the count names it ("no Bash call in scope u")
 instead of a count; and the tool filter itself keeps only the tools the scope can hold, so it never
-counts calls the scope then dims (the owner was shown "1577 matches", none visible). The outline column does not
+counts calls the scope then dims (the owner was shown "1577 matches", none visible). A step brings
+the match into view on BOTH axes (#354): outputs do not wrap on a phone, so a hit far along a line
+sat past its block's right edge while the vertical landing was exact (the owner's export: every
+step inside one 175,539 px agent process, at the right offset) — `landOnCurrentMark` now scrolls
+the mark's own horizontally scrolling block (its `scrollLeft`, never the transcript's offset). The outline column does not
 exist there: each pane opens from its icon as a drop-down that holds the outline's OWN live list (moved
 in while open, back after), so one renderer and one click handler (`navigatorClick`) serve both. Every
 sheet hangs at `--phone-top` (the bar's measured bottom). Inputs are 16px (iOS zooms into anything

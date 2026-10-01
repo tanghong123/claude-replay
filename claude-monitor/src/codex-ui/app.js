@@ -1609,9 +1609,26 @@ function landOnCurrentMark() {
     mark = viewport.window.querySelector("mark.search-mark.current");
     if (!mark) return;
   }
+  // #354: sideways first. A hit far along an unwrapped line of an output (a phone's default: `pre`
+  // that scrolls on its own) sits past its block's right edge, and nothing below moves sideways —
+  // the owner's export showed every step landing at the right offset of a 175,539 px agent process
+  // with the match out of sight. The block's own scrollLeft, never the transcript's offset.
+  revealSideways(mark);
   const box = mark.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
   if (box.top >= view.top && box.bottom <= view.bottom) return;
   viewport.reveal(mark, { top: Math.min(120, view.height / 3) });
+}
+/** Scroll the nearest horizontally scrolling block holding `mark` so the mark sits in it, with a
+ *  little of what precedes it — only when it is not already wholly visible there. */
+function revealSideways(mark) {
+  for (let block = mark.parentElement; block && block !== viewport.window; block = block.parentElement) {
+    if (block.scrollWidth <= block.clientWidth + 1) continue;
+    if (!/(auto|scroll)/.test(getComputedStyle(block).overflowX)) continue;
+    const b = block.getBoundingClientRect(), m = mark.getBoundingClientRect();
+    if (m.left >= b.left && m.right <= b.right) return;
+    block.scrollLeft += m.left - b.left - Math.min(48, b.width / 4);
+    return;
+  }
 }
 function markSearch() {
   viewport.window.querySelectorAll("mark.search-mark").forEach(mark => mark.replaceWith(mark.textContent));
