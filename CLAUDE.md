@@ -72,7 +72,9 @@ smaller), targets 44px. Choosing a session shuts the drawer at once and a veil (
 width) dims the session area with how much of the records has arrived. The rules are `production.css`
 under `#313`; the cases are `a_phone*` in `browser_follow.rs` and the preview pinch in `files.rs`,
 driven by `harness::phone` (emulated BEFORE the first load, since the page stores its outline
-default), `harness::pinch` and `harness::chrome_with`. **Gzip** (#313, `serve.rs` `gzip_for`) is for a
+default), `harness::pinch` and `harness::chrome_with`. `harness::finger_tap` delivers what a phone
+does for a tap — touch, then the compatibility mouse events and a click — on Linux too, where
+Chrome's synthesized tap stops at `touchend` (#366: two cases were red on every CI run for it). **Gzip** (#313, `serve.rs` `gzip_for`) is for a
 client ACROSS A NETWORK only — a `Host` that is not the loopback, as `tailscale serve` hands the
 monitor — so the local desktop is byte-for-byte what it was; the case
 `a_phone_over_the_tailnet_reads_the_session_gzipped` reaches it as `phone.test`. That same `Host` is
@@ -80,7 +82,11 @@ why the gate must know the tailnet name (#331): `origin_ok` (the DNS-rebinding a
 every file read and every write asks) knew only the loopback, so a PAIRED phone was told "reading
 local files requires pairing". Both binaries now hand the gate `pair_phone::trusted_hosts(port)`: the
 names this machine's `tailscale serve` relays to THIS port (read lazily, again on a miss at most every
-30 s), plus any `AGENT_MONITOR_TRUSTED_HOSTS` lists — never a `*.ts.net` wildcard. The pairing
+30 s), plus any `AGENT_MONITOR_TRUSTED_HOSTS` lists — never a `*.ts.net` wildcard. On Linux the gate
+also admits a VERIFIED same-user loopback peer without the cookie (D3b, `/proc/net/tcp`); macOS cannot
+verify one. `AGENT_MONITOR_TOKEN_ONLY=1` turns that leg off for a paired gate — stricter only — and
+the browser suite sets it on every paired monitor, so a case's unpaired browser is refused on Linux
+as on macOS (#366). The pairing
 cookie is named for the token it carries — `cmauth-` and eight hex digits of the token's SHA-256
 (`cookie_name`, #350) — because a cookie is scoped to the HOST, not the port: while every gate wrote
 `cmauth`, agent-metrics' `serve --phone` (this gate since #317, a token of its own) replaced the

@@ -1309,7 +1309,10 @@ impl Monitor {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         if paired {
-            cmd.arg("--pair");
+            // The token alone admits (#366): on Linux the gate otherwise admits a same-user
+            // loopback peer — every browser a case launches — so a case's UNPAIRED browser would
+            // be let in there and refused on macOS, which cannot verify the peer.
+            cmd.arg("--pair").env("AGENT_MONITOR_TOKEN_ONLY", "1");
         }
         if kind == Kind::V1 {
             cmd.arg("--no-open");
@@ -2910,7 +2913,16 @@ pub fn hold_the_head(tab: &headless_chrome::Tab) {
 /// phone sends — touch pointer events (down, up, and the LEAVE a lifted finger makes) and then the
 /// click — where a CDP mouse click is a mouse that never leaves.
 pub fn finger_tap(tab: &headless_chrome::Tab, x: f64, y: f64) {
-    use headless_chrome::protocol::cdp::Input::{GestureSourceType, SynthesizeTapGesture};
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption as Kind, GestureSourceType, MouseButton,
+        SynthesizeTapGesture,
+    };
+    // Clicks the page has seen, counted at the window in the capture phase — ahead of any
+    // listener a case or the page puts on the document, so a click one of them stops still counts.
+    let clicks = |tab: &headless_chrome::Tab| {
+        eval(tab, "(function () { if (!window.__fingerClicks) { window.__fingerClicks = { n: 0 }; window.addEventListener('click', function () { window.__fingerClicks.n++; }, true); } return window.__fingerClicks.n; })()").as_u64()
+    };
+    let before = clicks(tab);
     tab.call_method(SynthesizeTapGesture {
         x,
         y,
@@ -2919,6 +2931,43 @@ pub fn finger_tap(tab: &headless_chrome::Tab, x: f64, y: f64) {
         gesture_source_Type: Some(GestureSourceType::Touch),
     })
     .expect("a synthesized finger tap");
+    // A phone follows a tap with the compatibility mouse events and a click, and so does Chrome's
+    // synthesized tap on macOS; on Linux it stops at touchend (#366: the CI run's event log read
+    // pointerdown, touchstart, pointerup, touchend and nothing more). Where none came, deliver
+    // them at the same point, as the phone would have.
+    let Some(before) = before else { return };
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    loop {
+        match clicks(tab) {
+            Some(n) if n > before => return,
+            Some(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25))
+            }
+            Some(_) => break,
+            None => return, // the tap navigated away: nothing to supply
+        }
+    }
+    for kind in [Kind::MousePressed, Kind::MouseReleased] {
+        tab.call_method(DispatchMouseEvent {
+            Type: kind,
+            x,
+            y,
+            modifiers: None,
+            timestamp: None,
+            button: Some(MouseButton::Left),
+            buttons: None,
+            click_count: Some(1),
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        })
+        .expect("the tap's compatibility mouse events");
+    }
 }
 
 /// A two-finger pinch on a phone (#313): both fingers down on either side of `(cx, cy)`, `from`

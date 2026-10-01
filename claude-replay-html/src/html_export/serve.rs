@@ -1515,6 +1515,12 @@ pub struct AuthGate {
     /// admits a `Host`/`Origin` this says yes to. None unless
     /// [`with_trusted_hosts`](Self::with_trusted_hosts) gives one.
     trusted_hosts: Option<HostCheck>,
+    /// A PAIRED gate that admits the token alone (#366): the same-user loopback leg is off, so
+    /// the owner's own browser needs the cookie too — on Linux as on macOS, where the peer
+    /// cannot be verified anyway. Set by `AGENT_MONITOR_TOKEN_ONLY` (any value but `0`) when the
+    /// gate is made with a token; it only ever refuses more, and an unpaired gate ignores it.
+    /// The browser suite sets it, so a case's unpaired browser is refused on every platform.
+    token_only: bool,
 }
 
 /// The refusal a gate gives when its host sets none — the monitor's own.
@@ -1542,10 +1548,12 @@ impl AuthGate {
             refusal: DEFAULT_REFUSAL,
             public: &[],
             trusted_hosts: None,
+            token_only: false,
         }
     }
 
-    /// The paired gate: same-user OR the given bearer token (§4.2).
+    /// The paired gate: same-user OR the given bearer token (§4.2) — the token alone when
+    /// `AGENT_MONITOR_TOKEN_ONLY` is set (#366).
     pub fn with_token(token: impl Into<std::sync::Arc<str>>) -> Self {
         Self {
             euid: current_euid(),
@@ -1554,6 +1562,7 @@ impl AuthGate {
             refusal: DEFAULT_REFUSAL,
             public: &[],
             trusted_hosts: None,
+            token_only: std::env::var_os("AGENT_MONITOR_TOKEN_ONLY").is_some_and(|v| v != "0"),
         }
     }
 
@@ -1599,6 +1608,7 @@ impl AuthGate {
             refusal: DEFAULT_REFUSAL,
             public: &[],
             trusted_hosts: None,
+            token_only: false,
         }
     }
 
@@ -1639,6 +1649,10 @@ impl AuthGate {
         }
         // Else the same-user loopback leg (D3b). Non-loopback never bypasses.
         if !peer.ip().is_loopback() {
+            return Access::Denied;
+        }
+        // A paired gate told to admit the token alone has no same-user leg (#366).
+        if self.token_only && self.token.is_some() {
             return Access::Denied;
         }
         let same_user = match (peer, local) {
@@ -3380,6 +3394,51 @@ mod tests {
             "same-user connection is admitted:\n{resp}"
         );
         assert!(resp.trim_end().ends_with("ok"));
+    }
+
+    /// #366: a token-only gate refuses its OWN user's connection without the token — on Linux,
+    /// where that peer is verifiably same-user and an ordinary paired gate admits it, as on
+    /// macOS — and admits it with the token. Driven end to end on a bound listener, so the
+    /// platform's real peer lookup runs.
+    #[test]
+    fn a_token_only_gate_refuses_its_own_user_without_the_token() {
+        use std::io::{Read, Write};
+        let handler: RouteHandler =
+            std::sync::Arc::new(|_req: &Request| HttpResponse::ok("text/plain", b"ok".to_vec()));
+        let gate = AuthGate {
+            token_only: true,
+            ..AuthGate::with_token("secret-366")
+        };
+        let port = spawn_listener_gated(0, handler, gate).unwrap();
+        let get = |target: &str, cookie: &str| {
+            let mut s = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            write!(
+                s,
+                "GET {target} HTTP/1.0\r\nHost: 127.0.0.1\r\n{cookie}Connection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            resp
+        };
+        let refused = get("/", "");
+        assert!(
+            !refused.starts_with("HTTP/1.1 200") && !refused.starts_with("HTTP/1.1 302"),
+            "no token, no entry — even for this process's own user:\n{refused}"
+        );
+        // The token by URL is taken: the cookie is set and the URL loses the secret…
+        let paired = get("/?token=secret-366", "");
+        let cookie = paired
+            .lines()
+            .find_map(|l| l.strip_prefix("Set-Cookie: "))
+            .and_then(|c| c.split(';').next())
+            .unwrap_or_else(|| panic!("the token sets the cookie:\n{paired}"));
+        // …and the cookie admits.
+        let admitted = get("/", &format!("Cookie: {cookie}\r\n"));
+        assert!(
+            admitted.starts_with("HTTP/1.1 200 OK"),
+            "the cookie admits:\n{admitted}"
+        );
     }
 
     /// `pull_reply_json` splices the provisional records inline (no re-parse) and carries the
