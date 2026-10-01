@@ -10778,3 +10778,39 @@ fn a_phone_search_greys_out_what_cannot_combine() {
         "and no Bash call is marked as a hit the scope then dims: {clash}"
     );
 }
+
+/// #358, the owner: "add support for the Qwenwork agent. It is derived from qoderwork agent, and its
+/// own management directory is ~/.qwenworkcn". A session in Qwenwork's store is listed under its
+/// own agent, "Qwenwork", and opens like any other.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_app_shell_lists_and_opens_a_qwenwork_session() {
+    let _serial = serial();
+    let base = harness::base("qwenwork-agent");
+    let stores = harness::Stores::new(&base);
+    stores.qwenwork_session(
+        "aaaa1111-0000-4000-8000-000000000358",
+        &harness::long_session(6, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2735, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    m.pair(&tab);
+    m.open(&tab, "?ui=app");
+    harness::show_every_session(&tab, &m.url("?ui=app"));
+    harness::until(
+        &tab,
+        "[].slice.call(document.querySelectorAll('.agent-label')).some(function (e) { return e.textContent.trim() === 'Qwenwork'; })",
+        "the rail to list a Qwenwork agent",
+        Duration::from_secs(20),
+        "[].slice.call(document.querySelectorAll('.agent-label')).map(function (e) { return e.textContent.trim(); }).join(', ')",
+    );
+    m.open(&tab, "?ui=app&session=aaaa1111-0000-4000-8000-000000000358");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user')",
+        "the Qwenwork session to open on its turns",
+        Duration::from_secs(20),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 120) : 'no transcript'",
+    );
+}

@@ -1835,7 +1835,15 @@ fn extra_agent_patterns() -> &'static [AgentPattern] {
 }
 
 fn is_agent_exe(exe_base: &str, argv: &str) -> bool {
-    const BUILTINS: &[&str] = &["claude", "codex", "qoderwork", "qoder"];
+    // Qwenwork's desktop app runs as `QwenWorkCN`; its own CLI as `qwenwork` (#358).
+    const BUILTINS: &[&str] = &[
+        "claude",
+        "codex",
+        "qoderwork",
+        "qoder",
+        "qwenwork",
+        "qwenworkcn",
+    ];
     BUILTINS.iter().any(|b| exe_base.eq_ignore_ascii_case(b))
         || extra_agent_patterns()
             .iter()
@@ -2624,6 +2632,7 @@ mod tests {
         std::env::set_var("CLAUDE_PROJECTS_DIR", &store);
         // Point the OTHER stores away from the real machine, so the fixture is the world.
         std::env::set_var("QODERWORK_PROJECTS_DIR", base.join("qw"));
+        std::env::set_var("QWENWORK_PROJECTS_DIR", base.join("qwen"));
         std::env::set_var("QODER_PROJECTS_DIR", base.join("qoder"));
         std::env::set_var("CODEX_HOME", base.join("codex"));
 
@@ -3650,6 +3659,11 @@ n/Users/x/proj
         assert!(is_agent_exe("codex", "codex --model gpt-5"));
         assert!(is_agent_exe("qoderwork", "qoderwork"));
         assert!(is_agent_exe("qoder", "qoder"));
+        assert!(is_agent_exe(
+            "QwenWorkCN",
+            "/Applications/QwenWorkCN.app/Contents/MacOS/QwenWorkCN"
+        ));
+        assert!(is_agent_exe("qwenwork", "qwenwork"));
         // A wrapper is NOT an agent without a configured pattern: the interpreter's basename
         // says nothing, and matching its command line by default would claim every `node`.
         assert!(!is_agent_exe("npx", "npx codex --model gpt-5"));

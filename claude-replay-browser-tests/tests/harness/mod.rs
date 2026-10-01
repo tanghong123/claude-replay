@@ -955,6 +955,8 @@ impl Stores {
         vec![
             ("CLAUDE_PROJECTS_DIR", self.root.join("claude")),
             ("QODERWORK_PROJECTS_DIR", self.root.join("qoderwork")),
+            ("QWENWORK_PROJECTS_DIR", self.root.join("qwenwork")),
+            ("QWENWORK_DB", self.root.join("qwenwork.db")),
             ("QODER_PROJECTS_DIR", self.root.join("qoder")),
             ("CODEX_HOME", self.root.join("codex")),
             ("CLAUDE_JDI_TASKS_ROOT", self.root.join("claude-tasks")),
@@ -1067,6 +1069,24 @@ impl Stores {
         std::fs::create_dir_all(&proj).unwrap();
         let path = proj.join(format!("{sid}.jsonl"));
         std::fs::write(&path, jsonl).unwrap();
+        path
+    }
+
+    /// A Qwenwork session (#358) under `qwenwork/<workspace slug>/<sid>.jsonl` (the store
+    /// `QWENWORK_PROJECTS_DIR` points at), opened with the family's `runtime-config` head. A
+    /// workspace slug, because the family's store walk skips sessions filed under `$HOME`'s slug;
+    /// and the store drops transcripts under 4 KB, so pass a real conversation.
+    pub fn qwenwork_session(&self, sid: &str, jsonl: &str) -> PathBuf {
+        let proj = self
+            .root
+            .join("qwenwork")
+            .join("-Users-x--qwenworkcn-workspace-w358");
+        std::fs::create_dir_all(&proj).unwrap();
+        let path = proj.join(format!("{sid}.jsonl"));
+        let head = format!(
+            "{{\"type\":\"runtime-config\",\"sessionId\":\"{sid}\",\"model\":\"\",\"reasoningEffort\":null,\"contextWindow\":null,\"generation\":1,\"timestamp\":1784282861519}}\n"
+        );
+        std::fs::write(&path, head + jsonl).unwrap();
         path
     }
 

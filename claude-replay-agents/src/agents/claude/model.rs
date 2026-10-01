@@ -722,6 +722,11 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "humanSchedule",
     "interrupted",
     "isAgent",
+    // #359, the QoderWork family (Qwenwork, client 1.1.59; QoderWork 1.1.26): a boolean met only
+    // on results already marked `is_error` (113 of 113 — 30 true, 83 false, across 15 tools); the
+    // card shows the error from that. "Hard" is the client's own retry classification; revisit
+    // if hard failures should ever look different from soft ones.
+    "isHardFailure",
     "isAsync",
     "isBase64",
     "isImage",
@@ -1607,6 +1612,18 @@ pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Mes
 /// reveal action. `tokenize` is this over every line; the streaming driver (M9) calls it one
 /// line at a time so no whole-file `Vec<Message>` is ever built.
 pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>) {
+    decode_line_known(line, cwd, msgs, &[])
+}
+
+/// [`decode_line`] for an adapter that writes record types of its OWN on top of Claude's format —
+/// the QoderWork family's head rows (#359) — so they are known for that adapter alone and a
+/// Claude record that ever takes the same name is still reported.
+pub(crate) fn decode_line_known(
+    line: &str,
+    cwd: &mut String,
+    msgs: &mut Vec<Message>,
+    also_known: &[&str],
+) {
     let line = line.trim();
     if line.is_empty() {
         return;
@@ -2102,7 +2119,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                     v.get("subtype").and_then(|x| x.as_str()),
                     SYSTEM_SUBTYPES_KNOWN,
                 );
-            } else {
+            } else if !other.is_some_and(|t| also_known.contains(&t)) {
                 note_unknown_shape(&v, UnknownAt::RecordType, other, RECORD_TYPES_KNOWN);
             }
         }
@@ -5106,6 +5123,30 @@ mod tests {
     /// `toolUseResult` key produce exactly five reports — and the KNOWN vocabulary beside them
     /// produces none. A log that cannot tell "new" from "deliberately ignored" is the noise
     /// that makes it unreadable, and this is the test that keeps that true.
+    /// #359: an adapter's own record types are known for IT alone — the same row through plain
+    /// Claude decoding is still a new shape — and `isHardFailure` is known everywhere.
+    #[test]
+    fn an_adapters_own_record_types_are_known_only_to_it() {
+        let row = r#"{"type":"a-family-row-359","sessionId":"s-359","x":1}"#;
+        let other = r#"{"type":"another-family-row-359","sessionId":"s-359"}"#;
+        let (mut cwd, mut out) = (String::new(), Vec::new());
+        decode_line_known(row, &mut cwd, &mut out, &["a-family-row-359"]);
+        decode_line(other, &mut cwd, &mut out);
+        let seen: Vec<String> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.name.ends_with("family-row-359"))
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(seen, vec!["another-family-row-359".to_string()], "{seen:?}");
+        let jsonl = r#"{"type":"user","version":"1.1.59","sessionId":"s-359b","toolUseResult":{"stdout":"","isHardFailure":true},"message":{"content":[{"type":"tool_result","tool_use_id":"t9","content":"boom","is_error":true}]}}
+"#;
+        let _ = parse(jsonl);
+        assert!(
+            !unknown_shapes().iter().any(|s| s.name == "isHardFailure"),
+            "isHardFailure is a known result key"
+        );
+    }
+
     #[test]
     fn every_category_reports_what_is_new_and_nothing_that_is_known() {
         let jsonl = r##"

@@ -11,7 +11,7 @@
 pub mod adapters;
 pub(crate) mod agents;
 
-pub use adapters::{ClaudeAdapter, CodexAdapter, QoderWorkAdapter, REGISTRY};
+pub use adapters::{ClaudeAdapter, CodexAdapter, QoderWorkAdapter, QwenworkAdapter, REGISTRY};
 // The per-agent discovery modules keep their long-standing public paths (the facade
 // re-exports them as `claude_discover`/`codex_discover`/`qoderwork_discover`).
 pub use agents::claude::discover as claude_discover;

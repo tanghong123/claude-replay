@@ -519,6 +519,7 @@ mod tests {
 
         std::env::set_var("CLAUDE_PROJECTS_DIR", &claude);
         std::env::set_var("QODERWORK_PROJECTS_DIR", &qw);
+        std::env::set_var("QWENWORK_PROJECTS_DIR", &empty);
         std::env::set_var("QODER_PROJECTS_DIR", &empty);
         std::env::set_var("CODEX_SESSIONS_DIR", &empty);
         // Codex's machine-wide store also includes `<CODEX_HOME>/archived_sessions`.
@@ -529,6 +530,7 @@ mod tests {
         for v in [
             "CLAUDE_PROJECTS_DIR",
             "QODERWORK_PROJECTS_DIR",
+            "QWENWORK_PROJECTS_DIR",
             "QODER_PROJECTS_DIR",
             "CODEX_SESSIONS_DIR",
             "CODEX_HOME",

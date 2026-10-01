@@ -158,7 +158,8 @@ USAGE:
                     once. Run it on a SHARED machine; it prints the URL to open,
                     and a plain `agent-monitor` then keeps requiring that token.
   --port N          Serve on N instead of {DEFAULT_PORT}.
-  --agents LIST     Only these agents: claude, codex, qoder, qoderwork.
+  --agents LIST     Only these agents: claude, codex, qoder, qoderwork,
+                    qwenwork.
   --no-open         Print the URL instead of opening a browser.
   --pair-phone      Let a phone on your tailnet into a PAIRED monitor. Finds
                     the `tailscale serve` address for this monitor (or says
@@ -186,8 +187,8 @@ CACHE ROOT:
   install creates ~/.cache/agent-monitor. Never the viewer's own root.
 
 PROCESS RECOGNITION:
-  Built-in basenames: claude, codex, qoderwork, qoder. Extend that set with
-  $AGENT_MONITOR_AGENT_PATTERNS, comma-separated:
+  Built-in basenames: claude, codex, qoderwork, qoder, qwenwork, qwenworkcn.
+  Extend that set with $AGENT_MONITOR_AGENT_PATTERNS, comma-separated:
 
     basename:<name>     match the executable's own name
     argv:<substring>    match anywhere in the command line (wrapper launches)
@@ -204,6 +205,7 @@ fn parse_agent_name(name: &str) -> Result<Agent> {
         "codex" => Ok(Agent::CODEX),
         "qoder" => Ok(Agent::QODER),
         "qoderwork" => Ok(Agent::QODERWORK),
+        "qwenwork" | "qwenworkcn" => Ok(Agent::QWENWORK),
         other => anyhow::bail!("unknown agent {other:?}"),
     }
 }

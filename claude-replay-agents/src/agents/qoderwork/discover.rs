@@ -26,6 +26,20 @@ pub(crate) struct Home {
     db_env: &'static str,
 }
 
+/// The family's own top-level record types, known to its adapters alone (#359; looked at on the
+/// real stores — keys and value types, no content): `runtime-config` {model, reasoningEffort,
+/// contextWindow, generation, timestamp} — the family's metrics already record context and effort;
+/// `workspace-directories` {directories: list} and `worktree-state` {worktreeSession: null so far} —
+/// bookkeeping; `active-leaf` {leafUuid, explicit, timestamp, compactBoundaryUuid?} — names the live
+/// branch of a rewound conversation, which the page does not draw as branches (revisit if it ever
+/// does). None carries anything the page renders.
+pub(crate) const FAMILY_RECORD_TYPES: &[&str] = &[
+    "active-leaf",
+    "runtime-config",
+    "workspace-directories",
+    "worktree-state",
+];
+
 /// QoderWork itself.
 pub(crate) const QODERWORK: Home = Home {
     agent: Agent::QODERWORK,
@@ -35,10 +49,15 @@ pub(crate) const QODERWORK: Home = Home {
     db_env: "QODERWORK_DB",
 };
 
-/// Root under which QoderWork writes per-project transcript dirs.
-pub(crate) fn projects_dir() -> PathBuf {
-    projects_dir_for(&QODERWORK)
-}
+/// Qwenwork (#358) — derived from QoderWork: `~/.qwenworkcn/projects`, and its titles in
+/// `~/Library/Application Support/QwenWorkCN/data/agents.db`.
+pub(crate) const QWENWORK: Home = Home {
+    agent: Agent::QWENWORK,
+    dir: ".qwenworkcn",
+    projects_env: "QWENWORK_PROJECTS_DIR",
+    app: "QwenWorkCN",
+    db_env: "QWENWORK_DB",
+};
 
 /// Root under which an agent of the family writes per-project transcript dirs.
 pub(crate) fn projects_dir_for(home: &Home) -> PathBuf {
@@ -106,6 +125,7 @@ fn is_mount_slug(name: &str) -> bool {
 /// deeper `<project>/<uuid>/<uuid>.jsonl` sessions (QoderWork's `$HOME`-cwd sessions, #69) are
 /// left for a later coverage pass: surfacing them would ADD rows to an already-crowded group
 /// rather than cut the noise this task targets.
+#[cfg(test)]
 pub(crate) fn store_transcripts() -> Vec<PathBuf> {
     store_transcripts_for(&QODERWORK)
 }
@@ -221,6 +241,7 @@ const MEMO_V: u8 = 2;
 /// That split is why the staleness rule cannot live in the caller: **a QoderWork title changes
 /// when the database changes, with the transcript untouched.** Both halves are therefore checked,
 /// and `Unchanged` needs both to agree.
+#[cfg(test)]
 pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome {
     session_card_for(&QODERWORK, path, memo)
 }
@@ -514,6 +535,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// #358: Qwenwork, derived from QoderWork, writes the SAME `runtime-config` head; a session
+    /// under its own store (`~/.qwenworkcn/projects`) is Qwenwork by provenance, while the very
+    /// same file outside any store still reads as QoderWork — the shared head's owner — and a
+    /// session id resolves only within the store it belongs to.
+    #[test]
+    fn a_qwenwork_store_session_is_qwenwork_by_provenance() {
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("qwen-prov-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = root.join("projects");
+        let slug = store.join("-Users-dev--qwenworkcn-workspace-abc");
+        std::fs::create_dir_all(&slug).unwrap();
+        let head = concat!(
+            r#"{"type":"runtime-config","sessionId":"qn1","model":"","reasoningEffort":null,"contextWindow":null,"generation":1,"timestamp":1784282861519}"#,
+            "\n",
+        );
+        let p = slug.join("qn1.jsonl");
+        std::fs::write(&p, head).unwrap();
+        let loose = root.join("qn2.jsonl");
+        std::fs::write(&loose, head).unwrap();
+
+        std::env::set_var("QWENWORK_PROJECTS_DIR", &store);
+        let claimed = claude_replay_core::discover::detect_agent_claimed(&p);
+        let outside = claude_replay_core::discover::detect_agent_claimed(&loose);
+        let found = transcript_by_id_for(&QWENWORK, "qn1");
+        let not_qoderwork = transcript_by_id("qn1");
+        std::env::remove_var("QWENWORK_PROJECTS_DIR");
+        assert_eq!(
+            claimed,
+            (Agent::QWENWORK, true),
+            "its store makes it Qwenwork"
+        );
+        assert_eq!(
+            outside.0,
+            Agent::QODERWORK,
+            "out of any store, the shared head reads as QoderWork"
+        );
+        assert_eq!(
+            found.as_deref(),
+            Some(p.as_path()),
+            "its id resolves in its own store"
+        );
+        assert_eq!(not_qoderwork, None, "and not in QoderWork's");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The delegation guarantee: parsing a QoderWork transcript AS QoderWork is byte-identical
     /// to parsing it as Claude (same blocks, times, metrics) — the adapter adds detection and a
     /// store, never a format fork. Fixture mirrors the real shape: runtime-config head,
@@ -557,6 +624,33 @@ mod tests {
 
         std::env::remove_var("QODERWORK_PROJECTS_DIR");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #358: Qwenwork is the same adapter over its own home, so its parse of a family transcript —
+    /// the head rows Qwenwork writes included — is QoderWork's, block for block and metric for
+    /// metric. (QoderWork's own equivalence with Claude is the test below.)
+    #[test]
+    fn qwenwork_parse_is_qoderworks_parse() {
+        let f = std::env::temp_dir().join(format!("qn-equiv-{}.jsonl", std::process::id()));
+        std::fs::write(&f, concat!(
+            r#"{"type":"workspace-directories","sessionId":"s","directories":["/w"]}"#, "\n",
+            r#"{"type":"runtime-config","sessionId":"s","model":"qwen-x","reasoningEffort":null,"contextWindow":200000,"generation":null,"timestamp":1785068132048}"#, "\n",
+            r#"{"type":"worktree-state","sessionId":"s","worktreeSession":null}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"do it"}]},"timestamp":"2026-07-26T12:15:33Z"}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}],"model":"qwen-x"},"timestamp":"2026-07-26T12:15:40Z"}"#, "\n",
+            r#"{"type":"user","toolUseResult":{"stdout":"","isHardFailure":false},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"no","is_error":true}]},"timestamp":"2026-07-26T12:15:41Z"}"#, "\n",
+            r#"{"type":"active-leaf","sessionId":"s","leafUuid":"u","explicit":false,"timestamp":1785068132049}"#, "\n",
+        )).unwrap();
+        let qn = claude_replay_core::parse_session_as(Agent::QWENWORK, &f).unwrap();
+        let qw = claude_replay_core::parse_session_as(Agent::QODERWORK, &f).unwrap();
+        assert_eq!(
+            format!("{:?}", qn.blocks()),
+            format!("{:?}", qw.blocks()),
+            "blocks identical"
+        );
+        assert_eq!(qn.user_times, qw.user_times);
+        assert_eq!(qn.metrics, qw.metrics, "metrics identical");
+        let _ = std::fs::remove_file(&f);
     }
 
     #[test]

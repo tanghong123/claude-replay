@@ -280,7 +280,7 @@ function loadSessions() { return sessionIndex.refresh(); }
 function groupedSessions() {
   return sessionIndex.grouped().map(agent => ({ ...agent, name: agentName(agent.id) }));
 }
-const agentName = id => ({ claude: "Claude Code", codex: "Codex", qoder: "Qoder", qoderwork: "QoderWork" })[id] || id;
+const agentName = id => ({ claude: "Claude Code", codex: "Codex", qoder: "Qoder", qoderwork: "QoderWork", qwenwork: "Qwenwork" })[id] || id;
 const SIDEBAR_SESSION_LIMIT = 5;
 
 // Hide / restore (parity #1). The control lives ON the row, where the shell keeps row-level

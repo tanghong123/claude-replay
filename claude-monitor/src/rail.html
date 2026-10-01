@@ -311,7 +311,7 @@
   function agentBadge(r){
     var a=(r.agent||"").toLowerCase();
     var code=a.indexOf("claude")>=0?"cc":a.indexOf("codex")>=0?"cx":a.indexOf("qoder")>=0?"qw":(r.agent||"?").slice(0,2);
-    var cls=a.indexOf("claude")>=0?"a-claude":a.indexOf("codex")>=0?"a-codex":a.indexOf("qoder")>=0?"a-qoderwork":"a-other";
+    var cls=a.indexOf("claude")>=0?"a-claude":a.indexOf("codex")>=0?"a-codex":a.indexOf("qoder")>=0||a.indexOf("qwen")>=0?"a-qoderwork":"a-other";
     return '<span class="abadge '+cls+'" title="'+esc(r.agent)+'">'+esc(code)+'</span>';
   }
   // #129/#138: a session's start→last-activity span, said the shortest true way.

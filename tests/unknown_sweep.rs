@@ -29,6 +29,8 @@ fn run(root: &Path, cwd: &Path, args: &[&str]) -> (String, String, bool) {
         .env("QODER_TASKS_ROOT", root.join("qoder-tasks"))
         .env("QODERWORK_PROJECTS_DIR", root.join("qoderwork"))
         .env("QODERWORK_DB", root.join("qoderwork.db"))
+        .env("QWENWORK_PROJECTS_DIR", root.join("qwenwork"))
+        .env("QWENWORK_DB", root.join("qwenwork.db"))
         .env("CLAUDE_REPLAY_CACHE", root.join("cache"))
         .output()
         .unwrap();

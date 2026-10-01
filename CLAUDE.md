@@ -718,7 +718,16 @@ presentation-agnostic".
   (`agents_import_only_the_seam`); anything an adapter newly needs is added to the seam
   deliberately (#87). Each adapter owns its test suite (the byte-identical equivalence gates
   live in the `model` families); `model`'s tests are the agent-neutral ones only
-  (`block_kind`/`fold_key`, `relativize`).
+  (`block_kind`/`fold_key`, `relativize`). **The QoderWork family serves an agent DERIVED from
+  it** (#358): Qwenwork (QwenWorkCN, `~/.qwenworkcn`) writes the same store layout, sidecars and
+  title database under its own names, so `agents/qoderwork/discover.rs` takes a `Home` (agent,
+  dot-dir, App Support name, `*_PROJECTS_DIR`/`*_DB` overrides) and one macro defines both
+  adapters. The family's `runtime-config` head is QoderWork's alone at the sniff level, so
+  Qwenwork is Qwenwork only by provenance (a file under its store; one outside reads as
+  QoderWork), and its own head rows (`runtime-config`, `workspace-directories`,
+  `worktree-state`, `active-leaf`) are known to the family's adapters only (`decode_line_known`,
+  #359). A hermetic test points `QWENWORK_PROJECTS_DIR` (and `QWENWORK_DB`) at its scratch like
+  every other store, or it reads this machine's real sessions.
 
 Also in core (beside the vocabulary they index): `fold.rs` the `FoldPolicy` (clap-free
 `from_flags`; the CLI bridge is `Args::fold_policy`) and the agent-neutral diff-row model

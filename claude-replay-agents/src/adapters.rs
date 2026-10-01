@@ -22,6 +22,7 @@ pub static REGISTRY: &[&'static dyn TranscriptAdapter] = &[
     &CodexAdapter,
     &QoderAdapter,
     &QoderWorkAdapter,
+    &QwenworkAdapter,
 ];
 
 impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
@@ -408,101 +409,133 @@ impl TranscriptAdapter for QoderAdapter {
 /// may carry no usage at all; current sessions can report zeroed token counts plus
 /// `usage.credits`, which the shared metrics fold converts to cost just like Qoder CLI.
 pub struct QoderWorkAdapter;
-impl TranscriptAdapter for QoderWorkAdapter {
-    fn fork_origin(&self, path: &Path) -> Option<String> {
-        agents::qoderwork::discover::fork_origin(path)
-    }
-    fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
-        crate::agents::qoderwork::discover::store_transcripts()
-    }
-    fn store_transcripts_in(&self, root: &std::path::Path) -> Option<Vec<std::path::PathBuf>> {
-        Some(crate::agents::qoderwork::discover::store_transcripts_in(
-            root,
-        ))
-    }
 
-    fn agent(&self) -> Agent {
-        Agent::QODERWORK
-    }
+/// Qwenwork adapter (#358) — derived from QoderWork, the SAME adapter over its own `Home`
+/// (`~/.qwenworkcn`). It writes the same `runtime-config` head, which QoderWork alone owns at the
+/// sniff level, so a Qwenwork session is recognised only by provenance: a file under its store.
+/// One outside the store reads as QoderWork, the family's honest default.
+pub struct QwenworkAdapter;
 
-    /// QoderWork is a DESKTOP-collaboration agent: its sessions' cwd is usually `$HOME` or
-    /// nothing meaningful, so a monitor groups them under the agent, not a project (#98 §4.2).
-    fn workspace_anchored(&self) -> bool {
-        false
-    }
-    fn sniff(&self, head: &Value) -> SniffClaim {
-        // The `runtime-config` head is the qwork-family signature. Qoder CLI writes the
-        // SAME head (both keyed with `reasoningEffort`/`contextWindow` — verified against
-        // real stores, #20), so ownership of the shared shape stays here and Qoder is
-        // told apart by store provenance, which detection consults before any sniff.
-        if head.get("type").and_then(Value::as_str) == Some("runtime-config") {
-            SniffClaim::Owns
-        } else {
-            SniffClaim::No
+/// The QoderWork family's adapter, once: `$home` is the agent's `Home`, and `$owns_head` says
+/// whether it claims the family's `runtime-config` head at the sniff level (QoderWork only).
+macro_rules! qwork_family_adapter {
+    ($name:ident, $home:expr, $owns_head:expr) => {
+        impl TranscriptAdapter for $name {
+            fn fork_origin(&self, path: &Path) -> Option<String> {
+                agents::qoderwork::discover::fork_origin(path)
+            }
+            fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
+                agents::qoderwork::discover::store_transcripts_for(&$home)
+            }
+            fn store_transcripts_in(
+                &self,
+                root: &std::path::Path,
+            ) -> Option<Vec<std::path::PathBuf>> {
+                Some(agents::qoderwork::discover::store_transcripts_in(root))
+            }
+
+            fn agent(&self) -> Agent {
+                $home.agent
+            }
+
+            /// A DESKTOP-collaboration agent: its sessions' cwd is usually `$HOME` or nothing
+            /// meaningful, so a monitor groups them under the agent, not a project (#98 §4.2).
+            fn workspace_anchored(&self) -> bool {
+                false
+            }
+            fn sniff(&self, head: &Value) -> SniffClaim {
+                // The `runtime-config` head is the qwork-family signature. Qoder CLI writes the
+                // SAME head (both keyed with `reasoningEffort`/`contextWindow` — verified against
+                // real stores, #20), and so does Qwenwork, so ownership of the shared shape stays
+                // with QoderWork and the others are told apart by store provenance, which
+                // detection consults before any sniff.
+                if $owns_head && head.get("type").and_then(Value::as_str) == Some("runtime-config")
+                {
+                    SniffClaim::Owns
+                } else {
+                    SniffClaim::No
+                }
+            }
+            fn store_contains(&self, path: &Path) -> bool {
+                path.starts_with(agents::qoderwork::discover::projects_dir_for(&$home))
+            }
+            /// The one place the family cannot simply delegate: it keeps the spawn→child relation
+            /// in SIDECARS rather than inline in the transcript, so the ids are adopted from those
+            /// first — after which the shared Claude pass (which resolves children by exactly those
+            /// ids) does the rest against an identical `subagents/` layout.
+            fn enrich(&self, path: &Path, blocks: &mut [Block]) {
+                agents::claude::model::enrich_tree(path, blocks)
+            }
+            // A running spawn is nameless in the transcript; its id sits in a sidecar (#37).
+            fn spawn_links(&self, path: &Path) -> Vec<claude_replay_engine::seam::SpawnLink> {
+                agents::qoderwork::discover::spawn_links(path)
+            }
+            fn shaping(&self) -> &'static Shaping {
+                &agents::claude::model::CLAUDE_SHAPING
+            }
+            fn elision(&self) -> claude_replay_engine::seam::Elision {
+                agents::claude::model::CLAUDE_ELISION
+            }
+            // Claude's decoder, with the family's own head rows known (#359).
+            fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
+                agents::claude::model::decode_line_known(
+                    line,
+                    cwd,
+                    out,
+                    agents::qoderwork::discover::FAMILY_RECORD_TYPES,
+                )
+            }
+            // Claude Code's tool vocabulary, so Claude's interactive set (#21).
+            fn tool_is_interactive(&self, name: &str) -> bool {
+                agents::claude::model::tool_is_interactive(name)
+            }
+            // …and Claude's turn-lifecycle vocabulary (#194), for the same reason.
+            fn turn_ended(&self, raw_line: &str) -> Option<bool> {
+                agents::claude::model::turn_ended(raw_line)
+            }
+            fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
+                // The family's `runtime-config` head carries `reasoningEffort`/`contextWindow` —
+                // present-and-null in real stores, which is exactly "recorded, unknown" (#62).
+                Box::new(agents::claude::metrics::MetricsAcc::recording(&[
+                    "context", "effort",
+                ]))
+            }
+            fn load_attachment(
+                &self,
+                line: &str,
+                index: usize,
+            ) -> Option<claude_replay_engine::model::LoadedAttachment> {
+                agents::claude::model::nth_loaded_attachment(line, index)
+            }
+            fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> {
+                agents::qoderwork::discover::candidates_scoped_for(&$home, cwd)
+            }
+            fn resolve_id(&self, id: &str) -> Option<PathBuf> {
+                agents::qoderwork::discover::transcript_by_id_for(&$home, id)
+            }
+            fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
+                agents::claude::model::subagent_file(root, child_id)
+            }
+            fn session_card(
+                &self,
+                path: &Path,
+                memo: Option<&claude_replay_engine::seam::CardMemo>,
+            ) -> claude_replay_engine::seam::CardOutcome {
+                agents::qoderwork::discover::session_card_for(&$home, path, memo)
+            }
         }
-    }
-    fn store_contains(&self, path: &Path) -> bool {
-        path.starts_with(agents::qoderwork::discover::projects_dir())
-    }
-    /// The one place QoderWork cannot simply delegate: it keeps the spawn→child relation in
-    /// SIDECARS rather than inline in the transcript, so the ids are adopted from those
-    /// first — after which the shared Claude pass (which resolves children by exactly those
-    /// ids) does the rest against an identical `subagents/` layout.
-    fn enrich(&self, path: &Path, blocks: &mut [Block]) {
-        agents::claude::model::enrich_tree(path, blocks)
-    }
-    // A running spawn is nameless in the transcript; its id sits in a sidecar (#37).
-    fn spawn_links(&self, path: &Path) -> Vec<claude_replay_engine::seam::SpawnLink> {
-        agents::qoderwork::discover::spawn_links(path)
-    }
-    fn shaping(&self) -> &'static Shaping {
-        &agents::claude::model::CLAUDE_SHAPING
-    }
-    fn elision(&self) -> claude_replay_engine::seam::Elision {
-        agents::claude::model::CLAUDE_ELISION
-    }
-    fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
-        agents::claude::model::decode_line(line, cwd, out)
-    }
-    // Claude Code's tool vocabulary, so Claude's interactive set (#21).
-    fn tool_is_interactive(&self, name: &str) -> bool {
-        agents::claude::model::tool_is_interactive(name)
-    }
-    // …and Claude's turn-lifecycle vocabulary (#194), for the same reason.
-    fn turn_ended(&self, raw_line: &str) -> Option<bool> {
-        agents::claude::model::turn_ended(raw_line)
-    }
-    fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
-        // The family's `runtime-config` head carries `reasoningEffort`/`contextWindow` —
-        // present-and-null in real stores, which is exactly "recorded, unknown" (#62).
-        Box::new(agents::claude::metrics::MetricsAcc::recording(&[
-            "context", "effort",
-        ]))
-    }
-    fn load_attachment(
-        &self,
-        line: &str,
-        index: usize,
-    ) -> Option<claude_replay_engine::model::LoadedAttachment> {
-        agents::claude::model::nth_loaded_attachment(line, index)
-    }
-    fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> {
-        agents::qoderwork::discover::candidates_scoped(cwd)
-    }
-    fn resolve_id(&self, id: &str) -> Option<PathBuf> {
-        agents::qoderwork::discover::transcript_by_id(id)
-    }
-    fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
-        agents::claude::model::subagent_file(root, child_id)
-    }
-    fn session_card(
-        &self,
-        path: &Path,
-        memo: Option<&claude_replay_engine::seam::CardMemo>,
-    ) -> claude_replay_engine::seam::CardOutcome {
-        agents::qoderwork::discover::session_card(path, memo)
-    }
+    };
 }
+qwork_family_adapter!(
+    QoderWorkAdapter,
+    agents::qoderwork::discover::QODERWORK,
+    true
+);
+qwork_family_adapter!(
+    QwenworkAdapter,
+    agents::qoderwork::discover::QWENWORK,
+    false
+);
 
 #[cfg(test)]
 mod sniff_tests {
@@ -569,7 +602,9 @@ mod sniff_tests {
         for a in REGISTRY {
             let want = match a.agent() {
                 Agent::CODEX => Some(UsageKind::CounterReading),
-                Agent::CLAUDE | Agent::QODER | Agent::QODERWORK => Some(UsageKind::Call),
+                Agent::CLAUDE | Agent::QODER | Agent::QODERWORK | Agent::QWENWORK => {
+                    Some(UsageKind::Call)
+                }
                 other => panic!("{other:?} is registered: declare what its usage ids name"),
             };
             assert_eq!(a.metrics_acc().usage_kind(), want, "{:?}", a.agent());

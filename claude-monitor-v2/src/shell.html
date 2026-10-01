@@ -194,7 +194,8 @@
     return n;
   }
   function badgeClass(a) {
-    return "v2badge a-" + (/^(claude|codex|qoderwork)$/.test(a) ? a : "other");
+    // Qwenwork (#358) is QoderWork's derivative and wears its colour.
+    return "v2badge a-" + (/^(claude|codex|qoderwork)$/.test(a) ? a : a === "qwenwork" ? "qoderwork" : "other");
   }
 
   function render(filter) {

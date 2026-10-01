@@ -26,6 +26,10 @@ impl Agent {
     /// `contextWindow`, which is what tells it apart from QoderWork's. Parsing delegates
     /// to the Claude implementations.
     pub const QODER: Agent = Agent("qoder");
+    /// Qwenwork (QwenWorkCN) — derived from QoderWork, with its own store
+    /// (`~/.qwenworkcn/projects/`) and title database; the same Claude-shaped transcripts and the
+    /// same `runtime-config` head, so it is told apart by WHERE a file lives, never by its content.
+    pub const QWENWORK: Agent = Agent("qwenwork");
 
     /// Mint an agent id a third-party adapter registers under. The id doubles as the
     /// display label, so keep it short and lowercase (`"gemini"`).
@@ -48,6 +52,8 @@ impl Agent {
             "qoderwork" => Some(Self::QODERWORK),
             // `qodercli` is the binary's name; both resolve to the one store.
             "qoder" | "qodercli" => Some(Self::QODER),
+            // `qwenworkcn` is its home and its app's name; both resolve to the one store.
+            "qwenwork" | "qwenworkcn" => Some(Self::QWENWORK),
             _ => None,
         }
     }

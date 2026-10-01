@@ -93,6 +93,7 @@ fn main() -> Result<()> {
                     "codex" => Agent::CODEX,
                     "qoder" => Agent::QODER,
                     "qoderwork" => Agent::QODERWORK,
+                    "qwenwork" | "qwenworkcn" => Agent::QWENWORK,
                     other => anyhow::bail!("unknown agent {other:?}"),
                 });
             }
@@ -280,7 +281,7 @@ fn help_text() -> String {
 agent-monitor-v2 — every agent session on this machine, in one app-shell
 
 USAGE:
-  agent-monitor-v2 [--pair] [--port N] [--agents claude|codex|qoder|qoderwork]
+  agent-monitor-v2 [--pair] [--port N] [--agents claude|codex|qoder|qoderwork|qwenwork]
   agent-monitor-v2 --set-passcode
   agent-monitor-v2 --version
 

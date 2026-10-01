@@ -297,6 +297,7 @@ mod tests {
         for var in [
             "CLAUDE_PROJECTS_DIR",
             "QODERWORK_PROJECTS_DIR",
+            "QWENWORK_PROJECTS_DIR",
             "QODER_PROJECTS_DIR",
             "CODEX_HOME",
         ] {
