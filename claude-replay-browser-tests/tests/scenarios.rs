@@ -7838,8 +7838,29 @@ fn scenario_a_growth_around_the_run_displaces_the_reader(
     surface: Surface,
     fx: &Fixture,
 ) {
+    let scroller = surface.scroller();
+    let before = eval(
+        tab,
+        &format!("(function(){{ window.__jumpScrolls = 0; addEventListener('scroll', function () {{ window.__jumpScrolls++; }}, {{ capture: true, passive: true }}); return Math.round({scroller}.scrollTop); }})()"),
+    );
     jump_to_end(tab, surface);
     await_tail(tab, surface, "a fresh open to land at the tail");
+    // The jump's own scroll EVENT can arrive long after its offset moved — a lazy headless frame
+    // (#204, #344). Grown before the page heard it, the late event reads as the reader leaving
+    // the tail inside the jump's intent window, and the page lets go of it (#357, caught by a dump
+    // in a 1-in-40 loop: the jump at 891 ms, the growth at ~1140 ms, `following` lost, the offset
+    // never moved). So the page hears its jump first — unless the jump moved nothing, when no
+    // event is owed. The claim is unchanged: a pinned reader keeps the tail through a growth.
+    if eval(tab, &format!("Math.round({scroller}.scrollTop)")) != before {
+        harness::until(
+            tab,
+            "window.__jumpScrolls > 0",
+            "the page to hear the jump's own scroll",
+            Duration::from_secs(8),
+            "window.__jumpScrolls",
+        );
+    }
+    settle();
     assert!(
         grow_around(tab, surface, 320),
         "{surface:?}: the chrome above the run can be grown"
