@@ -8582,7 +8582,10 @@ fn a_paired_phone_over_the_tailnet_reads_a_file() {
 fn a_phone_taps_the_title_and_copies_the_session_id() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2715, "phone-copy-id", 390, 844);
-    harness::eval(&tab, "(function(){ window.__copied = []; var fake = { writeText: function (t) { window.__copied.push(t); return Promise.resolve(); } }; try { Object.defineProperty(navigator, 'clipboard', { value: fake, configurable: true }); } catch (e) { navigator.clipboard.writeText = fake.writeText; } return 1; })()");
+    harness::eval(&tab, "(function(){ window.__copied = []; var fake = { writeText: function (t) { window.__copied.push(t); return Promise.resolve(); } }; window.__fakeClipboard = fake; try { Object.defineProperty(navigator, 'clipboard', { value: fake, configurable: true }); } catch (e) { navigator.clipboard.writeText = fake.writeText; } return 1; })()");
+    // What the taps deliver, for a failure to report (#366: this case fails only on Linux CI).
+    // Registered before the cancellers below, so it sees every event they stop.
+    harness::eval(&tab, "window.__events = []; ['pointerdown', 'pointerup', 'touchstart', 'touchend', 'mousedown', 'mouseup', 'click'].forEach(function (k) { document.addEventListener(k, function (e) { var t = e.target, row = t.closest && t.closest('[data-copy-session]'); window.__events.push(k + ':' + (row ? 'row-' + row.dataset.copySession : (t.id || t.tagName))); }, true); }); window.addEventListener('error', function (e) { window.__events.push('error:' + e.message); }); window.addEventListener('unhandledrejection', function (e) { window.__events.push('rejection:' + e.reason); }); 1");
     // iOS: no compatibility mouse events for a tap on the title (see above) — the touch pointer
     // events are all the page gets. A cancelled `mousedown` also focuses nothing.
     harness::eval(&tab, "['mousedown', 'mouseup', 'click'].forEach(function (k) { document.addEventListener(k, function (e) { if (e.target.closest && e.target.closest('#sessionTitle')) { e.stopImmediatePropagation(); e.preventDefault(); } }, true); }); 1");
@@ -8614,7 +8617,7 @@ fn a_phone_taps_the_title_and_copies_the_session_id() {
         &format!("window.__copied.length === 1 && !({menu_open})"),
         "the session id to be copied, and the menu to close",
         Duration::from_secs(5),
-        "JSON.stringify(window.__copied)",
+        &format!("JSON.stringify({{ copied: window.__copied, menuOpen: {menu_open}, fakeClipboard: navigator.clipboard === window.__fakeClipboard, events: window.__events, toast: [].slice.call(document.querySelectorAll('.toast, [role=status]')).map(function (t) {{ return t.textContent; }}) }})"),
     );
     assert_eq!(
         harness::eval(&tab, "window.__copied[0]").as_str(),
@@ -10282,12 +10285,24 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
     // A browser that was never paired: the refusal, as a page, after one retry and no more.
     let (_fresh, other) = harness::chrome_tab();
     other.navigate_to(&target).unwrap();
+    // #366: the cookies this browser holds for the monitor once its page has loaded — HttpOnly
+    // ones included, which the page cannot read. Printed, so a failure on CI shows them.
+    let _ = other.wait_until_navigated();
+    eprintln!(
+        "unpaired browser's cookies for the monitor: {:?}",
+        other.get_cookies().map(|cs| cs
+            .into_iter()
+            .map(|c| (c.name, c.domain, c.http_only))
+            .collect::<Vec<_>>())
+    );
     harness::until(
         &other,
         "/not paired/i.test(document.body ? document.body.innerText : '') && !document.documentElement.hidden",
         "an unpaired browser to be told it is not paired",
         Duration::from_secs(20),
-        "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
+        // #366: on Linux CI this browser lands on the shell. Report the status the page load got,
+        // the API's answer and any cookie it can read, beside the text.
+        "location.href + ' | navigation status ' + ((performance.getEntriesByType('navigation')[0] || {}).responseStatus) + ' | readable cookies ' + JSON.stringify(document.cookie.split('; ').map(function (c) { return c.split('=')[0]; })) + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
     );
     let origin = harness::eval(&other, "performance.timeOrigin");
     std::thread::sleep(Duration::from_millis(2000));
