@@ -283,11 +283,13 @@ fn open_with(surface: Surface, fx: &Fixture, port: u16, extra: &str) -> Opened {
     let t0 = std::time::Instant::now();
     let opened = open_page(surface, fx, port, extra);
     harness::profile("open", t0.elapsed());
+    watch_for_settle(&opened.tab);
     opened
 }
 
 fn open_page(surface: Surface, fx: &Fixture, port: u16, extra: &str) -> Opened {
     let (browser, tab) = harness::chrome_tab();
+    harness::track_idle(&tab);
     match surface {
         Surface::Classic => {
             std::env::set_var("CLAUDE_REPLAY_CACHE", &fx.base);
@@ -375,6 +377,8 @@ fn open_page(surface: Surface, fx: &Fixture, port: u16, extra: &str) -> Opened {
 /// `?ui=app&session=`. The monitor is owned by the returned page and can be respawned.
 fn open_on_v2(surface: Surface, fx: &Fixture, port: u16) -> Opened {
     let (browser, tab) = harness::chrome_tab();
+    harness::track_idle(&tab);
+    watch_for_settle(&tab);
     let stores = Stores {
         root: fx.base.join("stores"),
     };
@@ -417,8 +421,75 @@ fn restart_monitor(page: &mut Opened, fx: &Fixture, port: u16) {
     ));
 }
 
+// The pages THIS case opened (#351): a settle waits on every one of them, so a case that drives
+// both surfaces never waits on the wrong page. Per test thread, so cases never see each other's.
+thread_local! {
+    static SETTLE_TABS: std::cell::RefCell<Vec<std::sync::Weak<headless_chrome::Tab>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn watch_for_settle(tab: &std::sync::Arc<headless_chrome::Tab>) {
+    SETTLE_TABS.with(|t| t.borrow_mut().push(std::sync::Arc::downgrade(tab)));
+}
+
+/// Let what the last action set in motion finish: until every page this case opened is IDLE
+/// (`harness::track_idle`: nothing due before the deadline, nothing under way), at most 700 ms —
+/// the fixed sleep it replaces (#351), which was 30 % of the scenarios' time while 77 % of settles
+/// saw the page change nothing at all. A page without the tracker, or one that cannot answer, is
+/// waited for the whole 700 ms as before. `CR_SETTLE_CHECK=<file>` is the validation mode: every
+/// settle waits the full 700 ms and appends `<case>\t<line>\t<ms it would have taken>\t<changes
+/// after that moment>\t<why it ran out>`, so a gap in the tracker shows as a nonzero count.
+#[track_caller]
 fn settle() {
-    harness::pause("settle", Duration::from_millis(700));
+    let line = std::panic::Location::caller().line();
+    let budget = Duration::from_millis(700);
+    let check = std::env::var_os("CR_SETTLE_CHECK");
+    let tabs: Vec<_> =
+        SETTLE_TABS.with(|t| t.borrow().iter().filter_map(|w| w.upgrade()).collect());
+    let t0 = std::time::Instant::now();
+    let mut answered = !tabs.is_empty();
+    let mut report = Vec::new();
+    for tab in &tabs {
+        let left = budget.saturating_sub(t0.elapsed()).as_millis();
+        let js = format!(
+            "window.__settle ? window.__settle({left}, {}) : null",
+            check.is_some()
+        );
+        match tab
+            .evaluate(&js, true)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(str::to_string))
+        {
+            Some(s) => report.push(s),
+            None => answered = false,
+        }
+    }
+    if !answered || check.is_some() {
+        std::thread::sleep(budget.saturating_sub(t0.elapsed()));
+    }
+    if let Some(path) = check {
+        let case = std::thread::current().name().unwrap_or("?").to_string();
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            use std::io::Write;
+            for r in &report {
+                let v: serde_json::Value = serde_json::from_str(r).unwrap_or_default();
+                let _ = writeln!(
+                    f,
+                    "{case}\t{line}\t{}\t{}\t{}\t{}",
+                    v["ms"],
+                    v["late"],
+                    v["why"].as_str().unwrap_or(""),
+                    v["diag"]
+                );
+            }
+        }
+    }
+    harness::profile("settle", t0.elapsed());
 }
 
 /// Wait for the scroller to sit at its tail (a jump may scroll smoothly), or fail saying so.

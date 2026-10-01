@@ -2755,6 +2755,122 @@ pub fn phone(tab: &headless_chrome::Tab, width: u32, height: u32) {
     .expect("touch emulation");
 }
 
+/// The page's own account of what it still has to do (#351), installed before its scripts so every
+/// timer, interval, animation frame, fetch and body read it starts goes through a wrapper that
+/// knows when it is due. `window.__settle(ms, check)` then resolves the moment the page is idle —
+/// or at `ms`, whatever its state, so a settle is never slower than the fixed sleep it replaces.
+///
+/// Idle has two halves, because #351's measurement showed either alone reads too early (the
+/// engine's own rest was followed by a change in 18 % of 1,482 settles; "quiet for 500 ms" still
+/// read early 36 times): NOTHING WILL START before the deadline — no timer or interval tick due by
+/// then, no animation frame callback queued, no fetch or body read in flight, no finite animation
+/// or transition ending by then, no font loading, no image half-loaded — and NOTHING IS UNDER WAY:
+/// two frames delivered since the last DOM mutation and the last scroll event. The second half is
+/// what a wrapper cannot see otherwise: observer callbacks run in the frame, and a smooth scroll is
+/// the compositor's. With `check`, the promise instead waits to the deadline and reports what
+/// changed after the moment it would have returned (`CR_SETTLE_CHECK`, the validation mode).
+pub fn track_idle(tab: &headless_chrome::Tab) {
+    use headless_chrome::protocol::cdp::Page;
+    tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+        source: TRACK_IDLE_JS.to_string(),
+        world_name: None,
+        include_command_line_api: None,
+        run_immediately: None,
+    })
+    .expect("the idle tracker is installed");
+}
+
+const TRACK_IDLE_JS: &str = r##"(function(){
+  if (window.__settle) return;
+  var w = window, oST = w.setTimeout, oCT = w.clearTimeout, oSI = w.setInterval, oCI = w.clearInterval,
+      oRAF = w.requestAnimationFrame, oCAF = w.cancelAnimationFrame, oFetch = w.fetch;
+  var now = function () { return performance.now(); };
+  var timers = new Map(), intervals = new Map(), rafs = new Set(), inflight = 0, frames = 0, changes = 0;
+  w.setTimeout = function (fn, ms) {
+    if (typeof fn !== "function") return oST.apply(w, arguments);
+    var args = [].slice.call(arguments, 2), id;
+    id = oST.call(w, function () { timers.delete(id); return fn.apply(this, args); }, ms);
+    timers.set(id, now() + Math.max(0, +ms || 0));
+    return id;
+  };
+  w.clearTimeout = function (id) { timers.delete(id); intervals.delete(id); return oCT.call(w, id); };
+  w.setInterval = function (fn, ms) {
+    if (typeof fn !== "function") return oSI.apply(w, arguments);
+    var args = [].slice.call(arguments, 2), period = Math.max(0, +ms || 0), id;
+    id = oSI.call(w, function () { var e = intervals.get(id); if (e) e.next = now() + period; return fn.apply(this, args); }, ms);
+    intervals.set(id, { next: now() + period });
+    return id;
+  };
+  w.clearInterval = function (id) { intervals.delete(id); timers.delete(id); return oCI.call(w, id); };
+  w.requestAnimationFrame = function (fn) {
+    var id = oRAF.call(w, function (t) { rafs.delete(id); return fn(t); });
+    rafs.add(id);
+    return id;
+  };
+  w.cancelAnimationFrame = function (id) { rafs.delete(id); return oCAF.call(w, id); };
+  var counted = function (p) { inflight++; var done = function () { inflight--; }; p.then(done, done); return p; };
+  if (oFetch) w.fetch = function () { return counted(oFetch.apply(this, arguments)); };
+  ["json", "text", "arrayBuffer", "blob"].forEach(function (k) {
+    var o = w.Response && Response.prototype[k];
+    if (o) Response.prototype[k] = function () { return counted(o.apply(this, arguments)); };
+  });
+  if (w.ReadableStreamDefaultReader) {
+    var oRead = ReadableStreamDefaultReader.prototype.read;
+    ReadableStreamDefaultReader.prototype.read = function () { return counted(oRead.apply(this, arguments)); };
+  }
+  var recent = [], lastAt = 0, totalFrames = 0;
+  var name = function (n) { if (!n || !n.tagName) return n && n.nodeName || "?"; return n.tagName.toLowerCase() + (n.id ? "#" + n.id : "") + (n.className && typeof n.className === "string" ? "." + n.className.split(" ")[0] : ""); };
+  var changed = function (list) {
+    frames = 0; changes++; lastAt = now();
+    var d = Array.isArray(list) ? list.slice(-2).map(function (m) { return m.type + ":" + name(m.target) + (m.attributeName ? "@" + m.attributeName : ""); }).join(",") : "scroll:" + name(list && list.target);
+    recent.push(Math.round(lastAt) + " " + d); if (recent.length > 6) recent.shift();
+  };
+  new MutationObserver(changed).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+  w.addEventListener("scroll", changed, { capture: true, passive: true });
+  var pending = function (deadline) {
+    for (var due of timers.values()) if (due <= deadline) return "timer";
+    for (var e of intervals.values()) if (e.next <= deadline) return "interval";
+    if (rafs.size) return "frame";
+    if (inflight) return "fetch";
+    if (document.fonts && document.fonts.status === "loading") return "font";
+    for (var img of document.images) if (img.src && !img.complete) return "image";
+    if (document.getAnimations) for (var a of document.getAnimations()) {
+      if (a.playState !== "running") continue;
+      var t = a.effect && a.effect.getComputedTiming();
+      if (!t || !isFinite(t.endTime)) continue;
+      var left = (t.endTime - (a.currentTime || 0)) / Math.abs(a.playbackRate || 1);
+      if (now() + left <= deadline) return "animation";
+    }
+    return "";
+  };
+  // A headless tab renders lazily for stretches (#204): measured inside a scenario page, 0–1 frames in
+  // 900 ms early in a case and 32 per 500 ms later, and neither bringToFront, focus emulation nor a
+  // mouse move reliably wakes it. A lazy tab never shows two frames, so its settle runs the full
+  // budget, as before. Answering "under way" with quiet time instead was tried and read early: the
+  // event for a scroll already applied came ~600 ms later, with the next lazy frame (the #344 shape).
+  w.__settle = function (ms, check) {
+    return new Promise(function (resolve) {
+      var t0 = now(), deadline = t0 + ms, running = true, at = null, seen = 0, why = "", c0 = changes;
+      frames = 0; totalFrames = 0;
+      var frame = function () { if (!running) return; frames++; totalFrames++; oRAF.call(w, frame); };
+      oRAF.call(w, frame);
+      var poll = function () {
+        var t = now();
+        if (at === null) {
+          why = pending(deadline);
+          if (!why && frames >= 2) { at = t; seen = changes; running = false; if (!check) return resolve(JSON.stringify({ ms: Math.round(t - t0), late: 0 })); }
+        }
+        if (t >= deadline) {
+          running = false;
+          return resolve(JSON.stringify({ ms: Math.round((at === null ? t : at) - t0), late: at === null ? 0 : changes - seen, why: at === null ? (why || "frames") : "", diag: at === null ? { frames: totalFrames, changes: changes - c0, lastChange: Math.round(lastAt - t0), recent: recent.slice() } : (changes > seen ? { at: Math.round(at - t0), t0: Math.round(t0), recent: recent.slice() } : null) }));
+        }
+        oST.call(w, poll, 8);
+      };
+      poll();
+    });
+  };
+})();"##;
+
 /// Hold the HEAD of a tail-first open (#314) until the case lets it go: every `/records` read
 /// from byte 0 waits on `window.__releaseHead()` (a tail-first open reads its tail from past 0, so
 /// the only such read is the head), and `window.__headRequested` counts them. Installed before the

@@ -261,7 +261,14 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   case opens one (#343: `first_tab` launches again, up to four times with a stderr line each,
   when a fresh browser gives no tab — ~220 of ~230 failures across fifteen suite runs were that
   one error, "The event waited for never came", in runs of up to 22 cases; such a browser is
-  dead, not slow, so waiting longer on it cannot help) — `until` (panics with what it saw), and the
+  dead, not slow, so waiting longer on it cannot help) — `track_idle` (#351, installed by every
+  scenario page before its scripts: it knows every timer, interval, frame callback, fetch and body
+  read the page has pending, and `window.__settle(ms)` resolves once nothing is due before the
+  deadline AND two frames have passed since the last change; scenarios' `settle()` waits on it,
+  capped at the old 700 ms — validated over 1,488 settles with no change after an early return; a
+  tab rendering lazily, #204, gives no frames and so waits the full 700 ms as before;
+  `CR_SETTLE_CHECK=<file>` re-runs that validation, `CR_PROFILE=<file>` times the settles) — `until`
+  (panics with what it saw), and the
   two-surface vocabulary (`Surface::{Classic, AppShell}`, `turn_at_top`, `at_tail`, `scroll_by`,
   `jump_to_end`, `open_last_fold`, `LiveGrowth`). `tests/browser_follow.rs` holds the
   structural cases (the html server's viewport contract; `the_app_shell_*` on ports 2831–2836;
