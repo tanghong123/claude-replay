@@ -53,7 +53,14 @@ a wrench; the word visually hidden, #353) and the clear control (×, every width
 query) wait in the open box. There the chips and the field are ONE strip (`.search-field`, wrapped at
 load) that scrolls as a whole, the field as wide as its text, so the end being typed stays in view;
 the count hangs as a tag under the box (the open box stacks above the turn's sticky bar, z 27 > 26);
-and the step arrows are SVG, centred. The outline column does not
+and the step arrows are SVG, centred. A tool chip is its wrench and the tools' own single-character
+selectors (`tool:Bash` reads "B", #355), and beside chips the field shows no placeholder. A scope and
+a tool facet that can never match together — user messages, replies or thinking with any tool; `b`
+with Read — are kept apart (#356): in the facet drop-down and the filter menu a choice that cannot
+combine with what the box holds is GREYED and disabled with its reason (an ON one stays live to be
+unticked); a typed contradiction marks both chips and the count names it ("no Bash call in scope u")
+instead of a count; and the tool filter itself keeps only the tools the scope can hold, so it never
+counts calls the scope then dims (the owner was shown "1577 matches", none visible). The outline column does not
 exist there: each pane opens from its icon as a drop-down that holds the outline's OWN live list (moved
 in while open, back after), so one renderer and one click handler (`navigatorClick`) serve both. Every
 sheet hangs at `--phone-top` (the bar's measured bottom). Inputs are 16px (iOS zooms into anything

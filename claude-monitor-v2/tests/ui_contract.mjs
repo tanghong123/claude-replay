@@ -1930,7 +1930,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(chainWalk(tree, rec => rec.kind === "write", null), false, "nothing under it, no chain");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /const q = splitQuery\(raw\);/, "the app shell splits the query through the module");
-  assert.match(app, /paintMatchCount\(query \? countLabel\(total, set, whole\) : ""\);/);
+  // The count is the shared label — or, when the box's scope and tools can never match together,
+  // the clash it names instead of "0 hits" (#356).
+  assert.match(app, /paintMatchCount\(facetClash\(\) \|\| \(query \? countLabel\(total, set, whole\) : ""\)\);/);
   // #303: the scope buttons set the box's scope CHIP; the typed text keeps no scope token.
   assert.match(app, /input\.value = writePrefix\(input\.value, \[\]\);\n\s*uiState\.chips\.scope = set \? activeLetters\(set\)\.join\(""\) : "";/);
   assert.match(app, /return chainWalk\(/, "…and walks the filter chain through the module");

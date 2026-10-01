@@ -995,6 +995,16 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    (`input~.find-count`, `input~.find-nav`) no longer reach past the wrapper, so they are restated with
    :has. The step arrows are SVG, centred in their targets. */
 .search-chip[data-chip="scope"] .search-chip-key{width:0}
+/* #355: with chips in the box its placeholder ("Search this session") is noise — the owner: "no
+   need to show the background search… text". Transparent, not removed: rules key on
+   :placeholder-shown. */
+.header-searchbox:has(.search-chips.has-chips) input::placeholder{color:transparent}
+/* #356: a choice that cannot combine with what the box holds is greyed (and disabled), with its
+   reason in its title and one line under its list; a chip pair that cannot match is marked. */
+.scope-option.is-off,.tool-type-option.is-off,.search-suggest-row.is-off{opacity:.42;cursor:not-allowed}
+.facet-off-note{padding:6px 10px 4px;color:var(--faint);font-size:11px;line-height:1.35}
+.search-chip.conflict{background:var(--amber-bg);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--amber) 55%,transparent)}
+.search-chip.conflict .search-chip-key,.search-chip.conflict .search-chip-value{color:var(--amber)}
 .search-field{display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
 .search-field::-webkit-scrollbar{display:none}
 .search-field>.search-chips{max-width:70%}

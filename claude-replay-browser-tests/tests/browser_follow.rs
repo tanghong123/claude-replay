@@ -10619,3 +10619,162 @@ fn a_phone_search_strip_scrolls_whole_and_counts_under_the_box() {
         );
     }
 }
+
+/// #355, the owner on 1.340.0 (the open box reading [u ×][🔧 Bash ×] "Search this sess…"): "I'd also
+/// like to only show single character for tools (glyph plus B)", then "No need to show the
+/// background search… text". A tool chip is the wrench and the tools' own selectors — Bash's is B —
+/// with the names in its title; beside chips the field shows no placeholder.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_search_chips_are_their_letters_and_the_placeholder_steps_aside() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(2732, "phone-search-letters", 390, 844);
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "a tap on the glass to open the box",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    let placeholder =
+        "getComputedStyle(document.getElementById('transcriptSearchInput'), '::placeholder').color";
+    let bare = harness::eval(&tab, placeholder);
+    tab.type_str("scope:u tool:Bash ").unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('#searchChips [data-chip=\"scope\"]') && !!document.querySelector('#searchChips [data-chip=\"tools\"]') && document.getElementById('transcriptSearchInput').value === ''",
+        "both chips frozen and the field empty",
+        Duration::from_secs(5),
+        "document.getElementById('searchChips').innerText + ' | ' + document.getElementById('transcriptSearchInput').value",
+    );
+    let chips: serde_json::Value = serde_json::from_str(
+        harness::eval(&tab, "(function(){ var t = document.querySelector('#searchChips [data-chip=\"tools\"]'), s = document.querySelector('#searchChips [data-chip=\"scope\"]'); return JSON.stringify({ tool: t.querySelector('.search-chip-value').innerText, toolTitle: t.title, toolGlyph: !!t.querySelector('svg'), scope: s.querySelector('.search-chip-value').innerText }); })()")
+            .as_str()
+            .unwrap_or("{}"),
+    )
+    .unwrap();
+    assert_eq!(
+        chips["tool"], "B",
+        "the tool chip is Bash's letter: {chips}"
+    );
+    assert_eq!(chips["toolGlyph"], true, "beside the wrench: {chips}");
+    assert!(
+        chips["toolTitle"].as_str().unwrap_or("").contains("Bash"),
+        "the name stays in its title: {chips}"
+    );
+    assert_eq!(chips["scope"], "u", "the scope chip is its letter: {chips}");
+    assert_ne!(
+        bare,
+        serde_json::json!("rgba(0, 0, 0, 0)"),
+        "an empty box shows its placeholder"
+    );
+    assert_eq!(
+        harness::eval(&tab, placeholder),
+        serde_json::json!("rgba(0, 0, 0, 0)"),
+        "beside chips the field shows no placeholder"
+    );
+}
+
+/// #356, the owner: "some combination of scope and tools cannot be combined. E.g. user message
+/// would never allow combination with any tools" ("Grey out makes sense"), then "the combination of
+/// u and Bash shows 1570 matches, and none of them actually shows". A choice that cannot combine
+/// with what the box holds is greyed in the drop-down and the filter menu and cannot be picked; a
+/// typed contradiction is marked and the count names it — no count of calls the scope dims away.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_search_greys_out_what_cannot_combine() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(2733, "phone-search-clash", 390, 844);
+    let open_box = || {
+        let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
+        phone_tap_at(&tab, gx, gy);
+        harness::until(
+            &tab,
+            "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+            "a tap on the glass to open the box",
+            Duration::from_secs(5),
+            "document.querySelector('.header-searchbox').className",
+        );
+    };
+    let rows = "(function(){ var s = document.getElementById('searchSuggest'); if (!s || s.hidden) return JSON.stringify({ open: false }); var r = [].slice.call(s.querySelectorAll('[data-suggest]')); return JSON.stringify({ open: true, rows: r.map(function (e) { return e.querySelector('.search-suggest-letter').textContent + (e.classList.contains('is-off') ? '-' : '+'); }).join(' '), note: !!s.querySelector('.facet-off-note') }); })()";
+    let read = |js: &str| -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, js).as_str().unwrap_or("{}")).unwrap_or_default()
+    };
+    open_box();
+    // A scope of user messages greys every tool.
+    tab.type_str("scope:u tool:").unwrap();
+    harness::until(&tab, "!document.getElementById('searchSuggest').hidden && !!document.querySelector('#searchSuggest [data-suggest]')", "the tool drop-down", Duration::from_secs(5), "document.getElementById('searchSuggest').innerText");
+    let r = read(rows);
+    assert!(
+        r["rows"]
+            .as_str()
+            .unwrap_or("")
+            .split(' ')
+            .all(|x| x.ends_with('-')),
+        "under scope u every tool row is greyed: {r}"
+    );
+    assert_eq!(r["note"], true, "and the list says why: {r}");
+    harness::eval(
+        &tab,
+        "document.querySelector('#searchSuggest [data-suggest]').click(); 'ok'",
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "document.getElementById('transcriptSearchInput').value"
+        ),
+        serde_json::json!("tool:"),
+        "a greyed row cannot be picked"
+    );
+    // The filter menu agrees.
+    harness::eval(&tab, "document.getElementById('transcriptSearchInput').value = ''; document.getElementById('transcriptSearchInput').dispatchEvent(new Event('input', { bubbles: true })); 'ok'");
+    phone_tap(&tab, "#filterTranscriptBtn");
+    harness::until(&tab, "document.getElementById('navigatorOptions').classList.contains('open') || getComputedStyle(document.getElementById('navigatorOptions')).display !== 'none'", "the filter menu", Duration::from_secs(5), "document.getElementById('navigatorOptions').className");
+    let menu = read("(function(){ var t = [].slice.call(document.querySelectorAll('#filterOptions .tool-type-option')); return JSON.stringify({ tools: t.length, off: t.filter(function (e) { return e.disabled && e.classList.contains('is-off'); }).length }); })()");
+    assert!(
+        menu["tools"].as_i64().unwrap_or(0) > 0 && menu["tools"] == menu["off"],
+        "under scope u the menu's tool rows are all greyed and disabled: {menu}"
+    );
+    phone_tap(&tab, "#filterTranscriptBtn");
+    // The other way: a Bash chip greys the classes that hold no Bash call.
+    phone_tap(&tab, "#transcriptSearchClear");
+    // The clear leaves the box open with the field focused, ready for the next query (#352).
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput') && document.getElementById('transcriptSearchInput').value === ''",
+        "the clear to leave the box open, empty and focused",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    tab.type_str("tool:Bash scope:").unwrap();
+    harness::until(&tab, "!document.getElementById('searchSuggest').hidden && !!document.querySelector('#searchSuggest [data-suggest]')", "the scope drop-down", Duration::from_secs(5), "document.getElementById('searchSuggest').innerText");
+    let r = read(rows);
+    assert_eq!(
+        r["rows"], "u- a- t- o+ b+ r- e- w+",
+        "with Bash only All tools and Bash output stay live: {r}"
+    );
+    // A contradiction typed anyway is marked, and the count names it — not "1577 matches".
+    phone_tap(&tab, "#transcriptSearchClear");
+    // The clear leaves the box open with the field focused, ready for the next query (#352).
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput') && document.getElementById('transcriptSearchInput').value === ''",
+        "the clear to leave the box open, empty and focused",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    tab.type_str("scope:u tool:Bash ").unwrap();
+    harness::until(&tab, "!!document.querySelector('#searchChips [data-chip=\"tools\"]') && !!document.querySelector('#searchChips [data-chip=\"scope\"]')", "both chips", Duration::from_secs(5), "document.getElementById('searchChips').innerText");
+    let clash = read("(function(){ return JSON.stringify({ count: document.getElementById('transcriptSearchCount').textContent, marked: document.querySelectorAll('#searchChips .search-chip.conflict').length, hits: document.querySelectorAll('.filter-hit').length }); })()");
+    assert_eq!(
+        clash["count"], "no Bash call in scope u",
+        "the count names the clash: {clash}"
+    );
+    assert_eq!(clash["marked"], 2, "both chips are marked: {clash}");
+    assert_eq!(
+        clash["hits"], 0,
+        "and no Bash call is marked as a hit the scope then dims: {clash}"
+    );
+}
