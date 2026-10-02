@@ -163,6 +163,16 @@ pub struct Args {
     #[cfg_attr(feature = "cli", arg(long))]
     pub unknown: bool,
 
+    /// Report how often the fields the rendering and the cost DEPEND on are written, per agent
+    /// and client version, and flag one the newest version writes clearly less often than the
+    /// versions before it (#363). `--unknown` catches a NEW shape; this catches a KNOWN field
+    /// going empty after a client update — a usage block that stops arriving makes the cost a
+    /// silent lower bound. Each adapter declares its own short list. Sweeps every agent's store
+    /// like `--unknown`: the newest 200 transcripts, or with `--since` every one in the window.
+    /// `--json` prints one object per agent, version and field.
+    #[cfg_attr(feature = "cli", arg(long, conflicts_with = "unknown"))]
+    pub field_coverage: bool,
+
     /// With `--paths`: sweep **every agent's store** instead of resolving one session, and
     /// print a JSON ARRAY — one object per transcript on this machine, each carrying the
     /// same directory facts plus `agent`, `mtime` and the canonical `session_key`. This is
@@ -172,7 +182,8 @@ pub struct Args {
     #[cfg_attr(feature = "cli", arg(long, requires = "paths"))]
     pub all: bool,
 
-    /// With `--paths --all` or `--unknown`: only transcripts modified within this window —
+    /// With `--paths --all`, `--unknown` or `--field-coverage`: only transcripts modified within
+    /// this window —
     /// `90m`, `24h`, `7d`. Filtered on mtime BEFORE any file is opened, which is the difference
     /// between a sweep that costs milliseconds and one that reads every byte on the machine
     /// (`--unknown` parses every file it is given; `latest_cwd` reads a file's end, and the

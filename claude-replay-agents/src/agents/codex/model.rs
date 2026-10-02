@@ -1,3 +1,4 @@
+use claude_replay_engine::seam::CoverageField;
 use claude_replay_engine::seam::{
     epoch_secs, parse_marker, parse_path_timed_for, relativize, AgentStatus, AssistantPhase,
     Attachment, AttachmentContent, AttachmentKind, Block, CompactTrigger, LinePreprocessor,
@@ -3421,5 +3422,108 @@ not json
             r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"bye"}]}}"#,
             "\n",
         ));
+    }
+}
+
+/// What Codex's cost and cards depend on (#363), for `--field-coverage`: the token count's usage
+/// (the first of a session carries none yet — a steady rate below one, not news), the turn
+/// context's `model` (the price), the session head's `cwd` and `cli_version`, and every record's
+/// `timestamp`. Codex states its version once, in the session head, so
+/// [`record_version`] answers only there and the scan carries it forward.
+pub(crate) const COVERAGE_FIELDS: &[CoverageField] = &[
+    CoverageField {
+        name: "event_msg.token_count.info.last_token_usage",
+        applies: is_token_count,
+        present: has_last_token_usage,
+    },
+    CoverageField {
+        name: "turn_context.model",
+        applies: is_turn_context,
+        present: has_turn_model,
+    },
+    CoverageField {
+        name: "session_meta.cwd",
+        applies: is_session_meta,
+        present: has_meta_cwd,
+    },
+    CoverageField {
+        name: "session_meta.cli_version",
+        applies: is_session_meta,
+        present: has_cli_version,
+    },
+    CoverageField {
+        name: "record.timestamp",
+        applies: has_type,
+        present: has_record_timestamp,
+    },
+];
+
+/// The client version a Codex record states: the session head's `cli_version` (#363).
+pub(crate) fn record_version(v: &Value) -> Option<String> {
+    if v.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return None;
+    }
+    v.pointer("/payload/cli_version")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn has_type(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str).is_some()
+}
+fn is_token_count(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str) == Some("event_msg")
+        && v.pointer("/payload/type").and_then(Value::as_str) == Some("token_count")
+}
+fn is_turn_context(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str) == Some("turn_context")
+}
+fn is_session_meta(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str) == Some("session_meta")
+}
+fn has_last_token_usage(v: &Value) -> bool {
+    v.pointer("/payload/info/last_token_usage")
+        .is_some_and(Value::is_object)
+}
+fn has_turn_model(v: &Value) -> bool {
+    v.pointer("/payload/model")
+        .and_then(Value::as_str)
+        .is_some()
+}
+fn has_meta_cwd(v: &Value) -> bool {
+    v.pointer("/payload/cwd").and_then(Value::as_str).is_some()
+}
+fn has_cli_version(v: &Value) -> bool {
+    v.pointer("/payload/cli_version")
+        .and_then(Value::as_str)
+        .is_some()
+}
+fn has_record_timestamp(v: &Value) -> bool {
+    v.get("timestamp").and_then(Value::as_str).is_some()
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// #363: Codex states its version once, in the session head, and a token count carries its
+    /// usage only once the turn has spent some — the first of a session has `info: null`.
+    #[test]
+    fn codex_declares_its_fields_and_its_version_comes_from_the_head() {
+        let head = json!({"type": "session_meta", "timestamp": "t", "payload": {"cwd": "/w", "cli_version": "0.42.0"}});
+        assert_eq!(record_version(&head).as_deref(), Some("0.42.0"));
+        assert_eq!(
+            record_version(&json!({"type": "event_msg", "payload": {}})),
+            None
+        );
+        let field = |name: &str| COVERAGE_FIELDS.iter().find(|f| f.name == name).unwrap();
+        let usage = field("event_msg.token_count.info.last_token_usage");
+        let first = json!({"type": "event_msg", "payload": {"type": "token_count", "info": null}});
+        let later = json!({"type": "event_msg", "payload": {"type": "token_count", "info": {"last_token_usage": {"input_tokens": 1}}}});
+        assert!((usage.applies)(&first) && !(usage.present)(&first));
+        assert!((usage.applies)(&later) && (usage.present)(&later));
+        assert!(!(usage.applies)(&head), "a head is not asked for usage");
+        assert!((field("session_meta.cwd").present)(&head));
     }
 }

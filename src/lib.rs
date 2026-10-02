@@ -33,16 +33,16 @@ pub fn run_viewer() -> Result<()> {
     // The two flags `--unknown` shares (#276) each go with either of two others, which clap's own
     // `requires` cannot say — so they are refused here, before anything runs, rather than ignored.
     anyhow::ensure!(
-        !args.json || args.dump.is_some() || args.unknown,
-        "--json goes with --dump or --unknown"
+        !args.json || args.dump.is_some() || args.unknown || args.field_coverage,
+        "--json goes with --dump, --unknown or --field-coverage"
     );
     anyhow::ensure!(
         !args.cache || (args.dump.is_some() && args.json),
         "--cache goes with --dump --json (the viewer and --html use the cache unless --no-cache)"
     );
     anyhow::ensure!(
-        args.since.is_none() || args.all || args.unknown,
-        "--since goes with --paths --all or --unknown"
+        args.since.is_none() || args.all || args.unknown || args.field_coverage,
+        "--since goes with --paths --all, --unknown or --field-coverage"
     );
     // `--paths`: not a viewer at all — a shell-out entry to the `discover` path vocabulary
     // (for tools that can't link the crate, e.g. a Python collector). Resolve the same way the
@@ -54,6 +54,11 @@ pub fn run_viewer() -> Result<()> {
     // it (#264), then exit. Also not a viewer.
     if args.unknown {
         return print_unknown_shapes(&args);
+    }
+    // `--field-coverage` (#363): the known fields' fill rates, the other half of "did the format
+    // move". Also not a viewer.
+    if args.field_coverage {
+        return print_field_coverage(&args);
     }
 
     // `--html`: open a browser instead of the TUI, but with the SAME session
@@ -194,6 +199,102 @@ impl<W: std::io::Write> std::io::Write for Counted<W> {
 /// agent's store. Parsing is the whole point — the reports come out of the adapters as they
 /// work, so this is the same code path a reader exercises, not a second parser that could
 /// disagree with it.
+fn print_field_coverage(args: &Args) -> anyhow::Result<()> {
+    use std::io::BufRead;
+    /// How many of the newest transcripts a sweep with no window reads.
+    const NEWEST: usize = 200;
+    let cutoff = args.since.as_deref().map(window_cutoff).transpose()?;
+    let mut all: Vec<_> = discover::store_all(args.agent)
+        .into_iter()
+        .filter(|e| cutoff.is_none_or(|c| e.mtime >= c))
+        .collect();
+    all.sort_by(|a, b| b.mtime.total_cmp(&a.mtime));
+    let take = if cutoff.is_some() { all.len() } else { NEWEST };
+    let mut tally = claude_replay_core::coverage::Tally::default();
+    let mut scanned = 0usize;
+    for e in all.into_iter().take(take) {
+        let adapter = claude_replay_core::adapter(e.agent);
+        let fields = adapter.coverage_fields();
+        if fields.is_empty() {
+            continue;
+        }
+        let Ok(file) = std::fs::File::open(&e.path) else {
+            continue;
+        };
+        scanned += 1;
+        // The last version the file stated: Codex states it once, in its head.
+        let mut version: Option<String> = None;
+        for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if let Some(ver) = adapter.record_version(&v) {
+                version = Some(ver);
+            }
+            tally.record(e.agent.label(), version.as_deref(), fields, &v);
+        }
+    }
+    eprintln!("read {scanned} transcript(s)…");
+    let rows = tally.rows();
+    if args.json {
+        for r in &rows {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "agent": r.agent,
+                    "version": r.version,
+                    "field": r.field,
+                    "records": r.records,
+                    "present": r.present,
+                    "rate": (r.rate() * 1000.0).round() / 1000.0,
+                    "usual": r.usual.map(|u| (u * 1000.0).round() / 1000.0),
+                    "dropped": r.dropped,
+                })
+            );
+        }
+        return Ok(());
+    }
+    // For a person, one row per agent and field: the version judged (the newest with enough
+    // records — rows come newest first within a field), its rate, and the usual rate before it.
+    let mut shown: Vec<&claude_replay_core::coverage::Row> = Vec::new();
+    for r in &rows {
+        let same =
+            |s: &&claude_replay_core::coverage::Row| s.agent == r.agent && s.field == r.field;
+        match shown.iter().position(same) {
+            None => shown.push(r),
+            Some(i)
+                if shown[i].records < claude_replay_core::coverage::MIN_RECORDS
+                    && r.records >= claude_replay_core::coverage::MIN_RECORDS =>
+            {
+                shown[i] = r
+            }
+            Some(_) => {}
+        }
+    }
+    println!(
+        "{:<8} {:<46} {:<12} {:>8} {:>7} {:>7}",
+        "AGENT", "FIELD", "NEWEST", "RECORDS", "RATE", "USUAL"
+    );
+    for r in &shown {
+        println!(
+            "{:<8} {:<46} {:<12} {:>8} {:>6.1}% {:>7}{}",
+            r.agent,
+            r.field,
+            r.version,
+            r.records,
+            r.rate() * 100.0,
+            r.usual
+                .map(|u| format!("{:.1}%", u * 100.0))
+                .unwrap_or_else(|| "-".to_string()),
+            if r.dropped { "  DROPPED" } else { "" }
+        );
+    }
+    if !rows.iter().any(|r| r.dropped) {
+        eprintln!("no field the newest version writes clearly less often than the ones before it");
+    }
+    Ok(())
+}
+
 fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
     /// How many of the newest transcripts a sweep with no window parses.
     const NEWEST: usize = 200;

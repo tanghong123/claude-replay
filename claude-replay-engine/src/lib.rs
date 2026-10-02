@@ -14,6 +14,7 @@
 
 pub mod adapter;
 mod agent;
+pub mod coverage;
 pub mod diff;
 pub mod discover;
 pub mod engine;

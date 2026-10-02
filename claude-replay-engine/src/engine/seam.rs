@@ -45,6 +45,10 @@ pub use crate::engine::replay::Shaping;
 // The frozen whole-file reference vocabulary the adapter crates' equivalence gates
 // drive. `#[doc(hidden)]` rather than cfg(test): a cfg(test) item is invisible to a
 // DOWNSTREAM crate's tests, and these must cross the engine/agents boundary (#87).
+/// What an adapter dropped because it did not KNOW about it (#264) — the one channel every
+/// family reports through, so a third-party adapter inherits it with the rest of the seam.
+// What an adapter declares for the field fill-rate check (#363).
+pub use crate::coverage::CoverageField;
 #[doc(hidden)]
 pub use crate::engine::build_sub_agents;
 #[doc(hidden)]
@@ -64,8 +68,6 @@ pub use crate::metrics::{
 #[doc(hidden)]
 pub use crate::model::attach_skill_body;
 pub use crate::model::*;
-/// What an adapter dropped because it did not KNOW about it (#264) — the one channel every
-/// family reports through, so a third-party adapter inherits it with the rest of the seam.
 // `watch_keys` too (#361): an adapter's tests turn the per-record key census on, as the sweep does.
 pub use crate::unknown::{
     note as note_unknown, snapshot as unknown_shapes, watch_keys as unknown_watch_keys,

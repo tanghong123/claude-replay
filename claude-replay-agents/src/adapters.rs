@@ -155,6 +155,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
         agents::claude::model::decode_line(line, cwd, out)
     }
+    fn coverage_fields(&self) -> &'static [claude_replay_engine::seam::CoverageField] {
+        agents::claude::model::COVERAGE_FIELDS
+    }
     fn tool_is_interactive(&self, name: &str) -> bool {
         agents::claude::model::tool_is_interactive(name)
     }
@@ -260,6 +263,12 @@ impl TranscriptAdapter for CodexAdapter {
     }
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
         agents::codex::model::decode_line(line, cwd, out)
+    }
+    fn coverage_fields(&self) -> &'static [claude_replay_engine::seam::CoverageField] {
+        agents::codex::model::COVERAGE_FIELDS
+    }
+    fn record_version(&self, v: &serde_json::Value) -> Option<String> {
+        agents::codex::model::record_version(v)
     }
     fn line_preprocessor(&self) -> Box<dyn claude_replay_engine::adapter::LinePreprocessor> {
         Box::new(agents::codex::model::CodexLinePreprocessor::default())

@@ -4445,6 +4445,7 @@ mod tests {
     fn args_with(fold: Option<&str>, unfold: Option<&str>, full: bool) -> Args {
         Args {
             unknown: false,
+            field_coverage: false,
             no_cache: true,
             cache: false,
             target: None,

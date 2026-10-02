@@ -17,6 +17,8 @@
 #      sunsetting so no more investment"). Its transcripts are Claude-shaped and read by the Claude
 #      family, so its rows arrive labelled `claude`; a row whose example session is a QoderWork
 #      transcript is QoderWork's, and is counted in the log instead of analysed.
+#      …and `agent-replay --field-coverage` over COVERAGE_WINDOW (14d): a field the newest client
+#      version writes clearly less often than the ones before it joins the scan as a row (#363).
 #   3. analyse — a headless `claude -p` in this repo, briefed by scripts/unknown-review.md, with a
 #      read-only tool allowlist plus taskq and the web: it judges each new row, checks the known
 #      prices against their official sources (every run — a price can move with no new row), and
@@ -74,6 +76,22 @@ fail() {
 "$AGENT_REPLAY" --unknown --since "$WINDOW" --json > "$STATE/scan.jsonl" 2> "$STATE/scan.err" \
   || fail "the scan did not run ($(tail -1 "$STATE/scan.err"))"
 scanned=$(grep -o 'scanning [0-9]* transcript' "$STATE/scan.err" | grep -o '[0-9]*' || echo "?")
+# 1b. field coverage (#363): a KNOWN field our cost or cards read going empty after a client update —
+# which no new shape reveals. Over a longer window than the shapes, since the newest version is
+# judged against the ones before it. A drop joins the scan as a `field.dropped` row named
+# `<field>@<version>`, so it is triaged once per version through the same path as a shape.
+COVERAGE_WINDOW="${COVERAGE_WINDOW:-14d}"
+"$AGENT_REPLAY" --field-coverage --since "$COVERAGE_WINDOW" --json > "$STATE/coverage.jsonl" 2> "$STATE/coverage.err" \
+  || fail "the coverage scan did not run ($(tail -1 "$STATE/coverage.err"))"
+python3 - "$STATE/coverage.jsonl" >> "$STATE/scan.jsonl" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    r = json.loads(line)
+    if r.get("dropped"):
+        print(json.dumps({"agent": r["agent"], "where": "field.dropped", "name": f'{r["field"]}@{r["version"]}',
+                          "count": r["records"], "version": r["version"], "example": None,
+                          "rate": r["rate"], "usual": r["usual"]}))
+PY
 
 # 2. filter
 QODERWORK_STORE="${QODERWORK_PROJECTS_DIR:-$HOME/.qoderwork/projects}"

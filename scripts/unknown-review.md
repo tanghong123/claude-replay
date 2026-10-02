@@ -17,7 +17,7 @@ and right. Every change you find becomes a task, never an edit.
 One repo task per decision group, exactly in this form (the path is filled in for you):
 
     {{TASKQ}} create --subject "<imperative, one line>" --active-form "<present continuous>" \
-      --meta origin=unknown-review --meta kind=<shape|price|pricing-drift> \
+      --meta origin=unknown-review --meta kind=<shape|price|coverage|pricing-drift> \
       --meta shapes=<agent>/<where>/<name>[,<agent>/<where>/<name>…] \
       --description '<the task, standalone>'
 
@@ -36,7 +36,7 @@ task can never be closed: never the whole browser suite (`cargo test -p claude-r
 the full-suite requirement in `--accept` or the description, where the executing agent meets it
 before its release.
 
-## 1. New transcript shapes (rows below whose `where` is not `model.unpriced`)
+## 1. New transcript shapes (rows below whose `where` is neither `model.unpriced` nor `field.dropped`)
 
 1. **Find it.** `example` is a session id: `agent-replay --paths <id>` prints the transcript's
    `path`. Grep that file for the shape's name and read a few records that carry it: which tool or
@@ -79,7 +79,23 @@ using it shows a cost that is a lower bound (`≥$x`). For each:
    official price exists (a preview, an internal model), queue it anyway, saying what you searched,
    so the next agent can mark it deliberately unpriced.
 
-## 3. Prices that moved (every run, even when nothing above is listed)
+## 3. Fields going empty (rows whose `where` is `field.dropped`)
+
+A field our cost or cards read — each adapter declares its short list, `COVERAGE_FIELDS` in
+`claude-replay-agents/src/agents/<agent>/model.rs` (#363) — is written clearly less often by the
+newest client version than by the versions before it. The row's `name` is `<field>@<version>`,
+`rate` that version's share of the records that should carry it, `usual` the best earlier share.
+Until it is fixed the cost becomes a lower bound or a card loses a line, in silence.
+
+1. **Confirm it.** `agent-replay --field-coverage --since 14d --json` is the whole table. Open a
+   transcript of that version (`agent-replay --paths <id>`, keys and value TYPES only): did the
+   client RENAME or MOVE the field — a new key beside where it was, which `--unknown` may be
+   reporting as a `record.key` or `toolUseResult.key` row today — or stop writing it?
+2. **Queue it** with `kind=coverage` and the row in `shapes`: what moved and where to, where the
+   adapter reads it (file and function), and what the page or the cost loses meanwhile. Done when
+   the adapter reads the field where the client now writes it and the row no longer reports.
+
+## 4. Prices that moved (every run, even when nothing above is listed)
 
 Fetch each URL in `pricing.json`'s `sources` and compare every model the page prices against the
 catalog's entries for that source. If any rate differs — or the page no longer lists a model the

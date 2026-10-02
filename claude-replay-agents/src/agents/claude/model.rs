@@ -804,6 +804,100 @@ fn note_unknown_record_keys(v: &Value, ty: &str, also_known: &[&str]) {
     }
 }
 
+/// What the cost and the cards depend on (#363), for `--field-coverage`: the assistant record's
+/// `model` (the price), `usage` (the tokens), `message.id` and `requestId` (one API call's usage is
+/// counted once across the records that repeat it); every record's `timestamp`; a user record's
+/// `cwd` (the session's directory, #173); and the structured result on a tool result, which the
+/// cards read (#263 was a field in it). An API failure (#236) carries no usage by nature.
+pub(crate) const COVERAGE_FIELDS: &[CoverageField] = &[
+    CoverageField {
+        name: "assistant.message.model",
+        applies: is_answer,
+        present: has_model,
+    },
+    CoverageField {
+        name: "assistant.message.usage",
+        applies: is_answer,
+        present: has_usage,
+    },
+    CoverageField {
+        name: "assistant.message.id",
+        applies: is_answer,
+        present: has_message_id,
+    },
+    CoverageField {
+        name: "assistant.requestId",
+        applies: is_answer,
+        present: has_request_id,
+    },
+    CoverageField {
+        name: "record.timestamp",
+        applies: is_conversation,
+        present: has_timestamp,
+    },
+    CoverageField {
+        name: "user.cwd",
+        applies: is_user,
+        present: has_cwd,
+    },
+    CoverageField {
+        name: "user.toolUseResult",
+        applies: carries_tool_result,
+        present: has_tool_use_result,
+    },
+];
+
+fn record_type(v: &Value) -> Option<&str> {
+    v.get("type").and_then(Value::as_str)
+}
+fn is_answer(v: &Value) -> bool {
+    record_type(v) == Some("assistant")
+        && !v
+            .get("isApiErrorMessage")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+fn is_user(v: &Value) -> bool {
+    record_type(v) == Some("user")
+}
+fn is_conversation(v: &Value) -> bool {
+    matches!(record_type(v), Some("user" | "assistant"))
+}
+fn carries_tool_result(v: &Value) -> bool {
+    is_user(v)
+        && v.pointer("/message/content")
+            .and_then(Value::as_array)
+            .is_some_and(|c| {
+                c.iter()
+                    .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+            })
+}
+fn has_model(v: &Value) -> bool {
+    v.pointer("/message/model")
+        .and_then(Value::as_str)
+        .is_some()
+}
+fn has_usage(v: &Value) -> bool {
+    v.pointer("/message/usage").is_some_and(Value::is_object)
+}
+fn has_message_id(v: &Value) -> bool {
+    v.pointer("/message/id").and_then(Value::as_str).is_some()
+}
+fn has_request_id(v: &Value) -> bool {
+    v.get("requestId").and_then(Value::as_str).is_some()
+}
+fn has_timestamp(v: &Value) -> bool {
+    v.get("timestamp").and_then(Value::as_str).is_some()
+}
+fn has_cwd(v: &Value) -> bool {
+    v.get("cwd")
+        .and_then(Value::as_str)
+        .is_some_and(|c| !c.is_empty())
+}
+fn has_tool_use_result(v: &Value) -> bool {
+    v.get("toolUseResult").is_some()
+}
+
 /// Report a record shape outside the known vocabulary (#264). One place, so the three
 /// categories cannot drift in how they describe themselves.
 fn note_unknown_shape(v: &Value, at: UnknownAt, name: Option<&str>, known: &[&str]) {

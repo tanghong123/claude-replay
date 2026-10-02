@@ -512,6 +512,22 @@ the reply out of the result's prose, which cannot carry a typed answer or a note
 found an answer missing from the card (#280). They are read now, and so is `afkTimeoutMs` (#281:
 the card called a question the client had stopped waiting on "waiting"), so the list holds eleven.
 
+**A new top-level KEY on a record we read is a category too** (#361, `record.key`, named
+`<type>.<key>`): Claude Code's `promptId` sat on nearly every user record for weeks and no category
+could see it. The census is `RECORD_KEYS_COMMON`/`RECORD_KEYS_BY_TYPE` in the Claude adapter, scoped
+per record type (many keys are generic words), and the QoderWork family's own keys are known to its
+adapters alone (`FAMILY_RECORD_KEYS`). It walks every record's keys, so it runs only while the sweep
+asks (`unknown::watch_keys`): an ordinary parse pays nothing. (`promptId` itself was measured as a
+turn key and refused, #362: it groups the client's prompt cycles, not the reader's prompts.)
+
+**`agent-replay --field-coverage` is the other half** (#363): `--unknown` catches a NEW shape, and
+cannot catch a KNOWN field going empty after a client update — a usage block that stops arriving
+makes the cost a silent lower bound. Each adapter declares the short list its cost and cards read
+(`COVERAGE_FIELDS`; Claude Code and Codex), and the report gives each field's fill rate per client
+version, flagging the newest version that writes one clearly (`coverage::DROP`, 20 points) less
+often than the best version before it. The daily job runs it over 14 days and a drop joins the scan
+as a `field.dropped` row (`<field>@<version>`), triaged like a shape.
+
 The channel is `claude-replay-engine/src/unknown.rs`, re-exported through `engine/seam.rs` as
 `note_unknown`/`UnknownAt` so all three families and any third-party adapter report the same way.
 It costs nothing when nothing is new: a recognised shape never reaches it, because the adapter's

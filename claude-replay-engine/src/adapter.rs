@@ -384,6 +384,21 @@ pub trait TranscriptAdapter: Sync {
     }
     /// Decode one raw line into 0+ canonical messages (`cwd` threads across lines).
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>);
+
+    /// The fields this adapter's rendering and cost DEPEND on (#363), for `--field-coverage`: a
+    /// short declared list, not every key a record has. Empty: nothing declared.
+    fn coverage_fields(&self) -> &'static [crate::coverage::CoverageField] {
+        &[]
+    }
+
+    /// The client version a record says it was written by, for `--field-coverage`. The scan keeps
+    /// the last one a file stated, so an agent that writes it once (in a session head) answers
+    /// only there.
+    fn record_version(&self, v: &serde_json::Value) -> Option<String> {
+        v.get("version")
+            .and_then(|x| x.as_str())
+            .map(str::to_string)
+    }
     /// A fresh per-session raw-line preprocessor. The default is a stateless pass-through;
     /// adapters only override this when their physical transcript contains records outside the
     /// logical session or transport records that need session context to decode.
