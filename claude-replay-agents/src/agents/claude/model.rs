@@ -640,8 +640,11 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
         &[
             "message",
             // On 202,774 of 207,605 user records (589 of 600 sessions) and read nowhere: the
-            // client's own id for a prompt, which loongsuite-pilot keys turns on. #362 measures it
-            // against our turn boundaries before anything reads it.
+            // client's own id for a prompt, which loongsuite-pilot keys turns on. #362 measured it
+            // against our turns (127 sessions, 2026-10-02): 94.5% of its groups sit inside one of
+            // ours, and where they differ ours is the reader's prompt — a message typed mid-turn,
+            // a queued prompt, the command after a compaction share the running prompt's id, and
+            // a task notification or system prompt starts a new one. Not a turn key; unread.
             "promptId",
             "sourceToolAssistantUUID",
             "toolUseResult",
