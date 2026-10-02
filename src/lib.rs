@@ -218,6 +218,8 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
         all.into_iter().take(take).map(|e| e.path).collect()
     };
     eprintln!("scanning {} transcript(s)…", paths.len());
+    // The per-record key census (#361) is this sweep's alone: an ordinary parse skips it.
+    claude_replay_core::unknown::watch_keys(true);
     // The pricing half of "what the adapters did not know about" (#276): a model that produced
     // tokens and has no price in `pricing.json` — its cost is DROPPED, and the session's figure
     // becomes a lower bound. Keyed by family and model; the count is sessions.

@@ -607,6 +607,200 @@ const CONTENT_TYPES_KNOWN: &[&str] = &[
     "web_search_tool_result",
 ];
 
+/// The top-level keys a record of ANY read type carries (#361) — the census of 2026-10-02 (the
+/// newest 600 Claude Code transcripts on the owner's machine, sub-agents included: keys only), as
+/// every one of user, assistant, attachment and system met them. Like the `toolUseResult` lists,
+/// this is a snapshot of the vocabulary, not a list of what is read: a key outside it is reported,
+/// and adding one here is a deliberate act — it says "looked at it" — made with the look.
+const RECORD_KEYS_COMMON: &[&str] = &[
+    "agentId",
+    "cwd",
+    "entrypoint",
+    "gitBranch",
+    "isSidechain",
+    "parentUuid",
+    "sessionId",
+    "sessionKind",
+    "session_id",
+    "slug",
+    "timestamp",
+    "type",
+    "userType",
+    "uuid",
+    "version",
+];
+
+/// Each read record type's own keys in the same census, scoped to that type because many are
+/// generic words (`error`, `content`, `url`, `source` on a system record mean nothing about a user
+/// record that grows one). Record types the adapter skips wholesale are not checked: a key on a
+/// record nobody reads changes nothing we show, and a new record TYPE is reported already.
+const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
+    (
+        "user",
+        &[
+            "message",
+            // On 202,774 of 207,605 user records (589 of 600 sessions) and read nowhere: the
+            // client's own id for a prompt, which loongsuite-pilot keys turns on. #362 measures it
+            // against our turn boundaries before anything reads it.
+            "promptId",
+            "sourceToolAssistantUUID",
+            "toolUseResult",
+            "origin",
+            "promptSource",
+            "permissionMode",
+            "turnOrigin",
+            "serverClassifierContext",
+            "queueSkipAttachments",
+            "isMeta",
+            "turnCompanion",
+            "queuePriority",
+            "scheduledTaskId",
+            "scheduledFireId",
+            "turnPosition",
+            "isVisibleInTranscriptOnly",
+            "isCompactSummary",
+            "toolDenialKind",
+            "interruptedMessageId",
+            "sourceToolUseID",
+            "classifierBoundary",
+            "mcpMeta",
+            "toolEndsTurn",
+            "imagePasteIds",
+            "queueOrigin",
+            "userFeedback",
+            "queueTranscriptOnly",
+            "usageLimitNote",
+        ],
+    ),
+    (
+        "assistant",
+        &[
+            "message",
+            "requestId",
+            "effort",
+            "advisorModel",
+            "apiBlockIndex",
+            "perTurnEffort",
+            "wireToolInputs",
+            "attributionAgent",
+            "wireIngestContext",
+            "attributionSkill",
+            "attributionMcpServer",
+            "attributionMcpTool",
+            "serverClassifierRequest",
+            "thinkingDurationMs",
+            "attributionPlugin",
+            "isApiErrorMessage",
+            "error",
+            "truncatedAfterOutput",
+            "apiErrorStatus",
+            "supersedesUuids",
+            "errorDetails",
+        ],
+    ),
+    (
+        "attachment",
+        &[
+            "attachment",
+            "rendered",
+            "renderedRole",
+            "renderedInHumanTurn",
+        ],
+    ),
+    (
+        "system",
+        &[
+            "subtype",
+            "isMeta",
+            "level",
+            "hookCount",
+            "hookInfos",
+            "hookErrors",
+            "hookAdditionalContext",
+            "preventedContinuation",
+            "stopReason",
+            "hasOutput",
+            "toolUseID",
+            "durationMs",
+            "messageCount",
+            "content",
+            "pendingBackgroundAgentCount",
+            "taskId",
+            "cron",
+            "prompt",
+            "logicalParentUuid",
+            "compactMetadata",
+            "pendingWorkflowCount",
+            "url",
+            "cronKind",
+            "taskKind",
+            "commandRun",
+            "originalModel",
+            "error",
+            "retryInMs",
+            "retryAttempt",
+            "maxRetries",
+            "requestId",
+            "apiRefusalCategory",
+            "apiRefusalExplanation",
+            "refusedUserMessageUuid",
+            "fallbackModel",
+            "trigger",
+            "direction",
+            "retractedMessageUuids",
+            "scope",
+            "noOpStreak",
+            "streakStartedAt",
+            "foldedUuids",
+            "source",
+            "choice",
+            "persistedAsDefault",
+        ],
+    ),
+    (
+        "queue-operation",
+        &[
+            "operation",
+            "content",
+            "reason",
+            "commandUuid",
+            "deliveryId",
+        ],
+    ),
+];
+
+/// The top-level keys of `v` (a record of type `ty`) outside the census (#361), in record order.
+/// `also_known` is an adapter's own keys on top of Claude's format (the QoderWork family's, #359).
+fn unknown_record_keys<'a>(v: &'a Value, ty: &str, also_known: &[&str]) -> Vec<&'a str> {
+    let Some(own) = RECORD_KEYS_BY_TYPE
+        .iter()
+        .find(|(t, _)| *t == ty)
+        .map(|(_, keys)| *keys)
+    else {
+        return Vec::new();
+    };
+    let Some(obj) = v.as_object() else {
+        return Vec::new();
+    };
+    obj.keys()
+        .map(String::as_str)
+        .filter(|k| !RECORD_KEYS_COMMON.contains(k) && !own.contains(k) && !also_known.contains(k))
+        .collect()
+}
+
+/// Report each top-level key outside the census (#361), as `<type>.<key>`, while the sweep asks.
+fn note_unknown_record_keys(v: &Value, ty: &str, also_known: &[&str]) {
+    for k in unknown_record_keys(v, ty, also_known) {
+        note_unknown(
+            "claude",
+            UnknownAt::RecordKey,
+            &format!("{ty}.{k}"),
+            v.get("version").and_then(|x| x.as_str()),
+            v.get("sessionId").and_then(|x| x.as_str()),
+        );
+    }
+}
+
 /// Report a record shape outside the known vocabulary (#264). One place, so the three
 /// categories cannot drift in how they describe themselves.
 fn note_unknown_shape(v: &Value, at: UnknownAt, name: Option<&str>, known: &[&str]) {
@@ -1612,17 +1806,19 @@ pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Mes
 /// reveal action. `tokenize` is this over every line; the streaming driver (M9) calls it one
 /// line at a time so no whole-file `Vec<Message>` is ever built.
 pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>) {
-    decode_line_known(line, cwd, msgs, &[])
+    decode_line_known(line, cwd, msgs, &[], &[])
 }
 
-/// [`decode_line`] for an adapter that writes record types of its OWN on top of Claude's format —
-/// the QoderWork family's head rows (#359) — so they are known for that adapter alone and a
-/// Claude record that ever takes the same name is still reported.
+/// [`decode_line`] for an adapter that writes record types — and top-level keys (#361) — of its
+/// OWN on top of Claude's format: the QoderWork family's head rows (#359) and its extra keys, so
+/// they are known for that adapter alone and a Claude record that ever takes the same name is
+/// still reported.
 pub(crate) fn decode_line_known(
     line: &str,
     cwd: &mut String,
     msgs: &mut Vec<Message>,
     also_known: &[&str],
+    also_known_keys: &[&str],
 ) {
     let line = line.trim();
     if line.is_empty() {
@@ -1631,6 +1827,12 @@ pub(crate) fn decode_line_known(
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return;
     };
+    // A new top-level key on a record we read (#361) — only while the `--unknown` sweep asks.
+    if unknown_watching_keys() {
+        if let Some(ty) = v.get("type").and_then(|t| t.as_str()) {
+            note_unknown_record_keys(&v, ty, also_known_keys);
+        }
+    }
     // Running-current (#173): each line that records a non-empty cwd moves the anchor
     // forward (a mid-session `cd`); a line without one keeps the previous value. Never
     // clear on absence — most lines carry no cwd.
@@ -5130,7 +5332,7 @@ mod tests {
         let row = r#"{"type":"a-family-row-359","sessionId":"s-359","x":1}"#;
         let other = r#"{"type":"another-family-row-359","sessionId":"s-359"}"#;
         let (mut cwd, mut out) = (String::new(), Vec::new());
-        decode_line_known(row, &mut cwd, &mut out, &["a-family-row-359"]);
+        decode_line_known(row, &mut cwd, &mut out, &["a-family-row-359"], &[]);
         decode_line(other, &mut cwd, &mut out);
         let seen: Vec<String> = unknown_shapes()
             .into_iter()
@@ -5144,6 +5346,84 @@ mod tests {
         assert!(
             !unknown_shapes().iter().any(|s| s.name == "isHardFailure"),
             "isHardFailure is a known result key"
+        );
+    }
+
+    /// #361 — a TOP-LEVEL key outside the census is reported, as `<type>.<key>`, while the sweep
+    /// asks; a generic key is known only on its own record type; a skipped record type is not
+    /// checked; and the census's own keys — `promptId` among them, knowingly — are not reported.
+    ///
+    /// The switch and the snapshot are process-global and the suite runs in parallel: this case
+    /// only ever turns the switch ON (nothing but the sweep reads the report), and it asserts about
+    /// its own session's rows.
+    #[test]
+    fn an_unrecognised_record_key_is_reported_while_the_sweep_asks() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.401","sessionId":"s-361","uuid":"u1","promptId":"p1","aKeyFromTheFuture361":1,"message":{"content":[{"type":"text","text":"hi"}]}}
+{"type":"assistant","version":"2.1.401","sessionId":"s-361","uuid":"a1","requestId":"r","effort":"high","message":{"content":[{"type":"text","text":"yo"}]}}
+{"type":"user","version":"2.1.401","sessionId":"s-361","uuid":"u2","url":"generic","message":{"content":[{"type":"text","text":"again"}]}}
+{"type":"system","version":"2.1.401","sessionId":"s-361","subtype":"turn_duration","url":"known-here","durationMs":7}
+{"type":"mode","mode":"x","sessionId":"s-361","aKeyOnASkippedRow361":1}
+"##;
+        let _ = parse(jsonl);
+        let mut mine: Vec<String> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.at == UnknownAt::RecordKey && s.example.as_deref() == Some("s-361"))
+            .map(|s| s.name)
+            .collect();
+        mine.sort();
+        assert_eq!(
+            mine,
+            vec![
+                "user.aKeyFromTheFuture361".to_string(),
+                "user.url".to_string()
+            ],
+            "the new key, and `url` on a USER record (it is known on a system record only); never \
+             promptId, requestId, effort or a key on a row the adapter skips"
+        );
+    }
+
+    /// #361: every key of the census, on every record type it was met on, is known — so the
+    /// first sweep reports nothing but what is really new.
+    #[test]
+    fn every_census_key_is_known_on_its_own_record_type() {
+        for (ty, own) in RECORD_KEYS_BY_TYPE {
+            let mut obj = serde_json::Map::new();
+            for k in RECORD_KEYS_COMMON.iter().chain(own.iter()) {
+                obj.insert((*k).to_string(), Value::Null);
+            }
+            obj.insert("type".to_string(), Value::String((*ty).to_string()));
+            let v = Value::Object(obj);
+            assert_eq!(
+                unknown_record_keys(&v, ty, &[]),
+                Vec::<&str>::new(),
+                "{ty}: its census keys are all known"
+            );
+        }
+    }
+
+    /// #361, as #359 did for record types: the QoderWork family's own keys are known to the
+    /// family's adapters alone, so a Claude record that grows one is still reported.
+    #[test]
+    fn the_family_s_own_keys_are_known_to_its_adapters_alone() {
+        let v: Value = serde_json::from_str(
+            r#"{"type":"user","sessionId":"s","humanInput":"x","parent_tool_use_id":"t","message":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            unknown_record_keys(&v, "user", &[]),
+            vec!["humanInput", "parent_tool_use_id"],
+            "on a Claude record they are new"
+        );
+        assert_eq!(
+            unknown_record_keys(
+                &v,
+                "user",
+                crate::agents::qoderwork::discover::FAMILY_RECORD_KEYS
+            ),
+            Vec::<&str>::new(),
+            "for the family, its own"
         );
     }
 

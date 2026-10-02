@@ -44,7 +44,13 @@ before its release.
 2. **Find where the adapter would read it.** `toolUseResult.key` is a key inside a tool result
    (`TOOL_RESULT_READ` and `TOOL_RESULT_KNOWN_IGNORED` in
    `claude-replay-agents/src/agents/<agent>/model.rs`); `record.type`, `system.subtype`,
-   `attachment.type` and `content.type` are the matches over those fields in the same family. Read
+   `attachment.type` and `content.type` are the matches over those fields in the same family.
+   `record.key` (#361) is a new TOP-LEVEL key on a record type the adapter reads, named
+   `<record type>.<key>` (`user.promptId` was the one that went unseen): the census is
+   `RECORD_KEYS_COMMON` and `RECORD_KEYS_BY_TYPE` in the same file, scoped per record type because
+   many keys are generic words, and the QoderWork family's own keys are `FAMILY_RECORD_KEYS` in
+   `agents/qoderwork/discover.rs`. A row whose session is in the QoderWork store is that family's,
+   whatever its `agent` column says, and the job drops it before you see it (sunset). Read
    CLAUDE.md, "When the transcript format moves": the known lists are an allow-list, and adding a
    key to the ignored list is a deliberate act, in the same commit as the look that decided so.
 3. **Decide:** **RENDER** — it carries something a reader would want to see in agent-monitor (the

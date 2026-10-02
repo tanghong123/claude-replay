@@ -483,6 +483,7 @@ macro_rules! qwork_family_adapter {
                     cwd,
                     out,
                     agents::qoderwork::discover::FAMILY_RECORD_TYPES,
+                    agents::qoderwork::discover::FAMILY_RECORD_KEYS,
                 )
             }
             // Claude Code's tool vocabulary, so Claude's interactive set (#21).

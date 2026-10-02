@@ -24,6 +24,7 @@
 //! issue. The value itself stays in the transcript.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// Which part of a transcript an unknown shape turned up in. Closed, because a new category
@@ -42,6 +43,12 @@ pub enum Where {
     /// `bashEditDiff`: the others are new NAMES in places we already look, and this is a new
     /// place to look inside something we already parse.
     ToolResultKey,
+    /// A TOP-LEVEL key on a record of a type we read, outside the census of the keys that type
+    /// is met with (#361), reported as `<record type>.<key>`. Claude Code's `promptId` sat on
+    /// nearly every user record for weeks and no category could see it: a new key on a known
+    /// record type was invisible. Only collected while [`watch_keys`] is on — it walks every
+    /// record's keys, and only the `--unknown` sweep reads the report.
+    RecordKey,
 }
 
 impl Where {
@@ -53,6 +60,7 @@ impl Where {
             Self::AttachmentType => "attachment.type",
             Self::ContentType => "content.type",
             Self::ToolResultKey => "toolUseResult.key",
+            Self::RecordKey => "record.key",
         }
     }
 }
@@ -79,6 +87,20 @@ type Registry = BTreeMap<(&'static str, Where, String), Seen>;
 fn registry() -> &'static Mutex<Registry> {
     static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+static WATCH_KEYS: AtomicBool = AtomicBool::new(false);
+
+/// Ask the adapters for the per-record checks (#361: [`Where::RecordKey`]). They cost a walk
+/// over every record's keys, and only the `--unknown` sweep reads the report, so an ordinary
+/// parse — the viewer, the monitor — leaves them off and pays nothing.
+pub fn watch_keys(on: bool) {
+    WATCH_KEYS.store(on, Ordering::Relaxed);
+}
+
+/// Whether [`watch_keys`] is on: an adapter asks before walking a record's keys.
+pub fn watching_keys() -> bool {
+    WATCH_KEYS.load(Ordering::Relaxed)
 }
 
 /// Report a shape the adapter did not recognise.

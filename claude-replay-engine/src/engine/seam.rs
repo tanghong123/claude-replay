@@ -66,5 +66,9 @@ pub use crate::model::attach_skill_body;
 pub use crate::model::*;
 /// What an adapter dropped because it did not KNOW about it (#264) — the one channel every
 /// family reports through, so a third-party adapter inherits it with the rest of the seam.
-pub use crate::unknown::{note as note_unknown, snapshot as unknown_shapes, Where as UnknownAt};
+// `watch_keys` too (#361): an adapter's tests turn the per-record key census on, as the sweep does.
+pub use crate::unknown::{
+    note as note_unknown, snapshot as unknown_shapes, watch_keys as unknown_watch_keys,
+    watching_keys as unknown_watching_keys, Where as UnknownAt,
+};
 pub use crate::Agent;

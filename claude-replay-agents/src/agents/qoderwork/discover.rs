@@ -40,6 +40,38 @@ pub(crate) const FAMILY_RECORD_TYPES: &[&str] = &[
     "worktree-state",
 ];
 
+/// The top-level keys the family writes on Claude's record types beyond Claude's own (#361), from
+/// the 2026-10-02 census of the QoderWork and Qwenwork stores (keys only): known to the family's
+/// adapters alone, as its head rows are (#359).
+pub(crate) const FAMILY_RECORD_KEYS: &[&str] = &[
+    // On the family's SYSTEM records too (Claude writes it on user records only); the first
+    // sweep's report on a QoderWork compaction (2026-10-02).
+    "isCompactSummary",
+    // Once, on a QoderWork assistant record flagged `isApiErrorMessage`: the client's fallback
+    // wording for the failure. The record's own message, which the page shows as the API error
+    // (#236), already says what failed; looked at in the first sweep (2026-10-02).
+    "errorFallbackMessage",
+    "parent_tool_use_id",
+    "humanInput",
+    "requestSetId",
+    "requestTokenAnchor",
+    "requiresActiveLeafCommit",
+    "attempt",
+    "max_retries",
+    "retry_delay_ms",
+    "error_status",
+    "status",
+    "request_id",
+    "request_set_id",
+    "model_key",
+    "queue_type",
+    "queue_count",
+    "wait_time_ms",
+    "queue_wait_elapsed_ms",
+    "queue_max_wait_ms",
+    "service_available",
+];
+
 /// QoderWork itself.
 pub(crate) const QODERWORK: Home = Home {
     agent: Agent::QODERWORK,

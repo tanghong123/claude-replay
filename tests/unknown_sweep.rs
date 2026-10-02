@@ -87,6 +87,36 @@ fn the_sweep_is_machine_wide_whatever_the_working_directory() {
     assert!(table.contains("a_record_nobody_has_seen"), "{table}");
 }
 
+/// #361: a new TOP-LEVEL key on a record the adapter reads is reported, `<type>.<key>` under
+/// `record.key` — the category Claude Code's `promptId` went unseen for want of — and a key the
+/// census knows (here `promptId` itself) is not.
+#[test]
+fn a_new_top_level_key_is_reported_and_a_known_one_is_not() {
+    let root = scratch("record-key");
+    let project = root.join("claude").join("-work-elsewhere");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join(format!("{SID}.jsonl")),
+        format!(
+            "{}\n",
+            r#"{"type":"user","cwd":"/work/elsewhere","sessionId":"0f0e0d0c-0000-4000-8000-000000000276","version":"9.9.9","promptId":"p-1","aKeyNobodyHasSeen":true,"message":{"role":"user","content":[{"type":"text","text":"hi"}]},"timestamp":"2026-09-25T00:00:00Z"}"#,
+        ),
+    )
+    .unwrap();
+    let (out, err, ok) = run(&root, &root, &["--unknown", "--json"]);
+    assert!(ok, "{err}");
+    let rows = rows(&out);
+    assert_eq!(
+        rows.len(),
+        1,
+        "one new key, and nothing for promptId: {out}"
+    );
+    assert_eq!(rows[0]["where"], "record.key");
+    assert_eq!(rows[0]["name"], "user.aKeyNobodyHasSeen");
+    assert_eq!(rows[0]["version"], "9.9.9");
+    assert_eq!(rows[0]["example"], SID);
+}
+
 #[test]
 fn since_trims_by_mtime_and_json_says_nothing_when_nothing_is_new() {
     let root = scratch("since");
