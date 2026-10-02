@@ -591,6 +591,15 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "total_tokens_reminder",
     "ultra_effort_enter",
     "ultra_effort_exit",
+    // #368 (client 2.1.286): `{type, size}`, the "Dynamic workflow size" setting in /config told to
+    // the model (small, medium, large or unrestricted; "small" in all 9 met). Drawn nothing: it is a
+    // setting the reader made, announced by every live session on its next prompt; it annotates
+    // nothing the session did (none of the 7 sessions carrying it ran a Workflow, whose card
+    // already shows its agents); and it repeats after a compaction with nothing changed. Its
+    // siblings — ultra effort, auto and plan mode — are here too. Revisit if a value other than
+    // small appears in a session that also calls Workflow: then a one-line note, shown only when
+    // the value differs from the last one shown, is the RENDER question for the owner.
+    "workflow_size_guideline_change",
 ];
 
 /// `message.content[]` block types met in the corpus. Short by design: this is the message
@@ -5247,6 +5256,22 @@ mod tests {
     /// display, msg_id}`.
     /// #290: the shapes client 2.1.283 began writing, each looked at and found to carry nothing the
     /// page draws — and `jobs`, a generic name, known only as the whole of a CronList result.
+    /// #368: the 2.1.286 attachment `workflow_size_guideline_change` is known — neither reported
+    /// as unknown nor drawn. Removing it from `ATTACHMENT_TYPES_KNOWN` turns this red.
+    #[test]
+    fn workflow_size_guideline_change_is_known() {
+        let jsonl = r##"
+{"type":"attachment","version":"2.1.286","sessionId":"s-368","uuid":"x1","attachment":{"type":"workflow_size_guideline_change","size":"small"}}
+"##;
+        let blocks = parse(jsonl);
+        assert!(blocks.is_empty(), "it draws nothing: {blocks:?}");
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-368"))
+            .collect();
+        assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
+    }
+
     #[test]
     fn the_2_1_283_shapes_are_known() {
         let unknown = |v: &Value| -> Vec<String> {
