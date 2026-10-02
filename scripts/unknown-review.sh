@@ -81,8 +81,13 @@ scanned=$(grep -o 'scanning [0-9]* transcript' "$STATE/scan.err" | grep -o '[0-9
 # judged against the ones before it. A drop joins the scan as a `field.dropped` row named
 # `<field>@<version>`, so it is triaged once per version through the same path as a shape.
 COVERAGE_WINDOW="${COVERAGE_WINDOW:-14d}"
-"$AGENT_REPLAY" --field-coverage --since "$COVERAGE_WINDOW" --json > "$STATE/coverage.jsonl" 2> "$STATE/coverage.err" \
-  || fail "the coverage scan did not run ($(tail -1 "$STATE/coverage.err"))"
+if ! "$AGENT_REPLAY" --field-coverage --since "$COVERAGE_WINDOW" --json > "$STATE/coverage.jsonl" 2> "$STATE/coverage.err"; then
+  # An installed agent-replay older than the release that brought the mode: skip, say so, go on.
+  grep -q -- "unexpected argument '--field-coverage'" "$STATE/coverage.err" \
+    || fail "the coverage scan did not run ($(tail -1 "$STATE/coverage.err"))"
+  log "coverage: this agent-replay predates --field-coverage (#363); skipped until it is upgraded"
+  : > "$STATE/coverage.jsonl"
+fi
 python3 - "$STATE/coverage.jsonl" >> "$STATE/scan.jsonl" <<'PY'
 import json, sys
 for line in open(sys.argv[1]):
