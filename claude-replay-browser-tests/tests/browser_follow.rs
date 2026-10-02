@@ -8247,6 +8247,72 @@ fn a_phone_pinches_an_image_to_zoom() {
     );
 }
 
+/// #369, the owner on 1.342.0: "Why the matched text are dimmed? I searched for word output in
+/// bash with whole word match." A Bash call the engine coalesced into an activity span is a child
+/// row of that span, whose own class is thinking; under `o(B)` the span is out of scope, and its
+/// dimming — an opacity no child can undo — dimmed the Bash rows inside it that the search had just
+/// matched. A row that holds an in-scope row is never dimmed; one that holds none still is.
+#[test]
+#[ignore]
+fn the_app_shell_never_dims_a_hit_inside_an_activity_span() {
+    let _serial = serial();
+    let base = harness::base("dim-held-hit");
+    let stores = harness::Stores::new(&base);
+    let transcript = harness::long_session(4, harness::Shape::default())
+        + &harness::user_at("check the job", &harness::now_minus(90))
+        + &harness::thinking_at("reading the task file first", &harness::now_minus(85))
+        + &harness::bash_call_at(
+            "cat /tmp/x/tasks/job.output",
+            "t-369",
+            &harness::now_minus(80),
+        )
+        + &harness::tool_result_lines("t-369", 3, &harness::now_minus(78))
+        + &harness::assistant_at("done reading", &harness::now_minus(70));
+    stores.claude_session(PHONE_SID, &transcript);
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2738, &base, Some(&stores), false);
+    let (_browser, tab) = harness::chrome_tab();
+    tab.navigate_to(&m.url(&format!("?ui=app&session={PHONE_SID}")))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user')",
+        "the session",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    harness::eval(&tab, "(function(){ var i = document.getElementById('transcriptSearchInput'); i.focus(); i.value = 'o(B)w: output'; i.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()");
+    harness::until(
+        &tab,
+        "/hits? in o\\(B\\)/.test(document.getElementById('transcriptSearchCount').textContent)",
+        "the count for o(B)",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::eval(&tab, "document.getElementById('findNext').click(); 1");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current')",
+        "the current hit",
+        Duration::from_secs(10),
+        "document.querySelectorAll('.virtual-window mark.search-mark').length",
+    );
+    let seen = harness::probe(&tab, "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); var dimmed = m.closest('.filter-dim'); return { inSpan: !!m.closest('[data-record-kind=\"act\"]'), inBash: !!m.closest('[data-record-kind=\"bash\"]'), dimmed: dimmed ? dimmed.dataset.recordKind || dimmed.className : null, promptDimmed: !!document.querySelector('.virtual-window [data-record-kind=\"user\"].filter-dim') }; })()");
+    assert!(
+        seen["inSpan"] == true && seen["inBash"] == true,
+        "the fixture's hit is a Bash call inside an activity span: {seen}"
+    );
+    assert_eq!(
+        seen["dimmed"],
+        serde_json::Value::Null,
+        "the hit is not dimmed with the span that holds it: {seen}"
+    );
+    assert_eq!(
+        seen["promptDimmed"], true,
+        "a row holding no hit is still dimmed under a tools-only scope: {seen}"
+    );
+}
+
 /// #365: with `mask-policy.json` saying `remote`, a session read over the tailnet NAME — the phone,
 /// a `Host` that is not the loopback — shows a key the transcript carries as `*`, and the same
 /// session on the desktop shows it as it is. The mask is applied to what leaves the server, at the

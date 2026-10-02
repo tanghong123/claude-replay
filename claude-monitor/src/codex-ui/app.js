@@ -2031,16 +2031,26 @@ function setToolFacets(names) {
 }
 function applyFilters() {
   const hits = recordState.filterHits;
-  viewport.window.querySelectorAll("[data-kind]").forEach(element => {
-    // Which scope classes this row belongs to, through the SHARED table (#126) — the last
-    // hand-written kind map on this shell, and one that read a row's DISPLAY name where the
-    // record's own kind is what the classes are defined on. A row no class claims (an agent
-    // event, an attachment, a queued prompt) is never dimmed: no scope excludes it.
+  // Which scope classes each row belongs to, through the SHARED table (#126) — the last
+  // hand-written kind map on this shell, and one that read a row's DISPLAY name where the record's
+  // own kind is what the classes are defined on. A row no class claims (an agent event, an
+  // attachment, a queued prompt) is never dimmed: no scope excludes it.
+  const rows = [...viewport.window.querySelectorAll("[data-kind]")];
+  const outOfScope = element => {
     const mask = directMask(element.dataset.recordKind || "");
-    const scopeDim = mask && (![...uiState.searchScopes].some(letter => mask & CLASS_BIT[letter])
+    return !!mask && (![...uiState.searchScopes].some(letter => mask & CLASS_BIT[letter])
       || (mask & CLASS_BIT.o && !toolMatches(element.dataset.searchTool || "", queryTools())));
-    element.classList.toggle("filter-dim", !!scopeDim);
-  });
+  };
+  const out = new Map(rows.map(element => [element, outOfScope(element)]));
+  // #369: a row that HOLDS an in-scope row is never dimmed. An activity span is a thinking row
+  // whose children are the tool calls the engine coalesced into it; dimming the span — an opacity
+  // no child can undo — dimmed the Bash calls `o(B)` had just matched inside it.
+  const holds = new Set();
+  for (const element of rows) {
+    if (out.get(element)) continue;
+    for (let up = element.parentElement?.closest("[data-kind]"); up && !holds.has(up); up = up.parentElement?.closest("[data-kind]")) holds.add(up);
+  }
+  for (const element of rows) element.classList.toggle("filter-dim", out.get(element) && !holds.has(element));
   // The tool filter is a SEARCH BY KIND on this shell (#133), not the classic page's cut: it
   // finds the calls of a kind and marks them, and the reader steps between them the way they
   // step search hits — with every hit still sitting in its own surroundings. Hiding everything
