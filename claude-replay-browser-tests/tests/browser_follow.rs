@@ -8247,6 +8247,81 @@ fn a_phone_pinches_an_image_to_zoom() {
     );
 }
 
+/// #365: with `mask-policy.json` saying `remote`, a session read over the tailnet NAME — the phone,
+/// a `Host` that is not the loopback — shows a key the transcript carries as `*`, and the same
+/// session on the desktop shows it as it is. The mask is applied to what leaves the server, at the
+/// same length, so the page reads the records it always did.
+#[test]
+#[ignore]
+fn a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not() {
+    let _serial = serial();
+    let base = harness::base("phone-mask");
+    let stores = harness::Stores::new(&base);
+    // Assembled here, so no line of this source is a whole key (CI runs gitleaks over it).
+    let key = format!("sk-ant-api03-{}", "Z".repeat(40));
+    let transcript = harness::long_session(4, harness::Shape::default())
+        + &harness::user_at(
+            &format!("the deploy key is {key} for now"),
+            &harness::rfc3339_secs_ago(60),
+        );
+    stores.claude_session(PHONE_SID, &transcript);
+    let state = base.join("state-2737");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(state.join("mask-policy.json"), r#"{"mode":"remote"}"#).unwrap();
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2737, &base, Some(&stores), true);
+    let prompt = "(function(){ var t = [].slice.call(document.querySelectorAll('.transcript .turn.user')).map(function (e) { return e.innerText; }).filter(function (x) { return /deploy key/.test(x); }); return t.length ? t[t.length - 1] : ''; })()";
+    let read = |tab: &headless_chrome::Tab, what: &str| -> String {
+        harness::until(
+            tab,
+            &format!("!!{prompt}"),
+            what,
+            Duration::from_secs(20),
+            "document.body.innerText.slice(0, 200)",
+        );
+        harness::eval(tab, prompt)
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    };
+    // The phone, over the tailnet name.
+    let (_phone_browser, phone) = harness::chrome_with_tab(&[
+        "--host-resolver-rules=MAP phone.test 127.0.0.1",
+        "--no-proxy-server",
+    ]);
+    harness::phone(&phone, 390, 844);
+    let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
+    phone
+        .navigate_to(&format!("http://phone.test:2737/{token}"))
+        .unwrap();
+    phone.wait_until_navigated().unwrap();
+    phone
+        .navigate_to(&format!(
+            "http://phone.test:2737/?ui=app&session={PHONE_SID}"
+        ))
+        .unwrap();
+    phone.wait_until_navigated().unwrap();
+    let on_phone = read(&phone, "the prompt over the tailnet name");
+    assert!(
+        !on_phone.contains(&key) && on_phone.contains(&"*".repeat(40)),
+        "the phone reads the key masked: {on_phone:?}"
+    );
+    assert!(
+        on_phone.contains("the deploy key is") && on_phone.contains("for now"),
+        "…and only the key: {on_phone:?}"
+    );
+    // The desktop, on this machine: untouched.
+    let (_desk_browser, desk) = harness::chrome_tab();
+    m.pair(&desk);
+    desk.navigate_to(&m.url(&format!("?ui=app&session={PHONE_SID}")))
+        .unwrap();
+    desk.wait_until_navigated().unwrap();
+    let on_desk = read(&desk, "the prompt on the desktop");
+    assert!(
+        on_desk.contains(&key),
+        "the desktop reads the transcript as it is: {on_desk:?}"
+    );
+}
+
 /// #313: a phone reaches the monitor through `tailscale serve`, by the tailnet NAME, and paid for
 /// every byte of a session's records — measured at 24 MB for a 70 MB transcript. A client that is
 /// not on this machine gets them gzipped; the page reads the same records. (`phone.test` is mapped

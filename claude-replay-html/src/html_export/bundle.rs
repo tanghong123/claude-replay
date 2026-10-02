@@ -45,6 +45,21 @@ fn build_stream(
     ))
 }
 
+/// The stream with its secrets masked when `--mask-secrets` asks (#365): JSON-aware, the same
+/// length, so the file is the same shape with `*` where a key was.
+fn masked(args: &Args, jsonl: String) -> String {
+    if !args.mask_secrets {
+        return jsonl;
+    }
+    let mut bytes = jsonl.into_bytes();
+    let n = super::mask::mask_json_bytes(&mut bytes);
+    if n > 0 {
+        eprintln!("masked {n} secret(s)");
+    }
+    // Only ASCII bytes are ever replaced, so the text is still UTF-8.
+    String::from_utf8(bytes).unwrap_or_default()
+}
+
 /// Entry point for `--dump-html`. Writes a shareable file → no reveal-in-Finder
 /// path links (their absolute `file://` paths don't resolve on another machine).
 pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
@@ -52,6 +67,7 @@ pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
     let fold = args.fold_policy();
     let reveal = false;
     let (jsonl, turns) = build_stream(agent, path, &fold, reveal)?;
+    let jsonl = masked(args, jsonl);
     // The page title identifies the session in a browser tab; files are named by session id.
     let title = display_title(agent, path);
 
@@ -168,6 +184,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
             continue;
         }
         let (jsonl, children) = agent_stream(agent, &fold, &cwd, false, &info, Some(&mut sink))?;
+        let jsonl = masked(args, jsonl);
         std::fs::write(
             out_dir.join(format!("{}.jsonl", info.id)),
             format!("{jsonl}\n"),

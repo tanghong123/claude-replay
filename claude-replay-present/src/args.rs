@@ -127,6 +127,12 @@ pub struct Args {
     #[cfg_attr(feature = "cli", arg(long, num_args(0..=1), value_name = "DIR", conflicts_with_all = ["dump", "dump_html"]))]
     pub dump_all_html: Option<Option<String>>,
 
+    /// With `--dump-html` or `--dump-all-html`: replace the secrets a transcript carries — provider
+    /// API keys, tokens, a private key's body, a password in a URL — with `*` in the file it writes
+    /// (#365). A dump is what gets sent on; the transcript itself is never changed.
+    #[cfg_attr(feature = "cli", arg(long))]
+    pub mask_secrets: bool,
+
     /// Open the transcript as an HTML page in your browser instead of the TUI.
     /// Serves over a loopback HTTP server (so a tool-path click can reveal the
     /// file in Finder) and prints the URL; Ctrl-C stops it. The page **follows

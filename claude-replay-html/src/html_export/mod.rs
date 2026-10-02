@@ -32,6 +32,7 @@ use std::path::Path;
 // dump_all_html, serve}` stays the crate's surface.
 pub mod audit; // the derived rendering-audit corpus (#174 P1)
 mod bundle;
+pub mod mask; // opt-in secret masking for what leaves the machine (#365)
 pub(crate) mod mdrev; // mdrev's embedded viewer in the app shell's preview pane (#270)
 pub mod pairing;
 mod record_store;

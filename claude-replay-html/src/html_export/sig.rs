@@ -67,7 +67,7 @@ fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
 /// since this crate sits BELOW the monitor and must not reach up. If the two ever disagreed
 /// the signature would simply fail to verify, which fails closed.
 #[cfg(not(test))]
-fn state_dir() -> PathBuf {
+pub(crate) fn state_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("AGENT_MONITOR_STATE")
         .or_else(|| std::env::var_os("CLAUDE_MONITOR_STATE"))
         .map(PathBuf::from)

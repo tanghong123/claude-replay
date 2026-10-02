@@ -235,6 +235,19 @@ PNG, measured), so the image gets reveal and the app shell's lightbox opens the 
 to the embedded copy if the original is gone. A sub-agent gets its root's uploads. So an allowlist
 entry for a directory no session explains mints stamps that `/file` still refuses.
 
+**What leaves the machine can have its secrets masked** (#365, opt-in, `html_export/mask.rs`):
+`<state>/mask-policy.json` beside `render-policy.json` — `{"mode": "remote"}` masks every JSON and
+plain-text response to a client whose `Host` is not the loopback (the phone over the tailnet, the
+same test as gzip), `always` masks the desktop too, `off` is the default — and `--mask-secrets`
+masks a `--dump-html`/`--dump-all-html` file. Applied to what is SERVED, never to the transcript
+or the cache, so the desktop and the phone read one cache. The rules are prefix scans (provider
+keys, JWTs, bearer tokens, a private key's body, a URL's password) replacing the secret with `*` of
+the SAME length — `/records` range-reads by byte offset, and a JSON string stays one — never
+touching a backslash or the byte after it, nor a `data:` URI or a long base64 run (a pasted image).
+The cases are `a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not` and
+`tests/dump_html_mask.rs`; their fake keys are assembled at run time because CI runs gitleaks over
+every line.
+
 **Every file view offers BOTH halves** (#272, the owner: "offering both for now"): showing the file
 in the page — or downloading it, for bytes the page does not show (`/file`'s `Content-Disposition:
 attachment`) — AND revealing it in the file manager, wherever the server offered each stamp

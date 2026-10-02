@@ -2106,7 +2106,7 @@ fn serve_connection(
     let r = if redirect_root {
         r
     } else {
-        gzip_for(r, &method, &headers)
+        gzip_for(mask_for(r, &headers), &method, &headers)
     };
     let head = if redirect_root {
         format!(
@@ -2209,6 +2209,24 @@ fn gzip_for(mut r: HttpResponse, method: &str, headers: &str) -> HttpResponse {
     r.body = gz;
     r.headers.push("Content-Encoding: gzip".to_string());
     r.headers.push("Vary: Accept-Encoding".to_string());
+    r
+}
+
+/// Mask the secrets in a response to a client the mask policy covers (#365, `mask-policy.json`):
+/// with `remote`, a phone over the tailnet — a `Host` that is not the loopback, as `gzip_for`
+/// tells it — and never the desktop. Before gzip, and only a whole, unencoded, successful body.
+fn mask_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
+    let encoded = r
+        .headers
+        .iter()
+        .any(|h| h.to_ascii_lowercase().starts_with("content-encoding:"));
+    if !r.code.starts_with("200")
+        || encoded
+        || !super::mask::policy().masks(host_is_local(header_value(headers, "host")))
+    {
+        return r;
+    }
+    super::mask::mask_body(r.content_type, &mut r.body);
     r
 }
 

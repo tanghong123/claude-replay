@@ -2178,6 +2178,7 @@ fn follow_viewer(path: &Path) -> Result<()> {
         dump: None,
         dump_html: None,
         dump_all_html: None,
+        mask_secrets: false,
         html: false,
         width: None,
         paths: false,
