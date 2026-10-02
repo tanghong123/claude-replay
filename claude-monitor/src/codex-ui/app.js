@@ -15,7 +15,7 @@ import { displayState, denoteState, sessionFilterBuckets, FILTER_BUCKETS, FILTER
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
-import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, querySpans, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, CLASS_ORDER, wholeAt, toolMatches, writeTools, recordHasTool } from "./shared/search.js";
+import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, querySpans, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, prefixOf, CLASS_ORDER, wholeAt, toolMatches, recordHasTool, toolLetters as sessionToolLetters, resolveTools as resolveToolSpec } from "./shared/search.js";
 import { parseJumpQuery } from "./jump-query.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
@@ -1421,22 +1421,23 @@ function searchTextOf(record) {
 }
 /** This shell's names for the shared task card (html/shared/task-card.js). */
 const APP_TASK = { card: "task-card", head: "task-card-head", glyph: "task-card-glyph", id: "task-card-id", title: "task-card-title", chips: "task-card-chips", chip: "task-chip", dates: "task-card-dates", gap: "task-card-gap", section: "task-card-section", label: "task-card-label", body: "task-card-body", item: "task-card-item", outcome: "task-card-out", log: "task-card-log", logTime: "task-card-log-time", logMsg: "task-card-log-msg", logBy: "task-card-log-by" };
-const ALL_SCOPES = ["u", "a", "t", "o", "b", "r", "e"];
+const ALL_SCOPES = ["u", "a", "t", "o"];
 /** The active scope as a set for the shared grammar; null when every class is on (no scope). */
 function activeScopeSet() {
   const scopes = uiState.searchScopes;
   // Every class on is NO class scope, whole-words or not (#118): the classic page reads `w:` as
-  // "whole words, everywhere", and a mask of all seven would quietly drop the records no class
-  // claims — an agent event, an attachment, a queued prompt.
-  const all = ALL_SCOPES.every(k => scopes.has(k));
+  // "whole words, everywhere", and a mask of all four would quietly drop the records no class
+  // claims — an agent event, an attachment, a queued prompt. Unless `o(…)` narrows the tools
+  // (#367): then every class is on but the tools class is not every tool.
+  const all = ALL_SCOPES.every(k => scopes.has(k)) && !queryTools().length;
   if (all && !uiState.searchWhole) return null;
-  const set = { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: !!uiState.searchWhole };
+  const set = { u: false, a: false, t: false, o: false, w: !!uiState.searchWhole };
   if (!all) for (const k of ALL_SCOPES) if (scopes.has(k)) set[k] = true;
   return set;
 }
-/** The box is the truth (#101, the classic page's rule): a typed `uatobrew:` prefix sets the
- *  scope buttons; a leading `:` escapes; a pure run searches itself. Counts per class fill the
- *  scope rows; stepping and marks honour the scope; the total reads "N hits in ub". */
+/** The box is the truth (#101, the classic page's rule): a typed `uatow:` prefix — `o(…)` naming
+ *  tools — sets the scope rows; a leading `:` escapes. Counts per class fill the scope rows;
+ *  stepping and marks honour the scope; the total reads "N hits in uo(B)". */
 /** #333: whether the box holds a query — typed text or chips. On a phone the closed box then keeps
  *  its count and its arrows (production.css), so the reader still sees how many and can step.
  *  Looked up here, not held: this runs during the module's first render. */
@@ -1451,9 +1452,18 @@ function updateSearch(reset) {
   // The split, the per-record count, the label: the shared rules (#118, shared/search.js), so a
   // query means the same thing on both pages — including the two-character floor, which this
   // shell did not have.
-  const q = splitQuery(raw);
-  // The buttons follow the box (#101): a scope facet anywhere in it — `scope:ub` or the bare `ub:`
-  // at the start (§8) — ticks its rows; none (or only an escaped `:scope:`) means everything.
+  const q = splitQuery(raw, undefined, spec => resolveToolSpec(spec, toolLetters()));
+  // The box's `o(…)` tools (#292, #367): read before the scope, which they narrow. The set is
+  // independent of the text, so the hits it opens are recomputed only when the tools themselves
+  // change — a keystroke must not re-walk every record and re-open folds.
+  const tools = q.tools || [];
+  const toolKey = tools.map(t => (t.prefix ? "^" : "=") + t.name.toLowerCase()).sort().join(" ");
+  const toolsChanged = toolKey !== (recordState.toolKey || "");
+  recordState.searchTools = tools;
+  recordState.toolKey = toolKey;
+  uiState.toolFilters = new Set(tools.map(t => t.name + (t.prefix ? "*" : "")));
+  // The rows follow the box (#101): its prefix (§8) ticks them; none (or an escaped `:ua:`) means
+  // everything.
   if (q.set) {
     uiState.searchScopes = new Set(scopeLetters(q.set).length ? scopeLetters(q.set) : ALL_SCOPES);
     uiState.searchWhole = !!q.set.w;
@@ -1465,15 +1475,6 @@ function updateSearch(reset) {
   const set = activeScopeSet();
   const wanted = scopeMask(set), whole = !!(set && set.w);
   recordState.searchMask = wanted; recordState.searchWhole = whole;
-  // The box's `tool:` tokens (#292). The facet set is independent of the text, so the hits it
-  // opens are recomputed only when the tokens themselves change — a keystroke must not re-walk
-  // every record and re-open folds.
-  const tools = q.tools || [];
-  const toolKey = tools.map(t => (t.prefix ? "^" : "=") + t.name.toLowerCase()).sort().join(" ");
-  const toolsChanged = toolKey !== (recordState.toolKey || "");
-  recordState.searchTools = tools;
-  recordState.toolKey = toolKey;
-  uiState.toolFilters = new Set(tools.map(t => t.name + (t.prefix ? "*" : "")));
   // Drawn only now that both halves of the state follow the box: drawn above the line before, the
   // menu and its badge showed the PREVIOUS query's tools, so a ticked tool read as unticked (#297).
   renderFilterMenu();
@@ -1483,18 +1484,15 @@ function updateSearch(reset) {
   let total = 0;
   if (query) recordState.records.forEach((record, index) => {
     const { text, parts } = searchTextOf(record);
-    // The facets narrow the TEXT: "Bash calls whose text matches", counted inside the call's own
-    // words (design §4) — not a record that merely holds one.
+    // `o(…)` narrows the TOOLS class: "Bash calls whose text matches", counted inside the call's
+    // own words (design §4), beside whatever the other letters ask for.
     const inScope = countRecord(text, parts, query, whole, wanted, classCounts, tools);
     if (inScope) { recordState.matches.push(index); total += inScope; }
   });
-  // The scope narrows the filter too (#356), so a scope change re-filters as a tools change does.
-  const scopeKey = scopeClassMask(), scopeChanged = scopeKey !== (recordState.filterScopeKey ?? 0);
-  recordState.filterScopeKey = scopeKey;
-  if (toolsChanged || (scopeChanged && tools.length)) applyToolFilter();
+  if (toolsChanged) applyToolFilter();
   for (const k of CLASS_ORDER) { const cell = byId("scopeRow").querySelector(`[data-scope-count="${k}"]`); if (cell) cell.textContent = query ? String(classCounts[k]) : ""; }
   if (reset) { recordState.match = recordState.matches.length ? 0 : -1; recordState.landed = null; } else recordState.match = Math.min(recordState.match, recordState.matches.length - 1);
-  paintMatchCount(facetClash() || (query ? countLabel(total, set, whole) : ""));
+  paintMatchCount(query ? countLabel(total, set, whole, q.toolSpec) : "");
   markSearch();
   applyFilters();
 }
@@ -1504,29 +1502,41 @@ function paintMatchCount(text) {
   const hits = !text && queryTools().length ? (recordState.filterMatches || []).length : 0;
   byId("transcriptSearchCount").textContent = text || (hits ? `${hits} ${hits === 1 ? "match" : "matches"}` : "");
 }
-/** The scope buttons rewrite the box's prefix (the classic page's applyScopeFromMenu). */
+/** The scope rows rewrite the box's prefix (the classic page's applyScopeFromMenu). */
 function applyScopeFromMenu() {
-  // #303: the menu sets the scope CHIP (the typed text keeps no scope token of its own).
+  // #303: the menu sets the scope CHIP (the typed text keeps no prefix of its own). Unticking
+  // Tools takes its tools with it (#367: a tool is only ever chosen inside Tools).
   const input = byId("transcriptSearchInput");
-  const set = activeScopeSet();
+  if (!uiState.searchScopes.has("o")) uiState.chips.tools = [];
+  const everything = ALL_SCOPES.every(k => uiState.searchScopes.has(k));
+  const letters = [...(everything && !uiState.chips.tools.length ? [] : ALL_SCOPES.filter(k => uiState.searchScopes.has(k))), ...(uiState.searchWhole ? ["w"] : [])];
   input.value = writePrefix(input.value, []);
-  uiState.chips.scope = set ? activeLetters(set).join("") : "";
+  setScopeChip(letters);
   updateSearch(true);
+}
+/** The scope chip's letters: `o` is held only as "every tool" — with tools named, the tools chip
+ *  is the `o(…)` (#367). */
+function setScopeChip(letters) {
+  uiState.chips.scope = activeLetters(Object.fromEntries(letters.filter(k => !(k === "o" && uiState.chips.tools.length)).map(k => [k, true]))).join("");
 }
 /** Whether a marked text node's nearest row is in scope — the RECORD's kind through the shared
  *  class table (#118), the same gate the classic page applies to the block a hit sits in. This
  *  shell used to derive the mask from the row's classes and its DISPLAY name, so an Edit (shown
  *  as "Update") was counted under `e:` and then marked nowhere. */
 function kindInScope(row, wanted) {
-  return !wanted || !!(directMask(row?.dataset.recordKind || "") & wanted);
+  if (!wanted) return true;
+  const mask = directMask(row?.dataset.recordKind || "");
+  if (!(mask & wanted)) return false;
+  // `o(…)` narrows the tools class to the tools it names (#367).
+  return !(mask & CLASS_BIT.o) || toolMatches(row?.dataset.searchTool || "", queryTools());
 }
-/** The tool facets the BOX holds (#292) — `tool:` tokens, parsed by the shared grammar. The one
- *  source of truth: the menu writes tokens into the box, `updateSearch` reads them back, so a
- *  tick and a typed token are the same thing (#101's rule, now for tools too). */
+/** The tools the BOX names (#292, #367) — its `o(…)`, parsed by the shared grammar. The one source
+ *  of truth: the menu writes the box, `updateSearch` reads it back, so a tick and a typed letter
+ *  are the same thing (#101's rule, now for tools too). */
 function queryTools() {
   return recordState.searchTools || [];
 }
-/** The name a `tool:` facet asks of a record: the tool it carries. The server writes the display
+/** The name `o(…)` asks of a record: the tool it carries. The server writes the display
  *  name into both `tool` and `head.name` (an Edit reads "Update" in both), so either answers —
  *  `tool` first, because that is the field the classic page filters on. */
 function toolNameOf(record) {
@@ -1713,13 +1723,13 @@ searchClear.addEventListener("click", () => {
   input.focus();
 });
 
-// ---- The search box's tokens (#303, design/in-session-search.md §8) ------------------------------
-// `tool:` and `scope:` are named facets typed anywhere in the box (`tools:` is read too). Typing one opens a drop-down of
-// what can follow it — each tool with a per-session LETTER (`tool:BaA`), each scope class with its
-// letter — and a SPACE freezes the token into a chip at the box's left: deletable (its ×, or
-// Backspace at the start of the text), not editable. A chip is the token it was, so `updateSearch`
-// parses chips and text together (`boxQuery`); the filter popover sets the chips directly, and a
-// chip ticks its rows. `var`: updateSearch can run during module evaluation, before this block.
+// ---- The search box's prefix (#303, #367, design/in-session-search.md §8) ---------------------------
+// The box may start with a prefix — scope letters, `o(…)` naming tools — then a colon. Typing `o(`
+// opens a drop-down of the session's tools with their LETTERS (`o(BaA)`); once something follows the
+// prefix's colon it freezes into chips at the box's left: deletable (their ×, or Backspace at the
+// start of the text), not editable. A chip is the prefix it was, so `updateSearch` parses chips and
+// text together (`boxQuery`); the filter popover sets the chips directly, and the chips tick its
+// rows. `var`: updateSearch can run during module evaluation, before this block.
 var searchChips = null, searchSuggest = null, suggestState = null;
 searchChips = document.createElement("span");
 searchChips.className = "search-chips"; searchChips.id = "searchChips";
@@ -1775,59 +1785,44 @@ document.addEventListener("pointerdown", event => {
   if (searchBox.classList.contains("phone-open") && !event.target.closest(".header-search-cluster")) setPhoneSearch(false);
 }, true);
 phoneSearch.addEventListener("change", () => { if (!phoneSearch.matches) setPhoneSearch(false); });
-const SCOPE_ROWS = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "All tools"], ["b", "Bash output"], ["r", "Reads"], ["e", "Edits"], ["w", "Whole words"]];
+const SCOPE_ROWS = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "Tools"], ["w", "Whole words"]];
+// #367: the session's tools are secondary checkboxes under the Tools scope row — the last row of the
+// scope list — not a section of their own. The reference shell draws them as one; production moves
+// the list up to follow the scope rows and hides the section's divider and heading (unticking Tools
+// clears its tools; All clears them too), so the extracted shell stays exact.
+{
+  const list = byId("filterOptions"), scopeList = byId("scopeRow");
+  list.previousElementSibling?.classList.add("tool-types-head-retired");
+  scopeList.nextElementSibling?.classList.contains("scope-menu-divider") && scopeList.nextElementSibling.classList.add("tool-types-head-retired");
+  scopeList.insertAdjacentElement("afterend", list);
+  list.classList.add("tool-type-nested");
+}
 
-/** The chips as the tokens they were, for the parser. */
+/** The chips as the prefix they were, for the parser: the scope letters, and `o(…)` for the tools
+ *  — by their letters when every one has one in this session, else by name. */
 function chipTokens() {
-  const out = [];
-  if (uiState.chips.scope) out.push(`scope:${uiState.chips.scope}`);
-  if (uiState.chips.tools.length) out.push(`tool:${uiState.chips.tools.join(",")}`);
-  return out;
+  const prefix = prefixOf([...uiState.chips.scope], toolChipSpec());
+  return prefix ? [prefix] : [];
+}
+function toolChipSpec() {
+  const tools = uiState.chips.tools;
+  if (!tools.length) return "";
+  const letterOf = new Map(toolLetters().map(e => [e.key, e.letter]));
+  return tools.every(k => letterOf.has(k)) ? tools.map(k => letterOf.get(k)).join("") : tools.join(",");
 }
 /** What `updateSearch` parses: the chips, then the typed text. */
 function boxQuery() {
   const input = byId("transcriptSearchInput");
   return [...chipTokens(), input ? input.value : ""].join(" ").trim();
 }
-/** The session's tools, each with its LETTER (§8.2): most-used first; a tool takes its initial when
- *  free (Bash `B`, advisor `a`, AskUserQuestion `A`), else the other case, else another letter of
- *  its name, else any free letter, then a digit. MCP tools take ONE letter per server, as the
- *  family `mcp__<server>__*`. Letters differ between sessions by design (owner). */
+/** The session's tools, each with its LETTER — the shared table (#367: the common tools' letters are
+ *  reserved and never change; the rest depend on the session). */
 function toolLetters() {
-  const counts = toolCounts(recordState.records);
-  const entries = new Map();
-  for (const [name, n] of Object.entries(counts)) {
-    const mcp = /^mcp__([^_]+(?:_[^_]+)*)__/.exec(name);
-    const key = mcp ? `mcp__${mcp[1]}__*` : name;
-    const label = mcp ? mcp[1] : name;
-    const e = entries.get(key) || { key, label, count: 0, family: !!mcp };
-    e.count += n; entries.set(key, e);
-  }
-  const ordered = [...entries.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
-  const used = new Set(), out = [];
-  const pool = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  const swap = c => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase());
-  for (const e of ordered) {
-    const own = [...e.label].filter(c => /[A-Za-z0-9]/.test(c));
-    const tries = [own[0], own[0] && swap(own[0]), ...own.slice(1), ...own.slice(1).map(swap), ...pool];
-    const letter = tries.find(c => c && !used.has(c));
-    if (!letter) continue;
-    used.add(letter); out.push({ ...e, letter });
-  }
-  return out;
+  return sessionToolLetters(toolCounts(recordState.records));
 }
-/** A typed `tool:` value → the names it means: the NAMES when every comma-separated part names a
- *  tool of this session (or a family), else the LETTERS when every character is one, else the value
- *  as names — the shared grammar's own reading. */
+/** An `o(…)` text → the tool KEYS it means (names, `mcp__<server>__*` for a family). */
 function resolveTools(value) {
-  const letters = toolLetters();
-  const byName = new Map(letters.map(e => [e.key.toLowerCase(), e.key]));
-  for (const name of Object.keys(toolCounts(recordState.records))) byName.set(name.toLowerCase(), name);
-  const parts = value.split(",").filter(Boolean);
-  if (parts.length && parts.every(p => byName.has(p.toLowerCase()))) return parts.map(p => byName.get(p.toLowerCase()));
-  const byLetter = new Map(letters.map(e => [e.letter, e.key]));
-  if (!value.includes(",") && [...value].every(c => byLetter.has(c))) return [...new Set([...value].map(c => byLetter.get(c)))];
-  return parts;
+  return resolveToolSpec(value, toolLetters()).map(t => t.name + (t.prefix ? "*" : ""));
 }
 function renderChips() {
   if (!searchChips) return;
@@ -1836,97 +1831,75 @@ function renderChips() {
   // #352: the key is a GLYPH — the filter button's for a scope, a wrench for tools — so a chip fits a
   // phone's box (the word clipped it to "scop" and took its × with it). The word stays in the chip,
   // visually hidden, for a screen reader and for whatever reads the chip as the token it was.
-  // #353: a scope is already single-character selectors (u a t o b r e w), so its chip is the letters
-  // alone; a tool chip keeps its wrench, which is what tells the two apart.
+  // #353: a scope is already single-character selectors (u a t o w), so its chip is the letters
+  // alone; a tool chip keeps its wrench, which is what tells the two apart — and is the `o(…)`.
   const chip = (kind, text, title) => { const word = kind === "tools" ? "tool" : kind; return `<span class="search-chip" data-chip="${kind}" title="${escapeText(title)}"><span class="search-chip-key">${kind === "tools" ? svg("tool") : ""}<span class="search-chip-word">${word}:</span></span><span class="search-chip-value">${escapeText(text)}</span><button class="search-chip-remove" type="button" data-chip-remove="${kind}" aria-label="Remove the ${word} filter">×</button></span>`; };
   // #355: a tool chip is the wrench and the tools' own single-character selectors — the letters
-  // `tool:` takes and the drop-down lists — with the names in its title; a key with no letter (none
+  // `o(…)` takes and the drop-down lists — with the names in its title; a key with no letter (none
   // in this session) keeps its name.
   const letterOf = new Map(tools.length ? toolLetters().map(e => [e.key, e.letter]) : []);
   const toolText = tools.every(k => letterOf.has(k)) ? tools.map(k => letterOf.get(k)).join("") : tools.map(k => letterOf.get(k) || label(k)).join(", ");
   searchChips.innerHTML = (scope ? chip("scope", scope, SCOPE_ROWS.filter(([k]) => scope.includes(k)).map(([, l]) => l).join(", ")) : "")
     + (tools.length ? chip("tools", toolText, tools.join(", ")) : "");
   searchChips.classList.toggle("has-chips", !!(scope || tools.length));
-  // #356: a scope and tools that cannot match together are marked as the clash they are.
-  const clash = scope && tools.length ? facetClash() : "";
-  for (const c of searchChips.querySelectorAll(".search-chip")) { c.classList.toggle("conflict", !!clash); if (clash) c.title = `${c.title} — ${clash}`; }
   fitSearchField();
 }
-/** Freeze every COMPLETE facet token in the text into a chip — one followed by a space, or the bare
- *  scope prefix once something follows its colon — and take it out of the text. */
+/** Freeze the typed prefix into chips once something follows its colon, and take it out of the
+ *  text: its letters join the scope chip, its `o(…)` tools the tools chip. */
 function absorbFacets() {
   const input = byId("transcriptSearchInput");
   const value = input.value;
-  const spans = querySpans(value);
-  let text = value, cut = 0, changed = false;
-  for (const span of spans) {
-    if (span.kind === "text") continue;
-    const complete = span.bare ? value.length > span.end : /\s/.test(value.charAt(span.end));
-    if (!complete) continue;
-    if (span.kind === "scope") {
-      const letters = new Set([...uiState.chips.scope, ...activeLetters(span.set)]);
-      uiState.chips.scope = SCOPE_ROWS.map(([k]) => k).filter(k => letters.has(k)).join("");
-    } else {
-      const raw = value.slice(span.start, span.end).replace(/^tools?:/i, "");
-      uiState.chips.tools = [...new Set([...uiState.chips.tools, ...resolveTools(raw)])];
-    }
-    // Out of the text, with the space that committed it.
-    const from = span.start - cut, to = span.end - cut + (span.bare ? 0 : 1);
-    text = text.slice(0, from) + text.slice(to);
-    cut += to - from; changed = true;
-  }
-  if (!changed) return false;
+  const span = querySpans(value).find(x => x.kind === "scope");
+  if (!span || value.length <= span.end) return false;
+  const tools = span.tools ? resolveTools(span.tools) : [];
+  uiState.chips.tools = [...new Set([...uiState.chips.tools, ...tools])];
+  setScopeChip([...uiState.chips.scope, ...activeLetters(span.set)]);
   const caret = input.selectionStart === value.length;
-  input.value = text.replace(/^\s+/, "");
+  input.value = value.slice(span.end).replace(/^\s+/, "");
   if (caret) input.setSelectionRange(input.value.length, input.value.length);
   return true;
 }
-/** The facet token the caret is in, if any: `{kind, start, end, value}`. */
+/** The `o(…)` the caret is in, when the typed text starts with a prefix still being written:
+ *  `{start, end, value}` of the text between the parentheses. */
 function tokenAtCaret() {
   const input = byId("transcriptSearchInput");
   const value = input.value, at = input.selectionStart ?? value.length;
-  let start = at; while (start > 0 && !/\s/.test(value.charAt(start - 1))) start--;
-  let end = at; while (end < value.length && !/\s/.test(value.charAt(end))) end++;
-  const token = value.slice(start, end);
-  const m = /^(tools?|scope):(\S*)$/i.exec(token);
-  if (!m) return null;
-  return { kind: m[1].toLowerCase() === "scope" ? "scope" : "tools", start, end, value: m[2] };
+  const m = /^([uatw]*o\()([^()\s:]*)/i.exec(value);
+  if (!m || !/^[uatw]*$/i.test(m[1].slice(0, -2))) return null;
+  const start = m[1].length, end = start + m[2].length;
+  if (at < start || at > end) return null;
+  return { kind: "tools", start, end, value: m[2] };
 }
-function suggestRows(kind) {
-  if (kind === "scope") return SCOPE_ROWS.map(([letter, label]) => ({ letter, label, count: null }));
+function suggestRows() {
   return toolLetters().map(e => ({ letter: e.letter, label: e.family ? `${e.label}/*` : e.label, count: e.count, key: e.key }));
 }
 function renderSuggest() {
   if (!searchSuggest) return;
   const tok = document.activeElement === byId("transcriptSearchInput") ? tokenAtCaret() : null;
   if (!tok) { searchSuggest.hidden = true; suggestState = null; return; }
-  const masks = toolClassMasks(recordState.records);
-  const chosen = tok.kind === "scope" ? new Set([...tok.value.toLowerCase()]) : new Set(resolveTools(tok.value));
-  // #356: a row that cannot combine with the box's other facet is greyed (an ON row stays live).
-  const rows = suggestRows(tok.kind).map(r => { const on = tok.kind === "scope" ? chosen.has(r.letter) : chosen.has(r.key); return { ...r, why: on ? "" : (tok.kind === "scope" ? (CLASS_BIT[r.letter] ? scopeConflict(r.letter, masks) : "") : toolConflict(r.key, masks)) }; });
-  const active = suggestState && suggestState.kind === tok.kind ? Math.min(suggestState.active, rows.length - 1) : 0;
+  const chosen = new Set(resolveTools(tok.value));
+  const rows = suggestRows();
+  const active = suggestState ? Math.min(suggestState.active, rows.length - 1) : 0;
   suggestState = { kind: tok.kind, rows, active };
-  searchSuggest.innerHTML = `<div class="search-suggest-head">${tok.kind === "scope" ? "Scope — type letters" : "Tools — type letters"}<span>space to apply</span></div>`
+  searchSuggest.innerHTML = '<div class="search-suggest-head">Tools — type letters<span>then ): and your words</span></div>'
     + (rows.map((r, i) => {
-      const on = tok.kind === "scope" ? chosen.has(r.letter) : chosen.has(r.key);
-      return `<button class="search-suggest-row${on ? " on" : ""}${i === active ? " active" : ""}${r.why ? " is-off" : ""}" type="button" role="option" aria-selected="${on}"${r.why ? ` aria-disabled="true" title="${escapeText(r.why)}"` : ""} data-suggest="${i}"><span class="search-suggest-letter">${escapeText(r.letter)}</span><span class="scope-check"></span><span class="search-suggest-label">${escapeText(r.label)}</span><span class="search-suggest-count">${r.count ?? ""}</span></button>`;
-    }).join("") || '<div class="search-suggest-empty">No tool calls in this session</div>')
-    + (rows.some(r => r.why) ? `<div class="facet-off-note">${tok.kind === "scope" ? "Greyed: they hold none of the tools in the box" : "Greyed: the scope holds none of their calls"}</div>` : "");
+      const on = chosen.has(r.key);
+      return `<button class="search-suggest-row${on ? " on" : ""}${i === active ? " active" : ""}" type="button" role="option" aria-selected="${on}" data-suggest="${i}"><span class="search-suggest-letter">${escapeText(r.letter)}</span><span class="scope-check"></span><span class="search-suggest-label">${escapeText(r.label)}</span><span class="search-suggest-count">${r.count ?? ""}</span></button>`;
+    }).join("") || '<div class="search-suggest-empty">No tool calls in this session</div>');
   searchSuggest.hidden = false;
 }
-/** Add or remove one row's letter in the token at the caret. */
+/** Add or remove one row's letter inside the `o(…)` at the caret. */
 function toggleSuggest(index) {
   const tok = tokenAtCaret(); if (!tok || !suggestState) return;
-  const row = suggestState.rows[index]; if (!row || row.why) return;
+  const row = suggestState.rows[index]; if (!row) return;
   const input = byId("transcriptSearchInput");
   let value = tok.value;
   // A value typed by NAME starts over as letters once a row is toggled, so the two never mix.
   const letters = new Set(toolLetters().map(e => e.letter));
-  if (tok.kind === "tools" && ![...value].every(c => letters.has(c))) value = "";
+  if (![...value].every(c => letters.has(c))) value = "";
   value = value.includes(row.letter) ? value.replace(row.letter, "") : value + row.letter;
-  const key = input.value.slice(tok.start, tok.end).split(":")[0];
-  input.value = input.value.slice(0, tok.start) + `${key}:${value}` + input.value.slice(tok.end);
-  const caret = tok.start + key.length + 1 + value.length;
+  input.value = input.value.slice(0, tok.start) + value + input.value.slice(tok.end);
+  const caret = tok.start + value.length;
   input.setSelectionRange(caret, caret);
   suggestState.active = index;
   renderSuggest();
@@ -1976,67 +1949,12 @@ byId("findNext").onclick = () => stepSearch(1); byId("findPrev").onclick = () =>
 
 function toolNames(records, into = []) {
   for (const record of records || []) {
-    // ONE tool identity with the facet (#292): what `toolNameOf` reads is what a `tool:` token
-    // asks for, so a ticked row and a typed token can never mean different things.
+    // ONE tool identity with the prefix (#292): what `toolNameOf` reads is what `o(…)` asks for,
+    // so a ticked row and a typed letter can never mean different things.
     if (["bash", "read", "write", "edit", "skill", "tool"].includes(record.kind)) into.push(toolNameOf(record) || record.kind);
     for (const part of record.body || []) if (part.p === "blocks") toolNames(part.items, into);
   }
   return into;
-}
-// #356: a scope and a tool facet can only ever match together if one of the tools falls in one of
-// the scope's classes — Bash is o|b, Read o|r, Edit/Write o|e, any other tool o; user messages,
-// replies and thinking hold no tool calls at all. The owner: "user message would never allow
-// combination with any tools". So a choice that cannot combine with what the box holds is GREYED
-// (the owner: "Grey out makes sense"), and a typed contradiction says so instead of "0 hits".
-const SCOPE_NAMES = { u: "User messages", a: "Agent replies", t: "Thinking", o: "All tools", b: "Bash output", r: "Reads", e: "Edits" };
-/** Each tool's scope classes, from the records' own kinds (nested ones included), keyed lowercase. */
-function toolClassMasks(records, into = new Map()) {
-  for (const record of records || []) {
-    if (["bash", "read", "write", "edit", "skill", "tool"].includes(record.kind)) {
-      const name = (toolNameOf(record) || record.kind).toLowerCase();
-      into.set(name, (into.get(name) || 0) | directMask(record.kind));
-    }
-    for (const part of record.body || []) if (part.p === "blocks") toolClassMasks(part.items, into);
-  }
-  return into;
-}
-/** A facet key's classes: a name's, or every member's for a family (`mcp__server__*`); 0 unknown. */
-function toolKeyMask(key, masks) {
-  const k = String(key).toLowerCase();
-  if (!k.endsWith("*")) return masks.get(k) || 0;
-  let m = 0;
-  for (const [name, v] of masks) if (name.startsWith(k.slice(0, -1))) m |= v;
-  return m;
-}
-/** The box's scope as a class mask; 0 when it asks for everything. */
-function scopeClassMask() {
-  const s = uiState.searchScopes;
-  if (!s || ALL_SCOPES.every(k => s.has(k))) return 0;
-  let m = 0;
-  for (const k of s) m |= CLASS_BIT[k] || 0;
-  return m;
-}
-const facetName = key => String(key).replace(/^mcp__([^_]+(?:_[^_]+)*)__\*$/, "$1/*");
-/** Why `key` cannot join the box's scope, or "" when it can. */
-function toolConflict(key, masks) {
-  const scope = scopeClassMask(), m = toolKeyMask(key, masks);
-  if (!scope || !m || (m & scope)) return "";
-  return `${[...uiState.searchScopes].filter(k => SCOPE_NAMES[k]).map(k => SCOPE_NAMES[k]).join(", ")} hold no ${facetName(key)} calls`;
-}
-/** Why scope class `letter` cannot join the box's tools, or "" when it can. */
-function scopeConflict(letter, masks) {
-  const tools = [...uiState.toolFilters];
-  let m = 0;
-  for (const t of tools) m |= toolKeyMask(t, masks);
-  if (!tools.length || !m || (m & CLASS_BIT[letter])) return "";
-  return `${SCOPE_NAMES[letter]} hold no ${tools.map(facetName).join(" or ")} calls`;
-}
-/** When the box's scope and tools cannot match at all, what to say instead of a count; else "". */
-function facetClash(masks = toolClassMasks(recordState.records)) {
-  const tools = [...uiState.toolFilters], scope = scopeClassMask();
-  if (!tools.length || !scope) return "";
-  if (tools.some(t => { const m = toolKeyMask(t, masks); return !m || (m & scope); })) return "";
-  return `no ${tools.map(facetName).join(" or ")} call in scope ${[...uiState.searchScopes].filter(k => CLASS_BIT[k]).join("")}`;
 }
 /** How many calls of each tool the session holds — the menu's counts (#293), from the RECORDS and
  *  their nested items, never the DOM (which holds only the mounted window). */
@@ -2045,20 +1963,17 @@ function toolCounts(records) {
   for (const name of toolNames(records)) counts[name] = (counts[name] || 0) + 1;
   return counts;
 }
-/** The box token for one row's selection: a name, or `name*` for a family (#292's `tool:` form). */
+/** A row's tool KEY: a name, or `name*` for a family (#292). */
 function facetToken(select) {
   return select.toolPre ? `${select.toolPre}*` : select.tool;
 }
 function renderFilterMenu() {
-  const scopes = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "All tools"], ["b", "Bash output"], ["r", "Reads"], ["e", "Edits"]];
-  // The scope rows' hint reads as the TOKEN a reader would type (`u:`), not as a bare letter that
-  // looks like a keyboard shortcut (#293).
-  // #356: a class that cannot hold any of the box's tools is greyed — unless it is ON, so a typed
-  // contradiction can still be unticked here.
-  const masks = toolClassMasks(recordState.records);
-  const everything = ALL_SCOPES.every(k => uiState.searchScopes.has(k));
-  byId("scopeRow").innerHTML = scopes.map(([key, label]) => { const on = !everything && uiState.searchScopes.has(key), why = on ? "" : scopeConflict(key, masks); return `<button class="scope-option ${uiState.searchScopes.has(key) ? "on" : ""}${why ? " is-off" : ""}" data-scope="${key}"${why ? ` disabled aria-disabled="true" title="${escapeText(why)}"` : ""}><span class="scope-check"></span><span>${label}</span><span class="scope-count" data-scope-count="${key}"></span><span class="scope-key">${key}:</span></button>`; }).join("")
-    + (scopes.some(([key]) => !(!everything && uiState.searchScopes.has(key)) && scopeConflict(key, masks)) ? '<div class="facet-off-note">Greyed: they hold none of the tools in the box</div>' : "");
+  // #367: Tools is one scope row, and the session's tools are checkboxes nested under it (the
+  // list below, moved there at load) — so a tool is only ever chosen inside Tools and no choice
+  // here can contradict another. The hint reads as the prefix a reader would type (`u:`), not as
+  // a bare letter that looks like a keyboard shortcut (#293).
+  const scopes = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "Tools"]];
+  byId("scopeRow").innerHTML = scopes.map(([key, label]) => `<button class="scope-option ${uiState.searchScopes.has(key) ? "on" : ""}" data-scope="${key}"><span class="scope-check"></span><span>${label}</span><span class="scope-count" data-scope-count="${key}"></span><span class="scope-key">${key === "o" && uiState.toolFilters.size ? "o(…):" : `${key}:`}</span></button>`).join("");
   // Whole words is a MATCH OPTION, not a part of the transcript, so it sits beside the box with
   // the other match controls (#293) instead of below the scope classes it is not one of.
   wholeWords.classList.toggle("on", !!uiState.searchWhole);
@@ -2070,7 +1985,7 @@ function renderFilterMenu() {
   // Most-used first here; the classic page keeps its alphabetical order.
   const groups = toolTree(toolCounts(recordState.records), uiState.toolTreeOpen, "count");
   const rows = groups.flatMap(g => g.rows);
-  let offTools = 0;
+  const letterOf = new Map(toolLetters().map(e => [e.key, e.letter]));
   byId("filterOptions").innerHTML = rows
     .map(r => {
       const token = facetToken(r.select);
@@ -2087,30 +2002,31 @@ function renderFilterMenu() {
       // The full name as the tooltip: an MCP row reads `server/tool`, and the reader may still
       // need the name a script would use.
       const title = r.select.tool || `${r.select.toolPre}*`;
-      const why = on ? "" : toolConflict(token, masks);
-      if (why) offTools++;
-      return `<button class="tool-type-option${on}${sub}${why ? " is-off" : ""}" role="menuitemcheckbox" aria-checked="${on ? "true" : "false"}" data-tool-filter="${escapeText(token)}" data-label="${escapeText(r.label)}" data-depth="${r.depth}" title="${escapeText(why ? `${title} — ${why}` : title)}"${why ? ' disabled aria-disabled="true"' : ""}>${bullet}<span>${escapeText(r.label)}</span><span class="count">${r.count}</span></button>`;
+      // The letter `o(…)` takes for this tool (#367), where the session gives it one.
+      const letter = letterOf.get(token);
+      return `<button class="tool-type-option${on}${sub}" role="menuitemcheckbox" aria-checked="${on ? "true" : "false"}" data-tool-filter="${escapeText(token)}" data-label="${escapeText(r.label)}" data-depth="${r.depth}" title="${escapeText(title)}">${bullet}<span>${escapeText(r.label)}</span><span class="count">${r.count}</span><span class="scope-key">${letter ? escapeText(letter) : ""}</span></button>`;
     })
     .join("") || '<div class="tool-type-empty">No tool events in this session</div>';
-  if (offTools) byId("filterOptions").insertAdjacentHTML("beforeend", '<div class="facet-off-note">Greyed: the scope holds none of their calls</div>');
   // The badge counts every active facet, tools AND classes (#293): a scope narrows the results, so
   // a button that read "inactive" while `u:` was on was telling the reader the opposite of the
   // truth. `searchWhole` is a match option, not a facet, and is not counted.
-  const classes = ALL_SCOPES.every(k => uiState.searchScopes.has(k)) ? 0 : uiState.searchScopes.size;
+  const classes = ALL_SCOPES.every(k => uiState.searchScopes.has(k)) ? 0 : [...uiState.searchScopes].filter(k => !(k === "o" && uiState.toolFilters.size)).length;
   byId("filterBadge").textContent = uiState.toolFilters.size + classes || "";
 }
-/** Tick or untick one tool: write the facets into the BOX and let `updateSearch` do the rest
- *  (#292). Nothing sets the tool state directly any more — the box is the query. */
+/** Tick or untick one tool: write the BOX and let `updateSearch` do the rest (#292). Nothing sets
+ *  the tool state directly any more — the box is the query. A tool is chosen inside Tools (#367):
+ *  ticking one with no scope at all searches the tools, and only them. */
 function toggleToolFacet(name) {
   const next = new Set(uiState.toolFilters);
   next.has(name) ? next.delete(name) : next.add(name);
   setToolFacets([...next]);
 }
 function setToolFacets(names) {
-  // #303: the menu sets the tools CHIP (the typed text keeps no tools token of its own).
+  // #303: the menu sets the tools CHIP (the typed text keeps no prefix of its own).
   const input = byId("transcriptSearchInput");
-  input.value = writeTools(input.value, []);
+  input.value = writePrefix(input.value, []);
   uiState.chips.tools = names.slice();
+  setScopeChip([...uiState.chips.scope]);
   updateSearch(true);
 }
 function applyFilters() {
@@ -2121,7 +2037,8 @@ function applyFilters() {
     // record's own kind is what the classes are defined on. A row no class claims (an agent
     // event, an attachment, a queued prompt) is never dimmed: no scope excludes it.
     const mask = directMask(element.dataset.recordKind || "");
-    const scopeDim = mask && ![...uiState.searchScopes].some(letter => mask & CLASS_BIT[letter]);
+    const scopeDim = mask && (![...uiState.searchScopes].some(letter => mask & CLASS_BIT[letter])
+      || (mask & CLASS_BIT.o && !toolMatches(element.dataset.searchTool || "", queryTools())));
     element.classList.toggle("filter-dim", !!scopeDim);
   });
   // The tool filter is a SEARCH BY KIND on this shell (#133), not the classic page's cut: it
@@ -2161,15 +2078,12 @@ function filterChain(record, wanted, hits, direct) {
  *  since — only what is newly on it is opened, so a live session does not re-open a fold the
  *  reader closed a moment ago (#126). */
 function computeFilterHits() {
-  // #356: only the tools the box's scope can hold. A tool's calls share one kind, so this is the
-  // whole of "in scope" for the filter: with `u` and Bash the owner was shown "1577 matches" and
-  // every one of them dimmed out of view, because the filter counted Bash calls the scope excludes.
-  const masks = toolClassMasks(recordState.records), scope = scopeClassMask();
-  const wanted = queryTools().filter(t => { if (!scope) return true; const m = toolKeyMask(t.name + (t.prefix ? "*" : ""), masks); return !m || !!(m & scope); });
+  // The tools `o(…)` names (#367): a tool is only ever chosen inside Tools, so no scope can rule
+  // one out — the owner's "1577 matches", none visible, cannot be built any more (#356).
+  const wanted = queryTools();
   const before = recordState.filterHits;
   const hits = new Set(), direct = new Set(), indices = [];
-  // An EMPTY list means "no facet, every tool" to the shared matcher, so a scope that rules out
-  // every chosen tool must match nothing here, not everything.
+  // An EMPTY list means "every tool" to the shared matcher, so no tools must match nothing here.
   if (wanted.length) recordState.records.forEach((record, index) => { if (filterChain(record, wanted, hits, direct)) indices.push(index); });
   recordState.filterHits = hits;
   recordState.filterDirect = direct;
@@ -2401,7 +2315,7 @@ byId("navigatorOptions").onclick = event => { const scope = event.target.closest
   // menu — the query has not changed.
   const tw = event.target.closest("[data-tw]"); if (tw) { const key = tw.dataset.tw; uiState.toolTreeOpen.has(key) ? uiState.toolTreeOpen.delete(key) : uiState.toolTreeOpen.add(key); renderFilterMenu(); return; }
   const tool = event.target.closest("[data-tool-filter]"); if (tool) { toggleToolFacet(tool.dataset.toolFilter); } };
-byId("selectAllScopes").onclick = () => { uiState.searchScopes = new Set(ALL_SCOPES); uiState.searchWhole = false; applyScopeFromMenu(); };
+byId("selectAllScopes").onclick = () => { uiState.searchScopes = new Set(ALL_SCOPES); uiState.searchWhole = false; uiState.chips.tools = []; applyScopeFromMenu(); };
 byId("clearTranscriptFilters").onclick = () => { setToolFacets([]); };
 
 function openGlobalSearch() { byId("searchLayer").classList.add("production-open"); byId("searchInput").value = ""; renderGlobalSearch(); byId("searchInput").focus(); }

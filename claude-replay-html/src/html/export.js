@@ -292,8 +292,10 @@
   stream.appendChild(vwin);
   stream.appendChild(botPad);
   var searchNeedle = ""; // active search term (lowercase), re-marked on materialize
-  var searchScope = null; // `uatobrew:` prefix parse; w modifies matching, null = unscoped
-  var searchTools = null; // the box's `tool:` facets (#292), null = none typed
+  var searchScope = null; // `uatow:` prefix parse; w modifies matching, null = unscoped
+  var searchTools = null; // the box's `o(…)` tools (#292, #367), null = none typed
+  var searchToolSpec = ""; // …as the reader wrote them, for the count label
+  var pageToolCounts = {}; // tool name -> calls, refreshed by buildToolMenu: `o(…)`'s letters
 
   function isTurnKind(b) { return b.kind === "user" || b.kind === "command"; }
   function isHiddenRec(i) { return !!filter && !isTurnKind(records[i]) && !recHit[i]; }
@@ -1707,6 +1709,7 @@
     // holds the materialized window (#50).
     var entries = {}; // selector -> {label, count}
     var toolCounts = {}; // tool name -> count, for the shared tree (#293)
+    pageToolCounts = toolCounts; // …and the letters `o(…)` reads (#367)
     eachFoldRec(function (b) {
       if (b.tool) {
         toolCounts[b.tool] = (toolCounts[b.tool] || 0) + 1;
@@ -3257,16 +3260,16 @@
       tn.parentNode.replaceChild(frag, tn);
     });
   }
-  // The `uatobrew:` scope grammar (same syntax as the TUI's `/` search,
-  // case-insensitive): a run of DISTINCT letters — u (your turns: user+command),
-  // a (agent replies), t (thinking, both think and act), o (ALL tools), b (bash),
-  // r (reads), e (edits+writes), w (whole-word modifier) — then `:`, ORDER-FREE,
-  // so `aut:` ≡ `uat:` and `tw:` means whole words in thinking prose (`+` still parses).
-  // A LEADING colon escapes:
-  // `:rate:limit` searches the literal `rate:limit`. Returns {set, len}; {set:null}
-  // for the escape; null when the text has no prefix (repeats, foreign letters —
-  // including the dropped `user:` alias — and colons in ordinary text like `http://`).
-  // The `uatobrew:` grammar is the shared module's (#101) — one parser with the app shell.
+  // The `uatow:` prefix (#367, case-insensitive): at the start of the box, a run of DISTINCT
+  // letters — u (your turns: user+command), a (agent replies), t (thinking, both think and act),
+  // o (tools), w (whole-word modifier) — then `:`, ORDER-FREE, so `aut:` ≡ `uat:` and `tw:` means
+  // whole words in thinking prose. `o(…)` narrows the tools: `o(B):` Bash, `o(Bash,Read):` by name.
+  // A LEADING colon escapes: `:ua: x` searches the literal `ua: x`.
+  // The `uatow:` grammar is the shared module's (#101, #367) — one parser with the app shell.
+  // The letters inside `o(…)` are the shared table's, from this page's own tool counts.
+  function resolveSearchTools(spec) {
+    return shared.resolveTools(spec, shared.toolLetters(pageToolCounts));
+  }
   function searchInScope(i) {
     return !searchScope || countRec(i, searchScope, searchNeedle, !!searchScope.w) > 0;
   }
@@ -3283,7 +3286,7 @@
     totalHits = 0;
     // The query split — the escape, the pure-scope run, the two-character floor — is the
     // shared rule (#118, shared/search.js splitQuery).
-    var q = shared.splitQuery(v);
+    var q = shared.splitQuery(v, undefined, resolveSearchTools);
     if (q.tooShort) {
       qc.textContent = "";
       classCounts = null;
@@ -3291,11 +3294,12 @@
       return;
     }
     searchScope = q.set;
-    // The box's own `tool:` facets (#292): one grammar with the app shell, so a typed facet
-    // narrows the search here too. The MENU's filter is this page's cut and still narrows beside
-    // it (`filterTools`); a typed facet takes precedence when both are present, because the box
-    // is what the reader just said.
+    // The box's own `o(…)` (#292, #367): one grammar with the app shell, so typed tools narrow
+    // the search here too. The MENU's filter is this page's cut and still narrows beside it
+    // (`filterTools`); typed tools take precedence when both are present, because the box is
+    // what the reader just said.
     searchTools = q.tools && q.tools.length ? q.tools : null;
+    searchToolSpec = q.toolSpec || "";
     var lc = q.lc;
     searchNeedle = lc;
     classCounts = shared.zeroCounts();
@@ -3324,7 +3328,7 @@
     var hr = curHit && navPos >= 0 ? hitRecs[navPos] : null;
     qc.textContent = hr
       ? (hr.start + Math.min(navMark, hr.count - 1) + 1) + "/" + totalHits
-      : shared.countLabel(totalHits, searchScope, whole);
+      : shared.countLabel(totalHits, searchScope, whole, searchToolSpec);
     showQNav(totalHits > 0);
   }
   // Hits follow the RECORDS as they arrive and retreat (#71): a record appended while a
@@ -3579,7 +3583,7 @@
       if (b) b.classList.toggle("on", !!on);
     });
   }
-  // The scope dropdown is the visible face of the `uatobrew:` prefix, and the BOX is the
+  // The scope dropdown is the visible face of the `uatow:` prefix, and the BOX is the
   // single source of truth: checking a box rewrites the prefix in the input, typing a
   // prefix by hand checks the boxes — neither can drift from the other. The rebuilt
   // prefix is canonical (`uato` order); a hand-typed permutation is honored as typed.
@@ -3588,7 +3592,7 @@
   // (null = no query). Computed in search()'s one pass over the records.
   var classCounts = null;
   function updateScopeCounts() {
-    ["u", "a", "t", "o", "b", "r", "e"].forEach(function (k) {
+    ["u", "a", "t", "o"].forEach(function (k) {
       var el = $("qsn-" + k);
       if (el) el.textContent = classCounts ? String(classCounts[k]) : "";
     });
@@ -3598,10 +3602,10 @@
     if (m) m.classList.toggle("on", !!open);
   }
   function syncQScope() {
-    // A scope facet anywhere in the box ticks its boxes — `scope:ub` or the bare `ub:` (§8).
-    var set = shared.splitQuery(q.value).set
-      || { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: false };
-    ["u", "a", "t", "o", "b", "r", "e", "w"].forEach(function (k) {
+    // The box's prefix ticks its boxes (§8, #367).
+    var set = shared.splitQuery(q.value, undefined, resolveSearchTools).set
+      || { u: false, a: false, t: false, o: false, w: false };
+    ["u", "a", "t", "o", "w"].forEach(function (k) {
       var cb = $("qs-" + k);
       if (cb) cb.checked = !!set[k];
     });
@@ -3610,11 +3614,13 @@
     if (qscope) qscope.classList.toggle("on", activeLetters(set).length > 0);
   }
   function applyScopeFromMenu() {
-    var letters = ["u", "a", "t", "o", "b", "r", "e", "w"].filter(function (k) {
+    var letters = ["u", "a", "t", "o", "w"].filter(function (k) {
       var cb = $("qs-" + k);
       return cb && cb.checked;
     });
-    q.value = shared.writePrefix(q.value, letters);
+    // Typed tools stay while Tools is ticked; unticking it takes them away (#367).
+    var tools = letters.indexOf("o") >= 0 ? shared.splitQuery(q.value).toolSpec : "";
+    q.value = shared.writePrefix(q.value, letters, tools);
     search(q.value);
     syncQScope();
   }
@@ -3622,7 +3628,7 @@
     qscope.addEventListener("click", function () {
       scopeMenu(!$("qscopemenu").classList.contains("on"));
     });
-    ["u", "a", "t", "o", "b", "r", "e", "w"].forEach(function (k) {
+    ["u", "a", "t", "o", "w"].forEach(function (k) {
       var cb = $("qs-" + k);
       if (cb) cb.addEventListener("change", applyScopeFromMenu);
     });

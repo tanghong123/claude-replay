@@ -10416,7 +10416,7 @@ fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
         Duration::from_secs(5),
         "document.querySelector('.header-searchbox').className",
     );
-    tab.type_str("scope:u question").unwrap();
+    tab.type_str("u: question").unwrap();
     tab.press_key("Enter").unwrap();
     harness::until(
         &tab,
@@ -10434,7 +10434,9 @@ fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
         count_w, true,
         "with one chip the open box shows the whole count"
     );
-    tab.type_str(" tool:Bash ").unwrap();
+    // #367: the prefix is read at the start of the box, so the second chip is typed there.
+    harness::eval(&tab, "(function(){ var i = document.getElementById('transcriptSearchInput'); i.setSelectionRange(0, 0); return 1; })()");
+    tab.type_str("o(B): ").unwrap();
     harness::until(
         &tab,
         "!!document.querySelector('#searchChips [data-chip=\"tools\"]') && document.getElementById('transcriptSearchInput').value.trim() === 'question'",
@@ -10505,7 +10507,7 @@ fn a_phone_toolbar_keeps_one_row_with_a_query_and_a_chip() {
         Duration::from_secs(5),
         "document.querySelector('.header-searchbox').className",
     );
-    tab.type_str("scope:u question").unwrap();
+    tab.type_str("u: question").unwrap();
     tab.press_key("Enter").unwrap();
     harness::until(
         &tab,
@@ -10580,7 +10582,7 @@ fn a_phone_search_strip_scrolls_whole_and_counts_under_the_box() {
         Duration::from_secs(5),
         "document.querySelector('.header-searchbox').className",
     );
-    tab.type_str("scope:ua tool:Bash ").unwrap();
+    tab.type_str("uao(B): ").unwrap();
     harness::until(
         &tab,
         "!!document.querySelector('#searchChips [data-chip=\"scope\"]') && !!document.querySelector('#searchChips [data-chip=\"tools\"]')",
@@ -10656,7 +10658,7 @@ fn a_phone_search_chips_are_their_letters_and_the_placeholder_steps_aside() {
     let placeholder =
         "getComputedStyle(document.getElementById('transcriptSearchInput'), '::placeholder').color";
     let bare = harness::eval(&tab, placeholder);
-    tab.type_str("scope:u tool:Bash ").unwrap();
+    tab.type_str("uo(B): ").unwrap();
     harness::until(
         &tab,
         "!!document.querySelector('#searchChips [data-chip=\"scope\"]') && !!document.querySelector('#searchChips [data-chip=\"tools\"]') && document.getElementById('transcriptSearchInput').value === ''",
@@ -10692,106 +10694,94 @@ fn a_phone_search_chips_are_their_letters_and_the_placeholder_steps_aside() {
     );
 }
 
-/// #356, the owner: "some combination of scope and tools cannot be combined. E.g. user message
-/// would never allow combination with any tools" ("Grey out makes sense"), then "the combination of
-/// u and Bash shows 1570 matches, and none of them actually shows". A choice that cannot combine
-/// with what the box holds is greyed in the drop-down and the filter menu and cannot be picked; a
-/// typed contradiction is marked and the count names it — no count of calls the scope dims away.
+/// #367, which retired #356's greying: the owner, "Remove Bash output, Reads, Edits from scope.
+/// Change All Tools to Tools (in scope), and make the individual tools the secondary checkbox below
+/// it". A tool is only ever chosen inside Tools, so no choice can contradict another: on a phone the
+/// tools drop-down is every row live, the popover nests the tools under the Tools row as 44px
+/// targets, and letters with tools are a UNION — `ao(B): ut` is the replies' hits AND the Bash
+/// calls' — every one of them reachable, not dimmed away (#356's "1570 matches, and none of them
+/// actually shows" can no longer be built).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn a_phone_search_greys_out_what_cannot_combine() {
+fn a_phone_search_nests_tools_under_tools_and_counts_their_union() {
     let _serial = serial();
-    let (_m, _b, tab) = phone_world(2733, "phone-search-clash", 390, 844);
-    let open_box = || {
-        let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
-        phone_tap_at(&tab, gx, gy);
-        harness::until(
-            &tab,
-            "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
-            "a tap on the glass to open the box",
-            Duration::from_secs(5),
-            "document.querySelector('.header-searchbox').className",
-        );
-    };
-    let rows = "(function(){ var s = document.getElementById('searchSuggest'); if (!s || s.hidden) return JSON.stringify({ open: false }); var r = [].slice.call(s.querySelectorAll('[data-suggest]')); return JSON.stringify({ open: true, rows: r.map(function (e) { return e.querySelector('.search-suggest-letter').textContent + (e.classList.contains('is-off') ? '-' : '+'); }).join(' '), note: !!s.querySelector('.facet-off-note') }); })()";
+    let (_m, _b, tab) = phone_world(2733, "phone-search-nest", 390, 844);
     let read = |js: &str| -> serde_json::Value {
         serde_json::from_str(harness::eval(&tab, js).as_str().unwrap_or("{}")).unwrap_or_default()
     };
-    open_box();
-    // A scope of user messages greys every tool.
-    tab.type_str("scope:u tool:").unwrap();
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "a tap on the glass to open the box",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    // `o(` opens the tools: every row live, Bash on its reserved letter.
+    tab.type_str("o(").unwrap();
     harness::until(&tab, "!document.getElementById('searchSuggest').hidden && !!document.querySelector('#searchSuggest [data-suggest]')", "the tool drop-down", Duration::from_secs(5), "document.getElementById('searchSuggest').innerText");
-    let r = read(rows);
+    let r = read("(function(){ var r = [].slice.call(document.querySelectorAll('#searchSuggest [data-suggest]')); return JSON.stringify({ rows: r.map(function (e) { return e.querySelector('.search-suggest-letter').textContent + ':' + e.querySelector('.search-suggest-label').textContent; }), off: r.filter(function (e) { return e.disabled || e.getAttribute('aria-disabled') === 'true' || e.classList.contains('is-off'); }).length }); })()");
     assert!(
         r["rows"]
-            .as_str()
-            .unwrap_or("")
-            .split(' ')
-            .all(|x| x.ends_with('-')),
-        "under scope u every tool row is greyed: {r}"
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|x| x == "B:Bash")),
+        "Bash is B: {r}"
     );
-    assert_eq!(r["note"], true, "and the list says why: {r}");
-    harness::eval(
-        &tab,
-        "document.querySelector('#searchSuggest [data-suggest]').click(); 'ok'",
-    );
-    assert_eq!(
+    assert_eq!(r["off"], 0, "no row is ever greyed: {r}");
+    // The union, counted: the box set as a reader leaves it, the count read back.
+    let count_of = |q: &str| -> i64 {
+        harness::eval(&tab, &format!("(function(){{ document.querySelectorAll('#searchChips [data-chip-remove]').forEach(function (c) {{ c.click(); }}); var i = document.getElementById('transcriptSearchInput'); i.value = {q:?}; i.dispatchEvent(new Event('input', {{ bubbles: true }})); return 'typed'; }})()"));
+        harness::until(
+            &tab,
+            "/^[0-9]/.test(document.getElementById('transcriptSearchCount').textContent.trim())",
+            "a count for the query",
+            Duration::from_secs(5),
+            "document.getElementById('transcriptSearchCount').textContent",
+        );
         harness::eval(
             &tab,
-            "document.getElementById('transcriptSearchInput').value"
-        ),
-        serde_json::json!("tool:"),
-        "a greyed row cannot be picked"
-    );
-    // The filter menu agrees.
-    harness::eval(&tab, "document.getElementById('transcriptSearchInput').value = ''; document.getElementById('transcriptSearchInput').dispatchEvent(new Event('input', { bubbles: true })); 'ok'");
-    phone_tap(&tab, "#filterTranscriptBtn");
-    harness::until(&tab, "document.getElementById('navigatorOptions').classList.contains('open') || getComputedStyle(document.getElementById('navigatorOptions')).display !== 'none'", "the filter menu", Duration::from_secs(5), "document.getElementById('navigatorOptions').className");
-    let menu = read("(function(){ var t = [].slice.call(document.querySelectorAll('#filterOptions .tool-type-option')); return JSON.stringify({ tools: t.length, off: t.filter(function (e) { return e.disabled && e.classList.contains('is-off'); }).length }); })()");
+            "document.getElementById('transcriptSearchCount').textContent.trim()",
+        )
+        .as_str()
+        .and_then(|t| t.split_whitespace().next()?.parse::<i64>().ok())
+        .unwrap_or(-1)
+    };
+    let replies = count_of("a: ut");
+    let bash = count_of("o(B): ut");
+    let both = count_of("ao(B): ut");
     assert!(
-        menu["tools"].as_i64().unwrap_or(0) > 0 && menu["tools"] == menu["off"],
-        "under scope u the menu's tool rows are all greyed and disabled: {menu}"
+        replies >= 1 && bash >= 1 && both == replies + bash,
+        "`ao(B): ut` is the replies' hits and the Bash calls' ({replies} + {bash} = {both})"
     );
-    phone_tap(&tab, "#filterTranscriptBtn");
-    // The other way: a Bash chip greys the classes that hold no Bash call.
-    phone_tap(&tab, "#transcriptSearchClear");
-    // The clear leaves the box open with the field focused, ready for the next query (#352).
+    // …and every one is reachable: the step lands on a mark that is shown, not dimmed.
+    harness::eval(&tab, "document.getElementById('findNext').click(); 1");
     harness::until(
         &tab,
-        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput') && document.getElementById('transcriptSearchInput').value === ''",
-        "the clear to leave the box open, empty and focused",
+        "(function(){ var m = document.querySelector('.transcript mark.search-mark.current'); return !!m && !m.closest('.filter-dim'); })()",
+        "a current match, not dimmed",
         Duration::from_secs(5),
-        "document.querySelector('.header-searchbox').className",
+        "document.querySelectorAll('.transcript mark.search-mark').length",
     );
-    tab.type_str("tool:Bash scope:").unwrap();
-    harness::until(&tab, "!document.getElementById('searchSuggest').hidden && !!document.querySelector('#searchSuggest [data-suggest]')", "the scope drop-down", Duration::from_secs(5), "document.getElementById('searchSuggest').innerText");
-    let r = read(rows);
-    assert_eq!(
-        r["rows"], "u- a- t- o+ b+ r- e- w+",
-        "with Bash only All tools and Bash output stay live: {r}"
-    );
-    // A contradiction typed anyway is marked, and the count names it — not "1577 matches".
-    phone_tap(&tab, "#transcriptSearchClear");
-    // The clear leaves the box open with the field focused, ready for the next query (#352).
+    // The popover: u, a, t and Tools, the tools nested under Tools as phone targets, none disabled.
+    harness::eval(&tab, "(function(){ if (!document.getElementById('navigatorOptions').classList.contains('open')) document.getElementById('filterTranscriptBtn').click(); return 1; })()");
     harness::until(
         &tab,
-        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput') && document.getElementById('transcriptSearchInput').value === ''",
-        "the clear to leave the box open, empty and focused",
+        "document.getElementById('navigatorOptions').classList.contains('open')",
+        "the filter popover",
         Duration::from_secs(5),
-        "document.querySelector('.header-searchbox').className",
+        "document.getElementById('navigatorOptions').className",
     );
-    tab.type_str("scope:u tool:Bash ").unwrap();
-    harness::until(&tab, "!!document.querySelector('#searchChips [data-chip=\"tools\"]') && !!document.querySelector('#searchChips [data-chip=\"scope\"]')", "both chips", Duration::from_secs(5), "document.getElementById('searchChips').innerText");
-    let clash = read("(function(){ return JSON.stringify({ count: document.getElementById('transcriptSearchCount').textContent, marked: document.querySelectorAll('#searchChips .search-chip.conflict').length, hits: document.querySelectorAll('.filter-hit').length }); })()");
-    assert_eq!(
-        clash["count"], "no Bash call in scope u",
-        "the count names the clash: {clash}"
+    let menu = read("(function(){ var scope = document.getElementById('scopeRow'), list = document.getElementById('filterOptions'); var rows = [].slice.call(scope.querySelectorAll('.scope-option')); var tools = [].slice.call(list.querySelectorAll('.tool-type-option')); return JSON.stringify({ scopes: rows.map(function (r) { return r.dataset.scope; }).join(''), follows: scope.nextElementSibling === list, tools: tools.length, tall: tools.every(function (t) { return t.getBoundingClientRect().height >= 44; }), off: tools.filter(function (t) { return t.disabled || t.classList.contains('is-off'); }).length, bashOn: tools.some(function (t) { return t.dataset.toolFilter === 'Bash' && t.classList.contains('on'); }) }); })()");
+    assert!(
+        menu["scopes"] == "uato" && menu["follows"] == true,
+        "the scope rows are u, a, t and Tools, the tools listed under Tools: {menu}"
     );
-    assert_eq!(clash["marked"], 2, "both chips are marked: {clash}");
-    assert_eq!(
-        clash["hits"], 0,
-        "and no Bash call is marked as a hit the scope then dims: {clash}"
+    assert!(
+        menu["tools"].as_u64().unwrap_or(0) >= 1 && menu["tall"] == true && menu["off"] == 0,
+        "every tool row is a live phone target: {menu}"
     );
+    assert_eq!(menu["bashOn"], true, "and the box's Bash is ticked: {menu}");
 }
 
 /// #358, the owner: "add support for the Qwenwork agent. It is derived from qoderwork agent, and its
@@ -10830,7 +10820,7 @@ fn the_app_shell_lists_and_opens_a_qwenwork_session() {
     );
 }
 
-/// #354, the owner's repro on 1.340.0: scope `ab`, one word, the box open, stepping — "matches
+/// #354, the owner's repro on 1.340.0: scope `ab` (`ao(B)` since #367), one word, the box open, stepping — "matches
 /// don't always show up in the view". Their export showed every step landing at the right offset;
 /// their screenshot, a Bash output whose lines all run past the right edge. On a phone an output
 /// does not wrap, so a hit far along a line sat beyond its block's right edge, and the step only
@@ -10868,7 +10858,7 @@ fn a_phone_search_step_shows_a_match_far_along_a_long_line() {
         Duration::from_secs(5),
         "document.querySelector('.header-searchbox').className",
     );
-    tab.type_str("scope:ab zebra").unwrap();
+    tab.type_str("ao(B): zebra").unwrap();
     tab.press_key("Enter").unwrap();
     harness::until(
         &tab,

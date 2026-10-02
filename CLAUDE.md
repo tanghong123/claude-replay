@@ -54,13 +54,15 @@ query) wait in the open box. There the chips and the field are ONE strip (`.sear
 load) that scrolls as a whole, the field as wide as its text, so the end being typed stays in view;
 the count hangs as a tag under the box (the open box stacks above the turn's sticky bar, z 27 > 26);
 and the step arrows are SVG, centred. A tool chip is its wrench and the tools' own single-character
-selectors (`tool:Bash` reads "B", #355), and beside chips the field shows no placeholder. A scope and
-a tool facet that can never match together — user messages, replies or thinking with any tool; `b`
-with Read — are kept apart (#356): in the facet drop-down and the filter menu a choice that cannot
-combine with what the box holds is GREYED and disabled with its reason (an ON one stays live to be
-unticked); a typed contradiction marks both chips and the count names it ("no Bash call in scope u")
-instead of a count; and the tool filter itself keeps only the tools the scope can hold, so it never
-counts calls the scope then dims (the owner was shown "1577 matches", none visible). A step brings
+selectors (`o(B)` reads "B", #355), and beside chips the field shows no placeholder. **The query is
+ONE prefix at the start of the box** (#367, `design/in-session-search.md` §9): letters u a t o w
+then a colon, `o(…)` naming tools by letter (`o(BR)`) or name (`o(Bash,Read)`); `scope:`, `tool:` and
+the letters b, r, e stop working (owner). The letters are a UNION and `o(…)` narrows only the tools
+class (`uo(B): x` is your turns or Bash calls), so nothing can contradict — #356's greying, clash
+label and filter intersection are gone. Common tools have RESERVED letters (`shared/search.js`
+`RESERVED_TOOLS`: B Bash, R Read, W Write, E Update, A Agent, S Skill, Q AskUserQuestion, F WebFetch)
+never given to another tool; the rest are per session. The filter popover's tools are checkboxes
+nested under its Tools row (the list moved up at load; the Tool types heading hidden). A step brings
 the match into view on BOTH axes (#354): outputs do not wrap on a phone, so a hit far along a line
 sat past its block's right edge while the vertical landing was exact (the owner's export: every
 step inside one 175,539 px agent process, at the right offset) — `landOnCurrentMark` now scrolls

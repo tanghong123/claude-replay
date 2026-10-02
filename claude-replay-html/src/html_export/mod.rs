@@ -2027,21 +2027,18 @@ fn build_page(
     </div>
     {searchbox}
       <span class="mag">⌕</span>
-      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · uatobrew: prefix scopes by type; w requires whole words (e.g. tw:) · a leading : searches the literal text" autocomplete="off">
+      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · a uatow: prefix scopes by type — o(…) narrows the tools, e.g. o(B): for Bash; w requires whole words (e.g. tw:) · a leading : searches the literal text" autocomplete="off">
       <span id="qcount"></span>
       <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
       <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
       <span class="qscopewrap">
-        <span id="qscope" class="qscope" title="Restrict search by message type or whole words — mirrors the uatobrew: prefix (gray = defaults)"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.5 2.5h13L9.75 8.4v4.6l-3.5 1.5V8.4L1.5 2.5z"/></svg></span>
+        <span id="qscope" class="qscope" title="Restrict search by message type or whole words — mirrors the uatow: prefix (gray = defaults)"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.5 2.5h13L9.75 8.4v4.6l-3.5 1.5V8.4L1.5 2.5z"/></svg></span>
         <div id="qscopemenu">
           <div class="menu-head">Search only…</div>
           <label class="qs-item"><input type="checkbox" id="qs-u"> user messages (u)<span class="qs-n" id="qsn-u"></span></label>
           <label class="qs-item"><input type="checkbox" id="qs-a"> agent responses (a)<span class="qs-n" id="qsn-a"></span></label>
           <label class="qs-item"><input type="checkbox" id="qs-t"> thinking (t)<span class="qs-n" id="qsn-t"></span></label>
-          <label class="qs-item"><input type="checkbox" id="qs-o"> all tools (o)<span class="qs-n" id="qsn-o"></span></label>
-          <label class="qs-item"><input type="checkbox" id="qs-b"> bash output (b)<span class="qs-n" id="qsn-b"></span></label>
-          <label class="qs-item"><input type="checkbox" id="qs-r"> read content (r)<span class="qs-n" id="qsn-r"></span></label>
-          <label class="qs-item"><input type="checkbox" id="qs-e"> file edits/writes (e)<span class="qs-n" id="qsn-e"></span></label>
+          <label class="qs-item"><input type="checkbox" id="qs-o"> tools (o)<span class="qs-n" id="qsn-o"></span></label>
           <label class="qs-item qs-whole"><input type="checkbox" id="qs-w"> whole words (w)</label>
         </div>
       </span>
@@ -4256,12 +4253,10 @@ mod tests {
         );
     }
 
-    /// The search box supports the `uatobrew:` scope prefix (same syntax as the TUI's
-    /// `/` search): a run of distinct letters — u (user+command), a (assistant),
-    /// t (think+act), o (all tool kinds), b (bash), r (reads), e (edits+writes) — in
-    /// any order, with a leading `:` escaping a scope-shaped literal and a PURE run
-    /// searching itself. The contract with the JS: the one parser, the kind-based
-    /// gate, and a tooltip that teaches the syntax.
+    /// The search box supports the `uatow:` prefix (#367): a run of distinct letters at the
+    /// start — u (user+command), a (assistant), t (think+act), o (every tool kind), w (whole
+    /// words) — in any order, `o(…)` narrowing the tools, with a leading `:` escaping it. The
+    /// contract with the JS: the one parser, the kind-based gate, and a tooltip that teaches it.
     #[test]
     fn search_supports_scoped_and_whole_word_prefixes() {
         // #111: the scope classes and the word rules moved to html/shared/search.js; the
@@ -4269,30 +4264,28 @@ mod tests {
         let search = super::shared::shared_source("search").unwrap();
         #[allow(non_snake_case)]
         let SEARCH = search;
-        // #302: the grammar is the shared module's token reader (design/in-session-search.md §8) —
-        // `scope:`/`tools:` facets anywhere, the bare letter run at the start, a per-token escape.
+        // #367: the grammar is the shared module's prefix reader (design/in-session-search.md §8)
+        // — the letter run at the start, `o(…)` for tools, the leading-colon escape.
         assert!(
-            SEARCH.contains(r"const BARE_SCOPE = /^([uatobrew+]{1,15}):/i;")
+            SEARCH.contains("function parsePrefix")
                 && SEARCH.contains("function querySpans")
-                && JS.contains("shared.splitQuery(q.value).set"),
-            "the order-free letter-run grammar is the one parser — the shared module's (#101, #302)"
+                && JS.contains("shared.splitQuery(q.value, undefined, resolveSearchTools)"),
+            "the order-free letter-run grammar is the one parser — the shared module's (#101, #367)"
         );
         assert!(
-            SEARCH.contains(r#"if (t.length > 1 && t.charAt(0) === ":") {"#),
-            "a leading colon escapes ONE token (owner, #302)"
+            SEARCH.contains(r#"if (s.charAt(lead) === ":" && s.length > lead + 1) {"#),
+            "a leading colon escapes the prefix (owner, #302)"
         );
         assert!(
-            SEARCH.contains("if (set && (t.length > bare[0].length || tokens.length > 1)) {")
-                && JS.contains("var q = shared.splitQuery(v);"),
-            "a pure scope run searches itself — the rule is the shared module's, the page runs it (#118)"
+            JS.contains("var q = shared.splitQuery(v, undefined, resolveSearchTools);"),
+            "the page runs the shared split (#118)"
         );
         assert!(
             SEARCH.contains("function directMask")
                 && SEARCH.contains(r#"k === "user" || k === "command""#)
                 && SEARCH.contains(r#"k === "assistant""#)
-                && SEARCH.contains(r"^(bash|edit|write|read|skill|tool)$")
-                && SEARCH.contains(r#"k === "edit" || k === "write""#),
-            "scope gating maps u/a/t/o/b/r/e onto the record kinds via one class table"
+                && SEARCH.contains(r"^(bash|edit|write|read|skill|tool)$"),
+            "scope gating maps u/a/t/o onto the record kinds via one class table"
         );
         assert!(
             JS.contains("recSearchParts")
@@ -4307,13 +4300,13 @@ mod tests {
             "w: uses explicit Unicode-aware word boundaries"
         );
         assert!(
-            build_shell("t", "root", false, false).contains("uatobrew: prefix"),
+            build_shell("t", "root", false, false).contains("uatow: prefix"),
             "the search box tooltip mentions the scope syntax"
         );
     }
 
-    /// The scope's visible face: seven type checkboxes plus a whole-word toggle that
-    /// rewrite the `uatobrew:` prefix in the box,
+    /// The scope's visible face: four type checkboxes plus a whole-word toggle that
+    /// rewrite the `uatow:` prefix in the box (#367: b, r and e are gone — `o(…)` names tools),
     /// and lights up reading back the active letters when a prefix is typed by hand.
     /// The box stays the single source of truth — one parser feeds both faces.
     #[test]
@@ -4326,9 +4319,6 @@ mod tests {
             "id=\"qs-a\"",
             "id=\"qs-t\"",
             "id=\"qs-o\"",
-            "id=\"qs-b\"",
-            "id=\"qs-r\"",
-            "id=\"qs-e\"",
             "id=\"qs-w\"",
         ] {
             assert!(
@@ -4340,11 +4330,10 @@ mod tests {
             shell.contains("user messages")
                 && shell.contains("agent responses")
                 && shell.contains("thinking")
-                && shell.contains("all tools")
-                && shell.contains("bash output")
-                && shell.contains("read content")
-                && shell.contains("file edits/writes")
-                && shell.contains("whole words (w)"),
+                && shell.contains("tools (o)")
+                && shell.contains("whole words (w)")
+                && !shell.contains("id=\"qs-b\"")
+                && !shell.contains("bash output"),
             "the type choices and whole-word modifier are named, letters included"
         );
         assert!(
@@ -4355,9 +4344,7 @@ mod tests {
             JS.contains("classCounts") && JS.contains("function updateScopeCounts"),
             "every choice shows the current query's per-class hit count"
         );
-        for id in [
-            "qsn-u", "qsn-a", "qsn-t", "qsn-o", "qsn-b", "qsn-r", "qsn-e",
-        ] {
+        for id in ["qsn-u", "qsn-a", "qsn-t", "qsn-o"] {
             assert!(shell.contains(id), "the count slot exists: {id}");
         }
         assert!(

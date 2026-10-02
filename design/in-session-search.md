@@ -39,6 +39,8 @@ count changes words between the two ("N hits in ub", "N matches") and never says
 
 ## 3. The grammar
 
+> Superseded by §9 (#367, 2026-10-02): `tool:` and the letters b, r and e are gone; tools are `o(…)` in the prefix.
+
 Backward compatible with every query that parses today:
 
 | form | meaning | notes |
@@ -135,6 +137,8 @@ red on the old code, and unit cases for the parser and the combination table in 
 
 ## 8. Filters as tokens: one shape for tools and scopes (owner, 2026-09-27)
 
+> Superseded by §9 (#367, 2026-10-02): `scope:` and `tool:` tokens stop working; the prefix is read at the start of the box only.
+
 ### 8.1 Why
 
 §3 left the two filters with two different treatments, and the owner named that as the problem:
@@ -199,4 +203,64 @@ confirmed the reach (2026-09-27: "just do it in app shell, and accept your recom
 2. **The app shell's token field**: the key-triggered drop-downs, the per-session letter
    assignment, space-to-chip, Backspace-deletes-chip, chips mirrored with the popover and its
    badge. Browser scenarios, red on the old code, at a narrow window too.
+
+## 9. One prefix, tools inside it (#367, owner, 2026-10-02)
+
+The owner, looking at which scopes and tools could ever combine: "Remove Bash output, Reads, Edits
+from scope. Change All Tools to Tools (in scope), and make the individual tools the secondary
+checkbox below it. Then I think we can make the search query syntax much easier." And on the
+syntax: "go back to the combinable one letter selector followed by `:`. The only tricky part is
+tools … something like `o(…)` to describe the tools."
+
+### 9.1 The grammar
+
+At the very start of the box, a run of distinct letters, then a colon:
+
+| Letter | Searches |
+|---|---|
+| `u` | your turns (prompts and slash commands) |
+| `a` | the agent's replies |
+| `t` | thinking |
+| `o` | tools — every tool, or `o(…)` the ones named |
+| `w` | whole words (a match option, not a part of the transcript) |
+
+Letters are case-insensitive and order-free; a repeated letter makes the run a word. Inside
+`o(…)` the tools are named by their letters (`o(BR)`) or by name (`o(Bash,Read)`, `o(mcp__github__*)`
+for a family), and case matters there (`a` and `A` are different tools). `o` and `o()` are every
+tool. A leading `:` escapes the prefix (`:ua: x` searches `ua: x`). The prefix is read only at the
+start; anywhere else `ua:` is text. A prefix with nothing after it is still a prefix (the app
+shell's chips compose the box as prefix then text).
+
+The old forms stop working (owner): `scope:…`, `tool:…`/`tools:…` and the letters `b`, `r`, `e`
+are text now.
+
+### 9.2 What a combination means
+
+The letters are a UNION of classes; `o(…)` narrows the tools class and nothing else. `uo(B): x`
+is `x` in your turns or in Bash calls. No letter and no tool can contradict each other, so #356's
+greying, its clash label and the filter's scope intersection are gone: the owner's "1570 matches,
+none visible" cannot be built.
+
+### 9.3 Tool letters
+
+Every tool in a session has a letter. The common ones are RESERVED (owner: "reserve letters for the
+most common tools so they never change"), chosen by use on 2026-10-02 (the newest 400 Claude Code
+sessions on the owner's machine): `B` Bash, `R` Read, `W` Write, `E` Update (an Edit or MultiEdit,
+shown and carried as Update; the names Edit and MultiEdit resolve to it), `A` Agent, `S` Skill,
+`Q` AskUserQuestion, `F` WebFetch. A reserved letter is never given to another tool, even in a
+session that never called its own, so a query saved with them means the same everywhere. Every
+other tool's letter depends on the session (its initial when free, else another); a saved query
+names those in full. One table (`toolLetters` in `shared/search.js`) serves both pages.
+
+### 9.4 The controls
+
+App shell: the scope rows are User messages, Agent replies, Thinking and Tools; the session's tools
+are checkboxes nested under Tools. Ticking a tool ticks Tools; unticking Tools (or All) clears the
+tools. The box's chips are the prefix: the scope letters, and a wrench chip for `o(…)`. Typing `o(`
+opens the tools drop-down; scope letters need none (the rows show their `u:` hints).
+
+Classic page: its scope menu is u, a, t, Tools and whole words, and it reads a typed `o(…)` through
+the same table. Its tool filter menu is its own cut, unchanged.
+
+The terminal viewer's `/` search keeps its own `uatobrew:` letters; it is a separate grammar now.
 

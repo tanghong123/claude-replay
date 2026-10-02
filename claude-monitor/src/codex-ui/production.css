@@ -916,7 +916,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .tool-type-option.tool-sub2{padding-left:24px}
 /* #297 — a tool row selects with the Scope rows' tick: a twisty slot (empty on a leaf), the tick,
    the name, the count. The ticked state is the scope rows' own paint. */
-.tool-type-option{grid-template-columns:9px 15px minmax(0,1fr) auto;gap:7px}
+.tool-type-option{grid-template-columns:9px 15px minmax(0,1fr) auto auto;gap:7px}
 .tool-type-option .tool-tw{width:9px}
 .tool-type-option.on .scope-check{border-color:var(--primary);background:var(--primary);box-shadow:0 1px 2px color-mix(in srgb,var(--primary) 22%,transparent)}
 .tool-type-option.on .scope-check:after{opacity:1}
@@ -1001,10 +1001,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .header-searchbox:has(.search-chips.has-chips) input::placeholder{color:transparent}
 /* #356: a choice that cannot combine with what the box holds is greyed (and disabled), with its
    reason in its title and one line under its list; a chip pair that cannot match is marked. */
-.scope-option.is-off,.tool-type-option.is-off,.search-suggest-row.is-off{opacity:.42;cursor:not-allowed}
-.facet-off-note{padding:6px 10px 4px;color:var(--faint);font-size:11px;line-height:1.35}
-.search-chip.conflict{background:var(--amber-bg);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--amber) 55%,transparent)}
-.search-chip.conflict .search-chip-key,.search-chip.conflict .search-chip-value{color:var(--amber)}
+/* #367: the session's tools are checkboxes under the Tools scope row, indented beneath it; the Tool
+   types section's own divider and heading are retired (app.js moves the list up at load). */
+.tool-types-head-retired{display:none!important}
+.tool-type-list.tool-type-nested{padding-left:18px}
+.tool-type-option .scope-key{font:11px/1.4 var(--mono,ui-monospace,monospace);color:var(--faint);min-width:1ch;text-align:right}
 .search-field{display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
 .search-field::-webkit-scrollbar{display:none}
 .search-field>.search-chips{max-width:70%}

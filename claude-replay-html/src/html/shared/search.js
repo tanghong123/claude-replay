@@ -3,25 +3,21 @@
 // of it: its head's summary, badge, preview, name, target and attachment name, then its body
 // parts — markdown with the tags stripped, pre/note text, numbered source lines, diff lines —
 // and the same for every record nested in it. Not its JSON: a query that is only a field name
-// finds nothing. The scope classes (u/a/t/o/b/r/e) and the whole-word rule live here too.
+// finds nothing. The scope classes (u/a/t/o), the tool letters and the whole-word rule live here too.
 //
 // Shared-module conventions (html_export/shared.rs): no imports, one trailing `export` line.
 // `strip` is the page's HTML-to-text function (the classic page uses a scratch element; the app
 // shell a regex) so the module stays DOM-free.
 
-const CLASS_BIT = { u: 1, a: 2, t: 4, o: 8, b: 16, r: 32, e: 64 };
+const CLASS_BIT = { u: 1, a: 2, t: 4, o: 8 };
 
-/** The scope classes a record kind belongs to directly, as a bitmask. */
+/** The scope classes a record kind belongs to directly, as a bitmask. Every tool call is the one
+ *  TOOLS class (#367): which tool it was is the record's `tool`, narrowed by `o(…)`. */
 function directMask(k) {
   if (k === "user" || k === "command") return CLASS_BIT.u;
   if (k === "assistant") return CLASS_BIT.a;
   if (k === "think" || k === "act") return CLASS_BIT.t;
-  if (!/^(bash|edit|write|read|skill|tool)$/.test(k)) return 0;
-  let mask = CLASS_BIT.o;
-  if (k === "bash") mask |= CLASS_BIT.b;
-  if (k === "read") mask |= CLASS_BIT.r;
-  if (k === "edit" || k === "write") mask |= CLASS_BIT.e;
-  return mask;
+  return /^(bash|edit|write|read|skill|tool)$/.test(k) ? CLASS_BIT.o : 0;
 }
 
 /** A record's OWN text parts (nested records excluded), in reading order. */
@@ -73,35 +69,120 @@ function recordTextParts(b, strip, lower = s => s) {
   return { text: all.join(""), parts };
 }
 
-/** The `uatobrew:` scope grammar (the same syntax as the TUI's `/` search, case-insensitive):
- *  a run of DISTINCT letters — u (your turns), a (agent replies), t (thinking), o (all tools),
- *  b (bash output), r (reads), e (edits/writes), w (whole words) — then a colon. Order-free, so
- *  `aut:` ≡ `uat:`; `+` (the old separator) still parses; a repeated letter is a word, not a
- *  scope; a leading `:` escapes a scope-shaped literal. Returns `{ set, len }` or null. */
-function parseScope(needle) {
-  if (needle.charAt(0) === ":") return { set: null, len: 1 };
-  const m = /^([uatobrew+]{1,15}):/i.exec(needle);
-  if (!m) return null;
-  const set = { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: false };
-  const run = m[1].toLowerCase();
-  for (let i = 0; i < run.length; i++) {
-    const p = run.charAt(i);
-    if (p === "+") continue;
-    if (set[p]) return null;
-    set[p] = true;
+/** The box's PREFIX (design/in-session-search.md §8, #367): at the very start of the box, a run of
+ *  DISTINCT letters — u (your turns), a (agent replies), t (thinking), o (tools), w (whole words)
+ *  — then a colon. The letters are case-insensitive and order-free (`au:` ≡ `ua:`); a repeated
+ *  letter is a word, not a prefix. `o` may carry, in parentheses, the tools it narrows to —
+ *  `o(BR)` by their letters ([`toolLetters`]), `o(Bash,Read)` by name, `o(mcp__github__*)` for a
+ *  family — with nothing inside or no parentheses at all meaning every tool. Inside the
+ *  parentheses case matters: `a` and `A` are different tools. A leading `:` escapes the prefix
+ *  (`:ua:` is the text `ua:`). `scope:`, `tool:` and the letters b, r and e are gone (the owner,
+ *  2026-10-02: old forms stop working). Returns `{ set, tools, len }` — `tools` the text between
+ *  the parentheses, "" for every tool — or null when `s` does not start with a prefix. */
+function parsePrefix(s) {
+  s = String(s ?? "");
+  const set = { u: false, a: false, t: false, o: false, w: false };
+  let i = 0, tools = "";
+  while (i < s.length && s.charAt(i) !== ":") {
+    const k = s.charAt(i).toLowerCase();
+    if (!(k in set) || set[k]) return null;
+    set[k] = true;
+    i++;
+    if (k === "o" && s.charAt(i) === "(") {
+      const close = s.indexOf(")", i);
+      if (close === -1) return null;
+      tools = s.slice(i + 1, close);
+      if (/[\s():]/.test(tools)) return null;
+      i = close + 1;
+    }
   }
-  if (!activeLetters(set).length) return null;
-  return { set, len: m[0].length };
+  if (i === 0 || s.charAt(i) !== ":") return null;
+  return { set, tools, len: i + 1 };
 }
 
 /** The scope classes of a set, in canonical order (without `w`). */
 function scopeLetters(set) {
-  return ["u", "a", "t", "o", "b", "r", "e"].filter(k => set && set[k]);
+  return ["u", "a", "t", "o"].filter(k => set && set[k]);
 }
 
 /** Every active letter of a set, `w` included. */
 function activeLetters(set) {
-  return ["u", "a", "t", "o", "b", "r", "e", "w"].filter(k => set && set[k]);
+  return ["u", "a", "t", "o", "w"].filter(k => set && set[k]);
+}
+
+/** Tools whose letter never changes (#367, the owner: "reserve letters for the most common tools
+ *  so they never change"), chosen by use: on 2026-10-02 the newest 400 Claude Code sessions here
+ *  called Bash in 394, Read in 265, Write in 246, Edit in 192, Agent in 56, Skill in 27,
+ *  AskUserQuestion in 17 and WebFetch in 16. A reserved letter is never handed to another tool,
+ *  even in a session that never called its own — so `o(B)` is Bash in every session, and a query
+ *  saved by these letters means the same everywhere. Every other tool's letter depends on the
+ *  session; a saved query names it in full. Names are the ones a record carries, which are the
+ *  ones the page shows: Claude Code shows an Edit (or MultiEdit) as `Update`, so `E` is Update,
+ *  and the names `Edit` and `MultiEdit` are read as it ([`TOOL_ALIASES`]). */
+const RESERVED_TOOLS = [["B", "Bash"], ["R", "Read"], ["W", "Write"], ["E", "Update"], ["A", "Agent"], ["S", "Skill"], ["Q", "AskUserQuestion"], ["F", "WebFetch"]];
+
+/** Tool names a reader may type for the name a record carries (present.rs `display_name`). */
+const TOOL_ALIASES = { edit: "Update", multiedit: "Update" };
+
+/** A session's tools with their LETTERS (§8.2), from `counts` (`{name: calls}`): most-used first.
+ *  A reserved tool takes its reserved letter; any other takes its initial when free, else the other
+ *  case, else another letter of its name, else any free letter, then a digit — never a reserved
+ *  one. MCP tools take ONE letter per server, as the family `mcp__<server>__*`. Returns
+ *  `[{key, label, count, family, letter}]`. */
+function toolLetters(counts) {
+  const entries = new Map();
+  for (const [name, n] of Object.entries(counts || {})) {
+    const mcp = /^mcp__([^_]+(?:_[^_]+)*)__/.exec(name);
+    const key = mcp ? `mcp__${mcp[1]}__*` : name;
+    const label = mcp ? mcp[1] : name;
+    const e = entries.get(key) || { key, label, count: 0, family: !!mcp };
+    e.count += n;
+    entries.set(key, e);
+  }
+  const ordered = [...entries.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  const reserved = new Map(RESERVED_TOOLS.map(([letter, name]) => [name, letter]));
+  const used = new Set(RESERVED_TOOLS.map(([letter]) => letter)), out = [];
+  const pool = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const swap = c => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase());
+  for (const e of ordered) {
+    if (reserved.has(e.key)) { out.push({ ...e, letter: reserved.get(e.key) }); continue; }
+    const own = [...e.label].filter(c => /[A-Za-z0-9]/.test(c));
+    const tries = [own[0], own[0] && swap(own[0]), ...own.slice(1), ...own.slice(1).map(swap), ...pool];
+    const letter = tries.find(c => c && !used.has(c));
+    if (!letter) continue;
+    used.add(letter);
+    out.push({ ...e, letter });
+  }
+  return out;
+}
+
+/** The tools an `o(…)` names, as `[{name, prefix}]` for [`toolMatches`]: the NAMES when every
+ *  comma-separated part names a tool of the session or a reserved one (or ends in `*`, a family),
+ *  else the LETTERS when the text is one run of known letters, else the parts as names (which match
+ *  nothing they do not name). `letters` is [`toolLetters`]'s answer for the session; the reserved
+ *  letters resolve whether or not the session called their tool. */
+function resolveTools(spec, letters) {
+  const s = String(spec ?? "");
+  const parts = s.split(",").filter(Boolean);
+  if (!parts.length) return [];
+  const asTool = key => (key.endsWith("*") ? { name: key.slice(0, -1), prefix: true } : { name: key, prefix: false });
+  const known = new Map(Object.entries(TOOL_ALIASES));
+  for (const [, name] of RESERVED_TOOLS) known.set(name.toLowerCase(), name);
+  for (const e of letters || []) known.set(e.key.toLowerCase(), e.key);
+  const named = parts.map(p => known.get(p.toLowerCase()) || p);
+  if (parts.every(p => known.has(p.toLowerCase()) || p.endsWith("*"))) return dedupeTools(named.map(asTool));
+  const byLetter = new Map(RESERVED_TOOLS);
+  for (const e of letters || []) byLetter.set(e.letter, e.key);
+  if (parts.length === 1 && [...s].every(c => byLetter.has(c))) return dedupeTools([...s].map(c => asTool(byLetter.get(c))));
+  return dedupeTools(named.map(asTool));
+}
+
+function dedupeTools(tools) {
+  const seen = new Set();
+  return tools.filter(t => {
+    const key = (t.prefix ? "^" : "=") + t.name.toLowerCase();
+    return seen.has(key) ? false : (seen.add(key), true);
+  });
 }
 
 /** The bitmask of a scope set's classes; 0 means no scope (everything). */
@@ -165,185 +246,76 @@ function countOcc(t, lc, whole) {
  * written here. */
 
 /** The scope classes in canonical order (no `w`) — the order every count row is read in. */
-const CLASS_ORDER = ["u", "a", "t", "o", "b", "r", "e"];
+const CLASS_ORDER = ["u", "a", "t", "o"];
 
 /** A needle shorter than this searches nothing: two characters of noise would mark a page. */
 const MIN_NEEDLE = 2;
 
 /** An empty per-class accumulator. */
 function zeroCounts() {
-  return { u: 0, a: 0, t: 0, o: 0, b: 0, r: 0, e: 0 };
+  return { u: 0, a: 0, t: 0, o: 0 };
 }
 
-/** A scope letter run (`ub`, `u+b`, `wt`) → its set, or null: each letter once, at least one. */
-function scopeSetOf(run) {
-  const set = { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: false };
-  for (const ch of String(run).toLowerCase()) {
-    if (ch === "+") continue;
-    if (!(ch in set) || set[ch]) return null;
-    set[ch] = true;
-  }
-  return activeLetters(set).length ? set : null;
-}
-
-/** A `tool:` value → `[{name, prefix}]`: comma-separated names, a trailing `*` for a family. */
-function toolsOf(value) {
-  const out = [];
-  for (const piece of String(value).split(",")) {
-    const prefix = piece.endsWith("*");
-    const name = prefix ? piece.slice(0, -1) : piece;
-    if (name.length) out.push({ name, prefix });
-  }
-  return out;
-}
-
-const FACET_KEY = /^(tools?|scope):(.*)$/i;
-const BARE_SCOPE = /^([uatobrew+]{1,15}):/i;
-
-/** The box as SPANS (design/in-session-search.md §8): each whitespace-separated token is TEXT, a
- *  SCOPE facet or a TOOLS facet, with its offsets in `raw`, so the readers (`splitQuery`) and the
- *  writers (`writePrefix`, `writeTools`) share one reading and a writer can replace facets without
- *  touching a character of the reader's own text.
- *  - `tool:A,B` (`tools:` too) and `scope:ub` are facets ANYWHERE — at the start or after a space,
- *    so `about:blank` is text: `about` is not a key. An empty or invalid value is text (a reader
- *    mid-type is not suddenly searching nothing; `scope:xyz` is not a scope).
- *  - A leading `:` escapes ONE token, up to the next space (owner, 2026-09-27): `:tools:` is the
- *    literal `tools:`, and the rest of the box parses as usual.
- *  - The bare letter run at the very start (`ub:x`, `ub: x`) is still a scope — the TUI's `/` and
- *    the reader's hands know it — unless nothing follows it (`auto:` searches itself). What follows
- *    its colon in the same token is read as a token of its own, so `ub:tool:Read` is two facets. */
+/** The box as SPANS (design/in-session-search.md §8): the PREFIX, when the box starts with one,
+ *  and the TEXT after it, with offsets in `raw` — so the reader (`splitQuery`) and the writer
+ *  (`writePrefix`) share one reading and the writer replaces the prefix without touching a
+ *  character of the reader's own words. The prefix is read only at the very start (the owner,
+ *  2026-10-02); anywhere else `ua:` is text. What follows its colon in the same token is text
+ *  (`ua:deploy`). A leading `:` escapes it: `:ua: x` searches `ua: x`. */
 function querySpans(raw) {
   const s = String(raw ?? "");
-  const tokens = [];
-  const rx = /\S+/g;
-  let m;
-  while ((m = rx.exec(s))) tokens.push({ t: m[0], start: m.index });
+  const lead = s.length - s.trimStart().length;
   const spans = [];
-  tokens.forEach(({ t, start }, i) => {
-    if (i === 0) {
-      const bare = BARE_SCOPE.exec(t);
-      const set = bare && scopeSetOf(bare[1]);
-      if (set && (t.length > bare[0].length || tokens.length > 1)) {
-        spans.push({ kind: "scope", start, end: start + bare[0].length, set, bare: true });
-        start += bare[0].length;
-        t = t.slice(bare[0].length);
-        if (!t) return;
-      }
-    }
-    if (t.length > 1 && t.charAt(0) === ":") {
-      spans.push({ kind: "text", start, end: start + t.length, escaped: true });
-      return;
-    }
-    const key = FACET_KEY.exec(t);
-    if (key) {
-      if (key[1].toLowerCase() === "scope") {
-        const set = scopeSetOf(key[2]);
-        if (set) return void spans.push({ kind: "scope", start, end: start + t.length, set });
-      } else {
-        const tools = toolsOf(key[2]);
-        if (tools.length) return void spans.push({ kind: "tools", start, end: start + t.length, tools });
-      }
-    }
-    spans.push({ kind: "text", start, end: start + t.length });
-  });
+  let at = lead;
+  if (s.charAt(lead) === ":" && s.length > lead + 1) {
+    spans.push({ kind: "text", start: lead, end: s.trimEnd().length, escaped: true });
+    return spans;
+  }
+  const prefix = parsePrefix(s.slice(lead));
+  if (prefix) {
+    spans.push({ kind: "scope", start: lead, end: lead + prefix.len, set: prefix.set, tools: prefix.tools });
+    at = lead + prefix.len;
+  }
+  const rest = s.slice(at);
+  const from = at + (rest.length - rest.trimStart().length), to = s.trimEnd().length;
+  if (to > from) spans.push({ kind: "text", start: from, end: to });
   return spans;
 }
 
-/** `raw` with every span of `kinds` removed — each with the whitespace before it, so what is left
- *  of `a tools:Bash b` is `a b` — and every other character kept as typed (escapes included). */
-function withoutSpans(raw, spans, kinds) {
-  const s = String(raw ?? "");
-  let out = "";
-  let at = 0;
-  for (const span of spans) {
-    if (!kinds.includes(span.kind)) continue;
-    let from = span.start;
-    while (from > at && /\s/.test(s.charAt(from - 1))) from--;
-    out += s.slice(at, from);
-    at = span.end;
-  }
-  return (out + s.slice(at)).trim();
-}
-
-/** A raw box value → what to search (§8): the text (lowercased in `lc`), the scope set (the union
- *  of every scope facet; null for everything), the tools (the union of every tools facet) and
- *  whether the text is too short to run. The text is what is left once the facets are out, with
- *  each escaped token's colon dropped. */
-function splitQuery(raw, minLen = MIN_NEEDLE) {
+/** A raw box value → what to search (§8): the text (lowercased in `lc`), the scope set (null for
+ *  everything), the tools `o(…)` names and whether the text is too short to run. `resolve` turns the
+ *  parenthesized text into `[{name, prefix}]` — a page passes its session's letters through
+ *  [`resolveTools`]; without one, the text is read as names. The tools narrow the TOOLS class and
+ *  nothing else: `uo(B): x` is `x` in your turns or in Bash calls. */
+function splitQuery(raw, minLen = MIN_NEEDLE, resolve) {
   const s = String(raw ?? "").trim();
-  const spans = querySpans(s);
-  let set = null;
-  const tools = [];
-  const seen = new Set();
-  let text = "";
-  let prevEnd = 0;
-  for (const span of spans) {
+  let set = null, spec = "", text = "";
+  for (const span of querySpans(s)) {
     if (span.kind === "scope") {
-      set = set || { u: false, a: false, t: false, o: false, b: false, r: false, e: false, w: false };
-      for (const k of activeLetters(span.set)) set[k] = true;
-    } else if (span.kind === "tools") {
-      for (const tool of span.tools) {
-        const key = (tool.prefix ? "^" : "=") + tool.name.toLowerCase();
-        if (!seen.has(key)) {
-          seen.add(key);
-          tools.push(tool);
-        }
-      }
+      set = span.set;
+      spec = span.tools;
     } else {
-      // The reader's own spacing between their own words is kept; a facet's space went with it.
-      const piece = s.slice(span.start + (span.escaped ? 1 : 0), span.end);
-      text += (text ? s.slice(prevEnd, span.start) : "") + piece;
+      text = s.slice(span.start + (span.escaped ? 1 : 0), span.end);
     }
-    prevEnd = span.end;
   }
   text = text.trim();
+  const tools = spec ? (resolve ? resolve(spec) : resolveTools(spec, [])) : [];
   return {
     needle: text,
     lc: text.toLowerCase(),
     set,
     scoped: set ? { set } : null,
     tools,
-    // A facet with no text is a whole query; text too short to run is too short whatever rides
+    toolSpec: spec,
+    // A prefix with no text is a whole query; text too short to run is too short whatever rides
     // beside it — a one-character needle silently dropped would answer a question nobody asked.
     tooShort: text.length > 0 && text.length < minLen,
   };
 }
 
-/** A `tool:` VALUE as the reader may write it: a bare name (`tool:Bash`), or a name ending in `*`
- *  for a family (`tool:mcp__github__*`, `tool:mcp__*`) — the prefix match the classic page's
- *  `[data-tool^=]` filter already does. Quoting is not part of the grammar: a tool name has no
- *  spaces (the value ends at whitespace), and a name that did could not be typed into the box
- *  today either. */
-const TOOL_TOKEN = /(?:^|\s)tool:([^\s]+)/gi;
-
-/** Pull every `tool:` token out of `raw`, newest rules in `splitQuery`. Returns an array of
- *  `{name, prefix}` — `prefix` true for the `*` form, with the star removed — carrying `rest`:
- *  what is left of the box for the text search. Duplicates collapse; an empty value (`tool:`)
- *  is not a token and stays in the text, so a reader mid-type is not searching nothing. */
-function takeTools(raw) {
-  const out = [];
-  const seen = new Set();
-  const rest = String(raw ?? "").replace(TOOL_TOKEN, (whole, value) => {
-    const prefix = value.endsWith("*");
-    const name = prefix ? value.slice(0, -1) : value;
-    if (!name.length) return whole;
-    const key = (prefix ? "^" : "=") + name.toLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      out.push({ name, prefix });
-    }
-    // The match ATE the space before the token, so it is removed with it: what is left of
-    // `a tool:Bash b` is `a b`, not `a  b`, which would search two literal spaces. The reader's
-    // own spacing between their own words is untouched.
-    return "";
-  });
-  out.rest = rest;
-  return out;
-}
-
 /** Does a record's `tool` answer one of `tools` (as `splitQuery` returns them)? An empty list
  *  asks nothing and admits every record — the caller decides whether that means "no filter".
- *  Case-insensitive, because the box is typed by hand. */
+ *  Case-insensitive for names, because the box is typed by hand. */
 function toolMatches(tool, tools) {
   if (!tools || !tools.length) return true;
   if (!tool) return false;
@@ -351,14 +323,12 @@ function toolMatches(tool, tools) {
   return tools.some(t => (t.prefix ? lc.startsWith(t.name.toLowerCase()) : lc === t.name.toLowerCase()));
 }
 
-/** The `tool:` token for a set of names, as the box would hold them — what a menu writes when
- *  the reader ticks rows (#292: the box is the truth, so a click and a typed token are one
- *  thing). Every tools facet already in the box, wherever it sat, is replaced by ONE comma-joined
- *  `tool:A,B` token at the front (§8; owner: `tool:`, the singular, is the written form). A name ending in `*` is passed through as the family form. */
-function writeTools(raw, names) {
-  const rest = withoutSpans(raw, querySpans(raw), ["tools"]);
-  const token = (names || []).length ? "tool:" + names.join(",") : "";
-  return [token, rest].filter(Boolean).join(" ");
+/** Whether one text part is inside the search: in a wanted class, and — for a tool call, when
+ *  `o(…)` names tools — one of them. No scope at all is everything. */
+function partWanted(part, wanted, tools) {
+  if (!wanted) return true;
+  if (!(part.mask & wanted)) return false;
+  return !(part.mask & CLASS_BIT.o) || toolMatches(part.tool, tools);
 }
 
 /** One record's hits: the total IN SCOPE, and — always, whatever the scope — every part's hits
@@ -367,23 +337,19 @@ function writeTools(raw, names) {
  *  fill the scope rows a reader is about to choose from. */
 function countRecord(text, parts, lc, whole, wanted, counts, tools) {
   let inScope = 0;
-  const byTool = !!(tools && tools.length);
   for (const part of parts || []) {
     const n = countOcc(text.slice(part.start, part.end), lc, whole);
     if (!n) continue;
     if (counts) for (const k of CLASS_ORDER) if (part.mask & CLASS_BIT[k]) counts[k] += n;
-    if (byTool && !toolMatches(part.tool, tools)) continue;
-    if (!wanted || part.mask & wanted) inScope += n;
+    if (partWanted(part, wanted, tools)) inScope += n;
   }
   // Unscoped, the record's own text is the truth — a part-sum would drop the bytes no part
   // claims (a head's summary, an agent or attachment record) that the classic page counts.
-  // A TOOL facet (#292) is a claim about which call the words sit in, so there the parts ARE the
-  // answer: text no part claims belongs to no tool.
-  return wanted || byTool ? inScope : countOcc(text, lc, whole);
+  return wanted ? inScope : countOcc(text, lc, whole);
 }
 
-/** Does a record, or anything nested in it, hold a call one of `tools` names (#292)? The facet's
- *  own question, for a query with no text: the chain is `shared/filter.js`'s, and this is the
+/** Does a record, or anything nested in it, hold a call one of `tools` names (#292)? The prefix's
+ *  own question for a query with no text: the chain is `shared/filter.js`'s, and this is the
  *  predicate a page hands it. */
 function recordHasTool(b, tools) {
   if (!tools || !tools.length) return false;
@@ -395,22 +361,31 @@ function recordHasTool(b, tools) {
   return false;
 }
 
-/** The count a reader sees: "12 hits", "3 hits in ua", "1 hit · whole words". */
-function countLabel(total, set, whole) {
-  const letters = scopeLetters(set);
+/** The prefix for a set of scope letters and an `o(…)` text, as the box holds it: canonical order,
+ *  `o(BR)` when tools are named — which implies `o` — and "" for no scope at all. */
+function prefixOf(letters, tools) {
+  const on = new Set(letters || []);
+  if (tools) on.add("o");
+  const run = ["u", "a", "t", "o", "w"].filter(k => on.has(k)).map(k => (k === "o" && tools ? `o(${tools})` : k)).join("");
+  return run ? run + ":" : "";
+}
+
+/** The count a reader sees: "12 hits", "3 hits in ua", "4 hits in uo(B)", "1 hit · whole words". */
+function countLabel(total, set, whole, tools) {
+  const scope = prefixOf(scopeLetters(set), scopeLetters(set).includes("o") ? tools || "" : "").slice(0, -1);
   return total + " hit" + (total === 1 ? "" : "s")
-    + (letters.length ? " in " + letters.join("") : "")
+    + (scope ? " in " + scope : "")
     + (whole ? " · whole words" : "");
 }
 
-/** The box value the scope menu writes back (§8): every scope facet — the bare prefix or a
- *  `scope:` token, wherever it sat — replaced by ONE `scope:<letters>` token at the front, the
- *  reader's own words kept as typed. No letters means no token: the box says "everything" by
- *  saying nothing. */
-function writePrefix(raw, letters) {
-  const rest = withoutSpans(raw, querySpans(raw), ["scope"]);
-  const token = letters.length ? "scope:" + letters.join("") : "";
-  return [token, rest].filter(Boolean).join(" ");
+/** The box value a menu writes back (§8): the prefix replaced by the one for `letters` and `tools`
+ *  (the text inside `o(…)`, "" for none), the reader's own words kept as typed. No letters and no
+ *  tools means no prefix: the box says "everything" by saying nothing. */
+function writePrefix(raw, letters, tools = "") {
+  const s = String(raw ?? "");
+  const scope = querySpans(s).find(span => span.kind === "scope");
+  const rest = (scope ? s.slice(scope.end) : s).trim();
+  return [prefixOf(letters, tools), rest].filter(Boolean).join(" ");
 }
 
-export { CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parseScope, scopeLetters, activeLetters, scopeMask, splitQuery, querySpans, takeTools, toolMatches, writeTools, recordHasTool, zeroCounts, countRecord, countLabel, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };
+export { CLASS_BIT, CLASS_ORDER, MIN_NEEDLE, directMask, ownTextParts, recordText, recordTextParts, recordTextSize, LIVE_SEARCH_LIMIT, parsePrefix, scopeLetters, activeLetters, scopeMask, RESERVED_TOOLS, toolLetters, resolveTools, splitQuery, querySpans, toolMatches, recordHasTool, zeroCounts, countRecord, countLabel, prefixOf, writePrefix, stripTags, WORD_LEFT, WORD_RIGHT, wholeAt, countOcc };

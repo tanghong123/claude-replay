@@ -4528,9 +4528,9 @@ fn scenario_scope_edges_count_mark_and_reenter(
         whole.ends_with("· whole words") && !whole.contains(" in "),
         "…and the label says so without naming a scope: {whole:?}"
     );
-    // 2. An edit is marked under `e:` — the gate is the record's KIND, not the head's name,
-    //    which reads "Update" on both pages.
-    eval(tab, &format!("{type_query}('e:needle')"));
+    // 2. An edit is marked under `o(E):` (#367: E is Update's reserved letter) — the gate is the
+    //    record's KIND and the tool it carries, which reads "Update" on both pages.
+    eval(tab, &format!("{type_query}('o(E):needle')"));
     settle();
     settle();
     for _ in 0..2 {
@@ -4540,7 +4540,7 @@ fn scenario_scope_edges_count_mark_and_reenter(
     }
     assert!(
         eval(tab, marks_in_edit).as_i64().unwrap_or(0) >= 1,
-        "an edit shows its hits under e: (marks: {:?}, count: {:?})",
+        "an edit shows its hits under o(E): (marks: {:?}, count: {:?})",
         eval(tab, marks_in_edit),
         eval(tab, total_of)
     );
@@ -5742,8 +5742,8 @@ fn scenario_scope_counts_prefix_and_gating(
             "(function(k){ var e = document.querySelector('[data-scope-count=\"' + k + '\"]'); return e ? e.textContent.trim() : 'none'; })",
             "(function(){ document.getElementById('findNext').click(); return 'next'; })()",
             "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); if (!m) return 'no current'; var t = m.closest('.turn'); return t && t.classList.contains('user') ? 'prompt' : 'other'; })()",
-            // The box as a whole: its chips as the tokens they were, then its text (#303).
-            "(function(){ var c = [...document.querySelectorAll('#searchChips [data-chip]')].map(function (e) { return e.querySelector('.search-chip-key').textContent + e.querySelector('.search-chip-value').textContent; }); c.push(document.getElementById('transcriptSearchInput').value); return c.join(' ').trim(); })()",
+            // The box as a whole: its chips as the prefix they are, then its text (#303, #367).
+            "(function(){ var s = document.querySelector('#searchChips [data-chip=\"scope\"] .search-chip-value'), t = document.querySelector('#searchChips [data-chip=\"tools\"] .search-chip-value'); var pre = (s ? s.textContent : '') + (t ? 'o(' + t.textContent + ')' : ''); return ((pre ? pre + ': ' : '') + document.getElementById('transcriptSearchInput').value).trim(); })()",
             "(function(k){ var b = document.querySelector('.scope-option[data-scope=\"' + k + '\"]'); return b ? b.classList.contains('on') : null; })",
             "(function(k){ var b = document.querySelector('.scope-option[data-scope=\"' + k + '\"]'); if (!b) return 'none'; b.click(); return 'clicked'; })",
             "(function(){ var b = document.getElementById('filterTranscriptBtn'); if (b && !document.getElementById('navigatorOptions').classList.contains('open')) b.click(); return 'ok'; })()",
@@ -5759,9 +5759,9 @@ fn scenario_scope_counts_prefix_and_gating(
         "one hit in prompts"
     );
     assert_eq!(
-        eval(tab, &format!("{count_of}('b')")),
+        eval(tab, &format!("{count_of}('o')")),
         "2",
-        "two hits in Bash output"
+        "two hits in the tools — the Bash output (#367: every tool is the one tools class)"
     );
     // A typed prefix: the User box checks, the others do not, and stepping stays in prompts.
     eval(tab, &format!("{type_query}('u:needle')"));
@@ -5773,9 +5773,9 @@ fn scenario_scope_counts_prefix_and_gating(
         "u: checks the User box"
     );
     assert_eq!(
-        eval(tab, &format!("{scope_on}('b')")),
+        eval(tab, &format!("{scope_on}('o')")),
         false,
-        "…and not Bash"
+        "…and not Tools"
     );
     for _ in 0..3 {
         eval(tab, next);
@@ -5800,21 +5800,23 @@ fn scenario_scope_counts_prefix_and_gating(
     settle();
     eval(tab, open_menu);
     assert_eq!(
-        eval(tab, &format!("{click_scope}('b')")),
+        eval(tab, &format!("{click_scope}('o')")),
         "clicked",
-        "the Bash scope button exists"
+        "the Tools scope row exists"
     );
     settle();
     let value = eval(tab, box_value).as_str().unwrap_or("").to_string();
-    // #302: the button writes ONE `scope:` token (design/in-session-search.md §8).
-    let letters = value
-        .strip_prefix("scope:")
-        .and_then(|rest| rest.split(' ').next())
-        .unwrap_or("")
-        .to_string();
+    // #367: the row writes the ONE prefix, at the start (design/in-session-search.md §8).
+    let letters = value.split(':').next().unwrap_or("").to_string();
     assert!(
-        letters.contains('b') && value.ends_with("needle"),
-        "the button wrote a scope token with b: {value:?}"
+        value.contains(':') && letters.contains('o') && value.ends_with("needle"),
+        "the row wrote a prefix with o: {value:?}"
+    );
+    // b, r and e are gone: no such rows, and `b:` is text.
+    assert_eq!(
+        eval(tab, &format!("{click_scope}('b')")),
+        "none",
+        "there is no Bash output row any more (#367)"
     );
 }
 
@@ -14455,14 +14457,14 @@ fn scenario_a_query_and_a_tool_facet_narrow_each_other(
         text_only >= 3,
         "{surface:?}: the fixture says needle in a Bash command, a Read target and some prose: {text_only}"
     );
-    typed("tool:Bash needle");
-    let both = hits("text and facet");
+    typed("o(Bash): needle");
+    let both = hits("text and tools");
     assert!(
         both >= 1 && both < text_only,
-        "{surface:?}: `tool:Bash needle` is the Bash calls' own needles — fewer than every \
+        "{surface:?}: `o(Bash): needle` is the Bash calls' own needles — fewer than every \
          needle ({both} of {text_only}), and not zero"
     );
-    typed("tool:Read needle");
+    typed("o(Read): needle");
     let read = hits("the other tool");
     assert!(
         read >= 1 && read < text_only,
@@ -14475,31 +14477,51 @@ fn scenario_a_query_and_a_tool_facet_narrow_each_other(
         "{surface:?}: dropping the facet brings every hit back"
     );
 
-    // #302 — design/in-session-search.md §8: the facets are named tokens ANYWHERE, so the new
-    // spelling, facets last and in any order, means exactly what the old prefix-first one did.
-    typed("o:tool:Read needle");
-    let old_spelling = hits("the old spelling");
-    typed("needle tools:Read scope:o");
+    // #367 — design/in-session-search.md §8: the tools are `o(…)` in the prefix, by letter or by
+    // name; B and R are reserved, so they mean Bash and Read on both pages and in every session.
+    typed("o(B): needle");
     assert_eq!(
-        hits("the new spelling"),
-        old_spelling,
-        "{surface:?}: `needle tools:Read scope:o` is `o:tool:Read needle`"
+        hits("by letter"),
+        both,
+        "{surface:?}: `o(B):` is `o(Bash):`"
     );
-    typed("tools:Read needle");
+    typed("o(R): needle");
     assert_eq!(
-        hits("tools: alone"),
+        hits("Read by letter"),
         read,
-        "{surface:?}: `tools:` is `tool:`"
+        "{surface:?}: `o(R):` is `o(Read):`"
     );
-    // A leading colon escapes ONE token (owner): `:tools:Read` is the literal, which no record holds.
-    typed(":tools:Read needle");
+    // The letters are a UNION of classes, the tools narrowing only the tools class: your turns,
+    // replies and thinking, and Read calls — more than Read alone, fewer than everything (Bash's
+    // needles are left out).
+    typed("uato(R): needle");
+    let union = hits("the union");
+    assert!(
+        read < union && union < text_only,
+        "{surface:?}: `uato(R): needle` is the prose AND the Read calls, never Bash \
+         ({read} < {union} < {text_only})"
+    );
+    // The old forms stop working (owner, 2026-10-02): `tool:` is text now, which no record holds.
+    for old in ["tool:Read needle", "scope:o needle"] {
+        typed(old);
+        let said = eval(tab, &format!("{count_sel}.textContent.trim()"))
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            said.starts_with('0') || said.to_lowercase().starts_with("no "),
+            "{surface:?}: `{old}` is searched as text, and nothing holds it: {said:?}"
+        );
+    }
+    // A leading colon escapes the prefix (owner): `:o(R):` is the literal, which no record holds.
+    typed(":o(R): needle");
     let said = eval(tab, &format!("{count_sel}.textContent.trim()"))
         .as_str()
         .unwrap_or("")
         .to_string();
     assert!(
         said.starts_with('0') || said.to_lowercase().starts_with("no "),
-        "{surface:?}: the escaped token is searched as text, and nothing holds it: {said:?}"
+        "{surface:?}: the escaped prefix is searched as text, and nothing holds it: {said:?}"
     );
 }
 
@@ -14534,7 +14556,7 @@ fn app_shell_the_search_box_shows_its_own_query() {
     let fx = needle_fixture("searchbox-width-app");
     let page = open(Surface::AppShell, &fx, 3046);
     let tab = &page.tab;
-    let query = "o:tool:Read needle";
+    let query = "uo(R): needle";
     let probe = "(function(){ var box = document.querySelector('.header-searchbox'); var input = document.getElementById('transcriptSearchInput'); var count = document.getElementById('transcriptSearchCount'); var ids = ['findPrev', 'findNext', 'transcriptWholeWords', 'filterTranscriptBtn']; var rects = ids.map(function (id) { var el = document.getElementById(id); if (!el || !el.offsetWidth) return null; var r = el.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { id: id, left: Math.round(r.left), right: Math.round(r.right), hit: !!hit && el.contains(hit) }; }); return JSON.stringify({ bar: [...document.querySelector('.topbar').children].filter(function (c) { return c.offsetWidth; }).map(function (c) { return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().width); }).join(' '), head: [...document.querySelector('.session-heading').children].map(function (c) { var cs = getComputedStyle(c); return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().width) + '/' + cs.flexShrink + '/' + cs.minWidth; }).join(' '), box: Math.round(box.getBoundingClientRect().width), title: (function(){ var t = document.getElementById('sessionTitle'); t.textContent = 'A session whose name needs every pixel the top bar can give it'; var r = t.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.right), Math.round(box.getBoundingClientRect().left), t.scrollWidth, t.clientWidth, t.textContent]; })(), input: [input.scrollWidth, input.clientWidth], count: [count.scrollWidth, count.clientWidth, count.textContent], rects: rects }); })()";
     for (width, height) in [(1440.0, 900.0), (1100.0, 860.0), (820.0, 860.0)] {
         harness::resize(tab, width, height);
@@ -15057,11 +15079,13 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
     drop(m);
 }
 
-/// #303 — design/in-session-search.md §8, the app shell's token field. The owner: "I would type
-/// `tool:` ... a tools selection box shows ... type single letters to combine tools ... I type a
-/// space, the drop down closes, and [the token] becomes a chip that can no longer be edited (but can
-/// be deleted)", the same for `scope:`, and a leading `:` for the literal. Every drop-down sits
-/// inside the window and answers its own hit test; a chip and the filter popover mirror each other.
+/// #303, #367 — design/in-session-search.md §8, the app shell's prefix field. Typing `o(` opens a
+/// drop-down of the session's tools with their letters (#367: Bash B and Read R are reserved);
+/// letters tick rows; once something follows the prefix's colon it freezes into chips that can no
+/// longer be edited (but can be deleted), and a leading `:` is the literal. The tools are checkboxes
+/// nested under the Tools scope row (the owner: "make the individual tools the secondary checkbox
+/// below it"), and a chip and the filter popover mirror each other. Every drop-down sits inside the
+/// window and answers its own hit test.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn app_shell_facets_are_typed_from_a_drop_down_and_frozen_into_chips() {
@@ -15105,6 +15129,7 @@ fn app_shell_facets_are_typed_from_a_drop_down_and_frozen_into_chips() {
             .unwrap_or("")
             .to_string()
     };
+    let open_popover = "(function(){ if (!document.getElementById('navigatorOptions').classList.contains('open')) document.getElementById('filterTranscriptBtn').click(); return 'open'; })()";
 
     for (width, height) in [(1440.0, 900.0), (820.0, 700.0)] {
         harness::resize(tab, width, height);
@@ -15118,21 +15143,28 @@ fn app_shell_facets_are_typed_from_a_drop_down_and_frozen_into_chips() {
         harness::until_preview_parked(tab);
         settle();
 
-        // `tools:` opens the drop-down: the session's tools, each with its letter.
-        type_box("tools:");
+        // `o(` opens the drop-down: the session's tools, each with its letter.
+        type_box("o(");
         let seen = read_suggest();
         assert!(
             seen["open"] == true && seen["inside"] == true && seen["hit"] == true,
-            "at {width}px: `tools:` opens a drop-down inside the window, its rows hit-testable: {seen}"
+            "at {width}px: `o(` opens a drop-down inside the window, its rows hit-testable: {seen}"
         );
         let bash = letter_of(&seen["rows"], "Bash");
         let read = letter_of(&seen["rows"], "Read");
         assert!(
             bash == "B" && read == "R",
-            "at {width}px: a tool takes its initial (Bash B, Read R): {seen}"
+            "at {width}px: Bash and Read take their reserved letters (#367): {seen}"
         );
-        // Letters tick rows.
-        type_box(&format!("tools:{bash}{read}"));
+        // Letters tick rows; a click on a row toggles its letter.
+        type_box("o(B");
+        eval(tab, "(function(){ var r = [...document.querySelectorAll('#searchSuggest [data-suggest]')].find(function (e) { return e.querySelector('.search-suggest-label').textContent === 'Read'; }); r.click(); return 'ok'; })()");
+        settle();
+        assert_eq!(
+            eval(tab, box_text),
+            "o(BR",
+            "at {width}px: a click writes the letter inside the parentheses"
+        );
         let seen = read_suggest();
         let on: Vec<&str> = seen["rows"]
             .as_array()
@@ -15144,15 +15176,15 @@ fn app_shell_facets_are_typed_from_a_drop_down_and_frozen_into_chips() {
         assert_eq!(
             on,
             vec!["Bash", "Read"],
-            "at {width}px: `tools:BR` ticks Bash and Read: {seen}"
+            "at {width}px: `o(BR` ticks Bash and Read: {seen}"
         );
-        // A space freezes the token into a chip; the drop-down closes; the text is empty.
-        type_box(&format!("tools:{bash}{read} "));
+        // Once something follows the colon the prefix freezes into a chip; the drop-down closes.
+        type_box("o(BR): ");
         let got = eval(tab, chips);
         assert!(
             got.as_str()
                 .is_some_and(|c| c.contains("tools") && c.contains("Bash") && c.contains("Read")),
-            "at {width}px: a space makes a tools chip naming Bash and Read: {got}"
+            "at {width}px: the prefix makes a tools chip naming Bash and Read: {got}"
         );
         assert_eq!(
             read_suggest()["open"],
@@ -15162,16 +15194,24 @@ fn app_shell_facets_are_typed_from_a_drop_down_and_frozen_into_chips() {
         assert_eq!(
             eval(tab, box_text),
             "",
-            "at {width}px: …and the token left the text"
+            "at {width}px: …and the prefix left the text"
         );
-        // The chip and the popover mirror each other.
-        eval(tab, "(function(){ if (!document.getElementById('navigatorOptions').classList.contains('open')) document.getElementById('filterTranscriptBtn').click(); return 'open'; })()");
+        // The chip and the popover mirror each other: the tools are ticked UNDER a ticked Tools.
+        eval(tab, open_popover);
         settle();
-        let ticked = eval(tab, "JSON.stringify([...document.querySelectorAll('#filterOptions .tool-type-option.on')].map(function (e) { return e.dataset.label; }).sort())");
+        let menu = eval(tab, "(function(){ var scope = document.getElementById('scopeRow'), list = document.getElementById('filterOptions'); var rows = [...scope.querySelectorAll('.scope-option')]; var tools = rows[rows.length - 1]; var first = list.querySelector('.tool-type-option'); return JSON.stringify({ follows: scope.nextElementSibling === list, last: tools.dataset.scope, toolsOn: tools.classList.contains('on'), indented: !!first && first.getBoundingClientRect().left > tools.querySelector('.scope-check').getBoundingClientRect().left, scopes: rows.map(function (r) { return r.dataset.scope; }).join(''), heads: [...document.querySelectorAll('#navigatorOptions .scope-menu-head')].filter(function (h) { return h.offsetParent; }).length, ticked: [...list.querySelectorAll('.tool-type-option.on')].map(function (e) { return e.dataset.label; }).sort() }); })()");
+        let menu: serde_json::Value = serde_json::from_str(menu.as_str().unwrap_or("{}")).unwrap();
+        assert!(
+            menu["follows"] == true && menu["last"] == "o" && menu["indented"] == true && menu["heads"] == 1,
+            "at {width}px: the tools are a list nested under the Tools row, the last scope row, with one heading left: {menu}"
+        );
         assert_eq!(
-            ticked.as_str(),
-            Some("[\"Bash\",\"Read\"]"),
-            "at {width}px: the chip ticks its rows in the popover"
+            menu["scopes"], "uato",
+            "at {width}px: the scope rows are u, a, t and Tools — no Bash output, Reads or Edits: {menu}"
+        );
+        assert!(
+            menu["toolsOn"] == true && menu["ticked"] == serde_json::json!(["Bash", "Read"]),
+            "at {width}px: the chip ticks Tools and its tools in the popover: {menu}"
         );
         eval(tab, "(function(){ document.querySelector('#filterOptions .tool-type-option[data-tool-filter=\"Read\"]').click(); return 'ok'; })()");
         settle();
@@ -15205,35 +15245,43 @@ fn app_shell_facets_are_typed_from_a_drop_down_and_frozen_into_chips() {
             "at {width}px: …and every needle is counted again"
         );
 
-        // `scope:` — the classes by letter; a row click toggles its letter; a space makes the chip.
-        type_box("needle scope:");
-        let seen = read_suggest();
-        assert_eq!(
-            seen["rows"].as_array().map(|r| r.len()),
-            Some(8),
-            "at {width}px: the seven classes and whole words: {seen}"
-        );
-        eval(tab, "(function(){ var r = [...document.querySelectorAll('#searchSuggest [data-suggest]')].find(function (e) { return e.querySelector('.search-suggest-letter').textContent === 'u'; }); r.click(); return 'ok'; })()");
-        settle();
-        assert_eq!(
-            eval(tab, box_text),
-            "needle scope:u",
-            "at {width}px: a click writes the letter"
-        );
-        type_box("needle scope:u ");
+        // Scope letters are typed as the prefix too: `u: ` makes a scope chip, the text stays.
+        type_box("u: needle");
         let got = eval(tab, chips);
         assert!(
             got.as_str()
                 .is_some_and(|c| c.contains("scope") && c.contains("User messages")),
             "at {width}px: a scope chip: {got}"
         );
-        // The token and the space that committed it leave; the reader's own space before it stays,
-        // so they can keep typing — the search trims it.
         assert_eq!(
             eval(tab, box_text).as_str().map(str::trim_end),
             Some("needle"),
             "at {width}px: the text keeps its own words"
         );
+        // Unticking Tools takes its tools with it: tick Bash, then untick Tools.
+        eval(tab, open_popover);
+        settle();
+        eval(tab, "(function(){ document.querySelector('#filterOptions .tool-type-option[data-tool-filter=\"Bash\"]').click(); return 'ok'; })()");
+        settle();
+        assert!(
+            eval(tab, chips)
+                .as_str()
+                .is_some_and(|c| c.contains("tools") && c.contains("Bash")),
+            "at {width}px: ticking a tool makes the tools chip beside the scope"
+        );
+        eval(tab, "(function(){ document.querySelector('.scope-option[data-scope=\"o\"]').click(); return 'ok'; })()");
+        settle();
+        assert!(
+            eval(tab, chips)
+                .as_str()
+                .is_some_and(|c| !c.contains("tools")),
+            "at {width}px: unticking Tools clears its tools"
+        );
+        eval(
+            tab,
+            "document.getElementById('filterTranscriptBtn').click(); 'ok'",
+        );
+        settle();
         // Its × removes it.
         eval(
             tab,
@@ -15247,16 +15295,16 @@ fn app_shell_facets_are_typed_from_a_drop_down_and_frozen_into_chips() {
         );
 
         // A leading colon: the literal, no drop-down, no chip.
-        type_box(":tools: ");
+        type_box(":o(B): ");
         assert_eq!(
             read_suggest()["open"],
             false,
-            "at {width}px: `:tools:` opens nothing"
+            "at {width}px: `:o(B):` opens nothing"
         );
         assert_eq!(eval(tab, chips), "[]", "at {width}px: …and makes no chip");
         assert_eq!(
             eval(tab, box_text),
-            ":tools: ",
+            ":o(B): ",
             "at {width}px: …and stays text as typed"
         );
         type_box("");
@@ -16130,7 +16178,7 @@ fn app_shell_command_k_is_a_jump_to_ranked_by_recency() {
     );
     // ⌘K shares nothing with the session box's grammar (owner, 2026-09-28): its filters are plain
     // text here, matched against names like any other words — and no name holds these.
-    type_in("ub: tool:Bash");
+    type_in("uo(B):");
     assert!(
         read().is_empty(),
         "the session box's filters are text in ⌘K, not something it strips or obeys"
