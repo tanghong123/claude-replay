@@ -19,6 +19,8 @@
 #      transcript is QoderWork's, and is counted in the log instead of analysed.
 #      …and `agent-replay --field-coverage` over COVERAGE_WINDOW (14d): a field the newest client
 #      version writes clearly less often than the ones before it joins the scan as a row (#363).
+#      …and scripts/version-canary.sh: a newly installed Claude Code or Codex run once in a throwaway
+#      home with your own login, its transcript swept the same day (#364).
 #   3. analyse — a headless `claude -p` in this repo, briefed by scripts/unknown-review.md, with a
 #      read-only tool allowlist plus taskq and the web: it judges each new row, checks the known
 #      prices against their official sources (every run — a price can move with no new row), and
@@ -97,6 +99,12 @@ for line in open(sys.argv[1]):
                           "count": r["records"], "version": r["version"], "example": None,
                           "rate": r["rate"], "usual": r["usual"]}))
 PY
+
+# 1c. the version canary (#364): a Claude Code or Codex version installed since the last run is run
+# once in a throwaway home and its transcript swept; what it finds joins the scan as rows with
+# `canary: true`. Its failure is logged, never the job's: tomorrow tries again.
+"$REPO/scripts/version-canary.sh" >> "$STATE/scan.jsonl" 2>> "$STATE/canary.log" \
+  || log "canary: a run failed (see $STATE/canary.log)"
 
 # 2. filter
 QODERWORK_STORE="${QODERWORK_PROJECTS_DIR:-$HOME/.qoderwork/projects}"

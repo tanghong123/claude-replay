@@ -203,22 +203,35 @@ fn print_field_coverage(args: &Args) -> anyhow::Result<()> {
     use std::io::BufRead;
     /// How many of the newest transcripts a sweep with no window reads.
     const NEWEST: usize = 200;
-    let cutoff = args.since.as_deref().map(window_cutoff).transpose()?;
-    let mut all: Vec<_> = discover::store_all(args.agent)
-        .into_iter()
-        .filter(|e| cutoff.is_none_or(|c| e.mtime >= c))
-        .collect();
-    all.sort_by(|a, b| b.mtime.total_cmp(&a.mtime));
-    let take = if cutoff.is_some() { all.len() } else { NEWEST };
+    // With an explicit target, that transcript alone (#364: the version canary's one session,
+    // read without touching the stores); otherwise the newest across every agent's store.
+    let entries: Vec<(claude_replay_core::Agent, std::path::PathBuf)> =
+        if args.target.is_some() || args.latest {
+            let path = discover::resolve_any(args.agent, args.target.as_deref(), args.latest)?;
+            vec![(discover::detect_agent(&path), path)]
+        } else {
+            let cutoff = args.since.as_deref().map(window_cutoff).transpose()?;
+            let mut all: Vec<_> = discover::store_all(args.agent)
+                .into_iter()
+                .filter(|e| cutoff.is_none_or(|c| e.mtime >= c))
+                .collect();
+            all.sort_by(|a, b| b.mtime.total_cmp(&a.mtime));
+            let take = if cutoff.is_some() { all.len() } else { NEWEST };
+            all.into_iter()
+                .take(take)
+                .map(|e| (e.agent, e.path))
+                .collect()
+        };
     let mut tally = claude_replay_core::coverage::Tally::default();
     let mut scanned = 0usize;
-    for e in all.into_iter().take(take) {
-        let adapter = claude_replay_core::adapter(e.agent);
+    for (agent, path) in entries {
+        let e = (agent, path);
+        let adapter = claude_replay_core::adapter(e.0);
         let fields = adapter.coverage_fields();
         if fields.is_empty() {
             continue;
         }
-        let Ok(file) = std::fs::File::open(&e.path) else {
+        let Ok(file) = std::fs::File::open(&e.1) else {
             continue;
         };
         scanned += 1;
@@ -231,7 +244,7 @@ fn print_field_coverage(args: &Args) -> anyhow::Result<()> {
             if let Some(ver) = adapter.record_version(&v) {
                 version = Some(ver);
             }
-            tally.record(e.agent.label(), version.as_deref(), fields, &v);
+            tally.record(e.0.label(), version.as_deref(), fields, &v);
         }
     }
     eprintln!("read {scanned} transcript(s)…");

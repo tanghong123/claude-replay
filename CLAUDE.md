@@ -551,6 +551,18 @@ gets one `dws` message naming the queued tasks (and one if the job fails). State
 `~/.local/state/claude-replay/unknown-review/` and `/tmp/unknown-review.{out,err}.log`. A task it
 queued is ordinary queue work: execute it with the gates, the browser suite and a release.
 
+**The version canary rides in the same job** (#364, `scripts/version-canary.sh`, the owner's
+decisions of 2026-10-02): when a Claude Code or Codex version is INSTALLED that the canary has not
+run, it runs that client once in a throwaway home on a fixed prompt that makes a tool call, sweeps the
+transcript with `--unknown` and `--field-coverage`, and adds what it finds to the day's scan
+(`canary: true`; a declared field the session never wrote is `field.empty`), keeping a copy of the
+transcript in the state dir. It reuses the owner's logins and never touches `~/.claude` or
+`~/.codex`: Claude Code through `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, in the 0600 env
+file — a relocated `CLAUDE_CONFIG_DIR` is hermetic but not signed in, and copying the Keychain login
+would prompt in an unattended job and could rotate the real one out), Codex through a copy of
+`auth.json` and `config.toml` made only while the login is under 7 days old, written back if it
+refreshed anyway and the original is untouched. `--force` runs it with no new version.
+
 ## Test scratch
 Tests build their scratch under `std::env::temp_dir()` — ~100 call sites across the
 crates — and `.cargo/config.toml` points `TMPDIR` at the workspace's own `target/`,

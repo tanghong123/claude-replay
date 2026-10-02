@@ -95,6 +95,14 @@ Until it is fixed the cost becomes a lower bound or a card loses a line, in sile
    adapter reads it (file and function), and what the page or the cost loses meanwhile. Done when
    the adapter reads the field where the client now writes it and the row no longer reports.
 
+**Rows with `canary: true`** come from the version canary (#364): a Claude Code or Codex version
+installed since yesterday was run once, in a throwaway home, on a fixed prompt that makes a tool call,
+and its transcript swept. They are shapes (§1) or `field.empty` rows — a declared field (§3) that the
+canary's whole session never wrote, which one session cannot call a drop but is worth a look. Their
+`canary_transcript` is a copy of that session you can read whole (the prompt is fixed; nothing in it
+is private). A canary row is often the FIRST sight of a change: the real sessions on that version
+start arriving tomorrow.
+
 ## 4. Prices that moved (every run, even when nothing above is listed)
 
 Fetch each URL in `pricing.json`'s `sources` and compare every model the page prices against the
