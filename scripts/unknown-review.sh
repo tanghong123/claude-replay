@@ -30,11 +30,16 @@
 #   5. message — ONE dws message to the owner naming the queued tasks, only when there are any
 #      (and one when the job itself fails, so a broken job is never silent). The recipient is the
 #      account dws is signed in as, resolved at run time: no identifier is stored or committed.
+#      A message dws cannot deliver is KEPT in state/outbox/ and sent at the start of the next
+#      run (or by --flush), and the Mac shows a notification saying why — a lapsed dws login
+#      once lost a day's message with nothing but a log line to show for it (2026-10-02).
 #
 # State and logs: ~/.local/state/claude-replay/unknown-review/ (runs.log, triaged.tsv, the last
 # scan and analysis); the LaunchAgent's own stdout/stderr go to /tmp/unknown-review.{out,err}.log.
 # Network: ~/.config/claude-replay/unknown-review.env (the proxy and DWS_CHANNEL launchd lacks).
 # --dry-run scans and prints the brief it would send, then stops: no analysis, no message.
+# --flush sends what the outbox holds, then stops — run it after `dws auth login`.
+# Installed (and checked: --status) by scripts/unknown-review-setup.sh.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,26 +52,114 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 # first run. The file is machine-local (0600), written from a session's environment.
 CONFIG="${UNKNOWN_REVIEW_ENV:-$HOME/.config/claude-replay/unknown-review.env}"
 if [ -f "$CONFIG" ]; then set -a; . "$CONFIG"; set +a; fi
+# dws's channel, where an interactive shell gets it: aries-black's ~/.config/dws/env, or the knack
+# one-liner's alibaba-env.sh on a box it set up (alilang-watch reads the same two). A launchd job
+# reads no shell profile, and without the channel every call is ENTERPRISE_NOT_AUTHORIZED.
+for f in "$HOME/.config/dws/env" "$HOME/.config/knack/alibaba-env.sh"; do
+  [ -n "${DWS_CHANNEL:-}" ] && break
+  # Not this job's files: an unset variable or a failing line in one must not end the run.
+  if [ -f "$f" ]; then set +u; . "$f" || true; set -u; fi
+done
+[ -n "${DWS_CHANNEL:-}" ] && export DWS_CHANNEL
 AGENT_REPLAY="${AGENT_REPLAY:-agent-replay}"
 CLAUDE="${CLAUDE_BIN:-claude}"
 TASKQ="${TASKQ:-$HOME/.claude/skills/agentdev/skills/taskq/scripts/taskq}"
-DRY=0
+DRY=0 FLUSH=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
+[ "${1:-}" = "--flush" ] && FLUSH=1
 
-mkdir -p "$STATE"
+mkdir -p "$STATE" "$STATE/outbox"
 touch "$STATE/triaged.tsv"
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$STATE/runs.log"; }
 
-# The one message this job sends, to the account dws is signed in as.
-notify() {
-  local title="$1" text="$2" me
-  me=$(dws contact user get-self --format json --jq '.result[0].orgEmployeeModel.userId' 2>/dev/null | tr -d '"')
-  if [ -z "$me" ]; then log "dws: could not resolve the recipient (is dws signed in?)"; return 1; fi
-  dws chat message send --user "$me" --title "$title" --text "$text" \
-    --uuid "unknown-review-$(date +%F)-$(printf '%s' "$text" | shasum | cut -c1-12)" \
-    --format json --yes >/dev/null 2>>"$STATE/dws.err" \
-    || { log "dws: the message was not sent (see $STATE/dws.err)"; return 1; }
+# Who dws is signed in as, or — on stderr, for the log — why it cannot say. `auth status` is no
+# answer: on 2026-10-02 it read "authenticated" with a refresh token good for a month while every
+# call was refused as not logged in, so the call that sends is the call that is asked.
+dws_me() {
+  local out me
+  out=$(dws contact user get-self --format json 2>&1) || true
+  me=$(printf '%s' "$out" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+r = d.get("result")
+if isinstance(r, list) and r:
+    print((r[0].get("orgEmployeeModel") or {}).get("userId") or "")
+' 2>/dev/null)
+  if [ -n "$me" ]; then printf '%s' "$me"; return 0; fi
+  case "$out" in
+    *not_authenticated*) echo "the dws login has lapsed: run \`dws auth login\` at this Mac, then \`$REPO/scripts/unknown-review.sh --flush\`" >&2 ;;
+    *ENTERPRISE_NOT_AUTHORIZED*) echo "dws has no DWS_CHANNEL (looked in $CONFIG, ~/.config/dws/env, ~/.config/knack/alibaba-env.sh)" >&2 ;;
+    "") echo "dws is not installed or printed nothing" >&2 ;;
+    *) echo "dws could not say who it is signed in as: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)" >&2 ;;
+  esac
+  return 1
 }
+
+# A notification on this Mac, for when DingTalk is the thing that is broken.
+desktop() {
+  [ "${UNKNOWN_REVIEW_DESKTOP:-1}" = 1 ] || return 0
+  osascript -e 'on run argv' -e 'display notification (item 2 of argv) with title (item 1 of argv)' \
+    -e 'end run' "$1" "$2" >/dev/null 2>&1 || true
+}
+
+# Send one held message; it leaves the outbox only once dws has taken it. Its uuid is fixed when it
+# is written, so a retry of a message dws did take is not a second message.
+send_held() {
+  local file="$1" me why title text uuid
+  title=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["title"])' "$file")
+  text=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["text"])' "$file")
+  uuid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["uuid"])' "$file")
+  if ! me=$(dws_me 2>"$STATE/dws.why"); then
+    why=$(cat "$STATE/dws.why")
+    log "dws: not sent, kept in the outbox — $why"
+    desktop "agent-monitor review: a message is waiting" "$why"
+    return 1
+  fi
+  if dws chat message send --user "$me" --title "$title" --text "$text" --uuid "$uuid" \
+       --format json --yes >/dev/null 2>>"$STATE/dws.err"; then
+    /bin/rm -f "$file"
+    return 0
+  fi
+  log "dws: the send failed, kept in the outbox (see $STATE/dws.err)"
+  desktop "agent-monitor review: a message is waiting" "dws could not send it; see $STATE/dws.err"
+  return 1
+}
+
+# Send whatever earlier runs could not, oldest first. Stops at the first failure: the rest would
+# fail for the same reason, and one notification says it.
+flush_outbox() {
+  local f sent=0
+  for f in "$STATE"/outbox/*.json; do
+    [ -f "$f" ] || continue
+    send_held "$f" || return 1
+    sent=$((sent + 1))
+  done
+  [ "$sent" = 0 ] || log "dws: delivered $sent message(s) held from an earlier run"
+}
+
+# The one message this job sends, to the account dws is signed in as: written to the outbox first,
+# so a message dws cannot take now is sent by a later run instead of lost.
+notify() {
+  local title="$1" text="$2" uuid file
+  uuid="unknown-review-$(date +%F)-$(printf '%s' "$text" | shasum | cut -c1-12)"
+  file="$STATE/outbox/$(date -u +%Y%m%dT%H%M%SZ)-$uuid.json"
+  python3 -c 'import json,sys; json.dump({"title": sys.argv[1], "text": sys.argv[2], "uuid": sys.argv[3]}, open(sys.argv[4], "w"))' \
+    "$title" "$text" "$uuid" "$file"
+  send_held "$file"
+}
+
+if [ $FLUSH = 1 ]; then
+  flush_outbox || true
+  left=$(find "$STATE/outbox" -name '*.json' | wc -l | tr -d ' ')
+  echo "outbox: $left message(s) waiting"
+  [ "$left" = 0 ] && exit 0 || exit 1
+fi
+# What an earlier run could not send goes first, so it arrives before today's. A failure here is
+# logged and notified inside; the review itself still runs.
+[ $DRY = 1 ] || flush_outbox || true
 
 fail() {
   log "FAILED: $1"
