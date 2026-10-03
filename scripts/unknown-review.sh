@@ -37,7 +37,7 @@
 # State and logs: ~/.local/state/claude-replay/unknown-review/ (runs.log, triaged.tsv, the last
 # scan and analysis); the LaunchAgent's own stdout/stderr go to /tmp/unknown-review.{out,err}.log.
 # Network: ~/.config/claude-replay/unknown-review.env (the proxy and DWS_CHANNEL launchd lacks).
-# --dry-run scans and prints the brief it would send, then stops: no analysis, no message.
+# --dry-run scans and prints the brief it would send, then stops: no canary, no analysis, no message.
 # --flush sends what the outbox holds, then stops — run it after `dws auth login`.
 # Installed (and checked: --status) by scripts/unknown-review-setup.sh.
 set -euo pipefail
@@ -196,8 +196,13 @@ PY
 # 1c. the version canary (#364): a Claude Code or Codex version installed since the last run is run
 # once in a throwaway home and its transcript swept; what it finds joins the scan as rows with
 # `canary: true`. Its failure is logged, never the job's: tomorrow tries again.
-"$REPO/scripts/version-canary.sh" >> "$STATE/scan.jsonl" 2>> "$STATE/canary.log" \
-  || log "canary: a run failed (see $STATE/canary.log)"
+# A dry run spends no model call, so it leaves the canary alone.
+if [ $DRY = 1 ]; then
+  echo "canary: skipped (--dry-run)" >&2
+else
+  "$REPO/scripts/version-canary.sh" >> "$STATE/scan.jsonl" 2>> "$STATE/canary.log" \
+    || log "canary: a run failed (see $STATE/canary.log)"
+fi
 
 # 2. filter
 QODERWORK_STORE="${QODERWORK_PROJECTS_DIR:-$HOME/.qoderwork/projects}"
