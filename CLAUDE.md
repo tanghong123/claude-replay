@@ -563,6 +563,11 @@ prices each unpriced model from the vendor's official page, and checks every kno
 gets one `dws` message naming the queued tasks (and one if the job fails). State and logs:
 `~/.local/state/claude-replay/unknown-review/` and `/tmp/unknown-review.{out,err}.log`. A task it
 queued is ordinary queue work: execute it with the gates, the browser suite and a release.
+**`scripts/unknown-review-setup.sh`** installs it on a Mac from wherever the checkout is (the 0600
+env file with the proxy, the LaunchAgent) and `--status` checks it end to end. A message dws cannot
+deliver waits in the state dir's `outbox/` for the next run (or `unknown-review.sh --flush`) and
+the Mac shows a notification saying why: on 2026-10-02 a lapsed dws login — `auth status` still
+read "authenticated" — lost a day's message to one log line.
 
 **The version canary rides in the same job** (#364, `scripts/version-canary.sh`, the owner's
 decisions of 2026-10-02): when a Claude Code or Codex version is INSTALLED that the canary has not
