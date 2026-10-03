@@ -16277,3 +16277,114 @@ fn app_shell_command_k_is_a_jump_to_ranked_by_recency() {
     );
     drop(m);
 }
+
+/// A session opened by a SessionStart hook that PRINTED something (#371): the client writes it as a
+/// `hook_success` attachment ahead of the first prompt, with the output in `content`.
+fn hook_context_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = format!(
+        "{{\"type\":\"attachment\",\"timestamp\":\"{}\",\"attachment\":{{\"type\":\"hook_success\",\
+\"hookName\":\"SessionStart:startup\",\"hookEvent\":\"SessionStart\",\"toolUseID\":\"x\",\
+\"content\":\"PROBE-371 main is 3 commits ahead\\nsecond line\\n\",\"stdout\":\"PROBE-371 main is 3 commits ahead\\nsecond line\\n\",\
+\"stderr\":\"\",\"exitCode\":0,\"command\":\"./ctx.sh\",\"durationMs\":40}}}}\n",
+        now_minus(300)
+    );
+    // Long answers: the classic page is ready once it is three windows tall.
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    for (i, q) in ["first prompt", "second prompt", "third prompt"]
+        .iter()
+        .enumerate()
+    {
+        let at = 290 - i as u64 * 20;
+        t += &user_at(q, &now_minus(at));
+        t += &assistant_at(&answer, &now_minus(at - 5));
+    }
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 3,
+    }
+}
+
+/// #371 — a hook that added context to the model says so, and does not move the turns.
+///
+/// Found by the daily unknown review: `hook_success` (client 2.1.288) carries the output a hook
+/// put in the model's context. Nothing else on the page shows it, and the reply may repeat it
+/// word for word. The SessionStart shape comes BEFORE the first prompt, so the case also holds the
+/// numbering: the first prompt is still turn 1 and the session still counts three turns.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_hook_that_added_context_is_named_and_turns_keep_their_numbers() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = hook_context_fixture(match surface {
+            Surface::Classic => "hook-context-classic",
+            Surface::AppShell => "hook-context-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3064 };
+        // The reader stays at the top, where the note and the first prompt are. A note is a fold
+        // whose head is its first 70 characters; the count of further lines is in its body.
+        let page = open_with(surface, &fx, port, "mountall=1");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        let seen: serde_json::Value = eval(
+            &page.tab,
+            "(function(){ var t = document.body.innerText; \
+               var turns = Array.from(document.querySelectorAll('.uturn[data-turn], .turn.user[data-turn]')) \
+                 .map(function(e){ return [Number(e.dataset.turn), e.innerText.indexOf('first prompt') >= 0]; }); \
+               var side = Array.from(document.querySelectorAll('#turnlist .side-item, .outline-turn-row')) \
+                 .map(function(e){ return e.innerText.replace(/\\s+/g, ' ').trim(); }); \
+               var n = document.getElementById('navigatorTurnCount'); \
+               return JSON.stringify({ \
+                 named: t.indexOf('SessionStart:startup added context: PROBE-371 main is 3 commits ahead') >= 0, \
+                 more: t.indexOf('(+1 more line)') >= 0, \
+                 turns: turns, side: side, count: n ? n.textContent.trim() : null }); })()",
+        )
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+        assert_eq!(
+            seen["named"],
+            serde_json::json!(true),
+            "{surface:?}: the page names the hook and the first line it added: {seen}"
+        );
+        assert_eq!(
+            seen["more"],
+            serde_json::json!(true),
+            "{surface:?}: …and says there is more: {seen}"
+        );
+        assert_eq!(
+            seen["turns"],
+            serde_json::json!([[1, true], [2, false], [3, false]]),
+            "{surface:?}: the first prompt is still turn 1, and there are three: {seen}"
+        );
+        let side: Vec<String> = seen["side"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            side.len() == 3
+                && side[0]
+                    .trim_start_matches('0')
+                    .starts_with("1 · first prompt"),
+            "{surface:?}: the turn list numbers from the first prompt: {seen}"
+        );
+        if surface == Surface::AppShell {
+            assert_eq!(
+                seen["count"],
+                serde_json::json!("3"),
+                "the Turns count: {seen}"
+            );
+        }
+    }
+}

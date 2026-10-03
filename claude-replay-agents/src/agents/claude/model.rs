@@ -565,6 +565,10 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "file",
     "hook_cancelled",
     "hook_non_blocking_error",
+    // #371 (client 2.1.288): a hook that ran and succeeded. Drawn as a note when it injected
+    // context (`hook_note`); listed so one that printed nothing — drawn as nothing — is not
+    // reported as new.
+    "hook_success",
     "hook_system_message",
     // #324 (client 2.1.283): where a prompt's pasted images were saved. Read above, into each
     // image's path; listed so a record the arm skips (no paths) is not reported as new.
@@ -3654,6 +3658,25 @@ fn hook_note(a: &Value) -> Option<String> {
             }
             Some(out)
         }
+        // #371 (client 2.1.288): a hook that SUCCEEDED and printed something, which the client put
+        // in the model's context. Nothing else on the page shows it, and the reply may repeat it
+        // verbatim with nothing to say where it came from — unlike `instructions` or a memory
+        // file, hook output exists nowhere a reader could open. Its first line, and how many more
+        // there are; a hook that printed nothing draws nothing, which is what keeps a hook on every
+        // prompt from flooding the page. `toolUseID` names no tool call, so it is not attached.
+        "hook_success" => {
+            let content = s("content");
+            let first = content.lines().next()?.trim();
+            let more = content.lines().count().saturating_sub(1);
+            let mut out = format!("{} added context: {first}", name(s("hookName")));
+            if more > 0 {
+                out.push_str(&format!(
+                    " (+{more} more line{})",
+                    if more == 1 { "" } else { "s" }
+                ));
+            }
+            Some(out)
+        }
         "hook_cancelled" if a.get("timedOut").and_then(Value::as_bool).unwrap_or(false) => {
             let mut out = format!("{} timed out", name(s("hookName")));
             match (
@@ -5528,6 +5551,46 @@ mod tests {
             .filter(|s| s.example.as_deref() == Some("s-370"))
             .collect();
         assert!(seen.is_empty(), "nothing reported: {seen:?}");
+    }
+
+    /// #371: a hook that succeeded and PRINTED something put that text in the model's context, and
+    /// nothing else on the page shows it — so it is one note naming the hook and the first line,
+    /// counting the rest. One that printed nothing (whitespace included) draws nothing and is
+    /// still not reported as new. The SessionStart shape comes before the first prompt, and the
+    /// note must not open a turn of its own.
+    #[test]
+    fn a_hook_that_added_context_is_a_note_and_a_silent_one_is_nothing() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"attachment","version":"2.1.288","sessionId":"s-371","uuid":"h1","timestamp":"2026-09-18T01:00:00.000Z","attachment":{"type":"hook_success","hookName":"SessionStart:startup","hookEvent":"SessionStart","toolUseID":"x","content":"main is 3 ahead\nsecond\n\nthird\n","stdout":"main is 3 ahead\nsecond\n\nthird\n","stderr":"","exitCode":0,"command":"./ctx.sh","durationMs":40}}
+{"type":"attachment","version":"2.1.288","sessionId":"s-371","uuid":"h2","timestamp":"2026-09-18T01:00:00.500Z","attachment":{"type":"hook_success","hookName":"UserPromptSubmit","hookEvent":"UserPromptSubmit","content":"  \n","stdout":"","stderr":"","exitCode":0}}
+{"type":"user","version":"2.1.288","sessionId":"s-371","timestamp":"2026-09-18T01:00:01.000Z","message":{"role":"user","content":"go"}}
+"##;
+        let blocks = parse(jsonl);
+        let notes: Vec<&String> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolResult(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            ["SessionStart:startup added context: main is 3 ahead (+3 more lines)"],
+            "{blocks:?}"
+        );
+        assert!(
+            matches!(blocks.last(), Some(Block::UserText(_))),
+            "the note sits ahead of the prompt: {blocks:?}"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref().is_some_and(|e| e.starts_with("s-371")))
+            .collect();
+        assert!(
+            seen.is_empty(),
+            "hook_success is known, empty or not: {seen:?}"
+        );
     }
 
     /// #361: every key of the census, on every record type it was met on, is known — so the
