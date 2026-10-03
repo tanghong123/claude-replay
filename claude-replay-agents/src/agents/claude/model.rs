@@ -717,6 +717,14 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "rendered",
             "renderedRole",
             "renderedInHumanTurn",
+            // #370 (client 2.1.288): the boolean `true`, met on `remote_session_change` (the
+            // attribution reminder, which draws nothing) beside `renderedRole: user`, at a
+            // session's start — 10 records on this machine, 2026-10-03. By its name and its
+            // `rendered*` siblings (none of them read) it says where the client puts the
+            // reminder in the request; nothing a reader needs. Revisit if it arrives `false`, or
+            // on an attachment that draws something, where it could order a note against a
+            // tool result.
+            "renderedBesideToolResult",
         ],
     ),
     (
@@ -5504,6 +5512,22 @@ mod tests {
             "the new key, and `url` on a USER record (it is known on a system record only); never \
              promptId, requestId, effort or a key on a row the adapter skips"
         );
+    }
+
+    /// #370: the 2.1.288 placement flag on an attachment is known — not reported while the sweep
+    /// asks. Removing it from the attachment arm of the census turns this red.
+    #[test]
+    fn rendered_beside_tool_result_is_known() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"attachment","version":"2.1.288","sessionId":"s-370","uuid":"a1","renderedRole":"user","renderedBesideToolResult":true,"attachment":{"type":"remote_session_change"}}
+"##;
+        let _ = parse(jsonl);
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-370"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
     }
 
     /// #361: every key of the census, on every record type it was met on, is known — so the
