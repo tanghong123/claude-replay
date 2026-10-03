@@ -562,7 +562,9 @@ prices each unpriced model from the vendor's official page, and checks every kno
 `pricing.json`'s sources — QUEUEING tasks tagged `origin=unknown-review`, never editing. The owner
 gets one `dws` message naming the queued tasks (and one if the job fails). State and logs:
 `~/.local/state/claude-replay/unknown-review/` and `/tmp/unknown-review.{out,err}.log`. A task it
-queued is ordinary queue work: execute it with the gates, the browser suite and a release.
+queued is ordinary queue work: execute it with the gates, the browser cases it touches (the whole
+local suite only when the diff touches page code; CI's browser job runs it on every push) and a
+release.
 **`scripts/unknown-review-setup.sh`** installs it on a Mac from wherever the checkout is (the 0600
 env file with the proxy, the LaunchAgent) and `--status` checks it end to end. A message dws cannot
 deliver waits in the state dir's `outbox/` for the next run (or `unknown-review.sh --flush`) and

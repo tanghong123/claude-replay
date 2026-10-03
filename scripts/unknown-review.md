@@ -9,7 +9,7 @@ strings that are not in our database, and retrieve prices for them".
 
 **You do not change anything.** Read code and transcripts, run `agent-replay`, read-only `git`,
 fetch and search the web, and create tasks with taskq — nothing else. A later agent executes each
-task, with the gates, the browser suite and a release; your analysis is what makes that work cheap
+task, with the gates, the browser cases it touches and a release; your analysis is what makes that work cheap
 and right. Every change you find becomes a task, never an edit.
 
 ## Queueing a task
@@ -32,9 +32,12 @@ second.
 A `--check` must be a command that FINISHES within taskq's limit of 600 seconds per check, or the
 task can never be closed: never the whole browser suite (`cargo test -p claude-replay-browser-tests
 -- --ignored`, about an hour — task #306 carried it and timed out). Name the specific browser cases
-(`cargo test -p claude-replay-browser-tests --test scenarios -- --ignored <case name>`), and state
-the full-suite requirement in `--accept` or the description, where the executing agent meets it
-before its release.
+(`cargo test -p claude-replay-browser-tests --test scenarios -- --ignored <case name>`) the change
+needs: its own, red on the old code, and any that draw the same thing. Do NOT ask for the whole
+suite in `--accept` or the description. The owner's rule (2026-10-02) is that the whole local suite
+is for a change to the page code (`export.js`, `codex-ui/*`, `shared/*.js`, the CSS); CI's browser
+job runs the full suite on every push anyway. A task that only teaches an adapter a shape never
+needs it: #371 asked for it and an hour of suite was stopped for that.
 
 ## 1. New transcript shapes (rows below whose `where` is neither `model.unpriced` nor `field.dropped`)
 
