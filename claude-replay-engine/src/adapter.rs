@@ -293,6 +293,19 @@ pub enum SniffClaim {
     No,
 }
 
+/// Where an agent registers a status-line command (#375), for an agent whose status line is
+/// handed its usage limits ([`TranscriptAdapter::status_line_limits`]). The consumer does the
+/// JSON edit itself; this says where, and what the entry looks like.
+#[derive(Debug, Clone)]
+pub struct StatusLineHook {
+    /// The settings file (JSON) that holds the entry. It may not exist yet.
+    pub settings: PathBuf,
+    /// The entry's JSON pointer within that file, e.g. `/statusLine`.
+    pub pointer: &'static str,
+    /// The entry's value for a command line.
+    pub entry: fn(command: &str) -> Value,
+}
+
 pub trait TranscriptAdapter: Sync {
     /// Which agent this adapter handles.
     fn agent(&self) -> Agent;
@@ -517,6 +530,28 @@ pub trait TranscriptAdapter: Sync {
     fn hands_over(&self, _attachment: &Attachment) -> bool {
         false
     }
+
+    /// The usage limits in one STATUS-LINE payload (#375): what an agent hands the command it
+    /// runs for its status line, for an agent that reports subscription limits there rather than
+    /// in its transcripts. Windows map as Codex's do: the shorter (session) window is `primary`,
+    /// the longer (weekly) one `secondary`, each with its length in `window_minutes`. Default
+    /// `None`: no status line, or one that carries no limits.
+    fn status_line_limits(&self, _payload: &Value) -> Option<crate::metrics::RateLimits> {
+        None
+    }
+
+    /// The account this agent is signed in as on this machine, read from its own configuration
+    /// (#375), so a consumer can say WHOSE limits a reading is. Identity only, never a
+    /// credential. Default `None`.
+    fn signed_in_account(&self) -> Option<crate::metrics::AgentAccount> {
+        None
+    }
+
+    /// Where this agent takes a status-line command (#375). Default `None`.
+    fn status_line_hook(&self) -> Option<StatusLineHook> {
+        None
+    }
+
     /// The session this one was FORKED from, if the agent records forks (#142).
     ///
     /// Forking copies the conversation up to the fork point, so a fork's transcript is

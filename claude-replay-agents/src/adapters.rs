@@ -222,6 +222,19 @@ impl TranscriptAdapter for ClaudeAdapter {
         use claude_replay_engine::model::AttachmentKind;
         a.path.is_some() && matches!(a.kind, AttachmentKind::File | AttachmentKind::Image)
     }
+    // Claude Code's limits reach its status line, not its transcripts (#375).
+    fn status_line_limits(
+        &self,
+        payload: &Value,
+    ) -> Option<claude_replay_engine::seam::RateLimits> {
+        agents::claude::limits::status_line_limits(payload)
+    }
+    fn signed_in_account(&self) -> Option<claude_replay_engine::seam::AgentAccount> {
+        agents::claude::limits::signed_in_account()
+    }
+    fn status_line_hook(&self) -> Option<claude_replay_engine::seam::StatusLineHook> {
+        Some(agents::claude::limits::status_line_hook())
+    }
 }
 
 /// Codex adapter — delegates to the `codex_model` / `codex_discover` implementations.

@@ -23,6 +23,20 @@ pub struct RateLimits {
     pub reached: Option<String>,
 }
 
+/// The account an agent is signed in as on this machine, as the agent's own configuration
+/// names it (#375). Identity only: never a token or any other credential, so a consumer may
+/// store and show it. Filled by [`TranscriptAdapter::signed_in_account`](crate::adapter::TranscriptAdapter::signed_in_account).
+#[derive(Debug, Default, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentAccount {
+    /// The agent's stable id for the account.
+    pub id: String,
+    pub email: Option<String>,
+    /// A display name, when the configuration records one.
+    pub name: Option<String>,
+    /// The plan or rate-limit tier, verbatim as the configuration names it.
+    pub tier: Option<String>,
+}
+
 /// Latest persisted execution context/settings. This is session metadata, not a synthetic
 /// historical block: adapters fill only fields their transcripts actually record, and shared
 /// presenters can expose the snapshot in their status/header surfaces.

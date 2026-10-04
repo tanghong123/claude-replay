@@ -11,6 +11,7 @@
 
 pub mod claude {
     pub mod discover;
+    pub mod limits;
     pub(crate) mod metrics;
     pub(crate) mod model;
 }

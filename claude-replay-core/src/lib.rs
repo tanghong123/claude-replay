@@ -22,7 +22,7 @@ pub mod transcript; // the canonical `Transcript` source handle (parse/follow/at
 pub use adapter::{
     adapter, adapters, expand_spawn_rosters, metrics_fold, CursorReject, FoldStart,
     LinePreprocessor, MetricsAccumulator, MetricsCursor, MetricsEvent, MetricsFold,
-    PreprocessedLine, SniffClaim, SpawnRoster, TranscriptAdapter,
+    PreprocessedLine, SniffClaim, SpawnRoster, StatusLineHook, TranscriptAdapter,
 };
 pub use claude_replay_agents::{claude_discover, codex_discover, qoderwork_discover};
 pub use claude_replay_engine::{

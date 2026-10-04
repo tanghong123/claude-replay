@@ -26,7 +26,9 @@
 //!   the families in `claude-replay-agents` — an intra-crate import there, no longer
 //!   a seam concern (#87 step 3).
 
-pub use crate::adapter::{LinePreprocessor, PreprocessedLine, SpawnLink, SpawnRoster};
+pub use crate::adapter::{
+    LinePreprocessor, PreprocessedLine, SpawnLink, SpawnRoster, StatusLineHook,
+};
 pub use crate::discover::{
     ancestors_below, home_dir, Candidate, CardMemo, CardOutcome, SessionCard, SNIPPET_CHARS,
 };
@@ -61,9 +63,9 @@ pub use crate::engine::time::epoch_secs;
 #[doc(hidden)]
 pub use crate::metrics::human_tokens;
 pub use crate::metrics::{
-    credits_cost, estimate_cost, parse_reader_with, parse_ts, total_cost, Metrics, MetricsTotals,
-    RateLimitWindow, RateLimits, ReportedCost, RequestPricing, RuntimeInfo, ServiceTier, TimeSpan,
-    TokenCounts, UsageKind,
+    credits_cost, estimate_cost, parse_reader_with, parse_ts, total_cost, AgentAccount, Metrics,
+    MetricsTotals, RateLimitWindow, RateLimits, ReportedCost, RequestPricing, RuntimeInfo,
+    ServiceTier, TimeSpan, TokenCounts, UsageKind,
 };
 #[doc(hidden)]
 pub use crate::model::attach_skill_body;
