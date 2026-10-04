@@ -767,8 +767,10 @@ it, until `Viewport.whenStill` (no scroll event for 200 ms, no finger down, and 
 agreeing); `a_phone_fling_keeps_its_turn_when_the_head_lands` emulates the glide on a 16 ms timer.
 **The engine writes nothing into a touch glide** (#372, `design/virtual-window-framework.md` §4.3):
 from `touchstart` until `whenStill`, a correction is absorbed into the top pad (`padDebt`, carried by
-`contentTop`) or, if the pad cannot hold it, yielded; estimates and the tail wait; one `settle` write
-pays the debt once still. The owner's export (`fixtures/history/phone-jitter-app.json`, the turn
+`contentTop`) or, if the pad cannot hold it, yielded; estimates and the tail wait, and so does a
+head landing (`updateRecords` holds on `viewport.touchGlide` as well as the scroll clock, which hears a
+glide only as fast as its events arrive — `a_phone_fling_heard_late_still_holds_the_head`); one
+`settle` write pays the debt once still. The owner's export (`fixtures/history/phone-jitter-app.json`, the turn
 swinging 444↔405) replays in `sandbox_phone_jitter_app_replays`; a touch gesture replays as an
 iOS-style glide (`harness::touch_glide`: offset writes from the glide's own position with a scroll
 event per frame — without that event a headless tab hears the glide lazily, which invents failures).

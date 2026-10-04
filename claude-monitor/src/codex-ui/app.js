@@ -679,10 +679,14 @@ let lastRecordCount = -1; // -1: nothing applied since the last reset — the ne
 // the whole head (100,000px on the owner's 141-turn session), and on iOS a write into a fling that
 // is still gliding does not stick: the glide carries on from its old offset, which in the new page
 // is a turn near the start. So while the view moves, the snapshot waits here — every later one too,
-// since each carries the head — and the latest is applied once `whenStill` says so.
+// since each carries the head — and the latest is applied once `whenStill` says so. A touch glide
+// (#372, from the finger landing until the view is still) holds it too, scroll events or none: the
+// scroll clock hears a glide only as fast as its events arrive, and a headless tab under load
+// delivers them lazily — the case caught the head landing into a glide that way once #372 stopped
+// the engine's own writes, whose echoes had been keeping that clock fresh.
 let heldRecords = null;
 function updateRecords(update) {
-  if (!heldRecords && !(update.prepended && viewport.readerMoving())) { applyRecords(update); return; }
+  if (!heldRecords && !(update.prepended && (viewport.readerMoving() || viewport.touchGlide))) { applyRecords(update); return; }
   const first = !heldRecords;
   heldRecords = first ? update : { records: update.records, meta: update.meta, changedFrom: Math.min(heldRecords.changedFrom, update.changedFrom), prepended: heldRecords.prepended || update.prepended };
   if (first) viewport.whenStill(() => { const held = heldRecords; heldRecords = null; if (held) applyRecords(held); });

@@ -10402,6 +10402,84 @@ fn a_phone_fling_keeps_its_turn_when_the_head_lands() {
     );
 }
 
+/// #340 held by the TOUCH GLIDE, not only by the scroll clock (#372's state). The case above caught
+/// the head landing into its glide once in a full suite run under load: it holds the landing only
+/// while a scroll event is recent, a headless tab under load delivers the glide's events lazily, and
+/// #372 had stopped the engine's own writes into the glide, whose echoes kept that clock fresh. Here
+/// the page hears NO scroll event until the glide ends — the worst a lazy tab can do — and still the
+/// head waits for the still view, then lands with the reader where the glide left them.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_fling_heard_late_still_holds_the_head() {
+    let _serial = serial();
+    let (_m, _b, tab) = tail_first_phone(2935, "tail-first-fling-deaf", 24576, "", &[]);
+    let s = harness::Surface::AppShell;
+    harness::eval(
+        &tab,
+        r#"(function(){
+        var s = document.querySelector('.transcript');
+        window.__flingDone = false; window.__flingFrames = 0; window.__landedInGlide = false;
+        var landed = function(){ return (window.__viewportHistory.deltas || []).some(function(d){ return d.shift > 0; }); };
+        window.__deaf = true;
+        s.addEventListener('scroll', function(e){ if (window.__deaf) e.stopImmediatePropagation(); }, true);
+        var t = new Touch({ identifier: 1, target: s, clientX: 195, clientY: 500 });
+        s.dispatchEvent(new TouchEvent('touchstart', { touches: [t], targetTouches: [t], changedTouches: [t], bubbles: true }));
+        s.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [t], bubbles: true }));
+        var pos = s.scrollTop, v = 2.2, last = performance.now();
+        function step() {
+            var now = performance.now(), dt = Math.min(50, now - last); last = now;
+            pos -= v * dt; v *= Math.pow(0.9975, dt);
+            if (landed()) window.__landedInGlide = true;
+            if (v < 0.05 || pos <= 0) { window.__deaf = false; s.dispatchEvent(new Event('scroll')); window.__flingDone = true; return; }
+            s.scrollTop = pos; window.__flingFrames++;
+            setTimeout(step, 16);
+        }
+        setTimeout(step, 16);
+        return 1;
+    })()"#,
+    );
+    harness::until(
+        &tab,
+        "window.__flingFrames >= 6",
+        "the glide to be under way",
+        Duration::from_secs(5),
+        "window.__flingFrames",
+    );
+    harness::eval(&tab, "window.__releaseHead(); 1");
+    harness::until(
+        &tab,
+        "window.__flingDone",
+        "the glide to come to rest",
+        Duration::from_secs(10),
+        "window.__flingFrames",
+    );
+    assert_eq!(
+        harness::eval(&tab, "window.__landedInGlide"),
+        false,
+        "the head does not land while the view is gliding, heard or not"
+    );
+    std::thread::sleep(Duration::from_millis(150));
+    let glided = harness::sticky_turn(&tab, s).map(|t| t.0).unwrap_or(0);
+    harness::until(
+        &tab,
+        "(window.__viewportHistory.deltas || []).some(function(d){ return d.shift > 0; })",
+        "the head to land once the view is still",
+        Duration::from_secs(10),
+        "window.__viewportHistory.deltas.length",
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    let now = harness::sticky_turn(&tab, s).map(|t| t.0).unwrap_or(0);
+    assert!(
+        (now - glided).abs() <= 1,
+        "the reader is on the turn the glide left them on: {glided} -> {now}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken across the landing"
+    );
+}
+
 /// #372, the owner (iPhone, with a viewport history): scrolling a session "feeling jittery" after the
 /// open. The export: an upward fling on iOS, gliding with no input behind it, while the units it
 /// brought into the window measured far taller than the engine had estimated. The engine held the
