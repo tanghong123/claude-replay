@@ -1009,11 +1009,12 @@ mod request_pricing_tests {
         }
     }
     /// Ultrafast (the claude-replay queue's #5): a turn recorded with `service_tier` "ultrafast"
-    /// on gpt-6-astra carries the tier, and its price is 6x Standard — an estimate, as every
-    /// client-set tier is until the provider confirms it. Before the tier was known, this request
-    /// priced at Standard with only the estimate flag: 6x under.
+    /// on gpt-6-astra carries the tier — an estimate, as every client-set tier is until the
+    /// provider confirms it. The engine's `ultrafast_is_six_times_standard_where_the_page_lists_it`
+    /// pins what that tier prices at (6x Standard); before it was known, this request priced at
+    /// Standard with only the estimate flag.
     #[test]
-    fn an_ultrafast_turn_carries_its_tier_and_six_times_standard() {
+    fn an_ultrafast_turn_carries_its_tier() {
         let mut acc = CodexMetricsAcc::default();
         acc.push(&json!({"type":"turn_context","payload":{"model":"gpt-6-astra","service_tier":"ultrafast"}}));
         acc.push(&usage(200_000, 200_000, 0));
@@ -1025,18 +1026,6 @@ mod request_pricing_tests {
                 long_context: Some(false),
                 tier_confirmed: false
             }
-        );
-        let tokens = TokenCounts {
-            input: 200_000,
-            ..Default::default()
-        };
-        assert_eq!(
-            pricing.cost_with(
-                &claude_replay_engine::metrics::PriceTable::default(),
-                "gpt-6-astra",
-                tokens
-            ),
-            (Some(12.0), true)
         );
     }
     #[test]
