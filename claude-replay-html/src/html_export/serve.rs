@@ -1545,6 +1545,10 @@ pub struct AuthGate {
     /// other than the monitor (agent-metrics serves its dashboard through this listener) names
     /// its own way in. [`DEFAULT_REFUSAL`] unless [`with_refusal`](Self::with_refusal) says.
     refusal: &'static str,
+    /// The command the pairing page names (#376): the HOST's, as [`refusal`](Self::refusal) is.
+    /// [`pairing::DEFAULT_PAIR_COMMAND`](super::pairing::DEFAULT_PAIR_COMMAND) unless
+    /// [`with_pair_command`](Self::with_pair_command) says.
+    pair_command: &'static str,
     /// Paths a GET may read without passing the gate (#320): bytes that say nothing about the
     /// host, which a device fetches before — or without — being paired. A phone saving the page
     /// to its Home Screen fetches the icon on its own, and may do so without the pairing cookie.
@@ -1585,6 +1589,7 @@ impl AuthGate {
             token: None,
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
+            pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
             public: &[],
             trusted_hosts: None,
             token_only: false,
@@ -1599,6 +1604,7 @@ impl AuthGate {
             token: Some(token.into()),
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
+            pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
             public: &[],
             trusted_hosts: None,
             token_only: std::env::var_os("AGENT_MONITOR_TOKEN_ONLY").is_some_and(|v| v != "0"),
@@ -1628,6 +1634,18 @@ impl AuthGate {
         self
     }
 
+    /// The command the pairing page tells a person to run (#376), for a host other than the
+    /// monitor. Plain words only (letters, digits, space and `. _ / -`), so the page needs no
+    /// escaping; anything else is a programming error.
+    pub fn with_pair_command(mut self, command: &'static str) -> Self {
+        assert!(
+            super::pairing::plain_command(command),
+            "a pairing command is plain words: {command:?}"
+        );
+        self.pair_command = command;
+        self
+    }
+
     /// Offer one-time phone pairing (#11) from the codes file at `path` — a no-op on an unpaired
     /// gate, which has no token to hand out and no need of one.
     pub fn with_pair_codes(mut self, path: impl Into<std::path::PathBuf>) -> Self {
@@ -1645,6 +1663,7 @@ impl AuthGate {
             token: token.map(std::sync::Arc::from),
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
+            pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
             public: &[],
             trusted_hosts: None,
             token_only: false,
@@ -2045,7 +2064,7 @@ fn serve_connection(
     // gate that offers it. The code arrives in a POST body, never a URL.
     if let (Some(tok), Some(codes)) = (gate.token.as_deref(), gate.pair_codes.as_deref()) {
         if name == "pair" || name == "api/pair" {
-            let (r, cookie) = pairing_route(&method, name, &body, tok, codes);
+            let (r, cookie) = pairing_route(&method, name, &body, tok, codes, gate.pair_command);
             let head = response_head(&r, &cookie);
             return stream
                 .write_all(head.as_bytes())
@@ -2168,10 +2187,11 @@ fn pairing_route(
     body: &[u8],
     token: &str,
     codes: &std::path::Path,
+    command: &str,
 ) -> (HttpResponse, String) {
     match (name, method) {
         ("pair", "GET") => (
-            HttpResponse::html(super::pairing::PAIR_PAGE.to_string()),
+            HttpResponse::html(super::pairing::pair_page(command)),
             String::new(),
         ),
         ("api/pair", "POST") => {

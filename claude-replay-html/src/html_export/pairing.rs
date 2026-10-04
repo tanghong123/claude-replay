@@ -183,6 +183,7 @@ pub fn now_secs() -> u64 {
 
 /// The `/pair` page: a code box that fills itself from `#code=…`, and a button. On success it
 /// replaces itself with `/`, so neither the code nor this page stays in the history.
+/// It names [`DEFAULT_PAIR_COMMAND`]; [`pair_page`] names another host's (#376).
 pub const PAIR_PAGE: &str = r#"<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pair this device</title>
@@ -219,9 +220,50 @@ button:disabled{opacity:.6}#msg{min-height:1.5em;margin:12px 0 0;color:var(--bad
 </script></body></html>
 "#;
 
+/// The command the pairing page tells a person to run: the monitor's own, unless the host
+/// names its own with [`AuthGate::with_pair_command`](super::serve::AuthGate::with_pair_command).
+pub const DEFAULT_PAIR_COMMAND: &str = "agent-monitor --pair-phone";
+
+/// Whether `command` can stand in the page as it is: plain words (letters, digits, space and
+/// `. _ / -`), which need no escaping in the page's HTML or in its script's string.
+pub fn plain_command(command: &str) -> bool {
+    !command.is_empty()
+        && command
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || " ._/-".contains(c))
+}
+
+/// The pairing page naming `command` (#376): [`PAIR_PAGE`] itself for the default.
+pub fn pair_page(command: &str) -> String {
+    if command == DEFAULT_PAIR_COMMAND || !plain_command(command) {
+        return PAIR_PAGE.to_string();
+    }
+    PAIR_PAGE.replace(DEFAULT_PAIR_COMMAND, command)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host's command replaces both of the page's mentions; the default leaves the page as
+    /// it always was (#376).
+    #[test]
+    fn the_pairing_page_names_the_hosts_command() {
+        assert_eq!(pair_page(DEFAULT_PAIR_COMMAND), PAIR_PAGE);
+        assert_eq!(
+            PAIR_PAGE.matches(DEFAULT_PAIR_COMMAND).count(),
+            2,
+            "the lead and the wrong-code message"
+        );
+        let other = pair_page("agent-metrics pair-phone");
+        assert_eq!(other.matches("agent-metrics pair-phone").count(), 2);
+        assert!(!other.contains("agent-monitor"));
+        // anything that would need escaping is not taken
+        assert!(!plain_command("x</code><script>"));
+        assert!(!plain_command("say \"hi\""));
+        assert!(!plain_command(""));
+        assert_eq!(pair_page("x\"y"), PAIR_PAGE);
+    }
 
     fn store_path(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("cr-pair-{}-{tag}", std::process::id()));
