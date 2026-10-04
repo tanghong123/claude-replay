@@ -265,6 +265,7 @@ pub enum ServiceTier {
     Unknown,
     Standard,
     Fast,
+    Ultrafast,
     Flex,
     Batch,
 }
@@ -275,6 +276,7 @@ impl ServiceTier {
         match value {
             "default" | "standard" => Self::Standard,
             "priority" | "fast" => Self::Fast,
+            "ultrafast" => Self::Ultrafast,
             "flex" => Self::Flex,
             "batch" => Self::Batch,
             _ => Self::Unknown,
@@ -306,7 +308,10 @@ impl RequestPricing {
     /// Model-specific request pricing from the catalog; absent rules remain estimates.
     /// Standard short-context catalog rates are the base, including host overrides.
     /// Source (2026-09-28): <https://developers.openai.com/api/docs/pricing> and
-    /// <https://developers.openai.com/api/docs/models/gpt-6-astra>.
+    /// <https://developers.openai.com/api/docs/models/gpt-6-astra>. Ultrafast (2026-10-04, the
+    /// page's Ultrafast tab read raw, and
+    /// <https://developers.openai.com/api/docs/guides/ultrafast-mode>): a request selects it with
+    /// `service_tier` "ultrafast"; listed for gpt-6-astra alone, 6x Standard short and long.
     /// The boolean marks an estimate with incomplete billing evidence, not a lower bound.
     pub fn price_with(
         &self,
@@ -323,6 +328,8 @@ impl RequestPricing {
         let factor = policy.and_then(|p| match self.tier {
             ServiceTier::Fast if long => p.fast_long,
             ServiceTier::Fast => p.fast,
+            ServiceTier::Ultrafast if long => p.ultrafast_long,
+            ServiceTier::Ultrafast => p.ultrafast,
             ServiceTier::Flex => p.flex,
             ServiceTier::Batch => p.batch,
             _ => Some([1, 1]),
@@ -913,6 +920,8 @@ struct RequestPolicy {
     long_context: bool,
     fast: Option<[u64; 2]>,
     fast_long: Option<[u64; 2]>,
+    ultrafast: Option<[u64; 2]>,
+    ultrafast_long: Option<[u64; 2]>,
     flex: Option<[u64; 2]>,
     batch: Option<[u64; 2]>,
 }
@@ -1013,9 +1022,16 @@ fn parse_pricing_catalog(json: &str) -> Result<BTreeMap<String, ModelPrice>, Str
             }
         }
         if let Some(policy) = &entry.request_pricing {
-            for factor in [policy.fast, policy.fast_long, policy.flex, policy.batch]
-                .into_iter()
-                .flatten()
+            for factor in [
+                policy.fast,
+                policy.fast_long,
+                policy.ultrafast,
+                policy.ultrafast_long,
+                policy.flex,
+                policy.batch,
+            ]
+            .into_iter()
+            .flatten()
             {
                 if factor[0] == 0 || factor[1] == 0 || factor[0] > 100 || factor[1] > 100 {
                     return Err("request pricing factors must be in 1..=100".into());
@@ -2082,6 +2098,40 @@ mod request_pricing_tests {
         );
     }
 
+    /// Ultrafast (the pricing page's Ultrafast tab, read raw 2026-10-04): gpt-6-astra alone, 6x
+    /// Standard on every token class, short and long. A model the tab does not list prices an
+    /// ultrafast request at Standard as an estimate, as Fast does without a long-context rate. The
+    /// tier is reached through `from_recorded`, where the old code lost it (Unknown: 1x, estimate).
+    #[test]
+    fn ultrafast_is_six_times_standard_where_the_page_lists_it() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            ..Default::default()
+        };
+        assert_ne!(
+            ServiceTier::from_recorded("ultrafast"),
+            ServiceTier::Unknown
+        );
+        for (model, long, expected, estimated) in [
+            ("gpt-6-astra", false, 60.0, false),
+            ("gpt-6-astra", true, 120.0, false),
+            ("gpt-6-sol", false, 2.0, true),
+            ("gpt-5.6-sol", true, 8.0, true),
+        ] {
+            let context = RequestPricing {
+                tier: ServiceTier::from_recorded("ultrafast"),
+                long_context: Some(long),
+                tier_confirmed: true,
+            };
+            assert_eq!(
+                context.cost_with(&table, model, tokens),
+                (Some(expected), estimated),
+                "{model} long={long}"
+            );
+        }
+    }
+
     #[test]
     fn request_rules_use_the_hosts_model_normalizer() {
         struct Alias;
@@ -2138,6 +2188,8 @@ mod request_pricing_tests {
             (ServiceTier::Standard, true, 122.0),
             (ServiceTier::Fast, false, 147.0),
             (ServiceTier::Fast, true, 244.0),
+            (ServiceTier::Ultrafast, false, 441.0),
+            (ServiceTier::Ultrafast, true, 732.0),
             (ServiceTier::Flex, true, 61.0),
         ] {
             let context = RequestPricing {

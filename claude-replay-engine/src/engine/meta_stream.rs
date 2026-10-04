@@ -226,11 +226,17 @@ pub const COMPACT_AFTER: usize = 256;
 /// from the `inlined_image_paths` record of client 2.1.283). A v38 stream has no path on any
 /// pasted image, so it offers no reveal and the lightbox opens only the downscaled inline copy.
 ///
+/// v40: the claude-replay queue's #5 — `ultrafast` joins the recorded service-tier vocabulary
+/// (`ServiceTier::Ultrafast`, 6x Standard on gpt-6-astra). A v39 fold holds such a request's priced
+/// class as `Unknown` — Standard, an estimate — so a cursor resumed across would keep those beside
+/// new ones priced at 6x, and its cost blocks were computed that way (v37's rule: the tier
+/// vocabulary of a resumed accumulator is fold behavior).
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 39;
+pub const FOLD_VERSION: u16 = 40;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
