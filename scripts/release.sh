@@ -15,10 +15,13 @@
 #   5. the release commit (`release: v<version> — <subject>`, the body from --message-file — the
 #      caller's trailers included) and the signed annotated tag, both signed by the repo's own
 #      config (never pass -c commit.gpgsign=false); the commit is verified before the tag;
-#   6. the push: origin main, then the tag (the tag push triggers the Release workflow), then
-#      the mirror (a failure there is printed and retried by hand — the host goes down).
-# --dry-run stops after the gates and reverts the bump. scripts/corp-publish.sh (the corp tap) and
-# scripts/sweep.sh remain the caller's (CLAUDE.md, Releasing). Exit 0 released, 2 stopped.
+#   6. the push: origin main, then the tag (the tag push triggers the Release workflow);
+#   7. the post-release hook, when this machine has one: $CLAUDE_REPLAY_RELEASE_HOOK, by default
+#      ~/.claude/claude-replay/release-hook.sh, run from the checkout's root with the version. Steps
+#      specific to the owner's environment live there, outside this public repository; the hook's
+#      failure is printed, never the release's (GitHub already holds it).
+# --dry-run stops after the gates and reverts the bump. scripts/sweep.sh remains the caller's
+# (CLAUDE.md, Releasing). Exit 0 released, 2 stopped.
 set -u
 version=""; subject=""; msgfile=""; dry=0; allow=""; skip=0
 usage() { echo "usage: $0 <version> [--subject <text>] [--message-file <path>] [--dry-run] [--allow-backwards] [--skip-gates]" >&2; exit 1; }
@@ -95,19 +98,19 @@ git commit -q -F "$T/msg" || stop "the release commit failed"
 git tag -a "v$version" -m "v$version — ${subject:-release}" || stop "the tag failed (the release commit is on main, untagged)"
 if git tag -v "v$version" >/dev/null 2>&1; then say "tag signature verifies"; else say "tag signature not verified here (allowed_signers?) — the tag is signed by config"; fi
 
-# 6. The push. To GitHub by its URL, not by the remote name: `origin` may carry a second pushurl
-# for the mirror (so a plain `git push` reaches both), and an unreachable mirror — the corp host off
-# VPN — must not fail the release after GitHub already has the commit. The mirror is pushed on its
-# own below, and its failure is only reported.
+# 6. The push. To GitHub by its URL, not by the remote name: `origin` may carry further push URLs
+# (so a plain `git push` reaches them all), and one that is unreachable must not fail the release
+# after GitHub already has the commit.
 github=$(git remote get-url origin) || stop "no origin remote"
 say "push origin ($github)"
 git push "$github" main || stop "push origin main failed — the release commit and tag are local"
 git push "$github" "v$version" || stop "push origin v$version failed — main is pushed; push the tag: git push $github v$version"
 git fetch -q origin || :   # a push by URL leaves origin/main where it was
-say "push mirror"
-run_timeout() { if command -v timeout >/dev/null 2>&1; then timeout 180 "$@"; else "$@"; fi; }
-if run_timeout git push alibaba main && run_timeout git push alibaba "v$version"; then :; else
-  say "MIRROR PUSH FAILED — retry when the host is up: git push alibaba main && git push alibaba v$version"
+# 7. The post-release hook.
+hook="${CLAUDE_REPLAY_RELEASE_HOOK:-$HOME/.claude/claude-replay/release-hook.sh}"
+if [ -x "$hook" ]; then
+  say "post-release hook ($hook)"
+  "$hook" "$version" || say "the post-release hook failed (exit $?) — the release itself is done; re-run it: $hook $version"
 fi
-say "released v$version at $(git rev-parse --short HEAD) — next: sh scripts/corp-publish.sh $version, then scripts/sweep.sh"
+say "released v$version at $(git rev-parse --short HEAD) — next: scripts/sweep.sh"
 exit 0

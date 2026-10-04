@@ -32,7 +32,7 @@
 # Then, by hand: read the contract's diff, run the gates and the FULL browser suite (the mdrev
 # cases and `mdrev-cli conform` run against the new pin), and commit. Exit 0, or 2 stopped.
 #
-# set -e is deliberately NOT used (as in release.sh and corp-publish.sh): every command is checked
+# set -e is deliberately NOT used (as in release.sh): every command is checked
 # with an explicit `|| stop`, and every value a later step depends on goes through need().
 set -u
 

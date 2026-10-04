@@ -538,8 +538,8 @@ cannot catch a KNOWN field going empty after a client update — a usage block t
 makes the cost a silent lower bound. Each adapter declares the short list its cost and cards read
 (`COVERAGE_FIELDS`; Claude Code and Codex), and the report gives each field's fill rate per client
 version, flagging the newest version that writes one clearly (`coverage::DROP`, 20 points) less
-often than the best version before it. The daily job runs it over 14 days and a drop joins the scan
-as a `field.dropped` row (`<field>@<version>`), triaged like a shape.
+often than the best version before it. Run over a window (`--since 14d`), a drop is the news: a client update stopped writing
+something the cost or a card reads.
 
 The channel is `claude-replay-engine/src/unknown.rs`, re-exported through `engine/seam.rs` as
 `note_unknown`/`UnknownAt` so all three families and any third-party adapter report the same way.
@@ -554,34 +554,8 @@ discovery and scanned nothing from `/tmp`): the newest 200 transcripts machine-w
 with no price in `claude-replay-engine/pricing.json` (`where: model.unpriced`, counted in sessions):
 that session's cost silently becomes a lower bound.
 
-**A daily job reads it** (#276, the owner: "review ... any unknown dropped messages ... queue up
-tasks ... send me a message when new work is found", and, in the same job, pricing): the LaunchAgent
-`com.hong.unknown-review` runs `scripts/unknown-review.sh` at 09:30. It scans the last day, and a
-headless `claude -p` briefed by `scripts/unknown-review.md` judges each new row (RENDER or IGNORE),
-prices each unpriced model from the vendor's official page, and checks every known price against
-`pricing.json`'s sources — QUEUEING tasks tagged `origin=unknown-review`, never editing. The owner
-gets one `dws` message naming the queued tasks (and one if the job fails). State and logs:
-`~/.local/state/claude-replay/unknown-review/` and `/tmp/unknown-review.{out,err}.log`. A task it
-queued is ordinary queue work: execute it with the gates, the browser cases it touches (the whole
-local suite only when the diff touches page code; CI's browser job runs it on every push) and a
-release.
-**`scripts/unknown-review-setup.sh`** installs it on a Mac from wherever the checkout is (the 0600
-env file with the proxy, the LaunchAgent) and `--status` checks it end to end. A message dws cannot
-deliver waits in the state dir's `outbox/` for the next run (or `unknown-review.sh --flush`) and
-the Mac shows a notification saying why: on 2026-10-02 a lapsed dws login — `auth status` still
-read "authenticated" — lost a day's message to one log line.
-
-**The version canary rides in the same job** (#364, `scripts/version-canary.sh`, the owner's
-decisions of 2026-10-02): when a Claude Code or Codex version is INSTALLED that the canary has not
-run, it runs that client once in a throwaway home on a fixed prompt that makes a tool call, sweeps the
-transcript with `--unknown` and `--field-coverage`, and adds what it finds to the day's scan
-(`canary: true`; a declared field the session never wrote is `field.empty`), keeping a copy of the
-transcript in the state dir. It reuses the owner's logins and never touches `~/.claude` or
-`~/.codex`: Claude Code through `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, in the 0600 env
-file — a relocated `CLAUDE_CONFIG_DIR` is hermetic but not signed in, and copying the Keychain login
-would prompt in an unattended job and could rotate the real one out), Codex through a copy of
-`auth.json` and `config.toml` made only while the login is under 7 days old, written back if it
-refreshed anyway and the original is untouched. `--force` runs it with no new version.
+An internal daily review reads both sweeps and queues what it finds; it is part of the owner's
+process, not of this repository (its notes are imported at the end of *Releasing*).
 
 ## Test scratch
 Tests build their scratch under `std::env::temp_dir()` — ~100 call sites across the
@@ -612,77 +586,12 @@ from 1.259.0 back to 1.258.0 while another tree was releasing); `cargo build` fo
 the gates; the release commit and the signed annotated tag, the commit verified before the tag
 (a failed commit with the tag commands still running once shipped a tag pointing at the wrong
 commit); the push to `origin main`, then the tag — the tag push triggers the Release workflow,
-which publishes binaries and bumps the Homebrew tap — then the mirror. `--dry-run` stops after
-the gates. CI's `version guard` job runs the same check on every push to main (the workspace
-version never below the highest tag; a release commit names its own version and owns its tag),
-and the Release workflow refuses a tag that does not name the workspace version, so a release
-cut by hand is still refused where it went wrong before.
-
-**Publish to BOTH taps** (owner, 2026-08-29). The tag push bumps the public Homebrew tap
-(`tanghong123/tap`) on its own; the corp tap is a separate, manual step that does not happen by
-itself — **`scripts/corp-publish.sh <version>`** IS that step, the one mechanical path for it
-(#267). It downloads the release's four tools x four targets, verifies each against its published
-`.sha256`, republishes them into `alibrew/artifacts`, rewrites the four formulae in
-`alibrew/homebrew-core`, and only then prints a success line it has EARNED — by re-reading the
-formulae from the tap's `origin/main` and the artifacts from the pushed commit and asserting they
-name this version and each other. `--verify-only <version>` runs that last check alone and is the
-ten-second answer to "is the corp tap actually current?"; `--dry-run` stops before the first write.
-
-It exists because the step used to be an inline block rewritten from this file each release, and
-on 2026-09-22 that block was found to have published NOTHING for five releases while printing
-success each time: `git -C "$TAP" add Formula/agent-*.rb` ran from the claude-replay root, where
-the glob matches nothing, so zsh killed the line before git saw it; the commit then said "no
-changes added to commit", the push said "Everything up-to-date", and the banner printed anyway.
-The tap served 1.287.0 while this machine ran 1.292.0 — brew installs from the tap clone's WORKING
-TREE, so `alibrew upgrade` kept working and hid it for two days. Hence the script's two rules:
-**nothing globs across directories** (paths are explicit and every staged set is compared against
-the exact list expected, never a count), and **the banner is earned, not printed**.
-
-What it encodes, and what must still be true if it is ever bypassed:
-- Artifacts live at `<tool>/<version>-<os>-<arch>/` (`darwin|linux` x `arm64|amd64`), keeping the
-  release's own filename. Clone `--filter=blob:none --no-checkout`, then `sparse-checkout init
-  --cone` + `set` the sixteen NEW directories and check out `master` — a plain clone pulls every
-  binary ever published. **Exactly two levels** — brew writes a single-line cone sparse-checkout
-  pattern and cone mode materializes NOTHING deeper.
-- In that clone, never run anything that needs blob SIZES or contents outside the cone — `git lfs
-  ls-files`, `ls-tree -l`, `git show HEAD:<big file>` — each missing blob is lazily fetched over
-  one ssh round-trip (measured: 178 MB / 51 packs in 14 minutes before it was killed). The LFS
-  guard is `grep filter=lfs .gitattributes` plus `git check-attr` on the new files; both read
-  metadata only. Never LFS-track that repo. `git ls-tree --name-only` is safe — trees are present
-  after a blob:none clone, and that is how the script proves the sixteen paths are really there.
-- Both corp repos are SHARED (other tools publish to them): `git fetch` + `rebase` right before
-  each push, or it is rejected as non-fast-forward — a knack release landed between clone and push
-  on 2026-09-03. And `agent-metrics` belongs to another team in that same tap: stage our four
-  formulae by explicit path and assert the staged set is exactly those four.
-- The installed tap clone is shared with alibrew ITSELF, which rewrites its own files there while it
-  updates (2026-09-29: an untracked `install.sh`, then `Formula/alibrew.rb`, each clean again in
-  minutes — and each stopped a publish that had already landed at its verify, before its upgrade
-  step). So the clean-tree check (`scripts/tap-clean.sh`, #327, at preflight and at verify) stops at
-  once on one of OUR four formulae and waits out any other dirty path, 15 s at a time for up to three
-  minutes. A retry that meets the already-published guard is told the way out: `--verify-only`, then
-  `alibrew upgrade` of the four tools if the stopped run never reached its own.
-- The formula (`Formula/<tool>.rb` in `alibrew/homebrew-core`, branch `main` — the installed tap at
-  `$(brew --repository alibrew/core)` IS that clone, which is why `brew audit` reads it) carries
-  the new version inside each `only_path:` as well, and the pushed artifacts sha as `revision:` —
-  a git url takes no `sha256` and no `using: :git`. Rewrite them by PATTERN, never against the old
-  version: a sed keyed on the version that was there silently no-ops on a formula that drifted.
-  Verify with `ruby -c`, `brew style --except-cops=FormulaAudit/Urls`, then `brew audit --strict
-  alibrew/core/<name>` (audit takes a NAME, not a path).
-- Take the artifacts sha from the REMOTE after the push, never from a local `rev-parse` before it:
-  a formula that names a commit nobody else has installs for nobody.
-
-Both corp repos **reject a commit authored from a non-corporate email** — set the owner's
-corporate address repo-locally in those clones only. Do not guess it: read it off the
-existing commits in `alibrew/homebrew-core` — and off a formula the tap ALREADY OWNS
-(`git log -1 --format='%an <%ae>' -- Formula/agent-replay.rb`), never the tap's last commit,
-which belongs to whichever team published most recently. `corp-publish.sh` does exactly that,
-at runtime, and never prints it. `a1 staff list
---query hongtang` does NOT report it — measured 2026-09-03, it returns five other people whose
-nicknames romanize the same way, and `a1 staff get <mr-assignee-id>` is a platform id, not an
-employee id, and names someone else again. It must never appear in THIS repo — not in a commit and not in a file, which
-`.githooks/pre-push` enforces on the diff as well as the metadata (it caught this very
-paragraph naming it outright). The two rules point opposite ways on purpose: one history is
-public and the other is not.
+which publishes binaries and bumps the Homebrew tap (`tanghong123/tap`) — then the post-release
+hook when this machine has one (below). `--dry-run` stops after the gates. CI's `version guard`
+job runs the same check on every push to main (the workspace version never below the highest
+tag; a release commit names its own version and owns its tag), and the Release workflow refuses a
+tag that does not name the workspace version, so a release cut by hand is still refused where it
+went wrong before.
 
 **Then sweep: `scripts/sweep.sh`.** A version bump changes the metadata hash of every
 crate and every test/example/bin target, so it mints a COMPLETE new set of artifacts and
@@ -693,20 +602,12 @@ artifacts the real gates need (`--message-format=json`, dev `--all-targets` + re
 deletes only what is in neither set, so it costs no rebuild — run it right after the build
 and the next one is still warm. `--dry-run` first if in doubt.
 
-`origin` (GitHub) is where the code is developed, where releases are cut, and
-where issues are filed. `alibaba` (git@code.alibaba-inc.com:project-h/
-claude-replay.git) is a MIRROR the owner asked restored (2026-08-21): `main`
-and tags go to BOTH. It holds code only; issues and releases stay on GitHub.
-**`origin` carries two push URLs, GitHub first** (2026-10-02, the owner: a
-mirror pushed only by a separate command is one a reader of the config misses),
-so a plain `git push origin main` reaches both. The setup, in a fresh clone:
-`git remote set-url --add --push origin https://github.com/tanghong123/claude-replay.git`
-then the same with `git@code.alibaba-inc.com:project-h/claude-replay.git` (the
-first `--add --push` replaces the implicit push URL, so GitHub must be added
-too). `release.sh` still pushes GitHub BY URL (`git remote get-url origin`
-answers the fetch URL) and the mirror on its own, so an unreachable corp host —
-off VPN — never fails a release GitHub already holds; the `alibaba` remote stays
-for that.
+`origin` (GitHub) is where the code is developed, where releases are cut, and where issues are
+filed. Steps specific to the owner's environment are not in this repository: `release.sh` runs
+`~/.claude/claude-replay/release-hook.sh` when it exists, and their notes are imported below. On
+a machine without them, a release ends with GitHub and the public tap.
+
+@~/.claude/claude-replay/internal.md
 
 ## Merging external PRs
 CI must run and pass BEFORE the merge — a fork PR from a first-time contributor
