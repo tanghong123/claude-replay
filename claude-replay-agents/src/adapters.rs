@@ -215,6 +215,13 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn scratch_owner(&self, cwd: &Path) -> Option<String> {
         agents::claude::discover::scratch_owner(cwd)
     }
+    /// An `@`-mentioned file (`File`) and a pasted image's saved original (an `Image` with a
+    /// path, #324). Not a compaction's `Ref`, an editor's open file or a plan: those are the
+    /// session's context, not something the user gave it.
+    fn hands_over(&self, a: &claude_replay_engine::model::Attachment) -> bool {
+        use claude_replay_engine::model::AttachmentKind;
+        a.path.is_some() && matches!(a.kind, AttachmentKind::File | AttachmentKind::Image)
+    }
 }
 
 /// Codex adapter — delegates to the `codex_model` / `codex_discover` implementations.
@@ -315,6 +322,12 @@ impl TranscriptAdapter for CodexAdapter {
         memo: Option<&claude_replay_engine::seam::CardMemo>,
     ) -> claude_replay_engine::seam::CardOutcome {
         agents::codex::discover::session_card(path, memo)
+    }
+    /// A Codex Desktop prompt's attachments: the images it carried with their paths, and the
+    /// files its envelope declared (`Ref`, the only thing this adapter makes one from).
+    fn hands_over(&self, a: &claude_replay_engine::model::Attachment) -> bool {
+        use claude_replay_engine::model::AttachmentKind;
+        a.path.is_some() && matches!(a.kind, AttachmentKind::Image | AttachmentKind::Ref)
     }
 }
 

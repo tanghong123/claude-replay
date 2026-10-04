@@ -235,6 +235,18 @@ pub(crate) fn may_render(path: &str) -> bool {
     decide(policy(), path)
 }
 
+/// Whether a file the transcript HANDED to the reader may be served (#374) — a `Cap::Handed`
+/// stamp. Every setting but `never`: an allowlist narrows what a page may render of the paths a
+/// transcript mentions, and a file sent to the reader, or attached by them, was never a mention.
+/// `never` means no page reads a local file at all, and that holds for these too.
+pub(crate) fn may_hand() -> bool {
+    hands(policy())
+}
+
+fn hands(policy: &Policy) -> bool {
+    !matches!(policy, Policy::Never)
+}
+
 /// The decision itself, taken apart from where the policy comes from so a test can put every
 /// setting through the real function instead of restating it.
 fn decide(policy: &Policy, path: &str) -> bool {
@@ -298,6 +310,13 @@ pub(crate) enum Cap {
     /// Read a document the page handed the server to hold for mdrev (#270): Markdown a transcript
     /// carries, which is not a file, so it cannot share `File`'s namespace of absolute paths.
     Held,
+    /// Serve the bytes of a file the transcript HANDED to the reader (#374): one an agent sent
+    /// with `SendUserFile`, or one the user attached to a prompt (a pasted image's original, an
+    /// `@`-mentioned file, a file declared with a Codex Desktop prompt). The same route as `File`,
+    /// but the stamp is its own authorization, as a reveal stamp is (#79): handing a file over
+    /// is the intent the render allowlist and containment stand in for when a transcript merely
+    /// MENTIONS a path. Minted by [`may_hand`]'s rule, so `never` still mints nothing.
+    Handed,
 }
 
 impl Cap {
@@ -306,6 +325,7 @@ impl Cap {
             Cap::File => "file",
             Cap::Reveal => "reveal",
             Cap::Held => "held",
+            Cap::Handed => "handed",
         }
     }
 }
@@ -432,6 +452,38 @@ mod tests {
         // Whatever the policy says, REVEAL is still stamped: it is the capability the policy
         // deliberately does not govern.
         assert!(sign(Cap::Reveal, &real).is_some());
+    }
+
+    /// #374: a handed-over file has a stamp of its own. It is not a `File` stamp, so the route
+    /// can tell "the transcript handed this over" from "the transcript mentioned this", and
+    /// neither opens the other's door; and every policy but `never` mints it, an allowlist
+    /// included, because an allowlist narrows mentions.
+    #[test]
+    fn a_handed_stamp_is_its_own_and_only_never_withholds_it() {
+        let p = "/Users/someone/Movies/demo.mp4";
+        let handed = sign(Cap::Handed, p).expect("a key");
+        let file = sign(Cap::File, p).expect("a key");
+        assert_ne!(handed, file);
+        assert!(verify(Cap::Handed, p, Some(&handed)));
+        assert!(
+            !verify(Cap::File, p, Some(&handed)),
+            "a handed stamp is not a file stamp"
+        );
+        assert!(
+            !verify(Cap::Handed, p, Some(&file)),
+            "…nor a file stamp a handed one"
+        );
+        assert!(!verify(
+            Cap::Handed,
+            "/Users/someone/.ssh/id_ed25519",
+            Some(&handed)
+        ));
+        assert!(!hands(&Policy::Never), "never means never, handed or not");
+        assert!(hands(&Policy::Offered));
+        assert!(
+            hands(&Policy::Allow(vec![])),
+            "an allowlist, even an empty one, does not withhold a handed file"
+        );
     }
 
     /// Hex is the wire form; it must round-trip a key exactly, and refuse anything else.

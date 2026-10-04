@@ -458,10 +458,8 @@ fn open(rel: &Release, live: Option<&SessionService>, req: &Request) -> HttpResp
     };
     let abs = param(req, "path").unwrap_or_default();
     let stamp = param(req, "sig");
-    if !sig::verify(Cap::File, &abs, stamp.as_deref()) {
-        return HttpResponse::not_found("no such path");
-    }
-    if live.contained(Path::new(&abs)).is_none() {
+    // `/file`'s own rule (a file stamp and containment, or a handed stamp, #374).
+    if live.servable(&abs, stamp.as_deref()).is_none() {
         return HttpResponse::not_found("no such path");
     }
     if !is_markdown(&abs) {
@@ -536,10 +534,11 @@ fn doc(live: &SessionService, req: &Request, root: &str) -> Result<Doc, HttpResp
         return Err(HttpResponse::forbidden("not offered"));
     }
     let abs = join(root, &rel);
-    if !sig::verify(Cap::File, &abs, param(req, "cap").as_deref()) {
+    let cap = param(req, "cap");
+    if !offered(&abs, cap.as_deref()) {
         return Err(HttpResponse::forbidden("not offered"));
     }
-    let Some(real) = live.contained(Path::new(&abs)) else {
+    let Some(real) = live.servable(&abs, cap.as_deref()) else {
         return Err(HttpResponse::not_found("no such document"));
     };
     Ok(Doc {
@@ -547,6 +546,12 @@ fn doc(live: &SessionService, req: &Request, root: &str) -> Result<Doc, HttpResp
         rel,
         real,
     })
+}
+
+/// Whether `cap` is this server's stamp for reading `abs`: a file stamp, or a handed one (#374).
+/// The stamp alone, for a route that refuses an unoffered path before it looks at the disk.
+fn offered(abs: &str, cap: Option<&str>) -> bool {
+    sig::verify(Cap::File, abs, cap) || sig::verify(Cap::Handed, abs, cap)
 }
 
 /// A path the contract may name inside a collection: relative, and every segment a plain name.
@@ -825,7 +830,7 @@ fn resolve(live: &SessionService, req: &Request, root: &str) -> HttpResponse {
             error("expected {from: {path, cap}, targets}"),
         );
     };
-    if !plain_relative(&from) || !sig::verify(Cap::File, &join(root, &from), from_cap.as_deref()) {
+    if !plain_relative(&from) || !offered(&join(root, &from), from_cap.as_deref()) {
         return HttpResponse::forbidden("not offered");
     }
     let caps: Vec<Value> = targets
@@ -1153,6 +1158,7 @@ fn status(code: &'static str, body: Vec<u8>) -> HttpResponse {
         content_type: "application/json",
         body,
         headers: Vec::new(),
+        stream: None,
     }
 }
 

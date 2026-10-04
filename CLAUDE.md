@@ -235,6 +235,20 @@ PNG, measured), so the image gets reveal and the app shell's lightbox opens the 
 to the embedded copy if the original is gone. A sub-agent gets its root's uploads. So an allowlist
 entry for a directory no session explains mints stamps that `/file` still refuses.
 
+**A file the transcript HANDS to the reader is served wherever it lives** (#374, the owner): what an
+agent sent with `SendUserFile` (unless the send failed or was declined) and what the user attached to
+a prompt (`TranscriptAdapter::hands_over` — Claude: an `@`-mentioned file, a pasted image's original;
+Codex: an attached image, a file declared with the prompt) carry a `Cap::Handed` stamp in
+`fsig`/`att_fsig`, minted under every render policy but `never` — an allowlist narrows what a
+transcript MENTIONS, and sending a file is not a mention. `/file` and mdrev's routes share one rule,
+`SessionService::servable`: a `File` stamp plus containment, or a `Handed` stamp alone, which is its
+own authorization as a reveal stamp is (#79). Measured before it on the owner's machine: 35 of 88
+delivered files (a film in `~/Movies`, a demo repo the session never worked in) and 10 of 10 pasted
+originals (`uploads` was not allowlisted) could only be revealed or copied, which a phone cannot use.
+And `/file` no longer refuses a file over its 8 MB viewer cap: it STREAMS it from disk as a download
+(`HttpResponse::stream`), never shown — except that a client the mask policy covers is refused one
+that reads as text (its first 64 KB decode as UTF-8), since a stream cannot be masked.
+
 **What leaves the machine can have its secrets masked** (#365, opt-in, `html_export/mask.rs`):
 `<state>/mask-policy.json` beside `render-policy.json` — `{"mode": "remote"}` masks every JSON and
 plain-text response to a client whose `Host` is not the loopback (the phone over the tailnet, the
@@ -305,7 +319,8 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   `jump_to_end`, `open_last_fold`, `LiveGrowth`). `tests/browser_follow.rs` holds the
   structural cases (the html server's viewport contract; `the_app_shell_*` on ports 2831–2836;
   `the_classic_rail_*` on 2837–2838 against v1; `the_v2_shell_*`, the compose affordance on
-  2841–2842). `tests/files.rs` holds #272's file affordances on the app shell (2811–2814), and
+  2841–2842). `tests/files.rs` holds #272's file affordances on the app shell (2811–2814) and #374's handed
+  files on a phone (2933), and
   `tests/unsigned.rs` the unstamped-path case on both pages (2815) — its own binary, because the
   signing key is read once per process and that case needs none; a case
   that clicks a reveal wraps the page's `fetch` so `/__reveal` is recorded, never sent — `open -R`

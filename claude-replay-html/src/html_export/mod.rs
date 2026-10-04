@@ -16,7 +16,7 @@
 use crate::diff::{diff_row_groups, DiffKind};
 use crate::fold::FoldPolicy;
 use crate::highlight;
-use crate::model::{AssistantPhase, AttachmentContent, Block, LoadedAttachment};
+use crate::model::{AssistantPhase, AttachmentContent, Block, LoadedAttachment, ToolStatus};
 use crate::present::{
     compaction_summary, display_name, edit_summary, spawn_chip, thinking_summary,
     tool_execution_failed, tool_execution_summary, write_content, WRITE_PREVIEW,
@@ -932,19 +932,34 @@ fn hunks_by_file(hunks: &[crate::model::Hunk]) -> Vec<&[crate::model::Hunk]> {
 /// minted: it hands over no bytes, and on a page that renders nothing inline it is the only thing
 /// a click can do. `fsig` renders the bytes, and exists only for a path the render policy allows —
 /// not stamping IS the restriction.
-fn offered_path(abs: &str) -> Map<String, Value> {
-    use crate::html_export::sig;
+///
+/// A file the transcript HANDED to the reader (`handed`, #374) carries a `Cap::Handed` stamp in
+/// `fsig` instead: the page asks `/file` for it the same way, and the route serves it wherever it
+/// lives, since sending it to the reader is the intent the allowlist and containment stand in for.
+fn offered_path(abs: &str, handed: bool) -> Map<String, Value> {
     let mut offer = Map::new();
     if let Some(s) = sig::sign(sig::Cap::Reveal, abs) {
         offer.insert("sig".into(), json!(s));
     }
-    if sig::may_render(abs) {
-        if let Some(s) = sig::sign(sig::Cap::File, abs) {
-            offer.insert("fsig".into(), json!(s));
-        }
+    if let Some(s) = file_stamp(abs, handed) {
+        offer.insert("fsig".into(), json!(s));
     }
     offer.insert("path".into(), json!(abs));
     offer
+}
+
+/// The stamp that lets a page read `abs`'s bytes, if any: `Cap::Handed` for a file the
+/// transcript handed to the reader (every policy but `never`), else `Cap::File` where the
+/// render policy allows it.
+fn file_stamp(abs: &str, handed: bool) -> Option<String> {
+    if handed {
+        return sig::may_hand()
+            .then(|| sig::sign(sig::Cap::Handed, abs))
+            .flatten();
+    }
+    sig::may_render(abs)
+        .then(|| sig::sign(sig::Cap::File, abs))
+        .flatten()
 }
 
 fn resolve_abs(cwd: &str, target: &str) -> Option<String> {
@@ -1200,14 +1215,17 @@ impl Emitter<'_> {
                         // stamps, because they permit different things — `att_sig` reveals it
                         // in the file manager, `att_fsig` renders its bytes in the page, and
                         // only the second answers to the render policy.
-                        use crate::html_export::sig;
+                        //
+                        // #374: a file the USER attached (the adapter says which) is handed over,
+                        // so its bytes stamp is `Cap::Handed`, honoured wherever the file lives.
                         if let Some(s) = sig::sign(sig::Cap::Reveal, p) {
                             head.insert("att_sig".into(), json!(s));
                         }
-                        if sig::may_render(p) {
-                            if let Some(s) = sig::sign(sig::Cap::File, p) {
-                                head.insert("att_fsig".into(), json!(s));
-                            }
+                        let handed = self
+                            .transcript
+                            .is_some_and(|t| crate::adapter(t.agent()).hands_over(a));
+                        if let Some(s) = file_stamp(p, handed) {
+                            head.insert("att_fsig".into(), json!(s));
                         }
                         head.insert("att_path".into(), json!(p));
                     }
@@ -1420,8 +1438,15 @@ impl Emitter<'_> {
                     } else {
                         target.as_str()
                     };
+                    // #374: what a send DELIVERED is handed to the reader — downloadable wherever
+                    // it lives — unless the call failed or the reader declined it.
+                    let handed = name == "SendUserFile"
+                        && !matches!(
+                            execution.as_ref().and_then(|e| e.status),
+                            Some(ToolStatus::Failed | ToolStatus::Declined | ToolStatus::Cancelled)
+                        );
                     if let Some(abs) = resolve_abs(base, target) {
-                        head.extend(offered_path(&abs));
+                        head.extend(offered_path(&abs, handed));
                     }
                     // #275: a send that delivered SEVERAL files offers every one of them. The
                     // header can name only the first — the rest were a "+2" with nothing behind
@@ -1430,7 +1455,7 @@ impl Emitter<'_> {
                         let files: Vec<Value> = delivered
                             .iter()
                             .filter_map(|p| resolve_abs(base, p))
-                            .map(|abs| Value::Object(offered_path(&abs)))
+                            .map(|abs| Value::Object(offered_path(&abs, handed)))
                             .collect();
                         head.insert("files".into(), json!(files));
                     }
@@ -4400,6 +4425,69 @@ mod tests {
         assert!(html.contains("fix the table"), "carries the text: {html}");
     }
 
+    /// #374: an attachment the adapter says the USER handed over (Claude: an `@`-mentioned file,
+    /// a pasted image's original; Codex: a declared file) carries a `Handed` bytes stamp; one
+    /// the agent's context merely points at (a Claude compaction `Ref`) keeps the `File` stamp
+    /// the allowlist and containment narrow. Without a transcript there is no adapter to ask.
+    #[test]
+    fn an_attachment_the_user_handed_over_is_stamped_as_handed() {
+        use crate::model::{Attachment, AttachmentKind};
+        let att = |kind, path: &str| {
+            Block::Attachment(Attachment {
+                lines: None,
+                kind,
+                name: "x".into(),
+                path: Some(path.into()),
+                content: AttachmentContent::None,
+            })
+        };
+        let fsig = |agent, b: Block| -> String {
+            let line = r#"{"type":"user","message":{"content":"hi"}}"#;
+            let src = Transcript::open(agent, att_transcript(line));
+            let out = stream_from(&[b], &FoldPolicy::none(), Some(&src));
+            out[0]["head"]["att_fsig"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        };
+        let handed = |agent, kind, path: &str| {
+            let s = fsig(agent, att(kind, path));
+            (
+                sig::verify(sig::Cap::Handed, path, Some(&s)),
+                sig::verify(sig::Cap::File, path, Some(&s)),
+            )
+        };
+        use crate::Agent;
+        let pasted = "/h/.claude/uploads/s-1/0a1b-image.png";
+        assert_eq!(
+            handed(Agent::CLAUDE, AttachmentKind::Image, pasted),
+            (true, false)
+        );
+        assert_eq!(
+            handed(Agent::CLAUDE, AttachmentKind::File, "/d/notes.md"),
+            (true, false)
+        );
+        assert_eq!(
+            handed(Agent::CLAUDE, AttachmentKind::Ref, "/d/notes.md"),
+            (false, true)
+        );
+        assert_eq!(
+            handed(Agent::CLAUDE, AttachmentKind::Edited, "/d/a.rs"),
+            (false, true)
+        );
+        assert_eq!(
+            handed(Agent::CODEX, AttachmentKind::Ref, "/d/spec.pdf"),
+            (true, false)
+        );
+        assert_eq!(
+            handed(Agent::CODEX, AttachmentKind::Image, "/d/shot.png"),
+            (true, false)
+        );
+        let none = stream(&[att(AttachmentKind::Image, pasted)], &FoldPolicy::none());
+        let s = none[0]["head"]["att_fsig"].as_str().unwrap_or("");
+        assert!(!sig::verify(sig::Cap::Handed, pasted, Some(s)));
+    }
+
     /// A surfaced attachment streams as kind "attachment". On a served page it carries
     /// the payload (`att_text`) or reveal path to act on; on a portable export
     /// (`reveal == false`) only the name is emitted.
@@ -5256,6 +5344,87 @@ mod tests {
             "one file needs no list — the header is that file: {}",
             one[0]["head"]
         );
+    }
+
+    /// #374: what a send DELIVERED is handed to the reader, so its bytes stamp is `Handed` —
+    /// which `/file` honours wherever the file lives — and not `File`, which the allowlist and
+    /// containment narrow. A send that failed or was declined handed nothing over.
+    #[test]
+    fn a_delivered_file_is_stamped_as_handed_unless_the_send_failed() {
+        use crate::model::{ToolExecution, ToolStatus};
+        let send = |status: Option<ToolStatus>| Block::ToolUse {
+            name: "SendUserFile".into(),
+            target: "/films/tour.mp4 +1".into(),
+            diffs: vec![],
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: status.map(|status| ToolExecution {
+                status: Some(status),
+                exit_code: None,
+                duration: None,
+            }),
+            published: None,
+            asked: None,
+            delivered: vec!["/films/tour.mp4".into(), "/films/tour-zh.mp4".into()],
+        };
+        let stamps = |b: Block| -> Vec<(String, String)> {
+            let out = stream(&[b], &FoldPolicy::none());
+            let head = &out[0]["head"];
+            let mut all = vec![(
+                head["path"].as_str().unwrap().to_string(),
+                head["fsig"].as_str().unwrap_or("").to_string(),
+            )];
+            for f in head["files"].as_array().expect("both files") {
+                all.push((
+                    f["path"].as_str().unwrap().to_string(),
+                    f["fsig"].as_str().unwrap_or("").to_string(),
+                ));
+            }
+            all
+        };
+        for (path, fsig) in stamps(send(Some(ToolStatus::Completed)))
+            .into_iter()
+            .chain(stamps(send(None)))
+        {
+            assert!(sig::verify(sig::Cap::Handed, &path, Some(&fsig)), "{path}");
+            assert!(!sig::verify(sig::Cap::File, &path, Some(&fsig)), "{path}");
+        }
+        for status in [
+            ToolStatus::Failed,
+            ToolStatus::Declined,
+            ToolStatus::Cancelled,
+        ] {
+            for (path, fsig) in stamps(send(Some(status))) {
+                assert!(
+                    !sig::verify(sig::Cap::Handed, &path, Some(&fsig)),
+                    "{status:?}: nothing was handed over, {path}"
+                );
+            }
+        }
+        // Any other tool's path is a mention, stamped `File` as before.
+        let read = Block::ToolUse {
+            name: "Read".into(),
+            target: "/films/tour.mp4".into(),
+            diffs: vec![],
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+        };
+        let out = stream(&[read], &FoldPolicy::none());
+        let fsig = out[0]["head"]["fsig"].as_str().unwrap_or("");
+        assert!(sig::verify(sig::Cap::File, "/films/tour.mp4", Some(fsig)));
+        assert!(!sig::verify(
+            sig::Cap::Handed,
+            "/films/tour.mp4",
+            Some(fsig)
+        ));
     }
 
     #[test]

@@ -13,7 +13,7 @@ use crate::engine::elide::Elision;
 use crate::engine::message::Message;
 use crate::engine::replay::Shaping;
 use crate::metrics::Metrics;
-use crate::model::Block;
+use crate::model::{Attachment, Block};
 use crate::Agent;
 use serde_json::Value;
 use std::io;
@@ -507,6 +507,15 @@ pub trait TranscriptAdapter: Sync {
     /// when the directory is nobody's scratch. Default: none.
     fn scratch_owner(&self, _cwd: &Path) -> Option<String> {
         None
+    }
+    /// Whether the USER handed this attachment to the session (#374): a file they attached to a
+    /// prompt, as opposed to one the agent's context merely points at. A page lets the reader
+    /// download a handed file wherever it lives, since attaching it is the intent its render
+    /// allowlist and containment stand in for. The same kind means different things per agent
+    /// (a Codex `Ref` is a file declared with the prompt, a Claude one a compaction's pointer),
+    /// which is why the adapter answers. Default: none.
+    fn hands_over(&self, _attachment: &Attachment) -> bool {
+        false
     }
     /// The session this one was FORKED from, if the agent records forks (#142).
     ///

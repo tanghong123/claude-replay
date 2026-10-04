@@ -8,7 +8,7 @@
 //! No case ever reveals anything: the page's `fetch` is wrapped so a `/__reveal` request is recorded
 //! and answered, never sent — `open -R` must not run on the machine the suite runs on.
 //!
-//! Ports 2811–2814. The classic page draws no preview pane; its file view already pairs the two
+//! Ports 2811–2814, and 2933 for #374's handed-over files on a phone. The classic page draws no preview pane; its file view already pairs the two
 //! (export.js `openArtifact` and its "Reveal in file manager" action), which is the reference here.
 
 use std::path::PathBuf;
@@ -679,4 +679,131 @@ fn the_app_shell_preview_pinch_zooms_an_image_on_a_phone() {
         &format!("document.querySelector('{stage}').dataset.zoom + ' from {fit}'"),
     );
     assert!(zoom() > fit, "zoomed in from {fit}");
+}
+
+/// #374: what a session HANDS to the reader is downloadable wherever it lives, on a phone too. The
+/// owner sent two films with `SendUserFile` from `~/Movies` and could only reveal them in Finder or
+/// copy the path — useless on a paired phone — because a page reads a file only where the render
+/// allowlist reaches AND a hosted session explains the path, and `~/Movies` is neither. A file the
+/// agent sent, or the user pasted, is handed over; the allowlist and containment are for paths a
+/// transcript merely mentions.
+///
+/// The world: the owner's allowlist (the session's repo alone); a 9 MB film outside every root, so
+/// over the viewer's cap as well, which streams it as a download; and a pasted image whose original
+/// the client saved under `<home>/uploads/<session>/`, which the allowlist does not reach either.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_downloads_what_the_session_handed_over_wherever_it_lives() {
+    const HANDED: &str = "5e5510a1-0000-4000-8000-000000000374";
+    let _serial = serial();
+    let base = base("files-handed");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    let elsewhere = base.join("elsewhere");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let film = elsewhere.join("tour.mp4");
+    let mut bytes = vec![
+        0u8, 0, 0, 0x20, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm', 0xff,
+    ];
+    bytes.resize(9 * 1024 * 1024, 0);
+    std::fs::write(&film, &bytes).unwrap();
+    let original = stores
+        .root
+        .join("uploads")
+        .join(HANDED)
+        .join("0a1b2c3d-image.png");
+    std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+    std::fs::write(&original, harness::base64_bytes(harness::WIDE_PNG_B64)).unwrap();
+
+    let mut jsonl =
+        harness::pasted_image_sized("here is a screenshot", &at("00:01"), harness::TINY_PNG_B64);
+    jsonl += &format!(
+        "{{\"type\":\"attachment\",\"timestamp\":\"{}\",\"attachment\":{{\"type\":\"inlined_image_paths\",\"paths\":[{:?}]}}}}\n",
+        at("00:02"),
+        original.display().to_string()
+    );
+    jsonl += &user_at("send me the film", &at("00:10"));
+    jsonl += &format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"s1\",\"name\":\"SendUserFile\",\"input\":{{\"files\":[{:?}],\"caption\":\"the film\",\"status\":\"normal\",\"display\":\"render\"}}}}]}},\"timestamp\":\"{}\"}}\n",
+        film.display().to_string(),
+        at("00:11")
+    );
+    jsonl += &tool_result_at("s1", &at("00:12"));
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(HANDED, &jsonl);
+
+    // The owner's allowlist, in this monitor's own state dir: the session's repo and nothing else.
+    let state = base.join("state-2933");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(
+        state.join("render-policy.json"),
+        format!(
+            "{{\"mode\":\"allowlist\",\"dirs\":[{:?}]}}",
+            repo.display().to_string()
+        ),
+    )
+    .unwrap();
+    let m = Monitor::spawn(Kind::V2, 2933, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 440, 956);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={HANDED}"));
+    let selector = format!("[data-reference-path={:?}]", film.display().to_string());
+    until(
+        &tab,
+        &format!("!!document.querySelector({selector:?}) && !!document.querySelector('[data-attachment][data-path$=\"-image.png\"]')"),
+        "the delivered film and the pasted image",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+
+    // The film: offered for reading, and the pane hands it over as a download of its real size.
+    let fsig = eval(
+        &tab,
+        &format!("document.querySelector({selector:?}).getAttribute('data-reference-fsig') || ''"),
+    );
+    assert!(
+        !fsig.as_str().unwrap_or("").is_empty(),
+        "a delivered file outside the allowlist and every root is still offered for reading"
+    );
+    eval(
+        &tab,
+        &format!("document.querySelector({selector:?}).click(); 'ok'"),
+    );
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody [data-preview-download]')",
+        "the pane offering the film as a download",
+        Duration::from_secs(20),
+        PANE,
+    );
+    let pane = eval(&tab, "document.getElementById('previewBody').innerText");
+    assert!(
+        pane.as_str().unwrap_or("").contains("9.0 MB"),
+        "the film's own size, from the streamed download's head: {pane:?}"
+    );
+    eval(
+        &tab,
+        "document.querySelector('#previewBody [data-preview-download]').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "document.getElementById('toast').textContent === 'Download started'",
+        "the whole film fetched and saved",
+        Duration::from_secs(20),
+        "document.getElementById('toast').textContent",
+    );
+
+    // The pasted image: its saved original is served, so the lightbox opens the original rather
+    // than the downscaled copy the transcript carries.
+    let fetched = eval(
+        &tab,
+        "(async function(){ var a = document.querySelector('[data-attachment][data-path$=\"-image.png\"]'); var r = await fetch('/file?path=' + encodeURIComponent(a.dataset.path) + '&sig=' + encodeURIComponent(a.dataset.fsig || ''), { cache: 'no-store' }); return r.status + ' ' + (r.headers.get('content-type') || ''); })()",
+    );
+    assert_eq!(
+        fetched.as_str().unwrap_or(""),
+        "200 image/png",
+        "a pasted image's original under uploads is served whatever the allowlist says"
+    );
 }

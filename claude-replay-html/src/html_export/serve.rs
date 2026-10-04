@@ -134,7 +134,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // why (`unanswered: {why, seconds?}`) instead of staying `resolved: false`, i.e. waiting.
     // v16: #275 — a multi-file send's head carries `files: [{path, sig, fsig?}]`, one per file.
     // v17: #282 — an asked option carries its `preview`, the asker's drawing, when it has one.
-    const RECORD_SCHEMA: u16 = 17;
+    // v18: #374 — a file the transcript handed to the reader (a `SendUserFile` delivery, a file
+    // the user attached) carries a `Cap::Handed` stamp in `fsig`/`att_fsig`.
+    const RECORD_SCHEMA: u16 = 18;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
@@ -519,6 +521,31 @@ impl SessionService {
     /// session that reads a sibling checkout.
     pub(crate) fn contained(&self, want: &Path) -> Option<PathBuf> {
         self.contained_kind(want, false)
+    }
+
+    /// The file a byte-reading route may serve for `path` and the page's `stamp`, or `None` —
+    /// the one rule `/file` and mdrev's routes share. OFFERED, then entitled: a `Cap::File`
+    /// stamp says this server rendered a link to exactly this path, and containment that a
+    /// hosted session still explains it (the cheap check, needing no disk, first).
+    ///
+    /// A `Cap::Handed` stamp (#374) is its own authorization, as a reveal stamp is (#79): the
+    /// renderer mints one only for a file the transcript HANDED to the reader — sent with
+    /// `SendUserFile`, or attached to a prompt — and a token holder already reads the transcript
+    /// that hands it over. Containment asks whether a session explains a path it MENTIONS; a
+    /// film an agent saved to `~/Movies` and sent is explained by the sending. It must still be
+    /// a real file.
+    pub(crate) fn servable(&self, path: &str, stamp: Option<&str>) -> Option<PathBuf> {
+        use super::sig::{verify, Cap};
+        if verify(Cap::File, path, stamp) {
+            return self.contained(Path::new(path));
+        }
+        if verify(Cap::Handed, path, stamp) && Path::new(path).is_absolute() {
+            return Path::new(path)
+                .canonicalize()
+                .ok()
+                .filter(|real| real.is_file());
+        }
+        None
     }
 
     /// Containment for `/__reveal`, which may also open a DIRECTORY.
@@ -1016,6 +1043,7 @@ impl SessionService {
                         .to_string()
                         .into_bytes(),
                     headers: Vec::new(),
+                    stream: None,
                 }
             }
         }
@@ -1274,6 +1302,11 @@ pub struct HttpResponse {
     /// wanted them: local bytes served on the monitor's own origin must carry `nosniff` and
     /// a sandbox policy, which a fixed head cannot express.
     pub headers: Vec<String>,
+    /// A file streamed from disk after the head, with its length (#374) — `body` is then empty.
+    /// Only `/file` sets it, for a download over [`MAX_ARTIFACT_BYTES`]: a viewer reads what it
+    /// shows into memory, but a download is not viewing, and a phone has no other way to fetch a
+    /// 19 MB video an agent sent it. Never gzipped, and masked only by refusal (`mask_for`).
+    pub stream: Option<(PathBuf, u64)>,
 }
 
 impl HttpResponse {
@@ -1283,6 +1316,7 @@ impl HttpResponse {
             content_type,
             body,
             headers: Vec::new(),
+            stream: None,
         }
     }
     pub fn html(body: String) -> Self {
@@ -1297,6 +1331,7 @@ impl HttpResponse {
             content_type: TEXT_PLAIN,
             body: msg.as_bytes().to_vec(),
             headers: Vec::new(),
+            stream: None,
         }
     }
     pub fn unauthorized(msg: &'static str) -> Self {
@@ -1305,6 +1340,7 @@ impl HttpResponse {
             content_type: TEXT_PLAIN,
             body: msg.as_bytes().to_vec(),
             headers: Vec::new(),
+            stream: None,
         }
     }
     /// #341: the refusal a browser LOADING A PAGE gets, where [`unauthorized`](Self::unauthorized)
@@ -1343,6 +1379,7 @@ impl HttpResponse {
             content_type: "text/html; charset=utf-8",
             body: body.into_bytes(),
             headers: Vec::new(),
+            stream: None,
         }
     }
     pub fn forbidden(msg: &'static str) -> Self {
@@ -1351,6 +1388,7 @@ impl HttpResponse {
             content_type: TEXT_PLAIN,
             body: msg.as_bytes().to_vec(),
             headers: Vec::new(),
+            stream: None,
         }
     }
     pub fn method_not_allowed(msg: &'static str) -> Self {
@@ -1359,6 +1397,7 @@ impl HttpResponse {
             content_type: TEXT_PLAIN,
             body: msg.as_bytes().to_vec(),
             headers: Vec::new(),
+            stream: None,
         }
     }
 }
@@ -1941,6 +1980,7 @@ fn too_large() -> HttpResponse {
         content_type: TEXT_PLAIN,
         body: b"request body too large".to_vec(),
         headers: Vec::new(),
+        stream: None,
     }
 }
 
@@ -1952,6 +1992,7 @@ fn artifact_refused(code: &'static str, why: &'static str) -> HttpResponse {
         content_type: TEXT_PLAIN,
         body: why.as_bytes().to_vec(),
         headers: artifact_headers(),
+        stream: None,
     }
 }
 
@@ -2116,9 +2157,7 @@ fn serve_connection(
     } else {
         response_head(&r, &cookie)
     };
-    stream
-        .write_all(head.as_bytes())
-        .and_then(|_| stream.write_all(&r.body))
+    write_response(&mut stream, &head, &r)
 }
 
 /// `/pair` (the page) and `/api/pair` (redeem a code for the gate's cookie), #11. Returns the
@@ -2149,6 +2188,7 @@ fn pairing_route(
                         content_type: "application/json; charset=utf-8",
                         body: br#"{"ok":false,"message":"wrong, used or expired code"}"#.to_vec(),
                         headers: Vec::new(),
+                        stream: None,
                     },
                     String::new(),
                 )
@@ -2188,6 +2228,7 @@ fn gzip_for(mut r: HttpResponse, method: &str, headers: &str) -> HttpResponse {
         .any(|h| h.to_ascii_lowercase().starts_with("content-encoding:"));
     if method != "GET"
         || !r.code.starts_with("200")
+        || r.stream.is_some()
         || r.body.len() < GZIP_MIN_BYTES
         || !text
         || encoded
@@ -2215,19 +2256,55 @@ fn gzip_for(mut r: HttpResponse, method: &str, headers: &str) -> HttpResponse {
 /// Mask the secrets in a response to a client the mask policy covers (#365, `mask-policy.json`):
 /// with `remote`, a phone over the tailnet — a `Host` that is not the loopback, as `gzip_for`
 /// tells it — and never the desktop. Before gzip, and only a whole, unencoded, successful body.
-fn mask_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
+fn mask_for(r: HttpResponse, headers: &str) -> HttpResponse {
+    mask_under(r, headers, super::mask::policy())
+}
+
+/// [`mask_for`] under a given policy — the policy is fixed to `off` in a test build.
+fn mask_under(mut r: HttpResponse, headers: &str, policy: super::mask::MaskPolicy) -> HttpResponse {
     let encoded = r
         .headers
         .iter()
         .any(|h| h.to_ascii_lowercase().starts_with("content-encoding:"));
     if !r.code.starts_with("200")
         || encoded
-        || !super::mask::policy().masks(host_is_local(header_value(headers, "host")))
+        || !policy.masks(host_is_local(header_value(headers, "host")))
     {
+        return r;
+    }
+    // A streamed file cannot be masked, so one that may carry a secret is refused (#374). The
+    // masker reads JSON and plain text only — a binary download under the cap already goes out
+    // as it is — so the question is whether the file is TEXT, and its head answers it: text is
+    // what `/file` would have served as `text/plain`, had it fit.
+    if let Some((path, _)) = &r.stream {
+        if looks_like_text(path) {
+            return artifact_refused(
+                "413 Content Too Large",
+                "too large to mask for this client — open it on the machine itself",
+            );
+        }
         return r;
     }
     super::mask::mask_body(r.content_type, &mut r.body);
     r
+}
+
+/// Whether a file's first 64 KB decode as UTF-8 (a character cut at the end of the sample
+/// still counts) — the test `/file` applies to a whole body, applied to what can be read
+/// cheaply. An unreadable file is treated as text, so the caller refuses rather than guesses.
+fn looks_like_text(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = Vec::with_capacity(64 * 1024);
+    let Ok(file) = std::fs::File::open(path) else {
+        return true;
+    };
+    if file.take(64 * 1024).read_to_end(&mut head).is_err() {
+        return true;
+    }
+    match std::str::from_utf8(&head) {
+        Ok(_) => true,
+        Err(e) => e.error_len().is_none(),
+    }
 }
 
 /// Whether `Accept-Encoding` lists gzip at a non-zero quality.
@@ -2280,8 +2357,28 @@ fn response_head(r: &HttpResponse, cookie: &str) -> String {
          {cache}Connection: close\r\n\r\n",
         r.code,
         r.content_type,
-        r.body.len()
+        r.stream
+            .as_ref()
+            .map_or(r.body.len() as u64, |(_, len)| *len)
     )
+}
+
+/// Write a response: its head, then its body or the file it streams. A streamed file is copied
+/// for exactly the length the head announced, so one that grew since cannot overrun it; one that
+/// shrank ends the connection early, which the client reads as a cut download.
+fn write_response(
+    stream: &mut impl std::io::Write,
+    head: &str,
+    r: &HttpResponse,
+) -> std::io::Result<()> {
+    stream.write_all(head.as_bytes())?;
+    match &r.stream {
+        None => stream.write_all(&r.body),
+        Some((path, len)) => {
+            let file = std::fs::File::open(path)?;
+            std::io::copy(&mut std::io::Read::take(file, *len), stream).map(|_| ())
+        }
+    }
 }
 
 /// Where a request's token came from.
@@ -2433,6 +2530,7 @@ pub fn service_routes(
                 content_type: TEXT_PLAIN,
                 body: b"stale epoch".to_vec(),
                 headers: Vec::new(),
+                stream: None,
             },
         };
     }
@@ -2445,8 +2543,11 @@ pub fn service_routes(
     //     route is not merely limited, it is absent. This matters most where the connection
     //     gate is weakest: on macOS an unpaired loopback listener admits every local user
     //     (§4.2's D3b), and the token is exactly what closes that.
-    //  2. containment — `contained` above: some hosted session must explain the path;
-    //  3. a size cap — a viewer, not a file server (over it, the page reveals instead);
+    //  2. the stamp, then containment — `servable` above: a `File` stamp and some hosted
+    //     session explaining the path, or a `Handed` stamp alone (#374);
+    //  3. a size cap — a viewer, not a file server: over it, the file is handed over as a
+    //     DOWNLOAD streamed from disk, never shown (#374; it used to be refused, and the page
+    //     revealed instead, which a phone cannot do);
     //  4. a rendering decision, never a sniff: bytes the browser can show SAFELY are shown,
     //     and everything else is handed over as a DOWNLOAD.
     //
@@ -2474,17 +2575,8 @@ pub fn service_routes(
             return HttpResponse::not_found("no such path");
         };
         let decoded = percent_decode(raw);
-        // OFFERED, then contained. The signature says this server rendered a link to exactly
-        // this path; containment says a hosted session still explains it. Both, in that
-        // order — the cheap check that needs no disk first.
-        if !super::sig::verify(
-            super::sig::Cap::File,
-            &decoded,
-            query_get(query, "sig").map(percent_decode).as_deref(),
-        ) {
-            return HttpResponse::not_found("no such path");
-        }
-        let Some(path) = live.contained(Path::new(&decoded)) else {
+        let stamp = query_get(query, "sig").map(percent_decode);
+        let Some(path) = live.servable(&decoded, stamp.as_deref()) else {
             return HttpResponse::not_found("no such path");
         };
         let Ok(meta) = std::fs::metadata(&path) else {
@@ -2495,7 +2587,16 @@ pub fn service_routes(
             return artifact_refused("415 Unsupported Media Type", "not a file");
         }
         if meta.len() > MAX_ARTIFACT_BYTES {
-            return artifact_refused("413 Content Too Large", "too large");
+            // Too big to SHOW, so it is not shown: whatever it is, it goes as an attachment the
+            // browser saves, streamed rather than read into memory.
+            let mut r = HttpResponse::ok("application/octet-stream", Vec::new());
+            r.stream = Some((path.clone(), meta.len()));
+            r.headers.push(format!(
+                "Content-Disposition: attachment; filename=\"{}\"",
+                download_name(&path)
+            ));
+            r.headers.extend(artifact_headers());
+            return r;
         }
         let Ok(bytes) = std::fs::read(&path) else {
             return HttpResponse::not_found("no such path");
@@ -2569,6 +2670,7 @@ pub fn service_routes(
             content_type: TEXT_PLAIN,
             body: b"forbidden".to_vec(),
             headers: Vec::new(),
+            stream: None,
         };
     }
     match std::fs::read(static_dir.join(name)) {
@@ -4805,10 +4907,111 @@ mod tests {
             r.headers
         );
 
-        // Over the cap: a viewer, not a file server.
+        // Over the cap: a viewer, not a file server — so it is not SHOWN, it is handed over as
+        // a download streamed from disk (#374). It used to be refused, and the page revealed
+        // instead, which a phone cannot do.
         let big = repo.join("big.txt");
         std::fs::write(&big, vec![b'x'; MAX_ARTIFACT_BYTES as usize + 1]).unwrap();
-        assert_eq!(get(&big).code, "413 Content Too Large");
+        let r = get(&big);
+        assert_eq!(r.code, "200 OK");
+        assert_eq!(r.content_type, "application/octet-stream");
+        assert!(r.body.is_empty(), "streamed, never read into memory");
+        assert_eq!(
+            r.stream.as_ref().map(|(p, len)| (p.clone(), *len)),
+            Some((big.canonicalize().unwrap(), MAX_ARTIFACT_BYTES + 1))
+        );
+        assert!(
+            r.headers
+                .iter()
+                .any(|h| h == "Content-Disposition: attachment; filename=\"big.txt\""),
+            "{:?}",
+            r.headers
+        );
+        assert!(
+            response_head(&r, "")
+                .contains(&format!("Content-Length: {}\r\n", MAX_ARTIFACT_BYTES + 1)),
+            "the head announces the file's length"
+        );
+        let mut wire = Vec::new();
+        write_response(&mut wire, "HEAD\r\n\r\n", &r).unwrap();
+        assert_eq!(
+            wire.len(),
+            "HEAD\r\n\r\n".len() + MAX_ARTIFACT_BYTES as usize + 1
+        );
+        // …but a streamed file cannot be masked, so a client the mask policy covers is refused
+        // one that reads as text, and still given one that does not (#365 masks text only).
+        let remote = "Host: phone.example.ts.net\r\n";
+        let masked =
+            |r: HttpResponse| mask_under(r, remote, super::super::mask::MaskPolicy::Remote);
+        assert_eq!(masked(get(&big)).code, "413 Content Too Large");
+        assert_eq!(
+            mask_under(
+                get(&big),
+                "Host: 127.0.0.1:2727\r\n",
+                super::super::mask::MaskPolicy::Remote
+            )
+            .code,
+            "200 OK",
+            "the desktop is not masked under `remote`"
+        );
+        let video = repo.join("big.mp4");
+        let mut bytes = vec![0u8, 0, 0, 0x20, b'f', b't', b'y', b'p', 0xff, 0xfe];
+        bytes.resize(MAX_ARTIFACT_BYTES as usize + 1, 0);
+        std::fs::write(&video, bytes).unwrap();
+        let r = masked(get(&video));
+        assert_eq!(r.code, "200 OK", "binary carries nothing the masker reads");
+        assert!(r.stream.is_some());
+
+        // **A handed file is served wherever it lives (#374).** Its `Cap::Handed` stamp is the
+        // authorization — minted only for a file the transcript handed to the reader — so the
+        // file outside every root that a `File` stamp cannot open, a `Handed` stamp does.
+        let handed = |p: &std::path::Path| {
+            service_routes(
+                Some(&live),
+                &dir,
+                &get_request(
+                    "file",
+                    &signed_for(crate::html_export::sig::Cap::Handed, p),
+                    true,
+                ),
+            )
+        };
+        assert_eq!(
+            get(&outside.join("secret")).code,
+            "404 Not Found",
+            "mentioned: refused"
+        );
+        let r = handed(&outside.join("secret"));
+        assert_eq!(r.code, "200 OK", "handed: served");
+        assert_eq!(r.body, b"ssh key\n");
+        assert_eq!(
+            handed(&outside.join("never-written")).code,
+            "404 Not Found",
+            "a handed file that is gone is gone"
+        );
+        assert_eq!(
+            handed(&outside).code,
+            "404 Not Found",
+            "a directory is not a file"
+        );
+        assert_eq!(
+            handed(Path::new("relative/secret")).code,
+            "404 Not Found",
+            "a relative path is never served"
+        );
+        std::fs::write(outside.join("other"), "not handed\n").unwrap();
+        let other = signed_for(
+            crate::html_export::sig::Cap::Handed,
+            &outside.join("secret"),
+        )
+        .replace("secret", "other");
+        assert_eq!(
+            service_routes(Some(&live), &dir, &get_request("file", &other, true)).code,
+            "404 Not Found",
+            "a handed stamp names one path"
+        );
+        let r = handed(&video);
+        assert!(r.stream.is_some(), "and a big one streams like any other");
 
         // Unpaired, the route is ABSENT, not merely narrowed (owner, 2026-08-27): reading the
         // local filesystem over HTTP is a capability the owner opts into with `--pair`, and an
