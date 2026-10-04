@@ -1303,7 +1303,7 @@ pub struct HttpResponse {
     /// a sandbox policy, which a fixed head cannot express.
     pub headers: Vec<String>,
     /// A file streamed from disk after the head, with its length (#374) — `body` is then empty.
-    /// Only `/file` sets it, for a download over [`MAX_ARTIFACT_BYTES`]: a viewer reads what it
+    /// Only `/file` sets it, for a download over its 8 MB viewer cap: a viewer reads what it
     /// shows into memory, but a download is not viewing, and a phone has no other way to fetch a
     /// 19 MB video an agent sent it. Never gzipped, and masked only by refusal (`mask_for`).
     pub stream: Option<(PathBuf, u64)>,
