@@ -23,6 +23,11 @@ HTML, bundles) and diffs it against a known-good `BASE`, printing
 - **Version normalization:** HTML outputs embed the build's version (#55); the two
   carriers (topbar brand span, meta `"version"` field) are normalized on both sides
   before diffing so release bumps stay PASS. Text dumps are compared raw.
+- **Data-directory normalization:** pages and bundles embed each input's absolute path, which
+  sits under `$SC_GATE_DIR`, so under the home directory. The gate rewrites whatever precedes
+  `/frozen_<name>` to `GATE_DIR` on both sides, so one BASE serves every machine whatever its
+  home or `SC_GATE_DIR`. Measured: the same data in another directory failed four pages and three
+  sub-agent bundle files before this rule, and passes with it.
 - **Intentional output changes** legitimately FAIL: verify the diff line-by-line
   (only the intended change — structural jsonl comparison by record kind helps),
   re-baseline the changed files into `BASE` with `/bin/cp -f` (bundles: `cp -Rf`),

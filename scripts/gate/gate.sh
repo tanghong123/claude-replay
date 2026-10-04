@@ -40,9 +40,14 @@ OUT="$GATE_DIR/NOW"; rm -rf "$OUT"; mkdir -p "$OUT"
 "$SCRIPT_DIR/verify.sh" "$BIN" "$OUT"
 "$BIN" "$GATE_DIR/frozen_self.jsonl" --dump - --width 120    >| "$OUT/self.dump.txt" 2>/dev/null
 "$BIN" "$GATE_DIR/frozen_self.jsonl" --dump-html - --width 120 >| "$OUT/self.html"     2>/dev/null
-# Normalize ONLY the two version carriers: the brand span and the top-level meta field.
+# Normalize ONLY what legitimately differs between a BASE and a run of the same code: the two
+# version carriers (the brand span and the top-level meta field), and the directory the frozen
+# inputs live in. Pages and bundles embed each input's absolute path, and $SC_GATE_DIR sits under
+# the home directory, so one BASE shared by several machines would otherwise fail on every one
+# whose home differs. Every input is frozen_<name>.jsonl (a Claude session's sub-agents under
+# frozen_<name>/subagents/), so whatever precedes /frozen_<name> is the data directory.
 norm() {
-  sed -E 's|<span class="brand-sub">v[0-9]+\.[0-9]+\.[0-9]+|<span class="brand-sub">vNORM|g; s|"version":"[0-9]+\.[0-9]+\.[0-9]+"|"version":"NORM"|g' "$1"
+  sed -E 's|<span class="brand-sub">v[0-9]+\.[0-9]+\.[0-9]+|<span class="brand-sub">vNORM|g; s|"version":"[0-9]+\.[0-9]+\.[0-9]+"|"version":"NORM"|g; s#[^"<>[:space:]]*/(frozen_[A-Za-z0-9_]+)#GATE_DIR/\1#g' "$1"
 }
 cmp_norm() { # $1=base file, $2=now file — normalized for html/jsonl, raw otherwise
   case "$1" in
