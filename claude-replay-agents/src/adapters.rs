@@ -212,6 +212,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn scratch_dirs(&self, path: &Path) -> Vec<std::path::PathBuf> {
         agents::claude::discover::scratch_dirs(path)
     }
+    fn scratch_owner(&self, cwd: &Path) -> Option<String> {
+        agents::claude::discover::scratch_owner(cwd)
+    }
 }
 
 /// Codex adapter — delegates to the `codex_model` / `codex_discover` implementations.

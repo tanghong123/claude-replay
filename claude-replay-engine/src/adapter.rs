@@ -499,6 +499,15 @@ pub trait TranscriptAdapter: Sync {
     fn scratch_dirs(&self, _path: &Path) -> Vec<std::path::PathBuf> {
         Vec::new()
     }
+    /// The session whose scratch the working directory `cwd` lies in, if any (#373) — the reverse
+    /// of [`scratch_dirs`](Self::scratch_dirs): a session STARTED in another session's scratch (a
+    /// git worktree an agent made under its scratchpad, a background job's tmp) was started by
+    /// that session, and a session list shows it under that session's project instead of as a
+    /// project of its own. An id, which the caller must find among the sessions it knows; `None`
+    /// when the directory is nobody's scratch. Default: none.
+    fn scratch_owner(&self, _cwd: &Path) -> Option<String> {
+        None
+    }
     /// The session this one was FORKED from, if the agent records forks (#142).
     ///
     /// Forking copies the conversation up to the fork point, so a fork's transcript is

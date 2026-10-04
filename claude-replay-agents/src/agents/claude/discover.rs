@@ -72,6 +72,89 @@ pub fn scratch_dirs(transcript: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The session whose scratch a working directory lies in (#373), when it lies in one: a session
+/// started THERE was started by that one. knack's agent ran `claude -p` in git worktrees under its
+/// own scratchpad (`<scratch root>/<project slug>/<session id>/scratchpad/wt-240`, 13 of them
+/// measured on the owner's machine, 2026-10-04), and each landed in the list as a project of its
+/// own; the owner wants them under the project of the session that started them.
+///
+/// Two layouts, both Claude Code's own:
+/// - **the per-project scratch**: `<scratch root>/<project slug>/<session id>/…`. The root is
+///   `$CLAUDE_SCRATCH_ROOT` when set, else any `/tmp/claude-<uid>` (or `/private/tmp/claude-<uid>`,
+///   which is what a macOS process records as its cwd). The component after the slug must be a
+///   whole session id (a UUID); a directory that merely looks like one is the caller's to refuse,
+///   since only it knows which sessions exist.
+/// - **a background job's tmp** (#291): `<claude home>/jobs/<eight characters>/tmp/…`, counted only
+///   when the job's `state.json` names a session starting with those characters (`sessionId`, or
+///   `resumeSessionId`), exactly as [`scratch_dirs`] admits it.
+///
+/// Reads nothing but that `state.json`, so it is cheap enough for a scan; the answer never changes
+/// for a cwd, so a caller asks once.
+pub fn scratch_owner(cwd: &Path) -> Option<String> {
+    let comps: Vec<&str> = cwd
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+    // The per-project scratch, under the configured root…
+    if let Ok(root) = std::env::var("CLAUDE_SCRATCH_ROOT") {
+        if let Ok(rest) = cwd.strip_prefix(&root) {
+            let mut it = rest.components().filter_map(|c| c.as_os_str().to_str());
+            if let (Some(_slug), Some(sid)) = (it.next(), it.next()) {
+                if is_session_id(sid) {
+                    return Some(sid.to_string());
+                }
+            }
+        }
+    }
+    // …or under `/tmp/claude-<uid>` (`/private/tmp` on macOS).
+    let tmp_at = match comps.as_slice() {
+        ["tmp", ..] => Some(1),
+        ["private", "tmp", ..] => Some(2),
+        _ => None,
+    };
+    if let Some(i) = tmp_at {
+        let root_ok = comps
+            .get(i)
+            .and_then(|c| c.strip_prefix("claude-"))
+            .is_some_and(|uid| !uid.is_empty() && uid.bytes().all(|b| b.is_ascii_digit()));
+        if root_ok {
+            if let Some(sid) = comps.get(i + 2).filter(|c| is_session_id(c)) {
+                return Some((*sid).to_string());
+            }
+        }
+    }
+    // A background job's tmp.
+    let j = comps.iter().position(|c| *c == "jobs")?;
+    let (prefix, tmp) = (comps.get(j + 1)?, comps.get(j + 2)?);
+    if *tmp != "tmp" || prefix.len() != 8 {
+        return None;
+    }
+    let mut home = PathBuf::from("/");
+    for c in &comps[..j] {
+        home.push(c);
+    }
+    let state = std::fs::read_to_string(home.join("jobs").join(prefix).join("state.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&state).ok()?;
+    ["sessionId", "resumeSessionId"]
+        .iter()
+        .filter_map(|k| v.get(*k).and_then(serde_json::Value::as_str))
+        .find(|sid| sid.starts_with(prefix) && is_session_id(sid))
+        .map(str::to_string)
+}
+
+/// A whole session id: Claude Code names sessions by a UUID (`8-4-4-4-12` hex).
+fn is_session_id(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('-').collect();
+    parts.len() == 5
+        && parts
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(p, n)| p.len() == n && p.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// Where Claude Code saves the images pasted into a session (#324): `<claude home>/uploads/<session
 /// id>/<8 hex>-image.png`, named by an `inlined_image_paths` record right after the prompt (client
 /// 2.1.283). The directory is the WHOLE session id — unlike a job's, not a prefix — so it needs no
@@ -646,6 +729,66 @@ mod tests {
             !scratch_dirs(&transcript).contains(&other),
             "another session's uploads are not this one's"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #373: a working directory inside a session's scratch names that session — the shape of
+    /// knack's worktrees (13 on the owner's machine, `…/<project slug>/<session id>/scratchpad/
+    /// wt-240`) under `/tmp` and macOS's `/private/tmp`, and a job's tmp only when its `state.json`
+    /// names a session with that prefix. Anything else is nobody's scratch.
+    #[test]
+    fn a_cwd_inside_a_session_scratch_names_that_session() {
+        let sid = "96b453d7-0d7b-4e63-af27-4f7e0ef030eb";
+        for cwd in [
+            format!("/private/tmp/claude-502/-Users-hong-code-knack/{sid}/scratchpad/wt-240"),
+            format!("/tmp/claude-502/-Users-hong-code-knack/{sid}/scratchpad/wt-ci"),
+            format!("/tmp/claude-1000/-home-dev-knack/{sid}"),
+        ] {
+            assert_eq!(
+                scratch_owner(Path::new(&cwd)).as_deref(),
+                Some(sid),
+                "{cwd}"
+            );
+        }
+        for cwd in [
+            // Not a session id in the id's place.
+            "/private/tmp/claude-502/-Users-hong-code-knack/scratchpad/wt-240".to_string(),
+            "/private/tmp/claude-502/-Users-hong-code-knack/96b453d7/scratchpad".to_string(),
+            // Not Claude Code's scratch root.
+            format!("/private/tmp/other-502/-Users-hong-code-knack/{sid}/scratchpad"),
+            format!("/tmp/claude-x/-slug/{sid}"),
+            // An id somewhere else entirely.
+            format!("/Users/hong/code/{sid}/wt-240"),
+            "/Users/hong/code/knack".to_string(),
+        ] {
+            assert_eq!(scratch_owner(Path::new(&cwd)), None, "{cwd}");
+        }
+
+        // A background job's tmp: owned by the session its state.json names, and by nothing
+        // without one or when it names a session of another prefix.
+        let root = std::env::temp_dir().join(format!("cr-scratch-owner-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let job = root.join(".claude").join("jobs").join("b0bb9596");
+        std::fs::create_dir_all(job.join("tmp").join("wt-1")).unwrap();
+        let cwd = job.join("tmp").join("wt-1");
+        assert_eq!(scratch_owner(&cwd), None, "no state.json, no owner");
+        std::fs::write(
+            job.join("state.json"),
+            r#"{"sessionId":"aaaaaaaa-0000-4000-8000-000000000000"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            scratch_owner(&cwd),
+            None,
+            "a state.json naming another prefix is not this job's"
+        );
+        let owner = "b0bb9596-4060-4a9b-9834-a2bc736d2f6c";
+        std::fs::write(
+            job.join("state.json"),
+            format!("{{\"sessionId\":\"{owner}\"}}"),
+        )
+        .unwrap();
+        assert_eq!(scratch_owner(&cwd).as_deref(), Some(owner));
         let _ = std::fs::remove_dir_all(&root);
     }
 

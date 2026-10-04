@@ -253,6 +253,11 @@ struct Row {
     /// a fork's origin is fixed when it is created and no later write changes it.
     fork_from: Option<String>,
     fork_probed: bool,
+    /// The session whose scratch this one's cwd lies in (#373) — a knack worktree under its
+    /// scratchpad, a job's tmp — and whether we have looked. Read once: a cwd never moves. Groups
+    /// the session under that session's project (`assemble`), never as a project of its own.
+    spawned_by: Option<String>,
+    spawn_probed: bool,
     /// The agent process this session was matched to by GROWTH (#146), and that process's
     /// cwd at the time. Growth is the strongest signal available for a no-id launch — a
     /// transcript only advances because its own agent wrote to it — so once a session is the
@@ -588,6 +593,8 @@ impl Index {
                     start_probed: false,
                     fork_from: None,
                     fork_probed: false,
+                    spawned_by: None,
+                    spawn_probed: false,
                     proved_pid: None,
                     grew_at: None,
                     counters: None,
@@ -632,6 +639,14 @@ impl Index {
                     row.fork_from = discover::fork_origin(row.agent, &path);
                     row.fork_probed = true;
                 }
+                // #373: started in another session's scratch? Asked once the cwd is known — the
+                // block below may be what first learns it, so the probe also runs after it.
+                if !row.spawn_probed {
+                    if let Some(cwd) = row.cwd.as_deref() {
+                        row.spawned_by = discover::scratch_owner(row.agent, Path::new(cwd));
+                        row.spawn_probed = true;
+                    }
+                }
                 // The card re-derives when the transcript moves (§4.1 under lazy) — a
                 // bounded tail read, so mtime-triggered is affordable.
                 let t_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
@@ -649,6 +664,12 @@ impl Index {
                     }
                     if row.repo.is_none() {
                         row.repo = discover::repo_root(&path).map(|p| p.display().to_string());
+                    }
+                    if !row.spawn_probed {
+                        if let Some(cwd) = row.cwd.as_deref() {
+                            row.spawned_by = discover::scratch_owner(row.agent, Path::new(cwd));
+                            row.spawn_probed = true;
+                        }
                     }
                 }
                 // Counters from the VISITED entry's meta stream (§2: fold-free read, keyed
@@ -934,11 +955,30 @@ impl Index {
                 kind: key_kind,
                 label,
                 path: group_path,
-            } = discover::session_key_from(
-                row.agent,
-                row.repo.as_deref().map(Path::new),
-                row.cwd.as_deref().map(Path::new),
-            );
+            } = {
+                // #373: a session started in another session's scratch (knack's `claude -p` in a
+                // worktree under its scratchpad, a background job's tmp) belongs to the PROJECT of
+                // the session that started it — the owner: "group them under knack". Followed up
+                // the chain to the first session that is not one, and only through sessions this
+                // index knows: an id that merely looks like a session's leaves the row where it is.
+                let mut home = row;
+                for _ in 0..8 {
+                    match home
+                        .spawned_by
+                        .as_deref()
+                        .filter(|p| *p != sid.as_str())
+                        .and_then(|p| st.rows.get(p))
+                    {
+                        Some(parent) if !std::ptr::eq(parent, home) => home = parent,
+                        _ => break,
+                    }
+                }
+                discover::session_key_from(
+                    row.agent,
+                    home.repo.as_deref().map(Path::new),
+                    home.cwd.as_deref().map(Path::new),
+                )
+            };
             let (kind, secondary) = match key_kind {
                 // Leaf as the label (in `label`), FULL path as the secondary line (§4.2) — the
                 // leaf-merge hedge: two checkouts sharing a leaf stay distinguishable one line
@@ -3449,6 +3489,8 @@ mod tests {
             start_probed: true,
             fork_from: None,
             fork_probed: true,
+            spawned_by: None,
+            spawn_probed: true,
             proved_pid: None,
             grew_at: growing.then(Instant::now),
             counters: None,
@@ -3499,6 +3541,73 @@ mod tests {
         assert!(groups.iter().all(|g| g["ignoreKey"] != "p:/repo/crate-a"));
         // …and a repo-less session still stands alone under its own cwd.
         assert!(groups.iter().any(|g| g["ignoreKey"] == "p:/loose"));
+    }
+
+    /// #373: a session started in another session's scratch — knack's `claude -p` in a worktree
+    /// under its scratchpad — is listed in THAT session's project group (the owner: "group them
+    /// under knack"), not as a project of its own, also two levels down; a session whose recorded
+    /// owner this index does not know keeps its own group.
+    #[test]
+    fn a_session_started_in_another_s_scratch_groups_under_its_project() {
+        let scratch = std::env::temp_dir().join(format!("cm-scratch-group-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut st = State::default();
+        let parent = "96b453d7-0d7b-4e63-af27-4f7e0ef030eb";
+        let mut knack = growth_row("/w/knack", false);
+        knack.repo = Some("/w/knack".into());
+        let wt = format!("/private/tmp/claude-502/-w-knack/{parent}/scratchpad/wt-240");
+        let mut child = growth_row(&wt, false);
+        child.repo = Some(wt.clone()); // a worktree is a git root of its own
+        child.spawned_by = Some(parent.into());
+        let child_id = "2eecdbdc-4a29-42ae-9177-ba338c8c34ab";
+        let wt2 = format!("/private/tmp/claude-502/-w-knack/{child_id}/scratchpad/wt-ci");
+        let mut grandchild = growth_row(&wt2, false);
+        grandchild.repo = Some(wt2.clone());
+        grandchild.spawned_by = Some(child_id.into());
+        let mut orphan = growth_row(
+            "/private/tmp/claude-502/-w-x/aaaaaaaa-0000-4000-8000-000000000000/scratchpad/wt-9",
+            false,
+        );
+        orphan.spawned_by = Some("aaaaaaaa-0000-4000-8000-000000000000".into()); // no such session here
+        st.rows.insert(parent.into(), knack);
+        st.rows.insert(child_id.into(), child);
+        st.rows.insert("grandchild".into(), grandchild);
+        st.rows.insert("orphan".into(), orphan);
+
+        let v: Value = idx.assemble(&st, &mut Vec::new());
+        let groups = v["groups"].as_array().unwrap();
+        let knack = groups
+            .iter()
+            .find(|g| g["ignoreKey"] == "p:/w/knack")
+            .expect("the knack group");
+        let ids: Vec<&str> = knack["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&parent) && ids.contains(&child_id) && ids.contains(&"grandchild"),
+            "the worktree sessions sit in the knack group, two levels down too: {ids:?}"
+        );
+        assert!(
+            groups.iter().all(
+                |g| !g["ignoreKey"].as_str().unwrap_or("").contains("wt-240")
+                    && !g["ignoreKey"].as_str().unwrap_or("").contains("wt-ci")
+            ),
+            "no worktree forms a project group: {:?}",
+            groups.iter().map(|g| &g["ignoreKey"]).collect::<Vec<_>>()
+        );
+        assert!(
+            groups.iter().any(|g| g["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["id"] == "orphan")
+                && g["ignoreKey"] != "p:/w/knack"),
+            "an owner this index does not know leaves the row where its own cwd puts it"
+        );
     }
 
     #[test]

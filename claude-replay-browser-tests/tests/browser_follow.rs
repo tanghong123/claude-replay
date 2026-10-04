@@ -1853,6 +1853,97 @@ fn the_artifact_roster_groups_republishes_by_url() {
     let _ = tab2.close(true);
 }
 
+/// #373: a session started in another session's scratch — knack's `claude -p` in a worktree under
+/// its scratchpad — is listed in that session's PROJECT group on both pages (the owner: "group them
+/// under knack"), never as a group named after the worktree. Red on 1.344.0, where the worktree's
+/// leaf (`wt-1`) was a project of its own.
+#[test]
+#[ignore]
+fn both_shells_list_a_session_started_in_another_s_scratch_under_its_project() {
+    let _serial = serial();
+    let base = base("scratch-child");
+    let stores = Stores::new(&base);
+    let parent = "96b453d7-0d7b-4e63-af27-4f7e0ef030eb";
+    let child = "2eecdbdc-4a29-42ae-9177-ba338c8c34ab";
+    let session = |sid: &str, cwd: &str, ago: u64, text: &str| {
+        format!(
+            "{{\"type\":\"user\",\"cwd\":\"{cwd}\",\"sessionId\":\"{sid}\",\"timestamp\":\"{t0}\",\"uuid\":\"u-{sid}\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n\
+             {{\"type\":\"assistant\",\"cwd\":\"{cwd}\",\"sessionId\":\"{sid}\",\"timestamp\":\"{t1}\",\"uuid\":\"a-{sid}\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"done\"}}]}}}}\n",
+            t0 = harness::rfc3339_secs_ago(ago),
+            t1 = harness::rfc3339_secs_ago(ago - 5),
+        )
+    };
+    stores.claude_session(
+        parent,
+        &session(parent, "/w/knack", 600, "fan out the fixes"),
+    );
+    let wt = format!("/tmp/claude-502/-w-knack/{parent}/scratchpad/wt-1");
+    stores.claude_session(child, &session(child, &wt, 400, "fix t1 in this worktree"));
+    let monitor = Monitor::spawn(Kind::V1, 2960, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let probe = |js: &str| -> serde_json::Value {
+        let v = tab
+            .evaluate(&format!("JSON.stringify({js})"), true)
+            .ok()
+            .and_then(|r| r.value);
+        serde_json::from_str(v.as_ref().and_then(|v| v.as_str()).unwrap_or("null"))
+            .unwrap_or(serde_json::Value::Null)
+    };
+
+    // The app shell: a row belongs to the project header above it.
+    harness::show_every_session(&tab, "http://127.0.0.1:2960/?ui=app");
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.tree-row.session[data-session=\"{child}\"]')"),
+        "the app shell's session tree",
+        Duration::from_secs(30),
+        "[...document.querySelectorAll('.tree-row')].map(function(r){return r.textContent.trim().slice(0,30);}).join(' | ')",
+    );
+    let app = probe(&format!(
+        "(function(){{ var rows=[...document.querySelectorAll('.tree-row')]; var heads=rows.filter(function(r){{return r.classList.contains('project');}}).map(function(r){{return (r.querySelector('.tree-title')||r).textContent.trim();}}); var i=rows.findIndex(function(r){{return r.dataset.session==='{child}';}}); var head=null; for(var k=i;k>=0;k--) if(rows[k].classList.contains('project')){{ head=(rows[k].querySelector('.tree-title')||rows[k]).textContent.trim(); break; }} return {{heads: heads, childUnder: head}}; }})()"
+    ));
+    assert_eq!(
+        app["childUnder"], "knack",
+        "app shell: the worktree session sits in its parent's project: {app}"
+    );
+    assert!(
+        !app["heads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h.as_str().unwrap_or("").starts_with("wt-")),
+        "app shell: no project is named after the worktree: {app}"
+    );
+
+    // The classic rail: a row sits inside its group.
+    tab.navigate_to("http://127.0.0.1:2960/?ui=classic")
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.row[data-id=\"{child}\"]')"),
+        "the classic rail's rows",
+        Duration::from_secs(30),
+        "[...document.querySelectorAll('.glabel')].map(function(g){return g.textContent;}).join(' | ')",
+    );
+    let rail = probe(&format!(
+        "(function(){{ var labels=[...document.querySelectorAll('.group .glabel')].map(function(g){{return g.textContent.trim();}}); var g=document.querySelector('.row[data-id=\"{child}\"]').closest('.group'); return {{labels: labels, childUnder: g ? g.querySelector('.glabel').textContent.trim() : null}}; }})()"
+    ));
+    assert_eq!(
+        rail["childUnder"], "knack",
+        "classic rail: the worktree session sits in its parent's group: {rail}"
+    );
+    assert!(
+        !rail["labels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h.as_str().unwrap_or("").starts_with("wt-")),
+        "classic rail: no group is named after the worktree: {rail}"
+    );
+}
+
 /// The classic rail (v1 `agent-monitor`, `?ui=classic`) on the hermetic family store: rows
 /// render, the fork family clusters into ONE row whose ⑂ chip opens the fork, and hide /
 /// restore round-trip through `/api/ignore` — the server's `hidden` flag flips, the rail's

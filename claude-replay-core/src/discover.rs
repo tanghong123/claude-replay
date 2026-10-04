@@ -180,6 +180,13 @@ pub fn fork_origin(agent: Agent, path: &Path) -> Option<String> {
     crate::adapter::adapter(agent).fork_origin(path)
 }
 
+/// The session whose scratch the working directory `cwd` lies in (#373), by the adapter of the
+/// agent that ran there — see [`TranscriptAdapter::scratch_owner`](crate::adapter::TranscriptAdapter::scratch_owner).
+/// A session started there belongs with the session that started it.
+pub fn scratch_owner(agent: Agent, cwd: &Path) -> Option<String> {
+    crate::adapter::adapter(agent).scratch_owner(cwd)
+}
+
 /// The LIVE on-disk task list for the session at `path` (#15) — the agent-neutral
 /// facade over each adapter's `load_tasks` hook (Claude reads
 /// `~/.claude/tasks/<session-id>/*.json`; agents with no task store return `None`).
