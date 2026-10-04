@@ -10402,6 +10402,145 @@ fn a_phone_fling_keeps_its_turn_when_the_head_lands() {
     );
 }
 
+/// #372, the owner (iPhone, with a viewport history): scrolling a session "feeling jittery" after the
+/// open. The export: an upward fling on iOS, gliding with no input behind it, while the units it
+/// brought into the window measured far taller than the engine had estimated. The engine held the
+/// reader's place the way it does under a wheel, by writing the offset — and a write into an iOS
+/// glide does not stick (#340): the glide carried on from its own position, the next transaction read
+/// that as the reader somewhere the window did not cover (I11, I10), placed again, and the turn under
+/// the reader swung between 444 and 405, 25 violations in 46 seconds. Repro: a session whose tall
+/// answers sit above the tail, under-estimated from the short ones measured there; the glide emulated
+/// as iOS runs it (#340's: a touch, then a timer writing the offset from ITS OWN position).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_fling_over_under_estimated_answers_does_not_jitter() {
+    let _serial = serial();
+    const SID: &str = "37200000-0000-4000-8000-000000000372";
+    let base = harness::base("fling-tall-answers");
+    let stores = harness::Stores::new(&base);
+    // The owner's shape (the export: units up to 1,368px against an estimate of 258, under a pad of
+    // 393k): a long session of long and middling answers, its last stretch short — so the open
+    // learns a short estimate, the pad above is big, and the glide, crossing into the long answers,
+    // both mounts units far taller than estimated AND moves the estimate (which 1.344.0 applied
+    // mid-glide: a reader at no input is "at rest" to its clock).
+    let para = |n: usize, what: &str| {
+        (0..n)
+            .map(|i| format!("Paragraph {i} of {what}, long enough to wrap on a phone screen."))
+            .collect::<Vec<_>>()
+            .join("\\n\\n")
+    };
+    let (long, medium) = (para(40, "a long answer"), para(6, "an answer"));
+    let mut t = String::new();
+    for turn in 0..300u32 {
+        let ago = u64::from(310 - turn) * 60;
+        let ts = harness::rfc3339_secs_ago(ago);
+        t += &harness::user_at(&format!("question {turn}"), &ts);
+        let answer = if turn >= 240 {
+            format!("A short answer to {turn}.")
+        } else if turn % 2 == 0 {
+            long.clone()
+        } else {
+            medium.clone()
+        };
+        t += &harness::assistant_at(&answer, &harness::rfc3339_secs_ago(ago - 30));
+    }
+    stores.claude_session(SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2962, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::phone(&tab, 440, 956);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={SID}"));
+    harness::until(
+        &tab,
+        "!!window.__viewportHistory && document.querySelectorAll('.transcript .turn.user').length > 0 && document.querySelector('.transcript').scrollTop > 2000",
+        "the session open at its tail",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') && document.querySelector('.transcript').scrollTop",
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    harness::eval(
+        &tab,
+        r#"(function(){
+        var s = document.querySelector('.transcript');
+        window.__flingDone = false; window.__flingFrames = 0;
+        // Every write to the offset that is not the glide's own is the engine's: count them. A
+        // write into an iOS glide does not stick, so the fix makes none (it absorbs or yields).
+        var desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+        window.__engineWrites = 0; window.__glideOn = false; var own = false;
+        Object.defineProperty(s, 'scrollTop', { configurable: true,
+            get: function () { return desc.get.call(this); },
+            set: function (v) { if (window.__glideOn && !own) window.__engineWrites++; desc.set.call(this, v); } });
+        var scrollTo = s.scrollTo;
+        s.scrollTo = function () { if (window.__glideOn) window.__engineWrites++; return scrollTo.apply(this, arguments); };
+        try {
+            var t = new Touch({ identifier: 1, target: s, clientX: 220, clientY: 600 });
+            s.dispatchEvent(new TouchEvent('touchstart', { touches: [t], targetTouches: [t], changedTouches: [t], bubbles: true }));
+            s.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [t], bubbles: true }));
+        } catch (e) { window.__touchError = String(e); }
+        window.__glideT0 = performance.now(); window.__glideOn = true;
+        var pos = s.scrollTop, v = 14, last = performance.now();
+        function step() {
+            var now = performance.now(), dt = Math.min(50, now - last); last = now;
+            pos -= v * dt; v *= Math.pow(0.9993, dt);
+            if (v < 0.05 || pos <= 0) { window.__flingDone = true; window.__glideOn = false; window.__glideT1 = performance.now(); return; }
+            // iOS delivers a scroll event every frame of a glide; a headless tab only lazily (#204).
+            own = true; s.scrollTop = pos; own = false; s.dispatchEvent(new Event('scroll')); window.__flingFrames++;
+            setTimeout(step, 16);
+        }
+        setTimeout(step, 16);
+        return 1;
+    })()"#,
+    );
+    harness::until(
+        &tab,
+        "window.__flingDone",
+        "the glide to come to rest",
+        Duration::from_secs(30),
+        "window.__flingFrames",
+    );
+    std::thread::sleep(Duration::from_millis(1200));
+    // The engine's own record of the glide: the turn under the reader, transaction by transaction.
+    let turns = harness::eval(
+        &tab,
+        "JSON.stringify((window.__viewportHistory.states || []).filter(function(s){ return s.t >= window.__glideT0 && s.t <= window.__glideT1 && s.turn != null; }).map(function(s){ return s.turn; }))",
+    );
+    let turns: Vec<i64> = serde_json::from_str(turns.as_str().unwrap_or("[]")).unwrap_or_default();
+    let reversals = turns.windows(2).filter(|w| w[1] > w[0]).count();
+    // The glide moves at most ~14px a millisecond, a few hundred pixels a frame: a turn under the
+    // reader that leaps further in one transaction is the reader losing their place (measured on
+    // 1.344.0: 201 -> 142 in 10ms, as a write the glide threw away came back as estimates landed).
+    let leap = turns
+        .windows(2)
+        .map(|w| (w[0] - w[1]).abs())
+        .max()
+        .unwrap_or(0);
+    let writes = harness::eval(&tab, "window.__engineWrites")
+        .as_i64()
+        .unwrap_or(-1);
+    assert!(turns.len() > 10, "the glide was recorded: {turns:?}");
+    assert!(
+        turns.first() > turns.last(),
+        "the glide carried the reader up: {turns:?}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken during the glide; turns {turns:?}"
+    );
+    assert_eq!(
+        reversals, 0,
+        "an upward glide never moves the reader DOWN a turn (the jitter): {turns:?}"
+    );
+    assert_eq!(
+        writes, 0,
+        "the engine writes nothing into a touch glide (it would not stick on iOS); turns {turns:?}"
+    );
+    assert!(
+        leap <= 6,
+        "no transaction moves the reader further than a glide can (largest leap {leap} turns): {turns:?}"
+    );
+}
+
 /// #342, the owner (iPhone, with a screenshot): "It stopped at the end (turn 141), but the turn badge
 /// said 8. After a while, the badge shows the right counts." A tail-first open draws the last few
 /// turns first; their NUMBERS are true from the first moment, and the phone's Turns icon counted

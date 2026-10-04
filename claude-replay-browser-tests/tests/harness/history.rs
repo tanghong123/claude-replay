@@ -585,6 +585,9 @@ pub enum Step {
     JumpTo(i64),
     End,
     Fold,
+    /// #372: a finger's fling on a phone, as iOS runs it — the offset moved by this much (a
+    /// negative distance reads further UP), by a glide the page cannot write into.
+    Glide(i64),
     Skip(String),
 }
 
@@ -721,4 +724,84 @@ pub fn surface_of(export: &Export) -> Surface {
     } else {
         Surface::Classic
     }
+}
+
+/// #372: the recorded actions between `from` and `to` (the export's clock) as a phone replays them:
+/// a jump to the turn the reader was on at `from`, then each run of `touch`/`pointer` actions — a
+/// finger's gesture, its momentum included — as ONE glide by the distance the engine's offset
+/// moved from just before it to just before the next one (a touch carries no displacement of its
+/// own). A gap of more than `pause` between two touch actions ends a gesture. Any other action maps
+/// as in [`steps`]. The gap before each step is the recorded one, capped.
+pub fn glides(
+    export: &Export,
+    from: f64,
+    to: f64,
+    pause: f64,
+    cap: Duration,
+) -> Vec<(Duration, Step, f64)> {
+    let mut out = Vec::new();
+    if let Some((Some(turn), _)) = state_after(&export.states, from) {
+        out.push((Duration::from_millis(0), Step::JumpTo(turn), from));
+    }
+    let acts: Vec<&Value> = export
+        .actions
+        .iter()
+        .filter(|a| {
+            let t = a["t"].as_f64().unwrap_or(0.0);
+            t >= from && t <= to
+        })
+        .collect();
+    let is_touch = |a: &Value| matches!(a["kind"].as_str(), Some("touch") | Some("pointer"));
+    let top_before = |t: f64| {
+        export
+            .states
+            .iter()
+            .rev()
+            .find(|s| s["t"].as_f64().unwrap_or(0.0) < t)
+            .and_then(|s| s["top"].as_f64())
+    };
+    let mut last_t = from;
+    let mut i = 0;
+    while i < acts.len() {
+        let t = acts[i]["t"].as_f64().unwrap_or(0.0);
+        let gap = Duration::from_millis((t - last_t).max(0.0) as u64).min(cap);
+        if is_touch(acts[i]) {
+            let mut j = i;
+            let mut end = acts[i]["until"].as_f64().unwrap_or(t);
+            while j + 1 < acts.len()
+                && is_touch(acts[j + 1])
+                && acts[j + 1]["t"].as_f64().unwrap_or(0.0) - end <= pause
+            {
+                j += 1;
+                end = end.max(acts[j]["until"].as_f64().unwrap_or(end));
+            }
+            // The glide runs on past the last touch: up to the next action, or the window's end.
+            let next = acts.get(j + 1).and_then(|a| a["t"].as_f64()).unwrap_or(to);
+            if let (Some(a), Some(b)) = (top_before(t), top_before(next)) {
+                let moved = (b - a).round() as i64;
+                if moved != 0 {
+                    out.push((gap, Step::Glide(moved), t));
+                }
+            }
+            last_t = next;
+            i = j + 1;
+            continue;
+        }
+        let kind = acts[i]["kind"].as_str().unwrap_or("");
+        let step = match kind {
+            "jump" | "reveal" | "move" | "hold" => match acts[i]["index"]
+                .as_u64()
+                .and_then(|x| export.turn_of(x as usize))
+            {
+                Some(turn) => Step::JumpTo(turn),
+                None => Step::Skip(kind.to_string()),
+            },
+            "fold" => Step::Fold,
+            other => Step::Skip(other.to_string()),
+        };
+        out.push((gap, step, t));
+        last_t = acts[i]["until"].as_f64().unwrap_or(t);
+        i += 1;
+    }
+    out
 }

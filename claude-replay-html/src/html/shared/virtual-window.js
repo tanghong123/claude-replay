@@ -356,6 +356,11 @@ class VirtualWindow {
     // reader is when nothing else says (`topBelief`) — never a read made for the history.
     this.topSeen = null;
     this.padsWritten = [0, 0];
+    // #372: how far the top pad is SHORTER than the sums say — corrections absorbed while a touch
+    // glide was under way (`place`), settled by one write once the view is still (`settleDebt`).
+    // The model's origin moves up with it (`contentTop`), so every offset ↔ record conversion stays
+    // exact while the DOM keeps the reader's content where it was.
+    this.padDebt = 0;
     this.pendingDelta = null;
     if (typeof window !== "undefined") window.__viewportHistory = { actions: this.history.actions, states: this.history.states, deltas: this.history.deltas, export: () => this.exportHistory() };
     this.rememberMs = rememberMs;
@@ -490,7 +495,7 @@ class VirtualWindow {
    *  to watch. Both readers want the same thing: an offset handed straight to the sums names an
    *  item about 250px late on the classic page and 24px late on the shell. */
   contentTop() {
-    return this.topPad.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop();
+    return this.topPad.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop() - this.padDebt;
   }
 
   rangeForScroll() {
@@ -643,6 +648,34 @@ class VirtualWindow {
     // on every observer notification of the records the jump had just mounted.
     const delta = correction(this.inFlight() ? this.wrote.to : this.frame.scrollTop(), want, 1);
     if (!delta) return true;
+    // #372: during a TOUCH glide a write does not stick — iOS carries the glide on from its own
+    // offset (#340), the next transaction reads that as the reader somewhere else (I11, I10) and
+    // places again: the jitter. So a correction made then is absorbed instead: the top pad gives up
+    // (or takes) exactly the shift, the reader's content stays where the screen shows it, and the
+    // debt is settled with one write once the view is still. Only a correction — a command's
+    // destination, a smooth write and the tail are written as ever — and only where the pad can
+    // hold it; the page decides what a glide is (`absorbCorrections`).
+    if (!smooth && !position.commanded && position.source !== "tail" && this.absorbCorrections()) {
+      const shift = -delta; // how far the content moved down under the reader
+      const pad = (this.prefix[this.lo] || 0) - this.padDebt;
+      if (shift <= pad) {
+        this.padDebt += shift;
+        this.updatePads();
+        // The model's origin moved with the pad, by design; `displaced` watches it for moves the
+        // engine did NOT make.
+        this.lastContentTop = this.contentTop();
+        this.trace("absorb", { source: position.source, anchor: position.key || null, shift: Math.round(shift), debt: Math.round(this.padDebt) });
+        return true;
+      }
+      // More than the pad can hold — the glide reached content estimated far too short, with too
+      // little estimated above it to give. A write would still not stick, so none is made: the
+      // reader is where the glide put them (`transact` mounts around that offset and `P` is re-read
+      // there). For a model position there was nothing of theirs on screen to keep still; for an
+      // anchor it is one visible jump, never the fight.
+      this.yielded = true;
+      this.trace("yield", { source: position.source, anchor: position.key || null, shift: Math.round(shift), pad: Math.round(pad) });
+      return true;
+    }
     if (smooth) {
       // Clamped so `to` is reachable and the range always collapses; the animation is the
       // browser's, and `ownScroll` walks its events (§4.10).
@@ -757,6 +790,22 @@ class VirtualWindow {
    *  protected was a STALE position, and `P` carries its own offset now (see `place`). */
   readerOwnsPosition() {
     return this.dragging || performance.now() - this.lastUserInput < this.userIntentMs;
+  }
+
+  /** #372: is the view gliding under a finger's fling right now, so that a scroll write would not
+   *  stick? The page knows (touch events, its own still test); the engine writes as it always has
+   *  unless told otherwise. */
+  absorbCorrections() {
+    return false;
+  }
+
+  /** #372: give back what `place` absorbed during a glide — the pad grows by the debt again and the
+   *  placement writes the same shift to the offset, so nothing on screen moves. One transaction;
+   *  the page calls it once the view is still, where a write sticks. */
+  settleDebt() {
+    if (!this.padDebt) return;
+    this.transact("settle", { spontaneous: true, mutate: () => { this.padDebt = 0; } });
+    this.lastContentTop = this.contentTop();
   }
 
   /** The reader just did something. Two clocks, because they answer different questions: handler
@@ -1071,7 +1120,14 @@ class VirtualWindow {
 
   updatePads() {
     const pads = padHeights(this.prefix, this.lo, this.hi, this.count);
-    this.topPad.style.height = `${pads.top}px`;
+    // #372: a debt larger than the pad it is carried in (the window reached the top of a session
+    // whose content above was estimated far too short) cannot be carried: the rest of it is given
+    // back here, and the placement that follows writes it, as it would have without the debt.
+    if (this.padDebt > pads.top) {
+      this.trace("debt:clamped", { debt: Math.round(this.padDebt), pad: Math.round(pads.top) });
+      this.padDebt = pads.top;
+    }
+    this.topPad.style.height = `${pads.top - this.padDebt}px`;
     this.bottomPad.style.height = `${pads.bottom}px`;
     this.padsWritten = [Math.round(pads.top), Math.round(pads.bottom)];
   }
@@ -1331,6 +1387,12 @@ class VirtualWindow {
         mounted = this.mountRange(again.lo, again.hi, Infinity, p0) || mounted;
         placed = this.placeAfter(p0, options, drift, smooth);
       }
+      // #372: a correction yielded to a touch glide left the reader where the glide is; the window
+      // follows them there, as for any reader on fresh ground, and `syncPosition` reads `P` there.
+      if (placed === "yielded" && !this.viewportMounted()) {
+        const again = this.rangeForScroll();
+        mounted = this.mountRange(again.lo, again.hi, Infinity, null) || mounted;
+      }
       // A position the reader asked for (§4.10) is `P` from here on; `syncPosition` keeps it.
       if (p0 && p0.commanded) this.position = p0;
       this.syncPosition();
@@ -1510,6 +1572,9 @@ class VirtualWindow {
       position: p ? `${p.source}:${p.key != null ? p.key : p.index}` : this.following ? "tail" : null,
       pending: (this.pendingTail ? "tail " : "") + (this.estimatesPending ? "estimates" : "") || null,
       pads: this.padsWritten.slice(),
+      debt: this.padDebt ? Math.round(this.padDebt) : undefined,
+      // #372: the page said a write would not stick (a touch glide) when this transaction ran.
+      glide: this.absorbCorrections() || undefined,
       sums: Math.round(this.prefix[this.count] || 0),
       estimate: Math.round(guess.estimate()),
       live: Math.round(guess.value()),
@@ -1587,7 +1652,9 @@ class VirtualWindow {
       this.pendingTail = false;
       return this.place(p0) ? "tail" : "none";
     }
-    return this.place(p0, drift, smooth) ? "placed" : "unmounted";
+    const placed = this.place(p0, drift, smooth);
+    if (this.yielded) { this.yielded = false; return "yielded"; }
+    return placed ? "placed" : "unmounted";
   }
 
   /** The window for where the reader is: the scroll batch's own update (#180 — the correction it

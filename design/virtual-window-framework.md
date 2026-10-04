@@ -401,6 +401,30 @@ fling, both surfaces, holding to the pixel. Written and measured on 2026-09-12
 the reader at the fourth of twelve decaying wheels moved them 503px for 780px of wheel on the app
 shell and 484px on the classic page — the growth, never placed back.
 
+**…but not under a TOUCH glide (#372).** All of the above is true of momentum that arrives as wheel
+events, which honour a write. A fling on iOS does not: after the finger lifts the page glides on with
+no input behind it — only scroll events — and an offset written into that glide does not stick; the
+glide carries on from its own position (#340 found it for the tail-first head landing). The engine's
+rest clock sees only input, so 320ms into a glide it believed the reader at rest: it applied a moved
+estimate (the sums shifted by tens of thousands of pixels) and wrote corrections, and the glide threw
+them away. The next transaction read the glide's offset as the reader somewhere the window did not
+cover (I11, I10) and placed again: the owner's export shows the turn under the reader swinging between
+444 and 405, 25 violations in 46 seconds (`tests/fixtures/history/phone-jitter-app.json`). So a page
+that knows a touch glide is under way says so (`absorbCorrections`; the app shell from `touchstart`
+until `whenStill` confirms a still view), and while it lasts:
+- **a correction is absorbed, not written**: the top pad gives up (or takes) exactly the shift, and the
+  model's origin moves with it (`padDebt`, carried by `contentTop`, so every offset ↔ record conversion
+  stays exact); the reader's content stays where the screen shows it;
+- **a correction the pad cannot hold is yielded**: no write, the reader is where the glide put them,
+  the window mounts around that offset and `P` is re-read there (`placed: "yielded"`; one visible jump
+  at worst — only where content above was estimated far too short with too little estimated above it);
+- **the estimate and the tail wait** (`readerOwnsPosition` includes the glide);
+- once still, **one write settles the debt** (`settleDebt`, a `settle` transaction) and `rest` runs what
+  waited. A command's destination, a smooth write and the tail are written as ever. The classic page
+  declares no touch glide and is unchanged. Held by `a_phone_fling_over_under_estimated_answers_does_not_jitter`
+  and `sandbox_phone_jitter_app_replays` (the owner's export: 76 engine writes into glides and 8 glides
+  with a turn against them on 1.344.0, none after).
+
 ### 4.4 The estimator moves into the engine
 
 `this.guesses = new Map(kind → HeightGuess(floor))`, `this.shares = new Map(key → {kind, share})`.

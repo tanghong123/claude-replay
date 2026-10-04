@@ -124,6 +124,41 @@ export class Viewport extends VirtualWindow {
     for (const type of ["touchstart", "touchend", "touchcancel"]) {
       scroller.addEventListener(type, event => { this.touching = event.touches.length; this.lastScrollAt = performance.now(); }, { passive: true, capture: true });
     }
+    // #372: a TOUCH glide — from the finger landing until the view is still again. While it lasts
+    // the engine absorbs its corrections into the top pad instead of writing the offset (a write
+    // into an iOS glide does not stick); once still, the debt is settled with one write. A wheel or
+    // a key is the desktop's own input, whose momentum honours a write: it ends the touch glide.
+    this.touchGlide = false;
+    scroller.addEventListener("touchstart", () => {
+      if (this.touchGlide) return;
+      this.touchGlide = true;
+      // Still: the absorbed corrections are written back (one write, which sticks now), then
+      // whatever waited for the reader to rest runs — the estimates first (#194).
+      this.whenStill(() => { this.touchGlide = false; this.settleDebt(); this.rest(); });
+    }, { passive: true, capture: true });
+    scroller.addEventListener("wheel", () => { this.touchGlide = false; }, { passive: true, capture: true });
+    addEventListener("keydown", () => { this.touchGlide = false; }, { capture: true });
+  }
+
+  /** #372: the engine asks before a correction whether a write would stick; during a touch glide
+   *  it would not. A finger still down is a drag, where the engine does not place at all (I14). */
+  absorbCorrections() {
+    return this.touchGlide && this.touching === 0;
+  }
+
+  /** #372: a touch glide is the reader moving the view, though no input stands behind it — so what
+   *  waits for them to rest waits for it too: the sums taking a moved estimate (#194), which on the
+   *  owner's export shifted the page by tens of thousands of pixels in one transaction mid-glide.
+   *  The engine's own clock sees only input; the glide's end is `whenStill`'s, which runs `rest`. */
+  readerOwnsPosition() {
+    return super.readerOwnsPosition() || this.touchGlide;
+  }
+
+  /** The rest timer re-arms from the last input, which a glide has none of: during a touch glide
+   *  it would spin. `whenStill` runs `rest` when the glide ends instead. */
+  armRest() {
+    if (this.touchGlide) return;
+    super.armRest();
   }
 
   /** #340: every scroll event, of any kind, is the view moving — noted on the way through to the
@@ -140,7 +175,9 @@ export class Viewport extends VirtualWindow {
    *  surface later, out of order. The owner's export (2026-09-30) shows a head landing written into
    *  such a glide, read back 8ms later as the reader at turn 4, and a bounce to turn 82. */
   readerMoving() {
-    return this.touching > 0 || this.readerOwnsPosition() || performance.now() - this.lastScrollAt < STILL_MS;
+    // The ENGINE's clock, not this page's `readerOwnsPosition`: that one includes the touch glide,
+    // whose end is decided here — asking it would wait on itself.
+    return this.touching > 0 || super.readerOwnsPosition() || performance.now() - this.lastScrollAt < STILL_MS;
   }
 
   /** #340: run `fn` once the view is still — `readerMoving` false, and two reads of the offset
@@ -167,6 +204,10 @@ export class Viewport extends VirtualWindow {
   cancelStill() {
     clearTimeout(this.stillTimer);
     this.stillWaiters = [];
+    // #372: the session the glide's debt belonged to is gone too; the next records change lays the
+    // pads out afresh.
+    this.touchGlide = false;
+    this.padDebt = 0;
   }
 
   // ── what a unit is, for the engine ──────────────────────────────────────

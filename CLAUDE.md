@@ -750,6 +750,13 @@ carries on from its old offset, which in the landed page is a turn near the star
 read turn 4, then bounced to 82). So `updateRecords` holds a prepend, and every later snapshot with
 it, until `Viewport.whenStill` (no scroll event for 200 ms, no finger down, and two reads 50 ms apart
 agreeing); `a_phone_fling_keeps_its_turn_when_the_head_lands` emulates the glide on a 16 ms timer.
+**The engine writes nothing into a touch glide** (#372, `design/virtual-window-framework.md` §4.3):
+from `touchstart` until `whenStill`, a correction is absorbed into the top pad (`padDebt`, carried by
+`contentTop`) or, if the pad cannot hold it, yielded; estimates and the tail wait; one `settle` write
+pays the debt once still. The owner's export (`fixtures/history/phone-jitter-app.json`, the turn
+swinging 444↔405) replays in `sandbox_phone_jitter_app_replays`; a touch gesture replays as an
+iOS-style glide (`harness::touch_glide`: offset writes from the glide's own position with a scroll
+event per frame — without that event a headless tab hears the glide lazily, which invents failures).
 While the head is still coming the phone's Turns count is the highest turn NUMBER drawn (#342). The
 classic page never asks for a tail and is unchanged.
 

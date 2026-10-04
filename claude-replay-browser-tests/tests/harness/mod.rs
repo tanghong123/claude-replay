@@ -2778,6 +2778,71 @@ pub fn phone(tab: &headless_chrome::Tab, width: u32, height: u32) {
     .expect("touch emulation");
 }
 
+/// #372: a finger's fling on the app shell's transcript, as iOS runs it — the touch lands and lifts,
+/// then the glide moves the offset by about `distance` (negative reads further up) on a 16ms timer
+/// from ITS OWN position, whatever else wrote in between (#340: a write into an iOS glide does not
+/// stick), with a scroll event per step (iOS delivers one a frame; a headless tab only lazily,
+/// #204). Returns when the glide has come to rest, with the turns the engine recorded during it and
+/// how many writes to the offset were NOT the glide's — the engine's, which the glide threw away.
+pub fn touch_glide(tab: &headless_chrome::Tab, distance: i64) -> (Vec<i64>, i64) {
+    let started = eval(
+        tab,
+        &format!(
+            r#"(function(){{
+        var s = document.querySelector('.transcript');
+        if (!s) return false;
+        if (!s.__glideHooked) {{
+            var desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+            s.__own = false;
+            Object.defineProperty(s, 'scrollTop', {{ configurable: true,
+                get: function () {{ return desc.get.call(this); }},
+                set: function (v) {{ if (window.__glideOn && !s.__own) window.__engineWrites++; desc.set.call(this, v); }} }});
+            var scrollTo = s.scrollTo;
+            s.scrollTo = function () {{ if (window.__glideOn) window.__engineWrites++; return scrollTo.apply(this, arguments); }};
+            s.__glideHooked = true;
+        }}
+        window.__engineWrites = 0; window.__glideDone = false;
+        try {{
+            var t = new Touch({{ identifier: 1, target: s, clientX: 200, clientY: 500 }});
+            s.dispatchEvent(new TouchEvent('touchstart', {{ touches: [t], targetTouches: [t], changedTouches: [t], bubbles: true }}));
+            s.dispatchEvent(new TouchEvent('touchend', {{ touches: [], targetTouches: [], changedTouches: [t], bubbles: true }}));
+        }} catch (e) {{}}
+        var k = 0.0015, dir = {dir}, v = Math.abs({distance}) * k, pos = s.scrollTop, last = performance.now();
+        window.__glideT0 = performance.now(); window.__glideOn = true;
+        function step() {{
+            var now = performance.now(), dt = Math.min(50, now - last); last = now;
+            pos += dir * v * dt; v *= Math.pow(1 - k, dt);
+            var max = s.scrollHeight - s.clientHeight;
+            if (v < 0.02 || pos <= 0 || pos >= max) {{ window.__glideOn = false; window.__glideT1 = performance.now(); window.__glideDone = true; return; }}
+            s.__own = true; s.scrollTop = pos; s.__own = false; s.dispatchEvent(new Event('scroll'));
+            setTimeout(step, 16);
+        }}
+        setTimeout(step, 16);
+        return true;
+    }})()"#,
+            dir = if distance < 0 { -1 } else { 1 },
+            distance = distance,
+        ),
+    );
+    if started != serde_json::Value::Bool(true) {
+        return (Vec::new(), 0);
+    }
+    until(
+        tab,
+        "window.__glideDone === true",
+        "a touch glide to come to rest",
+        Duration::from_secs(30),
+        "window.__glideDone",
+    );
+    let turns = eval(
+        tab,
+        "JSON.stringify((window.__viewportHistory.states || []).filter(function(s){ return s.t >= window.__glideT0 && s.t <= window.__glideT1 && s.turn != null; }).map(function(s){ return s.turn; }))",
+    );
+    let turns: Vec<i64> = serde_json::from_str(turns.as_str().unwrap_or("[]")).unwrap_or_default();
+    let writes = eval(tab, "window.__engineWrites").as_i64().unwrap_or(0);
+    (turns, writes)
+}
+
 /// The page's own account of what it still has to do (#351), installed before its scripts so every
 /// timer, interval, animation frame, fetch and body read it starts goes through a wrapper that
 /// knows when it is due. `window.__settle(ms, check)` then resolves the moment the page is idle —

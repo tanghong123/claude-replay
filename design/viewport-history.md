@@ -67,6 +67,9 @@ already make** (the #192 lesson, now the cost rule):
 - `lo`, `hi`, `count`, `following`, `dragging`, `position` (`source:key|index`), `pending`;
 - `pads` (the values `updatePads` wrote), `sums` (`prefix[count]`), `estimate` and `live` (the
   applied and the live mean of the default kind — model values);
+- `debt` and `glide` (#372, present only when set): how far the top pad is shorter than the sums say
+  (corrections absorbed during a touch glide, settled by one write once still), and whether the page
+  said a write would not stick (a touch glide) when the transaction ran;
 - `top`: the engine's BELIEF of the offset — `position.at` when the position carries the offset it
   was read or written at; else what it wrote (`wrote`, or `wrote.to` while a smooth write travels);
   else `topSeen`, the last offset `onScroll` read for its own classification. Never a fresh read.

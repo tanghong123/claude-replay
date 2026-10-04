@@ -2300,7 +2300,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /this\.observer = new ResizeObserver\(\(\) => this\.measureNow\(\)\);/, "the observer measures NOW, inside its delivery — no task in between");
   assert.doesNotMatch(src, /scheduleMeasure|pendingMeasure/, "…and the deferral is gone");
   assert.match(src, /this\.contentObserver\.observe\(mount\.window\);/, "the content observer watches the mounted window, not the pads it would loop on");
-  assert.match(src, /contentTop\(\) \{\s*\n\s*return this\.topPad\.getBoundingClientRect\(\)\.top - this\.frame\.viewportTop\(\) \+ this\.frame\.scrollTop\(\);/, "where the content the sums describe BEGINS, in the scroller's coordinate");
+  // #372: less the top pad's debt — corrections absorbed during a touch glide shorten the pad, and the
+  // model's origin moves up with them so every conversion stays exact.
+  assert.match(src, /contentTop\(\) \{\s*\n\s*return this\.topPad\.getBoundingClientRect\(\)\.top - this\.frame\.viewportTop\(\) \+ this\.frame\.scrollTop\(\) - this\.padDebt;/, "where the content the sums describe BEGINS, in the scroller's coordinate");
+  assert.match(src, /this\.topPad\.style\.height = `\$\{pads\.top - this\.padDebt\}px`;/, "#372: …and the top pad is shorter by the same debt");
   assert.match(src, /return this\.contentTop\(\) \+ \(this\.prefix\[index\] \|\| 0\);/, "an item's document top is that edge plus the sums before it");
   // #140 step 4: and an offset handed to the sums is measured from the SAME edge. It never was —
   // `scrollTop` went in raw, which is right only when the pads are the first thing in the
@@ -2310,7 +2313,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // item that far late.
   assert.match(src, /rangeForScroll\(this\.prefix, this\.count, this\.frame\.scrollTop\(\) - this\.contentTop\(\), this\.frame\.clientHeight\(\), this\.overscan\)/, "…and so is the range a scroll offset asks for");
   assert.match(src, /return itemTop \+ within - sat;\s*\n\s*\}\s*\n/, "the offset `P` names is derived from the anchor's own rect (offsetOf)…");
-  assert.match(src, /place\(position, drift = 0, smooth = false\) \{\n    if \(!position\) return false;\n(?:    if \(this\.dragging\) this\.violation\("I14".*\n)?    const base = this\.offsetOf\(position\);\n(?:.*\n){0,20}?      this\.frame\.scrollTo\(want\);\n/, "…and the write-back is absolute — `scrollTo(where it goes)`, never `scrollBy(how far it drifted)`");
+  assert.match(src, /place\(position, drift = 0, smooth = false\) \{\n    if \(!position\) return false;\n(?:    if \(this\.dragging\) this\.violation\("I14".*\n)?    const base = this\.offsetOf\(position\);\n(?:.*\n){0,60}?      this\.frame\.scrollTo\(want\);\n/, "…and the write-back is absolute — `scrollTo(where it goes)`, never `scrollBy(how far it drifted)`");
   assert.equal((src.match(/this\.frame\.scrollTo\(/g) || []).length, 2, "#196 (framework I2): the engine writes the offset in exactly ONE place, place() — its instant form and its smooth form (#196 stage 4)");
   assert.match(src, /if \(base == null\) \{ this\.trace\("place:unmounted", \{ anchor: position\.key \}\); return false; \}/, "…and an anchor the window has left behind stays put — the sums there are estimates");
   assert.match(src, /`null` for an anchor whose record is not\n\s*\*\s*mounted: nothing to hold it by\./, "…which offsetOf says in its own words");

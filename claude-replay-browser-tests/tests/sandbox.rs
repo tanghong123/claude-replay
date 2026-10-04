@@ -11,7 +11,8 @@ mod harness;
 use claude_replay_html::start_server;
 use claude_replay_present::Args;
 use harness::history::{
-    calibration_session, fit, growth, steps, surface_of, synthetic, Calib, Diff, Export, Step,
+    calibration_session, fit, glides, growth, steps, surface_of, synthetic, Calib, Diff, Export,
+    Step,
 };
 use harness::{base, serial, Kind, Monitor, Stores, Surface};
 use std::path::PathBuf;
@@ -39,7 +40,16 @@ struct Opened {
 }
 
 fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
+    open_on(surface, fx, port, None)
+}
+
+/// `open`, on a phone of `phone` (width, height) when given — emulated before the first load, as
+/// the page stores layout defaults then (`harness::phone`).
+fn open_on(surface: Surface, fx: &Fixture, port: u16, phone: Option<(u32, u32)>) -> Opened {
     let (browser, tab) = harness::chrome_tab();
+    if let Some((w, h)) = phone {
+        harness::phone(&tab, w, h);
+    }
     match surface {
         Surface::Classic => {
             std::env::set_var("CLAUDE_REPLAY_CACHE", &fx.base);
@@ -109,8 +119,13 @@ fn export_now(tab: &headless_chrome::Tab) -> Export {
 /// Measure the surface's prose model (§5's calibration): a short session of known lengths,
 /// every record mounted, heights read back through the export.
 fn calibrate(surface: Surface, port: u16, label: &str) -> Calib {
+    calibrate_on(surface, port, label, None)
+}
+
+/// `calibrate` at a phone's width: a record's height depends on the width it wraps at.
+fn calibrate_on(surface: Surface, port: u16, label: &str, phone: Option<(u32, u32)>) -> Calib {
     let fx = fixture(&format!("sandbox-calib-{label}"), &calibration_session());
-    let page = open(surface, &fx, port);
+    let page = open_on(surface, &fx, port, phone);
     // Everything mounted: the session is five turns, well inside the overscan.
     harness::until(
         &page.tab,
@@ -204,6 +219,9 @@ fn replay(export: &Export, surface: Surface, port: u16, label: &str, tolerance: 
             Step::End => harness::jump_to_end(&page.tab, surface),
             Step::Fold => {
                 let _ = harness::open_last_fold(&page.tab, surface);
+            }
+            Step::Glide(distance) => {
+                let _ = harness::touch_glide(&page.tab, *distance);
             }
             Step::Skip(_) => {}
         }
@@ -520,5 +538,85 @@ fn a_tail_first_open_ends_where_its_head_lands() {
         export.opened_records(),
         30,
         "the open ends where the head landed, not at the first batch"
+    );
+}
+
+/// #372, the owner's export (an iPhone, 1.344.0): opening an agent-metrics session and flinging
+/// through it "feeling jittery" — 25 violations (I10, I11) in one 46-second stretch of touch
+/// scrolling, the turn under the reader swinging between 444 and 405. Replayed at a phone's size
+/// over that stretch: the synthetic session (every record the export saw, as the open has them),
+/// a jump to where the reader was, then each recorded gesture as the glide iOS runs (a write into it
+/// does not stick). No violation, the engine writes nothing into a glide, and no turn moves against
+/// the glide that carried it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn sandbox_phone_jitter_app_replays() {
+    let _serial = serial();
+    let export = fixture_export("phone-jitter-app.json");
+    let phone = Some((440, 956));
+    let calib = calibrate_on(Surface::AppShell, 2997, "phone-jitter", phone);
+    let profile = export.profile();
+    let fx = fixture(
+        "sandbox-replay-phone-jitter",
+        &synthetic(&profile, profile.len(), &calib),
+    );
+    let page = open_on(Surface::AppShell, &fx, 2999, phone);
+    settle();
+    // The stretch around the violations (the export's clock), gestures split at a 250ms pause.
+    let script = glides(
+        &export,
+        2_990_000.0,
+        3_050_000.0,
+        250.0,
+        Duration::from_millis(1500),
+    );
+    let (mut writes, mut against, mut glided) = (0, Vec::new(), 0);
+    for (gap, step, _) in &script {
+        std::thread::sleep(*gap);
+        match step {
+            Step::JumpTo(turn) => {
+                let _ = harness::jump_to_turn(&page.tab, Surface::AppShell, (*turn).max(1) as u32);
+                settle();
+            }
+            Step::Glide(distance) => {
+                let (turns, w) = harness::touch_glide(&page.tab, *distance);
+                glided += 1;
+                writes += w;
+                let wrong = turns
+                    .windows(2)
+                    .filter(|t| {
+                        if *distance < 0 {
+                            t[1] > t[0]
+                        } else {
+                            t[1] < t[0]
+                        }
+                    })
+                    .count();
+                if wrong > 0 {
+                    against.push((*distance, turns));
+                }
+            }
+            Step::Fold => {
+                let _ = harness::open_last_fold(&page.tab, Surface::AppShell);
+            }
+            _ => {}
+        }
+    }
+    settle();
+    let violations = harness::probe(&page.tab, "(window.__viewportViolations || []).slice()");
+    eprintln!(
+        "phone-jitter: {} steps, {glided} glides, {writes} engine writes into a glide, {} glides with a turn against them",
+        script.len(),
+        against.len()
+    );
+    assert!(glided >= 10, "the stretch replays its gestures: {glided}");
+    assert!(
+        violations.as_array().is_some_and(Vec::is_empty),
+        "phone-jitter: the replay reported violations: {violations}"
+    );
+    assert_eq!(writes, 0, "the engine writes nothing into a touch glide");
+    assert!(
+        against.is_empty(),
+        "no glide moves the reader against its own direction: {against:?}"
     );
 }
