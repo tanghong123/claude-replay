@@ -34,12 +34,23 @@ for f in frozen_self frozen_claude_sa frozen_codex frozen_codex_desktop; do
     exit 1
   fi
 done
-cargo build --release 2>&1 | tail -1
+# The BUILD is guarded the same way. With no cargo on PATH (a non-interactive shell that never read
+# the profile adding rustup's ~/.cargo/bin) or a build that fails, the dumps below would run a
+# missing or stale binary, and the run would report every output as a regression: measured on a new
+# machine (2026-10-04), `cargo: command not found`, then a DIFF for every file.
+BUILD_LOG=$(mktemp "${TMPDIR:-/tmp}/gate-build.XXXXXX")
+if ! cargo build --release > "$BUILD_LOG" 2>&1; then
+  tail -20 "$BUILD_LOG"; rm -f "$BUILD_LOG"
+  echo "BUILD FAILED — nothing was compared (is cargo on PATH? rustup puts it in ~/.cargo/bin)."
+  echo "BYTE-IDENTICAL: FAIL"
+  exit 1
+fi
+tail -1 "$BUILD_LOG"; rm -f "$BUILD_LOG"
 BIN=./target/release/agent-replay
 OUT="$GATE_DIR/NOW"; rm -rf "$OUT"; mkdir -p "$OUT"
 "$SCRIPT_DIR/verify.sh" "$BIN" "$OUT"
-"$BIN" "$GATE_DIR/frozen_self.jsonl" --dump - --width 120    >| "$OUT/self.dump.txt" 2>/dev/null
-"$BIN" "$GATE_DIR/frozen_self.jsonl" --dump-html - --width 120 >| "$OUT/self.html"     2>/dev/null
+render "$BIN" "$GATE_DIR/frozen_self.jsonl" --dump - --width 120    >| "$OUT/self.dump.txt" 2>/dev/null
+render "$BIN" "$GATE_DIR/frozen_self.jsonl" --dump-html - --width 120 >| "$OUT/self.html"     2>/dev/null
 # Normalize ONLY what legitimately differs between a BASE and a run of the same code: the two
 # version carriers (the brand span and the top-level meta field), and the directory the frozen
 # inputs live in. Pages and bundles embed each input's absolute path, and $SC_GATE_DIR sits under

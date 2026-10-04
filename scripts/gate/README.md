@@ -28,6 +28,12 @@ HTML, bundles) and diffs it against a known-good `BASE`, printing
   `/frozen_<name>` to `GATE_DIR` on both sides, so one BASE serves every machine whatever its
   home or `SC_GATE_DIR`. Measured: the same data in another directory failed four pages and three
   sub-agent bundle files before this rule, and passes with it.
+- **The recorded home:** the renderer writes a path under the CURRENT home as `~/…`, so a session
+  renders differently on a machine whose home differs from the one it was recorded on. When the
+  data has a `recorded-home` file (one line), every render runs with `HOME` set to it
+  (`gate-dir.sh`'s `render`); without it, renders use the current `HOME`.
+- **A failed build stops the gate:** with no `cargo` on PATH, or a build that fails, it says so
+  and prints FAIL, instead of comparing a missing or stale binary's output.
 - **Intentional output changes** legitimately FAIL: verify the diff line-by-line
   (only the intended change — structural jsonl comparison by record kind helps),
   re-baseline the changed files into `BASE` with `/bin/cp -f` (bundles: `cp -Rf`),

@@ -29,9 +29,9 @@ for name in claude_sa codex codex_desktop; do
     echo "  re-freeze it and regenerate BASE in the same step — see scripts/gate/README.md." >&2
     exit 1
   fi
-  "$BIN" "$T" --dump - --width $W          > "$OUT/${name}.dump.txt"   2>"$OUT/${name}.dump.err"
-  "$BIN" "$T" --dump - --width $W --full   > "$OUT/${name}.full.txt"   2>"$OUT/${name}.full.err"
-  "$BIN" "$T" --dump-html - --width $W      > "$OUT/${name}.html"       2>"$OUT/${name}.html.err"
+  render "$BIN" "$T" --dump - --width $W          > "$OUT/${name}.dump.txt"   2>"$OUT/${name}.dump.err"
+  render "$BIN" "$T" --dump - --width $W --full   > "$OUT/${name}.full.txt"   2>"$OUT/${name}.full.err"
+  render "$BIN" "$T" --dump-html - --width $W      > "$OUT/${name}.html"       2>"$OUT/${name}.html.err"
   rm -rf "$OUT/${name}.bundle"
-  "$BIN" "$T" --dump-all-html "$OUT/${name}.bundle" --width $W >/dev/null 2>"$OUT/${name}.bundle.err"
+  render "$BIN" "$T" --dump-all-html "$OUT/${name}.bundle" --width $W >/dev/null 2>"$OUT/${name}.bundle.err"
 done

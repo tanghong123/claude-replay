@@ -27,6 +27,6 @@ for f in frozen_claude_sa frozen_codex; do
 done
 BASE="$GATE_DIR/BASE"; rm -rf "$BASE"; mkdir -p "$BASE"
 "$SCRIPT_DIR/verify.sh" "$BIN" "$BASE"
-"$BIN" "$GATE_DIR/frozen_self.jsonl" --dump - --width 120    >| "$BASE/self.dump.txt" 2>/dev/null
-"$BIN" "$GATE_DIR/frozen_self.jsonl" --dump-html - --width 120 >| "$BASE/self.html"     2>/dev/null
+render "$BIN" "$GATE_DIR/frozen_self.jsonl" --dump - --width 120    >| "$BASE/self.dump.txt" 2>/dev/null
+render "$BIN" "$GATE_DIR/frozen_self.jsonl" --dump-html - --width 120 >| "$BASE/self.html"     2>/dev/null
 echo "BASE regenerated at $BASE from $BIN"
