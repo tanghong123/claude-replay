@@ -6,6 +6,7 @@ import { recordText, stripTags } from "./shared/search.js";
 // display name, failed / running / completed from the words the server writes, and the exit
 // code and duration as facts — one vocabulary with the classic page's chips.
 import { displayName, toolHead, stateLabel } from "./shared/tool-head.js";
+import { svg } from "./icons.js";
 
 export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 // A record's searchable text is what a reader can see of it (#111, shared/search.js): heads and
@@ -318,7 +319,7 @@ export function partsHtml(parts = [], recordId = "", state = null) {
     return {
       shown: build(split.shown),
       hidden: `<div class="cap-more ${opened ? "shown" : ""}" data-cap-id="${escapeText(key)}">${build(split.hidden)}</div>`,
-      button: opened ? "" : `<button type="button" class="cap-more-btn" data-cap-more="${escapeText(key)}" data-cap-record="${escapeText(recordId)}" data-cap-ord="${ord}" data-cap-lines="${split.hidden.length}">${escapeText(capLabel(split.hidden.length, toLine))}</button>`
+      button: opened ? "" : `<button type="button" class="cap-more-btn" data-cap-more="${escapeText(key)}" data-cap-record="${escapeText(recordId)}" data-cap-ord="${ord}" data-cap-lines="${split.hidden.length}" title="${escapeText(capLabel(split.hidden.length, toLine))}">${capWords(capLabel(split.hidden.length, toLine))}</button>`
     };
   };
   return parts.map(part => {
@@ -338,6 +339,13 @@ export function partsHtml(parts = [], recordId = "", state = null) {
   }).join("");
 }
 
+/** An expander's words, with the range in a span of its own (#s8): "⋯ 16 more lines" stays on a
+ *  phone and " · to line 180" goes, rather than the whole label wrapping into a two-line pill. */
+function capWords(label) {
+  const at = label.indexOf(" · ");
+  return at < 0 ? escapeText(label) : `${escapeText(label.slice(0, at))}<span class="cap-more-range">${escapeText(label.slice(at))}</span>`;
+}
+
 function codeRows(part, capped, recordId = "", state = null) {
   const build = part.p === "num" ? rows => numRowsHtml(rows, APP_ROWS) : rows => diffRowsHtml(rows, APP_ROWS, APP_MARKS);
   const cut = capped(part.rows || [], part.cap, build, toLineOf(part));
@@ -345,7 +353,11 @@ function codeRows(part, capped, recordId = "", state = null) {
   // no marks — and, since #173, size and wrap for THIS BLOCK. They used to call the page-wide
   // preference, so a bar reported a state it did not have; the keyboard (− / + / w) still moves
   // the page-wide baseline, and these move one block off it. The expander shares the foot.
-  const bar = `<div class="codebar"><button type="button" class="code-size" data-code-size="-1" title="Smaller code in this block">A−</button><span class="code-size-val" data-code-size-val></span><button type="button" class="code-size" data-code-size="1" title="Larger code in this block">A+</button><button type="button" class="code-wrap" data-code-wrap title="Long lines in this block: wrap / scroll"></button><button type="button" class="code-copy" data-code-copy title="Copy this block">copy</button></div>`;
+  // #s8: glyphs in the page's own font and icons — a small and a large A, the wrap and copy icons —
+  // each with its words in `title` and `aria-label`; on a phone the words wrapped inside their
+  // buttons ("A" over "−", "co" over "py") in the code font. The wrap button's state word sits in
+  // a visually hidden span, so its accessible name says which state it is in.
+  const bar = `<div class="codebar"><button type="button" class="code-size code-size-down" data-code-size="-1" title="Smaller code in this block" aria-label="Smaller code in this block">A</button><span class="code-size-val" data-code-size-val></span><button type="button" class="code-size code-size-up" data-code-size="1" title="Larger code in this block" aria-label="Larger code in this block">A</button><button type="button" class="code-wrap" data-code-wrap aria-pressed="false" title="Long lines in this block: wrap / scroll" aria-label="Long lines in this block scroll">${svg("wrap")}<span class="code-bar-word" data-code-wrap-word></span></button><button type="button" class="code-copy" data-code-copy title="Copy this block" aria-label="Copy this block">${svg("copy")}</button></div>`;
   // #173: `data-code` marks what IS code — bytes that came from a FILE ON DISK, rendered
   // structurally (a Write body, a Read's output, an Edit's diff). Size is scoped to it and to
   // nothing else in the document; wrap reaches it and the transcript's `pre` elements. It sits

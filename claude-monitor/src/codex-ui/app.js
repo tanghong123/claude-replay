@@ -2268,8 +2268,14 @@ function setCodeOverride(key, patch) {
 function paintCodeBars() {
   for (const box of viewport.window.querySelectorAll("[data-codebox]")) {
     const shown = effectiveCode(box.querySelector("[data-code-record]")?.dataset.codeRecord || "");
-    const value = box.querySelector("[data-code-size-val]"); if (value) value.textContent = sizeStepLabel(shown.size);
-    const wrap = box.querySelector("[data-code-wrap]"); if (wrap) wrap.textContent = shown.wrap ? "⤶" : "↔";
+    // #s8: the step shows only off the default — "0" stays in the DOM, as the classic page's does.
+    const value = box.querySelector("[data-code-size-val]"); if (value) { const step = sizeStepLabel(shown.size); value.textContent = step; value.toggleAttribute("data-default", step === "0"); }
+    const wrap = box.querySelector("[data-code-wrap]");
+    if (wrap) {
+      wrap.setAttribute("aria-pressed", String(shown.wrap));
+      wrap.setAttribute("aria-label", shown.wrap ? "Long lines in this block wrap" : "Long lines in this block scroll");
+      const word = wrap.querySelector("[data-code-wrap-word]"); if (word) word.textContent = shown.wrap ? "long lines wrap" : "long lines scroll";
+    }
   }
 }
 let readingApplied = null;

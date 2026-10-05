@@ -420,10 +420,10 @@ export function bindComponentEvents(root, state, actions) {
       event.preventDefault(); event.stopPropagation();
       const box = codeCopy.closest(".codebox");
       const text = box ? [...box.querySelectorAll(".codecell")].map(cell => cell.textContent).join("\n") : "";
-      const original = codeCopy.textContent;
       const operation = navigator.clipboard?.writeText(text);
       if (!operation) { actions.toast?.("This browser does not support copying"); return; }
-      operation.then(() => { codeCopy.textContent = "copied"; setTimeout(() => { if (codeCopy.isConnected) codeCopy.textContent = original; }, 1200); }, () => actions.toast?.("Could not copy the code"));
+      // #s8: the button is an icon now, so it changes colour for a moment and the toast says it.
+      operation.then(() => { codeCopy.classList.add("copied"); actions.toast?.("Copied this block"); setTimeout(() => codeCopy.classList.remove("copied"), 1200); }, () => actions.toast?.("Could not copy the code"));
       return;
     }
     // A cap expander (#108): reveal in place — the rows are already there — and remember a

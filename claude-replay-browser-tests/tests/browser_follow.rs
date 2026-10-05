@@ -11349,3 +11349,109 @@ fn a_phone_search_step_shows_a_match_far_along_a_long_line() {
         misses.join("\n")
     );
 }
+
+/// #s8, the owner (iPhone, 440px): the foot of a code block "looks terrible". The expander "⋯ 16
+/// more lines · to line 180" wrapped into a cramped two-line pill, and the bar beside it wrapped
+/// each control inside itself — "A" over "−", the "0" alone, "co" over "py" — in the code's font.
+/// Now the bar is glyphs (a small and a large A, the wrap and copy icons) in the page's font, each
+/// with its words in `aria-label`; the expander keeps its count on a phone and drops the range;
+/// the foot is ONE row, at a phone's width and a desktop's, every control the thing a tap at its
+/// centre hits.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_code_block_foot_is_one_row_of_glyphs_on_a_phone_and_a_desktop() {
+    let _serial = serial();
+    const SID: &str = "5e5510a1-0000-4000-8000-0000000000s8";
+    let base = harness::base("code-foot");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::user_at("write the script", &harness::at("00:01"));
+    t += &harness::write_tool_at("w1", "/r/big.py", 200, &harness::at("00:02"));
+    t += &harness::assistant_at("written", &harness::at("00:03"));
+    stores.claude_session(SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2941, &base, Some(&stores), true);
+    let measure = r#"(async function(){
+        document.querySelectorAll('.renderer.closed > button.renderer-head').forEach(function (h) { h.click(); });
+        await new Promise(function (r) { requestAnimationFrame(function () { requestAnimationFrame(r); }); });
+        var box = [...document.querySelectorAll('.codebox')].pop();
+        if (!box) return JSON.stringify({ err: 'no code box' });
+        var foot = box.querySelector('.codefoot');
+        foot.scrollIntoView({ block: 'center' });
+        await new Promise(function (r) { setTimeout(r, 300); });
+        var more = foot.querySelector('.cap-more-btn'), ctrls = [...foot.querySelectorAll('.codebar button')];
+        // The lines of VISIBLE text a control draws — a visually hidden word is not drawn.
+        var lines = function (el) { var tops = new Set(), walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); for (var n = walk.nextNode(); n; n = walk.nextNode()) { if (!n.textContent.trim() || n.parentElement.closest('.code-bar-word')) continue; var r = document.createRange(); r.selectNodeContents(n); [...r.getClientRects()].forEach(function (x) { if (x.width > 0 && x.height > 0) tops.add(Math.round(x.top)); }); } return tops.size; };
+        var hit = function (el) { var r = el.getBoundingClientRect(); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!h && el.contains(h); };
+        var codeFont = getComputedStyle(box.querySelector('.codecell')).fontFamily;
+        var all = [more].concat(ctrls).filter(Boolean);
+        var centres = all.map(function (e) { var r = e.getBoundingClientRect(); return r.top + r.height / 2; });
+        return JSON.stringify({
+            more: more ? more.innerText : '', moreLines: more ? lines(more) : -1,
+            ctrlLines: ctrls.map(lines), hits: all.map(hit),
+            spread: Math.round(Math.max.apply(null, centres) - Math.min.apply(null, centres)),
+            codeFont: ctrls.map(function (c) { return getComputedStyle(c).fontFamily === codeFont; }),
+            labels: ctrls.map(function (c) { return c.getAttribute('aria-label') || ''; }),
+        });
+    })()"#;
+    for (w, h, phone) in [(440u32, 956u32, true), (1280, 900, false)] {
+        let (_browser, tab) = harness::chrome_tab();
+        if phone {
+            harness::phone(&tab, w, h);
+        } else {
+            harness::resize(&tab, f64::from(w), f64::from(h));
+        }
+        m.pair(&tab);
+        m.open(&tab, &format!("?ui=app&session={SID}"));
+        harness::until(
+            &tab,
+            "!!document.querySelector('.renderer-turn, .renderer')",
+            "the session drawn",
+            Duration::from_secs(30),
+            "document.body.innerText.slice(0, 200)",
+        );
+        let got: serde_json::Value =
+            serde_json::from_str(harness::eval(&tab, measure).as_str().unwrap_or("{}")).unwrap();
+        let at = format!("{w}px: {got}");
+        assert!(got.get("err").is_none(), "{at}");
+        let more = got["more"].as_str().unwrap_or("");
+        assert!(
+            more.starts_with("⋯ ") && more.contains("more lines"),
+            "{at}"
+        );
+        assert_eq!(
+            more.contains("to line"),
+            !phone,
+            "the range shows at a desktop's width only: {at}"
+        );
+        assert_eq!(got["moreLines"], 1, "the expander is one line: {at}");
+        for l in got["ctrlLines"].as_array().unwrap() {
+            assert!(
+                l.as_u64().unwrap() <= 1,
+                "no control wraps inside itself: {at}"
+            );
+        }
+        assert!(
+            got["hits"].as_array().unwrap().iter().all(|h| h == true),
+            "every control is what a tap at its centre hits: {at}"
+        );
+        assert!(
+            got["spread"].as_i64().unwrap() <= 4,
+            "the foot is one row: {at}"
+        );
+        assert!(
+            got["codeFont"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|f| f == false),
+            "the controls are not in the code's font: {at}"
+        );
+        assert!(
+            got["labels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| !l.as_str().unwrap_or("").is_empty()),
+            "each keeps its words: {at}"
+        );
+    }
+}

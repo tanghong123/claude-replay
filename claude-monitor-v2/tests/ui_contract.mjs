@@ -1619,7 +1619,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   const vm = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
   assert.match(vm, /<div class="codefoot">\$\{cut\.button\}\$\{bar\}<\/div><\/div>`/, "the bar and the expander share the pane's foot");
-  assert.match(vm, /data-code-size="-1"[^>]*>A−<\/button><span class="code-size-val" data-code-size-val><\/span><button[^>]*data-code-size="1"/, "A− size A+");
+  assert.match(vm, /data-code-size="-1"[^>]*aria-label="Smaller code in this block">A<\/button><span class="code-size-val" data-code-size-val><\/span><button[^>]*data-code-size="1"[^>]*aria-label="Larger code in this block">A<\/button>/, "a small A, the step, a large A (#s8: glyphs, their words in aria-label)");
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.match(comp, /\[\.\.\.box\.querySelectorAll\("\.codecell"\)\]\.map\(cell => cell\.textContent\)\.join\("\\n"\)/, "copy joins the code cells only");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
