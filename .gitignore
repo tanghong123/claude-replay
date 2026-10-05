@@ -20,6 +20,10 @@
 /*.ansi
 /*.json
 /*.html
+# The pointers to the private task queue and review store (taskq, mdrev) are the exception:
+# every clone finds the stores through them.
+!/.taskq.json
+!/.mdrev.json
 
 # Scratch / internal artifacts (analysis notes, autonomous-run briefs, comparison
 # tooling) — not part of the tracked source; may embed real session paths/ids.
