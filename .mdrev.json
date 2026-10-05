@@ -1,0 +1,6 @@
+{
+  "review": {
+    "remote": "https://github.com/tanghong123/claude-replay-notes.git",
+    "branch": "refs/notes/mdrev-review"
+  }
+}
