@@ -8,7 +8,8 @@
 //! No case ever reveals anything: the page's `fetch` is wrapped so a `/__reveal` request is recorded
 //! and answered, never sent — `open -R` must not run on the machine the suite runs on.
 //!
-//! Ports 2811–2814, and 2933 for #374's handed-over files on a phone. The classic page draws no preview pane; its file view already pairs the two
+//! Ports 2811–2814, 2933 for #374's handed-over files on a phone, and 2937 for #s7's mentioned
+//! files under the allowlist ceiling. The classic page draws no preview pane; its file view already pairs the two
 //! (export.js `openArtifact` and its "Reveal in file manager" action), which is the reference here.
 
 use std::path::PathBuf;
@@ -805,5 +806,88 @@ fn a_phone_downloads_what_the_session_handed_over_wherever_it_lives() {
         fetched.as_str().unwrap_or(""),
         "200 image/png",
         "a pasted image's original under uploads is served whatever the allowlist says"
+    );
+}
+
+/// #s7: a file a transcript MENTIONS is readable under the render allowlist, wherever the session
+/// ran. The owner, from a phone: a session in `~/code/knack` edited a file in a linked worktree at
+/// `~/code/knack-work/wt-b40`; the page offered it (the allowlist names `~/code`) and the pane said
+/// "HTTP 404 · The original path may be gone, or the file is outside what this monitor may read",
+/// though the file was there — containment knew only the session's own roots. The world here has
+/// that shape: an allowlist naming the case's root, a session in `repo/`, its reads in a sibling
+/// `wt/`. And a file deleted after the page offered it says it is GONE, naming the path.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_reads_a_mentioned_file_outside_the_session_under_the_allowlist() {
+    const SID: &str = "5e5510a1-0000-4000-8000-0000000000s7";
+    let _serial = serial();
+    let base = base("files-ceiling");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    let wt = base.join("wt");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join("tests.rs"), "fn a_worktree_test() {}\n").unwrap();
+    std::fs::write(wt.join("gone.rs"), "fn soon_deleted() {}\n").unwrap();
+    let mut jsonl = user_at("look at the worktree", &at("00:01"));
+    for (i, file) in ["tests.rs", "gone.rs"].iter().enumerate() {
+        let path = wt.join(file).display().to_string();
+        let ts = at(&format!("00:1{i}"));
+        jsonl += &read_tool_at(&format!("t{i}"), &path, &ts);
+        jsonl += &tool_result_at(&format!("t{i}"), &ts);
+    }
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(SID, &jsonl);
+    let state = base.join("state-2937");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(
+        state.join("render-policy.json"),
+        format!(
+            "{{\"mode\":\"allowlist\",\"dirs\":[{:?}]}}",
+            base.display().to_string()
+        ),
+    )
+    .unwrap();
+    let m = Monitor::spawn(Kind::V2, 2937, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 440, 956);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={SID}"));
+    until(
+        &tab,
+        "document.querySelectorAll('[data-reference-path]').length >= 2",
+        "the two read paths",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+    // Taken away after the page offered it: what the owner meets when a worktree is removed.
+    std::fs::remove_file(wt.join("gone.rs")).unwrap();
+
+    click_path(&tab, &wt, "tests.rs");
+    until(
+        &tab,
+        "(document.getElementById('previewBody').innerText || '').indexOf('fn a_worktree_test') >= 0",
+        "the worktree file shown in the pane",
+        Duration::from_secs(20),
+        PANE,
+    );
+
+    click_path(&tab, &wt, "gone.rs");
+    until(
+        &tab,
+        "(document.getElementById('previewBody').innerText || '').indexOf('This file is gone') >= 0",
+        "the pane saying the file is gone",
+        Duration::from_secs(20),
+        PANE,
+    );
+    let pane = eval(&tab, "document.getElementById('previewBody').innerText");
+    let pane = pane.as_str().unwrap_or("");
+    assert!(
+        pane.contains(&wt.join("gone.rs").display().to_string()),
+        "it names the path: {pane}"
+    );
+    assert!(
+        !pane.contains("may be gone, or"),
+        "and no longer says it may be either: {pane}"
     );
 }

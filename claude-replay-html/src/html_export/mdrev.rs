@@ -841,10 +841,18 @@ fn resolve(live: &SessionService, req: &Request, root: &str) -> HttpResponse {
                 return Value::Null;
             }
             let abs = join(root, t);
-            if live.contained(Path::new(&abs)).is_none() || !sig::may_render(&abs) {
+            // A link from a document the reader opened is a mention too: stamped where the
+            // render policy allows it, and served under the same ceiling `/file` keeps (#s7).
+            if !sig::may_render(&abs) {
                 return Value::Null;
             }
-            sig::sign(Cap::File, &abs).map_or(Value::Null, Value::String)
+            let Some(cap) = sig::sign(Cap::File, &abs) else {
+                return Value::Null;
+            };
+            if live.servable(&abs, Some(&cap)).is_none() {
+                return Value::Null;
+            }
+            Value::String(cap)
         })
         .collect();
     HttpResponse::json(json!({ "caps": caps }).to_string())

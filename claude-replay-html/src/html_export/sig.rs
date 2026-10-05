@@ -19,9 +19,10 @@
 //! `agent-monitor` and `agent-monitor-v2`. A key fingerprint is folded into `render_flavor`,
 //! so replacing the key re-renders rather than silently breaking every link.
 //!
-//! This is defence in depth, NOT a replacement for the other gates: `/file` still requires the
-//! pairing token and a same-origin request, and still applies containment. A signature says
-//! only "this server offered this path".
+//! It is NOT a replacement for the other gates: `/file` still requires the pairing token and a
+//! same-origin request. Since #s7 a `File` stamp IS the authorization to read — the transcript
+//! mentioned the path and the render policy allowed it — under a CEILING the route re-asks at
+//! serve time ([`ceiling`]): the allowlist, or, with no allowlist, containment as before.
 
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -177,7 +178,7 @@ pub(crate) enum Policy {
 ///
 /// It lives in the STATE dir on purpose. Losing a widening config fails safe; losing a
 /// NARROWING one silently widens, and the cache is a directory designed to be wiped.
-fn policy() -> &'static Policy {
+pub(crate) fn policy() -> &'static Policy {
     // Tests get the DEFAULT and never read the disk — the same argument `key()` makes one
     // function up (#153). Reading the real file made every rendering assertion depend on
     // whether this developer had narrowed their own policy: the suite would agree with CI
@@ -259,6 +260,29 @@ fn decide(policy: &Policy, path: &str) -> bool {
             };
             dirs.iter().any(|d| real.starts_with(d))
         }
+    }
+}
+
+/// Where a byte-reading route's CEILING stands for a real (canonical) path, re-asked at serve
+/// time (#s7): a stamp carries no policy, and one minted under a wider setting still sits in an
+/// open tab or a copied link after the owner narrows it. The path must already be canonical,
+/// which is why this is not [`decide`]: that canonicalizes for itself and calls a path that is
+/// gone "not allowed", which would report a deleted file as a refused one.
+pub(crate) enum Ceiling {
+    /// Under one of the allowlist's directories.
+    Inside,
+    /// Outside every one of them — or the policy is `never`.
+    Outside,
+    /// `offered`: no allowlist names a ceiling, so the routes keep containment as theirs.
+    None,
+}
+
+pub(crate) fn ceiling(policy: &Policy, real: &std::path::Path) -> Ceiling {
+    match policy {
+        Policy::Never => Ceiling::Outside,
+        Policy::Offered => Ceiling::None,
+        Policy::Allow(dirs) if dirs.iter().any(|d| real.starts_with(d)) => Ceiling::Inside,
+        Policy::Allow(_) => Ceiling::Outside,
     }
 }
 

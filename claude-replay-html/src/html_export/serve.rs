@@ -491,8 +491,11 @@ impl SessionService {
         None
     }
 
-    /// Positive containment for the artifact route (`/file`): resolve `want` to a real file
-    /// this server is ENTITLED to hand out, or `None`.
+    /// Positive containment: resolve `want` to a real file a session this server hosts explains,
+    /// or `None`. Since #s7 it is the byte-reading routes' CEILING only where the render policy
+    /// names none (`offered`), and the relocation fallback; under an allowlist the allowlist is
+    /// the ceiling ([`serve_decision`](Self::serve_decision)). The argument below is why it was
+    /// the rule, and still is for the default.
     ///
     /// `/__reveal` is not a precedent to copy. Revealing asks the OS file manager to open a
     /// window; it moves no bytes across the wire, so its hit branch is `exists()` alone.
@@ -524,28 +527,80 @@ impl SessionService {
     }
 
     /// The file a byte-reading route may serve for `path` and the page's `stamp`, or `None` —
-    /// the one rule `/file` and mdrev's routes share. OFFERED, then entitled: a `Cap::File`
-    /// stamp says this server rendered a link to exactly this path, and containment that a
-    /// hosted session still explains it (the cheap check, needing no disk, first).
-    ///
-    /// A `Cap::Handed` stamp (#374) is its own authorization, as a reveal stamp is (#79): the
-    /// renderer mints one only for a file the transcript HANDED to the reader — sent with
-    /// `SendUserFile`, or attached to a prompt — and a token holder already reads the transcript
-    /// that hands it over. Containment asks whether a session explains a path it MENTIONS; a
-    /// film an agent saved to `~/Movies` and sent is explained by the sending. It must still be
-    /// a real file.
+    /// [`serve_decision`](Self::serve_decision) without the reason.
     pub(crate) fn servable(&self, path: &str, stamp: Option<&str>) -> Option<PathBuf> {
-        use super::sig::{verify, Cap};
-        if verify(Cap::File, path, stamp) {
-            return self.contained(Path::new(path));
+        self.serve_decision(path, stamp).ok()
+    }
+
+    /// The one rule `/file` and mdrev's routes share, with the reason when it refuses: OFFERED,
+    /// then there, then under the ceiling (#s7, the owner: "we should allow access to anything
+    /// explicitly mentioned in a transcript (and within a ceiling)").
+    ///
+    /// * A `Cap::File` stamp says this server rendered a link to exactly this path — the
+    ///   transcript mentioned it, and the render policy let it be shown when it was rendered. That
+    ///   is the authorization, as a reveal stamp is (#79); what is re-asked here is the CEILING,
+    ///   since a stamp carries no policy and outlives a narrowing in an open tab: the allowlist
+    ///   ([`sig::ceiling`](super::sig::ceiling)). Under `offered` — no allowlist, no ceiling —
+    ///   containment stays the ceiling, so the default does not widen.
+    /// * A `Cap::Handed` stamp (#374) is minted only for a file the transcript HANDED to the reader
+    ///   — sent with `SendUserFile`, or attached to a prompt — and no allowlist withholds it; only
+    ///   `never` does.
+    ///
+    /// Containment used to be required of every `File` path, and refused the owner a file a
+    /// session had just edited: it ran in `~/code/knack` and worked in a linked worktree at
+    /// `~/code/knack-work/wt-b40`, which no root of the session's contained (#s7). It stays as
+    /// the relocation fallback ([`remap_reveal`](Self::remap_reveal)) and the `offered` ceiling.
+    pub(crate) fn serve_decision(
+        &self,
+        path: &str,
+        stamp: Option<&str>,
+    ) -> Result<PathBuf, Unservable> {
+        self.serve_under(path, stamp, super::sig::policy())
+    }
+
+    fn serve_under(
+        &self,
+        path: &str,
+        stamp: Option<&str>,
+        policy: &super::sig::Policy,
+    ) -> Result<PathBuf, Unservable> {
+        use super::sig::{ceiling, verify, Cap, Ceiling, Policy};
+        let want = Path::new(path);
+        if !want.is_absolute() {
+            return Err(Unservable::NotOffered);
         }
-        if verify(Cap::Handed, path, stamp) && Path::new(path).is_absolute() {
-            return Path::new(path)
-                .canonicalize()
-                .ok()
-                .filter(|real| real.is_file());
+        let handed = if verify(Cap::File, path, stamp) {
+            false
+        } else if verify(Cap::Handed, path, stamp) {
+            true
+        } else {
+            return Err(Unservable::NotOffered);
+        };
+        // There: the path as recorded, or a moved repository's live copy of it.
+        let real = want
+            .canonicalize()
+            .ok()
+            .or_else(|| self.remap_reveal(want)?.canonicalize().ok())
+            .ok_or(Unservable::Gone)?;
+        if !real.is_file() {
+            return Err(Unservable::NotAFile);
         }
-        None
+        if handed {
+            return match policy {
+                Policy::Never => Err(Unservable::Refused(Refusal::Never)),
+                _ => Ok(real),
+            };
+        }
+        match ceiling(policy, &real) {
+            Ceiling::Inside => Ok(real),
+            Ceiling::None => self
+                .contained(&real)
+                .ok_or(Unservable::Refused(Refusal::NoSession)),
+            Ceiling::Outside => Err(Unservable::Refused(match policy {
+                Policy::Never => Refusal::Never,
+                _ => Refusal::Allowlist,
+            })),
+        }
     }
 
     /// Containment for `/__reveal`, which may also open a DIRECTORY.
@@ -1945,6 +2000,62 @@ fn too_broad(root: &Path) -> bool {
 /// in the file manager rather than pulling 200 MB through a viewer.
 pub(super) const MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Why a byte-reading route will not serve a path ([`SessionService::serve_decision`], #s7). The
+/// page tells a reader which, in words: "it may be gone, or outside what this monitor may read"
+/// was the one sentence for all of them, and the owner's file was neither gone nor outside
+/// anything they had chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unservable {
+    /// No stamp of this server's for this path: the page never offered it. Says nothing more.
+    NotOffered,
+    /// Offered, and no longer there — moved or deleted after the session named it.
+    Gone,
+    /// There, and a directory or something else with no bytes to show.
+    NotAFile,
+    /// There, and outside the ceiling.
+    Refused(Refusal),
+}
+
+/// Which ceiling refused, so the reply can say where it is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// The render allowlist (`render-policy.json`) names no directory above it.
+    Allowlist,
+    /// `offered`, with no allowlist: no session this monitor shows works where the file is.
+    NoSession,
+    /// The render policy is `never`.
+    Never,
+}
+
+impl Unservable {
+    /// The reply `/file` gives, in words a page can show as they are.
+    pub(crate) fn response(self) -> HttpResponse {
+        match self {
+            Unservable::NotOffered => HttpResponse::not_found("no such path"),
+            Unservable::Gone => artifact_refused(
+                "410 Gone",
+                "The file is no longer there: it was moved or deleted after the session named it.",
+            ),
+            Unservable::NotAFile => artifact_refused("415 Unsupported Media Type", "not a file"),
+            Unservable::Refused(Refusal::Allowlist) => artifact_refused(
+                "403 Forbidden",
+                "This monitor reads files only under the directories its render policy names \
+                 (render-policy.json in its state directory), and this file is outside them.",
+            ),
+            Unservable::Refused(Refusal::NoSession) => artifact_refused(
+                "403 Forbidden",
+                "This monitor reads files only where a session it shows works (its directory, \
+                 project or scratch), and this file is outside them. A render-policy.json \
+                 allowlist in its state directory can name wider directories.",
+            ),
+            Unservable::Refused(Refusal::Never) => artifact_refused(
+                "403 Forbidden",
+                "This monitor's render policy is never: it shows no local file.",
+            ),
+        }
+    }
+}
+
 /// The raster image types `/file` will serve as images. Deliberately no `image/svg+xml`: an
 /// SVG is a script host, and this page's origin holds the monitor's cookie.
 pub(super) fn raster_type(ext: &str) -> Option<&'static str> {
@@ -2563,8 +2674,10 @@ pub fn service_routes(
     //     route is not merely limited, it is absent. This matters most where the connection
     //     gate is weakest: on macOS an unpaired loopback listener admits every local user
     //     (§4.2's D3b), and the token is exactly what closes that.
-    //  2. the stamp, then containment — `servable` above: a `File` stamp and some hosted
-    //     session explaining the path, or a `Handed` stamp alone (#374);
+    //  2. the stamp, then the ceiling — `serve_decision` above: a `File` stamp under the
+    //     render allowlist (containment, where there is no allowlist), or a `Handed` stamp
+    //     alone (#374) — refusing in words: 410 for a file that is gone, 403 for one the
+    //     ceiling holds back (#s7);
     //  3. a size cap — a viewer, not a file server: over it, the file is handed over as a
     //     DOWNLOAD streamed from disk, never shown (#374; it used to be refused, and the page
     //     revealed instead, which a phone cannot do);
@@ -2596,8 +2709,9 @@ pub fn service_routes(
         };
         let decoded = percent_decode(raw);
         let stamp = query_get(query, "sig").map(percent_decode);
-        let Some(path) = live.servable(&decoded, stamp.as_deref()) else {
-            return HttpResponse::not_found("no such path");
+        let path = match live.serve_decision(&decoded, stamp.as_deref()) {
+            Ok(path) => path,
+            Err(why) => return why.response(),
         };
         let Ok(meta) = std::fs::metadata(&path) else {
             return HttpResponse::not_found("no such path");
@@ -4705,6 +4819,118 @@ mod tests {
     /// loses), a directory, and anything past the size cap. And what it serves, it serves
     /// defused — a repo's `.html` comes back as `text/plain` with `nosniff`, because the page
     /// asking for it holds the monitor's cookie on the monitor's own origin.
+    /// #s7, the owner: "we should allow access to anything explicitly mentioned in a transcript
+    /// (and within a ceiling)". A session ran in `~/code/knack` and edited a file in a linked
+    /// worktree at `~/code/knack-work/wt-b40`; the page offered it (the allowlist names `~/code`)
+    /// and `/file` refused it, because containment knew only the session's own roots. Under an
+    /// allowlist the File stamp is the authorization and the allowlist the ceiling — re-asked at
+    /// serve time, since a stamp carries no policy; with no allowlist, containment stays the
+    /// ceiling; under `never` nothing is read, handed or not. And each refusal says which.
+    #[test]
+    fn a_mentioned_file_is_served_under_the_allowlist_ceiling() {
+        use crate::html_export::sig::{sign, Cap, Policy};
+        let dir = std::env::temp_dir().join(format!("cr-file-ceiling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (repo, worktree, beyond, store) = (
+            dir.join("code/knack"),
+            dir.join("code/knack-work/wt-b40"),
+            dir.join("elsewhere"),
+            dir.join("store"),
+        );
+        for d in [&repo, &worktree, &beyond, &store] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(worktree.join("tests.rs"), "#[test] fn t() {}\n").unwrap();
+        std::fs::write(beyond.join("secret"), "key\n").unwrap();
+        let sess = store.join("s.jsonl");
+        std::fs::write(
+            &sess,
+            format!(
+                "{{\"type\":\"user\",\"cwd\":\"{}\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"hi\"}}]}},\"timestamp\":\"2026-07-26T10:00:00Z\"}}\n",
+                repo.display()
+            ),
+        )
+        .unwrap();
+        let live = SessionService::new(ServiceConfig {
+            cache_root: None,
+            presentation: Presentation::Html,
+            fold: FoldPolicy::default(),
+            scratch: dir.join("scratch"),
+            root_lock: RootLock::PerSession,
+        })
+        .unwrap();
+        live.register_root(&sess);
+        let code = dir.join("code").canonicalize().unwrap();
+        let allow = Policy::Allow(vec![code]);
+        let decide = |p: &std::path::Path, cap: Cap, policy: &Policy| {
+            let path = p.display().to_string();
+            live.serve_under(&path, sign(cap, &path).as_deref(), policy)
+        };
+        let tests_rs = worktree.join("tests.rs");
+
+        // The owner's case: mentioned, under the allowlist, outside every root of the session.
+        assert_eq!(
+            decide(&tests_rs, Cap::File, &allow),
+            Ok(tests_rs.canonicalize().unwrap())
+        );
+        // …and the same file with no allowlist: containment is the ceiling, as before.
+        assert_eq!(
+            decide(&tests_rs, Cap::File, &Policy::Offered),
+            Err(Unservable::Refused(Refusal::NoSession))
+        );
+        // Outside the ceiling: refused, naming the allowlist — even with a stamp minted under a
+        // wider policy, which is what re-asking the ceiling at serve time is for.
+        assert_eq!(
+            decide(&beyond.join("secret"), Cap::File, &allow),
+            Err(Unservable::Refused(Refusal::Allowlist))
+        );
+        assert_eq!(
+            decide(&tests_rs, Cap::File, &Policy::Never),
+            Err(Unservable::Refused(Refusal::Never))
+        );
+        assert_eq!(
+            decide(&beyond.join("secret"), Cap::Handed, &Policy::Never),
+            Err(Unservable::Refused(Refusal::Never)),
+            "never withholds a handed file too"
+        );
+        assert_eq!(
+            decide(&beyond.join("secret"), Cap::Handed, &allow),
+            Ok(beyond.join("secret").canonicalize().unwrap()),
+            "the allowlist does not withhold a handed one (#374)"
+        );
+        // Gone and not-a-file are their own answers, whatever the ceiling.
+        assert_eq!(
+            decide(&worktree.join("gone.rs"), Cap::File, &allow),
+            Err(Unservable::Gone)
+        );
+        assert_eq!(
+            decide(&worktree, Cap::File, &allow),
+            Err(Unservable::NotAFile)
+        );
+        // No stamp, a reveal stamp, a relative path: never offered, and nothing more is said.
+        let path = tests_rs.display().to_string();
+        assert_eq!(
+            live.serve_under(&path, None, &allow),
+            Err(Unservable::NotOffered)
+        );
+        assert_eq!(
+            live.serve_under(&path, sign(Cap::Reveal, &path).as_deref(), &allow),
+            Err(Unservable::NotOffered)
+        );
+        assert_eq!(
+            decide(Path::new("code/x.rs"), Cap::File, &allow),
+            Err(Unservable::NotOffered)
+        );
+        // The replies: a page tells gone from refused by the status, and shows the words.
+        assert_eq!(Unservable::Gone.response().code, "410 Gone");
+        assert_eq!(
+            Unservable::Refused(Refusal::Allowlist).response().code,
+            "403 Forbidden"
+        );
+        assert_eq!(Unservable::NotOffered.response().code, "404 Not Found");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_artifact_route_serves_only_what_a_hosted_session_explains() {
         let dir = std::env::temp_dir().join(format!("cr-file-route-{}", std::process::id()));
@@ -4774,15 +5000,24 @@ mod tests {
         assert_eq!(r.code, "200 OK");
         assert_eq!(r.content_type, "text/plain; charset=utf-8");
 
-        // Outside every hosted root — refused, and refused as "no such path" so the reply
-        // does not tell a caller which paths exist.
-        assert_eq!(get(&outside.join("secret")).code, "404 Not Found");
+        // Outside every hosted root, under `offered` (the test build's policy, and the default:
+        // no allowlist, so containment is the ceiling) — refused, and refused SAYING so (#s7):
+        // the path is one this page offered, so naming the refusal tells the caller nothing the
+        // transcript did not, and "may be gone, or outside" was the owner's complaint.
+        let refused = get(&outside.join("secret"));
+        assert_eq!(refused.code, "403 Forbidden");
+        assert!(
+            String::from_utf8_lossy(&refused.body).contains("render-policy.json"),
+            "the refusal says where the ceiling is set"
+        );
         // …including by the route a textual prefix test would admit: a symlink that IS under
         // the contained tree but resolves out of it.
         #[cfg(unix)]
-        assert_eq!(get(&repo.join("escape")).code, "404 Not Found");
+        assert_eq!(get(&repo.join("escape")).code, "403 Forbidden");
         // …and by traversal, which canonicalization flattens before the prefix test.
-        assert_eq!(get(&repo.join("../outside/secret")).code, "404 Not Found");
+        assert_eq!(get(&repo.join("../outside/secret")).code, "403 Forbidden");
+        // A file that is GONE says so, apart from a refused one (#s7).
+        assert_eq!(get(&repo.join("never-written.rs")).code, "410 Gone");
 
         // **A path this server never offered is refused, however well it would otherwise
         // pass.** `a.rs` is inside the session's own cwd and served above; the same request
@@ -4831,10 +5066,9 @@ mod tests {
             "a reveal stamp is not a licence to read"
         );
 
-        // A directory is not contained at all (owner, 2026-08-31): it has no bytes to render,
-        // so the only thing it could do is open a file-manager window, which is not worth the
-        // surface now that `/file` shows the file in the page.
-        assert_eq!(get(&repo).code, "404 Not Found");
+        // A directory is never SERVED (owner, 2026-08-31): it has no bytes to render, so the
+        // only thing it could do is open a file-manager window.
+        assert_eq!(get(&repo).code, "415 Unsupported Media Type");
 
         // **An over-broad root donates nothing.** A second session whose cwd is `$HOME` — 20
         // of 139 sessions on the machine this was found on, QoderWork's scheduled automation
@@ -4853,7 +5087,7 @@ mod tests {
         live.register_root(&sess2);
         assert_eq!(
             get(&outside.join("secret")).code,
-            "404 Not Found",
+            "403 Forbidden",
             "a session rooted at $HOME must not hand the home directory to every other session"
         );
         assert_eq!(
@@ -4998,20 +5232,20 @@ mod tests {
         };
         assert_eq!(
             get(&outside.join("secret")).code,
-            "404 Not Found",
-            "mentioned: refused"
+            "403 Forbidden",
+            "mentioned, outside the ceiling: refused"
         );
         let r = handed(&outside.join("secret"));
         assert_eq!(r.code, "200 OK", "handed: served");
         assert_eq!(r.body, b"ssh key\n");
         assert_eq!(
             handed(&outside.join("never-written")).code,
-            "404 Not Found",
+            "410 Gone",
             "a handed file that is gone is gone"
         );
         assert_eq!(
             handed(&outside).code,
-            "404 Not Found",
+            "415 Unsupported Media Type",
             "a directory is not a file"
         );
         assert_eq!(

@@ -130,17 +130,20 @@ export class AttachmentViewer {
       let response;
       if (item.data) response = await fetch(item.data);
       else response = await fetch(`/file?path=${encodeURIComponent(item.path || "")}&sig=${encodeURIComponent(item.fsig || "")}`, { cache: "no-store" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });
       const url = URL.createObjectURL(await response.blob());
       const link = document.createElement("a");
       link.href = url; link.download = escapeName(item.name); document.body.append(link); link.click(); link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       this.actions.toast?.("Download started");
-    } catch (_) {
+    } catch (error) {
+      // #s7: say which — a file that is gone (410, or a fetch that failed outright) is not one this
+      // monitor may not read (403).
+      const why = error?.status === 403 ? "This monitor may not read that file" : error?.status && error.status !== 410 ? `Could not download (HTTP ${error.status})` : "The original file is gone";
       if (navigator.clipboard?.writeText && item.path) {
-        try { await navigator.clipboard.writeText(item.path); this.actions.toast?.("The original file is gone — copied the recorded path instead"); return; } catch (_) {}
+        try { await navigator.clipboard.writeText(item.path); this.actions.toast?.(`${why} — copied the recorded path instead`); return; } catch (_) {}
       }
-      this.actions.toast?.("The original file is gone");
+      this.actions.toast?.(why);
     }
   }
 }

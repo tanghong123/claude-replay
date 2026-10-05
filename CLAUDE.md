@@ -215,7 +215,14 @@ default when the file is absent) or `allowlist`. It governs rendering bytes into
 revealing in the file manager: reveal hands over nothing and is the only thing a click can do
 on the pages that render nothing inline. The effective policy is folded into `render_flavor`,
 so changing it re-renders rather than leaving cached pages stamped under the old one.
-The policy decides which paths get a FILE stamp; `/file` then also asks whether a hosted session
+The policy decides which paths get a FILE stamp, and **under an allowlist the stamp is the
+authorization and the allowlist the ceiling** (#s7, the owner: "we should allow access to anything
+explicitly mentioned in a transcript (and within a ceiling)"): `/file` serves a stamped path that is
+still there and still under the allowlist — re-asked at serve time, since a stamp carries no policy —
+wherever the session ran. Containment used to be required too, and refused the owner a file a session
+in `~/code/knack` had just edited in its linked worktree `~/code/knack-work/wt-b40`. It is now the
+ceiling only under `offered` (no allowlist, the default, which therefore does not widen) and the
+relocation fallback (`remap_reveal`). Containment asks whether a hosted session
 EXPLAINS the path (containment: its cwd, its project, its transcript's directory, and — #283 — the
 agent's own scratch for that project, `TranscriptAdapter::scratch_dirs`: for Claude
 `/tmp/claude-<uid>/<project slug>/`, where a session's spawned agents keep theirs too; `<uid>` is
@@ -232,8 +239,9 @@ each to `<claude home>/uploads/<whole session id>/` and names the paths in an `i
 record a record or two after the prompt; the fold puts each path on its image, in order and only when
 the counts agree (the inline copy is a re-encoded, downscaled JPEG — 921×2000 against a 1320×2868
 PNG, measured), so the image gets reveal and the app shell's lightbox opens the original, falling back
-to the embedded copy if the original is gone. A sub-agent gets its root's uploads. So an allowlist
-entry for a directory no session explains mints stamps that `/file` still refuses.
+to the embedded copy if the original is gone. A sub-agent gets its root's uploads. A refusal says
+which (`Unservable`, #s7): 410 for a file that is gone, 403 with the ceiling's words for one held
+back, 404 only for a path the page never offered; the preview pane shows them as they are.
 
 **A file the transcript HANDS to the reader is served wherever it lives** (#374, the owner): what an
 agent sent with `SendUserFile` (unless the send failed or was declined) and what the user attached to
@@ -241,7 +249,7 @@ a prompt (`TranscriptAdapter::hands_over` — Claude: an `@`-mentioned file, a p
 Codex: an attached image, a file declared with the prompt) carry a `Cap::Handed` stamp in
 `fsig`/`att_fsig`, minted under every render policy but `never` — an allowlist narrows what a
 transcript MENTIONS, and sending a file is not a mention. `/file` and mdrev's routes share one rule,
-`SessionService::servable`: a `File` stamp plus containment, or a `Handed` stamp alone, which is its
+`SessionService::serve_decision`: a `File` stamp under the ceiling, or a `Handed` stamp alone, which is its
 own authorization as a reveal stamp is (#79). Measured before it on the owner's machine: 35 of 88
 delivered files (a film in `~/Movies`, a demo repo the session never worked in) and 10 of 10 pasted
 originals (`uploads` was not allowlisted) could only be revealed or copied, which a phone cannot use.

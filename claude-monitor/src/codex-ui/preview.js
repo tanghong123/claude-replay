@@ -13,6 +13,8 @@ const SESSION_CACHE_BYTES = 12 * 1024 * 1024;
 // The pinned first tab: the session's published artifacts (#95), not a file the user opened.
 const ROSTER_ID = "__artifacts";
 const tabWeight = tab => 256 + 2 * String(tab.text || "").length + 2 * String(tab.data || "").length;
+/** A reason the pane cannot show a file, with the heading that says which kind (#s7). */
+const refusal = (title, message) => Object.assign(new Error(message), { title });
 
 export class Preview {
   constructor(actions) { this.actions = actions; this.sessionId = ""; this.sessionTabs = new Map(); this.renderGeneration = 0; this.objectUrl = ""; this.roster = []; this.rosterKey = ""; this.bind(); this.setOpen(false); this.restoreWidth(); }
@@ -175,7 +177,11 @@ export class Preview {
     const query = `path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig || "")}`;
     fetch(`/file?${query}`, { cache: "no-store" }).then(response => {
       if (response.status === 401) throw new Error("Reading local files requires pairing — run `agent-monitor --pair`.");
-      if (!response.ok) throw new Error(`HTTP ${response.status} · The original path may be gone, or the file is outside what this monitor may read.`);
+      // #s7: the route says which — 410 for a file that is gone, 403 for one this monitor may not
+      // read, with the words — so the pane says it, not "may be gone, or outside".
+      if (response.status === 410) throw refusal("This file is gone", `Nothing is at ${item.path} any more: it was moved or deleted after the session named it.`);
+      if (response.status === 403) return response.text().then(words => { throw refusal("This monitor may not read this file", words || "It is outside what this monitor may read."); });
+      if (!response.ok) throw new Error(`HTTP ${response.status} · This monitor did not offer this path. Reload the session for fresh links.`);
       const type = response.headers.get("content-type") || "";
       if (type.startsWith("image/")) return response.blob().then(blob => { if (generation === this.renderGeneration) this.show(item, null, URL.createObjectURL(blob)); });
       // Bytes the page does not show come as a download (`/file`: octet-stream, `Content-Disposition:
@@ -189,7 +195,7 @@ export class Preview {
     }).catch(error => {
       if (generation !== this.renderGeneration) return;
       const body = byId("previewBody"); body.classList.remove("production-loading");
-      body.innerHTML = `<div class="preview-error"><strong>Cannot preview this file</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${canReveal(item) && revealHere() ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
+      body.innerHTML = `<div class="preview-error"><strong>${escapeText(error.title || "Cannot preview this file")}</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${canReveal(item) && revealHere() ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
       const reveal = body.querySelector("[data-preview-reveal]");
       if (reveal) reveal.onclick = () => this.actions.reveal?.(item);
       body.querySelector("[data-copy-path]").onclick = () => {
