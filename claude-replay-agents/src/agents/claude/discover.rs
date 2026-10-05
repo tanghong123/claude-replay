@@ -766,8 +766,16 @@ mod tests {
 
         // A background job's tmp: owned by the session its state.json names, and by nothing
         // without one or when it names a session of another prefix.
-        let root = std::env::temp_dir().join(format!("cr-scratch-owner-{}", std::process::id()));
+        //
+        // The fake home's ANCESTRY is part of what is under test — the first `jobs` component
+        // decides, and a session's scratch above it answers before that — so it is built under a
+        // fixed base no rule claims, not under `temp_dir()`. That is the checkout's `target/`
+        // (.cargo/config.toml), and a checkout in a background job's tmp or in a session's
+        // scratchpad, where agents keep their worktrees, handed the fake job's cwd to the real
+        // owner (#s3).
+        let root = Path::new("/tmp").join(format!("cr-scratch-owner-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(scratch_owner(&root), None, "the fixture's base is nobody's");
         let job = root.join(".claude").join("jobs").join("b0bb9596");
         std::fs::create_dir_all(job.join("tmp").join("wt-1")).unwrap();
         let cwd = job.join("tmp").join("wt-1");
