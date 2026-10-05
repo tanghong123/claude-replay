@@ -471,14 +471,18 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .codebox:hover .codebar,.codebox:focus-within .codebar{opacity:1}
 .codebox .codebar button{position:relative;flex:none;min-width:26px;height:26px;padding:0 5px;display:inline-grid;place-items:center;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--sub);font:600 12px/1 var(--sans);white-space:nowrap;cursor:pointer}
 .codebox .codebar button:hover,.codebox .codebar button:focus-visible{border-color:var(--line);color:var(--ink);outline:0}
-.codebox .code-size-val{min-width:2.4em;text-align:center;font:11px/1.6 var(--sans);font-variant-numeric:tabular-nums;color:var(--faint)}
+.codebox .code-size-val{display:inline-block;width:2.4em;overflow:hidden;text-align:center;font:11px/1.6 var(--sans);font-variant-numeric:tabular-nums;color:var(--faint)}
 /* #s8: the bar is glyphs — a small and a large A, the wrap and copy icons — in the page's font, never
    the code's, each a fixed box that cannot wrap inside itself; the step shows only off the default;
    the expander keeps its count and drops its range before it would wrap. */
-.codebox .code-size-val[data-default]{display:none}
+/* Hidden at the default by its width and its colour, which the rendering audit (#174) reads as
+   a control showing its own state; `display` would read as reach nobody declared. */
+.codebox .code-size-val[data-default]{width:0;color:transparent}
 .codebox .codebar .code-size-down{font-size:10px}.codebox .codebar .code-size-up{font-size:14px}
 .codebox .codebar .icon{width:14px;height:14px}
-.codebox .codebar .code-wrap[aria-pressed="true"]{color:var(--ink);border-color:var(--line)}
+/* Pressed by its frame, not its ink: the icon's stroke follows `color`, and the audit counts a
+   stroke as reach. */
+.codebox .codebar .code-wrap[aria-pressed="true"]{border-color:var(--line);background-color:var(--hover)}
 .codebox .codebar .code-copy.copied{color:var(--green)}
 .code-bar-word{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .cap-more-btn{white-space:nowrap}
