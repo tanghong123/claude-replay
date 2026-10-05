@@ -162,7 +162,7 @@ The document's notes, as a JSON array of records in mdrev's shape (below). The h
 
 ### `POST {prefix}/annotations?path=`
 
-File a note. The body is the record the viewer built: `{body, type, anchor}`, with `anchor` in source space, and the `rev` on screen — plus `fromRev` for a note on struck text; pass the body through as it is. The host adds what it knows and stores it, and returns the record as stored, with 201: run `mdrev-cli notes add --path P --root <checkout>` with the body on stdin, and return its output. The CLI resolves the revision, writes the snapshot `blob`, places an anchor whose offsets were only a guess, and appends the line.
+File a note. The body is the record the viewer built: `{body, type, anchor}`, with `anchor` in source space, and the `rev` on screen — plus `fromRev` for a note on struck text, and `shared: true` for a note to the other reviewers (below); pass the body through as it is. The host adds what it knows and stores it, and returns the record as stored, with 201: run `mdrev-cli notes add --path P --root <checkout> --viewer` with the body on stdin, and return its output. The CLI resolves the revision, writes the snapshot `blob`, places an anchor whose offsets were only a guess, and appends the line.
 
 ### `PATCH {prefix}/annotations/{id}?path=` · `POST …/{id}/replies` · `DELETE …/{id}` · `DELETE …/{id}/replies/{at}`
 
@@ -464,6 +464,12 @@ taken, `400` for one that is not a batch of page lines.
 ### `GET {prefix}/events?path=` — optional
 
 Live reload. Either a `text/event-stream` that sends an event named `change` when the document changes, or **204**, which tells the viewer to poll `/text` every few seconds while its tab is visible. Answer 204 unless you already have push. A stream is a promise that changes arrive — the viewer does not poll while it holds one — so a signal that can fail silently needs a backstop: `mdrev-v2`'s file watcher is backed by a look at the file every two seconds while a page is following it.
+
+### `GET {prefix}/review?path=` · `POST …/review/fetch` · `…/review/push` · `…/review/pair` · `POST …/annotations/{id}/hide` — optional
+
+Shared review (docs/shared-review.md): the project's review store — by default a branch of the checkout's own repository, or the one `.mdrev.json` names. `GET review` answers with the store's state — where a push goes, whether this machine is paired and as whom, a pairing an agent asked for, and every unpushed shared record — from `mdrev-cli review status --root <checkout>`; `POST review/fetch` runs `review fetch` and answers with the state after it; `POST review/push` with `{ids}` runs `review push --ids … --viewer` and answers with its JSON; `POST review/pair` with `{email, name}` as shown, and `override: true` when the reader ticked "pair anyway", runs `review pair --confirm --viewer` (with `--override`) — the reader's click confirming a pairing their agent asked for — and answers with the state after it, or 400 with the store's words when the email is not that of the account the store's server signs the reader in as, and nothing was ticked; `POST annotations/{id}/hide` with `{hidden}` runs `notes hide|unhide ID --viewer`. A `PATCH annotations/{id}` carrying `{body}` alone is an edit: `notes edit ID --body "…" --viewer`. A failure is the store's own words, with 502 for fetch and push. The threads themselves come and go through the note routes above: they arrive in `GET annotations` (with `--records --viewer`), drawn as notes with ids starting `shr-` and a `shared` field, and a note filed with `shared: true` opens one.
+
+**The viewer key.** `--viewer` says a person acted in the page — what may open a thread, edit, hide, pair or push — and mdrev-cli believes it only with the viewer key in its environment: `MDREV_VIEWER_KEY` set to the token in mdrev's state directory (`MDREV_STATE_DIR`, default `~/.mdrev`, file `token`), which is the key mdrev's own viewers use. Pass both on every mdrev-cli call your routes make, and `--viewer` on every note write and on the annotations listing. A host that does not gets reading and local notes, and nothing shared; a host without these routes answers 404, and the viewer offers no Share control and no Push.
 
 ## The note record
 

@@ -82,11 +82,11 @@
 .mdrev-host .doc .footnotes {color:var(--ink-soft);border-top:1px solid var(--rule-soft);margin-top:2.5em;font-size:.92em}
 .mdrev-host .doc dt {font-weight:620}
 .mdrev-host .doc dd {color:var(--ink-soft);margin:0 0 .6em 1.2em}
-.mdrev-host, .mdrev-host[data-theme=light] {--bg: var(--mdrev-bg, #fff); --bg-soft: var(--mdrev-bg-soft, #f7f8fc); --bg-inset: var(--mdrev-bg-inset, #eef4fc); --ink: var(--mdrev-ink, #202536); --ink-soft: var(--mdrev-ink-soft, #646c80); --ink-faint: var(--mdrev-ink-faint, #69738a); --rule: var(--mdrev-rule, #3e496c1c); --rule-soft: var(--mdrev-rule-soft, #3e496c12); --accent: var(--mdrev-accent, #4758d0); --accent-soft: var(--mdrev-accent-soft, #4758d01f); --on-accent: var(--mdrev-on-accent, #fff); --ins-fg: var(--mdrev-ins-fg, #1d7536); --ins-bg: var(--mdrev-ins-bg, #1d75361c); --del-fg: var(--mdrev-del-fg, #bc212e); --del-bg: var(--mdrev-del-bg, #bc212e1a); --mod-fg: var(--mdrev-mod-fg, #363fb6); --mod-bg: var(--mdrev-mod-bg, #363fb61c); --shape-fg: var(--mdrev-shape-fg, #6b7590); --shape-bg: var(--mdrev-shape-bg, #6b75901c); --read-mono: var(--mdrev-read-mono, "Sarasa Mono SC", "Maple Mono NF CN", "Noto Sans Mono CJK SC", "Source Han Mono SC", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace); --code-bg: var(--mdrev-code-bg, #f7f8fc); --shadow: var(--mdrev-shadow, 0 12px 38px #323d681f); --lightningcss-light: var(--mdrev-lightningcss-light, initial); --lightningcss-dark:; color-scheme:light;}
+.mdrev-host, .mdrev-host[data-theme=light] {--bg: var(--mdrev-bg, #fff); --bg-soft: var(--mdrev-bg-soft, #f7f8fc); --bg-inset: var(--mdrev-bg-inset, #eef4fc); --ink: var(--mdrev-ink, #202536); --ink-soft: var(--mdrev-ink-soft, #646c80); --ink-faint: var(--mdrev-ink-faint, #69738a); --rule: var(--mdrev-rule, #3e496c1c); --rule-soft: var(--mdrev-rule-soft, #3e496c12); --accent: var(--mdrev-accent, #4758d0); --accent-soft: var(--mdrev-accent-soft, #4758d01f); --on-accent: var(--mdrev-on-accent, #fff); --shared: var(--mdrev-shared, #a8540f); --shared-soft: var(--mdrev-shared-soft, #a8540f1f); --ins-fg: var(--mdrev-ins-fg, #1d7536); --ins-bg: var(--mdrev-ins-bg, #1d75361c); --del-fg: var(--mdrev-del-fg, #bc212e); --del-bg: var(--mdrev-del-bg, #bc212e1a); --mod-fg: var(--mdrev-mod-fg, #363fb6); --mod-bg: var(--mdrev-mod-bg, #363fb61c); --shape-fg: var(--mdrev-shape-fg, #6b7590); --shape-bg: var(--mdrev-shape-bg, #6b75901c); --read-mono: var(--mdrev-read-mono, "Sarasa Mono SC", "Maple Mono NF CN", "Noto Sans Mono CJK SC", "Source Han Mono SC", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace); --code-bg: var(--mdrev-code-bg, #f7f8fc); --shadow: var(--mdrev-shadow, 0 12px 38px #323d681f); --lightningcss-light: var(--mdrev-lightningcss-light, initial); --lightningcss-dark:; color-scheme:light;}
 @media (prefers-color-scheme:dark) {
-.mdrev-host:not([data-theme=light]) {--bg: var(--mdrev-bg, #181b24); --bg-soft: var(--mdrev-bg-soft, #20242f); --bg-inset: var(--mdrev-bg-inset, #222c3d); --ink: var(--mdrev-ink, #f0f2f8); --ink-soft: var(--mdrev-ink-soft, #adb4c5); --ink-faint: var(--mdrev-ink-faint, #747e94); --rule: var(--mdrev-rule, #cfd7ef1c); --rule-soft: var(--mdrev-rule-soft, #cfd7ef12); --accent: var(--mdrev-accent, #93a4e4); --accent-soft: var(--mdrev-accent-soft, #93a4e429); --on-accent: var(--mdrev-on-accent, #181b24); --ins-fg: var(--mdrev-ins-fg, #50bb6e); --ins-bg: var(--mdrev-ins-bg, #50bb6e24); --del-fg: var(--mdrev-del-fg, #f18991); --del-bg: var(--mdrev-del-bg, #f1899121); --mod-fg: var(--mdrev-mod-fg, #93a4e4); --mod-bg: var(--mdrev-mod-bg, #93a4e421); --shape-fg: var(--mdrev-shape-fg, #8d97b3); --shape-bg: var(--mdrev-shape-bg, #8d97b321); --code-bg: var(--mdrev-code-bg, #20242f); --shadow: var(--mdrev-shadow, 0 18px 48px #04071261); --lightningcss-light:; --lightningcss-dark: var(--mdrev-lightningcss-dark, initial); color-scheme:dark;}
+.mdrev-host:not([data-theme=light]) {--bg: var(--mdrev-bg, #181b24); --bg-soft: var(--mdrev-bg-soft, #20242f); --bg-inset: var(--mdrev-bg-inset, #222c3d); --ink: var(--mdrev-ink, #f0f2f8); --ink-soft: var(--mdrev-ink-soft, #adb4c5); --ink-faint: var(--mdrev-ink-faint, #747e94); --rule: var(--mdrev-rule, #cfd7ef1c); --rule-soft: var(--mdrev-rule-soft, #cfd7ef12); --accent: var(--mdrev-accent, #93a4e4); --accent-soft: var(--mdrev-accent-soft, #93a4e429); --on-accent: var(--mdrev-on-accent, #181b24); --shared: var(--mdrev-shared, #e3a467); --shared-soft: var(--mdrev-shared-soft, #e3a46729); --ins-fg: var(--mdrev-ins-fg, #50bb6e); --ins-bg: var(--mdrev-ins-bg, #50bb6e24); --del-fg: var(--mdrev-del-fg, #f18991); --del-bg: var(--mdrev-del-bg, #f1899121); --mod-fg: var(--mdrev-mod-fg, #93a4e4); --mod-bg: var(--mdrev-mod-bg, #93a4e421); --shape-fg: var(--mdrev-shape-fg, #8d97b3); --shape-bg: var(--mdrev-shape-bg, #8d97b321); --code-bg: var(--mdrev-code-bg, #20242f); --shadow: var(--mdrev-shadow, 0 18px 48px #04071261); --lightningcss-light:; --lightningcss-dark: var(--mdrev-lightningcss-dark, initial); color-scheme:dark;}
 }
-.mdrev-host[data-theme=dark] {--bg: var(--mdrev-bg, #181b24); --bg-soft: var(--mdrev-bg-soft, #20242f); --bg-inset: var(--mdrev-bg-inset, #222c3d); --ink: var(--mdrev-ink, #f0f2f8); --ink-soft: var(--mdrev-ink-soft, #adb4c5); --ink-faint: var(--mdrev-ink-faint, #747e94); --rule: var(--mdrev-rule, #cfd7ef1c); --rule-soft: var(--mdrev-rule-soft, #cfd7ef12); --accent: var(--mdrev-accent, #93a4e4); --accent-soft: var(--mdrev-accent-soft, #93a4e429); --on-accent: var(--mdrev-on-accent, #181b24); --ins-fg: var(--mdrev-ins-fg, #50bb6e); --ins-bg: var(--mdrev-ins-bg, #50bb6e24); --del-fg: var(--mdrev-del-fg, #f18991); --del-bg: var(--mdrev-del-bg, #f1899121); --mod-fg: var(--mdrev-mod-fg, #93a4e4); --mod-bg: var(--mdrev-mod-bg, #93a4e421); --shape-fg: var(--mdrev-shape-fg, #8d97b3); --shape-bg: var(--mdrev-shape-bg, #8d97b321); --code-bg: var(--mdrev-code-bg, #20242f); --shadow: var(--mdrev-shadow, 0 18px 48px #04071261); --lightningcss-light:; --lightningcss-dark: var(--mdrev-lightningcss-dark, initial); color-scheme:dark;}
+.mdrev-host[data-theme=dark] {--bg: var(--mdrev-bg, #181b24); --bg-soft: var(--mdrev-bg-soft, #20242f); --bg-inset: var(--mdrev-bg-inset, #222c3d); --ink: var(--mdrev-ink, #f0f2f8); --ink-soft: var(--mdrev-ink-soft, #adb4c5); --ink-faint: var(--mdrev-ink-faint, #747e94); --rule: var(--mdrev-rule, #cfd7ef1c); --rule-soft: var(--mdrev-rule-soft, #cfd7ef12); --accent: var(--mdrev-accent, #93a4e4); --accent-soft: var(--mdrev-accent-soft, #93a4e429); --on-accent: var(--mdrev-on-accent, #181b24); --shared: var(--mdrev-shared, #e3a467); --shared-soft: var(--mdrev-shared-soft, #e3a46729); --ins-fg: var(--mdrev-ins-fg, #50bb6e); --ins-bg: var(--mdrev-ins-bg, #50bb6e24); --del-fg: var(--mdrev-del-fg, #f18991); --del-bg: var(--mdrev-del-bg, #f1899121); --mod-fg: var(--mdrev-mod-fg, #93a4e4); --mod-bg: var(--mdrev-mod-bg, #93a4e421); --shape-fg: var(--mdrev-shape-fg, #8d97b3); --shape-bg: var(--mdrev-shape-bg, #8d97b321); --code-bg: var(--mdrev-code-bg, #20242f); --shadow: var(--mdrev-shadow, 0 18px 48px #04071261); --lightningcss-light:; --lightningcss-dark: var(--mdrev-lightningcss-dark, initial); color-scheme:dark;}
 .mdrev-host * {box-sizing:border-box}
 .mdrev-host, .mdrev-host, .mdrev-host #root {height:100%;margin:0;padding:0;overflow:hidden}
 .mdrev-host {background:var(--bg);color:var(--ink);font:15.5px/1.65 -apple-system,BlinkMacSystemFont,Segoe UI,Noto Sans,Helvetica,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji}
@@ -177,6 +177,7 @@
 .mdrev-host .seg button {color:var(--ink-soft);border:none;border-right:1px solid var(--rule);background:0 0;padding:0 11px;font-size:12.5px}
 .mdrev-host .seg button:last-child {border-right:none}
 .mdrev-host .seg button.on {background:var(--bg-soft);color:var(--ink);font-weight:600}
+.mdrev-host .seg.view-seg button.on {background:var(--accent-soft);color:var(--accent)}
 .mdrev-host .ctl {height:26px;color:var(--ink-soft);border:1px solid var(--rule);background:0 0;border-radius:7px;align-items:center;gap:5px;padding:0 10px;font-size:12.5px;display:inline-flex}
 .mdrev-host .ctl:hover:not(:disabled) {color:var(--ink);background:var(--bg-soft)}
 .mdrev-host .ctl.on {background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
@@ -513,6 +514,40 @@
 .mdrev-host .ann-marker.ann-resolved .ann-count, .mdrev-host .ann-marker.ann-wontfix .ann-count {background:var(--ink-faint)}
 .mdrev-host .ann-marker.ann-resolved:hover, .mdrev-host .ann-marker.ann-wontfix:hover {background:var(--bg-soft);color:var(--ink-soft)}
 .mdrev-host .ann-err {color:var(--del-fg);font-size:12.5px}
+.mdrev-host .ann-card.ann-shared {border-left-color:var(--shared)}
+.mdrev-host .ann-card.ann-shared.ann-unpushed {border-left-style:dashed}
+.mdrev-host .ann-marker.ann-shared {border-color:color-mix(in srgb, var(--shared) 45%, transparent);background:var(--shared-soft);color:var(--shared)}
+.mdrev-host .ann-marker.ann-shared.ann-unpushed {border-style:dashed}
+.mdrev-host .ann-marker.ann-shared.is-open {background:var(--shared);border-color:var(--shared);color:var(--on-accent)}
+.mdrev-host .ann-badge {white-space:nowrap;border-radius:8px;padding:0 5px;font-size:10px;line-height:16px}
+.mdrev-host .ann-badge-shared {color:var(--shared);background:var(--shared-soft)}
+.mdrev-host .ann-badge-unpushed {color:var(--ink-soft);border:1px dashed var(--rule)}
+.mdrev-host .ann-status-label {color:var(--ink-soft);font-size:11px}
+.mdrev-host .ann-entry.ann-unpushed {border-top-style:dashed}
+.mdrev-host .ann-share {color:var(--ink-soft);cursor:pointer;align-items:center;gap:6px;margin:-2px 0 6px;font-size:11.5px;display:flex}
+.mdrev-host .ann-draft.ann-shared .ann-share {color:var(--shared);font-weight:600}
+.mdrev-host .ann-reply-box.ann-two-part {flex-wrap:wrap}
+.mdrev-host .ann-reply-box.ann-two-part textarea {flex:100%}
+.mdrev-host .ann-reply-box .ann-agent-part {border-style:dashed}
+.mdrev-host .ann-review {z-index:30;max-width:min(420px, calc(var(--mdv-app-w,100vw) - 32px));font-size:12.5px;position:fixed;bottom:16px;left:16px}
+.mdrev-host .ann-review-pill, .mdrev-host .ann-review-panel {background:var(--bg);border:1px solid var(--rule);border-left:3px solid var(--shared);box-shadow:var(--shadow,0 2px 10px #1f232814);border-radius:8px;padding:6px 10px}
+.mdrev-host .ann-review-pill {flex-wrap:wrap;align-items:center;gap:8px;display:flex}
+.mdrev-host .ann-review-panel {max-height:calc(var(--mdv-app-h,100vh) * .6);padding:10px 12px;overflow:auto}
+.mdrev-host .ann-review-dest code, .mdrev-host .ann-review-panel code {overflow-wrap:anywhere}
+.mdrev-host .ann-review-as {color:var(--ink-soft);margin-bottom:6px}
+.mdrev-host .ann-review-doc {margin:6px 0}
+.mdrev-host .ann-review-path {font-size:12px;font-weight:600}
+.mdrev-host .ann-review-item {overflow-wrap:anywhere;padding:2px 0 2px 10px}
+.mdrev-host details.ann-review-item>summary {cursor:pointer}
+.mdrev-host .ann-review-body {white-space:pre-wrap;border-left:2px solid var(--rule,#7f7f7f4d);color:var(--ink-soft);margin:2px 0 4px 10px;padding-left:6px}
+.mdrev-host .ann-badge-agent {color:var(--accent);background:var(--accent-soft)}
+.mdrev-host button.ann-id.ann-copy-id {font:inherit;color:inherit;cursor:copy;background:0 0;border:none;padding:0 2px}
+.mdrev-host button.ann-id.ann-copy-id:hover {color:var(--accent);-webkit-text-decoration:underline dotted;text-decoration:underline dotted}
+.mdrev-host .ann-hidden {text-align:left;border:1px dashed var(--rule);width:100%;color:var(--ink-soft);cursor:pointer;background:0 0;border-radius:6px;padding:2px 6px;font-size:11.5px;display:block}
+.mdrev-host .ann-edit textarea {min-height:3em}
+.mdrev-host .ann-actions button.ann-status.ann-status-not-owner {border-style:dashed}
+.mdrev-host .ann-push-code {align-items:flex-start;margin:6px 0}
+.mdrev-host .ann-review-commits {white-space:pre-wrap;font-family:var(--mono,monospace);color:var(--ink-soft);margin-top:2px;font-size:11px;display:block}
 .mdrev-host .ann-status {color:var(--ink-faint);border:1px solid var(--rule);white-space:nowrap;border-radius:4px;margin-right:4px;padding:0 6px;font-size:10.5px}
 .mdrev-host .ann-quote {border-left:3px solid var(--accent);color:var(--ink-soft);cursor:pointer;overflow-wrap:anywhere;margin:0 0 5px;padding:2px 8px;font-style:italic}
 .mdrev-host .ann-type {color:var(--mod-fg);margin-right:6px;font-weight:600}
@@ -526,6 +561,8 @@
 .mdrev-host .ann-entry-head {flex-wrap:wrap;align-items:baseline;gap:6px;margin-bottom:2px;display:flex}
 .mdrev-host .ann-entry-body {overflow-wrap:anywhere;white-space:pre-wrap;font-size:12px}
 .mdrev-host .ann-entry-head .ann-reply-drop {margin-left:auto;padding:0 4px;font-size:10px}
+.mdrev-host .ann-entry-head .ann-entry-act {padding:0 4px;font-size:10px}
+.mdrev-host .ann-entry-head .ann-entry-act:first-of-type {margin-left:auto}
 .mdrev-host .ann-entry .ann-type {color:var(--ink-faint);text-transform:uppercase;letter-spacing:.06em;font-size:10px}
 .mdrev-host .ann-close .ann-entry-body {color:var(--ink-soft);font-size:11.5px}
 .mdrev-host .ann-close-mark {font-weight:700}
@@ -694,7 +731,7 @@
 .mdrev-host .ann-resolution-open:before {content:"↺ ";color:var(--ink-faint);font-weight:700}
 .mdrev-host .ann-resolution-was {color:var(--ink-faint);font-style:italic}
 @media print {
-.mdrev-host[data-theme], .mdrev-host:not([data-theme]) {--bg: var(--mdrev-bg, #fff); --bg-soft: var(--mdrev-bg-soft, #f7f8fc); --bg-inset: var(--mdrev-bg-inset, #eef4fc); --ink: var(--mdrev-ink, #202536); --ink-soft: var(--mdrev-ink-soft, #646c80); --ink-faint: var(--mdrev-ink-faint, #69738a); --rule: var(--mdrev-rule, #3e496c1c); --rule-soft: var(--mdrev-rule-soft, #3e496c12); --accent: var(--mdrev-accent, #4758d0); --accent-soft: var(--mdrev-accent-soft, #4758d01f); --on-accent: var(--mdrev-on-accent, #fff); --ins-fg: var(--mdrev-ins-fg, #1d7536); --ins-bg: var(--mdrev-ins-bg, #1d75361c); --del-fg: var(--mdrev-del-fg, #bc212e); --del-bg: var(--mdrev-del-bg, #bc212e1a); --mod-fg: var(--mdrev-mod-fg, #363fb6); --mod-bg: var(--mdrev-mod-bg, #363fb61c); --code-bg: var(--mdrev-code-bg, #f7f8fc); --shadow: var(--mdrev-shadow, none); --lightningcss-light: var(--mdrev-lightningcss-light, initial); --lightningcss-dark:; color-scheme:light;}
+.mdrev-host[data-theme], .mdrev-host:not([data-theme]) {--bg: var(--mdrev-bg, #fff); --bg-soft: var(--mdrev-bg-soft, #f7f8fc); --bg-inset: var(--mdrev-bg-inset, #eef4fc); --ink: var(--mdrev-ink, #202536); --ink-soft: var(--mdrev-ink-soft, #646c80); --ink-faint: var(--mdrev-ink-faint, #69738a); --rule: var(--mdrev-rule, #3e496c1c); --rule-soft: var(--mdrev-rule-soft, #3e496c12); --accent: var(--mdrev-accent, #4758d0); --accent-soft: var(--mdrev-accent-soft, #4758d01f); --on-accent: var(--mdrev-on-accent, #fff); --shared: var(--mdrev-shared, #a8540f); --shared-soft: var(--mdrev-shared-soft, #a8540f1f); --ins-fg: var(--mdrev-ins-fg, #1d7536); --ins-bg: var(--mdrev-ins-bg, #1d75361c); --del-fg: var(--mdrev-del-fg, #bc212e); --del-bg: var(--mdrev-del-bg, #bc212e1a); --mod-fg: var(--mdrev-mod-fg, #363fb6); --mod-bg: var(--mdrev-mod-bg, #363fb61c); --code-bg: var(--mdrev-code-bg, #f7f8fc); --shadow: var(--mdrev-shadow, none); --lightningcss-light: var(--mdrev-lightningcss-light, initial); --lightningcss-dark:; color-scheme:light;}
 .mdrev-host, .mdrev-host .app, .mdrev-host .doc {color:var(--ink)!important;background:#fff!important}
 .mdrev-host, .mdrev-host, .mdrev-host .app, .mdrev-host .main {height:auto!important;min-height:0!important;display:block!important;overflow:visible!important}
 .mdrev-host .scrollpane {height:auto!important;overflow:visible!important}
