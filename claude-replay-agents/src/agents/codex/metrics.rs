@@ -190,9 +190,15 @@ impl CodexMetricsAcc {
                 self.last_context_tokens = Some(context_tokens);
             }
             if let Some(limits) = value.pointer("/payload/rate_limits") {
+                // #s14: a reading is dated by the event it came from, so a consumer can tell one
+                // taken before a re-login from one after it.
+                let observed_at = value
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(parse_ts);
                 self.runtime.rate_limits = Some(RateLimits {
-                    primary: rate_limit_window(limits.get("primary")),
-                    secondary: rate_limit_window(limits.get("secondary")),
+                    primary: rate_limit_window(limits.get("primary"), observed_at),
+                    secondary: rate_limit_window(limits.get("secondary"), observed_at),
                     plan_type: limits
                         .get("plan_type")
                         .and_then(Value::as_str)
@@ -201,6 +207,7 @@ impl CodexMetricsAcc {
                         .get("rate_limit_reached_type")
                         .and_then(Value::as_str)
                         .map(str::to_string),
+                    observed_at,
                 });
             }
             let Some(total) = value.pointer("/payload/info/total_token_usage") else {
@@ -445,21 +452,92 @@ fn remember_string(slot: &mut Option<String>, value: Option<&Value>) {
     }
 }
 
-fn rate_limit_window(value: Option<&Value>) -> Option<RateLimitWindow> {
+/// One window of a `token_count` reading. `resets_at` is absolute epoch seconds; an older Codex
+/// wrote `resets_in_seconds`, relative to the event, which `observed_at` (the event's time) turns
+/// absolute (#s14). Without the event's time a relative reset stays unknown rather than wrong.
+fn rate_limit_window(value: Option<&Value>, observed_at: Option<i64>) -> Option<RateLimitWindow> {
     let value = value?;
+    let resets_in = || {
+        let secs = value.get("resets_in_seconds").and_then(Value::as_i64)?;
+        Some(observed_at? + secs)
+    };
     Some(RateLimitWindow {
         used_percent: value.get("used_percent").and_then(Value::as_f64)?,
         window_minutes: value
             .get("window_minutes")
             .and_then(Value::as_u64)
             .unwrap_or(0),
-        resets_at: value.get("resets_at").and_then(Value::as_i64),
+        resets_at: value
+            .get("resets_at")
+            .and_then(Value::as_i64)
+            .or_else(resets_in),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #s14: a session's reading is dated by the LAST `token_count` event that carried one, and a
+    /// window's reset is absolute epoch seconds whichever shape the client wrote: `resets_at` as
+    /// is, an older client's relative `resets_in_seconds` counted from that event.
+    #[test]
+    fn a_rate_limit_reading_is_dated_and_its_resets_are_absolute() {
+        let reading = |ts: &str, primary: Value, secondary: Value| {
+            serde_json::json!({"timestamp": ts, "type": "event_msg", "payload": {
+                "type": "token_count", "info": null,
+                "rate_limits": {"plan_type": "plus", "primary": primary, "secondary": secondary}}})
+        };
+        let mut acc = CodexMetricsAcc::default();
+        acc.push(&reading(
+            "2026-10-04T01:00:00.250Z",
+            serde_json::json!({"used_percent": 10.0, "window_minutes": 300, "resets_in_seconds": 600}),
+            serde_json::json!({"used_percent": 20.0, "window_minutes": 10080, "resets_in_seconds": 86400}),
+        ));
+        let first = acc.clone_runtime_limits();
+        let one_am = parse_ts("2026-10-04T01:00:00Z").unwrap();
+        assert_eq!(first.observed_at, Some(one_am));
+        assert_eq!(first.primary.unwrap().resets_at, Some(one_am + 600));
+        acc.push(&reading(
+            "2026-10-04T02:00:00Z",
+            serde_json::json!({"used_percent": 12.0, "window_minutes": 300, "resets_at": 1_790_000_000}),
+            serde_json::json!({"used_percent": 21.0, "window_minutes": 10080, "resets_in_seconds": 3600}),
+        ));
+        let limits = acc.finish().runtime.rate_limits.unwrap();
+        let two_am = parse_ts("2026-10-04T02:00:00Z").unwrap();
+        assert_eq!(
+            limits.observed_at,
+            Some(two_am),
+            "the last reading's event time"
+        );
+        assert_eq!(
+            limits.primary.unwrap().resets_at,
+            Some(1_790_000_000),
+            "absolute, as written"
+        );
+        assert_eq!(
+            limits.secondary.unwrap().resets_at,
+            Some(two_am + 3600),
+            "relative, counted from its event"
+        );
+    }
+
+    /// #s14: without the event's time a relative reset is unknown, never a guess.
+    #[test]
+    fn an_undated_relative_reset_stays_unknown() {
+        let mut acc = CodexMetricsAcc::default();
+        acc.push(&serde_json::json!({"type": "event_msg", "payload": {"type": "token_count",
+            "rate_limits": {"primary": {"used_percent": 5.0, "window_minutes": 300, "resets_in_seconds": 60}}}}));
+        let limits = acc.finish().runtime.rate_limits.unwrap();
+        assert_eq!(limits.observed_at, None);
+        assert_eq!(limits.primary.unwrap().resets_at, None);
+    }
+
+    impl CodexMetricsAcc {
+        fn clone_runtime_limits(&self) -> RateLimits {
+            self.runtime.rate_limits.clone().expect("a reading")
+        }
+    }
 
     #[test]
     fn persisted_runtime_context_settings_and_limits_survive_the_adapter() {

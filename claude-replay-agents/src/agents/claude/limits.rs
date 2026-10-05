@@ -67,6 +67,7 @@ pub fn account_in(file: &Path) -> Option<AgentAccount> {
             .user_rate_limit_tier
             .or(account.organization_rate_limit_tier)
             .filter(|t| !t.is_empty()),
+        signed_in_at: None,
     })
 }
 
@@ -98,6 +99,7 @@ pub fn status_line_limits(payload: &Value) -> Option<RateLimits> {
         secondary,
         plan_type: None,
         reached: None,
+        observed_at: None,
     })
 }
 
@@ -177,6 +179,7 @@ mod tests {
                 email: Some("someone@example.test".into()),
                 name: Some("Someone".into()),
                 tier: Some("default_claude_max_20x".into()),
+                signed_in_at: None,
             })
         );
         // signed out, or never signed in: no account

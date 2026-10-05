@@ -237,11 +237,17 @@ pub const COMPACT_AFTER: usize = 256;
 /// was sent. A v40 stream holds the framed text, so its Agent cards keep opening on the client's
 /// boilerplate with the report indented under it.
 ///
+/// v42: #s14 — a Codex rate-limit reading carries `observed_at`, the time of the `token_count`
+/// event it came from, and a window written with a relative `resets_in_seconds` gets an absolute
+/// `resets_at`. A v41 cursor resumes with the reading undated, and a finished session cached at
+/// v41 would never date its last reading at all (v37's rule: what a resumed accumulator carries
+/// is fold behavior).
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 41;
+pub const FOLD_VERSION: u16 = 42;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

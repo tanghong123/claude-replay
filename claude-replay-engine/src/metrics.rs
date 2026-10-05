@@ -21,6 +21,12 @@ pub struct RateLimits {
     pub secondary: Option<RateLimitWindow>,
     pub plan_type: Option<String>,
     pub reached: Option<String>,
+    /// When this reading was taken, in epoch seconds: the time of the transcript event it came
+    /// from (#s14). `None` for a reading with no event behind it, such as a status-line payload.
+    /// With [`AgentAccount::signed_in_at`] it lets a consumer tell a reading from before a
+    /// re-login from one after it.
+    #[serde(default)]
+    pub observed_at: Option<i64>,
 }
 
 /// The account an agent is signed in as on this machine, as the agent's own configuration
@@ -35,6 +41,10 @@ pub struct AgentAccount {
     pub name: Option<String>,
     /// The plan or rate-limit tier, verbatim as the configuration names it.
     pub tier: Option<String>,
+    /// When this sign-in happened, in epoch seconds, when the agent records it (#s14: Codex's id
+    /// token `auth_time`, which a token refresh keeps and a new login moves). `None` otherwise.
+    #[serde(default)]
+    pub signed_in_at: Option<i64>,
 }
 
 /// Latest persisted execution context/settings. This is session metadata, not a synthetic
@@ -1942,6 +1952,22 @@ mod diagnostic_tests {
 #[cfg(test)]
 mod credits_tests {
     use super::*;
+
+    /// #s14: `RateLimits::observed_at` and `AgentAccount::signed_in_at` are additive — JSON written
+    /// before them (a cached fold, a consumer's own store) still reads, with both `None`.
+    #[test]
+    fn the_s14_fields_read_from_json_written_before_them() {
+        let limits: RateLimits = serde_json::from_str(
+            r#"{"primary":{"used_percent":1.0,"window_minutes":300,"resets_at":5},"secondary":null,"plan_type":"plus","reached":null}"#,
+        )
+        .unwrap();
+        assert_eq!(limits.observed_at, None);
+        assert_eq!(limits.plan_type.as_deref(), Some("plus"));
+        let account: AgentAccount =
+            serde_json::from_str(r#"{"id":"x","email":null,"name":null,"tier":"team"}"#).unwrap();
+        assert_eq!(account.signed_in_at, None);
+        assert_eq!(account.tier.as_deref(), Some("team"));
+    }
 
     /// The reserved `credits_micro` key surfaces as a footer segment; agents that never
     /// write it keep their footer byte-identical.

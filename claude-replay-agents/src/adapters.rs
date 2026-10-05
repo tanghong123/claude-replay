@@ -254,6 +254,12 @@ impl TranscriptAdapter for CodexAdapter {
     fn store_subagent_transcripts(&self) -> Vec<(std::path::PathBuf, String, String)> {
         crate::agents::codex::discover::subagent_transcripts_machine()
     }
+    /// #s14: the ChatGPT sign-in in Codex's `auth.json`, from its id token's claims. Codex reports
+    /// its limits in its transcripts (`runtime.rate_limits`, each reading dated by its event), not
+    /// through a status line, so this is the one hook it needs.
+    fn signed_in_account(&self) -> Option<claude_replay_engine::seam::AgentAccount> {
+        agents::codex::account::signed_in_account()
+    }
 
     fn agent(&self) -> Agent {
         Agent::CODEX

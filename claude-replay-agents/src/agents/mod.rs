@@ -16,6 +16,7 @@ pub mod claude {
     pub(crate) mod model;
 }
 pub mod codex {
+    pub mod account;
     pub mod discover;
     pub(crate) mod metrics;
     pub(crate) mod model;
