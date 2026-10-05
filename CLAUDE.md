@@ -166,6 +166,12 @@ pane's ↗ opens the document in a tab of its own (#271): `/markdown` is a STATI
 (`ui::markdown_page` + `markdown-page.js`) that reads root, path, cap and the reader's range from its
 own address and goes through the same routes; held text reaches the tab through sessionStorage,
 which `window.open` copies into the tab it makes — so that control must never use `noopener`.
+**An image gets a tab of its own too** (#s11, the owner, for the desktop): the pane's ↗ and the
+lightbox's open `/image` (`ui::image_page` + `image-page.js`), the image whole with the shared zoom
+(`shared/image-view.js`); a FILE by the path and stamp it was offered under (`/file` reads it, under
+#s7's rules; a pasted image's saved original at full size), an EMBEDDED image by its bytes through
+sessionStorage (`imageTabHref` in `preview.js`), which is also the fallback where the file has gone.
+Hidden on a phone, as the Markdown ↗ is (#335); text and HTML pages have none yet.
 The pinned `mdrev-cli conform` against a live monitor is the definition of done
 (`mdrev_contract_passes_mdrev_cli_conform`); the mdrev browser cases need nothing installed and run in
 CI too. Keys: `bindKeymap` tracks ENGAGEMENT as mdrev does — the last click or focus inside

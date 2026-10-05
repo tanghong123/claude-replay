@@ -8,8 +8,8 @@
 //! No case ever reveals anything: the page's `fetch` is wrapped so a `/__reveal` request is recorded
 //! and answered, never sent — `open -R` must not run on the machine the suite runs on.
 //!
-//! Ports 2811–2814, 2933 for #374's handed-over files on a phone, and 2937 for #s7's mentioned
-//! files under the allowlist ceiling. The classic page draws no preview pane; its file view already pairs the two
+//! Ports 2811–2814, 2933 for #374's handed-over files on a phone, 2937 for #s7's mentioned files
+//! under the allowlist ceiling, and 2970 for #s11's images in a tab of their own. The classic page draws no preview pane; its file view already pairs the two
 //! (export.js `openArtifact` and its "Reveal in file manager" action), which is the reference here.
 
 use std::path::PathBuf;
@@ -889,5 +889,118 @@ fn a_phone_reads_a_mentioned_file_outside_the_session_under_the_allowlist() {
     assert!(
         !pane.contains("may be gone, or"),
         "and no longer says it may be either: {pane}"
+    );
+}
+
+/// #s11, the owner: "the images do not get the same treatment of detached view? This probably
+/// matters more to the desktop version". On the desktop an image gets the ↗ Markdown has: in the
+/// preview pane (a file the session read, by its stamp) and in the lightbox (an image the transcript
+/// embeds, by its bytes, handed over through sessionStorage), opening a tab of its own that draws the
+/// image whole, at its real size, with the shared zoom.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn an_image_opens_in_a_tab_of_its_own_from_the_pane_and_the_lightbox() {
+    const IMG: &str = "5e5510a1-0000-4000-8000-0000000000s11";
+    let _serial = serial();
+    let base = base("files-image-tab");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("big.png"), big_png(1200, 800)).unwrap();
+    let mut jsonl =
+        harness::pasted_image_sized("here is a screenshot", &at("00:01"), harness::WIDE_PNG_B64);
+    let path = repo.join("big.png").display().to_string();
+    jsonl += &read_tool_at("t1", &path, &at("00:02"));
+    jsonl += &tool_result_at("t1", &at("00:03"));
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(IMG, &jsonl);
+    let m = Monitor::spawn(Kind::V2, 2970, &base, Some(&stores), true);
+    let (browser, tab) = chrome_tab();
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={IMG}"));
+    until(
+        &tab,
+        "document.querySelectorAll('[data-reference-path]').length >= 1 && !!document.querySelector('.prompt-image img')",
+        "the read image's path and the pasted image",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+    let opened = |want: &str| -> std::sync::Arc<headless_chrome::Tab> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let found = browser
+                .get_tabs()
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|t| t.get_url().contains(want))
+                .cloned();
+            if let Some(t) = found {
+                return t;
+            }
+            assert!(std::time::Instant::now() < deadline, "no tab at {want}");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+    let whole = "(function(){ var s = document.getElementById('stage'); var i = s && s.querySelector('img'); return !!i && !s.classList.contains('unavailable') && i.complete && i.naturalWidth === 1200 && i.getBoundingClientRect().width > 100; })()";
+    let what = "(function(){ var s = document.getElementById('stage'); return location.href + ' | ' + (s ? s.className + ' | ' + s.innerText.slice(0, 200) + ' | ' + ((s.querySelector('img') || {}).naturalWidth) : 'no stage'); })()";
+
+    // The pane: a file the session read.
+    click_path(&tab, &repo, "big.png");
+    until(
+        &tab,
+        "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); var b = document.querySelector('#previewHead .preview-newtab'); return !!i && i.naturalWidth === 1200 && !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the image in the pane, with the pane's ↗",
+        Duration::from_secs(20),
+        PANE,
+    );
+    tab.find_element("#previewHead .preview-newtab")
+        .unwrap()
+        .click()
+        .unwrap();
+    let own = opened("/image?");
+    until(
+        &own,
+        whole,
+        "the read image whole in a tab of its own",
+        Duration::from_secs(20),
+        what,
+    );
+    assert!(
+        own.get_url().contains("sig="),
+        "a file goes by its stamp: {}",
+        own.get_url()
+    );
+
+    // The lightbox: an image the transcript embeds. The tab just opened came to the front; a click
+    // on a page in the background waits for a frame that never comes.
+    tab.activate().unwrap();
+    eval(
+        &tab,
+        "document.querySelector('.prompt-image').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "(function(){ var b = document.querySelector('.image-lightbox [data-lightbox-newtab]'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the lightbox's ↗",
+        Duration::from_secs(20),
+        "(function(){ var l = document.querySelector('.image-lightbox'); return l ? l.dataset.state + ' ' + l.hidden : 'no lightbox'; })()",
+    );
+    tab.find_element(".image-lightbox [data-lightbox-newtab]")
+        .unwrap()
+        .click()
+        .unwrap();
+    let held = opened("held=");
+    until(
+        &held,
+        whole,
+        "the pasted image whole in a tab of its own",
+        Duration::from_secs(20),
+        what,
+    );
+    assert!(
+        !held.get_url().contains("data:"),
+        "the bytes ride sessionStorage, not the address: {}",
+        held.get_url()
     );
 }

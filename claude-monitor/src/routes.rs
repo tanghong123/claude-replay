@@ -116,6 +116,8 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         }
         // A Markdown document from the preview pane, in a tab of its own (#271).
         "markdown" => HttpResponse::html(ui::markdown_page()),
+        // An image from the preview pane, in a tab of its own (#s11).
+        "image" => HttpResponse::html(ui::image_page().to_string()),
         // Read or set which shell `/` serves; the toggle in each shell's header calls this
         // and reloads.
         "api/ui" => ui::route(query),

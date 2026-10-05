@@ -124,6 +124,14 @@ pub fn markdown_page() -> String {
     )
 }
 
+/// The page an image opens in when the preview pane sends it to a tab of its own (#s11): the image
+/// as the whole window, fit and zoomable. STATIC — `image-page.js` reads the image it names from its
+/// own address — and it reads only what the pane was offered: a file through `/file` with the
+/// stamp the page minted, or an embedded image handed over through sessionStorage.
+pub fn image_page() -> &'static str {
+    include_str!("codex-ui/image-page.html")
+}
+
 /// The monitor's tab icon (#203): the green list mark the classic rail inlines as a data URI
 /// (`rail.html`), served here so the app shell — extracted byte-for-byte from the hand-written
 /// demo, which declares no `<link rel="icon">` — gets it from the production layer's injected
@@ -245,6 +253,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
         "monitor-ui/markdown-page.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/markdown-page.js").as_slice(),
+        ),
+        "monitor-ui/image-page.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/image-page.js").as_slice(),
         ),
         "monitor-ui/preview.js" => (
             "text/javascript; charset=utf-8",
@@ -430,6 +442,7 @@ mod tests {
                 "markdown-page.js",
                 include_str!("codex-ui/markdown-page.js"),
             ),
+            ("image-page.js", include_str!("codex-ui/image-page.js")),
             ("record-store.js", include_str!("codex-ui/record-store.js")),
             ("sandbox.js", include_str!("codex-ui/sandbox.js")),
             (

@@ -7,6 +7,26 @@ import { canReveal, revealHere } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 
 const byId = id => document.getElementById(id);
+
+/** An image in a tab of its own (#s11), for the pane and the lightbox alike: `/image`, reading a
+ *  FILE by the path and stamp it was offered under (`/file` serves it there, under the same rules —
+ *  a pasted image's saved original too, #324, larger than the copy the transcript carries), with
+ *  the bytes the transcript EMBEDS handed over through sessionStorage — which `window.open` copies
+ *  into the tab it makes — as the whole image where there is no file and the fallback where the
+ *  file has gone since. "" when there is nothing to hand over. */
+export const imageTabbable = (item, shown = "") => !!item && !!((item.path && item.fsig) || item.data || String(shown).startsWith("data:"));
+
+export function imageTabHref(item, shown = "") {
+  if (!imageTabbable(item, shown)) return "";
+  const query = [`name=${encodeURIComponent(item.name || "image")}`];
+  if (item.path && item.fsig) query.push(`path=${encodeURIComponent(item.path)}`, `sig=${encodeURIComponent(item.fsig)}`);
+  const bytes = item.data || (String(shown).startsWith("data:") ? shown : "");
+  if (bytes) {
+    const key = `am-image:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    try { sessionStorage.setItem(key, bytes); query.push(`held=${encodeURIComponent(key)}`); } catch (_) { /* too large for sessionStorage: the file, if any, still opens */ }
+  }
+  return query.length > 1 ? `/image?${query.join("&")}` : "";
+}
 const SESSION_CACHE_LIMIT = 6;
 const SESSION_TAB_LIMIT = 6;
 const SESSION_CACHE_BYTES = 12 * 1024 * 1024;
@@ -28,7 +48,8 @@ export class Preview {
     this.newTab = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-newtab", textContent: "↗", title: "Open in a new tab", hidden: true });
     this.newTab.dataset.previewNewTab = "";
     this.newTab.setAttribute("aria-label", "Open this document in a new tab");
-    this.newTab.onclick = () => { const href = this.markdown?.href(); if (href) window.open(href, "_blank"); };
+    // #s11: an image the pane shows goes to a tab of its own too (`/image`, image-page.js).
+    this.newTab.onclick = () => { const href = this.markdown?.href() || this.imageHref(); if (href) window.open(href, "_blank"); };
     // The file manager, for whatever the pane shows (#272). The pane is where every "show me the
     // file" click lands, so this one control gives each view — an image, a page, Markdown, text,
     // a download, an error — the other half the owner asked for ("offering both for now"). Only
@@ -233,6 +254,7 @@ export class Preview {
       this.markdown = handle;
       // #335: not on a phone — the new tab is a page with no way back to the monitor.
       this.newTab.hidden = !revealHere();
+      this.newTab.setAttribute("aria-label", "Open this document in a new tab");
     }).catch(() => {
       if (this.markdownToken !== token) return;
       this.teardownMarkdown();
@@ -241,7 +263,7 @@ export class Preview {
   }
   teardownMarkdown() {
     this.markdown?.unmount(); this.markdown = null;
-    this.newTab.hidden = true;
+    this.newTab.hidden = true; this.image = null;
     this.markdownItem = null; this.markdownToken = null;
     byId("previewBody").classList.remove("mdrev-mounted");
   }
@@ -249,8 +271,15 @@ export class Preview {
     const body = byId("previewBody"); body.classList.remove("production-loading");
     body.innerHTML = `<div class="artifacts-list">${this.roster.map(r => `<div class="artifacts-row"><a href="${escapeText(r.url)}" target="_blank" rel="noopener" title="${escapeText(r.desc || r.url)}">${r.icon ? `<span class="artifacts-icon">${escapeText(r.icon)}</span>` : ""}<span class="artifacts-name">${escapeText(r.name || r.url)}</span>${r.desc ? `<span class="artifacts-desc">${escapeText(r.desc)}</span>` : ""}${r.count > 1 ? `<span class="artifacts-count">×${r.count}</span>` : ""}</a><button type="button" class="artifacts-jump" data-artifact-record="${r.at}" title="Go to where it was last published" aria-label="Go to where ${escapeText(r.name || r.url)} was last published">↳</button></div>`).join("")}</div>`;
   }
+  /** The address of the image the pane shows, in a tab of its own (#s11). */
+  imageHref() {
+    const href = this.image ? imageTabHref(this.image.item, this.image.data) : "";
+    if (!href) this.actions.toast?.("This image cannot be handed to a tab");
+    return href;
+  }
   show(item, text, data) {
     const body = byId("previewBody"); body.classList.remove("production-loading");
+    this.image = null; if (!this.markdown) this.newTab.hidden = true;
     // One object URL at a time: a tab reopened per session switch minted a new blob and never
     // released the last, so the page held every image it had ever previewed.
     if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = ""; }
@@ -275,6 +304,12 @@ export class Preview {
         this.stageObserver.observe(stage);
       }
       img.src = data;
+      // #s11: and to a tab of its own, on the desktop (#335: not on a phone, where a tab has no way
+      // back). What the tab reads is what the pane was offered: the file by its stamp, or the
+      // embedded bytes themselves.
+      this.image = { item, data };
+      this.newTab.hidden = !revealHere();
+      this.newTab.setAttribute("aria-label", "Open this image in a new tab");
       return;
     }
     const html = /\.html?$/i.test(item.name || "");
