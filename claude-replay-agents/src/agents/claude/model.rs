@@ -588,6 +588,15 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "session_context",
     "silent_turn_reminder",
     "skill_listing",
+    // #s2 (client 2.1.288): `{type, skillName}`, one per `/name` or `/namespace:name` token in a
+    // prompt, written right after it, with a `rendered` system reminder telling the MODEL to call
+    // the Skill tool only if the user asks to run it. Drawn nothing: the prompt card already shows
+    // the token, since it is part of the prompt text; a skill the model runs is its own Skill card;
+    // and the reminder is addressed to the model, as `inlined_image_paths`'s is. Its siblings
+    // `skill_listing` and `invoked_skills` are here too. Revisit if a client stops keeping the
+    // token in the prompt text (a composer that turns it into a chip): then this record is the only
+    // trace of the mention, and a chip on the prompt card is the RENDER question for the owner.
+    "skill_mention",
     "task_reminder",
     "task_status",
     "thinking_drop",
@@ -5299,6 +5308,28 @@ mod tests {
         let seen: Vec<_> = unknown_shapes()
             .into_iter()
             .filter(|s| s.example.as_deref() == Some("s-368"))
+            .collect();
+        assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
+    }
+
+    /// #s2: the 2.1.288 attachment `skill_mention` is known — neither reported as unknown nor
+    /// drawn. The prompt it follows is drawn as ever, slash token included. Removing it from
+    /// `ATTACHMENT_TYPES_KNOWN` turns this red.
+    #[test]
+    fn skill_mention_is_known() {
+        let jsonl = r##"
+{"type":"user","version":"2.1.288","sessionId":"s-sm","uuid":"u1","timestamp":"2026-10-04T01:00:00.000Z","message":{"role":"user","content":"tidy the notes, then /polish-prose"}}
+{"type":"attachment","version":"2.1.288","sessionId":"s-sm","uuid":"m1","parentUuid":"u1","timestamp":"2026-10-04T01:00:00.000Z","attachment":{"type":"skill_mention","skillName":"polish-prose"},"rendered":[{"content":"<system-reminder>The prompt names a skill.</system-reminder>"}],"renderedRole":"system"}
+"##;
+        let blocks = parse(jsonl);
+        assert_eq!(blocks.len(), 1, "only the prompt is drawn: {blocks:?}");
+        assert!(
+            matches!(&blocks[0], Block::UserText(t) if t.ends_with("/polish-prose")),
+            "and it keeps its slash token: {blocks:?}"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-sm"))
             .collect();
         assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
     }
