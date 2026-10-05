@@ -146,11 +146,12 @@ function mountAt(mountMdrev, el, facts, moved, contract = CONTRACT) {
  * mdrev. Rejects when this document cannot be mounted — the pane then shows the text exactly as it
  * did before mdrev.
  */
-export async function mountMarkdown(el, item) {
+export async function mountMarkdown(el, item, { review = false } = {}) {
   const version = mdrevVersion();
   if (!version) return null;
   const [{ mountMdrev }, facts] = await Promise.all([loadMdrev(version), factsFor(item)]);
-  const { place, unmount } = mountAt(mountMdrev, el, facts);
+  // #s12: the phone's review sheet mounts on the review prefix (#s10); the pane never does.
+  const { place, unmount } = mountAt(mountMdrev, el, facts, undefined, review ? REVIEW_CONTRACT : CONTRACT);
   const carried = item.text != null ? { name: item.name || "", text: item.text } : null;
   return {
     place,

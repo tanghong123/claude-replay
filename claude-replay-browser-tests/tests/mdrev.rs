@@ -789,18 +789,12 @@ fn mdrev_follows_the_reader_to_another_document_into_its_tab() {
     );
 }
 
-/// #s10, the owner: shared review "maybe not in the main interface, but in the full detached
-/// view". A checkout whose `.mdrev.json` names a review store (here a local bare repository), and a
-/// machine paired with it the way the owner pairs — an agent asks, the viewer key confirms — in a
-/// mdrev state directory of the case's own (never this machine's `~/.mdrev`). The pane's guest asks
-/// `review` and is told 404, so it offers no Share and no Push; the detached tab's guest, on the
-/// review prefix, is answered with the store's state, paired. And mdrev's own definition of a host
-/// holds on that prefix too: `mdrev-cli conform`, every route and the note round trip.
-#[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
-fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
-    let _serial = serial();
-    let (base, stores, repo) = fixture("mdrev-shared");
+/// #s10's world: the fixture's checkout with a review store of its own (a local bare repository,
+/// named by a committed `.mdrev.json`), a mdrev state directory of the case's own with its viewer key
+/// (never this machine's `~/.mdrev`), and the machine paired with the store the way the owner pairs
+/// — an agent asks, the viewer key confirms. Returns the state directory beside the fixture.
+fn shared_review_world(case: &str) -> (PathBuf, Stores, PathBuf, PathBuf) {
+    let (base, stores, repo) = fixture(case);
     let git = |args: &[&str]| {
         let out = Command::new("git").args(args).output().unwrap();
         assert!(
@@ -859,6 +853,22 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
     );
     cli(&["review", "pair", "--confirm", "--viewer"], true);
 
+    (base, stores, repo, state)
+}
+
+/// #s10, the owner: shared review "maybe not in the main interface, but in the full detached
+/// view". A checkout whose `.mdrev.json` names a review store (here a local bare repository), and a
+/// machine paired with it the way the owner pairs — an agent asks, the viewer key confirms — in a
+/// mdrev state directory of the case's own (never this machine's `~/.mdrev`). The pane's guest asks
+/// `review` and is told 404, so it offers no Share and no Push; the detached tab's guest, on the
+/// review prefix, is answered with the store's state, paired. And mdrev's own definition of a host
+/// holds on that prefix too: `mdrev-cli conform`, every route and the note round trip.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
+    let _serial = serial();
+    let (base, stores, repo, state) = shared_review_world("mdrev-shared");
+
     let port = 2945;
     let m = Monitor::spawn_with(
         Kind::V2,
@@ -888,6 +898,11 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
         pane.as_str().unwrap_or(""),
         "/api/mdrev 404",
         "the pane offers no shared review"
+    );
+    assert_eq!(
+        eval(&tab, "(function(){ var b = document.querySelector('#previewHead .preview-review'); return !b || b.hidden; })()"),
+        true,
+        "the desktop has its detached tab, and no review sheet (#s12)"
     );
 
     open_in_a_tab(&tab);
@@ -950,5 +965,95 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
     assert!(
         out.status.success() && report.contains("conforms"),
         "conform on the review prefix:\n{report}"
+    );
+}
+
+/// #s12, the owner chose it: on a phone, where a tab of its own has no way back (#335), shared review
+/// is a FULL-SCREEN SHEET over the app. The pane's Markdown shows a Review control there; the sheet
+/// mounts the document on the review prefix (#s10), its guest asking for and fetching the store, and
+/// its close control returns the reader to the pane and the transcript exactly as they were — no
+/// navigation, no reload, the transcript's offset unchanged.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
+    let _serial = serial();
+    let (base, stores, repo, state) = shared_review_world("mdrev-sheet");
+    let m = Monitor::spawn_with(
+        Kind::V2,
+        2972,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 440, 956);
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('#previewHead .preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the guide in the pane, with its Review control",
+        Duration::from_secs(30),
+        PANE,
+    );
+    let offset = || {
+        eval(
+            &tab,
+            "Math.round(document.querySelector('.transcript').scrollTop)",
+        )
+        .as_i64()
+        .unwrap_or(-1)
+    };
+    let before = offset();
+    eval(
+        &tab,
+        "document.querySelector('#previewHead .preview-review').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "!!document.querySelector('.review-sheet .mdrev-host h1') && performance.getEntriesByType('resource').some(e => e.name.indexOf('/api/mdrev-review/review?') >= 0 && e.responseStatus === 200)",
+        "the review sheet, its guest answered with the store's state",
+        Duration::from_secs(30),
+        "(function(){ var s = document.querySelector('.review-sheet'); return s ? s.innerText.slice(0, 200) : 'no sheet'; })()",
+    );
+    // The document is READ there: its heading across the sheet's width and the thing a tap on it
+    // hits — not mdrev squeezed into a shrink-to-fit column (a rect alone would not say so).
+    let readable = eval(
+        &tab,
+        "(function(){ var h = document.querySelector('.review-sheet .mdrev-host h1'); var r = h.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + Math.min(20, r.width / 2), r.top + r.height / 2); return JSON.stringify({ width: Math.round(r.width), hit: !!hit && h.contains(hit), host: Math.round(document.querySelector('.review-sheet .mdrev-host').getBoundingClientRect().width), inner: innerWidth }); })()",
+    );
+    let readable: serde_json::Value =
+        serde_json::from_str(readable.as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        readable["hit"] == true
+            && readable["host"].as_i64().unwrap_or(0) * 10
+                >= readable["inner"].as_i64().unwrap_or(1) * 9
+            && readable["width"].as_i64().unwrap_or(0) > 120,
+        "the document fills the sheet and is the thing a tap hits: {readable}"
+    );
+    let covers = eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.review-sheet'); var r = s.getBoundingClientRect(); var c = s.querySelector('[data-review-close]'); var cr = c.getBoundingClientRect(); var hit = document.elementFromPoint(cr.left + cr.width / 2, cr.top + cr.height / 2); return r.top === 0 && r.left === 0 && Math.round(r.width) === innerWidth && Math.round(r.height) === innerHeight && cr.width >= 44 && cr.height >= 44 && c.contains(hit); })()",
+    );
+    assert_eq!(
+        covers, true,
+        "the sheet covers the app, and its close control is a 44px target on top"
+    );
+    eval(
+        &tab,
+        "document.querySelector('.review-sheet [data-review-close]').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "!document.querySelector('.review-sheet') && !!document.querySelector('#previewBody .mdrev-host h1')",
+        "the sheet gone and the pane as it was",
+        Duration::from_secs(10),
+        PANE,
+    );
+    assert_eq!(
+        offset(),
+        before,
+        "the transcript is where the reader left it"
     );
 }

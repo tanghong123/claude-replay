@@ -1242,3 +1242,17 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .turn.pending-head{display:flex;align-items:center;justify-content:center;gap:10px;min-height:64px;margin:6px 0 14px;padding:14px;border-radius:12px;background:var(--panel);box-shadow:0 0 0 1px var(--line);color:var(--sub);font:13px/1.35 var(--sans);font-variant-numeric:tabular-nums}
 .pending-head-spinner{flex:none;width:18px;height:18px;border-radius:50%;border:2px solid color-mix(in srgb,var(--primary) 22%,transparent);border-top-color:var(--primary);animation:session-loading-spin .8s linear infinite}
 @media(prefers-reduced-motion:reduce){.pending-head-spinner{animation:none}}
+/* #s12: the phone's REVIEW SHEET — the pane's Markdown full-screen over the whole app, on the review
+   prefix (shared review), above the drawer and the bars, below the toasts; a close control back to
+   exactly where the reader was. The pane's own Review control is a phone's alone. */
+.review-sheet{position:fixed;inset:0;z-index:95;display:flex;flex-direction:column;background:var(--bg)}
+.review-sheet-head{flex:none;display:flex;align-items:center;gap:6px;min-height:52px;padding:4px 8px 4px 4px;border-bottom:1px solid var(--line)}
+.review-sheet-head strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}
+.review-sheet-close{flex:none;width:44px;height:44px;display:grid;place-items:center;border:0;border-radius:10px;background:transparent;color:var(--sub);cursor:pointer}
+.review-sheet-close:hover,.review-sheet-close:focus-visible{background:var(--hover);color:var(--ink);outline:0}
+.review-sheet-close .icon{width:20px;height:20px}
+/* The mount element is a flex ITEM with a height, never a flex container: mdrev fills it (its guide:
+   "in a flex column, flex: 1; min-height: 0"), and as a container it squeezed mdrev's root into a
+   shrink-to-fit column. */
+.review-sheet-body{flex:1;min-height:0;min-width:0;position:relative}
+.preview-review{flex:none;min-height:44px}

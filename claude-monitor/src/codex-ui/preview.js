@@ -57,7 +57,14 @@ export class Preview {
     this.revealBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-reveal", title: "Reveal in file manager", hidden: true, innerHTML: svg("folder") });
     this.revealBtn.setAttribute("aria-label", "Reveal this file in the file manager");
     this.revealBtn.onclick = () => { if (this.shown) this.actions.reveal?.(this.shown); };
-    byId("closePreview").before(this.revealBtn, this.newTab);
+    // #s12, the owner: shared review on a phone, where a tab of its own has no way back (#335) — a
+    // full-screen REVIEW SHEET over the app, opened from here, closed back to exactly where the reader
+    // was. Only for Markdown from a FILE (held text has no store), and only on a phone: the desktop
+    // has its detached tab (#s10). The pane itself stays review-free.
+    this.reviewBtn = Object.assign(document.createElement("button"), { type: "button", className: "smallbtn preview-review", textContent: "Review", title: "Review with the other reviewers", hidden: true });
+    this.reviewBtn.setAttribute("aria-label", "Review this document with the other reviewers");
+    this.reviewBtn.onclick = () => this.openReviewSheet(this.markdownItem);
+    byId("closePreview").before(this.revealBtn, this.newTab, this.reviewBtn);
     // #337, the owner: with many files open the strip squeezed every tab to a few letters and the
     // CURRENT one to nothing. The tabs now keep their width and the strip scrolls; while it
     // overflows, ‹ and › beside it step to the previous and next tab (the pinned roster first),
@@ -255,6 +262,7 @@ export class Preview {
       // #335: not on a phone — the new tab is a page with no way back to the monitor.
       this.newTab.hidden = !revealHere();
       this.newTab.setAttribute("aria-label", "Open this document in a new tab");
+      this.reviewBtn.hidden = revealHere() || item.text != null;
     }).catch(() => {
       if (this.markdownToken !== token) return;
       this.teardownMarkdown();
@@ -263,13 +271,42 @@ export class Preview {
   }
   teardownMarkdown() {
     this.markdown?.unmount(); this.markdown = null;
-    this.newTab.hidden = true; this.image = null;
+    this.newTab.hidden = true; this.image = null; this.reviewBtn.hidden = true;
     this.markdownItem = null; this.markdownToken = null;
     byId("previewBody").classList.remove("mdrev-mounted");
   }
   showRoster() {
     const body = byId("previewBody"); body.classList.remove("production-loading");
     body.innerHTML = `<div class="artifacts-list">${this.roster.map(r => `<div class="artifacts-row"><a href="${escapeText(r.url)}" target="_blank" rel="noopener" title="${escapeText(r.desc || r.url)}">${r.icon ? `<span class="artifacts-icon">${escapeText(r.icon)}</span>` : ""}<span class="artifacts-name">${escapeText(r.name || r.url)}</span>${r.desc ? `<span class="artifacts-desc">${escapeText(r.desc)}</span>` : ""}${r.count > 1 ? `<span class="artifacts-count">×${r.count}</span>` : ""}</a><button type="button" class="artifacts-jump" data-artifact-record="${r.at}" title="Go to where it was last published" aria-label="Go to where ${escapeText(r.name || r.url)} was last published">↳</button></div>`).join("")}</div>`;
+  }
+  /** #s12: the document, full-screen over the whole app, mounted on the review prefix — Share and
+   *  Push where the machine is paired. Nothing navigates: closing unmounts it and removes the layer,
+   *  and the transcript, the pane and the session list are as they were. */
+  openReviewSheet(item) {
+    if (!item || this.reviewSheet) return;
+    const sheet = document.createElement("div");
+    sheet.className = "review-sheet";
+    sheet.setAttribute("role", "dialog");
+    sheet.setAttribute("aria-label", `Review ${item.name || "document"}`);
+    sheet.innerHTML = `<div class="review-sheet-head"><button type="button" class="review-sheet-close" data-review-close aria-label="Close the review">${svg("x")}</button><strong>${escapeText(item.name || "document")}</strong></div><div class="review-sheet-body mdrev-pane"></div>`;
+    (byId("app") || document.body).append(sheet);
+    const state = { sheet, handle: null };
+    this.reviewSheet = state;
+    const close = () => {
+      if (this.reviewSheet !== state) return;
+      this.reviewSheet = null;
+      removeEventListener("keydown", onKey, true);
+      state.handle?.unmount();
+      sheet.remove();
+    };
+    const onKey = event => { if (event.key === "Escape") { event.preventDefault(); close(); } };
+    addEventListener("keydown", onKey, true);
+    sheet.querySelector("[data-review-close]").onclick = close;
+    mountMarkdown(sheet.querySelector(".review-sheet-body"), item, { review: true }).then(handle => {
+      if (this.reviewSheet !== state) { handle?.unmount(); return; }
+      if (!handle) throw new Error("no mdrev");
+      state.handle = handle;
+    }).catch(() => { close(); this.actions.toast?.("The review cannot be opened"); });
   }
   /** The address of the image the pane shows, in a tab of its own (#s11). */
   imageHref() {

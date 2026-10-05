@@ -193,6 +193,13 @@ the writes through `deny_mutation`; a paired client can reach the prefix directl
 withheld on a phone, the routes are not), which is the note routes' bar too. The cases are
 `the_detached_tab_offers_shared_review_and_the_pane_does_not` (unit, and the browser case with a
 hermetic store, state dir and pairing, which also runs `conform` on the review prefix).
+**On a phone the review prefix is a full-screen SHEET** (#s12, the owner's choice: a tab has no way
+back there): the pane's Markdown from a FILE shows a Review control on a phone only; `openReviewSheet`
+(`preview.js`) mounts the document with `mountMarkdown(…, {review: true})` in `.review-sheet` over the
+whole app (z 95: above the drawer, below the toasts), and its 44px close control unmounts it — no
+navigation, so the transcript's offset is unchanged (`a_phone_reviews_in_a_full_screen_sheet_and_…`).
+The mount element is a flex ITEM with a height, never a flex container: as one it squeezed mdrev into
+a shrink-to-fit column, which the case now catches by hit-testing the heading.
 
 `src/codex-ui/{reference.css,reference-shell.html,icons.js}` are **generated**, extracted
 byte-for-byte from `design/agent-monitor-codex-demo.html` by
