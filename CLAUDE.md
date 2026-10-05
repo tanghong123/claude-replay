@@ -143,7 +143,7 @@ link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.16), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.20, #s6), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor both binaries go through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
@@ -172,6 +172,11 @@ CI too. Keys: `bindKeymap` tracks ENGAGEMENT as mdrev does — the last click or
 `[data-guest-keys]` — and yields every key while it holds; the host element is NOT focusable. The
 request parser REFUSES (413) a body over its route's bound instead of silently cutting it to 64 KB;
 `hold` gets the artifact cap.
+**The pane offers no SHARED review** (#s6, mdrev 1.1.18+: threads in a review store, pairing, a
+Push): every `review` route and a thread's `hide` answer the contract's 404, after which the guest
+draws no Share control and no Push, and the host never passes mdrev's viewer key or `--viewer`,
+without which `mdrev-cli` does nothing shared. The pane reads and takes this machine's local notes;
+shared threads are mdrev's own viewer's business. Wiring them in is a decision for the owner.
 
 `src/codex-ui/{reference.css,reference-shell.html,icons.js}` are **generated**, extracted
 byte-for-byte from `design/agent-monitor-codex-demo.html` by

@@ -239,6 +239,16 @@ fn contract(
         "documents" | "tree" | "changed" | "recents" | "recent-changes" => {
             return HttpResponse::not_found("not offered by this host");
         }
+        // #s6: mdrev 1.1.18's SHARED REVIEW — threads in a review store, pairing, a Push — is not
+        // offered from the monitor's pane (the default the task set, the owner not having ruled
+        // otherwise): the pane reads, and takes this machine's local notes, and no store is reached
+        // from here. The contract's way to say so is 404 on every review route, after which the
+        // guest draws no Share control and no Push; and this host never passes mdrev's viewer key
+        // or `--viewer`, without which mdrev-cli does nothing shared even if asked.
+        "review" => return HttpResponse::not_found("shared review is not offered by this host"),
+        r if r.starts_with("review/") => {
+            return HttpResponse::not_found("shared review is not offered by this host");
+        }
         _ => {}
     }
     let root = param(req, "root").unwrap_or_default();
@@ -997,6 +1007,10 @@ fn note_op(rel: &Release, d: &Doc, req: &Request, rest: &str) -> HttpResponse {
             ];
             ("DELETE", "200 OK")
         }
+        // #s6: hiding is a shared thread's operation, and this host offers none (above).
+        ("POST", "hide") => {
+            return HttpResponse::not_found("shared review is not offered by this host")
+        }
         _ => return HttpResponse::method_not_allowed("no such note operation"),
     };
     if let Some(r) = req.deny_mutation(method) {
@@ -1633,6 +1647,48 @@ esac
         assert_eq!(
             call(&f, &held, "tree", &req("GET", "", b"", true)).code,
             "404 Not Found"
+        );
+        // #s6: shared review (1.1.18+) is not offered from the pane — every review route is the
+        // contract's 404, with a document named or not, so the guest draws no Share and no Push
+        // and nothing reaches a review store from here.
+        for (method, route, body) in [
+            ("GET", "review", &b""[..]),
+            ("POST", "review/fetch", b"{}"),
+            ("POST", "review/push", br#"{"ids":["shr-1"]}"#),
+            ("POST", "review/pair", br#"{"email":"a@b.c","name":"n"}"#),
+        ] {
+            assert_eq!(
+                call(&f, &held, route, &req(method, "", body, true)).code,
+                "404 Not Found",
+                "{method} {route}"
+            );
+            assert_eq!(
+                call(&f, &held, route, &req(method, &q, body, true)).code,
+                "404 Not Found",
+                "{method} {route} for a document"
+            );
+        }
+        assert_eq!(
+            call(
+                &f,
+                &held,
+                "annotations/shr-1/hide",
+                &req("POST", &q, br#"{"hidden":true}"#, true)
+            )
+            .code,
+            "404 Not Found",
+            "nor is hiding a thread"
+        );
+        // …and nothing this host runs carries mdrev's viewer key, without which mdrev-cli does
+        // nothing shared whatever it is asked.
+        let src = include_str!("mdrev.rs");
+        let (key, flag) = (
+            ["MDREV_VIEWER", "_KEY"].concat(),
+            ["\"--", "viewer\""].concat(),
+        );
+        assert!(
+            !src.contains(&key) && !src.contains(&flag),
+            "the host passes no viewer key"
         );
     }
 
