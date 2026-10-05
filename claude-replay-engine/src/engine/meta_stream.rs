@@ -232,11 +232,16 @@ pub const COMPACT_AFTER: usize = 256;
 /// new ones priced at 6x, and its cost blocks were computed that way (v37's rule: the tier
 /// vocabulary of a resumed accumulator is fold behavior).
 ///
+/// v41: #s5 — a Claude sub-agent result framed by client 2.1.289 (`[Subagent hand-back]` … `The
+/// report follows:`, every line indented) carries the REPORT as its result, not the frame the model
+/// was sent. A v40 stream holds the framed text, so its Agent cards keep opening on the client's
+/// boilerplate with the report indented under it.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 40;
+pub const FOLD_VERSION: u16 = 41;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

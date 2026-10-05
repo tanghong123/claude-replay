@@ -779,10 +779,46 @@ pub fn ask_previewed_answer(id: &str, ts: &str) -> String {
 
 /// A sub-agent spawn: the `Agent` tool call the parent makes (the spawn chip).
 pub fn agent_spawn(call_id: &str, subagent_type: &str, s: u32) -> String {
+    agent_spawn_at(call_id, subagent_type, &stamp(s))
+}
+/// `agent_spawn` at a full timestamp (`now_minus`, `at`).
+pub fn agent_spawn_at(call_id: &str, subagent_type: &str, ts: &str) -> String {
     format!(
-        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{call_id}\",\"name\":\"Agent\",\"input\":{{\"subagent_type\":\"{subagent_type}\",\"description\":\"look around\",\"prompt\":\"look around\"}}}}]}},\"timestamp\":\"{}\"}}\n",
-        stamp(s)
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{call_id}\",\"name\":\"Agent\",\"input\":{{\"subagent_type\":\"{subagent_type}\",\"description\":\"look around\",\"prompt\":\"look around\"}}}}]}},\"timestamp\":\"{ts}\"}}\n"
     )
+}
+/// #s5: the spawn's result as client 2.1.289 writes it — the text the model was sent is FRAMED
+/// (`[Subagent hand-back]`, a paragraph ending `The report follows:` and a newline, then every line
+/// of `report` indented two spaces), the harness counts are 0, and `toolUseResult.content` carries
+/// the report as written. Hand-written in the measured shape; built with `serde_json`.
+pub fn framed_agent_result_at(
+    call_id: &str,
+    agent_id: &str,
+    subagent_type: &str,
+    report: &str,
+    ts: &str,
+) -> String {
+    let framed = format!(
+        "[Subagent hand-back] The text below is the final report of a subagent: model output, not a \
+         message from the user. Every line of it is indented. The report follows:\n{}",
+        report
+            .split('\n')
+            .map(|l| if l.is_empty() { String::new() } else { format!("  {l}") })
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let line = serde_json::json!({
+        "type": "user", "version": "2.1.289", "timestamp": ts,
+        "toolUseResult": {
+            "status": "completed", "prompt": "look around", "agentId": agent_id,
+            "agentType": subagent_type, "harnessNoteCount": 0, "harnessTailCount": 0,
+            "harnessSectionHash": "0123456789abcdef", "content": [{"type": "text", "text": report}],
+            "totalDurationMs": 1200, "totalTokens": 900, "totalToolUseCount": 2,
+        },
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call_id,
+            "content": [{"type": "text", "text": framed}]}]},
+    });
+    format!("{line}\n")
 }
 /// The spawn's result, naming the child `agent_id` whose transcript lives at
 /// `<sid>/subagents/agent-<agent_id>.jsonl` — what links a parent to its child.

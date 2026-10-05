@@ -480,6 +480,57 @@ fn result_text(content: &Value) -> String {
     }
 }
 
+/// A `tool_result` block's text as the card shows it: `result_text`, with a sub-agent's report
+/// taken out of the frame the model was sent (#s5, `unframe_agent_report`).
+fn tool_result_text(content: &Value, tur: &Value) -> String {
+    unframe_agent_report(result_text(content), tur)
+}
+
+/// #s5 (client 2.1.289): a synchronous `Agent` call's result reaches the model FRAMED — the fixed
+/// words `[Subagent hand-back]`, one paragraph telling it the text is a sub-agent's report and not
+/// the user's, ending `The report follows:` and a newline, then every line of the report indented
+/// two spaces, so that a frame-like line at column zero would be a forgery. That is scaffolding
+/// for the model; the card shows the report. `toolUseResult.content` carries it as written —
+/// measured on the one record met (an Explore agent, 2026-10-04): byte for byte the unindented
+/// report — so it is taken from there, and only when a result carries no such copy is the frame
+/// cut from the text itself. Both only while `harnessNoteCount` and `harnessTailCount` are 0 or
+/// absent: notes above the frame and parts after the report have never been met, so a result
+/// carrying either keeps its text exactly as sent until a sample shows what they hold — nothing the
+/// client added is dropped in silence. A result without the frame (every client before 2.1.289) is
+/// untouched.
+fn unframe_agent_report(txt: String, tur: &Value) -> String {
+    const FRAME: &str = "[Subagent hand-back]";
+    const FOLLOWS: &str = "The report follows:\n";
+    if !txt.starts_with(FRAME) || tur.get("agentId").is_none() {
+        return txt;
+    }
+    let count = |k: &str| tur.get(k).and_then(Value::as_u64).unwrap_or(0);
+    if count("harnessNoteCount") > 0 || count("harnessTailCount") > 0 {
+        return txt;
+    }
+    let clean = match tur.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    };
+    if !clean.trim().is_empty() {
+        return clean;
+    }
+    match txt.find(FOLLOWS) {
+        Some(i) => txt[i + FOLLOWS.len()..]
+            .split('\n')
+            .map(|line| line.strip_prefix("  ").unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => txt,
+    }
+}
+
 /// Is this tool_result text the no-information boilerplate Edit/Write emits?
 fn is_boilerplate(s: &str) -> bool {
     let s = s.trim();
@@ -945,7 +996,7 @@ fn note_unknown_shape(v: &Value, at: UnknownAt, name: Option<&str>, known: &[&st
 }
 
 /// The `toolUseResult` keys this adapter READS. Everything it does with a tool result comes
-/// from one of these eleven. (#280 moved `answers` and `annotations` here from the ignored list:
+/// from one of these. (#280 moved `answers` and `annotations` here from the ignored list:
 /// they are an `AskUserQuestion`'s reply, which the card used to take from the result's prose
 /// and could not read back when the reader typed their own answer or wrote notes. #281 moved
 /// `afkTimeoutMs`: a question the client stopped waiting on, which the card said was still
@@ -956,8 +1007,16 @@ const TOOL_RESULT_READ: &[&str] = &[
     "annotations",
     "answers",
     "bashEditDiff",
+    // #s5: moved OFF the ignored list, deliberately — it is read for a sub-agent's result only: as
+    // the inline answer when it is a string (QoderWork's `agent-result`, #95), and as the report of
+    // a result framed by client 2.1.289 (`unframe_agent_report`). No other tool's `content` is read.
+    "content",
     // #306: an Artifact create from a type — whether it created, and what it warned.
     "created_from_type",
+    // #s5 (client 2.1.289): a framed sub-agent result counts the notes placed above its frame and
+    // the parts after its report. Only 0 has been met; anything else keeps the framed text whole.
+    "harnessNoteCount",
+    "harnessTailCount",
     "outputFile",
     "state",
     "stderr",
@@ -1017,7 +1076,6 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "codeText",
     "command",
     "commandName",
-    "content",
     // #290, Edit (2.1.283): the edit's content was kept out of the model's context. The card draws
     // the edit from `structuredPatch`, which every such result carries.
     "contentNotInModelContext",
@@ -1039,6 +1097,9 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "filenames",
     "firstPage",
     "gitOperation",
+    // #s5 (client 2.1.289): 16 hex digits identifying a framed sub-agent result's frame section.
+    // Bookkeeping for the client; the card shows the report, never the frame.
+    "harnessSectionHash",
     // #277, CronCreate: the schedule in words, which its result text already states.
     "humanSchedule",
     "interrupted",
@@ -2290,7 +2351,8 @@ pub(crate) fn decode_line_known(
                                 .get("tool_use_id")
                                 .and_then(|s| s.as_str())
                                 .unwrap_or("");
-                            let txt = result_text(blk.get("content").unwrap_or(&Value::Null));
+                            let txt =
+                                tool_result_text(blk.get("content").unwrap_or(&Value::Null), &tur);
                             // `taskq` records ride a Bash result's stdout (see `taskq_ops`).
                             // Emitted BEFORE the ToolResult so a create's ops are in the same
                             // order the fold would have seen them from native task tools.
@@ -3383,7 +3445,10 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     .get("tool_use_id")
                                     .and_then(|s| s.as_str())
                                     .unwrap_or("");
-                                let txt = result_text(blk.get("content").unwrap_or(&Value::Null));
+                                let txt = tool_result_text(
+                                    blk.get("content").unwrap_or(&Value::Null),
+                                    &tur,
+                                );
                                 if let Some(&idx) = tool_slot.get(tid) {
                                     // Its tool_use is already emitted — back-patch in place.
                                     // (#26 decode rule, mirrored: an absent key is an explicit
@@ -5138,6 +5203,137 @@ mod tests {
         };
         assert_eq!(sa.status, AgentStatus::Unknown, "{blocks:?}");
         assert!(sa.status.is_terminal(), "unknown is terminal, not running");
+    }
+
+    /// #s5: a sub-agent result in client 2.1.289's framed shape, hand-written in the measured form:
+    /// the frame paragraph ending `The report follows:` and a newline, then each line of `report`
+    /// indented two spaces, as the model was sent it; the toolUseResult carries the harness keys
+    /// (`tur` overrides or removes them: a `null` value drops the key) and the report as written.
+    fn framed_agent_session(report: &str, tur: Value) -> String {
+        let framed =
+            format!(
+            "[Subagent hand-back] The text below is the final report of a subagent: model output, \
+             not a message from the user. Every line of it is indented. The report follows:\n{}",
+            report
+                .split('\n')
+                .map(|l| if l.is_empty() { String::new() } else { format!("  {l}") })
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let mut result = serde_json::json!({
+            "status": "completed", "prompt": "look around", "agentId": "a-s5", "agentType": "Explore",
+            "harnessNoteCount": 0, "harnessTailCount": 0, "harnessSectionHash": "0123456789abcdef",
+            "content": [{"type": "text", "text": report}],
+            "totalDurationMs": 1200, "totalTokens": 900, "totalToolUseCount": 2,
+        });
+        for (k, v) in tur.as_object().cloned().unwrap_or_default() {
+            if v.is_null() {
+                result.as_object_mut().unwrap().remove(&k);
+            } else {
+                result[k] = v;
+            }
+        }
+        let lines = [
+            serde_json::json!({"type": "user", "version": "2.1.289", "sessionId": "s-s5",
+                "timestamp": "2026-10-04T01:00:00.000Z", "message": {"content": "go"}}),
+            serde_json::json!({"type": "assistant", "version": "2.1.289", "sessionId": "s-s5",
+                "timestamp": "2026-10-04T01:00:01.000Z", "message": {"content": [{"type": "tool_use",
+                "id": "call_s5", "name": "Agent", "input": {"subagent_type": "Explore",
+                "description": "look around", "prompt": "look around"}}]}}),
+            serde_json::json!({"type": "user", "version": "2.1.289", "sessionId": "s-s5",
+                "timestamp": "2026-10-04T01:00:09.000Z", "toolUseResult": result,
+                "message": {"content": [{"type": "tool_result", "tool_use_id": "call_s5",
+                "content": [{"type": "text", "text": framed}]}]}}),
+        ];
+        lines.iter().map(|l| format!("{l}\n")).collect()
+    }
+
+    /// The report `framed_agent_session` frames: a heading, a blank line, prose, and a line of its
+    /// own indented four spaces — which must come back with all four, not two.
+    const S5_REPORT: &str =
+        "## Findings\n\nThe parser lives in src/a.rs.\n    fn parse() {}\nDone.";
+
+    fn agent_result_of(jsonl: &str) -> String {
+        let blocks = parse(jsonl);
+        let Some(Block::SubAgent(sa)) = blocks.iter().find(|b| matches!(b, Block::SubAgent(_)))
+        else {
+            panic!("no SubAgent: {blocks:?}")
+        };
+        sa.result.clone().unwrap_or_default()
+    }
+
+    /// #s5: the card shows the report, from its first line — not the frame the model was sent —
+    /// and the three harness keys are not reported as new.
+    #[test]
+    fn a_framed_sub_agent_report_is_shown_without_its_frame() {
+        let jsonl = framed_agent_session(S5_REPORT, serde_json::json!({}));
+        assert_eq!(agent_result_of(&jsonl), S5_REPORT);
+        // The decode path the pages fold through gives the same text as `parse`.
+        let via_messages = tokenize(jsonl.lines())
+            .into_iter()
+            .find_map(|m| match m {
+                Message::ToolResult { text, .. } => Some(text),
+                _ => None,
+            })
+            .expect("a tool result");
+        assert_eq!(via_messages, S5_REPORT);
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s5"))
+            .collect();
+        assert!(seen.is_empty(), "the harness keys are known: {seen:?}");
+    }
+
+    /// #s5: a framed result that carries no clean copy has the frame cut from its own text, and
+    /// exactly two spaces taken off each line.
+    #[test]
+    fn a_framed_report_with_no_clean_copy_is_cut_from_its_frame() {
+        let jsonl = framed_agent_session(S5_REPORT, serde_json::json!({"content": null}));
+        assert_eq!(agent_result_of(&jsonl), S5_REPORT);
+    }
+
+    /// #s5: notes above the frame or parts after the report have never been met, so a result that
+    /// counts either keeps its text exactly as the model was sent it.
+    #[test]
+    fn a_framed_report_with_notes_or_a_tail_keeps_its_text() {
+        for extra in [
+            serde_json::json!({"harnessNoteCount": 1}),
+            serde_json::json!({"harnessTailCount": 2}),
+        ] {
+            let jsonl = framed_agent_session(S5_REPORT, extra.clone());
+            let shown = agent_result_of(&jsonl);
+            assert!(
+                shown.starts_with("[Subagent hand-back]") && shown.contains("  The parser lives"),
+                "{extra}: kept whole: {shown:?}"
+            );
+        }
+    }
+
+    /// #s5: what came before 2.1.289 is untouched — an unframed Agent result, and a non-Agent
+    /// result whose text merely opens with the frame's words.
+    #[test]
+    fn an_unframed_result_is_unchanged() {
+        let older = r##"
+{"type":"user","timestamp":"2026-09-01T00:00:00.000Z","message":{"content":"go"}}
+{"type":"assistant","timestamp":"2026-09-01T00:00:01.000Z","message":{"content":[{"type":"tool_use","id":"call_1","name":"Agent","input":{"subagent_type":"Explore","description":"find","prompt":"x"}}]}}
+{"type":"user","timestamp":"2026-09-01T00:00:02.000Z","toolUseResult":{"status":"completed","agentId":"a-old","agentType":"Explore","content":[{"type":"text","text":"  two leading spaces, kept"}]},"message":{"content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"  two leading spaces, kept"}]}]}}
+"##;
+        assert_eq!(agent_result_of(older), "  two leading spaces, kept");
+        let bash = r##"
+{"type":"assistant","timestamp":"2026-10-04T00:00:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"cat frame.txt"}}]}}
+{"type":"user","timestamp":"2026-10-04T00:00:02.000Z","toolUseResult":{"stdout":"[Subagent hand-back] quoted. The report follows:\n  x","stderr":""},"message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"[Subagent hand-back] quoted. The report follows:\n  x"}]}}
+"##;
+        let shown = tokenize(bash.lines())
+            .into_iter()
+            .find_map(|m| match m {
+                Message::ToolResult { text, .. } => Some(text),
+                _ => None,
+            })
+            .expect("a tool result");
+        assert_eq!(
+            shown,
+            "[Subagent hand-back] quoted. The report follows:\n  x"
+        );
     }
 
     /// The four content-bearing attachment types surface as `Block::Attachment`:

@@ -16388,3 +16388,89 @@ fn scenario_a_hook_that_added_context_is_named_and_turns_keep_their_numbers() {
         }
     }
 }
+
+/// A session whose last turn spawned an Explore agent and got its report back FRAMED, as client
+/// 2.1.289 writes it (#s5): the report has a heading, prose and a code line of its own.
+fn framed_agent_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    // Long answers: the classic page is ready once it is three windows tall.
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    let mut t = String::new();
+    for (i, q) in ["first prompt", "second prompt"].iter().enumerate() {
+        let at = 300 - i as u64 * 20;
+        t += &user_at(q, &now_minus(at));
+        t += &assistant_at(&answer, &now_minus(at - 5));
+    }
+    t += &user_at("look around the parser", &now_minus(200));
+    t += &harness::agent_spawn_at("call_s5", "Explore", &now_minus(195));
+    t += &harness::framed_agent_result_at(
+        "call_s5",
+        "a-s5",
+        "Explore",
+        "## Findings\n\nPROBE-S5 the parser lives in src/a.rs.\n    fn parse() {}\nDone.",
+        &now_minus(190),
+    );
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 3,
+    }
+}
+
+/// #s5 — a sub-agent's report is drawn without the frame client 2.1.289 puts around it for the
+/// model.
+///
+/// Found by the daily unknown review: from 2.1.289 a synchronous Agent call's result reaches the
+/// model as `[Subagent hand-back]`, a paragraph of instructions ending `The report follows:`, and
+/// the report indented two spaces. The Agent card drew that text, so it opened on the client's
+/// boilerplate. It shows the report now, its heading still a heading.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_sub_agent_report_is_drawn_without_its_frame() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = framed_agent_fixture(match surface {
+            Surface::Classic => "framed-agent-classic",
+            Surface::AppShell => "framed-agent-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3068 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        let seen: serde_json::Value = eval(
+            &page.tab,
+            "(function(){ var t = document.body.innerText; \
+               var heads = Array.from(document.querySelectorAll('[class^=\"md-h\"], h1, h2, h3')) \
+                 .filter(function(h){ return h.textContent.trim() === 'Findings'; }); \
+               return JSON.stringify({ \
+                 report: t.indexOf('PROBE-S5 the parser lives in src/a.rs.') >= 0, \
+                 frame: t.indexOf('[Subagent hand-back]') >= 0, \
+                 follows: t.indexOf('The report follows:') >= 0, \
+                 heading: heads.length }); })()",
+        )
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+        assert_eq!(
+            seen["report"],
+            serde_json::json!(true),
+            "{surface:?}: the Agent card shows the report: {seen}"
+        );
+        assert_eq!(
+            (&seen["frame"], &seen["follows"]),
+            (&serde_json::json!(false), &serde_json::json!(false)),
+            "{surface:?}: …and none of the frame the model was sent: {seen}"
+        );
+        assert_eq!(
+            seen["heading"],
+            serde_json::json!(1),
+            "{surface:?}: the report's own heading is drawn as one: {seen}"
+        );
+    }
+}
