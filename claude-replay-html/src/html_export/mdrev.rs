@@ -189,14 +189,53 @@ fn write_cli(kit: &Kit, dir: &Path) -> std::io::Result<PathBuf> {
 
 // ------------------------------------------------------------------------------------ dispatch
 
-/// Claims `mdrev/<version>/…` (the bundle) and `api/mdrev/…` (the contract); `None` for every other
-/// name, so `service_routes` goes on as before.
+/// Claims `mdrev/<version>/…` (the bundle), `api/mdrev/…` (the contract, as the preview pane mounts
+/// it) and `api/mdrev-review/…` (the same contract WITH shared review, as the detached tab mounts it,
+/// #s10); `None` for every other name, so `service_routes` goes on as before.
+///
+/// The split is by PREFIX so that the pane cannot reach a review store even by a crafted request
+/// (the owner, 2026-10-05: shared review "maybe not in the main interface, but in the full detached
+/// view"). The review prefix offers it only when mdrev's viewer key exists on this machine
+/// ([`viewer`]); without one it is the pane's contract, which is mdrev's own fallback.
 pub(super) fn route(live: Option<&SessionService>, req: &Request) -> Option<HttpResponse> {
     if let Some(rest) = req.name.strip_prefix("mdrev/") {
         return Some(bundle_file(release(), rest));
     }
+    if let Some(rest) = req.name.strip_prefix("api/mdrev-review/") {
+        let key = viewer();
+        return Some(contract(release(), live, req, rest, held(), key.as_ref()));
+    }
     let rest = req.name.strip_prefix("api/mdrev/")?;
-    Some(contract(release(), live, req, rest, held()))
+    Some(contract(release(), live, req, rest, held(), None))
+}
+
+/// mdrev's viewer key (#s10). `--viewer` tells `mdrev-cli` a person acted in the page — what may
+/// open a thread, edit, hide, pair or push — and it believes that only with this key in its
+/// environment: the token in mdrev's state directory, the key mdrev's own viewers use, so a pairing
+/// made in mdrev's viewer or at a terminal is this host's too.
+pub(super) struct Viewer {
+    state_dir: PathBuf,
+    key: String,
+}
+
+/// The viewer key, read on every request to the review prefix (mdrev mints it on its first run,
+/// which may come after the monitor's): `MDREV_STATE_DIR` when absolute, else `~/.mdrev`, file
+/// `token`. `None` without one. Fixed to `None` in a test build, which hands its own to
+/// [`contract`] and never reads this machine's.
+#[cfg(not(test))]
+fn viewer() -> Option<Viewer> {
+    let state_dir = std::env::var_os("MDREV_STATE_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".mdrev")))?;
+    let key = std::fs::read_to_string(state_dir.join("token")).ok()?;
+    let key = key.trim().to_string();
+    (!key.is_empty()).then_some(Viewer { state_dir, key })
+}
+
+#[cfg(test)]
+fn viewer() -> Option<Viewer> {
+    None
 }
 
 /// The largest body `hold` takes: a document at the artifact cap, plus its JSON framing.
@@ -212,6 +251,7 @@ fn contract(
     req: &Request,
     route: &str,
     held: &Mutex<Held>,
+    viewer: Option<&Viewer>,
 ) -> HttpResponse {
     let Some(rel) = rel else {
         return HttpResponse::not_found("this server carries no mdrev");
@@ -240,13 +280,15 @@ fn contract(
             return HttpResponse::not_found("not offered by this host");
         }
         // #s6: mdrev 1.1.18's SHARED REVIEW — threads in a review store, pairing, a Push — is not
-        // offered from the monitor's pane (the default the task set, the owner not having ruled
-        // otherwise): the pane reads, and takes this machine's local notes, and no store is reached
-        // from here. The contract's way to say so is 404 on every review route, after which the
-        // guest draws no Share control and no Push; and this host never passes mdrev's viewer key
-        // or `--viewer`, without which mdrev-cli does nothing shared even if asked.
-        "review" => return HttpResponse::not_found("shared review is not offered by this host"),
-        r if r.starts_with("review/") => {
+        // offered from the monitor's PANE: it reads, and takes this machine's local notes, and no
+        // store is reached from it. The contract's way to say so is 404 on every review route, after
+        // which the guest draws no Share control and no Push; and the pane never passes mdrev's
+        // viewer key or `--viewer`, without which mdrev-cli does nothing shared even if asked. The
+        // detached tab's prefix carries the key (#s10) and goes on to the document's review routes.
+        "review" if viewer.is_none() => {
+            return HttpResponse::not_found("shared review is not offered by this host");
+        }
+        r if r.starts_with("review/") && viewer.is_none() => {
             return HttpResponse::not_found("shared review is not offered by this host");
         }
         _ => {}
@@ -255,7 +297,7 @@ fn contract(
     if root == HELD_ROOT {
         held_route(req, route, held)
     } else {
-        local_route(rel, live, req, route, &root)
+        local_route(rel, live, req, route, &root, viewer)
     }
 }
 
@@ -589,6 +631,7 @@ fn local_route(
     req: &Request,
     route: &str,
     root: &str,
+    viewer: Option<&Viewer>,
 ) -> HttpResponse {
     if let Some(r) = refuse_unpaired(req) {
         return r;
@@ -615,11 +658,15 @@ fn local_route(
         ("GET", "asset") => asset(&d),
         ("GET", "snapshot") => snapshot(&d, req),
         ("GET", "stat") => stat(&d),
-        ("GET", "annotations") => notes_list(rel, &d),
-        ("POST", "annotations") => notes_add(rel, &d, req),
+        ("GET", "annotations") => notes_list(rel, &d, viewer),
+        ("POST", "annotations") => notes_add(rel, &d, req, viewer),
         (_, r) if r.starts_with("annotations/") => {
-            note_op(rel, &d, req, &r["annotations/".len()..])
+            note_op(rel, &d, req, &r["annotations/".len()..], viewer)
         }
+        (_, r) if r == "review" || r.starts_with("review/") => match viewer {
+            Some(v) => review(rel, &d, req, r, v),
+            None => HttpResponse::not_found("shared review is not offered by this host"),
+        },
         _ => HttpResponse::not_found("no such route"),
     }
 }
@@ -907,13 +954,13 @@ fn stat(d: &Doc) -> HttpResponse {
 /// first judges every note against the file as it stands now (what `--notes` shows an agent),
 /// which the viewer never reads and which costs a word diff per snapshot: seconds on a document
 /// with a few dozen notes, after every note, every reply and every poll.
-fn notes_list(rel: &Release, d: &Doc) -> HttpResponse {
-    let out = cli(
-        rel,
-        &d.root,
-        &["notes", "list", "--path", &d.rel, "--all", "--records"],
-        None,
-    );
+fn notes_list(rel: &Release, d: &Doc, viewer: Option<&Viewer>) -> HttpResponse {
+    let mut args = vec!["notes", "list", "--path", &d.rel, "--all", "--records"];
+    // #s10: with the viewer key, the listing carries the shared threads too (`shr-` ids).
+    if viewer.is_some() {
+        args.push("--viewer");
+    }
+    let out = cli_as(rel, &d.root, &args, None, viewer);
     if out.code != 0 {
         return cli_error(&out);
     }
@@ -927,17 +974,26 @@ fn notes_list(rel: &Release, d: &Doc) -> HttpResponse {
 }
 
 /// `POST annotations`: file a note — the viewer's record on stdin, the stored note back, 201.
-fn notes_add(rel: &Release, d: &Doc, req: &Request) -> HttpResponse {
+fn notes_add(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> HttpResponse {
     if let Some(r) = req.deny_mutation("POST") {
         return r;
     }
+    // A note filed `shared: true` opens a thread in the review store (#s10) — the detached tab's to
+    // do, never the pane's, whatever a request says.
+    if viewer.is_none()
+        && serde_json::from_slice::<Value>(req.body)
+            .ok()
+            .and_then(|b| b.get("shared").and_then(Value::as_bool))
+            == Some(true)
+    {
+        return HttpResponse::forbidden("shared review is not offered here");
+    }
     let _one_at_a_time = document_lock(d);
-    let out = cli(
-        rel,
-        &d.root,
-        &["notes", "add", "--path", &d.rel],
-        Some(req.body),
-    );
+    let mut args = vec!["notes", "add", "--path", &d.rel];
+    if viewer.is_some() {
+        args.push("--viewer");
+    }
+    let out = cli_as(rel, &d.root, &args, Some(req.body), viewer);
     if out.code != 0 {
         return cli_error(&out);
     }
@@ -946,7 +1002,13 @@ fn notes_add(rel: &Release, d: &Doc, req: &Request) -> HttpResponse {
 
 /// `PATCH annotations/{id}` (close / reopen), `POST …/{id}/replies`, `DELETE …/{id}`,
 /// `DELETE …/{id}/replies/{at}` — each one `mdrev-cli notes` verb.
-fn note_op(rel: &Release, d: &Doc, req: &Request, rest: &str) -> HttpResponse {
+fn note_op(
+    rel: &Release,
+    d: &Doc,
+    req: &Request,
+    rest: &str,
+    viewer: Option<&Viewer>,
+) -> HttpResponse {
     let (id, tail) = rest.split_once('/').unwrap_or((rest, ""));
     let id_ok = !id.is_empty()
         && id.len() <= 80
@@ -959,6 +1021,17 @@ fn note_op(rel: &Release, d: &Doc, req: &Request, rest: &str) -> HttpResponse {
     let body: Value = serde_json::from_slice(req.body).unwrap_or(Value::Null);
     let args: Vec<String>;
     let (method, ok): (&'static str, &'static str) = match (req.method, tail) {
+        // #s10: a PATCH carrying `{body}` alone is an edit — a person's, in a viewer: their own
+        // unpushed shared record, or an open local note.
+        ("PATCH", "") if viewer.is_some() && body.get("status").is_none() => {
+            let Some(text) = body.get("body").and_then(Value::as_str) else {
+                return status("400 Bad Request", error("expected {status} or {body}"));
+            };
+            args = ["notes", "edit", id, "--body", text]
+                .map(String::from)
+                .to_vec();
+            ("PATCH", "200 OK")
+        }
         ("PATCH", "") => {
             let verb = match body.get("status").and_then(Value::as_str) {
                 Some("resolved") => "resolve",
@@ -1007,7 +1080,15 @@ fn note_op(rel: &Release, d: &Doc, req: &Request, rest: &str) -> HttpResponse {
             ];
             ("DELETE", "200 OK")
         }
-        // #s6: hiding is a shared thread's operation, and this host offers none (above).
+        // Hiding is a shared thread's operation: the detached tab's (#s10), never the pane's (#s6).
+        ("POST", "hide") if viewer.is_some() => {
+            let Some(hidden) = body.get("hidden").and_then(Value::as_bool) else {
+                return status("400 Bad Request", error("expected {hidden}"));
+            };
+            let verb = if hidden { "hide" } else { "unhide" };
+            args = ["notes", verb, id].map(String::from).to_vec();
+            ("POST", "200 OK")
+        }
         ("POST", "hide") => {
             return HttpResponse::not_found("shared review is not offered by this host")
         }
@@ -1017,8 +1098,11 @@ fn note_op(rel: &Release, d: &Doc, req: &Request, rest: &str) -> HttpResponse {
         return r;
     }
     let _one_at_a_time = document_lock(d);
-    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = cli(rel, &d.root, &argv, None);
+    let mut argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    if viewer.is_some() {
+        argv.push("--viewer");
+    }
+    let out = cli_as(rel, &d.root, &argv, None, viewer);
     if out.code != 0 {
         return cli_error(&out);
     }
@@ -1026,6 +1110,111 @@ fn note_op(rel: &Release, d: &Doc, req: &Request, rest: &str) -> HttpResponse {
         return status(ok, Vec::new());
     }
     status(ok, out.out)
+}
+
+/// The shared-review routes (#s10), on the detached tab's prefix only: `GET review` is the store's
+/// state; `POST review/fetch` brings the machine's copy up to date and answers the state after it;
+/// `POST review/push {ids}` sends those unpushed records (a person's press, so `--viewer`);
+/// `POST review/pair {email, name, override?}` confirms the pairing an agent asked for, or answers
+/// 400 with the store's words when the email is not the server account's and nothing was ticked.
+/// Each runs `mdrev-cli review …` for the document's checkout, with the viewer key.
+fn review(rel: &Release, d: &Doc, req: &Request, route: &str, viewer: &Viewer) -> HttpResponse {
+    let run = |args: &[&str]| cli_as(rel, &d.root, args, None, Some(viewer));
+    let state = || {
+        let out = run(&["review", "status"]);
+        if out.code != 0 {
+            return cli_error(&out);
+        }
+        HttpResponse::json(String::from_utf8_lossy(&out.out).into_owned())
+    };
+    let body: Value = serde_json::from_slice(req.body).unwrap_or(Value::Null);
+    match (req.method, route) {
+        ("GET", "review") => state(),
+        ("POST", "review/fetch") => {
+            if let Some(r) = req.deny_mutation("POST") {
+                return r;
+            }
+            let out = run(&["review", "fetch"]);
+            if out.code != 0 {
+                return gateway(&out);
+            }
+            state()
+        }
+        ("POST", "review/push") => {
+            if let Some(r) = req.deny_mutation("POST") {
+                return r;
+            }
+            let ids: Vec<&str> = body
+                .get("ids")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            if ids.iter().any(|id| !record_id(id)) {
+                return status("400 Bad Request", error("no such record id"));
+            }
+            let joined = ids.join(",");
+            let mut args = vec!["review", "push"];
+            if !ids.is_empty() {
+                args.extend(["--ids", &joined]);
+            }
+            args.push("--viewer");
+            let out = run(&args);
+            if out.code != 0 {
+                return gateway(&out);
+            }
+            HttpResponse::json(String::from_utf8_lossy(&out.out).into_owned())
+        }
+        ("POST", "review/pair") => {
+            if let Some(r) = req.deny_mutation("POST") {
+                return r;
+            }
+            let text = |k: &str| {
+                body.get(k)
+                    .and_then(Value::as_str)
+                    .filter(|v| !v.is_empty())
+            };
+            let mut args = vec!["review", "pair", "--confirm", "--viewer"];
+            if let Some(email) = text("email") {
+                args.extend(["--email", email]);
+            }
+            if let Some(name) = text("name") {
+                args.extend(["--name", name]);
+            }
+            if body.get("override").and_then(Value::as_bool) == Some(true) {
+                args.push("--override");
+            }
+            let out = run(&args);
+            if out.code != 0 {
+                return cli_error(&out);
+            }
+            state()
+        }
+        _ => HttpResponse::not_found("no such route"),
+    }
+}
+
+/// A shared record's id, as the store writes it: plain characters only, so it can never reach the
+/// CLI as an option.
+fn record_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 80
+        && !id.starts_with('-')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// A fetch or a push that failed is the store's own words, as a 502 (the contract's code for them).
+fn gateway(out: &Out) -> HttpResponse {
+    let message = out.err.trim().trim_start_matches("mdrev-cli: ");
+    status(
+        "502 Bad Gateway",
+        error(if message.is_empty() {
+            "the review store did not answer"
+        } else {
+            message
+        }),
+    )
 }
 
 /// One document's note writes, one at a time: the CLI rewrites the sidecar on every change but
@@ -1061,6 +1250,19 @@ const CLI_TIMEOUT: Duration = Duration::from_secs(30);
 /// threads while the child runs — a note list larger than a pipe buffer would otherwise hold the
 /// child and this request against each other until the timeout.
 fn cli(rel: &Release, root: &str, args: &[&str], stdin: Option<&[u8]>) -> Out {
+    cli_as(rel, root, args, stdin, None)
+}
+
+/// [`cli`] as a viewer (#s10): with mdrev's viewer key and its state directory in the child's
+/// environment, which is what makes `--viewer` believed. Without one the key is REMOVED from the
+/// environment, so the pane's calls can never inherit it.
+fn cli_as(
+    rel: &Release,
+    root: &str,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    viewer: Option<&Viewer>,
+) -> Out {
     let Some((program, lead)) = rel.cli_argv().and_then(|a| a.split_first()) else {
         return Out {
             code: -1,
@@ -1068,7 +1270,14 @@ fn cli(rel: &Release, root: &str, args: &[&str], stdin: Option<&[u8]>) -> Out {
             err: format!("mdrev-cli needs node >= {NODE_MAJOR}, and this machine has none"),
         };
     };
-    let spawned = Command::new(program)
+    let mut command = Command::new(program);
+    match viewer {
+        Some(v) => command
+            .env("MDREV_VIEWER_KEY", &v.key)
+            .env("MDREV_STATE_DIR", &v.state_dir),
+        None => command.env_remove("MDREV_VIEWER_KEY"),
+    };
+    let spawned = command
         .args(lead)
         .args(args)
         .args(["--root", root])
@@ -1253,8 +1462,15 @@ mod tests {
     /// fails the way the real one does — exit 2 for a missing note, 1 for anything unknown.
     const FAKE_CLI: &str = r#"#!/bin/sh
 here="$(cd "$(dirname "$0")" && pwd)"
-printf '%s\n' "$*" >> "$here/calls.log"
+printf '%s key=%s\n' "$*" "${MDREV_VIEWER_KEY:+set}" >> "$here/calls.log"
 case "$1" in
+  review)
+    case "$2" in
+      status) echo '{"configured":true,"paired":false,"pending":[]}' ;;
+      fetch) echo '{"fetched":true}' ;;
+      push) echo '{"sent":["shr-1"]}' ;;
+      pair) case "$*" in *nobody@*) echo "mdrev-cli: that email is not the account's" >&2; exit 1 ;; esac; echo '{"paired":true}' ;;
+    esac ;;
   revisions)
     git log --format='{"rev":"%H","date":"%aI","author":"%an","subject":"%s","path":"'"$3"'"}' -- "$3" | paste -sd, - | sed 's/^/[/; s/$/]/' ;;
   text) printf 'from the cli' ;;
@@ -1385,7 +1601,7 @@ esac
     }
 
     fn call(f: &Fx, held: &Mutex<Held>, route: &str, req: &Request) -> HttpResponse {
-        contract(Some(&f.rel), Some(&f.live), req, route, held)
+        contract(Some(&f.rel), Some(&f.live), req, route, held, None)
     }
 
     fn req<'a>(method: &'a str, query: &'a str, body: &'a [u8], paired: bool) -> Request<'a> {
@@ -1619,6 +1835,7 @@ esac
             &req("GET", "", b"", true),
             "text",
             &held,
+            None,
         );
         assert_eq!(r.code, "404 Not Found");
         let q = doc_query(&f, "docs/doc.md");
@@ -1679,16 +1896,152 @@ esac
             "404 Not Found",
             "nor is hiding a thread"
         );
-        // …and nothing this host runs carries mdrev's viewer key, without which mdrev-cli does
-        // nothing shared whatever it is asked.
-        let src = include_str!("mdrev.rs");
-        let (key, flag) = (
-            ["MDREV_VIEWER", "_KEY"].concat(),
-            ["\"--", "viewer\""].concat(),
+        // …and nothing the PANE runs carries mdrev's viewer key or `--viewer`, without which
+        // mdrev-cli does nothing shared whatever it is asked (#s10 gives them to the detached tab's
+        // prefix alone). Its note listing and a note write are the calls that would carry them.
+        let _ = call(&f, &held, "annotations", &req("GET", &q, b"", true));
+        let _ = call(
+            &f,
+            &held,
+            "annotations",
+            &req("POST", &q, br#"{"body":"x"}"#, true),
+        );
+        let log = calls(&f);
+        assert!(log.contains("notes list"), "{log}");
+        assert!(
+            !log.contains("--viewer") && !log.contains("key=set"),
+            "the pane passes no viewer key: {log}"
+        );
+        // …and a note asking to open a thread is refused there, whatever the request says.
+        let shared = br#"{"body":"x","shared":true}"#;
+        assert_eq!(
+            call(&f, &held, "annotations", &req("POST", &q, shared, true)).code,
+            "403 Forbidden"
+        );
+    }
+
+    /// #s10, the owner: shared review "maybe not in the main interface, but in the full detached
+    /// view". The detached tab's prefix carries mdrev's viewer key: its review routes answer, from
+    /// `mdrev-cli review …` for the document's checkout, and every note listing and write it makes
+    /// passes `--viewer` with the key in the CLI's environment — while the same request to the pane's
+    /// prefix is the 404 it always was.
+    #[test]
+    fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
+        let f = fx("review");
+        let held = Mutex::new(Held::default());
+        let key = Viewer {
+            state_dir: f.kit.join("state"),
+            key: "k3y".into(),
+        };
+        let q = doc_query(&f, "docs/doc.md");
+        let tab = |method: &str, route: &str, body: &[u8], paired: bool| {
+            contract(
+                Some(&f.rel),
+                Some(&f.live),
+                &req(method, &q, body, paired),
+                route,
+                &held,
+                Some(&key),
+            )
+        };
+        let pane = |method: &str, route: &str, body: &[u8]| {
+            call(&f, &held, route, &req(method, &q, body, true)).code
+        };
+
+        let status = tab("GET", "review", b"", true);
+        assert_eq!(status.code, "200 OK");
+        assert!(String::from_utf8_lossy(&status.body).contains("\"configured\":true"));
+        assert_eq!(pane("GET", "review", b""), "404 Not Found");
+
+        let pushed = tab("POST", "review/push", br#"{"ids":["shr-1"]}"#, true);
+        assert_eq!(pushed.code, "200 OK");
+        assert!(calls(&f).contains("review push --ids shr-1 --viewer --root"));
+        assert_eq!(
+            pane("POST", "review/push", br#"{"ids":["shr-1"]}"#),
+            "404 Not Found"
+        );
+        assert_eq!(
+            tab("POST", "review/push", br#"{"ids":["--all"]}"#, true).code,
+            "400 Bad Request",
+            "an id is never an option"
+        );
+        assert_eq!(
+            tab("POST", "review/push", br#"{"ids":["shr-1"]}"#, false).code,
+            "401 Unauthorized",
+            "a push is a write: paired clients only"
+        );
+
+        assert_eq!(tab("POST", "review/fetch", b"{}", true).code, "200 OK");
+        let paired = tab(
+            "POST",
+            "review/pair",
+            br#"{"email":"me@example.com","name":"Me"}"#,
+            true,
+        );
+        assert_eq!(paired.code, "200 OK");
+        assert!(
+            calls(&f).contains("review pair --confirm --viewer --email me@example.com --name Me")
+        );
+        let refused = tab(
+            "POST",
+            "review/pair",
+            br#"{"email":"nobody@example.com"}"#,
+            true,
+        );
+        assert_eq!(
+            refused.code, "400 Bad Request",
+            "the store's words, as a 400"
+        );
+        assert!(String::from_utf8_lossy(&refused.body).contains("not the account"));
+
+        assert_eq!(
+            tab(
+                "POST",
+                "annotations/shr-1/hide",
+                br#"{"hidden":true}"#,
+                true
+            )
+            .code,
+            "200 OK"
+        );
+        assert!(calls(&f).contains("notes hide shr-1 --viewer --root"));
+        assert_eq!(
+            pane("POST", "annotations/shr-1/hide", br#"{"hidden":true}"#),
+            "404 Not Found"
+        );
+        assert_eq!(
+            tab(
+                "PATCH",
+                "annotations/shr-1",
+                br#"{"body":"better words"}"#,
+                true
+            )
+            .code,
+            "200 OK"
+        );
+        assert!(calls(&f).contains("notes edit shr-1 --body better words --viewer --root"));
+
+        let _ = tab("GET", "annotations", b"", true);
+        let _ = tab(
+            "POST",
+            "annotations",
+            br#"{"body":"x","shared":true}"#,
+            true,
+        );
+        let log = calls(&f);
+        assert!(
+            log.contains("notes list --path docs/doc.md --all --records --viewer --root"),
+            "{log}"
         );
         assert!(
-            !src.contains(&key) && !src.contains(&flag),
-            "the host passes no viewer key"
+            log.contains("notes add --path docs/doc.md --viewer --root"),
+            "{log}"
+        );
+        assert!(
+            log.lines()
+                .filter(|l| l.contains("--viewer"))
+                .all(|l| l.ends_with("key=set")),
+            "every --viewer call carries the key: {log}"
         );
     }
 
@@ -1761,6 +2114,7 @@ esac
                 &req("GET", q, b"", true),
                 route,
                 &held,
+                None,
             )
         };
         let abs = format!("{}/docs/doc.md", f.repo.display());

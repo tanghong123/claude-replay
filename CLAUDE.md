@@ -172,11 +172,21 @@ CI too. Keys: `bindKeymap` tracks ENGAGEMENT as mdrev does — the last click or
 `[data-guest-keys]` — and yields every key while it holds; the host element is NOT focusable. The
 request parser REFUSES (413) a body over its route's bound instead of silently cutting it to 64 KB;
 `hold` gets the artifact cap.
-**The pane offers no SHARED review** (#s6, mdrev 1.1.18+: threads in a review store, pairing, a
-Push): every `review` route and a thread's `hide` answer the contract's 404, after which the guest
-draws no Share control and no Push, and the host never passes mdrev's viewer key or `--viewer`,
-without which `mdrev-cli` does nothing shared. The pane reads and takes this machine's local notes;
-shared threads are mdrev's own viewer's business. Wiring them in is a decision for the owner.
+**SHARED review is the detached tab's, never the pane's** (#s6, then #s10, the owner: "maybe not in
+the main interface, but in the full detached view"; mdrev 1.1.18+: threads in a review store,
+pairing, a Push). The split is by PREFIX: the pane mounts the guest on `api/mdrev/`, where every
+`review` route and a thread's `hide` answer the contract's 404 (the guest then draws no Share and no
+Push), a note filed `shared: true` is refused, and `mdrev-cli` runs with the viewer key REMOVED from
+its environment; the detached tab (`markdown-page.js` → `mountStandalone`) mounts it on
+`api/mdrev-review/`, the same handler with mdrev's viewer key (`MDREV_STATE_DIR` or `~/.mdrev`, file
+`token`, read per request; without one the prefix is the pane's), which answers `review`,
+`review/fetch|push|pair`, `hide` and a body-only `PATCH` edit through `mdrev-cli review|notes …`, and
+passes `--viewer` on every note write and listing. The page's own calls (`hold`, `open`, `resolve`)
+stay on `api/mdrev/`. Every review route goes through the document's stamp like the note routes, and
+the writes through `deny_mutation`; a paired client can reach the prefix directly (the tab is
+withheld on a phone, the routes are not), which is the note routes' bar too. The cases are
+`the_detached_tab_offers_shared_review_and_the_pane_does_not` (unit, and the browser case with a
+hermetic store, state dir and pairing, which also runs `conform` on the review prefix).
 
 `src/codex-ui/{reference.css,reference-shell.html,icons.js}` are **generated**, extracted
 byte-for-byte from `design/agent-monitor-codex-demo.html` by

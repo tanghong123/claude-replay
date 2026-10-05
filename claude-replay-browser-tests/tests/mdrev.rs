@@ -788,3 +788,167 @@ fn mdrev_follows_the_reader_to_another_document_into_its_tab() {
         own.get_url()
     );
 }
+
+/// #s10, the owner: shared review "maybe not in the main interface, but in the full detached
+/// view". A checkout whose `.mdrev.json` names a review store (here a local bare repository), and a
+/// machine paired with it the way the owner pairs — an agent asks, the viewer key confirms — in a
+/// mdrev state directory of the case's own (never this machine's `~/.mdrev`). The pane's guest asks
+/// `review` and is told 404, so it offers no Share and no Push; the detached tab's guest, on the
+/// review prefix, is answered with the store's state, paired. And mdrev's own definition of a host
+/// holds on that prefix too: `mdrev-cli conform`, every route and the note round trip.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("mdrev-shared");
+    let git = |args: &[&str]| {
+        let out = Command::new("git").args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let store = base.join("store.git");
+    git(&["init", "-q", "--bare", &store.display().to_string()]);
+    let r = repo.display().to_string();
+    git(&["-C", &r, "config", "user.email", "t@example.invalid"]);
+    git(&["-C", &r, "config", "user.name", "T"]);
+    git(&["-C", &r, "config", "commit.gpgsign", "false"]);
+    std::fs::write(
+        repo.join(".mdrev.json"),
+        format!(
+            "{{\"review\": {{\"remote\": \"file://{}\", \"branch\": \"refs/notes/mdrev-review\"}}}}\n",
+            store.display()
+        ),
+    )
+    .unwrap();
+    git(&["-C", &r, "add", ".mdrev.json"]);
+    git(&["-C", &r, "commit", "-qm", "the review store"]);
+    let state = base.join("mdrev-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let key = "5e5510a1c0ffee00000000000000000000000000000000000000000000000010";
+    std::fs::write(state.join("token"), key).unwrap();
+    let cli = |args: &[&str], viewer: bool| {
+        let mut c = mdrev_cli();
+        c.args(args)
+            .args(["--root", &r])
+            .env("MDREV_STATE_DIR", &state);
+        if viewer {
+            c.env("MDREV_VIEWER_KEY", key);
+        } else {
+            c.env_remove("MDREV_VIEWER_KEY").env("CLAUDECODE", "1");
+        }
+        let out = c.output().expect("mdrev-cli runs");
+        assert!(
+            out.status.success(),
+            "mdrev-cli {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    cli(
+        &[
+            "review",
+            "pair",
+            "--email",
+            "t@example.invalid",
+            "--name",
+            "T",
+        ],
+        false,
+    );
+    cli(&["review", "pair", "--confirm", "--viewer"], true);
+
+    let port = 2945;
+    let m = Monitor::spawn_with(
+        Kind::V2,
+        port,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
+    let (browser, tab) = chrome_tab();
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1')",
+        "the guide in the pane",
+        Duration::from_secs(30),
+        PANE,
+    );
+    // The pane's prefix, asked with the pane's own document stamp: no shared review there, so its
+    // guest (which does not even ask) could never be offered Share or Push.
+    let pane = eval(
+        &tab,
+        "(async function(){ var d = document.querySelector('.mdrev-pane').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var r = await fetch(d.contract + '/review?' + q); return d.contract + ' ' + r.status; })()",
+    );
+    assert_eq!(
+        pane.as_str().unwrap_or(""),
+        "/api/mdrev 404",
+        "the pane offers no shared review"
+    );
+
+    open_in_a_tab(&tab);
+    let own = opened_tab(&browser);
+    until(
+        &own,
+        "!!document.querySelector('#doc.mdrev-host h1')",
+        "the guide in a tab of its own",
+        Duration::from_secs(30),
+        OWN,
+    );
+    // The detached tab's guest asks for the store's state and brings it up to date, as it does
+    // wherever shared review is offered — read off the browser's own record of the requests.
+    let answered = |route: &str| {
+        format!("performance.getEntriesByType('resource').some(e => e.name.indexOf('/api/mdrev-review/{route}?') >= 0 && e.responseStatus === 200)")
+    };
+    until(
+        &own,
+        &format!("{} && {}", answered("review"), answered("review/fetch")),
+        "the detached tab's guest asking for, and fetching, the review store",
+        Duration::from_secs(20),
+        "JSON.stringify(performance.getEntriesByType('resource').filter(e => e.name.indexOf('/api/mdrev') >= 0).map(e => e.name.replace(/\\?.*/, '') + ' ' + e.responseStatus))",
+    );
+    let paired_as = eval(
+        &own,
+        "(async function(){ var d = document.getElementById('doc').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var r = await fetch(d.contract + '/review?' + q); var j = await r.json(); return r.status + ' ' + (j.paired && j.paired.email); })()",
+    );
+    assert_eq!(
+        paired_as.as_str().unwrap_or(""),
+        "200 t@example.invalid",
+        "…and is answered with the store's state, paired as the case paired"
+    );
+
+    // mdrev's definition of a host, on the review prefix.
+    let fact = |k: &str| {
+        eval(&own, &format!("document.getElementById('doc').dataset.{k}"))
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    };
+    let (root, path, cap) = (fact("root"), fact("path"), fact("cap"));
+    let token = m.token().expect("a paired monitor has a token");
+    let out = mdrev_cli()
+        .args([
+            "conform",
+            "--url",
+            &format!("http://127.0.0.1:{port}/api/mdrev-review"),
+        ])
+        .args(["--path", &path, "--root", &root, "--cap", &cap])
+        .args(["--header", &format!("Cookie: cmauth={token}")])
+        .args(["--review", "--annotate"])
+        .env("MDREV_STATE_DIR", &state)
+        .output()
+        .expect("mdrev-cli runs");
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && report.contains("conforms"),
+        "conform on the review prefix:\n{report}"
+    );
+}

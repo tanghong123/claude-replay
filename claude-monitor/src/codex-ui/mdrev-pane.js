@@ -18,6 +18,11 @@
 // own (#271): `/markdown` serves the viewer as the whole page, at the reader's document and range.
 
 const CONTRACT = "/api/mdrev";
+// #s10: the detached tab mounts the guest under a prefix of its own, which ALSO answers mdrev's
+// shared review (threads, pairing, a Push) — the owner: "maybe not in the main interface, but in the
+// full detached view". The page's own calls (hold, open, resolve) stay on CONTRACT; only the guest's
+// contract prefix differs, so the pane cannot reach a review store even by a crafted request.
+const REVIEW_CONTRACT = "/api/mdrev-review";
 const MARKDOWN = /\.(md|markdown|mdown|mkd)$/i;
 
 /** Whether the pane should hand this tab to mdrev: a Markdown name, by extension. */
@@ -99,7 +104,7 @@ async function capFor(root, origin, target) {
  * mdrev's guide shapes, §10). A theme toggle remounts at that place, since mdrev cannot re-theme a
  * live mount; `moved` hears every move.
  */
-function mountAt(mountMdrev, el, facts, moved) {
+function mountAt(mountMdrev, el, facts, moved, contract = CONTRACT) {
   const origin = { path: facts.path, cap: facts.cap || "" };
   const place = { root: facts.root, path: facts.path, cap: origin.cap, range: facts.range || null };
   // A key pressed while the reader is engaged with it is mdrev's (shared/keymap.js tracks the same
@@ -107,7 +112,7 @@ function mountAt(mountMdrev, el, facts, moved) {
   // `tabindex` on mdrev's host turned a single key press into thousands of trusted keydowns on it.
   el.dataset.guestKeys = "";
   const show = () => {
-    Object.assign(el.dataset, { contract: CONTRACT, root: place.root, path: place.path, cap: place.cap });
+    Object.assign(el.dataset, { contract, root: place.root, path: place.path, cap: place.cap });
     for (const key of ["from", "to", "since"]) {
       const value = place.range?.[key];
       if (value) el.dataset[key] = value; else delete el.dataset[key];
@@ -126,7 +131,7 @@ function mountAt(mountMdrev, el, facts, moved) {
   let mounted = null;
   const mount = () => {
     const at = place.cap ? place : { ...place, ...origin };
-    mounted = mountMdrev(el, { contract: CONTRACT, ...facts, path: at.path, cap: at.cap || undefined, range: at.range || undefined, theme: theme(), onNavigate });
+    mounted = mountMdrev(el, { contract, ...facts, path: at.path, cap: at.cap || undefined, range: at.range || undefined, theme: theme(), onNavigate });
   };
   show();
   mount();
@@ -239,5 +244,5 @@ export async function mountStandalone(el, search = location.search) {
   return mountAt(mountMdrev, el, { ...facts, range: want.range }, place => {
     document.title = place.path.split("/").pop() || name;
     history.replaceState(null, "", standaloneHref(place));
-  });
+  }, REVIEW_CONTRACT);
 }
