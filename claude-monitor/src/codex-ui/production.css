@@ -1265,3 +1265,5 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    shrink-to-fit column. */
 .review-sheet-body{flex:1;min-height:0;min-width:0;position:relative}
 .preview-review{flex:none;min-height:44px}
+/* #s28: the file a shell command changed, leading its note — a path the reader can open. */
+.renderer-note-file{color:var(--blue);cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px;overflow-wrap:anywhere}

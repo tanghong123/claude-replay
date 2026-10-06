@@ -142,7 +142,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // `N lines`, and a fresh Write is no longer opened on the pages (v19's rule withdrawn).
     // v21: #s24 — under an allowlist, a path that is gone when the page is drawn is stamped by its
     // nearest existing ancestor, where it got no file stamp at all.
-    const RECORD_SCHEMA: u16 = 21;
+    // v22: #s28 — the note naming a file a shell command changed carries that file's offer
+    // (`file: {path, sig, fsig?, name}`).
+    const RECORD_SCHEMA: u16 = 22;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);

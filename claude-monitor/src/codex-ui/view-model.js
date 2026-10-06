@@ -337,7 +337,16 @@ export function partsHtml(parts = [], recordId = "", state = null) {
     if (part.p === "pre" || part.p === "raw") return `<pre>${escapeText(part.x || "")}</pre>`;
     // `/context` renders as a report, from the shape the server parsed (#235).
     if (part.p === "ctx") return contextReportHtml(part, APP_CTX);
-    if (part.p === "note") return `<div class="renderer-note"><p>${escapeText(part.x || "")}</p></div>`;
+    if (part.p === "note") {
+      // #s28: a file a shell command changed leads its note as an offered path, the click the
+      // shell's every other path takes (components.js `[data-reference-path]`).
+      const file = part.file, text = part.x || "";
+      if (file?.path && file.name && text.startsWith(file.name)) {
+        const link = `<span class="renderer-note-file" data-reference-path="${escapeText(file.path)}" data-reference-fsig="${escapeText(file.fsig || "")}" data-reference-sig="${escapeText(file.sig || "")}" title="${escapeText(file.path)}">${escapeText(file.name)}</span>`;
+        return `<div class="renderer-note"><p>${link}${escapeText(text.slice(file.name.length))}</p></div>`;
+      }
+      return `<div class="renderer-note"><p>${escapeText(text)}</p></div>`;
+    }
     if (part.p === "num" || part.p === "diff") return codeRows(part, capped, recordId, state);
     if (part.p === "blocks") return "";
     return `<div class="renderer-fallback"><div class="renderer-fallback-row"><span>unknown part</span><code>${escapeText(JSON.stringify(part))}</code></div></div>`;

@@ -1698,10 +1698,30 @@ impl Emitter<'_> {
                                     part.as_ref().map_or((0, 0), |(_, a, d)| (*a, *d));
                                 all_adds += adds;
                                 all_dels += dels;
-                                body.push(json!({
+                                let mut note = json!({
                                     "p": "note",
                                     "x": crate::present::file_edit_summary(file, adds, dels),
-                                }));
+                                });
+                                // #s28, the owner: "can we provide user the ability to open such
+                                // files?" On a served page the file the command changed is OFFERED
+                                // as a head's path is — its stamps under the render policy — and
+                                // both pages draw the name that leads the note as that link.
+                                if self.reveal {
+                                    let at = if cwd.is_empty() {
+                                        self.cwd
+                                    } else {
+                                        cwd.as_str()
+                                    };
+                                    if let Some(abs) = resolve_abs(at, file) {
+                                        let mut offer = offered_path(&abs, false);
+                                        offer.insert(
+                                            "name".into(),
+                                            json!(file.rsplit('/').next().unwrap_or(file)),
+                                        );
+                                        note["file"] = Value::Object(offer);
+                                    }
+                                }
+                                body.push(note);
                                 if let Some((rows, _, _)) = part {
                                     body.push(rows);
                                 }
@@ -4866,6 +4886,67 @@ mod tests {
         assert_eq!(
             out[0]["head"]["interaction"]["answers"][0]["label"],
             "恢复 Classic 默认 (Recommended)"
+        );
+    }
+
+    /// #s28: on a served page each file a shell command changed is OFFERED on the note that names
+    /// it — its path and its reveal stamp, beside the name the note leads with — so a page can draw
+    /// the name as a link; a portable export offers nothing.
+    #[test]
+    fn a_shell_commands_changed_file_is_offered_on_its_note() {
+        let bash = Block::ToolUse {
+            name: "Bash".into(),
+            target: "python3 edit.py".into(),
+            diffs: vec![],
+            output: None,
+            patch: Some(vec![Hunk {
+                old_start: 1,
+                new_start: 1,
+                lines: vec!["-a".into(), "+b".into()],
+                file: Some("/repo/CLAUDE.md".into()),
+            }]),
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+        };
+        let out = stream_from(std::slice::from_ref(&bash), &FoldPolicy::none(), None);
+        let note = out[0]["body"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["p"] == "note")
+            .expect("a note")
+            .clone();
+        assert_eq!(note["x"], json!("CLAUDE.md · Added 1 line, removed 1 line"));
+        assert_eq!(note["file"]["path"], json!("/repo/CLAUDE.md"));
+        assert_eq!(note["file"]["name"], json!("CLAUDE.md"));
+        assert!(note["file"]["sig"].is_string(), "the reveal stamp: {note}");
+        // A portable export (`--dump-html`, `reveal: false`).
+        let (jsonl, _) = build_jsonl(
+            &[bash],
+            &[],
+            &[],
+            &FoldPolicy::none(),
+            "/repo",
+            false,
+            false,
+            None,
+            json!({ "t": "meta" }),
+        );
+        let rec: Value = serde_json::from_str(jsonl.lines().nth(1).unwrap()).unwrap();
+        let note = rec["body"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["p"] == "note")
+            .expect("a note")
+            .clone();
+        assert!(
+            note.get("file").is_none(),
+            "a portable export offers no path: {note}"
         );
     }
 

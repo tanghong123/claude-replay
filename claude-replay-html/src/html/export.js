@@ -159,7 +159,16 @@
     if (p.p === "note") {
       var note = el("div", "note");
       note.appendChild(el("span", null, shared.RESULT_MARK));
-      note.appendChild(el("span", null, p.x));
+      // #s28: a file a shell command changed leads its note as an offered path, as a head's is.
+      var x = p.x || "";
+      if (p.file && p.file.path && p.file.name && x.indexOf(p.file.name) === 0) {
+        var line = el("span", null);
+        line.appendChild(toolPathLink(p.file, p.file.name));
+        line.appendChild(document.createTextNode(x.slice(p.file.name.length)));
+        note.appendChild(line);
+      } else {
+        note.appendChild(el("span", null, x));
+      }
       into.appendChild(note);
       return;
     }

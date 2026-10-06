@@ -1141,3 +1141,101 @@ fn a_phone_opens_a_carried_file_in_mdrev_and_is_offered_no_reveal() {
         PANE,
     );
 }
+
+/// #s28, the owner: "some of the diff blocks are associated with bash command, and they carry a
+/// file name (e.g. CLAUDE.md), can we provide user the ability to open such files?" Each file a
+/// shell command changed leads its note as an offered path, on both pages: the app shell opens it
+/// in the preview pane (mdrev, for Markdown), the classic page offers it as a `.tool-path` with its
+/// stamps.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_file_a_shell_command_changed_opens_from_its_note_on_both_pages() {
+    const SID28: &str = "5e5510a1-0000-4000-8000-0000000000s28";
+    let _serial = serial();
+    let base = base("files-bash-edit-note");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let claude_md = repo.join("CLAUDE.md");
+    std::fs::write(&claude_md, "# Project rules\n\nPROBE_S28_RULES\n").unwrap();
+    let path = claude_md.display().to_string();
+    let call = serde_json::json!({"type": "assistant", "timestamp": at("00:03"), "message": {"role": "assistant",
+        "content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "python3 - <<'PY'\nedit CLAUDE.md\nPY"}}]}});
+    let result = serde_json::json!({"type": "user", "timestamp": at("00:04"), "toolUseResult": {"stdout": "done", "stderr": "",
+        "bashEditDiff": {"moreFiles": 0, "changedFiles": [path], "files": [{"filePath": path, "hunks": [{"oldStart": 3, "oldLines": 1,
+            "newStart": 3, "newLines": 1, "lines": ["-old rule", "+PROBE_S28_RULES"]}]}]}},
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "b1", "content": "done"}]}});
+    let mut jsonl = user_at("tighten the rules", &at("00:01"));
+    jsonl += &harness::assistant_at("Editing the rules file.", &at("00:02"));
+    jsonl += &format!("{call}\n{result}\n");
+    jsonl += &harness::assistant_at("Done.", &at("00:05"));
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(SID28, &jsonl);
+    let m = Monitor::spawn(Kind::V2, 2939, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    m.pair(&tab);
+
+    // The app shell: open the run, then the command, and the note leads with the file as a link.
+    m.open(&tab, &format!("?ui=app&session={SID28}"));
+    until(
+        &tab,
+        "!!document.querySelector('.renderer[data-renderer-kind=\"activity\"]')",
+        "the run holding the command",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+    for _ in 0..3 {
+        eval(&tab, "(function(){ var r = document.querySelector('.renderer.closed'); if (r) r.querySelector(':scope > .renderer-head').click(); return 'ok'; })()");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    until(
+        &tab,
+        &format!(
+            "!!document.querySelector('.renderer-note-file[data-reference-path={:?}]')",
+            path
+        ),
+        "the changed file as a link on its note",
+        Duration::from_secs(20),
+        PANE,
+    );
+    let link = eval(&tab, "(function(){ var l = document.querySelector('.renderer-note-file'); return JSON.stringify({ text: l.textContent, rest: l.parentElement.textContent, fsig: !!l.dataset.referenceFsig }); })()");
+    let link: serde_json::Value =
+        serde_json::from_str(link.as_str().unwrap_or("{}")).unwrap_or_default();
+    assert_eq!(link["text"], "CLAUDE.md", "the name is the link: {link}");
+    assert_eq!(
+        link["rest"], "CLAUDE.md · Added 1 line, removed 1 line",
+        "and the note reads as before: {link}"
+    );
+    assert_eq!(link["fsig"], true, "offered for reading: {link}");
+    eval(
+        &tab,
+        "(function(){ document.querySelector('.renderer-note-file').click(); return 'ok'; })()",
+    );
+    until(
+        &tab,
+        "(function(){ var d = document.querySelector('#previewBody .mdrev-host article.doc'); return !!d && d.innerText.indexOf('PROBE_S28_RULES') >= 0; })()",
+        "the changed file in the preview pane, by mdrev",
+        Duration::from_secs(30),
+        PANE,
+    );
+
+    // The classic page: the same note, the name a `.tool-path` with the file's stamps.
+    m.open(&tab, &format!("?ui=classic&session={SID28}"));
+    let frame = "(function(){ var f = document.querySelector('iframe'); return f && f.contentDocument ? f.contentDocument : document; })()";
+    until(
+        &tab,
+        &format!("!!{frame}.querySelector('#stream .fold')"),
+        "the classic page",
+        Duration::from_secs(30),
+        PANE,
+    );
+    let classic = eval(
+        &tab,
+        &format!("(function(){{ var d = {frame}; d.querySelectorAll('#stream .fold').forEach(function (f) {{ if (f.dataset.open === '0') f.querySelector('.fold-h').click(); }}); d.querySelectorAll('#stream .fold').forEach(function (f) {{ if (f.dataset.open === '0') f.querySelector('.fold-h').click(); }}); var a = [...d.querySelectorAll('.note a.tool-path')].find(function (a) {{ return a.dataset.path === {path:?}; }}); return a ? JSON.stringify({{ text: a.textContent, fsig: !!a.dataset.fsig, sig: !!a.dataset.sig }}) : 'none'; }})()"),
+    );
+    assert_eq!(
+        classic.as_str(),
+        Some(r#"{"text":"CLAUDE.md","fsig":true,"sig":true}"#),
+        "the classic page offers the file on its note"
+    );
+}
