@@ -83,10 +83,20 @@ async function opened(path, sig) {
 }
 
 /** The mount's facts for one tab: which collection, which document, its capability, and how much
- *  of mdrev it gets. */
+ *  of mdrev it gets — and whether it is the FILE (`held: false`) or text the monitor holds.
+ *
+ *  #s27, the owner: a file the transcript carried (a compaction's `file` attachment, which keeps the
+ *  text the agent had in context) opens as ITSELF while it is still on disk with a stamp — mdrev's
+ *  whole viewer, its history and display menu, as a Read target opens — where it used to open the
+ *  carried text in the bare reader, which on a phone did not read as mdrev at all. The carried text
+ *  is what shows when the file is gone. */
 async function factsFor(item) {
-  if (item.text != null) return reader(await hold(item.name, item.text));
-  return opened(item.path || "", item.fsig);
+  if (item.path && item.fsig) {
+    try { return { ...(await opened(item.path, item.fsig)), held: false }; }
+    catch (error) { if (item.text == null) throw error; }
+  }
+  if (item.text != null) return { ...reader(await hold(item.name, item.text)), held: true };
+  return { ...(await opened(item.path || "", item.fsig)), held: false };
 }
 
 /** The capability for another document of the collection the reader moved to — the one `resolve`
@@ -155,11 +165,14 @@ export async function mountMarkdown(el, item, { review = false } = {}) {
   if (!version) return null;
   const [{ mountMdrev }, facts] = await Promise.all([loadMdrev(version), factsFor(item)]);
   // #s12: the phone's review sheet mounts on the review prefix (#s10); the pane never does.
-  const { place, unmount } = mountAt(mountMdrev, el, facts, undefined, review ? REVIEW_CONTRACT : CONTRACT);
-  const carried = item.text != null ? { name: item.name || "", text: item.text } : null;
+  const { held, ...mount } = facts; // `held` is the pane's to know, not an option of mdrev's
+  const { place, unmount } = mountAt(mountMdrev, el, mount, undefined, review ? REVIEW_CONTRACT : CONTRACT);
+  const carried = held ? { name: item.name || "", text: item.text } : null;
   return {
     place,
     unmount,
+    /** Whether the mount shows text the monitor holds rather than the file itself. */
+    held,
     /** Where a tab of its own finds this document; for held text, first leave the tab its own copy
      *  (`window.open` copies this page's sessionStorage into the tab it makes), so a monitor restart
      *  that empties the store cannot strand a tab the reader keeps open. */

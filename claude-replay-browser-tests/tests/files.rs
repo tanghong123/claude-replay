@@ -1024,3 +1024,120 @@ fn an_image_opens_in_a_tab_of_its_own_from_the_pane_and_the_lightbox() {
         held.get_url()
     );
 }
+
+/// #s27, the owner from a phone (a session after a compaction, whose context carried files back
+/// as `file` attachments with their text): the attachment card offered "Reveal in file manager",
+/// which a phone cannot use (#335), and its "Open preview" did not show the file in mdrev. On a
+/// phone the card offers no reveal, and the preview is mdrev's: a Markdown file as a document.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_opens_a_carried_file_in_mdrev_and_is_offered_no_reveal() {
+    const SID27: &str = "5e5510a1-0000-4000-8000-0000000000s27";
+    let _serial = serial();
+    let base = base("files-carried-phone");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(repo.join("memory")).unwrap();
+    let path = repo.join("memory/threat-model.md");
+    std::fs::write(&path, "# Threat model\n\nline 2\n").unwrap();
+    let mut jsonl = user_at("carry on", &at("00:01"));
+    jsonl += &harness::assistant_at("Picking up where the summary left off.", &at("00:02"));
+    jsonl += &harness::restored_file_at(
+        &path.display().to_string(),
+        "../../memory/threat-model.md",
+        3,
+        &at("00:02"),
+    );
+    let output = base.join("tmp/tasks/bbndtuivb.output");
+    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+    std::fs::write(&output, "line 1\nline 2\nline 3\n").unwrap();
+    jsonl += &harness::restored_file_at(
+        &output.display().to_string(),
+        "../../../../tmp/tasks/bbndtuivb.output",
+        3,
+        &at("00:02"),
+    );
+    jsonl += &user_at("next", &at("00:03"));
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(SID27, &jsonl);
+    let m = Monitor::spawn(Kind::V2, 2938, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 440, 956);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={SID27}"));
+    until(
+        &tab,
+        "document.querySelectorAll('[data-attachment-action]').length > 0",
+        "the carried file's card",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+    // Open the card if it starts closed, then read what it offers.
+    eval(&tab, "(function(){ var r = [...document.querySelectorAll('.renderer.closed')].find(function (r) { return r.querySelector('[data-attachment-action]'); }); if (r) r.querySelector(':scope > .renderer-head').click(); return 'ok'; })()");
+    let offers = eval(
+        &tab,
+        "JSON.stringify([...document.querySelectorAll('.renderer-note [data-attachment-action]')].map(function (b) { return b.dataset.attachmentAction + ':' + b.textContent.trim(); }))",
+    );
+    let offers = offers.as_str().unwrap_or("").to_string();
+    let dom = eval(&tab, "(function(){ var a = document.querySelector('[data-attachment-action]'); var r = a && a.closest('.renderer, .turn'); return r ? r.outerHTML.slice(0, 1500) : 'none'; })()");
+    assert!(
+        offers.contains("preview:"),
+        "the card offers its preview: {offers} {dom:?}"
+    );
+    assert!(
+        !offers.contains("reveal:"),
+        "and no file manager on a phone: {offers}"
+    );
+    let open = |name: &str| {
+        eval(&tab, &format!("(function(){{ var b = [...document.querySelectorAll('.renderer-note [data-attachment-action=\"preview\"]')].find(function (b) {{ return /{name}/.test(b.dataset.path); }}); if (!b) return 'none'; b.click(); return 'ok'; }})()"))
+    };
+    assert_eq!(open("threat-model").as_str(), Some("ok"));
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host article.doc')",
+        "the carried Markdown shown by mdrev as a document",
+        Duration::from_secs(30),
+        PANE,
+    );
+    // The FILE, as a Read target opens it (the owner's choice): mdrev mounted over the file's own
+    // directory or checkout — not over the monitor's `held` store, which is where the text the
+    // transcript carried goes, shown in the bare reader.
+    let root = eval(&tab, "(function(){ var h = document.querySelector('#previewBody .mdrev-host'); return h ? h.dataset.root : null; })()");
+    let root = root.as_str().unwrap_or("").to_string();
+    assert!(
+        !root.is_empty() && root != "held" && repo.display().to_string().starts_with(&root),
+        "the file itself, over its own directory: root {root:?}"
+    );
+    // The pane is a sheet over the transcript on a phone: shut it before the next card.
+    eval(&tab, "(function(){ var c = document.querySelector('[data-close-preview], #previewClose, .preview-close'); if (c) c.click(); return 'ok'; })()");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(open("bbndtuivb").as_str(), Some("ok"));
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host .source-view .src-line')",
+        "the carried task output shown by mdrev as source",
+        Duration::from_secs(30),
+        PANE,
+    );
+    // Once the file is gone, the card still shows what the transcript carried, in mdrev's reader.
+    // A reader coming back to the session later: a fresh page, the file gone since.
+    std::fs::remove_file(&output).unwrap();
+    m.open(&tab, &format!("?ui=app&session={SID27}"));
+    until(
+        &tab,
+        "document.querySelectorAll('.renderer-note [data-attachment-action=\"preview\"]').length >= 2 || document.querySelectorAll('.renderer.closed').length > 0",
+        "the session again",
+        Duration::from_secs(30),
+        PANE,
+    );
+    eval(&tab, "(function(){ document.querySelectorAll('.renderer.closed').forEach(function (r) { if (r.querySelector('[data-attachment-action]')) r.querySelector(':scope > .renderer-head').click(); }); return 'ok'; })()");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(open("bbndtuivb").as_str(), Some("ok"));
+    until(
+        &tab,
+        "(function(){ var h = document.querySelector('#previewBody .mdrev-host'); var v = h && h.querySelector('.source-view'); return !!v && h.dataset.root === 'held' && v.innerText.indexOf('line 3') >= 0; })()",
+        "the carried text, held, in mdrev, once the file is gone",
+        Duration::from_secs(30),
+        PANE,
+    );
+}

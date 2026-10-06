@@ -280,7 +280,7 @@ export class Preview {
       this.newTab.hidden = !revealHere();
       this.newTab.setAttribute("aria-label", `Open this ${isMarkdownName(item.name) ? "document" : "file"} in a new tab`);
       // #s13: shared review is threads on a document's notes, and mdrev files no notes on code.
-      this.reviewBtn.hidden = revealHere() || item.text != null || !isMarkdownName(item.name);
+      this.reviewBtn.hidden = revealHere() || handle.held || !isMarkdownName(item.name);
     }).catch(() => {
       if (this.markdownToken !== token) return;
       this.teardownMarkdown();

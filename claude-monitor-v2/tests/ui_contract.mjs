@@ -2857,6 +2857,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#203 favicon cases passed");
 }
 
+// ── #s27: an attachment card offers no file manager on a phone; a carried file opens as itself ──
+{
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /capability\.action !== "reveal" && revealHere\(\) && canReveal\(\{ path: h\.att_path, sig: h\.att_sig \}\)/, "the process card's reveal asks revealHere(), as the prompt card's does (#335)");
+  const pane = readFileSync(new URL("../../claude-monitor/src/codex-ui/mdrev-pane.js", import.meta.url), "utf8");
+  assert.match(pane, /if \(item\.path && item\.fsig\) \{\n    try \{ return \{ \.\.\.\(await opened\(item\.path, item\.fsig\)\), held: false \}; \}\n    catch \(error\) \{ if \(item\.text == null\) throw error; \}/, "a stamped file opens as itself, the carried text only when it cannot");
+  console.log("#s27 attachment card cases passed");
+}
+
 // ── #s23: a change is compact, and says what it did ────────────────────────────────────────
 {
   // The owner, amending #s21: edits nest in their run, and the run line (or a lone edit's own
