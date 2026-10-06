@@ -1441,6 +1441,66 @@ impl Monitor {
     }
 }
 
+/// The name a REMOTE client reaches a monitor by in a case — the tailnet name's stand-in. A
+/// monitor a remote case opens must trust it (`AGENT_MONITOR_TRUSTED_HOSTS`, see
+/// [`Monitor::spawn_remote`]); Chrome maps it to the loopback ([`remote_phone`]).
+pub const REMOTE_HOST: &str = "phone.test";
+
+impl Monitor {
+    /// [`Monitor::spawn`] that also trusts [`REMOTE_HOST`] on its port, so a remote client — a
+    /// phone over the tailnet — can be paired and served (#331).
+    pub fn spawn_remote(kind: Kind, port: u16, base: &Path, stores: Option<&Stores>) -> Monitor {
+        let trusted = format!("{REMOTE_HOST}:{port}");
+        Monitor::spawn_with(
+            kind,
+            port,
+            base,
+            stores,
+            true,
+            &[("AGENT_MONITOR_TRUSTED_HOSTS", &trusted)],
+        )
+    }
+
+    /// This monitor's address as a REMOTE client sees it.
+    pub fn remote_url(&self, path_and_query: &str) -> String {
+        format!(
+            "http://{REMOTE_HOST}:{}/{}",
+            self.port,
+            path_and_query.trim_start_matches('/')
+        )
+    }
+
+    /// Pair `tab` with this monitor as a remote client, and open `path_and_query` there.
+    pub fn open_remote(&self, tab: &headless_chrome::Tab, path_and_query: &str) {
+        let token = self
+            .token()
+            .map(|t| format!("?token={t}"))
+            .unwrap_or_default();
+        tab.navigate_to(&self.remote_url(&token)).unwrap();
+        tab.wait_until_navigated().unwrap();
+        seed_every_bucket(tab);
+        tab.navigate_to(&self.remote_url(path_and_query)).unwrap();
+        tab.wait_until_navigated().unwrap();
+    }
+}
+
+/// A phone reaching a monitor from ELSEWHERE (#s29): its own browser, [`REMOTE_HOST`] mapped to the
+/// loopback and no proxy, emulated at `w`×`h`. Where the reader is decides what the pages offer —
+/// a reveal only to one at this machine — so a case about what a phone is offered over the tailnet
+/// opens it this way; one at 127.0.0.1 is a reader at this machine, whatever its width.
+pub fn remote_phone(
+    w: u32,
+    h: u32,
+) -> (
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    let rule = format!("--host-resolver-rules=MAP {REMOTE_HOST} 127.0.0.1");
+    let (browser, tab) = chrome_with_tab(&[rule.as_str(), "--no-proxy-server"]);
+    phone(&tab, w, h);
+    (browser, tab)
+}
+
 // ── chrome, actions, probes ─────────────────────────────────────────────────────────────────
 
 /// Headless Chrome with timer throttling off — a throttled background tab misses polls and

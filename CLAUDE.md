@@ -322,9 +322,19 @@ attachment`) — AND revealing it in the file manager, wherever the server offer
 file stamp standing in). In the app shell the preview pane — where every "show me the file" click
 lands — carries ONE reveal control in its head for whatever it shows (image, page, Markdown, text,
 a download, an error), and a prompt card carries a reveal beside its own action, as the
-process-surface card did. Not on a phone (#335): its reader is not at the machine a Finder window
-would open on, so `revealHere()` (`shared/capabilities.js`, the 760px breakpoint) withholds every
-reveal — a reveal-only file is COPIED instead — and the pane's ↗, whose page has no way back.
+Only for a reader at THIS machine (#s29, the owner: "only offer reveal in file manager when
+accessing locally and offer download the file when accessing remotely"): `revealHere()`
+(`shared/capabilities.js`) is LOCALITY — the page loaded from a loopback host, the server's own test
+for gzip and masking — and `besideAction` puts, beside a file's own action, the file manager for a
+reader here and the file as a download for one elsewhere (a phone over the tailnet, another
+desktop), each where the server offered what it needs; a reveal-only path is COPIED elsewhere, and
+the classic page's refusal no longer falls back to a reveal for a remote reader. It was the 760px
+breakpoint (#335), which missed a remote desktop and a narrow local window both; the width still
+decides what a phone's LAYOUT withholds (`onPhone()`: the pane's ↗, whose page has no way back) and
+offers (the review sheet). `a_phone_is_never_offered_the_file_manager_on_either_page` is the audit:
+a remote phone clicks every kind of offered path on both pages and meets no reveal and sends no
+`/__reveal`; a local narrow window keeps its reveal. A case about what a REMOTE reader is offered
+opens the monitor as one (`Monitor::spawn_remote`, `harness::remote_phone`, `open_remote`).
 Nothing reveals automatically, not even on a refusal (v2's fallback did):
 a reveal is a side effect on the reader's desktop. Reveal is interim — a web file browser will
 replace it — so no new reveal-only path is added (mdrev's `/reveal` answers 501 for this reason).

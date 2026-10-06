@@ -1,6 +1,6 @@
 // The two-stamp file rule — what a clicked attachment or path may DO — is the shared module's
 // (html/shared/capabilities.js, #46), read here and by the classic page alike.
-import { attachmentCapability, canReveal, groupPointerRuns, isPointerAttachment, referenceAction, revealHere, revealQuery } from "./shared/capabilities.js";
+import { attachmentCapability, besideAction, groupPointerRuns, isPointerAttachment, referenceAction, revealHere, revealQuery } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 import { fleetGroups } from "./shared/fleet.js";
 import { escapeText, partsHtml } from "./view-model.js";
@@ -104,7 +104,7 @@ function rendererBody(view, state) {
     // renderer is `noninteractive` (see above) and draws as ONE head line — the kind, the
     // path, and the path itself clickable through `targetHtml`. A pointer looks like a pointer.
     if (isPointerAttachment(h)) return "";
-    return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button>${capability.action !== "reveal" && revealHere() && canReveal({ path: h.att_path, sig: h.att_sig }) ? `<button class="artifact-link artifact-link-secondary" data-attachment="${escapeText(view.id || "")}" data-attachment-action="reveal" data-path="${escapeText(h.att_path)}" data-sig="${escapeText(h.att_sig)}">Reveal in file manager</button>` : ""}</div>`;
+    return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button>${besideHtml(view, h, capability)}</div>`;
   }
   if (view.renderer === "bash") return `<div class="renderer-terminal ${view.error ? "error" : ""}"><span class="output">${bodyHtml(view, state) || "No output recorded"}</span></div>`;
   // #168: a record with nothing to show renders NOTHING. A card whose only content is a sentence
@@ -194,6 +194,15 @@ export function fleetHtml(run, state) {
 // (`changeBadgeHtml`), and in a run it is nested in the run, whose line carries the sum.
 export const rendererStartsClosed = view =>
   !view.running && !view.interaction && !view.attachment && view.renderer !== "queue";
+
+/** The control beside an attachment's own action (#272, #s29): the file manager for a reader at
+ *  this machine, the file as a download for one elsewhere — what `besideAction` allows. */
+const besideOf = h => besideAction({ path: h.att_path, sig: h.att_sig, fsig: h.att_fsig, data: h.att_datauri, text: h.att_text });
+function besideHtml(view, h, capability) {
+  const beside = besideOf(h);
+  if (!beside || beside === capability.action) return "";
+  return `<button class="artifact-link artifact-link-secondary" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${beside}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${beside === "reveal" ? "Reveal in file manager" : "Download"}</button>`;
+}
 
 /** What a change did, on its head (#s23): green `+N`, red `−N`, beside the target and never in
  *  the state pill — which a phone hides, and which is where the owner looked for it. Empty for
@@ -359,11 +368,12 @@ function renderPromptAttachments(attachments = []) {
     const card = isImage && source
       ? `<button class="prompt-attachment prompt-image" type="button" ${action} title="Enlarge ${escapeText(h.att_name || "image")}"><span class="prompt-image-thumb"><img src="${escapeText(source)}" alt=""></span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "image")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">⤢</span></button>`
       : `<button class="prompt-attachment prompt-file" type="button" ${action}><span class="prompt-file-icon">${escapeText(ext)}</span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "Attachment")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">${glyph}</span></button>`;
-    // The card's own action, and — where that is not already the file manager and the server
-    // offered the reveal stamp — the file manager beside it, as the process-surface card has (#272).
-    if (capability.action === "reveal" || !revealHere() || !canReveal({ path: h.att_path, sig: h.att_sig })) return card;
-    const label = `Reveal ${escapeText(h.att_name || "this file")} in the file manager`;
-    return `<span class="prompt-attachment-pair">${card}<button class="prompt-attachment-reveal" type="button" data-attachment="${escapeText(view.id || "")}" data-attachment-action="reveal" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path)}" data-sig="${escapeText(h.att_sig)}" title="${label}" aria-label="${label}">${svg("folder")}</button></span>`;
+    // The card's own action, and beside it the file manager for a reader at this machine or the
+    // file as a download for one elsewhere (#272, #s29) — never the same thing twice.
+    const beside = besideOf(h);
+    if (!beside || beside === capability.action) return card;
+    const label = beside === "reveal" ? `Reveal ${escapeText(h.att_name || "this file")} in the file manager` : `Download ${escapeText(h.att_name || "this file")}`;
+    return `<span class="prompt-attachment-pair">${card}<button class="prompt-attachment-${beside}" type="button" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${beside}" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}" title="${label}" aria-label="${label}">${beside === "reveal" ? svg("folder") : "↓"}</button></span>`;
   }).join("");
   return `<div class="prompt-attachments" aria-label="Prompt attachments">${cards}</div>`;
 }

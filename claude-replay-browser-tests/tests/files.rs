@@ -1060,11 +1060,10 @@ fn a_phone_opens_a_carried_file_in_mdrev_and_is_offered_no_reveal() {
     jsonl += &user_at("next", &at("00:03"));
     let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID27, &jsonl);
-    let m = Monitor::spawn(Kind::V2, 2938, &base, Some(&stores), true);
-    let (_browser, tab) = chrome_tab();
-    harness::phone(&tab, 440, 956);
-    m.pair(&tab);
-    m.open(&tab, &format!("?ui=app&session={SID27}"));
+    // A phone over the tailnet (#s29: what is offered beside a file depends on where the reader is).
+    let m = Monitor::spawn_remote(Kind::V2, 2938, &base, Some(&stores));
+    let (_browser, tab) = harness::remote_phone(440, 956);
+    m.open_remote(&tab, &format!("?ui=app&session={SID27}"));
     until(
         &tab,
         "document.querySelectorAll('[data-attachment-action]').length > 0",
@@ -1086,7 +1085,11 @@ fn a_phone_opens_a_carried_file_in_mdrev_and_is_offered_no_reveal() {
     );
     assert!(
         !offers.contains("reveal:"),
-        "and no file manager on a phone: {offers}"
+        "and no file manager to a reader elsewhere: {offers}"
+    );
+    assert!(
+        offers.contains("download:"),
+        "but the file, as a download: {offers}"
     );
     let open = |name: &str| {
         eval(&tab, &format!("(function(){{ var b = [...document.querySelectorAll('.renderer-note [data-attachment-action=\"preview\"]')].find(function (b) {{ return /{name}/.test(b.dataset.path); }}); if (!b) return 'none'; b.click(); return 'ok'; }})()"))
@@ -1122,7 +1125,7 @@ fn a_phone_opens_a_carried_file_in_mdrev_and_is_offered_no_reveal() {
     // Once the file is gone, the card still shows what the transcript carried, in mdrev's reader.
     // A reader coming back to the session later: a fresh page, the file gone since.
     std::fs::remove_file(&output).unwrap();
-    m.open(&tab, &format!("?ui=app&session={SID27}"));
+    m.open_remote(&tab, &format!("?ui=app&session={SID27}"));
     until(
         &tab,
         "document.querySelectorAll('.renderer-note [data-attachment-action=\"preview\"]').length >= 2 || document.querySelectorAll('.renderer.closed').length > 0",
@@ -1237,5 +1240,223 @@ fn a_file_a_shell_command_changed_opens_from_its_note_on_both_pages() {
         classic.as_str(),
         Some(r#"{"text":"CLAUDE.md","fsig":true,"sig":true}"#),
         "the classic page offers the file on its note"
+    );
+}
+
+/// What offers the file manager, visibly, anywhere on either page right now: the controls that
+/// exist only for it, and any visible control whose words or title say "reveal" (not "revealed").
+const REVEAL_CONTROLS: &str = r#"(function () {
+  var docs = [document];
+  document.querySelectorAll('iframe').forEach(function (f) { try { if (f.contentDocument) docs.push(f.contentDocument); } catch (e) {} });
+  var seen = [];
+  docs.forEach(function (d) {
+    d.querySelectorAll('button, a, span, [role="button"]').forEach(function (e) {
+      if (!e.offsetWidth && !e.offsetHeight) return;
+      if (e.hidden || e.closest('[hidden]')) return;
+      var own = [].map.call(e.childNodes, function (n) { return n.nodeType === 3 ? n.textContent : ''; }).join('').trim();
+      var said = (own + ' ' + (e.getAttribute('title') || '') + ' ' + (e.getAttribute('aria-label') || '')).toLowerCase();
+      var only = e.matches('[data-attachment-action="reveal"], .prompt-attachment-reveal, [data-preview-reveal], [data-lightbox-reveal], .preview-reveal, .areveal');
+      if (only || (/\breveal\b/.test(said) && !/revealed/.test(said))) seen.push((e.className || e.tagName) + ': ' + said.slice(0, 60));
+    });
+  });
+  return JSON.stringify(seen);
+})()"#;
+
+/// #s29, the owner: "Can you extend an audit to make sure we have no reveal in file manager in the
+/// mobile rendering path?" (#s27 had found the process card still offering one on a phone.) A phone,
+/// on both pages, over a session that offers every kind of path the pages draw — a Read target, one
+/// outside the session (refused) and one gone, an Edit, a Write, a multi-file delivery, a prompt
+/// attachment, a carried file, a pointer run, an image, a shell command's changed file. Everything
+/// is expanded and every offered path and attachment is clicked: no control may offer the file
+/// manager, and no `/__reveal` request may leave the page (the stub records it instead).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_is_never_offered_the_file_manager_on_either_page() {
+    const SID29: &str = "5e5510a1-0000-4000-8000-0000000000s29";
+    let _serial = serial();
+    let base = base("files-phone-fm-audit");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    let elsewhere = base.join("elsewhere");
+    for d in [repo.join("src"), repo.join("memory"), elsewhere.clone()] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let files = [
+        ("src/lib.rs", "fn lib() {}\n"),
+        ("prompt-note.md", "# Prompt note\n"),
+        ("memory/m.md", "# Memory\n"),
+        ("a.txt", "a\n"),
+        ("b.txt", "b\n"),
+        ("CLAUDE.md", "# Rules\n"),
+    ];
+    for (f, body) in files {
+        std::fs::write(repo.join(f), body).unwrap();
+    }
+    std::fs::write(repo.join("shot.png"), PNG).unwrap();
+    std::fs::write(elsewhere.join("secret.txt"), "outside\n").unwrap();
+    let p = |f: &str| repo.join(f).display().to_string();
+    let mut j = user_at("audit everything", &at("00:01"));
+    j += &harness::restored_file_at(&p("prompt-note.md"), "prompt-note.md", 1, &at("00:01"));
+    j += &harness::assistant_at("Reading, editing and delivering.", &at("00:02"));
+    j += &read_tool_at("r1", &p("src/lib.rs"), &at("00:03"));
+    j += &tool_result_at("r1", &at("00:03"));
+    j += &read_tool_at(
+        "r2",
+        &elsewhere.join("secret.txt").display().to_string(),
+        &at("00:04"),
+    );
+    j += &tool_result_at("r2", &at("00:04"));
+    j += &read_tool_at("r3", &p("gone.rs"), &at("00:05"));
+    j += &tool_result_at("r3", &at("00:05"));
+    j += &read_tool_at("r4", &p("shot.png"), &at("00:06"));
+    j += &tool_result_at("r4", &at("00:06"));
+    j += &harness::edit_tool_at("e1", &p("src/lib.rs"), &at("00:07"));
+    j += &harness::write_tool_at("w1", &p("new.py"), 4, &at("00:08"));
+    j += &harness::send_user_file_at("s1", &[&p("a.txt"), &p("b.txt")], &at("00:09"));
+    j += &harness::assistant_at("The context carried these back.", &at("00:10"));
+    j += &harness::restored_file_at(&p("memory/m.md"), "../../memory/m.md", 1, &at("00:11"));
+    for (i, f) in ["src/lib.rs", "a.txt", "b.txt"].iter().enumerate() {
+        j += &harness::carried_file_at(&p(f), f, &at(&format!("00:1{}", i + 2)));
+    }
+    let path = p("CLAUDE.md");
+    let call = serde_json::json!({"type": "assistant", "timestamp": at("00:20"), "message": {"role": "assistant",
+        "content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "python3 - <<'PY'\nedit\nPY"}}]}});
+    let result = serde_json::json!({"type": "user", "timestamp": at("00:21"), "toolUseResult": {"stdout": "done", "stderr": "",
+        "bashEditDiff": {"moreFiles": 0, "changedFiles": [path], "files": [{"filePath": path, "hunks": [{"oldStart": 1, "oldLines": 1,
+            "newStart": 1, "newLines": 1, "lines": ["-# Old", "+# Rules"]}]}]}},
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "b1", "content": "done"}]}});
+    j += &format!("{call}\n{result}\n");
+    j += &harness::assistant_at("Done.", &at("00:22"));
+    let j = j.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(SID29, &j);
+    let m = Monitor::spawn_remote(Kind::V2, 2940, &base, Some(&stores));
+    let (_browser, tab) = harness::remote_phone(440, 956);
+    let stub = |tab: &headless_chrome::Tab| {
+        eval(tab, STUB_REVEAL);
+        eval(tab, "(function(){ document.querySelectorAll('iframe').forEach(function (f) { try { var w = f.contentWindow; w.__reveals = window.__reveals; var real = w.fetch; w.fetch = function (u, o) { var s = String(u); if (/__reveal\\?/.test(s)) { window.__reveals.push(s); return Promise.resolve(new Response('', {status: 200})); } return real(u, o); }; } catch (e) {} }); return 'ok'; })()");
+    };
+    let mut leaks: Vec<String> = Vec::new();
+    let scan = |tab: &headless_chrome::Tab, at: &str, leaks: &mut Vec<String>| {
+        let seen = eval(tab, REVEAL_CONTROLS);
+        let seen = seen.as_str().unwrap_or("[]");
+        if seen != "[]" {
+            leaks.push(format!("{at}: {seen}"));
+        }
+    };
+
+    // ── The app shell ──────────────────────────────────────────────────────────────────────
+    m.open_remote(&tab, &format!("?ui=app&session={SID29}"));
+    until(
+        &tab,
+        "document.querySelectorAll('[data-reference-path]').length >= 3",
+        "the offered paths",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+    stub(&tab);
+    for _ in 0..12 {
+        let more = eval(&tab, "(function(){ var b = document.querySelector('[data-process-more][aria-expanded=\"false\"]') || document.querySelector('.renderer.closed > button.renderer-head') || document.querySelector('.prompt-expand[aria-expanded=\"false\"]'); if (!b) return 'done'; b.click(); return 'more'; })()");
+        if more.as_str() == Some("done") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    scan(&tab, "app shell, everything open", &mut leaks);
+    let targets = eval(
+        &tab,
+        "document.querySelectorAll('[data-reference-path], [data-attachment-action]').length",
+    )
+    .as_i64()
+    .unwrap_or(0);
+    assert!(
+        targets >= 12,
+        "the fixture offers every kind of path: {targets}"
+    );
+    for i in 0..targets {
+        let what = eval(&tab, &format!("(function(){{ var e = document.querySelectorAll('[data-reference-path], [data-attachment-action]')[{i}]; if (!e) return 'none'; var w = (e.dataset.attachmentAction || 'path') + ' ' + (e.dataset.referencePath || e.dataset.path || ''); e.click(); return w; }})()"));
+        std::thread::sleep(Duration::from_millis(700));
+        scan(
+            &tab,
+            &format!("app shell after {}", what.as_str().unwrap_or("?")),
+            &mut leaks,
+        );
+        eval(&tab, "(function(){ var l = document.querySelector('.image-lightbox.open [data-lightbox-close], .image-lightbox.open .image-lightbox-close'); if (l) l.click(); document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})); var c = document.getElementById('closePreview'); if (c && c.offsetWidth) c.click(); return 'ok'; })()");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    // ── The classic page ───────────────────────────────────────────────────────────────────
+    m.open_remote(&tab, &format!("?ui=classic&session={SID29}"));
+    let frame = "(function(){ var f = document.querySelector('iframe'); return f && f.contentDocument ? f.contentDocument : document; })()";
+    until(
+        &tab,
+        &format!("{frame}.querySelectorAll('#stream .fold').length > 0"),
+        "the classic page",
+        Duration::from_secs(30),
+        PANE,
+    );
+    stub(&tab);
+    for _ in 0..3 {
+        eval(&tab, &format!("(function(){{ var d = {frame}; d.querySelectorAll('#stream .fold').forEach(function (f) {{ if (f.dataset.open === '0') f.querySelector('.fold-h').click(); }}); return 'ok'; }})()"));
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    scan(&tab, "classic, everything open", &mut leaks);
+    // Every path link, and every attachment whose click opens or reveals (not a download).
+    let sel = "a.tool-path, .adl[title=\"open\"], .adl[title=\"copy path\"], .adl[title=\"reveal in file manager\"]";
+    let targets = eval(&tab, &format!("{frame}.querySelectorAll('{sel}').length"))
+        .as_i64()
+        .unwrap_or(0);
+    assert!(
+        targets >= 8,
+        "the classic page offers the paths too: {targets}"
+    );
+    for i in 0..targets {
+        let what = eval(&tab, &format!("(function(){{ var e = {frame}.querySelectorAll('{sel}')[{i}]; if (!e) return 'none'; var w = e.className + ' ' + (e.dataset.path || e.textContent); e.click(); return w; }})()"));
+        std::thread::sleep(Duration::from_millis(700));
+        scan(
+            &tab,
+            &format!("classic after {}", what.as_str().unwrap_or("?")),
+            &mut leaks,
+        );
+        eval(&tab, &format!("(function(){{ var d = {frame}; d.querySelectorAll('.lightbox').forEach(function (b) {{ b.remove(); }}); return 'ok'; }})()"));
+    }
+
+    let sent = eval(&tab, "JSON.stringify(window.__reveals || [])");
+    assert_eq!(
+        sent.as_str(),
+        Some("[]"),
+        "no /__reveal request left a phone over the tailnet: {sent:?}"
+    );
+    assert!(
+        leaks.is_empty(),
+        "a phone over the tailnet was offered the file manager:\n{}",
+        leaks.join("\n")
+    );
+
+    // The other half, so the audit cannot pass by offering nothing anywhere: a reader at THIS
+    // machine — even in a window as narrow as a phone — is offered the file manager.
+    let (_local, here) = chrome_tab();
+    harness::phone(&here, 440, 956);
+    m.pair(&here);
+    m.open(&here, &format!("?ui=app&session={SID29}"));
+    until(
+        &here,
+        "document.querySelectorAll('[data-reference-path]').length >= 3",
+        "the offered paths, locally",
+        Duration::from_secs(30),
+        PANE,
+    );
+    eval(
+        &here,
+        &format!(
+            "(function(){{ var e = document.querySelector('[data-reference-path={:?}]'); e.click(); return 'ok'; }})()",
+            p("src/lib.rs")
+        ),
+    );
+    until(
+        &here,
+        "(function(){ var b = document.querySelector('.preview-reveal'); return !!b && !b.hidden && !!b.offsetWidth; })()",
+        "the pane's reveal, offered to a reader at this machine",
+        Duration::from_secs(20),
+        PANE,
     );
 }

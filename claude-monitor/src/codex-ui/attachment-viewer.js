@@ -1,4 +1,4 @@
-import { canReveal, revealHere, revealQuery } from "./shared/capabilities.js";
+import { besideAction, onPhone, revealQuery } from "./shared/capabilities.js";
 import { createImageView } from "./shared/image-view.js";
 import { imageTabbable, imageTabHref } from "./preview.js";
 
@@ -14,7 +14,7 @@ export class AttachmentViewer {
     this.root.setAttribute("role", "dialog");
     this.root.setAttribute("aria-modal", "true");
     this.root.setAttribute("aria-label", "Image preview");
-    this.root.innerHTML = `<div class="image-lightbox-card"><div class="image-lightbox-head"><div class="image-lightbox-title"><strong data-lightbox-name></strong><span class="image-lightbox-status" data-lightbox-status></span></div><div class="image-lightbox-actions"><button class="smallbtn" type="button" data-lightbox-newtab hidden aria-label="Open this image in a new tab" title="Open in a new tab">↗</button><button class="smallbtn" type="button" data-lightbox-sidebar>opens in the preview pane</button><button class="smallbtn" type="button" data-lightbox-reveal hidden>Reveal in file manager</button><button class="image-lightbox-close" type="button" data-lightbox-close aria-label="Close preview">×</button></div></div><div class="image-lightbox-stage"><img data-lightbox-image alt=""><div class="image-zoom" data-zoom-bar hidden><button class="image-zoom-btn" type="button" data-zoom="out" aria-label="Zoom out" title="Zoom out (−)">−</button><button class="image-zoom-level" type="button" data-zoom="fit" title="Fit to screen (0)"><span data-zoom-percent>100%</span></button><button class="image-zoom-btn" type="button" data-zoom="in" aria-label="Zoom in" title="Zoom in (+)">+</button><button class="image-zoom-btn image-zoom-actual" type="button" data-zoom="actual" title="Actual size (1)">1:1</button></div><div class="image-lightbox-loading"><span aria-hidden="true"></span><small>Loading image…</small></div><div class="image-lightbox-error" hidden><span class="image-lightbox-error-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4.8 5.5A2.5 2.5 0 0 1 7.3 3h9.4a2.5 2.5 0 0 1 2.5 2.5v10.1M18.5 19H7.3a2.5 2.5 0 0 1-2.5-2.5V8.8M7.5 14l2.1-2.1 2.6 2.6 1.2-1.2M3 3l18 18"/></svg></span><strong>That image cannot be opened</strong><span data-lightbox-error-detail>Only the original path was kept; a temporary file may have been cleaned up or moved.</span><div class="image-lightbox-error-actions"><button class="smallbtn" type="button" data-lightbox-copy>Copy original path</button><button class="smallbtn primary" type="button" data-lightbox-close>Close</button></div></div></div></div>`;
+    this.root.innerHTML = `<div class="image-lightbox-card"><div class="image-lightbox-head"><div class="image-lightbox-title"><strong data-lightbox-name></strong><span class="image-lightbox-status" data-lightbox-status></span></div><div class="image-lightbox-actions"><button class="smallbtn" type="button" data-lightbox-newtab hidden aria-label="Open this image in a new tab" title="Open in a new tab">↗</button><button class="smallbtn" type="button" data-lightbox-sidebar>opens in the preview pane</button><button class="smallbtn" type="button" data-lightbox-reveal hidden>Reveal in file manager</button><button class="smallbtn" type="button" data-lightbox-download hidden>Download</button><button class="image-lightbox-close" type="button" data-lightbox-close aria-label="Close preview">×</button></div></div><div class="image-lightbox-stage"><img data-lightbox-image alt=""><div class="image-zoom" data-zoom-bar hidden><button class="image-zoom-btn" type="button" data-zoom="out" aria-label="Zoom out" title="Zoom out (−)">−</button><button class="image-zoom-level" type="button" data-zoom="fit" title="Fit to screen (0)"><span data-zoom-percent>100%</span></button><button class="image-zoom-btn" type="button" data-zoom="in" aria-label="Zoom in" title="Zoom in (+)">+</button><button class="image-zoom-btn image-zoom-actual" type="button" data-zoom="actual" title="Actual size (1)">1:1</button></div><div class="image-lightbox-loading"><span aria-hidden="true"></span><small>Loading image…</small></div><div class="image-lightbox-error" hidden><span class="image-lightbox-error-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4.8 5.5A2.5 2.5 0 0 1 7.3 3h9.4a2.5 2.5 0 0 1 2.5 2.5v10.1M18.5 19H7.3a2.5 2.5 0 0 1-2.5-2.5V8.8M7.5 14l2.1-2.1 2.6 2.6 1.2-1.2M3 3l18 18"/></svg></span><strong>That image cannot be opened</strong><span data-lightbox-error-detail>Only the original path was kept; a temporary file may have been cleaned up or moved.</span><div class="image-lightbox-error-actions"><button class="smallbtn" type="button" data-lightbox-copy>Copy original path</button><button class="smallbtn primary" type="button" data-lightbox-close>Close</button></div></div></div></div>`;
     document.body.append(this.root);
     this.image = this.root.querySelector("[data-lightbox-image]");
     this.error = this.root.querySelector(".image-lightbox-error");
@@ -32,6 +32,7 @@ export class AttachmentViewer {
       else if (event.target.closest("[data-lightbox-sidebar]")) { this.close(); this.actions.openPreview?.(this.item); }
       else if (event.target.closest("[data-lightbox-copy]")) this.copyPath(this.item);
       else if (event.target.closest("[data-lightbox-reveal]")) this.reveal(this.item);
+      else if (event.target.closest("[data-lightbox-download]")) this.download(this.item);
       // #s11: the image in a tab of its own, on the desktop. Not `noopener`: the tab inherits a copy
       // of this page's sessionStorage, which is how embedded bytes reach it.
       else if (event.target.closest("[data-lightbox-newtab]")) { const href = imageTabHref(this.item, this.image.getAttribute("src") || ""); if (href) window.open(href, "_blank"); }
@@ -89,9 +90,12 @@ export class AttachmentViewer {
     status.textContent = item.fallback ? "original" : item.embedded ? "saved with the session" : "temporary file";
     status.className = `image-lightbox-status ${item.embedded ? "embedded" : "temporary"}`;
     this.root.querySelector("[data-lightbox-sidebar]").hidden = !item.source;
-    this.root.querySelector("[data-lightbox-reveal]").hidden = !canReveal(item) || !revealHere();
+    // #s29: the file manager for a reader at this machine, the image as a download for one elsewhere.
+    const beside = besideAction(item);
+    this.root.querySelector("[data-lightbox-reveal]").hidden = beside !== "reveal";
+    this.root.querySelector("[data-lightbox-download]").hidden = beside !== "download";
     // #s11 (#335: not on a phone, where a tab has no way back).
-    this.root.querySelector("[data-lightbox-newtab]").hidden = !revealHere() || !imageTabbable(item, item.source || "");
+    this.root.querySelector("[data-lightbox-newtab]").hidden = onPhone() || !imageTabbable(item, item.source || "");
     this.error.hidden = true;
     this.root.querySelector(".image-lightbox-loading").hidden = false;
     this.image.hidden = false;
@@ -136,6 +140,8 @@ export class AttachmentViewer {
     try {
       let response;
       if (item.data) response = await fetch(item.data);
+      // #s29: text the transcript carried, with no file stamp to fetch the file by, is its own bytes.
+      else if (item.text != null && !(item.path && item.fsig)) response = new Response(new Blob([item.text], { type: "text/plain;charset=utf-8" }));
       else response = await fetch(`/file?path=${encodeURIComponent(item.path || "")}&sig=${encodeURIComponent(item.fsig || "")}`, { cache: "no-store" });
       if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });
       const url = URL.createObjectURL(await response.blob());

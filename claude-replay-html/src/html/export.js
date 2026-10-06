@@ -662,7 +662,7 @@
         // #272/#324: a file the page SHOWS from the session's copy (a pasted image, once the client
         // named where it saved the original) is still a file on disk: the file manager beside it,
         // wherever the server offered the reveal stamp.
-        // #335: not on a phone, whose reader is not at the machine a Finder window would open on.
+        // #335/#s29: only for a reader at this machine — a Finder window opens on the monitor's Mac.
         if ((text != null || datauri != null) && path != null && sig && shared.revealHere()) {
             var rv = el("span", "adl areveal", "reveal");
             rv.title = "reveal in file manager";
@@ -996,14 +996,26 @@
     capText.textContent = path;
     capPath.appendChild(capText);
     cap.appendChild(capPath);
-    var rev = el("button", "lb-act", "Reveal in file manager");
-    rev.onclick = function (ev) {
-      ev.stopPropagation();
-      var p = reveal ? reveal() : null;
-      if (!p || !p.then) { rev.textContent = reveal ? "revealed ✓" : "not offered"; return; }
-      p.then(function (r) { rev.textContent = r && r.ok ? "revealed ✓" : "not found"; }, function () { rev.textContent = "not found"; });
-    };
-    cap.appendChild(rev);
+    // #s29: the file manager for a reader at this machine; for one elsewhere, the file itself as a
+    // download — the bytes this view already holds.
+    if (shared.revealHere()) {
+      var rev = el("button", "lb-act", "Reveal in file manager");
+      rev.onclick = function (ev) {
+        ev.stopPropagation();
+        var p = reveal ? reveal() : null;
+        if (!p || !p.then) { rev.textContent = reveal ? "revealed ✓" : "not offered"; return; }
+        p.then(function (r) { rev.textContent = r && r.ok ? "revealed ✓" : "not found"; }, function () { rev.textContent = "not found"; });
+      };
+      cap.appendChild(rev);
+    } else if (text != null || imgUrl != null) {
+      var dl = el("button", "lb-act", "Download");
+      dl.onclick = function (ev) {
+        ev.stopPropagation();
+        if (text != null) { saveBlob(path, new Blob([text], { type: "text/plain;charset=utf-8" })); return; }
+        fetch(imgUrl).then(function (r) { return r.blob(); }).then(function (b) { saveBlob(path, b); });
+      };
+      cap.appendChild(dl);
+    }
     box.appendChild(cap);
     function close() {
       if (shown) shown.view.destroy();
@@ -1046,8 +1058,18 @@
   // manager instead, which is what those cases want.
   function openArtifact(q, fallback) {
     var path = decodeURIComponent((/(?:^|&)path=([^&]*)/.exec(q) || [, ""])[1]);
+    // #s29: for a reader elsewhere a refusal never falls back to the file manager — they are not at the
+    // machine a Finder window would open on (#335). The file view says why instead, in the
+    // server's own words (gone, outside the allowlist, a removed worktree).
+    var refused = function (r) {
+      if (shared.revealHere()) { fallback(r ? r.status : 0); return; }
+      var say = function (words) { fileview(path, null, words, null); };
+      if (!r) { say("The monitor could not be reached."); return; }
+      r.text().then(function (t) { say(t || ("Not shown here (HTTP " + r.status + ").")); },
+        function () { say("Not shown here (HTTP " + r.status + ")."); });
+    };
     fetch("file?" + q).then(function (r) {
-      if (!r.ok) { fallback(r.status); return null; }
+      if (!r.ok) { refused(r); return null; }
       var ct = r.headers.get("content-type") || "";
       var cd = r.headers.get("content-disposition") || "";
       if (cd.indexOf("attachment") >= 0) {
@@ -1057,7 +1079,7 @@
         return r.blob().then(function (b) { fileview(path, URL.createObjectURL(b), null, fallback); });
       }
       return r.text().then(function (t) { fileview(path, null, t, fallback); });
-    }).catch(function () { fallback(0); });
+    }).catch(function () { refused(null); });
   }
 
   // Total messages — what a reader means by the word: the top-level user and assistant

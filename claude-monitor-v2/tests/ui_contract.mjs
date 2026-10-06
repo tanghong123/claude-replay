@@ -2857,13 +2857,29 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#203 favicon cases passed");
 }
 
-// ── #s27: an attachment card offers no file manager on a phone; a carried file opens as itself ──
+// ── #s27/#s29: beside a file, the file manager for a reader HERE, a download for one elsewhere ───
 {
+  const caps = await import("../../claude-replay-html/src/html/shared/capabilities.js");
+  const at = host => { globalThis.location = { hostname: host }; };
+  const file = { path: "/w/a.md", sig: "r", fsig: "f" };
+  at("127.0.0.1");
+  assert.equal(caps.revealHere(), true, "a page loaded from the loopback is at this machine");
+  assert.equal(caps.besideAction(file), "reveal");
+  assert.equal(caps.besideAction({ path: "/w/a.md", fsig: "f" }), null, "no reveal stamp, no reveal");
+  at("localhost"); assert.equal(caps.revealHere(), true);
+  at("[::1]"); assert.equal(caps.revealHere(), true);
+  at("hong-mac.tail1234.ts.net");
+  assert.equal(caps.revealHere(), false, "a page loaded over the tailnet is elsewhere — whatever its width");
+  assert.equal(caps.besideAction(file), "download", "…and is offered the file as a download");
+  assert.equal(caps.besideAction({ path: "/w/a.md", sig: "r" }), null, "a reveal stamp alone downloads nothing");
+  assert.equal(caps.besideAction({ text: "carried" }), "download", "carried text is its own bytes");
+  assert.equal(caps.referenceAction({ revealSig: "r", reveal: caps.revealHere() }), "copy", "a reveal-only path is copied elsewhere");
+  delete globalThis.location;
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
-  assert.match(comp, /capability\.action !== "reveal" && revealHere\(\) && canReveal\(\{ path: h\.att_path, sig: h\.att_sig \}\)/, "the process card's reveal asks revealHere(), as the prompt card's does (#335)");
+  assert.equal((comp.match(/besideOf\(h\)/g) || []).length, 2, "both attachment cards ask the one rule");
   const pane = readFileSync(new URL("../../claude-monitor/src/codex-ui/mdrev-pane.js", import.meta.url), "utf8");
   assert.match(pane, /if \(item\.path && item\.fsig\) \{\n    try \{ return \{ \.\.\.\(await opened\(item\.path, item\.fsig\)\), held: false \}; \}\n    catch \(error\) \{ if \(item\.text == null\) throw error; \}/, "a stamped file opens as itself, the carried text only when it cannot");
-  console.log("#s27 attachment card cases passed");
+  console.log("#s27/#s29 beside-a-file cases passed");
 }
 
 // ── #s23: a change is compact, and says what it did ────────────────────────────────────────

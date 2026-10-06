@@ -3,7 +3,7 @@ import { uiState } from "./state.js";
 import { sandboxDocument } from "./sandbox.js";
 import { createImageView } from "./shared/image-view.js";
 import { isMarkdownName, mdrevVersion, mountMarkdown } from "./mdrev-pane.js";
-import { canReveal, RASTER_FILE, revealHere } from "./shared/capabilities.js";
+import { besideAction, onPhone, RASTER_FILE } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 
 const byId = id => document.getElementById(id);
@@ -57,6 +57,10 @@ export class Preview {
     this.revealBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-reveal", title: "Reveal in file manager", hidden: true, innerHTML: svg("folder") });
     this.revealBtn.setAttribute("aria-label", "Reveal this file in the file manager");
     this.revealBtn.onclick = () => { if (this.shown) this.actions.reveal?.(this.shown); };
+    // #s29: for a reader elsewhere, the control beside the file is the file itself, as a download.
+    this.downloadBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-download", title: "Download this file", hidden: true, textContent: "↓" });
+    this.downloadBtn.setAttribute("aria-label", "Download this file");
+    this.downloadBtn.onclick = () => { if (this.shown) this.actions.download?.(this.shown); };
     // #s12, the owner: shared review on a phone, where a tab of its own has no way back (#335) — a
     // full-screen REVIEW SHEET over the app, opened from here, closed back to exactly where the reader
     // was. Only for Markdown from a FILE (held text has no store), and only on a phone: the desktop
@@ -64,7 +68,7 @@ export class Preview {
     this.reviewBtn = Object.assign(document.createElement("button"), { type: "button", className: "smallbtn preview-review", textContent: "Review", title: "Review with the other reviewers", hidden: true });
     this.reviewBtn.setAttribute("aria-label", "Review this document with the other reviewers");
     this.reviewBtn.onclick = () => this.openReviewSheet(this.markdownItem);
-    byId("closePreview").before(this.revealBtn, this.newTab, this.reviewBtn);
+    byId("closePreview").before(this.revealBtn, this.downloadBtn, this.newTab, this.reviewBtn);
     // #337, the owner: with many files open the strip squeezed every tab to a few letters and the
     // CURRENT one to nothing. The tabs now keep their width and the strip scrolls; while it
     // overflows, ‹ and › beside it step to the previous and next tab (the pinned roster first),
@@ -180,7 +184,9 @@ export class Preview {
     const generation = ++this.renderGeneration;
     const item = uiState.previewTabs.find(tab => tab.id === uiState.previewId);
     this.shown = item || null;
-    this.revealBtn.hidden = !(item && canReveal(item) && revealHere());
+    const beside = item ? besideAction(item) : null;
+    this.revealBtn.hidden = beside !== "reveal";
+    this.downloadBtn.hidden = beside !== "download";
     // No file tab selected and something was published: the roster is what the pane shows —
     // so it is also what a freshly opened pane lands on, without hunting for a control.
     const roster = !item && this.roster.length > 0;
@@ -239,7 +245,7 @@ export class Preview {
     }).catch(error => {
       if (generation !== this.renderGeneration) return;
       const body = byId("previewBody"); body.classList.remove("production-loading");
-      body.innerHTML = `<div class="preview-error"><strong>${escapeText(error.title || "Cannot preview this file")}</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${canReveal(item) && revealHere() ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
+      body.innerHTML = `<div class="preview-error"><strong>${escapeText(error.title || "Cannot preview this file")}</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${besideAction(item) === "reveal" ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
       const reveal = body.querySelector("[data-preview-reveal]");
       if (reveal) reveal.onclick = () => this.actions.reveal?.(item);
       body.querySelector("[data-copy-path]").onclick = () => {
@@ -277,10 +283,10 @@ export class Preview {
       if (!handle) throw new Error("no mdrev");
       this.markdown = handle;
       // #335: not on a phone — the new tab is a page with no way back to the monitor.
-      this.newTab.hidden = !revealHere();
+      this.newTab.hidden = onPhone();
       this.newTab.setAttribute("aria-label", `Open this ${isMarkdownName(item.name) ? "document" : "file"} in a new tab`);
       // #s13: shared review is threads on a document's notes, and mdrev files no notes on code.
-      this.reviewBtn.hidden = revealHere() || handle.held || !isMarkdownName(item.name);
+      this.reviewBtn.hidden = !onPhone() || handle.held || !isMarkdownName(item.name);
     }).catch(() => {
       if (this.markdownToken !== token) return;
       this.teardownMarkdown();
@@ -363,7 +369,7 @@ export class Preview {
       // back). What the tab reads is what the pane was offered: the file by its stamp, or the
       // embedded bytes themselves.
       this.image = { item, data };
-      this.newTab.hidden = !revealHere();
+      this.newTab.hidden = onPhone();
       this.newTab.setAttribute("aria-label", "Open this image in a new tab");
       return;
     }

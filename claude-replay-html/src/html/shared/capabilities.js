@@ -37,7 +37,7 @@ function attachmentCapability(head = {}, { reveal = true } = {}) {
   // but the server offered the REVEAL stamp: the file manager can still show the file. This is
   // the classic view's fallback (export.js: `fsig ? openArtifact : reveal`), and it is what
   // keeps every path actionable under `render-policy.json` mode "never".
-  // #335: not where the reader cannot see the file manager (a phone): the path is copied instead.
+  // #335/#s29: not where the reader cannot see the file manager (a remote client): copied instead.
   if (head.att_path && head.att_sig && reveal) return { action: "reveal", label: "Reveal in file manager", hint: "not readable here · opens its folder" };
   return { action: "copy", label: "Copy path", hint: head.att_path ? "path only · click to copy" : "attachment record only" };
 }
@@ -47,7 +47,7 @@ function attachmentCapability(head = {}, { reveal = true } = {}) {
  *  precedence is by what the page may DO, not by which stamp happens to be present. */
 function referenceAction({ fileSig, revealSig, reveal = true } = {}) {
   if (fileSig) return "preview";
-  // #335: `reveal: false` where the file manager is not the reader's (a phone): copy instead.
+  // #335/#s29: `reveal: false` where the file manager is not the reader's (a remote client).
   if (revealSig && reveal) return "reveal";
   return "copy";
 }
@@ -58,10 +58,33 @@ function referenceAction({ fileSig, revealSig, reveal = true } = {}) {
  *  both for now") — until a web file browser replaces reveal, no view offers only one half. */
 const canReveal = ({ path, sig } = {}) => Boolean(path && sig);
 
-/** Whether the file manager is the reader's to see (#335): not on a phone (the shells' 760px
- *  breakpoint), whose reader is not at the machine a reveal would open a Finder window on. Every
- *  reveal a page offers asks this; `referenceAction`/`attachmentCapability` take it as `reveal`. */
-const revealHere = () => !(typeof matchMedia === "function" && matchMedia("(max-width:760px)").matches);
+/** Whether the page can hand the reader the file's bytes: a FILE stamp `/file` honours, or bytes
+ *  the page already holds (an embedded data URI, carried text). A reveal stamp is not one. */
+const canDownload = ({ path, fsig, data, text } = {}) => Boolean((path && fsig) || data || text != null);
+
+/** The control BESIDE a file's own action (#272's "both halves", made where-aware by #s29): the
+ *  file manager for a reader at this machine, the file as a download for one elsewhere — each only
+ *  where the server offered what it needs (the reveal stamp; a file stamp or the bytes). `null`
+ *  when neither applies. */
+const besideAction = item => (revealHere() ? (canReveal(item) ? "reveal" : null) : canDownload(item) ? "download" : null);
+
+/** Whether the file manager is the reader's to see: the page was loaded from THIS machine — a
+ *  loopback host, the same test the server applies for gzip and masking (#313, #365). A reveal
+ *  opens a Finder window on the machine the monitor runs on, so only a reader at that machine can
+ *  use one; a remote reader (a phone over the tailnet, another desktop) is offered the file as a
+ *  download instead (#s29, the owner: "only offer reveal in file manager when accessing locally and
+ *  offer download the file when accessing remotely"). It was the 760px breakpoint (#335), which
+ *  stood in for "remote" and missed a remote desktop and a narrow local window both. Every reveal a
+ *  page offers asks this; `referenceAction`/`attachmentCapability` take it as `reveal`. */
+const revealHere = () => {
+  const host = typeof location === "object" && location ? String(location.hostname || "") : "";
+  return host === "" || host === "localhost" || /^127(\.\d{1,3}){3}$/.test(host) || host === "[::1]" || host === "::1";
+};
+
+/** Whether the page is laid out for a phone (the shells' 760px breakpoint, #310/#313): what a
+ *  phone's layout withholds for its own reasons — a tab of its own, which has no way back there
+ *  (#335) — and offers instead (the review sheet, #s12). Not a question of where the reader is. */
+const onPhone = () => typeof matchMedia === "function" && matchMedia("(max-width:760px)").matches;
 
 /** The `/__reveal` query for a path and its reveal stamp — encoded once, verbatim. */
 const revealQuery = ({ path, sig }) => `/__reveal?path=${encodeURIComponent(path || "")}&sig=${encodeURIComponent(sig || "")}`;
@@ -122,4 +145,4 @@ function groupPointerRuns(items, headOf) {
   return out.map(g => (g.run && g.items.length === 1 ? { run: false, item: g.items[0] } : g));
 }
 
-export { attachmentCapability, canReveal, groupPointerRuns, isPointerAttachment, POINTER_KINDS, RASTER_FILE, referenceAction, revealHere, revealQuery, stampQuery };
+export { attachmentCapability, besideAction, canDownload, canReveal, groupPointerRuns, isPointerAttachment, onPhone, POINTER_KINDS, RASTER_FILE, referenceAction, revealHere, revealQuery, stampQuery };

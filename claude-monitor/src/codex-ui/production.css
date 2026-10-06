@@ -927,8 +927,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .preview-head .preview-reveal .icon{width:15px;height:15px}
 .prompt-attachment-pair{display:flex;gap:4px;min-width:0}
 .prompt-attachment-pair>.prompt-attachment{flex:1;min-width:0}
-.prompt-attachment-reveal{width:32px;flex:none;border:1px solid color-mix(in srgb,var(--primary) 14%,var(--line));border-radius:11px;background:transparent;color:var(--faint);display:grid;place-items:center;cursor:pointer}
-.prompt-attachment-reveal:hover{background:var(--hover);color:var(--ink)}
+.prompt-attachment-reveal,.prompt-attachment-download{width:32px;flex:none;border:1px solid color-mix(in srgb,var(--primary) 14%,var(--line));border-radius:11px;background:transparent;color:var(--faint);display:grid;place-items:center;cursor:pointer}
+.prompt-attachment-reveal:hover,.prompt-attachment-download:hover{background:var(--hover);color:var(--ink)}
 .prompt-attachment-reveal .icon{width:14px;height:14px}
 
 /* #293 — the tool-types section is a TREE: a twisty where a branch expands, indents for its
@@ -1217,9 +1217,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      label into a column a word wide. */
   #app .input-answer{flex-direction:column;align-items:flex-start;gap:2px;width:100%}
   #app .input-answer span{overflow:visible;overflow-wrap:break-word}
-  /* #335: nothing a phone cannot use — a reveal opens Finder on the Mac, and the pane's ↗ opens a
-     page with no way back. (The shells also stop offering them; this is the belt.) */
-  #app .preview-reveal,#app .preview-newtab,#app .prompt-attachment-reveal,[data-lightbox-reveal],[data-preview-reveal]{display:none!important}
+  /* #335: the pane's ↗ opens a page with no way back on a phone. (A reveal is not a question of
+     width since #s29 — the shells offer it to a reader at this machine and nobody else.) */
+  #app .preview-newtab{display:none!important}
   /* #338: a phone's text already runs edge to edge, so the width switch has nothing to widen. */
   #app .reading-options .reading-row.reading-wide{display:none}
   #app .preview-tab-step{width:40px;height:44px}

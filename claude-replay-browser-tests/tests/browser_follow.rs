@@ -9861,16 +9861,40 @@ fn phone_files_world(
         format!("{{\"mode\":\"{policy}\"}}"),
     )
     .unwrap();
-    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
-    let (b, tab) = phone_tab(&m, 390, 844);
+    let m = harness::Monitor::spawn_remote(harness::Kind::V2, port, &base, Some(&stores));
+    let (b, tab) = remote_phone_tab(&m, 390, 844);
     (m, b, tab, paths)
+}
+
+/// A phone reaching `m` over the tailnet (#s29): what these cases test is what a reader ELSEWHERE
+/// is offered, and since #s29 that is decided by where the reader is, not by the width.
+fn remote_phone_tab(
+    m: &harness::Monitor,
+    w: u32,
+    h: u32,
+) -> (
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    let (browser, tab) = harness::remote_phone(w, h);
+    m.open_remote(&tab, &format!("?ui=app&session={PHONE_SID}"));
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('mobile-detail') && !!document.querySelector('.transcript .turn.user')",
+        "the phone to open on a session over the tailnet",
+        Duration::from_secs(20),
+        "location.host + ' ' + document.getElementById('app').className",
+    );
+    (browser, tab)
 }
 
 /// Whether the element `sel` names is drawn at all: displayed, with a box.
 const PHONE_DRAWN: &str = "function (sel) { return [].slice.call(document.querySelectorAll(sel)).some(function (el) { var r = el.getBoundingClientRect(); return !el.hidden && getComputedStyle(el).display !== 'none' && r.width > 0 && r.height > 0; }); }";
 
 /// #335, the owner: "On mobile, do not show reveal in file manager" and "the open fullscreen is not
-/// useful at all, and can be destructive (we have no way to get back)". A phone opening a text file
+/// useful at all, and can be destructive (we have no way to get back)". Since #s29 the reveal half is
+/// decided by where the reader is — this phone reaches the monitor over the tailnet — and the
+/// pane offers the file as a download in its place. A phone opening a text file
 /// and a Markdown document in the pane is offered neither the pane's reveal nor its ↗, and a file
 /// the server would only let it REVEAL is copied rather than sent to `/__reveal` (the case wraps
 /// `fetch`, so a reveal is recorded and never sent).
@@ -9915,12 +9939,12 @@ fn a_phone_is_offered_no_reveal_and_no_new_tab() {
         std::thread::sleep(Duration::from_millis(600));
         let drawn = harness::eval(
             &tab,
-            &format!("JSON.stringify({{ reveal: ({PHONE_DRAWN})('.preview-reveal, [data-preview-reveal]'), newtab: ({PHONE_DRAWN})('.preview-newtab') }})"),
+            &format!("JSON.stringify({{ reveal: ({PHONE_DRAWN})('.preview-reveal, [data-preview-reveal]'), newtab: ({PHONE_DRAWN})('.preview-newtab'), download: ({PHONE_DRAWN})('.preview-download') }})"),
         );
         assert_eq!(
             drawn.as_str(),
-            Some("{\"reveal\":false,\"newtab\":false}"),
-            "a phone is offered neither the reveal nor the new tab for {path}"
+            Some("{\"reveal\":false,\"newtab\":false,\"download\":true}"),
+            "a phone over the tailnet is offered neither the reveal nor the new tab for {path}, and the file as a download"
         );
     }
     // The desktop keeps both, on the same document.
