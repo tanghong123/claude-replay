@@ -1173,6 +1173,15 @@ fn mdrev_shows_a_local_code_file_as_highlighted_numbered_source() {
         Duration::from_secs(30),
         PANE,
     );
+    // The colours come after the rows: mdrev fetches the language's grammar on demand, and on a
+    // slower machine (CI's Linux runner) the first rows are drawn plain until it lands.
+    until(
+        &tab,
+        "document.querySelectorAll('#previewBody .mdrev-host .source-view span[style*=\"--shiki\"], #previewBody .mdrev-host .source-view span[style*=\"color\"]').length > 0",
+        "mdrev to highlight src/app.ts",
+        Duration::from_secs(30),
+        PANE,
+    );
     let seen = source(&tab);
     assert_eq!(seen["source"], true, "the source view: {seen}");
     assert_eq!(seen["doc"], false, "never rendered as a document: {seen}");
