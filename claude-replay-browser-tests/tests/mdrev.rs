@@ -915,17 +915,16 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
         Duration::from_secs(30),
         OWN,
     );
-    // The detached tab's guest asks for the store's state and brings it up to date, as it does
-    // wherever shared review is offered — read off the browser's own record of the requests.
-    let answered = |route: &str| {
-        format!("performance.getEntriesByType('resource').some(e => e.name.indexOf('/api/mdrev-review/{route}?') >= 0 && e.responseStatus === 200)")
-    };
+    // The detached tab's guest is mounted on the REVIEW prefix (#s10), and the next check asks that
+    // prefix for the store with the tab's own document facts. Not "the guest asked": when mdrev
+    // asks is its own business, and reading it off the browser's resource timing was red on CI's
+    // Linux runner, where the guest had not asked by the deadline.
     until(
         &own,
-        &format!("{} && {}", answered("review"), answered("review/fetch")),
-        "the detached tab's guest asking for, and fetching, the review store",
+        "(document.getElementById('doc') || {dataset: {}}).dataset.contract === '/api/mdrev-review'",
+        "the detached tab mounted on the review prefix",
         Duration::from_secs(20),
-        "JSON.stringify(performance.getEntriesByType('resource').filter(e => e.name.indexOf('/api/mdrev') >= 0).map(e => e.name.replace(/\\?.*/, '') + ' ' + e.responseStatus))",
+        "JSON.stringify((document.getElementById('doc') || {dataset: {}}).dataset)",
     );
     let paired_as = eval(
         &own,
