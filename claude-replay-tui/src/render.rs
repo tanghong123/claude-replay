@@ -653,13 +653,23 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                         .map(|(o, n)| diff_counts(o, n))
                         .fold((0usize, 0usize), |(a, d), (x, y)| (a + x, d + y))
                 };
-                out.push(Line::styled(
-                    format!("  ⎿ \u{a0}{}", edit_summary(adds, dels)),
-                    theme::result(),
-                ));
+                // A rename with no diff has no lines to count; its note below says what happened.
+                if adds + dels > 0 || output.is_none() {
+                    out.push(Line::styled(
+                        format!("  ⎿ \u{a0}{}", edit_summary(adds, dels)),
+                        theme::result(),
+                    ));
+                }
                 // Prefer the transcript's structuredPatch (real file line numbers);
                 // `diff_row_groups` falls back to our own line-diff (local numbering) when absent.
                 render_diff(diffs, patch.as_deref(), token, hl, &mut out);
+                // An edit keeps no receipt, but an adapter's note ABOUT it does — a rename, why a
+                // patch was rejected (#s21) — since nothing else on the card says it.
+                if let Some(note) = output.as_deref().filter(|o| !o.trim().is_empty()) {
+                    for line in note.lines() {
+                        out.push(Line::styled(format!("  ⎿ \u{a0}{line}"), theme::result()));
+                    }
+                }
             } else {
                 // Bash / Read / other tools — header + (capped) output, on the
                 // expanded shell/read background block (medium-dark gray, full

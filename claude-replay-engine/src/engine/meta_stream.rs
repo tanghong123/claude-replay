@@ -255,11 +255,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// folded as an edit (open, its diff in view). A v44 stream holds it inside the run's
 /// `ran N shell commands` line, so the change it made stays hidden.
 ///
+/// v46: #s21 — a Codex file added or deleted carries its lines (from the change's `content`), a
+/// rename says where to, and a patch Codex rejected is a failed edit with its reason. A v45
+/// stream has empty cards for the first two and nothing at all for the third.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 45;
+pub const FOLD_VERSION: u16 = 46;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

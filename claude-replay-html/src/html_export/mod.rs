@@ -1490,7 +1490,10 @@ impl Emitter<'_> {
                             head.insert("chips".into(), json!(chips));
                             body.push(json!({ "p": "note", "x": edit_summary(adds, dels) }));
                             body.push(part);
-                        } else if let Some(out) = output {
+                        }
+                        // An edit keeps no receipt, but an adapter's note ABOUT it does — a
+                        // rename, why a patch was rejected (#s21) — beside the diff or alone.
+                        if let Some(out) = output.as_deref().filter(|o| !o.trim().is_empty()) {
                             body.push(pre_part(out));
                         }
                     }

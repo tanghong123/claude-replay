@@ -11,9 +11,7 @@ use claude_replay_engine::seam::{
 };
 use claude_replay_engine::seam::{taskq_create_ops, taskq_ops};
 use serde_json::Value;
-#[cfg(test)]
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 const AGENT_PATH_KEY_PREFIX: &str = "codex-agent-";
@@ -28,6 +26,9 @@ const EXPLORE_READ: &str = "__codex_explore_read";
 const EXPLORE_SEARCH: &str = "__codex_explore_search";
 const EXPLORE_LIST: &str = "__codex_explore_list";
 const EXPLORE_DETAIL: &str = "__codex_explore_detail";
+/// Marks a result the adapter wrote about an edit (a rename, a rejected patch): the one output
+/// an edit card keeps (#s21). Never in a transcript; `tur` is `Null` for every Codex record.
+const EDIT_NOTE: &str = "__codex_edit_note";
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CodexLinePreprocessor {
@@ -43,6 +44,13 @@ pub(crate) struct CodexLinePreprocessor {
     /// a durable resume can land between the call and its output.
     #[serde(default)]
     transport_calls: HashSet<String>,
+    /// The patches an `apply_patch` wrapper carried, by wrapper call id, until either the
+    /// `FileChange` mirror arrives (the edit is drawn from that) or the wrapper's output does
+    /// (#s21). A patch Codex REJECTED gets no mirror at all, so without this the attempt
+    /// vanished from the transcript: 4 of 147 on the owner's machine, each a "verification
+    /// failed". Rides the cursor for the same reason `transport_calls` does.
+    #[serde(default)]
+    unmirrored_patches: HashMap<String, Vec<String>>,
     /// Latest accepted session cwd, used to relativize paths in `FileChange` events.
     #[serde(default)]
     cwd: String,
@@ -188,6 +196,19 @@ impl LinePreprocessor for CodexLinePreprocessor {
             if matches!(kind, "function_call_output" | "custom_tool_call_output")
                 && self.transport_calls.remove(call_id)
             {
+                let rejected = self
+                    .unmirrored_patches
+                    .remove(call_id)
+                    .zip(rejected_patch_reason(payload));
+                if let Some((patches, reason)) = rejected {
+                    let ts = value
+                        .get("timestamp")
+                        .and_then(Value::as_str)
+                        .and_then(epoch_secs);
+                    return PreprocessedLine::Messages(rejected_patch_messages(
+                        call_id, ts, &patches, &reason, &self.cwd,
+                    ));
+                }
                 return PreprocessedLine::Ignore;
             }
 
@@ -232,9 +253,24 @@ impl LinePreprocessor for CodexLinePreprocessor {
             if self.semantic_exec && is_semantic_exec_transport(payload) {
                 if !call_id.is_empty() {
                     self.transport_calls.insert(call_id.to_string());
+                    let patches = payload
+                        .get("input")
+                        .and_then(Value::as_str)
+                        .filter(|code| code.contains("tools.apply_patch("))
+                        .map(patch_literals)
+                        .unwrap_or_default();
+                    if !patches.is_empty() {
+                        self.unmirrored_patches.insert(call_id.to_string(), patches);
+                    }
                 }
                 return PreprocessedLine::Ignore;
             }
+        }
+
+        // A `FileChange` is the mirror of whichever `apply_patch` wrapper is in flight: Codex
+        // writes it between the wrapper's call and its output, and names no call id to match.
+        if value.pointer("/payload/item/type").and_then(Value::as_str) == Some("FileChange") {
+            self.unmirrored_patches.clear();
         }
 
         if self.semantic_exec {
@@ -570,13 +606,36 @@ fn semantic_exec_messages(value: &Value, fallback_cwd: &str) -> Option<Vec<Messa
                     .get("unified_diff")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let patch = format!("{header}{path}\n{diff}");
+                // #s21: an added or deleted file carries its text in `content` and an EMPTY
+                // `unified_diff` (all 14 on the owner's machine), so the card had nothing to
+                // draw. Its lines are the patch's `+` (added) or `-` (deleted) lines.
+                let content = change.get("content").and_then(Value::as_str);
+                let body = match (kind, content) {
+                    ("add", Some(text)) if diff.is_empty() => prefixed_lines(text, '+'),
+                    ("delete", Some(text)) if diff.is_empty() => prefixed_lines(text, '-'),
+                    _ => diff.to_string(),
+                };
+                // A rename is `move_path` beside the diff (empty when only the name changed).
+                let moved = change
+                    .get("move_path")
+                    .and_then(Value::as_str)
+                    .filter(|to| !to.is_empty());
+                let move_line = moved.map_or(String::new(), |to| format!("*** Move to: {to}\n"));
+                let id = format!("{event_id}:{index}");
                 messages.push(Message::ToolUse {
-                    id: format!("{event_id}:{index}"),
+                    id: id.clone(),
                     name: "apply_patch".to_string(),
-                    input: Value::String(patch),
+                    input: Value::String(format!("{header}{path}\n{move_line}{body}")),
                     cwd: fallback_cwd.to_string(),
                 });
+                if let Some(to) = moved {
+                    messages.push(Message::ToolResult {
+                        tool_use_id: id,
+                        text: format!("Moved to {}", relativize(to, fallback_cwd)),
+                        tur: serde_json::json!({ EDIT_NOTE: true }),
+                        is_error: None,
+                    });
+                }
             }
             Some(messages)
         }
@@ -934,9 +993,19 @@ fn parse_codex(jsonl: &str) -> Vec<Block> {
 /// Codex's back-patch is simpler than Claude's — no `toolUseResult` metadata, and the
 /// output is skipped for Edit/Write. Shim it into `Shaping::apply`'s `(&mut Block, &str,
 /// &Value)` signature (the `Value` is always Null for Codex).
-fn apply_output_shaping(block: &mut Block, text: &str, _tur: &Value, _is_error: Option<bool>) {
+fn apply_output_shaping(block: &mut Block, text: &str, tur: &Value, _is_error: Option<bool>) {
     // Codex's status/exit/duration come from its own `custom_tool_call_output` records;
     // the seam's tri-state adds nothing here (and is `None` for this format anyway).
+    //
+    // #s21: an edit drops Codex's receipt ("Success. Updated the following files"), but a note
+    // the adapter wrote ABOUT the edit — a rename, a patch Codex rejected — is the one output an
+    // edit keeps, since nothing else on the card says it.
+    if tur.get(EDIT_NOTE).is_some() {
+        if let Block::ToolUse { output, .. } = block {
+            *output = Some(text.to_string());
+            return;
+        }
+    }
     apply_output(block, text.to_string());
 }
 fn codex_keep_orphan(text: &str) -> bool {
@@ -2069,6 +2138,116 @@ fn string_field(input: &Value, keys: &[&str]) -> String {
         .to_string()
 }
 
+/// Each line of `text` behind `mark` — the body of an added (`+`) or deleted (`-`) file in the
+/// patch grammar, from the `content` a `FileChange` carries in place of a diff.
+fn prefixed_lines(text: &str, mark: char) -> String {
+    text.lines().map(|line| format!("{mark}{line}\n")).collect()
+}
+
+/// The patches an `apply_patch` wrapper's JavaScript carries: every double-quoted string
+/// literal holding a `*** Begin Patch` (`const patch = "*** Begin Patch\n…";` is the shape of
+/// all 147 on the owner's machine), decoded as JSON, which a JS double-quoted literal is but
+/// for `\'`.
+fn patch_literals(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(at) = code[from..].find("\"*** Begin Patch").map(|i| from + i) {
+        let bytes = code.as_bytes();
+        let mut end = None;
+        let mut escaped = false;
+        for (offset, &byte) in bytes[at + 1..].iter().enumerate() {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                end = Some(at + 1 + offset);
+                break;
+            }
+        }
+        let Some(end) = end else { break };
+        let literal = code[at..=end].replace("\\'", "'");
+        if let Ok(patch) = serde_json::from_str::<String>(&literal) {
+            out.push(patch);
+        }
+        from = end + 1;
+    }
+    out
+}
+
+/// One patch per FILE: the grammar lets one `apply_patch` touch several, and an edit card
+/// names one file.
+fn patch_files(patch: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in patch.lines() {
+        let header = ["*** Update File: ", "*** Add File: ", "*** Delete File: "]
+            .iter()
+            .any(|prefix| line.starts_with(prefix));
+        if header {
+            out.push(String::new());
+        } else if out.is_empty()
+            || line.starts_with("*** Begin Patch")
+            || line.starts_with("*** End Patch")
+        {
+            continue;
+        }
+        if let Some(file) = out.last_mut() {
+            file.push_str(line);
+            file.push('\n');
+        }
+    }
+    out
+}
+
+/// Why a wrapper's run failed, when it did: the `Script error:` Codex prints (an `apply_patch`
+/// it rejected says `apply_patch verification failed: …`), or the whole output when a failed
+/// run printed none. `None` for a run that did not fail — including one still running, whose
+/// `FileChange` may yet arrive through a `wait`.
+fn rejected_patch_reason(payload: &Value) -> Option<String> {
+    let text = output_text(payload.get("output").unwrap_or(&Value::Null));
+    if !text.starts_with("Script failed") && !text.contains("Script error:") {
+        return None;
+    }
+    let reason = text
+        .split_once("Script error:")
+        .map_or(text.as_str(), |(_, after)| after)
+        .trim();
+    Some(reason.to_string())
+}
+
+/// A patch Codex rejected, as the failed edits it attempted — one per file — each carrying the
+/// reason as its note. It changed nothing, and says so: the head is `failed`.
+fn rejected_patch_messages(
+    call_id: &str,
+    ts: Option<f64>,
+    patches: &[String],
+    reason: &str,
+    cwd: &str,
+) -> Vec<Message> {
+    let failed = ToolExecution {
+        status: Some(ToolStatus::Failed),
+        exit_code: None,
+        duration: None,
+    };
+    let mut messages = vec![Message::LineStart(ts)];
+    for (index, patch) in patches.iter().flat_map(|p| patch_files(p)).enumerate() {
+        let id = format!("{call_id}:{index}");
+        messages.push(Message::ToolUse {
+            id: id.clone(),
+            name: "apply_patch".to_string(),
+            input: serde_json::json!({ "patch": patch, "__execution": failed }),
+            cwd: cwd.to_string(),
+        });
+        messages.push(Message::ToolResult {
+            tool_use_id: id,
+            text: reason.to_string(),
+            tur: serde_json::json!({ EDIT_NOTE: true }),
+            is_error: Some(true),
+        });
+    }
+    messages
+}
+
 fn patch_target(patch: &str) -> Option<String> {
     patch.lines().find_map(|line| {
         ["*** Update File: ", "*** Add File: ", "*** Delete File: "]
@@ -2708,6 +2887,107 @@ mod tests {
             Block::ToolResult(text) => text.contains("Script completed"),
             _ => false,
         }));
+    }
+
+    /// #s21: every file a Codex edit changed is drawn. An added or deleted file carries its text
+    /// in `content` and an empty `unified_diff`; a rename carries `move_path`; and a patch Codex
+    /// REJECTED gets no `FileChange` at all, so it used to vanish with its wrapper.
+    #[test]
+    fn every_codex_file_change_is_drawn_and_a_rejected_patch_is_a_failed_edit() {
+        let at = |s: u32| format!("2026-10-01T06:00:{s:02}Z");
+        let exec = |s: u32, id: &str, code: &str| {
+            serde_json::json!({"timestamp": at(s), "type": "response_item", "payload": {
+                "type": "custom_tool_call", "name": "exec", "call_id": id, "input": code}})
+        };
+        let output = |s: u32, id: &str, out: Value| {
+            serde_json::json!({"timestamp": at(s), "type": "response_item", "payload": {
+                "type": "custom_tool_call_output", "call_id": id, "output": out}})
+        };
+        let change = |s: u32, changes: Value| {
+            serde_json::json!({"timestamp": at(s), "type": "event_msg", "payload": {
+                "type": "item_completed", "item": {
+                    "type": "FileChange", "id": format!("fc-{s}"), "status": "completed",
+                    "changes": changes}}})
+        };
+        let rejected = "const patch = \"*** Begin Patch\\n*** Update File: /repo/src/a.rs\\n@@\\n-alpha\\n+beta\\n*** Update File: /repo/src/b.rs\\n@@\\n-gamma\\n+delta\\n*** End Patch\";\ntext(await tools.apply_patch(patch));\n";
+        let lines = [
+            serde_json::json!({"timestamp": at(0), "type": "session_meta",
+                "payload": {"cwd": "/repo", "originator": "codex-tui", "cli_version": "0.147.0"}}),
+            exec(1, "outer-files", "const patch = \"*** Begin Patch\\n*** Add File: /repo/new.rs\\n+fn new() {}\\n*** End Patch\";\ntext(await tools.apply_patch(patch));\n"),
+            change(2, serde_json::json!({
+                "/repo/new.rs": {"type": "add", "unified_diff": "", "content": "fn new() {}\nfn more() {}\n"},
+                "/repo/gone.rs": {"type": "delete", "unified_diff": "", "content": "fn gone() {}\n"},
+                "/repo/old_name.rs": {"type": "update", "unified_diff": "", "move_path": "/repo/new_name.rs"}
+            })),
+            output(3, "outer-files", serde_json::json!("{}")),
+            exec(4, "outer-rejected", rejected),
+            output(5, "outer-rejected", serde_json::json!([
+                {"type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"},
+                {"type": "input_text", "text": "Script error:\napply_patch verification failed: Failed to find expected lines in /repo/src/a.rs"}
+            ])),
+            // A patch still running when its wrapper yields is not rejected: its FileChange comes
+            // later, through a `wait`, and is the one edit drawn.
+            exec(6, "outer-yield", "const patch = \"*** Begin Patch\\n*** Update File: /repo/late.rs\\n@@\\n-x\\n+y\\n*** End Patch\";\ntext(await tools.apply_patch(patch));\n"),
+            output(7, "outer-yield", serde_json::json!("Script running with cell ID 7\nWall time 10.0 seconds\nOutput:\n")),
+            change(8, serde_json::json!({
+                "/repo/late.rs": {"type": "update", "unified_diff": "@@ -1 +1 @@\n-x\n+y\n"}
+            })),
+        ];
+        let jsonl = lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let path = std::env::temp_dir().join(format!(
+            "codex-every-file-change-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(&path, jsonl).unwrap();
+        let (blocks, _, _) = parse_path_timed_for(&crate::adapters::CodexAdapter, &path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        let edits = blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::ToolUse {
+                    name,
+                    target,
+                    diffs,
+                    output,
+                    execution,
+                    ..
+                } if name == "Edit" => Some((
+                    target.as_str(),
+                    diffs.clone(),
+                    output.as_deref(),
+                    execution.as_ref().and_then(|e| e.status),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let pair = |old: &str, new: &str| vec![(old.to_string(), new.to_string())];
+        assert_eq!(
+            edits,
+            [
+                // `changes` is a JSON object, read in key order.
+                ("gone.rs", pair("fn gone() {}", ""), None, None),
+                ("new.rs", pair("", "fn new() {}\nfn more() {}"), None, None),
+                ("old_name.rs", vec![], Some("Moved to new_name.rs"), None),
+                (
+                    "src/a.rs",
+                    pair("alpha", "beta"),
+                    Some("apply_patch verification failed: Failed to find expected lines in /repo/src/a.rs"),
+                    Some(ToolStatus::Failed),
+                ),
+                (
+                    "src/b.rs",
+                    pair("gamma", "delta"),
+                    Some("apply_patch verification failed: Failed to find expected lines in /repo/src/a.rs"),
+                    Some(ToolStatus::Failed),
+                ),
+                ("late.rs", pair("x", "y"), None, None),
+            ]
+        );
     }
 
     /// A real modern `CommandExecution` carries the semantic parse the Codex TUI uses for its
