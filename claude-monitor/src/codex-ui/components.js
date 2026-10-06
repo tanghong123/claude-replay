@@ -189,7 +189,23 @@ export function fleetHtml(run, state) {
 // `state.openImages`, so an opened record shows a button and fetches nothing; expand-all over a
 // hundred screenshots is still a hundred buttons and zero bytes.
 export const rendererStartsClosed = view =>
-  !view.running && !view.interaction && !view.attachment && view.renderer !== "queue";
+  !view.running && !view.interaction && !view.attachment && view.renderer !== "queue" && !showsAChange(view);
+
+// A record that CHANGED a file starts open with its change in view, and the process surface's
+// cap never holds it back (#s21, the owner: "all edit changes in transcripts are not buried").
+// The server's fold policy is the one rule for which those are, as on the classic page: it
+// opens a tool record (`open`) exactly when it is an edit, a Write, or a shell command or patch
+// that recorded a diff. It used to be every finished card closed with the diff behind a click
+// (parity row 3.5), and past the seventh event of a busy turn not even the head was in view.
+export const showsAChange = view => view.t === "tool" && !!view.raw?.open;
+
+/** Which of a process surface's events its cap holds back: past the first `limit` events that
+ *  are not changes. A change is always in view (#s21), so it neither hides past the cap nor
+ *  spends one of its slots. One flag per group (a pointer run is one event, #254). */
+export function cappedEvents(groups, limit) {
+  let counted = 0;
+  return groups.map(group => !(group.item && showsAChange(group.item.view)) && counted++ >= limit);
+}
 
 function renderProcess(unit, state) {
   const key = unit.key;
@@ -209,9 +225,10 @@ function renderProcess(unit, state) {
   // counts as ONE event against the cap below, which is the point: five pointers must not eat
   // five of the seven visible slots that real work needs.
   const groups = groupPointerRuns(unit.views, item => item.view?.attachment);
+  const capped = cappedEvents(groups, visibleLimit);
   const events = groups.map((group, position) => {
-    const hidden = position >= visibleLimit && !expanded;
-    const frame = inner => `<div class="process-event ${hidden ? "progressive-hidden" : ""}" data-progressive="${position >= visibleLimit}">${inner}</div>`;
+    const hidden = capped[position] && !expanded;
+    const frame = inner => `<div class="process-event ${hidden ? "progressive-hidden" : ""}" data-progressive="${capped[position]}">${inner}</div>`;
     if (group.run) {
       const links = group.items.map(({ view }) => {
         const h = view.attachment || {};
@@ -230,7 +247,7 @@ function renderProcess(unit, state) {
   }).join("");
   // Counted over GROUPS, not raw views (#254): a collapsed run is one event on screen, so
   // "Show N more" must agree with what the reader would actually reveal.
-  const hidden = Math.max(0, groups.length - visibleLimit);
+  const hidden = capped.filter(Boolean).length;
   return `<section class="process-surface process-${tone} ${closed ? "closed" : ""}" data-process-surface data-process-key="${escapeText(key)}" data-process-state="${tone}" data-turn="${escapeText(unit.turn)}" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}" aria-label="Agent process"><div class="process-surface-headbar"><div class="process-surface-summary"><button class="process-section-toggle" type="button" data-process-toggle aria-expanded="${!closed}" title="${closed ? "Expand" : "Collapse"} this section">${svg("chev")}</button><span class="process-surface-label" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}">Agent process</span><span class="process-surface-preview">${escapeText(preview)}</span><span class="process-surface-count">${unit.views.length} events${updates ? ` · ${updates} updates` : ""}</span><button class="process-bulk-toggle" type="button" data-process-bulk aria-pressed="false" title="Expand every detail in this section">${svg("expandStack")}</button></div></div><div class="process-surface-body">${events}${hidden ? `<button class="process-more" type="button" data-process-more aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span>${svg("chev")}</button>` : ""}</div></section>`;
 }
 

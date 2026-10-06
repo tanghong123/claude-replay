@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
-import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed } from "../../claude-monitor/src/codex-ui/components.js";
+import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed, cappedEvents, showsAChange } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, canReveal, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
 import { fleetGroups } from "../../claude-replay-html/src/html/shared/fleet.js";
@@ -2854,6 +2854,31 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.ok(served && inline, "both icon sources were found");
   assert.equal(decodeURIComponent(inline), served, "…and it is the rail's own mark: one source, two shells, both binaries");
   console.log("#203 favicon cases passed");
+}
+
+// ── #s21: a record that changed a file is never buried ────────────────────────────────────
+{
+  // The owner: "all edit changes in transcripts are not buried". The server's fold policy opens a
+  // tool record exactly when it changed a file; the shell opens it too, and the process surface's
+  // cap neither hides it nor spends a slot on it.
+  const record = (id, kind, open, extra = {}) => ({ t: "block", id, kind, fold: true, open, tool: kind === "edit" ? "Edit" : "Bash", head: { name: kind === "edit" ? "Edit" : "Bash", target: `${id}.rs` }, body: [{ p: "pre", x: "out" }], ...extra });
+  const edit = viewRecord(record("b9", "edit", 1));
+  const bash = viewRecord(record("b1", "bash", 0));
+  assert.equal(showsAChange(edit), true, "an edit the policy opens is a change");
+  assert.equal(showsAChange(bash), false, "a command the policy folds is not");
+  assert.equal(rendererStartsClosed(edit), false, "a change starts open");
+  assert.equal(rendererStartsClosed(bash), true, "everything else finished still starts closed");
+  // Nine commands, then an edit: the cap shows seven commands and holds two, and the edit —
+  // tenth of ten — is in view.
+  const groups = [...Array(9).keys()].map(i => ({ item: { index: i, view: viewRecord(record(`b${i}`, "bash", 0)) } }));
+  groups.push({ item: { index: 9, view: edit } });
+  assert.deepEqual(cappedEvents(groups, 7), [false, false, false, false, false, false, false, true, true, false]);
+  // An edit early in the turn does not spend a slot: seven commands still show after it.
+  assert.deepEqual(cappedEvents([groups[9], ...groups.slice(0, 9)], 7), [false, false, false, false, false, false, false, false, true, true]);
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /const capped = cappedEvents\(groups, visibleLimit\);/, "the process surface asks the rule");
+  assert.match(comp, /const hidden = capped\.filter\(Boolean\)\.length;/, "…and Show N more counts what it holds");
+  console.log("#s21 change visibility cases passed");
 }
 
 // ── #228: an image is one click away, and the enlarged view zooms ───────────────────────────

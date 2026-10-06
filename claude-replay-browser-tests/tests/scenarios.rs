@@ -16755,30 +16755,142 @@ fn scenario_a_shell_command_that_edited_a_file_shows_its_change() {
             chips.contains("+1") && chips.contains("−1"),
             "{surface:?}: its head carries the change: {seen}"
         );
-        match surface {
-            // The classic page draws it open, as an Edit: the diff is in view as the page opens.
-            Surface::Classic => assert_eq!(
-                seen["visible"],
-                serde_json::json!(true),
-                "{surface:?}: the edit's diff is in view as the page opens: {seen}"
-            ),
-            // The app shell starts every finished call closed; opening this one shows the diff.
-            Surface::AppShell => {
-                eval(
-                    &page.tab,
-                    "(function(){ var r = [...document.querySelectorAll('.renderer[data-renderer-kind]')].find(function (r) { var t = r.querySelector(':scope > .renderer-head .renderer-target'); return t && t.textContent.indexOf('python3') === 0; }); r.querySelector(':scope > .renderer-head').click(); return 'ok'; })()",
-                );
-                settle();
-                assert_eq!(
-                    eval(
-                        &page.tab,
-                        "document.body.innerText.indexOf('return PROBE_S20_EXIT') >= 0"
-                    )
-                    .as_bool(),
-                    Some(true),
-                    "{surface:?}: opening the card shows the diff"
-                );
-            }
+        // Both pages draw it open, as an Edit: the diff is in view as the page opens (#s21 made
+        // the app shell open a change too; it used to start every finished call closed).
+        assert_eq!(
+            seen["visible"],
+            serde_json::json!(true),
+            "{surface:?}: the edit's diff is in view as the page opens: {seen}"
+        );
+    }
+}
+
+/// A busy turn whose CHANGES all come after its seventh event (#s21): eight fetches, then an
+/// Edit, a Write over an existing file, a fresh-file Write and a shell command that edited a
+/// file. Each change carries a probe string in the lines it changed.
+fn changes_past_the_cap_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    let mut t = String::new();
+    t += &user_at("first prompt", &now_minus(300));
+    t += &assistant_at(&answer, &now_minus(295));
+    t += &user_at(
+        "read the pages, then update the code and the notes",
+        &now_minus(280),
+    );
+    let call = |id: &str, name: &str, input: serde_json::Value, ts: String| {
+        serde_json::json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant",
+            "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}})
+    };
+    let result = |id: &str, text: &str, tur: serde_json::Value, ts: String| {
+        serde_json::json!({"type": "user", "timestamp": ts, "toolUseResult": tur,
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}})
+    };
+    let mut lines = Vec::new();
+    let mut at = 279;
+    let mut tick = || {
+        at -= 1;
+        now_minus(at)
+    };
+    for i in 0..8 {
+        let url = format!("https://example.test/page{i}");
+        lines.push(call(
+            &format!("f{i}"),
+            "WebFetch",
+            serde_json::json!({"url": url, "prompt": "summarise"}),
+            tick(),
+        ));
+        lines.push(result(&format!("f{i}"), &format!("page {i}"),
+            serde_json::json!({"bytes": 10, "code": 200, "codeText": "OK", "result": format!("page {i}"), "durationMs": 5, "url": url}), tick()));
+    }
+    lines.push(call("e1", "Edit", serde_json::json!({"file_path": "/w/a.rs", "old_string": "alpha", "new_string": "PROBE_S21_EDIT"}), tick()));
+    lines.push(result("e1", "The file /w/a.rs has been updated.", serde_json::json!({"filePath": "/w/a.rs",
+        "oldString": "alpha", "newString": "PROBE_S21_EDIT", "originalFile": "x\ny\nalpha\n", "userModified": false, "replaceAll": false,
+        "structuredPatch": [{"oldStart": 3, "oldLines": 1, "newStart": 3, "newLines": 1, "lines": ["-alpha", "+PROBE_S21_EDIT"]}]}), tick()));
+    lines.push(call(
+        "w1",
+        "Write",
+        serde_json::json!({"file_path": "/w/notes.md", "content": "one\nPROBE_S21_OVERWRITE\n"}),
+        tick(),
+    ));
+    lines.push(result("w1", "The file /w/notes.md has been updated.", serde_json::json!({"type": "update", "filePath": "/w/notes.md",
+        "content": "one\nPROBE_S21_OVERWRITE\n", "originalFile": "one\n",
+        "structuredPatch": [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": [" one", "+PROBE_S21_OVERWRITE"]}]}), tick()));
+    lines.push(call(
+        "w2",
+        "Write",
+        serde_json::json!({"file_path": "/w/new.md", "content": "PROBE_S21_FRESH\nsecond\n"}),
+        tick(),
+    ));
+    lines.push(result(
+        "w2",
+        "File created successfully at: /w/new.md",
+        serde_json::json!({"type": "create", "filePath": "/w/new.md",
+        "content": "PROBE_S21_FRESH\nsecond\n", "structuredPatch": [], "originalFile": null}),
+        tick(),
+    ));
+    lines.push(call(
+        "b1",
+        "Bash",
+        serde_json::json!({"command": "python3 - <<'PY'\nedit shared.py\nPY"}),
+        tick(),
+    ));
+    lines.push(result("b1", "done", serde_json::json!({"stdout": "done", "stderr": "", "interrupted": false, "isImage": false,
+        "noOutputExpected": false, "bashEditDiff": {"moreFiles": 0, "changedFiles": ["/w/shared.py"], "files": [{"filePath": "/w/shared.py",
+        "hunks": [{"oldStart": 9, "oldLines": 1, "newStart": 9, "newLines": 1, "lines": ["-    return 0", "+    return PROBE_S21_BASH"]}]}]}}), tick()));
+    for line in lines {
+        t += &format!("{line}\n");
+    }
+    t += &assistant_at(&answer, &now_minus(240));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 2,
+    }
+}
+
+/// #s21 — no change to a file is buried, on either page (the owner: "all edit changes in
+/// transcripts are not buried"). A turn with eight fetches before its four changes: on the app
+/// shell the changes sat past the process surface's seventh event, behind "Show N more", and each
+/// started closed besides. Now every change starts open with its lines in view and the cap holds
+/// back only what is not a change — here the eighth fetch. Nothing is expanded by the case.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_every_change_to_a_file_is_in_view_as_the_page_opens() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = changes_past_the_cap_fixture(match surface {
+            Surface::Classic => "changes-classic",
+            Surface::AppShell => "changes-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3075 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        settle();
+        let seen = eval(
+            &page.tab,
+            "(function(){ var t = document.body.innerText; return JSON.stringify(['PROBE_S21_EDIT', 'PROBE_S21_OVERWRITE', 'PROBE_S21_FRESH', 'PROBE_S21_BASH'].filter(function (p) { return t.indexOf(p) < 0; })); })()",
+        );
+        assert_eq!(
+            seen.as_str(),
+            Some("[]"),
+            "{surface:?}: every change is in view as the page opens (missing: {seen:?})"
+        );
+        if surface == Surface::AppShell {
+            // The cap still works for what is not a change: seven fetches show, the eighth waits.
+            let cap = eval(
+                &page.tab,
+                "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); var m = p.querySelector('[data-process-more]'); return JSON.stringify({ held: [...p.querySelectorAll('.process-event.progressive-hidden')].map(function (e) { return (e.querySelector('.renderer') || {}).dataset ? e.querySelector('.renderer').dataset.rendererKind : '?'; }), more: m ? m.textContent.trim() : null }); })()",
+            );
+            assert_eq!(
+                cap.as_str(),
+                Some(r#"{"held":["tool"],"more":"Show 1 more"}"#),
+                "{surface:?}: the cap holds back the eighth fetch and nothing else"
+            );
         }
     }
 }
