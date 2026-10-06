@@ -6168,7 +6168,7 @@ fn scenario_tool_heads_carry_state_exit_and_duration(
         tab,
         match surface {
             Surface::Classic => "[...document.querySelectorAll('#stream .fold')].map(f => { var h = f.querySelector('.fold-h'); return { name: (h.querySelector('.tool-name') || {}).textContent || '', target: (h.querySelector('.tool-target,.tool-path') || {}).textContent || '', chips: [...h.querySelectorAll('.chip')].map(c => ({ c: c.className.replace('chip', '').trim(), x: c.textContent })) }; })",
-            Surface::AppShell => "[...document.querySelectorAll('.renderer[data-renderer-kind]')].map(r => ({ name: (r.querySelector('.renderer-title') || {}).textContent || '', target: (r.querySelector('.renderer-target') || {}).textContent || '', state: r.dataset.state || '', pill: (r.querySelector('.renderer-state') || {}).textContent || '' }))",
+            Surface::AppShell => "[...document.querySelectorAll('.renderer[data-renderer-kind]')].map(r => ({ name: (r.querySelector('.renderer-title') || {}).textContent || '', target: (r.querySelector('.renderer-target') || {}).textContent || '', state: r.dataset.state || '', pill: (r.querySelector('.renderer-state') || {}).textContent || '', change: [...r.querySelectorAll(':scope > .renderer-head .renderer-change > span')].map(s => s.textContent) }))",
         },
     );
     let heads = heads.as_array().cloned().unwrap_or_default();
@@ -6240,10 +6240,20 @@ fn scenario_tool_heads_carry_state_exit_and_duration(
                 (declined["state"].as_str(), declined["pill"].as_str()),
                 (Some("failed"), Some("declined · 42ms"))
             );
+            // #s23: an Edit's counts are its badge, beside the target — never the state pill,
+            // which a phone hides.
             assert_eq!(
-                (update["state"].as_str(), update["pill"].as_str()),
-                (Some("completed"), Some("+1 · −1")),
-                "an Edit reads Update with its change chips"
+                (
+                    update["state"].as_str(),
+                    update["pill"].as_str(),
+                    &update["change"]
+                ),
+                (
+                    Some("completed"),
+                    Some(""),
+                    &serde_json::json!(["+1", "−1"])
+                ),
+                "an Edit reads Update with its change as a badge: {update:?}"
             );
         }
     }
