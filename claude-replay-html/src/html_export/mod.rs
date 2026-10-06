@@ -831,6 +831,17 @@ fn numbered_part(content: &str, token: &str, cap: usize) -> Value {
 /// logic the TUI renders), so real-file-line-number (patch) vs local-numbering (fallback)
 /// behavior can't drift between the two presenters. The gutter grouping is a TUI concern —
 /// here the groups are simply flattened.
+/// A fresh-file Write: the TUI's FOLD of it is the preview Claude Code shows — `Wrote N lines`
+/// and the first `WRITE_PREVIEW` of them — and this page's OPEN body is that same capped preview,
+/// so it opens wherever the TUI's fold would show it (#s21). A shut card held the new file's
+/// contents out of sight: 5,659 writes on the owner's machine. A Write over an existing file
+/// carries a diff and folds as an edit already (`fold_key`).
+fn previews_when_folded(b: &Block) -> bool {
+    matches!(b, Block::ToolUse { name, patch, .. }
+        if matches!(name.as_str(), "Write" | "NotebookEdit")
+            && patch.as_deref().is_none_or(<[_]>::is_empty))
+}
+
 fn diff_part(b: &Block) -> Option<(Value, usize, usize)> {
     let Block::ToolUse { diffs, patch, .. } = b else {
         return None;
@@ -1057,7 +1068,8 @@ impl Emitter<'_> {
         o.insert("kind".into(), json!(kind));
         if is_fold(b) {
             o.insert("fold".into(), json!(true));
-            o.insert("open".into(), json!(u8::from(!self.fold.collapses(b))));
+            let open = !self.fold.collapses(b) || previews_when_folded(b);
+            o.insert("open".into(), json!(u8::from(open)));
         }
 
         let mut head = Map::new();

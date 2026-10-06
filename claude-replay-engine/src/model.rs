@@ -750,10 +750,14 @@ impl BlockKind {
 }
 
 pub fn fold_key(b: &Block) -> &'static str {
-    // #s20: a shell command that CHANGED files folds as an edit (open by default, its diff in
-    // view), as Claude Code draws it; its kind stays Bash for the icon, the search letter and the
-    // filters.
-    if matches!(b, Block::ToolUse { patch: Some(_), .. }) && block_kind(b) == BlockKind::Bash {
+    // A call that recorded a DIFF folds as an edit — open by default, the change in view — as
+    // Claude Code draws it: a shell command that changed files (#s20) and a Write over an existing
+    // file (#s21; its `structuredPatch` is the diff, #92). Its kind stays Bash or Write for the
+    // icon, the search letter and the filters. A fresh-file Write keeps folding as a write: the
+    // TUI's fold of it IS the preview Claude Code shows.
+    if matches!(b, Block::ToolUse { patch: Some(h), .. } if !h.is_empty())
+        && matches!(block_kind(b), BlockKind::Bash | BlockKind::Write)
+    {
         return "edit";
     }
     block_kind(b).fold_key()
@@ -1005,6 +1009,43 @@ mod tests {
         );
         assert_eq!(block_kind(&out[1]), BlockKind::Bash, "its kind stays Bash");
         assert_eq!(fold_key(&bash("ls", None)), "bash");
+    }
+
+    /// #s21: a Write OVER AN EXISTING FILE records a diff (its `structuredPatch`, #92) and folds as
+    /// an edit, open by default, where it used to fold shut as a write with its diff under it — 661
+    /// of them on the owner's machine. A fresh-file Write (no patch) still folds as a write, whose
+    /// TUI fold is the preview Claude Code shows; an empty patch is no diff.
+    #[test]
+    fn a_write_over_an_existing_file_folds_as_an_edit() {
+        let write = |patch: Option<Vec<Hunk>>| Block::ToolUse {
+            name: "Write".into(),
+            target: "notes.md".into(),
+            diffs: vec![(String::new(), "one\ntwo\n".into())],
+            output: None,
+            patch,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+        };
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec!["-one".into(), "+one".into(), "+two".into()],
+            file: None,
+        };
+        let overwrite = write(Some(vec![hunk]));
+        assert_eq!(fold_key(&overwrite), "edit");
+        assert_eq!(
+            block_kind(&overwrite),
+            BlockKind::Write,
+            "its kind stays Write"
+        );
+        assert_eq!(fold_key(&write(None)), "write");
+        assert_eq!(fold_key(&write(Some(Vec::new()))), "write");
+        assert!(!crate::fold::FoldPolicy::default().collapses(&overwrite));
     }
 
     /// #256: an attachment produced INSIDE an activity run follows the run, and does not lead it.

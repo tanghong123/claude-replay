@@ -136,7 +136,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // v17: #282 — an asked option carries its `preview`, the asker's drawing, when it has one.
     // v18: #374 — a file the transcript handed to the reader (a `SendUserFile` delivery, a file
     // the user attached) carries a `Cap::Handed` stamp in `fsig`/`att_fsig`.
-    const RECORD_SCHEMA: u16 = 18;
+    // v19: #s21 — a Write over an existing file (its diff) and a fresh-file Write (its capped
+    // preview) are `open`.
+    const RECORD_SCHEMA: u16 = 19;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
