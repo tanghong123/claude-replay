@@ -410,8 +410,10 @@ estimate (the sums shifted by tens of thousands of pixels) and wrote corrections
 them away. The next transaction read the glide's offset as the reader somewhere the window did not
 cover (I11, I10) and placed again: the owner's export shows the turn under the reader swinging between
 444 and 405, 25 violations in 46 seconds (`tests/fixtures/history/phone-jitter-app.json`). So a page
-that knows a touch glide is under way says so (`absorbCorrections`; the app shell from `touchstart`
-until `whenStill` confirms a still view), and while it lasts:
+that knows a touch glide is under way says so (`absorbCorrections`; the app shell from the finger's
+first `touchmove` until `whenStill` confirms a still view — never from `touchstart`, #s25: a TAP is
+not a glide, and a pane a tap had opened re-anchored the reader inside that window), and while it
+lasts:
 - **a correction is absorbed, not written**: the top pad gives up (or takes) exactly the shift, and the
   model's origin moves with it (`padDebt`, carried by `contentTop`, so every offset ↔ record conversion
   stays exact); the reader's content stays where the screen shows it;

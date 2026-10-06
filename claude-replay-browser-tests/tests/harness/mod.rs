@@ -2841,6 +2841,7 @@ pub fn touch_glide(tab: &headless_chrome::Tab, distance: i64) -> (Vec<i64>, i64)
         try {{
             var t = new Touch({{ identifier: 1, target: s, clientX: 200, clientY: 500 }});
             s.dispatchEvent(new TouchEvent('touchstart', {{ touches: [t], targetTouches: [t], changedTouches: [t], bubbles: true }}));
+            var moved = new Touch({{ identifier: 1, target: s, clientX: 200, clientY: 460 }}); s.dispatchEvent(new TouchEvent('touchmove', {{ touches: [moved], targetTouches: [moved], changedTouches: [moved], bubbles: true }}));
             s.dispatchEvent(new TouchEvent('touchend', {{ touches: [], targetTouches: [], changedTouches: [t], bubbles: true }}));
         }} catch (e) {{}}
         var k = 0.0015, dir = {dir}, v = Math.abs({distance}) * k, pos = s.scrollTop, last = performance.now();

@@ -124,12 +124,17 @@ export class Viewport extends VirtualWindow {
     for (const type of ["touchstart", "touchend", "touchcancel"]) {
       scroller.addEventListener(type, event => { this.touching = event.touches.length; this.lastScrollAt = performance.now(); }, { passive: true, capture: true });
     }
-    // #372: a TOUCH glide — from the finger landing until the view is still again. While it lasts
+    // #372: a TOUCH glide — from the finger moving until the view is still again. While it lasts
     // the engine absorbs its corrections into the top pad instead of writing the offset (a write
     // into an iOS glide does not stick); once still, the debt is settled with one write. A wheel or
     // a key is the desktop's own input, whose momentum honours a write: it ends the touch glide.
     this.touchGlide = false;
-    scroller.addEventListener("touchstart", () => {
+    // #s25: the glide begins when the finger MOVES, never at the touch: a TAP is not a glide. It
+    // used to begin at `touchstart`, so a tap on a file reference opened this window, and the
+    // layout change of the pane it opened was absorbed or yielded inside it — the reader re-taken
+    // around an offset that meant nothing, several turns back once the pane closed (the owner's
+    // export: turn 40's anchor became turn 33's). A fling always moves the finger first.
+    scroller.addEventListener("touchmove", () => {
       if (this.touchGlide) return;
       this.touchGlide = true;
       // Still: the absorbed corrections are written back (one write, which sticks now), then

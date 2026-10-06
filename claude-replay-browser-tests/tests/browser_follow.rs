@@ -10342,6 +10342,8 @@ fn a_phone_fling_keeps_its_turn_when_the_head_lands() {
         try {
             var t = new Touch({ identifier: 1, target: s, clientX: 195, clientY: 500 });
             s.dispatchEvent(new TouchEvent('touchstart', { touches: [t], targetTouches: [t], changedTouches: [t], bubbles: true }));
+
+            var moved = new Touch({ identifier: 1, target: s, clientX: 195, clientY: 460 }); s.dispatchEvent(new TouchEvent('touchmove', { touches: [moved], targetTouches: [moved], changedTouches: [moved], bubbles: true }));
             s.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [t], bubbles: true }));
         } catch (e) { window.__touchError = String(e); }
         var pos = s.scrollTop, v = 2.2, last = performance.now();
@@ -10424,6 +10426,8 @@ fn a_phone_fling_heard_late_still_holds_the_head() {
         s.addEventListener('scroll', function(e){ if (window.__deaf) e.stopImmediatePropagation(); }, true);
         var t = new Touch({ identifier: 1, target: s, clientX: 195, clientY: 500 });
         s.dispatchEvent(new TouchEvent('touchstart', { touches: [t], targetTouches: [t], changedTouches: [t], bubbles: true }));
+
+        var moved = new Touch({ identifier: 1, target: s, clientX: 195, clientY: 460 }); s.dispatchEvent(new TouchEvent('touchmove', { touches: [moved], targetTouches: [moved], changedTouches: [moved], bubbles: true }));
         s.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [t], bubbles: true }));
         var pos = s.scrollTop, v = 2.2, last = performance.now();
         function step() {
@@ -10553,6 +10557,8 @@ fn a_phone_fling_over_under_estimated_answers_does_not_jitter() {
         try {
             var t = new Touch({ identifier: 1, target: s, clientX: 220, clientY: 600 });
             s.dispatchEvent(new TouchEvent('touchstart', { touches: [t], targetTouches: [t], changedTouches: [t], bubbles: true }));
+
+            var moved = new Touch({ identifier: 1, target: s, clientX: 195, clientY: 460 }); s.dispatchEvent(new TouchEvent('touchmove', { touches: [moved], targetTouches: [moved], changedTouches: [moved], bubbles: true }));
             s.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [t], bubbles: true }));
         } catch (e) { window.__touchError = String(e); }
         window.__glideT0 = performance.now(); window.__glideOn = true;
@@ -11454,4 +11460,145 @@ fn a_code_block_foot_is_one_row_of_glyphs_on_a_phone_and_a_desktop() {
             "each keeps its words: {at}"
         );
     }
+}
+
+/// #s25, the owner (iPhone, 1.352.0, with a viewport history): "when I open a file in turn 40 in the
+/// mdrev window, and return back on mobile, the view point drifts to turn 34 (header still says 40)".
+/// The export: the TAP that opened the file began #372's touch glide (from a touchstart until the
+/// view is still), the pane's opening changed the transcript's layout inside that window, and the
+/// remeasure it caused YIELDED — no write, the reader re-taken around an offset that meant nothing —
+/// so the anchor went from turn 40's unit to turn 33's, where closing the pane then put the reader.
+/// A tap is not a glide. Here the reader goes to the turn that edited a Markdown file (an Update
+/// row, as the owner's was), taps its path with a finger (touch, then the compatibility mouse events and a click), closes
+/// the pane with a finger, and is where they were: the anchor the engine held, the turn under the
+/// bar, and the bar itself.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_reader_who_opens_a_file_and_closes_the_pane_stays_on_its_turn() {
+    let _serial = serial();
+    const SID: &str = "5e5510a1-0000-4000-8000-0000000000s25";
+    let base = harness::base("phone-pane-return");
+    let stores = harness::Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(repo.join("docs")).unwrap();
+    std::fs::write(
+        repo.join("docs/contracts.md"),
+        "# Service contracts\n\nEach entry is an interface plus the invariant it upholds.\n",
+    )
+    .unwrap();
+    let doc = repo.join("docs/contracts.md").display().to_string();
+    let mut t = harness::long_session(30, harness::Shape::default());
+    t += &harness::user("update the contracts", 30);
+    t += &harness::edit_tool_at("r30", &doc, &harness::at("00:30"));
+    t += &harness::tool_result_at("r30", &harness::at("00:30"));
+    t += &harness::assistant(
+        &format!(
+            "answer 30: {}",
+            "the contracts now say what each seam keeps. ".repeat(12)
+        ),
+        30,
+    );
+    for i in 31..40 {
+        t += &harness::user(&format!("question {i}: and then?"), i);
+        t += &harness::assistant(
+            &format!(
+                "answer {i}: {}",
+                "sed do eiusmod tempor incididunt ut labore. ".repeat(20)
+            ),
+            i,
+        );
+    }
+    let t = t.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V2, 2979, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::phone(&tab, 440, 956);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={SID}"));
+    let reference = format!("[data-reference-path={doc:?}]");
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector({reference:?})"),
+        "the Read's file reference",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 200) : 'no transcript'",
+    );
+    // The reader goes to the file's turn (the phone's Turns pane does this) and rests there.
+    assert!(
+        harness::jump_to_turn(&tab, harness::Surface::AppShell, 30),
+        "a jump to turn 30"
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    let held = || {
+        harness::eval(&tab, "(function(){ var s = (window.__viewportHistory.states || []).slice(-1)[0] || {}; return String(s.anchor || ''); })()")
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    };
+    let s = harness::Surface::AppShell;
+    assert!(
+        !held().is_empty(),
+        "the engine holds an anchor before the tap"
+    );
+    let centre = |sel: &str| -> (f64, f64) {
+        let v: Vec<f64> = serde_json::from_str(
+            harness::eval(&tab, &format!("JSON.stringify((function(){{ var r = document.querySelector({sel:?}).getBoundingClientRect(); return [r.left + Math.min(r.width / 2, 40), r.top + r.height / 2]; }})())"))
+                .as_str()
+                .unwrap_or("[]"),
+        )
+        .unwrap_or_default();
+        (v[0], v[1])
+    };
+    // A tap is not a glide (#372 began one at every touchstart): a finger tap on the Update row's
+    // own fold chevron re-renders the turn, and the engine's state for it is not a glide's.
+    let chevron: Vec<f64> = serde_json::from_str(
+        harness::eval(&tab, &format!("JSON.stringify((function(){{ var h = document.querySelector({reference:?}).closest('.renderer').querySelector('button.renderer-head'); var r = h.getBoundingClientRect(); return [r.left + 12, r.top + r.height / 2]; }})())"))
+            .as_str()
+            .unwrap_or("[]"),
+    )
+    .unwrap_or_default();
+    harness::eval(&tab, "window.__foldTapAt = performance.now(); 1");
+    harness::finger_tap(&tab, chevron[0], chevron[1]);
+    std::thread::sleep(Duration::from_millis(400));
+    let fold_states = harness::eval(&tab, "JSON.stringify((window.__viewportHistory.states || []).filter(function(s){ return s.t >= window.__foldTapAt; }).map(function(s){ return [s.cause, !!s.glide]; }))");
+    let fold_states = fold_states.as_str().unwrap_or("[]").to_string();
+    assert!(
+        fold_states.contains("render"),
+        "the tap re-rendered the turn: {fold_states}"
+    );
+    assert!(
+        !fold_states.contains("true"),
+        "and nothing the engine did after a tap was a glide's: {fold_states}"
+    );
+    // Back open, as it was, and at rest.
+    harness::finger_tap(&tab, chevron[0], chevron[1]);
+    std::thread::sleep(Duration::from_millis(1200));
+    let (anchor, content, bar) = (
+        held(),
+        harness::turn_at_top(&tab, s),
+        harness::sticky_turn(&tab, s).map(|b| b.0),
+    );
+    let (x, y) = centre(&reference);
+    harness::finger_tap(&tab, x, y);
+    harness::until(
+        &tab,
+        "(function(){ var b = document.getElementById('previewBody'); return !!b && /Service contracts/.test(b.innerText || ''); })()",
+        "the file in the pane",
+        Duration::from_secs(30),
+        "(document.getElementById('previewBody') || {}).innerText",
+    );
+    std::thread::sleep(Duration::from_millis(1200));
+    let (cx, cy) = centre("#closePreview");
+    harness::finger_tap(&tab, cx, cy);
+    std::thread::sleep(Duration::from_millis(1500));
+    let after = (
+        held(),
+        harness::turn_at_top(&tab, s),
+        harness::sticky_turn(&tab, s).map(|b| b.0),
+    );
+    assert_eq!(
+        after,
+        (anchor.clone(), content, bar),
+        "the reader is where they were: (anchor, turn at the top, the bar's turn)"
+    );
 }

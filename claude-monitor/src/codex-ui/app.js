@@ -221,7 +221,18 @@ bindComponentEvents(transcript, recordState, {
   toast
 });
 
-const preview = new Preview({ layoutChanged: () => viewport.remeasure(), toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => viewport.jumpToRecord(at, "artifact") });
+// #s25: the pane changes the TRANSCRIPT's layout only where it is a grid column (a wide desktop).
+// Elsewhere — a phone, or below 1180px — it lies over the transcript, whose width and so every
+// height are unchanged, and a remeasure only threw every measured height away: on a phone it was the
+// step through which a pane a tap had opened moved the reader back several turns.
+let paneLaidOutWidth = transcript.clientWidth;
+const paneLayoutChanged = () => {
+  const width = transcript.clientWidth;
+  if (width === paneLaidOutWidth) return;
+  paneLaidOutWidth = width;
+  viewport.remeasure();
+};
+const preview = new Preview({ layoutChanged: paneLayoutChanged, toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => viewport.jumpToRecord(at, "artifact") });
 const attachmentViewer = new AttachmentViewer({ openPreview: item => preview.open(item), toast });
 const controls = new ControlStore({ toast, refreshIndex: loadSessions });
 const sessionIndex = new SessionIndexStore({
