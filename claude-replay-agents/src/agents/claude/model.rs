@@ -652,6 +652,11 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "task_status",
     "thinking_drop",
     "thinking_stripped",
+    // #s18 (Qwenwork 1.1.32): `{type, content: [{description, status}], itemCount}`, the client
+    // re-telling the MODEL its open todo list (16 records in one session). Addressed to the model,
+    // and the Tasks pane already draws the list from the TodoWrite call: the analogue of
+    // `task_reminder`, above.
+    "todo_reminder",
     "total_tokens_reminder",
     "ultra_effort_enter",
     "ultra_effort_exit",
@@ -1123,6 +1128,11 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "msg_id",
     "name",
     "newString",
+    // #s18, Qwenwork's TodoWrite result (1.1.32, 8 of 8): `newTodos` is the list the call sent as
+    // `input.todos`, `oldTodos` the list before it. The Tasks pane reads the call's INPUT
+    // (`TaskOp::Snapshot`), so both are copies of what is drawn. Revisit if a result ever
+    // disagrees with its input: then it is what the client applied, and the pane should take it.
+    "newTodos",
     "noOutputExpected",
     "notifications",
     // #285, Grep: its counts. The result text states them ("Found N total occurrences across
@@ -1131,6 +1141,8 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "numLines",
     "numMatches",
     "oldString",
+    // #s18: the list before a Qwenwork TodoWrite; see `newTodos`.
+    "oldTodos",
     "originalFile",
     "path",
     "paths",
@@ -5941,6 +5953,21 @@ mod tests {
             ],
             "one report per category, and the known `cost-state`, `turn_duration`, \
              `total_tokens_reminder`, `text` and `isImage` beside them say nothing"
+        );
+        // #s18: Qwenwork's todo bookkeeping is known — its TodoWrite result and the reminder.
+        let qwenwork = r##"
+{"type":"attachment","version":"1.1.32","sessionId":"s-s18","attachment":{"type":"todo_reminder","content":[{"description":"write it","status":"pending"}],"itemCount":1}}
+{"type":"assistant","version":"1.1.32","sessionId":"s-s18","message":{"content":[{"type":"tool_use","id":"w1","name":"TodoWrite","input":{"todos":[{"description":"write it","status":"in_progress"}]}}]}}
+{"type":"user","version":"1.1.32","sessionId":"s-s18","toolUseResult":{"oldTodos":[{"description":"write it","status":"pending"}],"newTodos":[{"description":"write it","status":"in_progress"}]},"message":{"content":[{"type":"tool_result","tool_use_id":"w1","content":"ok"}]}}
+"##;
+        let _ = parse(qwenwork);
+        let reported: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s18"))
+            .collect();
+        assert!(
+            reported.is_empty(),
+            "todo_reminder, oldTodos and newTodos are known: {reported:?}"
         );
     }
 
