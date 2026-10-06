@@ -1016,6 +1016,8 @@ const TOOL_RESULT_READ: &[&str] = &[
     "annotations",
     "answers",
     "bashEditDiff",
+    // #s17: a Qwenwork Bash result's exit code, shown on the tool head as Codex's is.
+    "exitCode",
     // #s5: moved OFF the ignored list, deliberately — it is read for a sub-agent's result only: as
     // the inline answer when it is a string (QoderWork's `agent-result`, #95), and as the report of
     // a result framed by client 2.1.289 (`unframe_agent_report`). No other tool's `content` is read.
@@ -1193,6 +1195,9 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "task_id",
     "task_type",
     "tasks",
+    // #s17, a Qwenwork Bash result: the client's telemetry id for the execution, a UUID. Its
+    // bookkeeping, nothing a reader opens.
+    "telemetryExecutionId",
     "threads",
     "timedOutAfterMs",
     "timeoutMs",
@@ -1289,6 +1294,22 @@ const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
     "version",
 ];
 
+/// Every key a Qwenwork Bash result was met with (#s17, client 1.1.32, 20 of 20 in one session):
+/// the shared `stdout`/`stderr`/`interrupted`/`isImage`/`noOutputExpected`, plus `exitCode` (read),
+/// `kind` ("completed" in all), `signal` (null in all; a string is read as a kill) and
+/// `telemetryExecutionId`.
+const QWENWORK_BASH_SHAPE: &[&str] = &[
+    "exitCode",
+    "interrupted",
+    "isImage",
+    "kind",
+    "noOutputExpected",
+    "signal",
+    "stderr",
+    "stdout",
+    "telemetryExecutionId",
+];
+
 /// Every key a Skill result was met with (#s19, measured 2026-10-06 over 42 results on this machine:
 /// `{commandName, success}` 38, plus `allowedTools` 2 (clients 2.1.287 and 2.1.289, a skill bundled
 /// with the client), plus `status` 2).
@@ -1346,6 +1367,12 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // something else on a future tool. Revisit, as a RENDER question for the owner, if a skill
     // that grants a mutating tool (Bash, Write, Edit) turns up: a quiet "allows: …" on the card.
     ("allowedTools", SKILL_SHAPE),
+    // #s17: a Qwenwork Bash result's `kind` ("completed" in every one met) and `signal` (null in
+    // every one met; a string is read as a kill, above) are generic words, so each is known only in
+    // that result's shape. Revisit when a kind other than "completed", a non-null signal or a
+    // non-zero exit is met: check whether the tool_result then also carries `is_error`.
+    ("kind", QWENWORK_BASH_SHAPE),
+    ("signal", QWENWORK_BASH_SHAPE),
 ];
 
 /// The `toolUseResult` keys this adapter neither reads nor has already met (#264), in the
@@ -1908,6 +1935,32 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
                 });
                 if e.status.is_none() {
                     e.status = Some(ToolStatus::Failed);
+                }
+            }
+            // #s17 (Qwenwork 1.1.32): its Bash result records the command's exit code, so the head
+            // shows it as a Codex head does — `exit N`, a failure when non-zero — and a Qwenwork
+            // Bash card reads like a Codex one. A `signal` string is a kill: Cancelled. Success adds
+            // no status, the #36 rule; the exit code is what the head shows. Claude Code writes
+            // neither key, so its cards are unchanged.
+            let exit_code = tur
+                .get("exitCode")
+                .and_then(Value::as_i64)
+                .and_then(|code| i32::try_from(code).ok());
+            let killed = tur
+                .get("signal")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty());
+            if exit_code.is_some() || killed {
+                let e = execution.get_or_insert(ToolExecution {
+                    status: None,
+                    exit_code: None,
+                    duration: None,
+                });
+                if e.exit_code.is_none() {
+                    e.exit_code = exit_code;
+                }
+                if killed && e.status.is_none() {
+                    e.status = Some(ToolStatus::Cancelled);
                 }
             }
             // An `Artifact` publish: the URL arrives only now, in the result's prose. With it
@@ -5953,6 +6006,90 @@ mod tests {
         assert!(
             seen.is_empty(),
             "hook_success is known, empty or not: {seen:?}"
+        );
+    }
+
+    /// #s17: a Qwenwork Bash result in its measured nine-key shape reports nothing, and its exit
+    /// code reaches the tool's execution — 0 and 1 as written, which the head shows as `exit N`
+    /// (a failure when non-zero); a string `signal` is a kill, Cancelled.
+    #[test]
+    fn qwenwork_bash_exit_codes_reach_the_tool_and_its_shape_is_known() {
+        let call = |id: &str, cmd: &str| {
+            serde_json::json!({"type": "assistant", "version": "1.1.32", "sessionId": "s-s17",
+                "message": {"content": [{"type": "tool_use", "id": id, "name": "Bash",
+                "input": {"command": cmd}}]}})
+            .to_string()
+        };
+        let result = |id: &str, exit: Value, signal: Value| {
+            serde_json::json!({"type": "user", "version": "1.1.32", "sessionId": "s-s17",
+                "toolUseResult": {"kind": "completed", "telemetryExecutionId": "00000000-0000-4000-8000-000000000017",
+                    "stdout": "out", "stderr": "", "exitCode": exit, "signal": signal,
+                    "interrupted": false, "isImage": false, "noOutputExpected": false},
+                "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": "out"}]}})
+            .to_string()
+        };
+        let jsonl = [
+            call("q0", "cargo build"),
+            result("q0", serde_json::json!(0), Value::Null),
+            call("q1", "cargo test"),
+            result("q1", serde_json::json!(1), Value::Null),
+            call("q2", "sleep 99"),
+            result("q2", Value::Null, serde_json::json!("SIGTERM")),
+        ]
+        .join("\n");
+        // Consecutive activity calls coalesce into one span: harvest the top level and the spans.
+        let executions: Vec<Option<ToolExecution>> = parse(&jsonl)
+            .iter()
+            .flat_map(|b| match b {
+                Block::ToolUse { execution, .. } => vec![*execution],
+                Block::Thinking { tools, .. } => tools
+                    .iter()
+                    .filter_map(|t| match t {
+                        Block::ToolUse { execution, .. } => Some(*execution),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(executions.len(), 3, "{executions:?}");
+        let ex = |i: usize| executions[i].unwrap_or_else(|| panic!("no execution: {executions:?}"));
+        assert_eq!(
+            (ex(0).exit_code, ex(0).status),
+            (Some(0), None),
+            "success: its exit code, no badge"
+        );
+        assert_eq!(
+            (ex(1).exit_code, ex(1).status),
+            (Some(1), None),
+            "a failure, by its exit code"
+        );
+        assert_eq!(
+            (ex(2).exit_code, ex(2).status),
+            (None, Some(ToolStatus::Cancelled)),
+            "a kill"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s17"))
+            .collect();
+        assert!(seen.is_empty(), "the nine keys are known: {seen:?}");
+    }
+
+    /// #s17: `kind` and `signal` are generic words, known only in the Qwenwork Bash shape: beside a
+    /// key that shape lacks, each is reported like any new key; `telemetryExecutionId` and
+    /// `exitCode` are specific names, known anywhere.
+    #[test]
+    fn qwenwork_bash_kind_and_signal_are_known_only_in_its_shape() {
+        let other = serde_json::json!({"kind": "x", "signal": null, "filePath": "/w/a.rs"});
+        let mut elsewhere = unknown_tool_result_keys(&other);
+        elsewhere.sort_unstable();
+        assert_eq!(elsewhere, vec!["kind", "signal"]);
+        assert_eq!(
+            unknown_tool_result_keys(
+                &serde_json::json!({"exitCode": 0, "telemetryExecutionId": "t", "stdout": ""})
+            ),
+            Vec::<&str>::new()
         );
     }
 

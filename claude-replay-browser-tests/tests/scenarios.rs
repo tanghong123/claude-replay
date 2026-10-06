@@ -16559,3 +16559,111 @@ fn scenario_diagnostics_after_a_tool_call_are_a_note() {
         );
     }
 }
+
+/// A Qwenwork session (#s17: client 1.1.32 writes a Bash result's `exitCode`) whose last turn ran
+/// two Bash calls — one exit 0, one exit 1 — with prose between them so each keeps its own head.
+fn qwenwork_tool_heads_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    // Long enough that the classic page is three windows tall, which is when it counts as ready.
+    let mut jsonl = long_session(30, Shape::default());
+    let bash = |id: &str, cmd: &str, exit: i64, s: u32| {
+        let ts = harness::at(&format!("{s:02}:00"));
+        format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "assistant", "version": "1.1.32", "timestamp": ts,
+                "message": {"role": "assistant", "content": [{"type": "tool_use", "id": id,
+                "name": "Bash", "input": {"command": cmd}}]}}),
+            serde_json::json!({"type": "user", "version": "1.1.32", "timestamp": ts,
+                "toolUseResult": {"kind": "completed", "telemetryExecutionId": "00000000-0000-4000-8000-000000000017",
+                    "stdout": "done", "stderr": "", "exitCode": exit, "signal": null,
+                    "interrupted": false, "isImage": false, "noOutputExpected": false},
+                "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": "done"}]}})
+        )
+    };
+    jsonl += &bash("qw-build", "cargo build", 0, 40);
+    jsonl += &harness::assistant(&"The build passed. ".repeat(20), 41);
+    jsonl += &bash("qw-test", "cargo test --lib", 1, 42);
+    jsonl += &harness::assistant(&"One test failed. ".repeat(20), 43);
+    let path = stores.qwenwork_session(SID, &jsonl);
+    Fixture {
+        base,
+        path,
+        turns: 30,
+    }
+}
+
+/// #s17 — a Qwenwork Bash head carries its exit code as a Codex head does: `exit 0` on success,
+/// `exit 1` with failure presentation. Found by the daily unknown review: the client records
+/// `exitCode`, which the page dropped, so a failed command read as a successful one.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_qwenwork_tool_heads_carry_their_exit_code() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = qwenwork_tool_heads_fixture(match surface {
+            Surface::Classic => "qwenwork-heads-classic",
+            Surface::AppShell => "qwenwork-heads-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3073 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        let tab = &page.tab;
+        settle();
+        open_everything(tab, surface);
+        settle();
+        if surface == Surface::AppShell {
+            eval(
+                tab,
+                "document.querySelectorAll('[data-process-more][aria-expanded=\"false\"]').forEach(b => b.click())",
+            );
+            settle();
+        }
+        let heads = probe(
+            tab,
+            match surface {
+                Surface::Classic => "[...document.querySelectorAll('#stream .fold')].map(f => { var h = f.querySelector('.fold-h'); return { name: (h.querySelector('.tool-name') || {}).textContent || '', target: (h.querySelector('.tool-target,.tool-path') || {}).textContent || '', chips: [...h.querySelectorAll('.chip')].map(c => ({ c: c.className.replace('chip', '').trim(), x: c.textContent })) }; })",
+                Surface::AppShell => "[...document.querySelectorAll('.renderer[data-renderer-kind]')].map(r => ({ name: (r.querySelector('.renderer-title') || {}).textContent || '', target: (r.querySelector('.renderer-target') || {}).textContent || '', state: r.dataset.state || '', pill: (r.querySelector('.renderer-state') || {}).textContent || '' }))",
+            },
+        );
+        let heads = heads.as_array().cloned().unwrap_or_default();
+        let find = |target: &str| {
+            heads
+                .iter()
+                .find(|h| h["name"] == "Bash" && h["target"] == target)
+                .cloned()
+                .unwrap_or_else(|| panic!("{surface:?}: no Bash {target} head among {heads:?}"))
+        };
+        let (ok, failed) = (find("cargo build"), find("cargo test --lib"));
+        match surface {
+            Surface::Classic => {
+                let last = |h: &serde_json::Value| {
+                    h["chips"]
+                        .as_array()
+                        .and_then(|c| c.last().cloned())
+                        .unwrap_or_default()
+                };
+                assert_eq!(
+                    last(&ok),
+                    serde_json::json!({ "c": "", "x": "exit 0" }),
+                    "{ok}"
+                );
+                assert_eq!(
+                    last(&failed),
+                    serde_json::json!({ "c": "fail", "x": "exit 1" }),
+                    "a failed command: failure presentation with its exit: {failed}"
+                );
+            }
+            Surface::AppShell => {
+                assert!(
+                    ok["pill"].as_str().unwrap_or("").ends_with("exit 0"),
+                    "{ok}"
+                );
+                assert_eq!(failed["state"].as_str(), Some("failed"), "{failed}");
+                assert!(
+                    failed["pill"].as_str().unwrap_or("").ends_with("exit 1"),
+                    "{failed}"
+                );
+            }
+        }
+    }
+}

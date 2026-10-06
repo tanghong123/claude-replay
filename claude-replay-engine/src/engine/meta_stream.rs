@@ -247,11 +247,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// into the model's context after a tool call) is drawn as a note. A v42 stream has nothing where
 /// each one sat, so the reply that acts on the findings keeps reading as if out of nowhere.
 ///
+/// v44: #s17 — a Qwenwork Bash call carries its exit code (`ToolExecution::exit_code`, from the
+/// result's `exitCode`), and a killed one is Cancelled. A v43 stream has no execution on any of
+/// them, so its heads show no `exit N` and a failed command does not read as one.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 43;
+pub const FOLD_VERSION: u16 = 44;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
