@@ -11525,11 +11525,15 @@ fn scenario_a_read_says_which_file(tab: &headless_chrome::Tab, surface: Surface,
         Surface::AppShell => ".renderer[data-renderer-kind=\"read\"] .renderer-target",
     };
     // The visible span of the LAST characters of the path — the file name — against the box that
-    // clips them. Rendered outside it, the reader cannot see what was read.
+    // clips them. Rendered outside it, the reader cannot see what was read. The Read is found by
+    // its file, not as the first in the DOM: the window decides which Reads are mounted, and once
+    // edits open (#s21) the tail is taller and only `window.rs` was, at 1100px.
     let probe = format!(
         "(function(){{ \
-           var e = document.querySelector('{sel}'); if (!e) return JSON.stringify({{ miss: true }}); \
-           var text = (e.textContent || ''); var name = 'reducer.rs'; \
+           var name = 'reducer.rs'; \
+           var e = [...document.querySelectorAll('{sel}')].find(function (x) {{ return (x.textContent || '').indexOf(name) >= 0; }}) || document.querySelector('{sel}'); \
+           if (!e) return JSON.stringify({{ miss: true }}); \
+           var text = (e.textContent || ''); \
            var at = text.lastIndexOf(name); if (at < 0) return JSON.stringify({{ absent: true, text: text.slice(0, 80) }}); \
            var walker = document.createTreeWalker(e, NodeFilter.SHOW_TEXT), node, seen = 0, range = document.createRange(), done = false; \
            while ((node = walker.nextNode())) {{ \
@@ -11544,7 +11548,14 @@ fn scenario_a_read_says_which_file(tab: &headless_chrome::Tab, surface: Surface,
            return JSON.stringify({{ visible: r.width > 0 && r.left >= b.left - 1 && r.right <= b.right + 1, nameLeft: Math.round(r.left - b.left), boxW: Math.round(b.width) }}); \
          }})()"
     );
+    // The reader is LOOKING at that Read: bring it under them before each resize, so the window
+    // keeps it mounted across the resize as it keeps whatever the reader is on.
+    let look = format!(
+        "(function(){{ var e = [...document.querySelectorAll('{sel}')].find(function (x) {{ return (x.textContent || '').indexOf('reducer.rs') >= 0; }}); if (e) e.scrollIntoView({{ block: 'center' }}); return !!e; }})()"
+    );
     for width in [1400.0_f64, 1100.0, 900.0] {
+        eval(tab, &look);
+        settle();
         let _ = tab.set_bounds(headless_chrome::types::Bounds::Normal {
             left: None,
             top: None,
@@ -12329,17 +12340,17 @@ fn settled_big_turn_fixture(name: &str) -> Fixture {
     let mut t = long_session(10, Shape::default());
     t += &user_at("question: do a long stretch of work", &now_minus(400));
     t += &assistant_at("Working through it.", &now_minus(398));
-    // WRITES, not Bash: consecutive Bash/Read/thinking calls COALESCE into a single activity
+    // FETCHES, not Bash: consecutive Bash/Read/thinking calls COALESCE into a single activity
     // event, so ten of them render as one and sit far under the cap — the assertion would then
-    // pass for the wrong reason. Edit/Write/Skill stand alone, which is what gives ten events.
+    // pass for the wrong reason. A fetch stands alone, which is what gives ten events. Not
+    // Writes either, since #s21: a change is never held back by the cap and spends none of it.
     for k in 0..10u64 {
-        t += &write_tool_at(
+        t += &named_tool_at(
             &format!("s-{k}"),
-            &format!("/w/src/mod_{k}.py"),
-            5,
+            "WebFetch",
+            &format!("https://example.test/page{k}"),
             &now_minus(396 - k * 4),
         );
-        t += &tool_result_lines(&format!("s-{k}"), 2, &now_minus(395 - k * 4));
     }
     let path = stores.claude_session(SID, &t);
     Fixture {
@@ -12407,19 +12418,16 @@ fn app_shell_the_live_turn_lists_everything_and_a_settled_one_does_not() {
     jump_to_end(tab, Surface::AppShell);
     await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
     settle();
-    // Writes again, for the same reason: Bash calls would coalesce into one event and the turn
-    // would never pass the cap, so the rule would have nothing to demonstrate.
+    // Fetches again, for the same reasons: Bash calls would coalesce into one event and the turn
+    // would never pass the cap, and Writes are changes, which the cap never holds (#s21).
     let script: Vec<String> = (0..9u64)
-        .flat_map(|k| {
-            vec![
-                write_tool_at(
-                    &format!("g-live-{k}"),
-                    &format!("/w/src/live_{k}.py"),
-                    4,
-                    &now_minus(40 - k * 3),
-                ),
-                tool_result_lines(&format!("g-live-{k}"), 2, &now_minus(39 - k * 3)),
-            ]
+        .map(|k| {
+            named_tool_at(
+                &format!("g-live-{k}"),
+                "WebFetch",
+                &format!("https://example.test/live{k}"),
+                &now_minus(40 - k * 3),
+            )
         })
         .collect();
     let n = script.len();
