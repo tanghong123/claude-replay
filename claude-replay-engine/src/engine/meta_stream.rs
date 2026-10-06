@@ -259,11 +259,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// rename says where to, and a patch Codex rejected is a failed edit with its reason. A v45
 /// stream has empty cards for the first two and nothing at all for the third.
 ///
+/// v47: #s22 — a Claude edit that failed keeps the client's reason as its output, and one the
+/// reader refused is Declined. A v46 stream has no reason on them and calls a refusal Failed.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 46;
+pub const FOLD_VERSION: u16 = 47;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

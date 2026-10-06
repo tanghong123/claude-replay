@@ -1936,6 +1936,17 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
                 if e.status.is_none() {
                     e.status = Some(ToolStatus::Failed);
                 }
+                // #s22: an edit that failed changed nothing, and its reason is the one thing to
+                // say about it — keep the client's text (a success receipt is still dropped). The
+                // reader refusing it is Declined, as a refused question is (#281).
+                if is_edit_tool(name) {
+                    if refused(txt, tur) {
+                        e.status = Some(ToolStatus::Declined);
+                        *output = None;
+                    } else {
+                        *output = Some(tool_error_text(txt, tur));
+                    }
+                }
             }
             // #s17 (Qwenwork 1.1.32): its Bash result records the command's exit code, so the head
             // shows it as a Codex head does — `exit N`, a failure when non-zero — and a Qwenwork
@@ -2874,13 +2885,39 @@ fn unanswered(asked: &Asked, txt: &str, tur: &Value, is_error: Option<bool>) -> 
     if is_error != Some(true) {
         return None;
     }
-    const REFUSALS: [&str; 2] = ["doesn't want to proceed", "rejected tool use"];
-    let refused = |s: &str| REFUSALS.iter().any(|r| s.contains(r));
-    Some(if refused(txt) || tur.as_str().is_some_and(refused) {
+    Some(if refused(txt, tur) {
         Unanswered::Declined
     } else {
         Unanswered::Failed
     })
+}
+
+/// Whether a failed result is the client's REFUSAL — the reader said no: the text "The user
+/// doesn't want to proceed with this tool use…", the `toolUseResult` "User rejected tool use" or
+/// that same sentence behind "Error: " (#281, measured over 20 refused questions).
+fn refused(txt: &str, tur: &Value) -> bool {
+    const REFUSALS: [&str; 2] = ["doesn't want to proceed", "rejected tool use"];
+    let hit = |s: &str| REFUSALS.iter().any(|r| s.contains(r));
+    hit(txt) || tur.as_str().is_some_and(hit)
+}
+
+/// The calls that change a file by name.
+fn is_edit_tool(name: &str) -> bool {
+    matches!(name, "Edit" | "MultiEdit" | "Write" | "NotebookEdit")
+}
+
+/// A failed call's reason as the client words it: the `toolUseResult` string (`Error: String to
+/// replace not found in file.`), else the result text out of its `<tool_use_error>` wrapper —
+/// the two shapes of all ~220 failed edits on the owner's machine (#s22).
+fn tool_error_text(txt: &str, tur: &Value) -> String {
+    if let Some(s) = tur.as_str().filter(|s| !s.trim().is_empty()) {
+        return s.trim().to_string();
+    }
+    txt.trim()
+        .trim_start_matches("<tool_use_error>")
+        .trim_end_matches("</tool_use_error>")
+        .trim()
+        .to_string()
 }
 
 /// The half of an `Artifact` publish that the CALL knows: what to call it, what it is, and the
@@ -6074,6 +6111,77 @@ mod tests {
             .filter(|s| s.example.as_deref() == Some("s-s17"))
             .collect();
         assert!(seen.is_empty(), "the nine keys are known: {seen:?}");
+    }
+
+    /// #s22: an edit that FAILED keeps the client's reason (its receipt is still dropped) and
+    /// reads Failed; one the reader REFUSED reads Declined and keeps nothing — the presenters
+    /// word it. The shapes are the owner's: a `toolUseResult` string, and the result text inside
+    /// `<tool_use_error>`.
+    #[test]
+    fn a_failed_edit_keeps_its_reason_and_a_refused_one_is_declined() {
+        let call = |id: &str, name: &str| {
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use",
+                "id": id, "name": name, "input": {"file_path": "/w/x.rs", "old_string": "alpha",
+                "new_string": "beta", "content": "beta\n"}}]}})
+            .to_string()
+        };
+        let failed = |id: &str, text: &str, tur: Value| {
+            serde_json::json!({"type": "user", "toolUseResult": tur, "message": {"content": [
+                {"type": "tool_result", "tool_use_id": id, "is_error": true, "content": text}]}})
+            .to_string()
+        };
+        let jsonl = [
+            call("e1", "Edit"),
+            failed(
+                "e1",
+                "<tool_use_error>String to replace not found in file.\nString: alpha</tool_use_error>",
+                serde_json::json!("Error: String to replace not found in file.\nString: alpha"),
+            ),
+            call("w1", "Write"),
+            failed(
+                "w1",
+                "<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>",
+                Value::Null,
+            ),
+            call("e2", "Edit"),
+            failed(
+                "e2",
+                "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
+                serde_json::json!("User rejected tool use"),
+            ),
+        ]
+        .join("\n");
+        let seen: Vec<(String, Option<String>, Option<ToolStatus>)> = parse(&jsonl)
+            .into_iter()
+            .filter_map(|b| match b {
+                Block::ToolUse {
+                    name,
+                    output,
+                    execution,
+                    ..
+                } => Some((name, output, execution.and_then(|e| e.status))),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (
+                    "Edit".to_string(),
+                    Some("Error: String to replace not found in file.\nString: alpha".to_string()),
+                    Some(ToolStatus::Failed),
+                ),
+                (
+                    "Write".to_string(),
+                    Some(
+                        "File has not been read yet. Read it first before writing to it."
+                            .to_string()
+                    ),
+                    Some(ToolStatus::Failed),
+                ),
+                ("Edit".to_string(), None, Some(ToolStatus::Declined)),
+            ]
+        );
     }
 
     /// #s17: `kind` and `signal` are generic words, known only in the Qwenwork Bash shape: beside a

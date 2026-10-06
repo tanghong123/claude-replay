@@ -195,7 +195,7 @@ export const rendererStartsClosed = view =>
 // cap never holds it back (#s21, the owner: "all edit changes in transcripts are not buried").
 // The server's fold policy is the one rule for which those are, as on the classic page: it
 // opens a tool record (`open`) exactly when it is an edit, a Write, or a shell command or patch
-// that recorded a diff. It used to be every finished card closed with the diff behind a click
+// that recorded a diff — or an edit that tried and says why it changed nothing (#s22). It used to be every finished card closed with the diff behind a click
 // (parity row 3.5), and past the seventh event of a busy turn not even the head was in view.
 export const showsAChange = view => view.t === "tool" && !!view.raw?.open;
 

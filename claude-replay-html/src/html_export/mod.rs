@@ -18,8 +18,8 @@ use crate::fold::FoldPolicy;
 use crate::highlight;
 use crate::model::{AssistantPhase, AttachmentContent, Block, LoadedAttachment, ToolStatus};
 use crate::present::{
-    compaction_summary, display_name, edit_summary, spawn_chip, thinking_summary,
-    tool_execution_failed, tool_execution_summary, write_content, WRITE_PREVIEW,
+    compaction_summary, display_name, edit_summary, not_applied, spawn_chip, thinking_summary,
+    tool_execution_failed, tool_execution_summary, write_content, NotApplied, WRITE_PREVIEW,
 };
 use crate::{discover, Agent, Transcript};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -842,6 +842,18 @@ fn previews_when_folded(b: &Block) -> bool {
             && patch.as_deref().is_none_or(<[_]>::is_empty))
 }
 
+/// A change's `+N` / `−N` head chips, each only when non-zero.
+fn change_chips(adds: usize, dels: usize) -> Vec<Value> {
+    let mut chips = Vec::new();
+    if adds > 0 {
+        chips.push(chip_class("add", format!("+{adds}")));
+    }
+    if dels > 0 {
+        chips.push(chip_class("del", format!("−{dels}")));
+    }
+    chips
+}
+
 fn diff_part(b: &Block) -> Option<(Value, usize, usize)> {
     let Block::ToolUse { diffs, patch, .. } = b else {
         return None;
@@ -1490,25 +1502,34 @@ impl Emitter<'_> {
                 }
                 let token = highlight::token_for_target(target);
                 match kind {
-                    "edit" => {
-                        if let Some((part, adds, dels)) = diff_part(b) {
-                            let mut chips = Vec::new();
-                            if adds > 0 {
-                                chips.push(chip_class("add", format!("+{adds}")));
-                            }
-                            if dels > 0 {
-                                chips.push(chip_class("del", format!("−{dels}")));
-                            }
-                            head.insert("chips".into(), json!(chips));
-                            body.push(json!({ "p": "note", "x": edit_summary(adds, dels) }));
-                            body.push(part);
+                    "edit" => match not_applied(
+                        name,
+                        target,
+                        false,
+                        execution.as_ref(),
+                        output.as_deref(),
+                    ) {
+                        // #s22: an edit that changed nothing says why, in place of a diff that
+                        // never happened — or, rejected by the reader, says so above the diff
+                        // they said no to. Neither carries a `+N`/`−N`: nothing changed.
+                        Some(NotApplied::Failed(reason)) => body.push(pre_part(&reason)),
+                        Some(NotApplied::Rejected(said)) => {
+                            body.push(json!({ "p": "note", "x": said }));
+                            body.extend(diff_part(b).map(|(part, _, _)| part));
                         }
-                        // An edit keeps no receipt, but an adapter's note ABOUT it does — a
-                        // rename, why a patch was rejected (#s21) — beside the diff or alone.
-                        if let Some(out) = output.as_deref().filter(|o| !o.trim().is_empty()) {
-                            body.push(pre_part(out));
+                        None => {
+                            if let Some((part, adds, dels)) = diff_part(b) {
+                                head.insert("chips".into(), json!(change_chips(adds, dels)));
+                                body.push(json!({ "p": "note", "x": edit_summary(adds, dels) }));
+                                body.push(part);
+                            }
+                            // An edit keeps no receipt, but an adapter's note ABOUT it does — a
+                            // rename (#s21) — beside the diff or alone.
+                            if let Some(out) = output.as_deref().filter(|o| !o.trim().is_empty()) {
+                                body.push(pre_part(out));
+                            }
                         }
-                    }
+                    },
                     "write" => {
                         // An overwrite carries the harness's structuredPatch — CC
                         // renders it as a diff like an Edit (#92); only a fresh-file
@@ -1517,31 +1538,46 @@ impl Emitter<'_> {
                             b,
                             Block::ToolUse { patch: Some(h), .. } if !h.is_empty()
                         );
-                        if overwrite {
-                            if let Some((part, adds, dels)) = diff_part(b) {
-                                let mut chips = Vec::new();
-                                if adds > 0 {
-                                    chips.push(chip_class("add", format!("+{adds}")));
+                        let content = write_content(diffs);
+                        match not_applied(
+                            name,
+                            target,
+                            overwrite,
+                            execution.as_ref(),
+                            output.as_deref(),
+                        ) {
+                            // #s22, as for an edit: a write that failed shows no preview of a
+                            // file that was never written.
+                            Some(NotApplied::Failed(reason)) => body.push(pre_part(&reason)),
+                            Some(NotApplied::Rejected(said)) => {
+                                body.push(json!({ "p": "note", "x": said }));
+                                if overwrite {
+                                    body.extend(diff_part(b).map(|(part, _, _)| part));
+                                } else {
+                                    body.push(numbered_part(content, token, WRITE_PREVIEW));
                                 }
-                                if dels > 0 {
-                                    chips.push(chip_class("del", format!("−{dels}")));
-                                }
-                                head.insert("chips".into(), json!(chips));
-                                body.push(json!({ "p": "note", "x": edit_summary(adds, dels) }));
-                                body.push(part);
                             }
-                        } else {
-                            let content = write_content(diffs);
-                            let n = content.lines().count();
-                            head.insert(
-                                "chips".into(),
-                                json!([chip_class("add", format!("{n} lines"))]),
-                            );
-                            body.push(json!({
-                                "p": "note",
-                                "x": format!("Wrote {n} lines to {target}"),
-                            }));
-                            body.push(numbered_part(content, token, WRITE_PREVIEW));
+                            None if overwrite => {
+                                if let Some((part, adds, dels)) = diff_part(b) {
+                                    head.insert("chips".into(), json!(change_chips(adds, dels)));
+                                    body.push(
+                                        json!({ "p": "note", "x": edit_summary(adds, dels) }),
+                                    );
+                                    body.push(part);
+                                }
+                            }
+                            None => {
+                                let n = content.lines().count();
+                                head.insert(
+                                    "chips".into(),
+                                    json!([chip_class("add", format!("{n} lines"))]),
+                                );
+                                body.push(json!({
+                                    "p": "note",
+                                    "x": format!("Wrote {n} lines to {target}"),
+                                }));
+                                body.push(numbered_part(content, token, WRITE_PREVIEW));
+                            }
                         }
                     }
                     // #173: `BlockKind::Read` covers five tools, but only two of them return
@@ -3024,7 +3060,7 @@ mod tests {
 
     use super::serve::{percent_decode, query_get};
     use super::*;
-    use crate::model::Hunk;
+    use crate::model::{Hunk, ToolExecution};
 
     /// The resumable-render property (render-once foundation, §9): rendering a block list in two
     /// ranges while carrying `EmitState` produces the EXACT same wire records — and the same sidebar
@@ -4828,6 +4864,81 @@ mod tests {
         assert_eq!(
             out[0]["head"]["interaction"]["answers"][0]["label"],
             "恢复 Classic 默认 (Recommended)"
+        );
+    }
+
+    /// #s22: an edit that changed nothing says why in place of its diff (failed), or says it was
+    /// rejected above the diff the reader refused; neither claims `+N`/`−N` or `Added N lines`.
+    #[test]
+    fn a_not_applied_edit_says_so_instead_of_claiming_a_change() {
+        let with = |status: ToolStatus, output: Option<&str>| match edit_with_patch() {
+            Block::ToolUse {
+                name,
+                target,
+                diffs,
+                patch,
+                ..
+            } => Block::ToolUse {
+                name,
+                target,
+                diffs,
+                output: output.map(str::to_string),
+                patch,
+                read_lines: None,
+                cwd: String::new(),
+                execution: Some(ToolExecution {
+                    status: Some(status),
+                    exit_code: None,
+                    duration: None,
+                }),
+                published: None,
+                asked: None,
+                delivered: Vec::new(),
+            },
+            _ => unreachable!(),
+        };
+        let parts = |b: Block| {
+            let out = stream(&[b], &FoldPolicy::none());
+            let chips: Vec<String> = out[0]["head"]["chips"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|c| c["x"].as_str().unwrap_or("").to_string())
+                .collect();
+            let body: Vec<(String, String)> = out[0]["body"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| {
+                    let x = p["x"].as_str().unwrap_or("").to_string();
+                    (p["p"].as_str().unwrap_or("").to_string(), x)
+                })
+                .collect();
+            (chips, body)
+        };
+        let (chips, body) = parts(with(
+            ToolStatus::Failed,
+            Some("Error: String to replace not found in file."),
+        ));
+        assert_eq!(chips, ["failed"]);
+        assert_eq!(
+            body,
+            [(
+                "pre".to_string(),
+                "Error: String to replace not found in file.".to_string()
+            )]
+        );
+        let (chips, body) = parts(with(ToolStatus::Declined, None));
+        assert_eq!(chips, ["declined"]);
+        assert_eq!(
+            body,
+            [
+                (
+                    "note".to_string(),
+                    "User rejected update to src/x.rs".to_string()
+                ),
+                ("diff".to_string(), String::new()),
+            ]
         );
     }
 

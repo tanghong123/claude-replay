@@ -66,6 +66,50 @@ pub fn spawn_chip(sa: &SubAgent) -> String {
 /// `… +N lines` marker (the full content isn't dumped into the transcript view).
 pub const WRITE_PREVIEW: usize = 10;
 
+/// Why an edit changed nothing (#s22): the call FAILED (or was interrupted), or the reader
+/// REJECTED it. A not-applied edit used to read exactly like an applied one — its diff and
+/// `Added 1 line, removed 1 line` — with only a chip on its head to say otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotApplied {
+    /// `Error: <the client's reason>` — drawn INSTEAD of the diff, as Claude Code draws it: the
+    /// change never happened, and what it would have been is not what the reader needs.
+    Failed(String),
+    /// `User rejected update to <file>` — drawn ABOVE the proposed diff, as Claude Code draws it:
+    /// the reader saw it and said no, and what they said no to is the point.
+    Rejected(String),
+}
+
+/// What a file-changing call says in place of its summary when it changed nothing — `None` when
+/// it was applied, or recorded no outcome. `reason` is the result text the adapter kept for a
+/// failed edit (Claude's `<tool_use_error>`, a patch Codex rejected).
+pub fn not_applied(
+    name: &str,
+    target: &str,
+    overwrite: bool,
+    execution: Option<&ToolExecution>,
+    reason: Option<&str>,
+) -> Option<NotApplied> {
+    let reason = reason.map(str::trim).filter(|r| !r.is_empty());
+    match execution.and_then(|e| e.status)? {
+        ToolStatus::Declined => {
+            let verb = if matches!(name, "Write" | "NotebookEdit") && !overwrite {
+                "write"
+            } else {
+                "update"
+            };
+            Some(NotApplied::Rejected(format!(
+                "User rejected {verb} to {target}"
+            )))
+        }
+        ToolStatus::Failed | ToolStatus::Cancelled => Some(NotApplied::Failed(match reason {
+            Some(r) if r.starts_with("Error") => r.to_string(),
+            Some(r) => format!("Error: {r}"),
+            None => "Error: not applied".to_string(),
+        })),
+        ToolStatus::Completed | ToolStatus::Unknown => None,
+    }
+}
+
 /// `Added N lines[, removed M lines]` (singular/plural; "removed" omitted at 0) —
 /// the Edit/MultiEdit result summary, matching Claude Code.
 pub fn edit_summary(adds: usize, dels: usize) -> String {
@@ -177,6 +221,73 @@ pub fn write_content(diffs: &[(String, String)]) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #s22: what a file-changing call says when it changed nothing.
+    #[test]
+    fn a_not_applied_edit_names_why() {
+        let ran = |status| ToolExecution {
+            status: Some(status),
+            exit_code: None,
+            duration: None,
+        };
+        let failed = ran(ToolStatus::Failed);
+        assert_eq!(
+            not_applied(
+                "Edit",
+                "x.rs",
+                false,
+                Some(&failed),
+                Some("Error: not found")
+            ),
+            Some(NotApplied::Failed("Error: not found".into()))
+        );
+        assert_eq!(
+            not_applied(
+                "Edit",
+                "x.rs",
+                false,
+                Some(&failed),
+                Some("File has not been read yet.")
+            ),
+            Some(NotApplied::Failed(
+                "Error: File has not been read yet.".into()
+            ))
+        );
+        assert_eq!(
+            not_applied(
+                "Write",
+                "x.md",
+                false,
+                Some(&ran(ToolStatus::Cancelled)),
+                None
+            ),
+            Some(NotApplied::Failed("Error: not applied".into()))
+        );
+        let declined = ran(ToolStatus::Declined);
+        assert_eq!(
+            not_applied("Edit", "x.rs", false, Some(&declined), None),
+            Some(NotApplied::Rejected("User rejected update to x.rs".into()))
+        );
+        assert_eq!(
+            not_applied("Write", "x.md", false, Some(&declined), None),
+            Some(NotApplied::Rejected("User rejected write to x.md".into()))
+        );
+        assert_eq!(
+            not_applied("Write", "x.md", true, Some(&declined), None),
+            Some(NotApplied::Rejected("User rejected update to x.md".into()))
+        );
+        assert_eq!(not_applied("Edit", "x.rs", false, None, None), None);
+        assert_eq!(
+            not_applied(
+                "Edit",
+                "x.rs",
+                false,
+                Some(&ran(ToolStatus::Completed)),
+                None
+            ),
+            None
+        );
+    }
 
     #[test]
     fn execution_summary_preserves_exit_status_and_subsecond_duration() {

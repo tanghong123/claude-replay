@@ -16894,3 +16894,75 @@ fn scenario_every_change_to_a_file_is_in_view_as_the_page_opens() {
         }
     }
 }
+
+/// An Edit that failed and an Edit the reader rejected (#s22), then one that was applied.
+fn not_applied_edits_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    let mut t = String::new();
+    t += &user_at("first prompt", &now_minus(300));
+    t += &assistant_at(&answer, &now_minus(295));
+    t += &user_at("rename the field", &now_minus(280));
+    let call = |id: &str, old: &str, new: &str, ts: String| {
+        serde_json::json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant",
+            "content": [{"type": "tool_use", "id": id, "name": "Edit",
+            "input": {"file_path": "/w/x.rs", "old_string": old, "new_string": new}}]}})
+    };
+    let failed = |id: &str, text: &str, tur: serde_json::Value, ts: String| {
+        serde_json::json!({"type": "user", "timestamp": ts, "toolUseResult": tur,
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id,
+            "is_error": true, "content": text}]}})
+    };
+    let refusal = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file).";
+    for line in [
+        call("e1", "field_a", "PROBE_S22_NEVER", now_minus(279)),
+        failed(
+            "e1",
+            "<tool_use_error>String to replace not found in file.\nString: field_a</tool_use_error>",
+            serde_json::json!("Error: String to replace not found in file.\nString: field_a"),
+            now_minus(278),
+        ),
+        call("e2", "field_b", "PROBE_S22_REFUSED", now_minus(277)),
+        failed("e2", refusal, serde_json::json!("User rejected tool use"), now_minus(276)),
+    ] {
+        t += &format!("{line}\n");
+    }
+    t += &assistant_at(&answer, &now_minus(270));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 2,
+    }
+}
+
+/// #s22 — an edit that changed nothing says so, on both pages: a FAILED one says why and draws
+/// no diff (the change never happened), a REJECTED one says the reader rejected it above the diff
+/// they refused. Neither claims `Added N lines`, which both used to.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_an_edit_that_changed_nothing_says_why() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = not_applied_edits_fixture(match surface {
+            Surface::Classic => "not-applied-classic",
+            Surface::AppShell => "not-applied-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3076 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        settle();
+        let seen = eval(
+            &page.tab,
+            "(function(){ var t = document.body.innerText; return JSON.stringify({ reason: t.indexOf('String to replace not found in file.') >= 0, rejected: t.indexOf('User rejected update to') >= 0, refused: t.indexOf('PROBE_S22_REFUSED') >= 0, never: t.indexOf('PROBE_S22_NEVER') >= 0, added: t.indexOf('Added 1 line') >= 0 }); })()",
+        );
+        assert_eq!(
+            seen.as_str(),
+            Some(r#"{"reason":true,"rejected":true,"refused":true,"never":false,"added":false}"#),
+            "{surface:?}: the failed edit says why with no diff, the rejected one says so above its diff, and neither claims a change"
+        );
+    }
+}

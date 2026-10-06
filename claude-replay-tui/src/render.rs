@@ -5,8 +5,9 @@ use crate::diff::{diff_row_groups, line_diff, DiffKind, LineOp};
 use crate::highlight::{self, Hl};
 use crate::model::{AssistantPhase, Attachment, Block};
 use crate::present::{
-    display_name, edit_summary, file_edit_summary, spawn_chip, thinking_summary,
-    tool_execution_failed, tool_execution_summary, turn_summary, write_content, WRITE_PREVIEW,
+    display_name, edit_summary, file_edit_summary, not_applied, spawn_chip, thinking_summary,
+    tool_execution_failed, tool_execution_summary, turn_summary, write_content, NotApplied,
+    WRITE_PREVIEW,
 };
 use crate::tui::{markdown, theme};
 use ratatui::style::{Color, Modifier, Style};
@@ -217,6 +218,14 @@ pub(crate) fn diff_counts(old: &str, new: &str) -> (usize, usize) {
         }
     }
     (adds, dels)
+}
+
+/// One `⎿` result line per line of `text` — an edit's note, or why it changed nothing (#s22).
+fn push_result_lines(text: &str, out: &mut Vec<Line<'static>>) {
+    for (i, line) in text.lines().enumerate() {
+        let lead = if i == 0 { "⎿ \u{a0}" } else { "   " };
+        out.push(Line::styled(format!("  {lead}{line}"), theme::result()));
+    }
 }
 
 /// Render a whole-new-file write as syntax-highlighted, line-numbered code (no
@@ -624,12 +633,37 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
             // holds the original); CC renders it as a diff like an Edit (#92). Only
             // a fresh-file write (empty patch) keeps the numbered-content preview.
             let overwrite = write_like && patch.as_deref().is_some_and(|h| !h.is_empty());
-            if write_like && !overwrite {
+            let edit_like = write_like || matches!(name.as_str(), "Edit" | "MultiEdit");
+            // #s22: an edit that changed nothing says so, and why, in place of its summary.
+            let refused = edit_like
+                .then(|| {
+                    not_applied(
+                        name,
+                        target,
+                        overwrite,
+                        execution.as_ref(),
+                        output.as_deref(),
+                    )
+                })
+                .flatten();
+            if let Some(NotApplied::Failed(reason)) = &refused {
                 out.push(with_execution(
                     tool_header(name, target, None),
                     execution.as_ref(),
                     None,
                 ));
+                push_result_lines(reason, &mut out);
+            } else if write_like && !overwrite {
+                out.push(with_execution(
+                    tool_header(name, target, None),
+                    execution.as_ref(),
+                    None,
+                ));
+                if let Some(NotApplied::Rejected(said)) = &refused {
+                    push_result_lines(said, &mut out);
+                    write_numbered(write_content(diffs), token, None, hl, &mut out);
+                    return out;
+                }
                 let content = write_content(diffs);
                 let n = content.lines().count();
                 out.push(Line::styled(
@@ -653,6 +687,12 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                         .map(|(o, n)| diff_counts(o, n))
                         .fold((0usize, 0usize), |(a, d), (x, y)| (a + x, d + y))
                 };
+                if let Some(NotApplied::Rejected(said)) = &refused {
+                    // What the reader said no to, under the words saying so.
+                    push_result_lines(said, &mut out);
+                    render_diff(diffs, patch.as_deref(), token, hl, &mut out);
+                    return out;
+                }
                 // A rename with no diff has no lines to count; its note below says what happened.
                 if adds + dels > 0 || output.is_none() {
                     out.push(Line::styled(
@@ -663,12 +703,10 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 // Prefer the transcript's structuredPatch (real file line numbers);
                 // `diff_row_groups` falls back to our own line-diff (local numbering) when absent.
                 render_diff(diffs, patch.as_deref(), token, hl, &mut out);
-                // An edit keeps no receipt, but an adapter's note ABOUT it does — a rename, why a
-                // patch was rejected (#s21) — since nothing else on the card says it.
+                // An edit keeps no receipt, but an adapter's note ABOUT it does — a rename
+                // (#s21) — since nothing else on the card says it.
                 if let Some(note) = output.as_deref().filter(|o| !o.trim().is_empty()) {
-                    for line in note.lines() {
-                        out.push(Line::styled(format!("  ⎿ \u{a0}{line}"), theme::result()));
-                    }
+                    push_result_lines(note, &mut out);
                 }
             } else {
                 // Bash / Read / other tools — header + (capped) output, on the
@@ -924,6 +962,7 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             target,
             diffs,
             patch,
+            output,
             execution,
             ..
         } if (name == "Write" || name == "NotebookEdit")
@@ -932,13 +971,24 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             let content = write_content(diffs);
             let n = content.lines().count();
             let token = highlight::token_for_target(target);
-            let mut v = vec![
-                with_execution(tool_header(name, target, None), execution.as_ref(), None),
-                Line::styled(
+            let mut v = vec![with_execution(
+                tool_header(name, target, None),
+                execution.as_ref(),
+                None,
+            )];
+            // #s22: a write that changed nothing says so — and a failed one shows no preview of
+            // a file that was never written.
+            match not_applied(name, target, false, execution.as_ref(), output.as_deref()) {
+                Some(NotApplied::Failed(reason)) => {
+                    push_result_lines(&reason, &mut v);
+                    return v;
+                }
+                Some(NotApplied::Rejected(said)) => push_result_lines(&said, &mut v),
+                None => v.push(Line::styled(
                     format!("  ⎿ \u{a0}Wrote {n} lines to {target}"),
                     theme::result(),
-                ),
-            ];
+                )),
+            }
             write_numbered(content, token, Some(WRITE_PREVIEW), Hl::Styled, &mut v);
             v
         }
@@ -1632,6 +1682,65 @@ mod tests {
         );
         assert!(t[0].contains("⎿ out 0"), "header wrong: {t:?}");
         assert!(t[1].contains("49 folded"), "true count wrong: {t:?}");
+    }
+
+    /// #s22: an Edit that FAILED says why and draws no diff — the change never happened; one the
+    /// reader REJECTED says so above the diff they refused. Neither claims `Added N lines`.
+    #[test]
+    fn a_not_applied_edit_says_why_and_claims_no_change() {
+        use crate::model::{ToolExecution, ToolStatus};
+        let edit = |status, output: Option<&str>| Block::ToolUse {
+            name: "Edit".into(),
+            target: "src/y.rs".into(),
+            diffs: vec![("let a = 1;".into(), "let a = 2;".into())],
+            output: output.map(str::to_string),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: Some(ToolExecution {
+                status: Some(status),
+                exit_code: None,
+                duration: None,
+            }),
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+        };
+        let failed = texts(&render_one(
+            &edit(
+                ToolStatus::Failed,
+                Some("Error: String to replace not found in file.\nString: let a = 1;"),
+            ),
+            80,
+            Hl::Styled,
+        ));
+        let all = failed.join("\n");
+        assert!(
+            all.contains(
+                "⎿ \u{a0}Error: String to replace not found in file.\n     String: let a = 1;"
+            ),
+            "the reason, its second line under the first:\n{all}"
+        );
+        assert!(!all.contains("Added"), "no change claimed:\n{all}");
+        assert!(
+            !all.contains("let a = 2;"),
+            "no diff of a change that never happened:\n{all}"
+        );
+        let rejected = texts(&render_one(
+            &edit(ToolStatus::Declined, None),
+            80,
+            Hl::Styled,
+        ));
+        let all = rejected.join("\n");
+        assert!(
+            all.contains("⎿ \u{a0}User rejected update to src/y.rs"),
+            "said rejected:\n{all}"
+        );
+        assert!(!all.contains("Added"), "no change claimed:\n{all}");
+        assert!(
+            all.contains("let a = 2;"),
+            "the refused diff is shown:\n{all}"
+        );
     }
 
     /// Edit shows an `⏺ Update(...)` header + `⎿ Added/removed` summary + -/+ rows.
