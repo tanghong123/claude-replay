@@ -741,6 +741,49 @@ fn follow_matches_full_reparse_claude() {
     );
 }
 
+/// #s20/#s21: a shell command's edit diff arrives with its RESULT, a poll after the call — while
+/// the call sat inside an activity run. Followed live, the run must give it up exactly as a full
+/// parse does, and the read after it starts a new run.
+#[test]
+fn follow_matches_full_reparse_when_an_edit_diff_lands_on_a_shell_command() {
+    let diff = "{\"moreFiles\":0,\"changedFiles\":[\"/r/a.py\"],\"files\":[{\"filePath\":\"/r/a.py\",\"hunks\":[{\"oldStart\":1,\"oldLines\":1,\"newStart\":1,\"newLines\":1,\"lines\":[\"-a\",\"+b\"]}]}]}";
+    let read = |id: &str, ts: u32| {
+        format!("{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"cat a.py\"}}}}]}},\"timestamp\":\"2026-07-26T10:00:{ts:02}Z\"}}\n")
+    };
+    let out = |id: &str, tur: &str, ts: u32| {
+        format!("{{\"type\":\"user\",\"toolUseResult\":{{\"stdout\":\"ok\",\"stderr\":\"\"{tur}}},\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"ok\"}}]}},\"timestamp\":\"2026-07-26T10:00:{ts:02}Z\"}}\n")
+    };
+    let chunks = [
+        "{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"go\"}]},\"timestamp\":\"2026-07-26T10:00:00Z\"}\n".to_string(),
+        read("b1", 1),
+        out("b1", "", 2),
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"b2\",\"name\":\"Bash\",\"input\":{\"command\":\"python3 edit.py\"}}]},\"timestamp\":\"2026-07-26T10:00:03Z\"}\n".to_string(),
+        out("b2", &format!(",\"bashEditDiff\":{diff}"), 4),
+        read("b3", 5),
+        out("b3", "", 6),
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]},\"timestamp\":\"2026-07-26T10:00:07Z\"}\n".to_string(),
+    ];
+    let chunks: Vec<&str> = chunks.iter().map(String::as_str).collect();
+    assert_follow(&ClaudeAdapter, &chunks);
+}
+
+/// #s21: a Codex `apply_patch` wrapper's patch is held until its `FileChange` or its output — a
+/// poll apart, so the held patch rides the cursor. A rejected one followed live must become the
+/// same failed edit a full parse makes.
+#[test]
+fn follow_matches_full_reparse_when_a_codex_patch_is_rejected() {
+    assert_follow(
+        &CodexAdapter,
+        &[
+            "{\"timestamp\":\"2026-10-01T06:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/repo\",\"cli_version\":\"0.147.0\"}}\n",
+            "{\"timestamp\":\"2026-10-01T06:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"fix\"}]}}\n",
+            "{\"timestamp\":\"2026-10-01T06:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call\",\"name\":\"exec\",\"call_id\":\"o1\",\"input\":\"const patch = \\\"*** Begin Patch\\\\n*** Update File: /repo/a.rs\\\\n@@\\\\n-x\\\\n+y\\\\n*** End Patch\\\";\\ntext(await tools.apply_patch(patch));\\n\"}}\n",
+            "{\"timestamp\":\"2026-10-01T06:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call_output\",\"call_id\":\"o1\",\"output\":\"Script failed\\nWall time 0.0 seconds\\nOutput:\\n\\nScript error:\\napply_patch verification failed: Failed to find expected lines in /repo/a.rs\"}}\n",
+            "{\"timestamp\":\"2026-10-01T06:00:03Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}}\n",
+        ],
+    );
+}
+
 #[test]
 fn follow_matches_full_reparse_codex() {
     // Codex splits a call and its output across polls — the persistent Replayer
