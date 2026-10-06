@@ -193,7 +193,7 @@ B 节中的每条规则，以及每一项保留给人的行为，都是 mdrev �
 - 拒绝 `refs/heads` 之外引用的服务器，需要用分支名（`{"review": {"branch": "mdrev-review"}}`）；被它拒绝的推送会如实说明（E1）。
 - 一个仓库可以在 mdrev 的引用旁边放其他工具的隐藏引用——比如 taskq 共享队列的 `refs/notes/taskq`：它们互不相干。
 
-**写明评审库，让每个克隆都能找到它（#s11）。** 没有指针时，克隆会把自己的 `origin` 当作评审库——而镜像或 fork 的 `origin` 并不是讨论串所在的地方。所以指针是常规做法：在终端里配对时会提议写入它，skill 会询问，`mdrev --review-pointer` 会把这个检出目录当前使用的评审库（仓库和引用都写明）写进去，并只提交这一个文件（由这个人随代码一起推送）。当指针指定的仓库既不是这个克隆的 `origin`、也不是它的 `upstream` 时，状态和配对会把两者都说出来："this clone's origin is X; the review store is at Y"。没有指针时，状态会说明镜像会怎样。
+**写明评审库，让每个克隆都能找到它（#s11）。** 没有指针时，克隆会把自己的 `origin` 当作评审库——而镜像或 fork 的 `origin` 并不是讨论串所在的地方。所以指针是常规做法：在终端里配对时会提议写入它，skill 会询问，`mdrev --review-pointer` 会把这个检出目录当前使用的评审库（仓库和引用都写明）写进去，并只提交这一个文件（由这个人随代码一起推送）。当指针指定的仓库既不是这个克隆的 `origin`、也不是它的 `upstream` 时，状态和配对会把两者都说出来："this clone's origin is X; the review store is at Y"——只有当 Y 正是 X 自己的 `<repo>-notes`，即公开项目放在自己旁边的私有评审库（E0）时例外，这时会直接这样称呼它。没有指针时，状态会说明镜像会怎样。
 
 指针存在却无法读取时，查看器和状态都会如实说明，绝不当作"没有评审库"。既没有远端、也没有指针的项目，没有共享评审。
 
@@ -271,7 +271,7 @@ paired: you write as Hong-on-laptop <hong@example.com>
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.20",
+  "mdrev": "1.1.22",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }

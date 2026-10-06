@@ -93,6 +93,31 @@ design.)
 For a host writing against this contract the rule is short: **anything you tell
 the viewer about a folder, tell it again when the reader changes folder.**
 
+## A path that is not Markdown is source code
+
+A host may send any text file, not only Markdown (docs/code-files.md). The
+viewer decides what each one is **by its path, and by nothing else** — it
+neither asks the host nor looks at the content: a path ending `.md`,
+`.markdown`, `.mdown` or `.mkd` is a document, rendered as it always was, and
+any other path is source code. A code file is shown only as source: the
+unified line diff of the range in redline, the file at the range's newer
+revision in clean, its lines numbered, coloured by its language, and a line
+changed in place marked word by word. The viewer files no notes on it and asks
+the annotation routes nothing about it; notes on the documents beside it work
+as before.
+
+Nothing else changes for a host. `/text` answers a code path exactly as it
+answers a document's — the file's text — and `/revisions`, renames, live
+reload and capabilities are the same for both. The lists the host answers —
+`/documents`, `/tree`, `/changed`, `/recent-changes`, `/recents` — may carry
+any text path; which ones is the host's choice, and a host that lists only
+Markdown has the viewer it always had. **Leave binary files out** of them. The
+viewer guards anyway: a file with a NUL byte in its first 8 KB is shown as one
+line saying it is binary, and one past about a megabyte or 20,000 lines on
+either side of the range as its size and a line saying it is too large to show
+here — but a list of files the viewer can only refuse is not much of a list.
+`mdrev-cli conform --path` takes a code path as readily as a document's.
+
 ## The routes
 
 All under one prefix, say `/docs/api/mdrev`. Every request carries the host's own session (`credentials: 'same-origin'`), and the host decides what a session may read and write; mdrev never sees a filesystem. Errors are JSON `{"error": "…"}` with the status that fits: 400 for a bad request, 403 for a session that may not, 404 for a document or note that is not there.
@@ -120,7 +145,7 @@ The viewer has parsed a document it holds and found what that document points at
 
 ### `GET {prefix}/text?path=&rev=`
 
-The document's Markdown, as `text/plain; charset=utf-8`. `rev` is a revision id the host issued through `/revisions`, or `current` for the document as it stands. A `path` that names nothing at that revision is 404; a `path` that tries to leave the host's document root (`../`) is refused. Send an `ETag` if you can: a viewer without push polls this route with `If-None-Match`, and a `304` costs nothing.
+The file's text, as `text/plain; charset=utf-8` — a document's Markdown, or, for a host that offers them, a source file's code ([above](#a-path-that-is-not-markdown-is-source-code)). The viewer reads it as UTF-8, and a file that is not decodes with replacement characters rather than failing. `rev` is a revision id the host issued through `/revisions`, or `current` for the document as it stands. A `path` that names nothing at that revision is 404; a `path` that tries to leave the host's document root (`../`) is refused. Send an `ETag` if you can: a viewer without push polls this route with `If-None-Match`, and a `304` costs nothing.
 
 ### `GET {prefix}/revisions?path=`
 
@@ -179,7 +204,8 @@ offer a switcher. Not what changed and not what has been opened — the viewer
 has those two lists already; this is the one a reader needs to reach a document
 nobody touched in the range they are looking at and they have never opened,
 which otherwise means typing a path. `git ls-files -- '*.md' '**/*.md'` answers
-it in a checkout.
+it in a checkout — without the pathspec, and its binary files left out, for a
+host that offers source code too.
 
 It is about the host, not about a document, so it carries no `cap` of its own —
 the key is the whole of the authorisation, as for `health`. But a host that

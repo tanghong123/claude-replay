@@ -17698,9 +17698,9 @@ function pairRows(del2, ins2) {
   }
   return [{ k: "mod", text: ins2, pieces }];
 }
-function codeDiff(aValue, bValue, lang, langFrom) {
+function codeLineDiff(aValue, bValue) {
   const rows = [];
-  const norm = (v) => v.endsWith("\n") ? v : v + "\n";
+  const norm = (v) => v === "" || v.endsWith("\n") ? v : v + "\n";
   const parts = diffLines(norm(aValue), norm(bValue));
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
@@ -17722,6 +17722,10 @@ function codeDiff(aValue, bValue, lang, langFrom) {
     for (const text8 of linesOf2(part.value))
       rows.push({ k, text: text8 });
   }
+  return rows;
+}
+function codeDiff(aValue, bValue, lang, langFrom) {
+  const rows = codeLineDiff(aValue, bValue);
   const node2 = {
     type: "mdvCodeDiff",
     lang,
@@ -32381,7 +32385,7 @@ async function writePointer(root5, storeUrl) {
   logEvent("review.pointer-written", { store: p2.remote, branch: p2.branch, committed: commit ?? "no" });
   return { file, remote: p2.remote, branch: p2.branch, commit, already: false };
 }
-async function originIsNot(root5, p2) {
+async function storeVsOrigin(root5, p2) {
   if (p2.source !== "pointer" || !p2.remote)
     return null;
   const origin = await remoteUrl(root5, "origin");
@@ -32389,7 +32393,12 @@ async function originIsNot(root5, p2) {
   const store = sameRepository(p2.remote);
   if (!origin || sameRepository(origin) === store || upstream && sameRepository(upstream) === store)
     return null;
-  return origin;
+  for (const repo of [origin, upstream]) {
+    const notes = repo ? notesRepository(repo) : null;
+    if (notes && sameRepository(notes) === store)
+      return { kind: "notes", origin, of: repo };
+  }
+  return { kind: "elsewhere", origin };
 }
 async function pairedElsewhere(root5, now) {
   const home = join5(stateHome(), "review");
@@ -32544,13 +32553,14 @@ function setMachineDisplayName(name) {
   logEvent("review.display-name", { name: name.trim() || "(cleared)", file });
   return file;
 }
-function describeStore(p2, originNot) {
+function describeStore(p2, relation) {
   const origin = p2.source === "default" ? `the project's own repository: your ${p2.remoteName ?? "origin"} remote \u2014 no .mdrev.json names another` : "named by .mdrev.json";
   return [
     `review store:  ${p2.remote}, ${p2.branch.startsWith("refs/") ? "ref" : "branch"} ${p2.branch}`,
     `               (${origin})`,
     ...p2.skipped ? [`               (${p2.skipped})`] : [],
-    ...originNot ? [`               (this clone's origin is ${originNot}: the store is not there)`] : [],
+    ...relation?.kind === "elsewhere" ? [`               (this clone's origin is ${relation.origin}: the store is not there)`] : [],
+    ...relation?.kind === "notes" ? [`               (this project's private review store, beside its repository ${relation.of})`] : [],
     "readers:       everyone who can read that repository, and its mirrors"
   ].join("\n") + "\n";
 }
@@ -32559,7 +32569,7 @@ async function pairAtTerminal(root5, io, given = {}) {
   if (!pointer)
     throw new StoreError("this project has no review store: no .mdrev.json names one, and the checkout has no remote to keep one in", "other");
   const git2 = await identityOf(root5);
-  io.say(describeStore(pointer, await originIsNot(root5, pointer)));
+  io.say(describeStore(pointer, await storeVsOrigin(root5, pointer)));
   const yes = (s2) => ["y", "yes"].includes(s2.trim().toLowerCase());
   if (!yes(await io.ask("Pair this machine with it? [y/N] "))) {
     io.say("not paired\n");
@@ -32940,7 +32950,7 @@ async function reviewStatus(source, opts = {}) {
     ...store.pointer.skipped ? { skipped: store.pointer.skipped } : {},
     ...moved ? { storeChanged: { paired: moved.remote, branch: moved.branch } } : {},
     ...machineDisplayName() ? { machineName: machineDisplayName() } : {},
-    ...await originIsNot(source.repoRoot, store.pointer).then((o) => o ? { originIsNot: o } : {}, () => ({})),
+    ...await storeVsOrigin(source.repoRoot, store.pointer).then((v) => v?.kind === "elsewhere" ? { originIsNot: v.origin } : v?.kind === "notes" ? { notesOf: v.of } : {}, () => ({})),
     pointerNamed: Boolean(store.pointer.source === "pointer" && store.pointer.remote && readPointer(source.repoRoot)?.remote),
     // only an explicit status asks the network whether the store is public; a viewer's poll never does (#s12)
     ...opts.fetch && !pairing?.inTheOpen && await publicRepository(store.pointer.remote, source.repoRoot) === true ? { publicStore: { notes: notesRepository(store.pointer.remote), create: (() => {
@@ -33035,6 +33045,8 @@ function formatStatus(s2) {
     lines.push(`  (${s2.skipped})`);
   if (s2.originIsNot)
     lines.push(`  this clone's origin is ${s2.originIsNot}; the review store is at ${s2.remote}, as .mdrev.json says`);
+  else if (s2.notesOf)
+    lines.push(`  this project's private review store, beside its repository ${s2.notesOf}`);
   else if (s2.pointerNamed === false)
     lines.push("  no .mdrev.json names it, so a mirror or fork would take its own origin for the store \u2014 mdrev --review-pointer writes one");
   if (!s2.paired && s2.storeChanged) {
@@ -34880,7 +34892,7 @@ async function run3(argv, out = (s2) => process.stdout.write(s2), input = readSt
           }
           const { check } = await requestPairing(source.repoRoot, { email: o.email, name });
           if (o.text)
-            out(`${describeStore(pointer, await originIsNot(source.repoRoot, pointer))}${formatPairRequest(o.email, name, check)}
+            out(`${describeStore(pointer, await storeVsOrigin(source.repoRoot, pointer))}${formatPairRequest(o.email, name, check)}
 `);
           else
             emit({ requested: { email: o.email.toLowerCase(), name }, store: pointer, check });

@@ -436,7 +436,9 @@ writes the store this checkout uses now, repository and ref both spelled out,
 and commits that file alone (the person pushes it with their code). When a
 pointer names a repository that is not this clone's `origin` (nor its
 `upstream`), the status and pairing say both: "this clone's origin is X; the
-review store is at Y". With no pointer, the status says what a mirror would do.
+review store is at Y" — except when Y is X's own `<repo>-notes`, the private
+store a public project keeps beside itself (E0), which they call just that.
+With no pointer, the status says what a mirror would do.
 
 A pointer that is there and cannot be read is said so, in the viewer and the
 status, never taken for "no store". A project with neither a remote nor a
@@ -566,7 +568,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.20",
+  "mdrev": "1.1.22",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }

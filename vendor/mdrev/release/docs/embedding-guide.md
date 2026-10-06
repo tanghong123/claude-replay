@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.20/
+mdrev-embed-1.1.22/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.20`, with two tarballs: `mdrev-1.1.20-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.20.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.22`, with two tarballs: `mdrev-1.1.22-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.22.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.20/mdrev-embed-1.1.20.tar.gz
-tar xzf mdrev-embed-1.1.20.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.20
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.22/mdrev-embed-1.1.22.tar.gz
+tar xzf mdrev-embed-1.1.22.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.22
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.20/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.22/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.20/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.20.tar.gz
-cd mdrev-embed-1.1.20
+tar xzf mdrev-embed-1.1.22.tar.gz
+cd mdrev-embed-1.1.22
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -223,7 +223,7 @@ That listing is what an agent reads; if the `mdrev` application is installed on 
 #   http://127.0.0.1:4600/modes?path=README.md&code=…
 ```
 
-One document, one mount at a time, and beside it the exact `mountMdrev` call that made it and the routes a host must serve for it. `example/modes.ts` is the table; §3 says what each option costs.
+One document, one mount at a time, and beside it the exact `mountMdrev` call that made it and the routes a host must serve for it. `example/modes.ts` is the table; §3 says what each option costs. Started with `--code-files` as well, it has one more mount: a source file, shown as a code file is (§5, *Source code*).
 
 Now check the sample against the contract it claims to implement:
 
@@ -423,7 +423,7 @@ What is fixed, and is worth a moment if you are fitting this to a framework that
 
 | Route | Returns | Notes |
 |---|---|---|
-| `GET /text?path=&rev=` | the Markdown, `text/plain; charset=utf-8` | `rev` is an id from `/revisions`, or `current` for the document as it stands. Send an `ETag`; the viewer polls with `If-None-Match` when you have no push, and a 304 is free. Refuse `..` |
+| `GET /text?path=&rev=` | the file's text — a document's Markdown, or source code (below) — `text/plain; charset=utf-8` | `rev` is an id from `/revisions`, or `current` for the document as it stands. Send an `ETag`; the viewer polls with `If-None-Match` when you have no push, and a 304 is free. Refuse `..` |
 | `GET /revisions?path=` | `[{rev, date, author, subject, body?}]`, **newest first** | `rev` must be the **git commit id** if notes are to be shared with the mdrev application, because a note records the revision it was taken on. `[]` means no history: the viewer is then a reader with notes. **With no `path`** — optional — the COLLECTION's own revisions, which is how the viewer tells "this folder has no history" from "this document has none yet" |
 | `GET /asset?path=` | the file, with its media type | images a document refers to; same root and refusals as `/text` |
 | `GET /annotations?path=` | `[note]` | `mdrev-cli notes list --path P --all --records --root R`, returned as it is (§6) |
@@ -448,6 +448,14 @@ wrong. Answering `{"files": []}` or `[]` instead of 404 quiets them, and says
 the same thing.
 
 Texts and revisions come from **your** store, however you keep it. `mdrev-v2` keeps them in git and answers `/text` with `git show <rev>:<path>` and `/revisions` with one `git log --format=…` — see `example/server.ts`, which is short enough to read top to bottom. If your documents are in git, those two commands are the whole backend; if they are in a database, the same two routes over your tables.
+
+### Source code
+
+You may send any text file, not only Markdown. The guest decides what each one is **by its path**, and by nothing else: a path ending `.md`, `.markdown`, `.mdown` or `.mkd` is a document, rendered as it always was; any other path is source code. A code file is shown only as source — the unified line diff of the range in redline, the file at the range's newer revision in clean — with its lines numbered, coloured by its language (the extension, or a name like `Makefile` or `Dockerfile`, picks the grammar; one it does not know is plain text), and a line changed in place marked word by word. What only a document has is not drawn for it: the rendered/source switch, the outline, folding deletions, and notes. The guest asks your annotation routes nothing about a code file, and notes on the Markdown beside it work as before.
+
+Nothing else changes for you. `/text` answers a code path as it answers a document's, with the file's text, and `/revisions`, renames, live reload and capabilities are the same. Which files to offer is your choice: put them in `/documents`, `/tree`, `/changed` and `/recents` as you put documents there. **Leave binary files out** of those lists. The guest guards anyway — a file with a NUL in its first 8 KB is one line saying it is binary, and one past about a megabyte or 20,000 lines is its size and a line saying it is too large to show — but a list of files it can only refuse is not much of a list. `mdrev-cli conform --path src/app.ts` checks a host on a code path as it does on a document.
+
+To see it on the sample, add `--code-files`: it lists every text file in the checkout, opens any file by its path, and its gallery (`--modes`) gains a *Source code* mount. It runs a private host of its own, because the switch is for trying this and for the build's own checks; the `mdrev` application shows Markdown and nothing else.
 
 ## 6. Notes, through mdrev-cli
 
