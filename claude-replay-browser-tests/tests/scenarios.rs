@@ -13579,9 +13579,10 @@ fn both_shells_open_a_file_from_the_session_s_own_scratch() {
         );
         let (link, shown) = match surface {
             Surface::Classic => (".tool-path[data-path={p}]", ".lightbox pre.lb-text"),
+            // #s13: a text file opens in mdrev's source view (itself a `pre`), not the plain one.
             Surface::AppShell => (
                 "[data-reference-path={p}]",
-                "#previewBody pre.artifact-text",
+                "#previewBody .mdrev-host .source-view",
             ),
         };
         let click = |p: &str| {
@@ -15711,9 +15712,10 @@ fn both_shells_open_a_file_from_the_session_s_job_workspace() {
         );
         let (link, shown) = match surface {
             Surface::Classic => (".tool-path[data-path={p}]", ".lightbox pre.lb-text"),
+            // #s13: a text file opens in mdrev's source view (itself a `pre`), not the plain one.
             Surface::AppShell => (
                 "[data-reference-path={p}]",
-                "#previewBody pre.artifact-text",
+                "#previewBody .mdrev-host .source-view",
             ),
         };
         let click = |p: &str| {
