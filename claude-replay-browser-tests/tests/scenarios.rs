@@ -16474,3 +16474,88 @@ fn scenario_a_sub_agent_report_is_drawn_without_its_frame() {
         );
     }
 }
+
+/// A session where a Bash call that built the code was followed by the compiler findings the client
+/// put into the model's context (#s16: a `diagnostics` attachment, client 2.1.288), then the reply
+/// that acts on them.
+fn diagnostics_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    let mut t = String::new();
+    t += &user_at("first prompt", &now_minus(300));
+    t += &assistant_at(&answer, &now_minus(295));
+    t += &user_at("build it", &now_minus(280));
+    t += &harness::tool_open_at("b1", &now_minus(278));
+    t += &harness::tool_result_at("b1", &now_minus(276));
+    let attachment = serde_json::json!({
+        "type": "attachment", "version": "2.1.288", "timestamp": now_minus(275),
+        "attachment": {"type": "diagnostics", "isNew": true, "files": [{"uri": "/w/src/lib.rs",
+            "diagnostics": [
+                {"message": "cannot find value `x` in this scope\nnot found in this scope", "severity": "Error",
+                 "range": {"start": {"line": 11, "character": 4}, "end": {"line": 11, "character": 5}},
+                 "source": "rustc", "code": "E0425"},
+                {"message": "unused variable: `y`", "severity": "Warning",
+                 "range": {"start": {"line": 29, "character": 8}, "end": {"line": 29, "character": 9}},
+                 "source": "rustc", "code": "unused_variables"}]}]},
+        "rendered": [{"content": "<new-diagnostics>PROBE-S16-FOR-THE-MODEL</new-diagnostics>"}],
+        "renderedRole": "system"
+    });
+    t += &format!("{attachment}\n");
+    t += &assistant_at(&answer, &now_minus(270));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 2,
+    }
+}
+
+/// #s16 — the compiler findings a client puts in the model's context after a tool call are a note on
+/// the page: the count, the file and the first finding, the rest one a line. Found by the daily
+/// unknown review: `diagnostics` (client 2.1.288) drew nothing, so the reply that fixed the code
+/// read as if out of nowhere. Never the reminder the record carries for the model.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_diagnostics_after_a_tool_call_are_a_note() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = diagnostics_fixture(match surface {
+            Surface::Classic => "diagnostics-classic",
+            Surface::AppShell => "diagnostics-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3072 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        let seen: serde_json::Value = eval(
+            &page.tab,
+            "(function(){ var t = document.body.innerText; return JSON.stringify({ \
+               head: t.indexOf('2 new diagnostics in lib.rs: Error E0425 (rustc) line 12') >= 0, \
+               rest: t.indexOf('Warning unused_variables (rustc) line 30: unused variable') >= 0, \
+               model: t.indexOf('PROBE-S16-FOR-THE-MODEL') >= 0 }); })()",
+        )
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+        assert_eq!(
+            seen["head"],
+            serde_json::json!(true),
+            "{surface:?}: the note names the count, the file and the first finding: {seen}"
+        );
+        assert_eq!(
+            seen["rest"],
+            serde_json::json!(true),
+            "{surface:?}: …and the other finding on a line of its own: {seen}"
+        );
+        assert_eq!(
+            seen["model"],
+            serde_json::json!(false),
+            "{surface:?}: never the reminder addressed to the model: {seen}"
+        );
+    }
+}

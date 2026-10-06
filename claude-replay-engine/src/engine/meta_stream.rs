@@ -243,11 +243,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// v41 would never date its last reading at all (v37's rule: what a resumed accumulator carries
 /// is fold behavior).
 ///
+/// v43: #s16 — a Claude Code `diagnostics` attachment (client 2.1.288: the compiler findings put
+/// into the model's context after a tool call) is drawn as a note. A v42 stream has nothing where
+/// each one sat, so the reply that acts on the findings keeps reading as if out of nowhere.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 42;
+pub const FOLD_VERSION: u16 = 43;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

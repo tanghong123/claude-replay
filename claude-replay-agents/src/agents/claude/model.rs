@@ -611,6 +611,10 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "date_change",
     "deferred_tools_delta",
     "deferred_tools_record",
+    // #s16 (client 2.1.288): the compiler / LSP findings put into the model's context after a tool
+    // call changed a file. Drawn as a note (`diagnostics_note`); listed so a record with no finding
+    // in it, which draws nothing, is not reported as new.
+    "diagnostics",
     "edited_text_file",
     "environment",
     "file",
@@ -3727,8 +3731,96 @@ fn attachment_note(a: &Value) -> Option<String> {
                 banner.lines().next().unwrap_or(banner).to_string()
             })
         }
+        "diagnostics" => diagnostics_note(a),
         _ => hook_note(a),
     }
+}
+
+/// #s16 (client 2.1.288): the compiler / LSP findings the client puts into the MODEL's context after
+/// a tool call changed a file — `{files: [{uri, diagnostics: [{message, severity, range: {start:
+/// {line, character}}, source, code}]}], isNew}` (8 records met: `rustc`, Error and Warning, `isNew`
+/// true in all). The model was told the change broke something and its next reply acts on it, while
+/// the page showed nothing that said why: the gap #371 closed for a hook. Built from `files[]`, never
+/// from the record's `rendered` reminder, which is addressed to the model. The first line counts the
+/// findings and names the file (or how many files) and the first finding; each other one follows on
+/// a line of its own. Lines are 1-based, as an editor shows them (the record's are 0-based). Nothing
+/// drawn for a record with no finding. Revisit if `isNew: false`, or a severity other than Error or
+/// Warning, turns up.
+fn diagnostics_note(a: &Value) -> Option<String> {
+    let basename = |uri: &str| {
+        let path = uri.strip_prefix("file://").unwrap_or(uri);
+        path.rsplit('/').next().unwrap_or(path).to_string()
+    };
+    let mut found: Vec<(String, &Value)> = Vec::new();
+    for file in a.get("files")?.as_array()? {
+        let name = basename(file.get("uri").and_then(Value::as_str).unwrap_or(""));
+        for d in file
+            .get("diagnostics")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            found.push((name.clone(), d));
+        }
+    }
+    let mut files: Vec<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
+    files.dedup();
+    let finding = |d: &Value| {
+        let text = |k: &str| {
+            d.get(k)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        // An LSP `code` may be a number as well as a string.
+        let code =
+            text("code").or_else(|| d.get("code").and_then(Value::as_i64).map(|c| c.to_string()));
+        let mut words: Vec<String> = [text("severity"), code].into_iter().flatten().collect();
+        if let Some(source) = text("source") {
+            words.push(format!("({source})"));
+        }
+        if let Some(line) = d.pointer("/range/start/line").and_then(Value::as_u64) {
+            words.push(format!("line {}", line + 1));
+        }
+        let message = text("message");
+        let first = message
+            .as_deref()
+            .and_then(|m| m.lines().next())
+            .unwrap_or("");
+        match (words.is_empty(), first.is_empty()) {
+            (false, false) => format!("{}: {first}", words.join(" ")),
+            (false, true) => words.join(" "),
+            _ => first.to_string(),
+        }
+    };
+    let ((first_file, first), rest) = found.split_first()?;
+    let n = found.len();
+    let new = if a.get("isNew").and_then(Value::as_bool) == Some(true) {
+        "new "
+    } else {
+        ""
+    };
+    let several = files.len() > 1;
+    let place = if several {
+        format!("{} files: {first_file}:", files.len())
+    } else {
+        format!("{first_file}:")
+    };
+    let mut note = format!(
+        "{n} {new}diagnostic{} in {place} {}",
+        if n == 1 { "" } else { "s" },
+        finding(first)
+    );
+    for (file, d) in rest {
+        note.push('\n');
+        if several {
+            note.push_str(file);
+            note.push_str(": ");
+        }
+        note.push_str(&finding(d));
+    }
+    Some(note)
 }
 
 fn hook_note(a: &Value) -> Option<String> {
@@ -5862,6 +5954,58 @@ mod tests {
             seen.is_empty(),
             "hook_success is known, empty or not: {seen:?}"
         );
+    }
+
+    /// #s16: the findings a client puts in the model's context after a tool call are one note — the
+    /// count, the file and the first finding, then one finding a line, with 1-based lines and the
+    /// message's first line; several files are counted and each finding names its own; and a record
+    /// with no finding draws nothing. None is reported as new.
+    #[test]
+    fn diagnostics_after_a_tool_call_are_a_note() {
+        let note = |attachment: &str| {
+            // One JSONL line: the fixtures below are written across lines for reading.
+            let attachment = serde_json::from_str::<Value>(attachment)
+                .expect("a valid fixture")
+                .to_string();
+            let jsonl = format!(
+                "{{\"type\":\"attachment\",\"version\":\"2.1.288\",\"sessionId\":\"s-s16\",\"attachment\":{attachment},\"rendered\":[{{\"content\":\"<new-diagnostics>for the model</new-diagnostics>\"}}]}}\n"
+            );
+            parse(&jsonl)
+                .into_iter()
+                .filter_map(|b| match b {
+                    Block::ToolResult(t) => Some(t),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let one_file = r#"{"type":"diagnostics","isNew":true,"files":[{"uri":"/w/src/lib.rs","diagnostics":[
+            {"message":"cannot find value `x` in this scope\nnot found in this scope","severity":"Error","range":{"start":{"line":11,"character":4},"end":{"line":11,"character":5}},"source":"rustc","code":"E0425"},
+            {"message":"unused variable: `y`","severity":"Warning","range":{"start":{"line":29,"character":8},"end":{"line":29,"character":9}},"source":"rustc","code":"unused_variables"},
+            {"message":"mismatched types","severity":"Error","range":{"start":{"line":40,"character":0},"end":{"line":40,"character":3}},"source":"rustc","code":"E0308"}]}]}"#;
+        assert_eq!(
+            note(one_file),
+            ["3 new diagnostics in lib.rs: Error E0425 (rustc) line 12: cannot find value `x` in this scope\n\
+              Warning unused_variables (rustc) line 30: unused variable: `y`\n\
+              Error E0308 (rustc) line 41: mismatched types"]
+        );
+        let two_files = r#"{"type":"diagnostics","isNew":true,"files":[
+            {"uri":"file:///w/src/a.rs","diagnostics":[{"message":"m1","severity":"Error","range":{"start":{"line":0,"character":0}},"source":"rustc","code":"E0001"}]},
+            {"uri":"/w/src/b.rs","diagnostics":[{"message":"m2","severity":"Warning","range":{"start":{"line":4,"character":0}},"source":"rustc","code":7}]}]}"#;
+        assert_eq!(
+            note(two_files),
+            ["2 new diagnostics in 2 files: a.rs: Error E0001 (rustc) line 1: m1\nb.rs: Warning 7 (rustc) line 5: m2"]
+        );
+        let not_new = r#"{"type":"diagnostics","isNew":false,"files":[{"uri":"/w/x.rs","diagnostics":[{"message":"m","severity":"Error"}]}]}"#;
+        assert_eq!(note(not_new), ["1 diagnostic in x.rs: Error: m"]);
+        assert!(
+            note(r#"{"type":"diagnostics","isNew":true,"files":[{"uri":"/w/x.rs","diagnostics":[]}]}"#).is_empty(),
+            "no finding, no note"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s16"))
+            .collect();
+        assert!(seen.is_empty(), "diagnostics is known: {seen:?}");
     }
 
     /// #361: every key of the census, on every record type it was met on, is known — so the
