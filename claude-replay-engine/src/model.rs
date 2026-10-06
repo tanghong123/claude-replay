@@ -750,6 +750,12 @@ impl BlockKind {
 }
 
 pub fn fold_key(b: &Block) -> &'static str {
+    // #s20: a shell command that CHANGED files folds as an edit (open by default, its diff in
+    // view), as Claude Code draws it; its kind stays Bash for the icon, the search letter and the
+    // filters.
+    if matches!(b, Block::ToolUse { patch: Some(_), .. }) && block_kind(b) == BlockKind::Bash {
+        return "edit";
+    }
     block_kind(b).fold_key()
 }
 
@@ -818,7 +824,8 @@ pub(crate) fn is_activity_tool(name: &str) -> bool {
 /// Coalesce each **span** of consecutive thinking + activity tool calls into one
 /// `Thinking` block — Claude Code's between-outputs rule (#57; the full empirical
 /// derivation is `design/cc-activity-coalescing.md`). Any other block ends the span:
-/// assistant text, user turns/commands, expanded tools (Edit/Write/WebFetch/spawns/…),
+/// assistant text, user turns/commands, expanded tools (Edit/Write/WebFetch/spawns/…, and since
+/// #s20 an activity tool whose result carries an edit diff),
 /// and the task-bookkeeping tools (TaskUpdate & co — CC renders them
 /// invisibly but they still split the span; we keep their blocks visible). The one
 /// exception: `Attachment` blocks are span-transparent — CC doesn't render them and
@@ -870,7 +877,15 @@ pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
                     dur = Some(dur.unwrap_or(0) + d);
                 }
             }
-            Block::ToolUse { ref name, .. } if is_activity_tool(name) => tools.push(b),
+            // #s20: an activity tool that CHANGED files is durable output, not activity — a Bash
+            // command whose result carries an edit diff (Claude Code's `bashEditDiff`, #263) is drawn
+            // on its own with its diff, never inside a `ran N shell commands` line, so it ends the
+            // run as an Edit does.
+            Block::ToolUse {
+                ref name,
+                ref patch,
+                ..
+            } if is_activity_tool(name) && patch.is_none() => tools.push(b),
             // #256: inside an open run it waits for the run; with no run open there is nothing
             // to wait for, and it emits exactly where it is. That second case is a pasted image
             // in a prompt, and it was always right.
@@ -929,6 +944,67 @@ mod tests {
             matches!(&out[0], Block::Thinking { tools, duration_secs: Some(5), .. } if tools.len() == 2),
             "{out:?}"
         );
+    }
+
+    /// #s20: a shell command that CHANGED files stands on its own, as Claude Code draws it — it ends
+    /// the run before it and opens a new one after it, it folds as an edit (open by default), and its
+    /// kind stays Bash. A command that changed nothing still folds into the run.
+    #[test]
+    fn a_shell_command_that_edited_a_file_stands_out_of_the_activity_run() {
+        let bash = |cmd: &str, patch: Option<Vec<Hunk>>| Block::ToolUse {
+            name: "Bash".into(),
+            target: cmd.into(),
+            diffs: Vec::new(),
+            output: None,
+            patch,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+        };
+        let hunk = Hunk {
+            old_start: 1081,
+            new_start: 1081,
+            lines: vec![
+                "-        return 0".into(),
+                "+        return a.get(\"exit\", 0)".into(),
+            ],
+            file: Some("skills/taskq/scripts/taskq_shared.py".into()),
+        };
+        let thought = |t: &str| Block::Thinking {
+            text: t.into(),
+            duration_secs: Some(3),
+            tools: Vec::new(),
+        };
+        let out = coalesce_spans(vec![
+            thought("a"),
+            bash("grep -n told x.py", None),
+            bash("python3 - <<PY", Some(vec![hunk])),
+            thought("b"),
+            bash("sed -n 1,9p x.py", None),
+        ]);
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert!(
+            matches!(&out[0], Block::Thinking { tools, .. } if tools.len() == 1),
+            "the read-only command folds into the run before: {out:?}"
+        );
+        assert!(
+            matches!(&out[1], Block::ToolUse { target, patch: Some(_), .. } if target == "python3 - <<PY"),
+            "the editing command stands alone: {out:?}"
+        );
+        assert!(
+            matches!(&out[2], Block::Thinking { tools, .. } if tools.len() == 1),
+            "and a new run follows it: {out:?}"
+        );
+        assert_eq!(
+            fold_key(&out[1]),
+            "edit",
+            "it folds as an edit, open by default"
+        );
+        assert_eq!(block_kind(&out[1]), BlockKind::Bash, "its kind stays Bash");
+        assert_eq!(fold_key(&bash("ls", None)), "bash");
     }
 
     /// #256: an attachment produced INSIDE an activity run follows the run, and does not lead it.

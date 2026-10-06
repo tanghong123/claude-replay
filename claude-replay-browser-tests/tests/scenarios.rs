@@ -16669,3 +16669,116 @@ fn scenario_qwenwork_tool_heads_carry_their_exit_code() {
         }
     }
 }
+
+/// A session whose turn ran a read-only command, then a shell command that EDITED a file (its
+/// result carries Claude Code's `bashEditDiff`, #263), then thought about it (#s20).
+fn bash_edit_in_a_run_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    let mut t = String::new();
+    t += &user_at("first prompt", &now_minus(300));
+    t += &assistant_at(&answer, &now_minus(295));
+    t += &user_at("make the exit code reach the caller", &now_minus(280));
+    t += &thinking_at("Looking at where told is used.", &now_minus(279));
+    let call = |id: &str, cmd: &str, ts: String| {
+        serde_json::json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant",
+            "content": [{"type": "tool_use", "id": id, "name": "Bash", "input": {"command": cmd}}]}})
+    };
+    let result = |id: &str, out: &str, diff: Option<serde_json::Value>, ts: String| {
+        let mut tur = serde_json::json!({"stdout": out, "stderr": "", "interrupted": false,
+            "isImage": false, "noOutputExpected": false});
+        if let Some(d) = diff {
+            tur["bashEditDiff"] = d;
+        }
+        serde_json::json!({"type": "user", "timestamp": ts, "toolUseResult": tur,
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": out}]}})
+    };
+    let diff = serde_json::json!({"moreFiles": 0, "changedFiles": ["/w/shared.py"],
+        "files": [{"filePath": "/w/shared.py", "hunks": [{"oldStart": 1080, "oldLines": 3,
+            "newStart": 1080, "newLines": 3, "lines": [
+                "     say(\"landed\")", "-    return 0", "+    return PROBE_S20_EXIT", "     if move:"]}]}]});
+    for line in [
+        call("r1", "rg -n told shared.py", now_minus(278)),
+        result("r1", "489:def close_kept(told=0):", None, now_minus(277)),
+        call("e1", "python3 - <<'PY'\nedit shared.py\nPY", now_minus(276)),
+        result("e1", "compiled", Some(diff), now_minus(275)),
+    ] {
+        t += &format!("{line}\n");
+    }
+    t += &thinking_at("The finish receives that code as told.", &now_minus(270));
+    t += &assistant_at(&answer, &now_minus(268));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 2,
+    }
+}
+
+/// #s20 — a shell command that edited a file shows its change where it ran, as Claude Code draws
+/// it: its own card, open, the diff in view. It used to fold into the turn's `ran N shell
+/// commands` line, so the reader saw the output of the commands around it and never the change.
+/// Nothing is expanded here: the diff must be visible as the page opens.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_shell_command_that_edited_a_file_shows_its_change() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = bash_edit_in_a_run_fixture(match surface {
+            Surface::Classic => "bash-edit-classic",
+            Surface::AppShell => "bash-edit-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3074 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        settle();
+        // The editing call's own card: not nested in another (an activity run is a card holding
+        // cards), with the change on its head, `+1` and `−1`.
+        let card = match surface {
+            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(function (f) { var t = f.querySelector(':scope > .fold-h .tool-target, :scope > .fold-h .tool-path'); return t && t.textContent.indexOf('python3') === 0; }); if (!f) return null; return JSON.stringify({ nested: !!f.parentElement.closest('.fold'), chips: [...f.querySelectorAll(':scope > .fold-h .chip')].map(function (c) { return c.textContent; }), visible: document.body.innerText.indexOf('return PROBE_S20_EXIT') >= 0 }); })()",
+            Surface::AppShell => "(function(){ var r = [...document.querySelectorAll('.renderer[data-renderer-kind]')].find(function (r) { var t = r.querySelector(':scope > .renderer-head .renderer-target'); return t && t.textContent.indexOf('python3') === 0; }); if (!r) return null; return JSON.stringify({ nested: !!r.parentElement.closest('.renderer'), chips: [(r.querySelector(':scope > .renderer-head .renderer-state') || {}).textContent || ''], visible: document.body.innerText.indexOf('return PROBE_S20_EXIT') >= 0 }); })()",
+        };
+        let seen: serde_json::Value = eval(&page.tab, card)
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        assert_eq!(
+            seen["nested"],
+            serde_json::json!(false),
+            "{surface:?}: the editing command is a card of its own, out of the activity run: {seen}"
+        );
+        let chips = seen["chips"].to_string();
+        assert!(
+            chips.contains("+1") && chips.contains("−1"),
+            "{surface:?}: its head carries the change: {seen}"
+        );
+        match surface {
+            // The classic page draws it open, as an Edit: the diff is in view as the page opens.
+            Surface::Classic => assert_eq!(
+                seen["visible"],
+                serde_json::json!(true),
+                "{surface:?}: the edit's diff is in view as the page opens: {seen}"
+            ),
+            // The app shell starts every finished call closed; opening this one shows the diff.
+            Surface::AppShell => {
+                eval(
+                    &page.tab,
+                    "(function(){ var r = [...document.querySelectorAll('.renderer[data-renderer-kind]')].find(function (r) { var t = r.querySelector(':scope > .renderer-head .renderer-target'); return t && t.textContent.indexOf('python3') === 0; }); r.querySelector(':scope > .renderer-head').click(); return 'ok'; })()",
+                );
+                settle();
+                assert_eq!(
+                    eval(
+                        &page.tab,
+                        "document.body.innerText.indexOf('return PROBE_S20_EXIT') >= 0"
+                    )
+                    .as_bool(),
+                    Some(true),
+                    "{surface:?}: opening the card shows the diff"
+                );
+            }
+        }
+    }
+}

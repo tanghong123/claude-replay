@@ -1635,6 +1635,7 @@ impl Emitter<'_> {
                         // could not diff (a tarball, or one past `bashEditDiff`'s five-file
                         // cap) is named with nothing under it, which is all the record knows.
                         if let Block::ToolUse { patch: Some(h), .. } = b {
+                            let (mut all_adds, mut all_dels) = (0usize, 0usize);
                             for group in hunks_by_file(h) {
                                 let Some(file) = group[0].file.as_deref() else {
                                     continue;
@@ -1642,6 +1643,8 @@ impl Emitter<'_> {
                                 let part = diff_part_of(group);
                                 let (adds, dels) =
                                     part.as_ref().map_or((0, 0), |(_, a, d)| (*a, *d));
+                                all_adds += adds;
+                                all_dels += dels;
                                 body.push(json!({
                                     "p": "note",
                                     "x": crate::present::file_edit_summary(file, adds, dels),
@@ -1649,6 +1652,15 @@ impl Emitter<'_> {
                                 if let Some((rows, _, _)) = part {
                                     body.push(rows);
                                 }
+                            }
+                            // #s20: the change on the head too, as an Edit's head carries it, so a
+                            // closed card (the app shell starts every finished call closed) says
+                            // the command changed files and by how much.
+                            if all_adds > 0 {
+                                push_chip(&mut head, chip_class("add", format!("+{all_adds}")));
+                            }
+                            if all_dels > 0 {
+                                push_chip(&mut head, chip_class("del", format!("−{all_dels}")));
                             }
                         }
                     }

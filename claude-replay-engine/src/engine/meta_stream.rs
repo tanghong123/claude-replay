@@ -251,11 +251,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// result's `exitCode`), and a killed one is Cancelled. A v43 stream has no execution on any of
 /// them, so its heads show no `exit N` and a failed command does not read as one.
 ///
+/// v45: #s20 — a shell command whose result carries an edit diff stands out of the activity run,
+/// folded as an edit (open, its diff in view). A v44 stream holds it inside the run's
+/// `ran N shell commands` line, so the change it made stays hidden.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 44;
+pub const FOLD_VERSION: u16 = 45;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
