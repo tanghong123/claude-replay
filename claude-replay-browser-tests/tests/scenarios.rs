@@ -16678,231 +16678,6 @@ fn scenario_qwenwork_tool_heads_carry_their_exit_code() {
     }
 }
 
-/// A session whose turn ran a read-only command, then a shell command that EDITED a file (its
-/// result carries Claude Code's `bashEditDiff`, #263), then thought about it (#s20).
-fn bash_edit_in_a_run_fixture(name: &str) -> Fixture {
-    let base = base(name);
-    let stores = Stores::new(&base);
-    let answer = (0..60)
-        .map(|i| format!("Paragraph {i} of the answer."))
-        .collect::<Vec<_>>()
-        .join("\\n\\n");
-    let mut t = String::new();
-    t += &user_at("first prompt", &now_minus(300));
-    t += &assistant_at(&answer, &now_minus(295));
-    t += &user_at("make the exit code reach the caller", &now_minus(280));
-    t += &thinking_at("Looking at where told is used.", &now_minus(279));
-    let call = |id: &str, cmd: &str, ts: String| {
-        serde_json::json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant",
-            "content": [{"type": "tool_use", "id": id, "name": "Bash", "input": {"command": cmd}}]}})
-    };
-    let result = |id: &str, out: &str, diff: Option<serde_json::Value>, ts: String| {
-        let mut tur = serde_json::json!({"stdout": out, "stderr": "", "interrupted": false,
-            "isImage": false, "noOutputExpected": false});
-        if let Some(d) = diff {
-            tur["bashEditDiff"] = d;
-        }
-        serde_json::json!({"type": "user", "timestamp": ts, "toolUseResult": tur,
-            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": out}]}})
-    };
-    let diff = serde_json::json!({"moreFiles": 0, "changedFiles": ["/w/shared.py"],
-        "files": [{"filePath": "/w/shared.py", "hunks": [{"oldStart": 1080, "oldLines": 3,
-            "newStart": 1080, "newLines": 3, "lines": [
-                "     say(\"landed\")", "-    return 0", "+    return PROBE_S20_EXIT", "     if move:"]}]}]});
-    for line in [
-        call("r1", "rg -n told shared.py", now_minus(278)),
-        result("r1", "489:def close_kept(told=0):", None, now_minus(277)),
-        call("e1", "python3 - <<'PY'\nedit shared.py\nPY", now_minus(276)),
-        result("e1", "compiled", Some(diff), now_minus(275)),
-    ] {
-        t += &format!("{line}\n");
-    }
-    t += &thinking_at("The finish receives that code as told.", &now_minus(270));
-    t += &assistant_at(&answer, &now_minus(268));
-    let path = stores.claude_session(SID, &t);
-    Fixture {
-        base,
-        path,
-        turns: 2,
-    }
-}
-
-/// #s20 — a shell command that edited a file shows its change where it ran, as Claude Code draws
-/// it: its own card, open, the diff in view. It used to fold into the turn's `ran N shell
-/// commands` line, so the reader saw the output of the commands around it and never the change.
-/// Nothing is expanded here: the diff must be visible as the page opens.
-#[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn scenario_a_shell_command_that_edited_a_file_shows_its_change() {
-    let _serial = serial();
-    for surface in [Surface::Classic, Surface::AppShell] {
-        let fx = bash_edit_in_a_run_fixture(match surface {
-            Surface::Classic => "bash-edit-classic",
-            Surface::AppShell => "bash-edit-app",
-        });
-        let port = if surface == Surface::Classic { 0 } else { 3074 };
-        let page = open_with(surface, &fx, port, "mountall=1");
-        settle();
-        // The editing call's own card: not nested in another (an activity run is a card holding
-        // cards), with the change on its head, `+1` and `−1`.
-        let card = match surface {
-            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(function (f) { var t = f.querySelector(':scope > .fold-h .tool-target, :scope > .fold-h .tool-path'); return t && t.textContent.indexOf('python3') === 0; }); if (!f) return null; return JSON.stringify({ nested: !!f.parentElement.closest('.fold'), chips: [...f.querySelectorAll(':scope > .fold-h .chip')].map(function (c) { return c.textContent; }), visible: document.body.innerText.indexOf('return PROBE_S20_EXIT') >= 0 }); })()",
-            Surface::AppShell => "(function(){ var r = [...document.querySelectorAll('.renderer[data-renderer-kind]')].find(function (r) { var t = r.querySelector(':scope > .renderer-head .renderer-target'); return t && t.textContent.indexOf('python3') === 0; }); if (!r) return null; return JSON.stringify({ nested: !!r.parentElement.closest('.renderer'), chips: [(r.querySelector(':scope > .renderer-head .renderer-state') || {}).textContent || ''], visible: document.body.innerText.indexOf('return PROBE_S20_EXIT') >= 0 }); })()",
-        };
-        let seen: serde_json::Value = eval(&page.tab, card)
-            .as_str()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or(serde_json::Value::Null);
-        assert_eq!(
-            seen["nested"],
-            serde_json::json!(false),
-            "{surface:?}: the editing command is a card of its own, out of the activity run: {seen}"
-        );
-        let chips = seen["chips"].to_string();
-        assert!(
-            chips.contains("+1") && chips.contains("−1"),
-            "{surface:?}: its head carries the change: {seen}"
-        );
-        // Both pages draw it open, as an Edit: the diff is in view as the page opens (#s21 made
-        // the app shell open a change too; it used to start every finished call closed).
-        assert_eq!(
-            seen["visible"],
-            serde_json::json!(true),
-            "{surface:?}: the edit's diff is in view as the page opens: {seen}"
-        );
-    }
-}
-
-/// A busy turn whose CHANGES all come after its seventh event (#s21): eight fetches, then an
-/// Edit, a Write over an existing file, a fresh-file Write and a shell command that edited a
-/// file. Each change carries a probe string in the lines it changed.
-fn changes_past_the_cap_fixture(name: &str) -> Fixture {
-    let base = base(name);
-    let stores = Stores::new(&base);
-    let answer = (0..60)
-        .map(|i| format!("Paragraph {i} of the answer."))
-        .collect::<Vec<_>>()
-        .join("\\n\\n");
-    let mut t = String::new();
-    t += &user_at("first prompt", &now_minus(300));
-    t += &assistant_at(&answer, &now_minus(295));
-    t += &user_at(
-        "read the pages, then update the code and the notes",
-        &now_minus(280),
-    );
-    let call = |id: &str, name: &str, input: serde_json::Value, ts: String| {
-        serde_json::json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant",
-            "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}})
-    };
-    let result = |id: &str, text: &str, tur: serde_json::Value, ts: String| {
-        serde_json::json!({"type": "user", "timestamp": ts, "toolUseResult": tur,
-            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}})
-    };
-    let mut lines = Vec::new();
-    let mut at = 279;
-    let mut tick = || {
-        at -= 1;
-        now_minus(at)
-    };
-    for i in 0..8 {
-        let url = format!("https://example.test/page{i}");
-        lines.push(call(
-            &format!("f{i}"),
-            "WebFetch",
-            serde_json::json!({"url": url, "prompt": "summarise"}),
-            tick(),
-        ));
-        lines.push(result(&format!("f{i}"), &format!("page {i}"),
-            serde_json::json!({"bytes": 10, "code": 200, "codeText": "OK", "result": format!("page {i}"), "durationMs": 5, "url": url}), tick()));
-    }
-    lines.push(call("e1", "Edit", serde_json::json!({"file_path": "/w/a.rs", "old_string": "alpha", "new_string": "PROBE_S21_EDIT"}), tick()));
-    lines.push(result("e1", "The file /w/a.rs has been updated.", serde_json::json!({"filePath": "/w/a.rs",
-        "oldString": "alpha", "newString": "PROBE_S21_EDIT", "originalFile": "x\ny\nalpha\n", "userModified": false, "replaceAll": false,
-        "structuredPatch": [{"oldStart": 3, "oldLines": 1, "newStart": 3, "newLines": 1, "lines": ["-alpha", "+PROBE_S21_EDIT"]}]}), tick()));
-    lines.push(call(
-        "w1",
-        "Write",
-        serde_json::json!({"file_path": "/w/notes.md", "content": "one\nPROBE_S21_OVERWRITE\n"}),
-        tick(),
-    ));
-    lines.push(result("w1", "The file /w/notes.md has been updated.", serde_json::json!({"type": "update", "filePath": "/w/notes.md",
-        "content": "one\nPROBE_S21_OVERWRITE\n", "originalFile": "one\n",
-        "structuredPatch": [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": [" one", "+PROBE_S21_OVERWRITE"]}]}), tick()));
-    lines.push(call(
-        "w2",
-        "Write",
-        serde_json::json!({"file_path": "/w/new.md", "content": "PROBE_S21_FRESH\nsecond\n"}),
-        tick(),
-    ));
-    lines.push(result(
-        "w2",
-        "File created successfully at: /w/new.md",
-        serde_json::json!({"type": "create", "filePath": "/w/new.md",
-        "content": "PROBE_S21_FRESH\nsecond\n", "structuredPatch": [], "originalFile": null}),
-        tick(),
-    ));
-    lines.push(call(
-        "b1",
-        "Bash",
-        serde_json::json!({"command": "python3 - <<'PY'\nedit shared.py\nPY"}),
-        tick(),
-    ));
-    lines.push(result("b1", "done", serde_json::json!({"stdout": "done", "stderr": "", "interrupted": false, "isImage": false,
-        "noOutputExpected": false, "bashEditDiff": {"moreFiles": 0, "changedFiles": ["/w/shared.py"], "files": [{"filePath": "/w/shared.py",
-        "hunks": [{"oldStart": 9, "oldLines": 1, "newStart": 9, "newLines": 1, "lines": ["-    return 0", "+    return PROBE_S21_BASH"]}]}]}}), tick()));
-    for line in lines {
-        t += &format!("{line}\n");
-    }
-    t += &assistant_at(&answer, &now_minus(240));
-    let path = stores.claude_session(SID, &t);
-    Fixture {
-        base,
-        path,
-        turns: 2,
-    }
-}
-
-/// #s21 — no change to a file is buried, on either page (the owner: "all edit changes in
-/// transcripts are not buried"). A turn with eight fetches before its four changes: on the app
-/// shell the changes sat past the process surface's seventh event, behind "Show N more", and each
-/// started closed besides. Now every change starts open with its lines in view and the cap holds
-/// back only what is not a change — here the eighth fetch. Nothing is expanded by the case.
-#[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn scenario_every_change_to_a_file_is_in_view_as_the_page_opens() {
-    let _serial = serial();
-    for surface in [Surface::Classic, Surface::AppShell] {
-        let fx = changes_past_the_cap_fixture(match surface {
-            Surface::Classic => "changes-classic",
-            Surface::AppShell => "changes-app",
-        });
-        let port = if surface == Surface::Classic { 0 } else { 3075 };
-        let page = open_with(surface, &fx, port, "mountall=1");
-        settle();
-        let seen = eval(
-            &page.tab,
-            "(function(){ var t = document.body.innerText; return JSON.stringify(['PROBE_S21_EDIT', 'PROBE_S21_OVERWRITE', 'PROBE_S21_FRESH', 'PROBE_S21_BASH'].filter(function (p) { return t.indexOf(p) < 0; })); })()",
-        );
-        assert_eq!(
-            seen.as_str(),
-            Some("[]"),
-            "{surface:?}: every change is in view as the page opens (missing: {seen:?})"
-        );
-        if surface == Surface::AppShell {
-            // The cap still works for what is not a change: seven fetches show, the eighth waits.
-            let cap = eval(
-                &page.tab,
-                "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); var m = p.querySelector('[data-process-more]'); return JSON.stringify({ held: [...p.querySelectorAll('.process-event.progressive-hidden')].map(function (e) { return (e.querySelector('.renderer') || {}).dataset ? e.querySelector('.renderer').dataset.rendererKind : '?'; }), more: m ? m.textContent.trim() : null }); })()",
-            );
-            assert_eq!(
-                cap.as_str(),
-                Some(r#"{"held":["tool"],"more":"Show 1 more"}"#),
-                "{surface:?}: the cap holds back the eighth fetch and nothing else"
-            );
-        }
-    }
-}
-
 /// An Edit that failed and an Edit the reader rejected (#s22), then one that was applied.
 fn not_applied_edits_fixture(name: &str) -> Fixture {
     let base = base(name);
@@ -16963,6 +16738,12 @@ fn scenario_an_edit_that_changed_nothing_says_why() {
         let port = if surface == Surface::Classic { 0 } else { 3076 };
         let page = open_with(surface, &fx, port, "mountall=1");
         settle();
+        // #s23: an edit is a one-line card on the pages — open both before reading them.
+        eval(&page.tab, match surface {
+            Surface::Classic => "(function(){ document.querySelectorAll('#stream .fold[data-kind=\"edit\"]').forEach(function (f) { if (f.dataset.open === '0') f.querySelector('.fold-h').click(); }); return 'ok'; })()",
+            Surface::AppShell => "(function(){ for (var i = 0; i < 4; i++) { var r = document.querySelector('.renderer[data-renderer-kind=\"edit\"].closed'); if (!r) break; r.querySelector(':scope > .renderer-head').click(); } return 'ok'; })()",
+        });
+        settle();
         let seen = eval(
             &page.tab,
             "(function(){ var t = document.body.innerText; return JSON.stringify({ reason: t.indexOf('String to replace not found in file.') >= 0, rejected: t.indexOf('User rejected update to') >= 0, refused: t.indexOf('PROBE_S22_REFUSED') >= 0, never: t.indexOf('PROBE_S22_NEVER') >= 0, added: t.indexOf('Added 1 line') >= 0 }); })()",
@@ -16971,6 +16752,298 @@ fn scenario_an_edit_that_changed_nothing_says_why() {
             seen.as_str(),
             Some(r#"{"reason":true,"rejected":true,"refused":true,"never":false,"added":false}"#),
             "{surface:?}: the failed edit says why with no diff, the rejected one says so above its diff, and neither claims a change"
+        );
+    }
+}
+
+/// A turn whose run made three changes — a shell command that edited a file, a new file and an
+/// Edit — then an Edit alone between two messages (#s23). Each change carries a probe string in
+/// the lines it changed; the run's sum is +5 −2 (+1 −1, +3, +1 −1) and the lone edit's +2.
+fn changes_in_a_run_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    let mut t = String::new();
+    t += &user_at("first prompt", &now_minus(300));
+    t += &assistant_at(&answer, &now_minus(295));
+    t += &user_at("change the code and the notes", &now_minus(280));
+    t += &thinking_at("Looking at where told is used.", &now_minus(279));
+    for line in s23_changes(278) {
+        t += &format!("{line}\n");
+    }
+    t += &assistant_at("Now the lone one.", &now_minus(260));
+    for line in [
+        s23_call(
+            "e2",
+            "Edit",
+            serde_json::json!({"file_path": "/w/b.rs", "old_string": "ctx", "new_string": "ctx\nPROBE_S23_LONE\nmore"}),
+            now_minus(259),
+        ),
+        s23_result(
+            "e2",
+            "The file /w/b.rs has been updated.",
+            serde_json::json!({"filePath": "/w/b.rs",
+            "structuredPatch": [{"oldStart": 4, "oldLines": 1, "newStart": 4, "newLines": 3, "lines": [" ctx", "+PROBE_S23_LONE", "+more"]}]}),
+            now_minus(258),
+        ),
+    ] {
+        t += &format!("{line}\n");
+    }
+    t += &assistant_at(&answer, &now_minus(250));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 2,
+    }
+}
+
+fn s23_call(id: &str, name: &str, input: serde_json::Value, ts: String) -> serde_json::Value {
+    serde_json::json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant",
+        "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}})
+}
+
+fn s23_result(id: &str, text: &str, tur: serde_json::Value, ts: String) -> serde_json::Value {
+    serde_json::json!({"type": "user", "timestamp": ts, "toolUseResult": tur,
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}})
+}
+
+/// The run's calls, from `at` seconds ago: a read, a shell command that edited a file (+1 −1), a
+/// new file (+3) and an Edit (+1 −1).
+fn s23_changes(at: u64) -> Vec<serde_json::Value> {
+    let bash = |cmd: &str| serde_json::json!({"command": cmd});
+    vec![
+        s23_call("r1", "Bash", bash("rg -n told shared.py"), now_minus(at)),
+        s23_result(
+            "r1",
+            "489:def close_kept(told=0):",
+            serde_json::json!({"stdout": "489:def close_kept(told=0):", "stderr": ""}),
+            now_minus(at - 1),
+        ),
+        s23_call(
+            "b1",
+            "Bash",
+            bash("python3 - <<'PY'\nedit shared.py\nPY"),
+            now_minus(at - 2),
+        ),
+        s23_result(
+            "b1",
+            "done",
+            serde_json::json!({"stdout": "done", "stderr": "", "bashEditDiff": {"moreFiles": 0,
+            "changedFiles": ["/w/shared.py"], "files": [{"filePath": "/w/shared.py", "hunks": [{"oldStart": 9, "oldLines": 1,
+            "newStart": 9, "newLines": 1, "lines": ["-    return 0", "+    return PROBE_S23_BASH"]}]}]}}),
+            now_minus(at - 3),
+        ),
+        s23_call(
+            "w1",
+            "Write",
+            serde_json::json!({"file_path": "/w/new.md", "content": "PROBE_S23_NEW\nb\nc\n"}),
+            now_minus(at - 4),
+        ),
+        s23_result(
+            "w1",
+            "File created successfully at: /w/new.md",
+            serde_json::json!({"type": "create", "filePath": "/w/new.md",
+            "content": "PROBE_S23_NEW\nb\nc\n", "structuredPatch": [], "originalFile": null}),
+            now_minus(at - 5),
+        ),
+        s23_call(
+            "e1",
+            "Edit",
+            serde_json::json!({"file_path": "/w/a.rs", "old_string": "alpha", "new_string": "PROBE_S23_EDIT"}),
+            now_minus(at - 6),
+        ),
+        s23_result(
+            "e1",
+            "The file /w/a.rs has been updated.",
+            serde_json::json!({"filePath": "/w/a.rs",
+            "structuredPatch": [{"oldStart": 3, "oldLines": 1, "newStart": 3, "newLines": 1, "lines": ["-alpha", "+PROBE_S23_EDIT"]}]}),
+            now_minus(at - 7),
+        ),
+    ]
+}
+
+/// What a page shows of the run and the lone edit: the run's summary and its change counts (with
+/// their colours and whether they are on screen), which change records sit inside it, whether
+/// each starts closed, and the lone edit's own card.
+const S23_PROBE: &str = r#"(function () {
+  var classic = !!document.getElementById('stream');
+  var runSel = classic ? '.fold[data-kind="act"]' : '.renderer[data-renderer-kind="activity"]';
+  var run = [...document.querySelectorAll(runSel)].find(function (r) { return /created 1 file/.test(r.textContent); });
+  if (!run) return JSON.stringify({ miss: 'run', runs: [...document.querySelectorAll(runSel)].map(function (r) { return r.textContent.slice(0, 120); }).slice(-3), tail: document.body.innerText.slice(-300) });
+  var head = run.querySelector(classic ? ':scope > .fold-h' : ':scope > .renderer-head');
+  var add = head.querySelector(classic ? '.chip.add' : '.renderer-change .add');
+  var del = head.querySelector(classic ? '.chip.del' : '.renderer-change .del');
+  function seen(e) { if (!e) return false; var r = e.getBoundingClientRect(), h = head.getBoundingClientRect(); return r.width > 0 && r.right <= h.right + 1 && r.left >= h.left - 1; }
+  var editSel = classic ? '.fold[data-kind="edit"], .fold[data-kind="write"], .fold[data-kind="bash"]' : '.renderer[data-renderer-kind="edit"], .renderer[data-renderer-kind="write"], .renderer[data-renderer-kind="bash"]';
+  var changes = [...document.querySelectorAll(editSel)].filter(function (e) { return /a\.rs|new\.md|python3|b\.rs/.test((e.querySelector(classic ? '.fold-h' : '.renderer-head') || e).textContent); });
+  var outer = function (e) { var up = e.parentElement && e.parentElement.closest(classic ? '.fold' : '.renderer'); return up ? (up === run ? 'run' : 'other') : 'top'; };
+  var closed = function (e) { return classic ? e.dataset.open === '0' : e.classList.contains('closed'); };
+  var name = function (e) { var t = (e.querySelector(classic ? '.fold-h' : '.renderer-head') || e).textContent; return (/a\.rs|new\.md|python3|b\.rs/.exec(t) || ['?'])[0]; };
+  var addCol = add && getComputedStyle(add).color, delCol = del && getComputedStyle(del).color;
+  return JSON.stringify({
+    summary: (head.textContent.match(/(searched|ran)[^+−]*created 1 file/) || [''])[0],
+    runs: [...document.querySelectorAll(runSel)].map(function (r) { return (r.querySelector(classic ? ':scope > .fold-h' : ':scope > .renderer-head') || r).textContent.slice(0, 90); }).slice(-3),
+    add: add ? add.textContent.trim() : null, del: del ? del.textContent.trim() : null,
+    coloured: !!(addCol && delCol && addCol !== delCol), onScreen: seen(add) && seen(del),
+    changes: changes.map(function (e) { return name(e) + ':' + outer(e) + ':' + (closed(e) ? 'closed' : 'open'); }).sort(),
+    diffs: ['PROBE_S23_BASH', 'PROBE_S23_NEW', 'PROBE_S23_EDIT', 'PROBE_S23_LONE'].filter(function (p) { return document.body.innerText.indexOf(p) >= 0; })
+  });
+})()"#;
+
+/// #s23 — on every page a change NESTS in the run it happened in, and the run's line carries what
+/// it changed, green `+N` and red `−N` (the owner, amending #s21, with the Claude app's "Ran 5
+/// commands, created a file +158 −0" beside the app shell's separate open Write card). An edit
+/// alone between two messages is a one-line card with its own `+N`. Nothing is open as the page
+/// loads; each diff is one tap away. On a phone the counts stay on screen: the state pill they
+/// used to share is hidden there.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_change_nests_in_its_run_and_the_run_carries_it() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = changes_in_a_run_fixture(match surface {
+            Surface::Classic => "s23-run-classic",
+            Surface::AppShell => "s23-run-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3074 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        settle();
+        let read = |what: &str| -> serde_json::Value {
+            let v = eval(&page.tab, S23_PROBE);
+            serde_json::from_str(v.as_str().unwrap_or("{}"))
+                .unwrap_or_else(|_| panic!("{surface:?} {what}: {v:?}"))
+        };
+        let seen = read("on load");
+        assert_eq!(
+            seen["summary"],
+            "searched for 1 pattern, ran 1 shell command, edited 1 file, created 1 file",
+            "{surface:?}: the run's line names its changes: {seen}"
+        );
+        assert_eq!(
+            (seen["add"].as_str(), seen["del"].as_str()),
+            (Some("+5"), Some("−2")),
+            "{surface:?}: …and carries their sum: {seen}"
+        );
+        assert_eq!(seen["coloured"], true, "{surface:?}: green and red: {seen}");
+        assert_eq!(
+            seen["onScreen"], true,
+            "{surface:?}: on screen in the run's head: {seen}"
+        );
+        assert_eq!(
+            seen["diffs"],
+            serde_json::json!([]),
+            "{surface:?}: compact — no diff open as the page loads: {seen}"
+        );
+        // Open the run: its three changes are inside it, each a closed card; the lone edit is
+        // its own card at the top level.
+        eval(&page.tab, match surface {
+            Surface::Classic => "(function(){ var r = [...document.querySelectorAll('.fold[data-kind=\"act\"]')].find(function (r) { return /created 1 file/.test(r.textContent); }); r.querySelector(':scope > .fold-h').click(); return 'ok'; })()",
+            Surface::AppShell => "(function(){ var r = [...document.querySelectorAll('.renderer[data-renderer-kind=\"activity\"]')].find(function (r) { return /created 1 file/.test(r.textContent); }); r.querySelector(':scope > .renderer-head').click(); return 'ok'; })()",
+        });
+        settle();
+        let opened = read("with the run open");
+        assert_eq!(
+            opened["changes"],
+            serde_json::json!(["a.rs:run:closed", "b.rs:top:closed", "new.md:run:closed", "python3:run:closed"]),
+            "{surface:?}: the run's changes nest in it, the lone edit stands alone, all closed: {opened}"
+        );
+        assert_eq!(
+            opened["diffs"],
+            serde_json::json!([]),
+            "{surface:?}: still no diff until one is opened: {opened}"
+        );
+        // A tap on the lone edit shows its diff.
+        eval(&page.tab, match surface {
+            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('.fold[data-kind=\"edit\"]')].find(function (f) { return /b\\.rs/.test(f.querySelector('.fold-h').textContent); }); f.querySelector('.fold-h').click(); return 'ok'; })()",
+            Surface::AppShell => "(function(){ var r = [...document.querySelectorAll('.renderer[data-renderer-kind=\"edit\"]')].find(function (r) { return /b\\.rs/.test(r.querySelector('.renderer-head').textContent); }); r.querySelector(':scope > .renderer-head').click(); return 'ok'; })()",
+        });
+        settle();
+        assert_eq!(
+            read("with the lone edit open")["diffs"],
+            serde_json::json!(["PROBE_S23_LONE"]),
+            "{surface:?}: one tap shows the lone edit's diff"
+        );
+        if surface == Surface::AppShell {
+            // At a phone's width the counts stay on screen: the state pill is hidden there.
+            let _ = page.tab.set_bounds(headless_chrome::types::Bounds::Normal {
+                left: None,
+                top: None,
+                width: Some(390.0),
+                height: Some(844.0),
+            });
+            settle();
+            settle();
+            let narrow = read("at 390px");
+            assert_eq!(
+                (narrow["add"].as_str(), narrow["onScreen"].as_bool()),
+                (Some("+5"), Some(true)),
+                "{surface:?} at 390px: the run's counts are still on screen: {narrow}"
+            );
+        }
+    }
+}
+
+/// #s23, live: a change that lands in a run while the page is open JOINS that run — the run's
+/// line gains its counts, and no card of its own appears beside it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_change_made_live_joins_its_run() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let base = base(match surface {
+            Surface::Classic => "s23-live-classic",
+            Surface::AppShell => "s23-live-app",
+        });
+        let stores = Stores::new(&base);
+        let mut t = long_session(10, Shape::default());
+        t += &user_at("change the code and the notes", &now_minus(120));
+        t += &thinking_at("Looking at where told is used.", &now_minus(119));
+        let path = stores.claude_session(SID, &t);
+        let fx = Fixture {
+            base,
+            path,
+            turns: 11,
+        };
+        let port = if surface == Surface::Classic { 0 } else { 3075 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        settle();
+        let script: Vec<String> = s23_changes(60).iter().map(|v| format!("{v}\n")).collect();
+        let n = script.len();
+        let growth = LiveGrowth::start(fx.path.clone(), script, Duration::from_millis(500));
+        assert_eq!(
+            growth.finish(Duration::from_secs(60)),
+            n,
+            "the driver appended the run"
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut seen = serde_json::Value::Null;
+        while std::time::Instant::now() < deadline {
+            let v = eval(&page.tab, S23_PROBE);
+            seen =
+                serde_json::from_str(v.as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null);
+            if seen["add"] == "+5" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        assert_eq!(
+            (seen["summary"].as_str(), seen["add"].as_str(), seen["del"].as_str()),
+            (Some("searched for 1 pattern, ran 1 shell command, edited 1 file, created 1 file"), Some("+5"), Some("−2")),
+            "{surface:?}: the changes that arrived live joined the run, and its line carries them: {seen}"
+        );
+        let stray = eval(&page.tab, match surface {
+            Surface::Classic => "[...document.querySelectorAll('#stream .fold[data-kind=\"edit\"], #stream .fold[data-kind=\"write\"]')].filter(function (f) { return !f.parentElement.closest('.fold'); }).length",
+            Surface::AppShell => "[...document.querySelectorAll('.renderer[data-renderer-kind=\"edit\"], .renderer[data-renderer-kind=\"write\"]')].filter(function (r) { return !r.parentElement.closest('.renderer'); }).length",
+        });
+        assert_eq!(
+            stray.as_i64(),
+            Some(0),
+            "{surface:?}: no change stands outside its run"
         );
     }
 }
