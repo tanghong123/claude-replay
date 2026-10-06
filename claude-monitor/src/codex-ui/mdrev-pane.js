@@ -1,9 +1,12 @@
 // mdrev's embedded viewer, as a guest in the preview pane (#270) — design/mdrev-in-the-preview-pane.md.
 //
 // The monitor serves the mdrev release PINNED into it (#274, `vendor/mdrev`): the page learns the
-// version from `data-mdrev` and imports the bundle from `/mdrev/<version>/` only when a Markdown
-// document is first shown, so a shell that never previews Markdown never loads it. Where the
-// document came from decides how much of mdrev it gets:
+// version from `data-mdrev` and imports the bundle from `/mdrev/<version>/` only when a text file is
+// first shown, so a shell that never previews one never loads it. Since #s13 (mdrev 1.1.21) the pane
+// hands it every text file, not only Markdown (`preview.js` `mdrevTakes`): mdrev shows a Markdown path
+// as a document and any other as source code — highlighted, its lines numbered, no notes — deciding
+// by the path, which is why held text keeps its real name. Where the file came from decides how much
+// of mdrev it gets:
 //
 //  * Markdown the transcript CARRIES (`item.text`) — the owner: "only show a cleanly rendered
 //    viewer (as a reader)". The monitor holds the text for mdrev's contract and the mount declares
@@ -25,7 +28,8 @@ const CONTRACT = "/api/mdrev";
 const REVIEW_CONTRACT = "/api/mdrev-review";
 const MARKDOWN = /\.(md|markdown|mdown|mkd)$/i;
 
-/** Whether the pane should hand this tab to mdrev: a Markdown name, by extension. */
+/** Whether mdrev shows this name as a DOCUMENT (with notes and shared review), by extension — the
+ *  same test as mdrev's own; any other text it shows as source code (#s13). */
 export const isMarkdownName = name => MARKDOWN.test(String(name || ""));
 
 /** The pinned mdrev release's version, or "" from a server that carries none. */

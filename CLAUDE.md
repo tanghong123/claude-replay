@@ -138,12 +138,12 @@ anywhere, and `note_forks_from_argv` is how one joins its #142 family. Diagnose 
 machine, not the API: `term`/`injectable` describe the process the row was LINKED to, so a false
 link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.
 
-**Markdown in the preview pane is mdrev's viewer, as a guest** (#270,
-`design/mdrev-in-the-preview-pane.md`), and **mdrev is PINNED** (#274, the owner: "only depend on
+**Text in the preview pane is mdrev's viewer, as a guest** (#270,
+`design/mdrev-in-the-preview-pane.md`; every text file since #s13), and **mdrev is PINNED** (#274, the owner: "only depend on
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.20, #s6), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.22, #s13), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor both binaries go through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
@@ -178,6 +178,16 @@ CI too. Keys: `bindKeymap` tracks ENGAGEMENT as mdrev does — the last click or
 `[data-guest-keys]` — and yields every key while it holds; the host element is NOT focusable. The
 request parser REFUSES (413) a body over its route's bound instead of silently cutting it to 64 KB;
 `hold` gets the artifact cap.
+**Every text file goes to mdrev, not only Markdown** (#s13, mdrev 1.1.21): mdrev renders a Markdown
+path as a document and ANY other as source code — highlighted by its language, its lines numbered
+(drawn from `data-n`, never in copied text), no notes and so no Review control — deciding by the
+path alone, which is why held text keeps its real name. Here only the BYTES decide: `open` accepts
+what `/file` would show as text (`shows_as_text`: under the viewer cap, not a raster image, UTF-8)
+and refuses the rest with 415, whose mount failure falls back to the pane's own view (a download, an
+image); and the pane (`mdrevTakes` in `preview.js`) never sends an HTML page, which renders as a
+page (the owner, 2026-10-06), nor an image it draws itself. The cases are
+`mdrev_shows_a_local_code_file_as_highlighted_numbered_source` and
+`the_pane_hands_mdrev_held_code_and_keeps_its_own_view_of_the_rest`.
 **SHARED review is the detached tab's, never the pane's** (#s6, then #s10, the owner: "maybe not in
 the main interface, but in the full detached view"; mdrev 1.1.18+: threads in a review store,
 pairing, a Push). The split is by PREFIX: the pane mounts the guest on `api/mdrev/`, where every

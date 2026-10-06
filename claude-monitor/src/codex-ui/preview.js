@@ -3,7 +3,7 @@ import { uiState } from "./state.js";
 import { sandboxDocument } from "./sandbox.js";
 import { createImageView } from "./shared/image-view.js";
 import { isMarkdownName, mdrevVersion, mountMarkdown } from "./mdrev-pane.js";
-import { canReveal, revealHere } from "./shared/capabilities.js";
+import { canReveal, RASTER_FILE, revealHere } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 
 const byId = id => document.getElementById(id);
@@ -194,11 +194,20 @@ export class Preview {
     this.teardownMarkdown();
     if (roster) { this.showRoster(); return; }
     if (!item) { byId("previewBody").innerHTML = '<div class="preview-empty"><div class="preview-empty-icon">◇</div><strong>No file open</strong><span>Open a file, image or HTML page from the transcript.</span></div>'; return; }
-    if (!item.data && isMarkdownName(item.name) && mdrevVersion()) { this.showMarkdown(item, generation); return; }
+    if (this.mdrevTakes(item)) { this.showMarkdown(item, generation); return; }
     this.showPlain(item, generation);
   }
-  /** What the pane showed before mdrev (#270), and still shows for everything that is not
-   *  Markdown — and for Markdown when there is no mdrev, or it cannot mount this document. */
+  /** #s13: the pane hands mdrev every TEXT file, not only Markdown. mdrev (1.1.21) shows a Markdown
+   *  path as a document and any other as source code — highlighted, its lines numbered, no notes —
+   *  deciding by the path alone; the host's `open` refuses a file whose bytes are not text, and the
+   *  mount's failure falls back to `showPlain`, which draws it as `/file` serves it. Never an HTML
+   *  page, which renders as a page (the owner, 2026-10-06), nor an image, which the pane draws. */
+  mdrevTakes(item) {
+    const name = item.name || "";
+    return !!mdrevVersion() && !item.data && !/\.html?$/i.test(name) && !RASTER_FILE.test(name);
+  }
+  /** What the pane showed before mdrev (#270), and still shows for an image, an HTML page, a file
+   *  that is not text — and for any file when there is no mdrev, or it cannot mount this one. */
   showPlain(item, generation) {
     if (item.text != null || item.data) { this.show(item, item.text, item.data); return; }
     byId("previewBody").classList.add("production-loading"); byId("previewBody").textContent = "Reading securely…";
@@ -242,9 +251,10 @@ export class Preview {
     body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="preview-error preview-download"><strong>No preview for this file</strong><span>${escapeText(item.name)}${bytes ? ` · ${bytes}` : ""} — this pane shows text and images; this file downloads.</span><div class="preview-error-actions"><button class="smallbtn primary" data-preview-download>Download</button></div></div>`;
     body.querySelector("[data-preview-download]").onclick = () => this.actions.download?.(item);
   }
-  /** Markdown through mdrev's viewer (#270): a reader for text the transcript carries, the whole
-   *  viewer for a file on disk. Any failure — no bundle, a refused route, a mount that throws —
-   *  falls back to `showPlain`, so mdrev can only ever add to what the pane showed. */
+  /** Text through mdrev's viewer (#270; every text file since #s13): a reader for text the
+   *  transcript carries, the whole viewer for a file on disk — a document for Markdown, source code
+   *  for anything else. Any failure — no bundle, a refused route, a mount that throws — falls back to
+   *  `showPlain`, so mdrev can only ever add to what the pane showed. */
   showMarkdown(item, generation) {
     const body = byId("previewBody");
     if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = ""; }
@@ -261,8 +271,9 @@ export class Preview {
       this.markdown = handle;
       // #335: not on a phone — the new tab is a page with no way back to the monitor.
       this.newTab.hidden = !revealHere();
-      this.newTab.setAttribute("aria-label", "Open this document in a new tab");
-      this.reviewBtn.hidden = revealHere() || item.text != null;
+      this.newTab.setAttribute("aria-label", `Open this ${isMarkdownName(item.name) ? "document" : "file"} in a new tab`);
+      // #s13: shared review is threads on a document's notes, and mdrev files no notes on code.
+      this.reviewBtn.hidden = revealHere() || item.text != null || !isMarkdownName(item.name);
     }).catch(() => {
       if (this.markdownToken !== token) return;
       this.teardownMarkdown();

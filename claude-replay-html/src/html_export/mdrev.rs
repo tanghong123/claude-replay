@@ -500,7 +500,11 @@ fn held_route(req: &Request, route: &str, held: &Mutex<Held>) -> HttpResponse {
 // ------------------------------------------------------------------------------ local files
 
 /// The mount's facts for a file the page already holds a `/file` stamp for:
-/// `{root, path, cap, isGit, name, review, annotate}`. The same four guards as `/file`.
+/// `{root, path, cap, isGit, name, review, annotate}`. The same four guards as `/file`, and the file
+/// must be one `/file` would SHOW as text (#s13): mdrev 1.1.21 renders a Markdown path as a document
+/// and any other as source code, deciding by the path alone, so what decides here is only whether
+/// the bytes are text. Anything else (an image, a binary, a file past the viewer cap) is refused, and
+/// the pane falls back to showing it as `/file` serves it.
 fn open(rel: &Release, live: Option<&SessionService>, req: &Request) -> HttpResponse {
     if let Some(r) = refuse_unpaired(req) {
         return r;
@@ -514,11 +518,8 @@ fn open(rel: &Release, live: Option<&SessionService>, req: &Request) -> HttpResp
     if live.servable(&abs, stamp.as_deref()).is_none() {
         return HttpResponse::not_found("no such path");
     }
-    if !is_markdown(&abs) {
-        return status(
-            "415 Unsupported Media Type",
-            error("not a Markdown document"),
-        );
+    if !is_markdown(&abs) && !shows_as_text(Path::new(&abs)) {
+        return status("415 Unsupported Media Type", error("not a text file"));
     }
     let (root, is_git) = root_of(&abs);
     let path = abs[root.len()..].trim_start_matches('/').to_string();
@@ -554,7 +555,27 @@ fn root_of(abs: &str) -> (String, bool) {
     (parent.unwrap_or_else(|| "/".to_string()), false)
 }
 
-/// What mdrev reads: the extensions mdrev's own `/documents` lists, and their common spellings.
+/// What `/file` shows as text (#s13), by its own three tests: a file under the viewer cap, not a
+/// raster image, whose whole body is UTF-8. Anything else `/file` serves as an image or a download,
+/// and so does the pane.
+fn shows_as_text(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() > MAX_ARTIFACT_BYTES {
+        return false;
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    super::serve::raster_type(&ext).is_none()
+        && std::fs::read(path).is_ok_and(|bytes| std::str::from_utf8(&bytes).is_ok())
+}
+
+/// A Markdown document: the extensions mdrev's own `/documents` lists, and their common spellings.
+/// mdrev renders it as a document; any other text path is source code (#s13).
 fn is_markdown(path: &str) -> bool {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     path.contains('.') && matches!(ext.as_str(), "md" | "markdown" | "mdown" | "mkd")
@@ -2092,12 +2113,26 @@ esac
             call(&f, &held, "open", &req("GET", &unstamped, b"", true)).code,
             "404 Not Found"
         );
+        // #s13: any text file opens, as mdrev's source code; an image or a binary does not.
         let txt = format!("{}/docs/notes.txt", f.repo.display());
         let q = format!("path={}&sig={}", enc(&txt), stamp(&txt));
+        let r = call(&f, &held, "open", &req("GET", &q, b"", true));
+        assert_eq!(r.code, "200 OK", "{}", String::from_utf8_lossy(&r.body));
+        let v: Value = serde_json::from_slice(&r.body).unwrap();
         assert_eq!(
-            call(&f, &held, "open", &req("GET", &q, b"", true)).code,
-            "415 Unsupported Media Type"
+            (&v["path"], &v["name"]),
+            (&json!("docs/notes.txt"), &json!("notes.txt"))
         );
+        std::fs::write(f.repo.join("docs/blob.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+        for refused in ["docs/img.png", "docs/blob.bin"] {
+            let abs = format!("{}/{refused}", f.repo.display());
+            let q = format!("path={}&sig={}", enc(&abs), stamp(&abs));
+            assert_eq!(
+                call(&f, &held, "open", &req("GET", &q, b"", true)).code,
+                "415 Unsupported Media Type",
+                "{refused}"
+            );
+        }
     }
 
     /// No node, no CLI: the host refuses notes — mdrev's own format, written only through its CLI —

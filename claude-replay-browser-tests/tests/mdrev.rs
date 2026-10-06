@@ -7,7 +7,8 @@
 //!
 //! Ports 2821–2829. The classic page has no preview pane, so there is no second surface here: the
 //! owner named the right-most pane, which only the app shell has. 2826–2829 are #271: the pane's
-//! document in a tab of its own (`/markdown`).
+//! document in a tab of its own (`/markdown`). 3070–3071 are #s13:
+//! every text file through mdrev, as source code when it is not Markdown.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -900,7 +901,7 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
         "the pane offers no shared review"
     );
     assert_eq!(
-        eval(&tab, "(function(){ var b = document.querySelector('#previewHead .preview-review'); return !b || b.hidden; })()"),
+        eval(&tab, "(function(){ var b = document.querySelector('.preview-review'); return !b || b.hidden; })()"),
         true,
         "the desktop has its detached tab, and no review sheet (#s12)"
     );
@@ -992,7 +993,7 @@ fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
     open_guide(&tab, &repo);
     until(
         &tab,
-        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('#previewHead .preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
         "the guide in the pane, with its Review control",
         Duration::from_secs(30),
         PANE,
@@ -1008,7 +1009,7 @@ fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
     let before = offset();
     eval(
         &tab,
-        "document.querySelector('#previewHead .preview-review').click(); 'ok'",
+        "document.querySelector('.preview-review').click(); 'ok'",
     );
     until(
         &tab,
@@ -1055,5 +1056,222 @@ fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
         offset(),
         before,
         "the transcript is where the reader left it"
+    );
+}
+
+// ── #s13: every text file through mdrev, as source code when it is not Markdown ──────────────
+
+/// A 1×1 transparent PNG.
+const PNG_1X1: [u8; 67] = [
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+    0x42, 0x60, 0x82,
+];
+
+/// Held code: a Python file the session attached WITH its text, so the pane holds it for mdrev.
+const HELPER: &str = "# a helper\ndef add(x, y):\n    \"\"\"Sum.\"\"\"\n    return x + y\n";
+
+/// The `fixture` checkout plus `src/app.ts` committed twice (a history), and beside it a binary, an
+/// image and an HTML page; the session READ each of those four (stamped paths in tool heads) and
+/// carries `helper.py` as an attachment with its text.
+fn code_fixture(name: &str) -> (PathBuf, Stores, PathBuf) {
+    let (base, stores, repo) = fixture(name);
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/app.ts"), "export const a = 1;\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "app one"]);
+    std::fs::write(
+        repo.join("src/app.ts"),
+        "// the app\nexport const a = 2;\nexport function add(x: number, y: number): number {\n  return x + y;\n}\n",
+    )
+    .unwrap();
+    git(&["commit", "-qam", "app two"]);
+    std::fs::write(repo.join("docs/blob.bin"), [0xff, 0xfe, 0x00, 0x01, 0x02]).unwrap();
+    std::fs::write(repo.join("docs/pic.png"), PNG_1X1).unwrap();
+    std::fs::write(
+        repo.join("docs/page.html"),
+        "<!doctype html><title>Page</title><h1>A page</h1>\n",
+    )
+    .unwrap();
+    let path = |rel: &str| repo.join(rel).display().to_string();
+    let helper = path("scratch/helper.py");
+    let attachment = format!(
+        "{{\"type\":\"attachment\",\"timestamp\":\"{ts}\",\"attachment\":{{\"type\":\"file\",\"filename\":\"{helper}\",\"displayPath\":\"helper.py\",\"content\":{{\"type\":\"text\",\"file\":{{\"filePath\":\"{helper}\",\"content\":{text},\"numLines\":4,\"startLine\":1,\"totalLines\":4}}}}}}}}\n",
+        ts = at("00:14"),
+        text = serde_json::to_string(HELPER).unwrap(),
+    );
+    let mut jsonl = user_at("read the code and the files beside it", &at("00:10"));
+    for (i, rel) in [
+        "src/app.ts",
+        "docs/blob.bin",
+        "docs/pic.png",
+        "docs/page.html",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let id = format!("c{i}");
+        jsonl += &read_tool_at(&id, &path(rel), &at(&format!("00:1{i}")));
+        jsonl += &tool_result_at(&id, &at(&format!("00:1{i}")));
+    }
+    jsonl += &attachment;
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(SID, &jsonl);
+    (base, stores, repo)
+}
+
+fn open_path(tab: &headless_chrome::Tab, abs: &str) {
+    let found = eval(
+        tab,
+        &format!("(function(){{ var e = document.querySelector('[data-reference-path={abs:?}]'); if (!e) return false; e.click(); return true; }})()"),
+    );
+    assert_eq!(found.as_bool(), Some(true), "a stamped reference to {abs}");
+}
+
+/// What mdrev drew in the pane: its source view (rows, numbers, highlighted spans) or a document.
+const SOURCE: &str = "(function(){ var h = document.querySelector('#previewBody .mdrev-host'); if (!h) return null; var v = h.querySelector('.source-view'); return JSON.stringify({ source: !!v, doc: !!h.querySelector('article.doc'), rows: v ? v.querySelectorAll('.src-line').length : 0, first: v && v.querySelector('.src-num') ? v.querySelector('.src-num').getAttribute('data-n') : null, copied: v && v.querySelector('.src-num') ? v.querySelector('.src-num').textContent : null, coloured: v ? v.querySelectorAll('span[style*=\"--shiki\"], span[style*=\"color\"]').length : 0, text: v ? v.innerText : '', root: (document.querySelector('.mdrev-pane') || {dataset: {}}).dataset.root || null }); })()";
+
+fn source(tab: &headless_chrome::Tab) -> serde_json::Value {
+    eval(tab, SOURCE)
+        .as_str()
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// #s13: a source file on disk opens in mdrev 1.1.21's source view — highlighted, its lines
+/// numbered, never rendered as a document — over the file's own checkout, and with nothing of notes
+/// or shared review, which mdrev does not do on code.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+fn mdrev_shows_a_local_code_file_as_highlighted_numbered_source() {
+    let _serial = serial();
+    drop(mdrev_cli()); // the file's history runs the pinned CLI under node
+    let (base, stores, repo) = code_fixture("mdrev-code-local");
+    let m = Monitor::spawn(Kind::V2, 3070, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    open_shell(&m, &tab);
+    open_path(&tab, &repo.join("src/app.ts").display().to_string());
+    until(
+        &tab,
+        "document.querySelectorAll('#previewBody .mdrev-host .source-view .src-line').length > 0",
+        "mdrev to show src/app.ts as source",
+        Duration::from_secs(30),
+        PANE,
+    );
+    let seen = source(&tab);
+    assert_eq!(seen["source"], true, "the source view: {seen}");
+    assert_eq!(seen["doc"], false, "never rendered as a document: {seen}");
+    assert_eq!(seen["first"], "1", "its lines are numbered: {seen}");
+    assert_eq!(
+        seen["copied"], "",
+        "and the number is drawn, never part of the copied text: {seen}"
+    );
+    assert!(
+        seen["coloured"].as_i64().unwrap_or(0) > 0,
+        "highlighted by its language: {seen}"
+    );
+    assert!(
+        seen["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("export function add"),
+        "the file as it stands: {seen}"
+    );
+    assert_eq!(
+        seen["root"].as_str(),
+        Some(repo.display().to_string().as_str()),
+        "the whole viewer, over the file's checkout: {seen}"
+    );
+    assert_ne!(
+        eval(&tab, NOTES_CONTROL).as_str(),
+        Some("shown"),
+        "no notes on code"
+    );
+    assert_eq!(
+        eval(&tab, NOTE_INVITE).as_i64(),
+        Some(0),
+        "and no invitation to file one"
+    );
+    assert_eq!(
+        eval(&tab, "(function(){ var b = document.querySelector('.preview-review'); return !b || b.hidden; })()")
+            .as_bool(),
+        Some(true),
+        "no shared review on code: it is threads on a document's notes"
+    );
+}
+
+/// #s13: what the pane does NOT hand mdrev stays exactly as it was — and held code goes to mdrev as
+/// source. Text the transcript carries (`helper.py`) opens in mdrev's source view as a reader; a
+/// binary still offers its download, an image is still drawn, and an HTML page still renders as a
+/// page (the owner, 2026-10-06: "html pages render as pages, no need to send to mdrev").
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_pane_hands_mdrev_held_code_and_keeps_its_own_view_of_the_rest() {
+    let _serial = serial();
+    let (base, stores, repo) = code_fixture("mdrev-code-rest");
+    let m = Monitor::spawn(Kind::V2, 3071, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    open_shell(&m, &tab);
+    open_notes(&tab);
+    until(
+        &tab,
+        "document.querySelectorAll('#previewBody .mdrev-host .source-view .src-line').length > 0",
+        "mdrev to show the held helper.py as source",
+        Duration::from_secs(30),
+        PANE,
+    );
+    let seen = source(&tab);
+    assert_eq!(
+        (&seen["doc"], &seen["root"]),
+        (&serde_json::json!(false), &serde_json::json!("held")),
+        "held text, by its real name, is code: {seen}"
+    );
+    assert!(
+        seen["text"].as_str().unwrap_or("").contains("def add"),
+        "{seen}"
+    );
+
+    let open = |rel: &str, ready: &str, what: &str| {
+        open_path(&tab, &repo.join(rel).display().to_string());
+        until(&tab, ready, what, Duration::from_secs(20), PANE);
+        assert_eq!(
+            eval(
+                &tab,
+                "document.querySelectorAll('#previewBody .mdrev-host').length"
+            )
+            .as_i64(),
+            Some(0),
+            "{rel} is not handed to mdrev"
+        );
+    };
+    open(
+        "docs/blob.bin",
+        "!!document.querySelector('#previewBody .preview-download')",
+        "the binary's download, as before",
+    );
+    open(
+        "docs/pic.png",
+        "!!document.querySelector('#previewBody img.artifact-image')",
+        "the image, drawn by the pane",
+    );
+    open(
+        "docs/page.html",
+        "!!document.querySelector('#previewBody iframe.artifact-html-frame')",
+        "the HTML page, rendered as a page",
     );
 }

@@ -151,7 +151,8 @@ fn the_app_shell_preview_offers_the_file_manager_for_whatever_it_shows() {
     for (file, view) in [
         ("shot.png", "#previewBody img.artifact-image"),
         ("page.html", "#previewBody iframe.artifact-html-frame"),
-        ("notes.txt", "#previewBody pre.artifact-text"),
+        // #s13: text is mdrev's source view now, and the head's reveal still sits beside it.
+        ("notes.txt", "#previewBody .mdrev-host .source-view"),
         ("blob.bin", "#previewBody [data-preview-download]"),
     ] {
         click_path(&tab, &repo, file);
@@ -480,7 +481,7 @@ fn the_app_shell_offers_a_path_as_an_image_exactly_when_the_server_serves_one() 
         "document.querySelector('[data-lightbox-close]').click(); 'ok'",
     );
 
-    // …and the SVG is read as its source, in the preview pane.
+    // …and the SVG is read as its source, in the preview pane: mdrev's source view since #s13.
     eval(
         &tab,
         &format!(
@@ -490,7 +491,7 @@ fn the_app_shell_offers_a_path_as_an_image_exactly_when_the_server_serves_one() 
     );
     until(
         &tab,
-        "(function(){ var t = document.querySelector('#previewBody pre.artifact-text'); return !!t && t.textContent.indexOf('<svg') >= 0; })()",
+        "(function(){ var v = document.querySelector('#previewBody .mdrev-host .source-view'); return !!v && v.innerText.indexOf('<svg') >= 0; })()",
         "the preview pane showing the SVG's source",
         Duration::from_secs(10),
         PANE,
