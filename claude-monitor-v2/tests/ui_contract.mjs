@@ -2882,6 +2882,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#s27/#s29 beside-a-file cases passed");
 }
 
+// ── #s30: the pane prints a Markdown document where mdrev's toolbar offers no print ────────────
+{
+  const preview = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
+  assert.match(preview, /this\.printBtn\.onclick = \(\) => this\.markdown\?\.print\?\.\(\);/, "mdrev's own print, never the page's");
+  assert.match(preview, /this\.printBtn\.hidden = !isMarkdownName\(item\.name\) \|\| !\(onPhone\(\) \|\| handle\.held\);/, "Markdown only, where mdrev offers none");
+  const pane = readFileSync(new URL("../../claude-monitor/src/codex-ui/mdrev-pane.js", import.meta.url), "utf8");
+  assert.match(pane, /print\(\) \{ mounted\?\.print\?\.\(\); \}/, "the handle carries mdrev's print");
+  console.log("#s30 pane print cases passed");
+}
+
 // ── #s23: a change is compact, and says what it did ────────────────────────────────────────
 {
   // The owner, amending #s21: edits nest in their run, and the run line (or a lone edit's own

@@ -1334,3 +1334,126 @@ fn the_pane_hands_mdrev_held_code_and_keeps_its_own_view_of_the_rest() {
         "the HTML page, rendered as a page",
     );
 }
+
+/// Whether the pane head's print control is offered, and where a tap at its centre lands — the
+/// control itself, or what covers it. `hidden` when it is not drawn.
+const PRINT_CONTROL: &str = "(function(){ var b = document.querySelector('#previewHead .preview-print, .preview-head .preview-print'); if (!b || b.hidden || !b.offsetWidth) return 'hidden'; var r = b.getBoundingClientRect(); if (r.right > innerWidth || r.left < 0) return 'off-screen'; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return hit && b.contains(hit) ? 'shown' : 'covered by ' + (hit ? hit.className : 'nothing'); })()";
+
+/// #s30, the owner: "for markdown, in mdrev, I actually think print still makes sense, though we
+/// have to make sure we can fit the icon on the toolbar". mdrev's own toolbar offers print on a
+/// desktop; its phone layout drops it, and a held reader has no toolbar at all. There the pane head
+/// offers mdrev's own print (`mounted.print()`) for a Markdown document — on screen and hit-tested
+/// at a phone's width, beside the head's other controls — and nothing for a code file.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn the_pane_prints_a_markdown_document_where_mdrev_offers_no_print() {
+    let _serial = serial();
+    drop(mdrev_cli());
+    // The guide (a file) and the carried notes (held), plus a code file read after them.
+    let (base, stores, repo) = fixture("mdrev-print");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/app.ts"), "export const a = 1;\n").unwrap();
+    let session = stores.root.join("claude/-r").join(format!("{SID}.jsonl"));
+    let mut jsonl = std::fs::read_to_string(&session).unwrap();
+    let code = repo.join("src/app.ts").display().to_string();
+    jsonl += &read_tool_at("c1", &code, &at("00:05"));
+    jsonl += &tool_result_at("c1", &at("00:05"));
+    stores.claude_session(SID, &jsonl);
+    let m = Monitor::spawn(Kind::V2, 3077, &base, Some(&stores), true);
+    let stub_print =
+        "window.__printed = 0; window.print = function () { window.__printed++; }; 'ok'";
+
+    // A phone: the guide (a file, mdrev's whole viewer in its phone layout).
+    let (_phone_browser, phone) = chrome_tab();
+    harness::phone(&phone, 390, 844);
+    open_shell(&m, &phone);
+    eval(&phone, stub_print);
+    open_path(&phone, &repo.join("docs/guide.md").display().to_string());
+    until(
+        &phone,
+        "!!document.querySelector('#previewBody .mdrev-host article.doc')",
+        "the guide in mdrev on a phone",
+        Duration::from_secs(30),
+        PANE,
+    );
+    until(
+        &phone,
+        &format!("{PRINT_CONTROL} === 'shown'"),
+        "the pane's print control, on screen and on top, at 390px",
+        Duration::from_secs(10),
+        &format!("{PRINT_CONTROL} + ' | ' + {PANE}"),
+    );
+    eval(
+        &phone,
+        "document.querySelector('.preview-print').click(); 'ok'",
+    );
+    until(
+        &phone,
+        "window.__printed === 1",
+        "mdrev's print to run",
+        Duration::from_secs(10),
+        "String(window.__printed)",
+    );
+    // A code file offers no print.
+    open_path(&phone, &repo.join("src/app.ts").display().to_string());
+    until(
+        &phone,
+        "!!document.querySelector('#previewBody .mdrev-host .source-view')",
+        "the code file as source",
+        Duration::from_secs(30),
+        PANE,
+    );
+    assert_eq!(
+        eval(&phone, PRINT_CONTROL).as_str(),
+        Some("hidden"),
+        "no print for code"
+    );
+
+    // A desktop: the guide has mdrev's own print on its toolbar, so the pane adds none; the notes
+    // the transcript carried (gone from disk, so held) are a reader with no toolbar, and get it.
+    let (_desk_browser, desk) = chrome_tab();
+    open_shell(&m, &desk);
+    eval(&desk, stub_print);
+    open_path(&desk, &repo.join("docs/guide.md").display().to_string());
+    until(
+        &desk,
+        "!!document.querySelector('#previewBody .mdrev-host article.doc')",
+        "the guide in mdrev on a desktop",
+        Duration::from_secs(30),
+        PANE,
+    );
+    assert_eq!(
+        eval(&desk, PRINT_CONTROL).as_str(),
+        Some("hidden"),
+        "mdrev's own toolbar prints a file on a desktop"
+    );
+    eval(
+        &desk,
+        "document.querySelector('[data-attachment-action=\"preview\"]').click(); 'ok'",
+    );
+    until(
+        &desk,
+        "(function(){ var h = document.querySelector('#previewBody .mdrev-host'); return !!h && h.dataset.root === 'held' && !!h.querySelector('article.doc'); })()",
+        "the carried notes, held, in mdrev",
+        Duration::from_secs(30),
+        PANE,
+    );
+    until(
+        &desk,
+        &format!("{PRINT_CONTROL} === 'shown'"),
+        "the pane's print control for a held reader",
+        Duration::from_secs(10),
+        PRINT_CONTROL,
+    );
+    eval(
+        &desk,
+        "document.querySelector('.preview-print').click(); 'ok'",
+    );
+    until(
+        &desk,
+        "window.__printed === 1",
+        "mdrev's print to run for the held reader",
+        Duration::from_secs(10),
+        "String(window.__printed)",
+    );
+}

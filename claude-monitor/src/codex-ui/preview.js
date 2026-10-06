@@ -68,7 +68,14 @@ export class Preview {
     this.reviewBtn = Object.assign(document.createElement("button"), { type: "button", className: "smallbtn preview-review", textContent: "Review", title: "Review with the other reviewers", hidden: true });
     this.reviewBtn.setAttribute("aria-label", "Review this document with the other reviewers");
     this.reviewBtn.onclick = () => this.openReviewSheet(this.markdownItem);
-    byId("closePreview").before(this.revealBtn, this.downloadBtn, this.newTab, this.reviewBtn);
+    // #s30, the owner: "for markdown, in mdrev, I actually think print still makes sense". mdrev's
+    // own toolbar has print on a desktop; its phone layout drops it, and a held reader has no
+    // toolbar — there the pane offers mdrev's print itself.
+    this.printBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-print", title: "Print this document", hidden: true });
+    this.printBtn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M7 14h10v7H7z"/></svg>`;
+    this.printBtn.setAttribute("aria-label", "Print this document");
+    this.printBtn.onclick = () => this.markdown?.print?.();
+    byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, this.newTab, this.reviewBtn);
     // #337, the owner: with many files open the strip squeezed every tab to a few letters and the
     // CURRENT one to nothing. The tabs now keep their width and the strip scrolls; while it
     // overflows, ‹ and › beside it step to the previous and next tab (the pinned roster first),
@@ -287,6 +294,8 @@ export class Preview {
       this.newTab.setAttribute("aria-label", `Open this ${isMarkdownName(item.name) ? "document" : "file"} in a new tab`);
       // #s13: shared review is threads on a document's notes, and mdrev files no notes on code.
       this.reviewBtn.hidden = !onPhone() || handle.held || !isMarkdownName(item.name);
+      // #s30: wherever mdrev's toolbar offers no print of its own — a phone, a held reader.
+      this.printBtn.hidden = !isMarkdownName(item.name) || !(onPhone() || handle.held);
     }).catch(() => {
       if (this.markdownToken !== token) return;
       this.teardownMarkdown();
@@ -295,7 +304,7 @@ export class Preview {
   }
   teardownMarkdown() {
     this.markdown?.unmount(); this.markdown = null;
-    this.newTab.hidden = true; this.image = null; this.reviewBtn.hidden = true;
+    this.newTab.hidden = true; this.image = null; this.reviewBtn.hidden = true; this.printBtn.hidden = true;
     this.markdownItem = null; this.markdownToken = null;
     byId("previewBody").classList.remove("mdrev-mounted");
   }

@@ -925,6 +925,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .preview-head .preview-reveal{width:32px;height:32px;flex:none}
 .preview-head .preview-reveal[hidden]{display:none}
 .preview-head .preview-reveal .icon{width:15px;height:15px}
+/* #s29 the file as a download, where the reader is not at this machine; #s30 mdrev's print, where
+   its own toolbar offers none (a phone, a held reader). Same shape as the reveal beside them. */
+.preview-head .preview-download,.preview-head .preview-print{width:32px;height:32px;flex:none;font-size:15px;line-height:1}
+.preview-head .preview-download[hidden],.preview-head .preview-print[hidden]{display:none}
 .prompt-attachment-pair{display:flex;gap:4px;min-width:0}
 .prompt-attachment-pair>.prompt-attachment{flex:1;min-width:0}
 .prompt-attachment-reveal,.prompt-attachment-download{width:32px;flex:none;border:1px solid color-mix(in srgb,var(--primary) 14%,var(--line));border-radius:11px;background:transparent;color:var(--faint);display:grid;place-items:center;cursor:pointer}
@@ -1223,6 +1227,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   /* #338: a phone's text already runs edge to edge, so the width switch has nothing to widen. */
   #app .reading-options .reading-row.reading-wide{display:none}
   #app .preview-tab-step{width:40px;height:44px}
+  /* #s30: the head's file controls are a finger's target on a phone too. */
+  #app .preview-head .preview-print,#app .preview-head .preview-download,#app .preview-head .preview-reveal{width:40px;height:44px}
 
   input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{font-size:16px!important}
 }

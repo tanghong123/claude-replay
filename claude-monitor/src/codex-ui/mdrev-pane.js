@@ -151,7 +151,12 @@ function mountAt(mountMdrev, el, facts, moved, contract = CONTRACT) {
   mount();
   const watch = new MutationObserver(() => { mounted?.unmount(); mount(); });
   watch.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-  return { place, unmount() { watch.disconnect(); mounted?.unmount(); mounted = null; } };
+  return {
+    place,
+    unmount() { watch.disconnect(); mounted?.unmount(); mounted = null; },
+    /** mdrev's own print (#s30): the document alone on the paper, under its own name. */
+    print() { mounted?.print?.(); },
+  };
 }
 
 /**
@@ -166,13 +171,14 @@ export async function mountMarkdown(el, item, { review = false } = {}) {
   const [{ mountMdrev }, facts] = await Promise.all([loadMdrev(version), factsFor(item)]);
   // #s12: the phone's review sheet mounts on the review prefix (#s10); the pane never does.
   const { held, ...mount } = facts; // `held` is the pane's to know, not an option of mdrev's
-  const { place, unmount } = mountAt(mountMdrev, el, mount, undefined, review ? REVIEW_CONTRACT : CONTRACT);
+  const { place, unmount, print } = mountAt(mountMdrev, el, mount, undefined, review ? REVIEW_CONTRACT : CONTRACT);
   const carried = held ? { name: item.name || "", text: item.text } : null;
   return {
     place,
     unmount,
     /** Whether the mount shows text the monitor holds rather than the file itself. */
     held,
+    print,
     /** Where a tab of its own finds this document; for held text, first leave the tab its own copy
      *  (`window.open` copies this page's sessionStorage into the tab it makes), so a monitor restart
      *  that empties the store cannot strand a tab the reader keeps open. */
