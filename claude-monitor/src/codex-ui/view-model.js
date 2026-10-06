@@ -269,11 +269,16 @@ function rendererRecord(record, renderer, name) {
   // head keeps its renderer's own word (state null → "reasoning" for a thinking). A head says
   // nothing about liveness — an async spawn's chip reads "launched" long after it finished —
   // so `running` stays false here until a record carries a real in-flight signal.
-  const th = toolHead(head);
+  // #s23: a change's `+N` / `−N` chips are its BADGE (components.js `changeBadgeHtml`), never
+  // part of the state pill — a phone hides the pill, and a count is not a state.
+  const allChips = Array.isArray(head.chips) ? head.chips : [];
+  const change = allChips.filter(c => c && (c.c === "add" || c.c === "del"));
+  const th = toolHead(change.length ? { ...head, chips: allChips.filter(c => !change.includes(c)) } : head);
   return {
     t: renderer === "thinking" ? "thinking" : renderer === "activity" ? "activity" : renderer === "task" ? "task" : renderer === "agent" ? "agent" : "tool",
     renderer, id: record.id, name: displayName(name), summary: head.target || head.preview || head.summary || "",
     state: th.state, error: th.failed, running: false, duration: th.duration, exit: th.exit, pill: stateLabel(th),
+    change: change.map(c => ({ kind: c.c, text: c.x })),
     html: partsHtml((record.body || []).filter(p => p.p !== "blocks")), raw: record,
     parts: (record.body || []).filter(p => p.p !== "blocks"),
     path: head.path || head.att_path,

@@ -85,10 +85,29 @@ impl FoldPolicy {
         }
     }
 
+    /// The PAGES' default (#s23, the owner: "compact everywhere"): the TUI's, with edits folded
+    /// too — an edit is a one-line card carrying its `+N −N`, its diff a tap away, where the TUI
+    /// shows the change itself.
+    pub fn pages_default() -> Self {
+        let mut p = Self::default();
+        p.folded.insert("edit");
+        p
+    }
+
     /// Build from plain flag values (`--full` / `--fold` / `--unfold` CSVs) — the
     /// clap-free constructor. CLI callers go through `Args::fold_policy`.
     pub fn from_flags(full: bool, fold: Option<&str>, unfold: Option<&str>) -> Self {
-        let mut p = if full { Self::none() } else { Self::default() };
+        Self::from_flags_on(Self::default(), full, fold, unfold)
+    }
+
+    /// The same flags over the pages' default ([`pages_default`](Self::pages_default)) — what
+    /// every html page renders with. CLI callers go through `Args::page_fold_policy`.
+    pub fn pages_from_flags(full: bool, fold: Option<&str>, unfold: Option<&str>) -> Self {
+        Self::from_flags_on(Self::pages_default(), full, fold, unfold)
+    }
+
+    fn from_flags_on(base: Self, full: bool, fold: Option<&str>, unfold: Option<&str>) -> Self {
+        let mut p = if full { Self::none() } else { base };
         for k in parse_keys(fold) {
             p.folded.insert(k);
         }

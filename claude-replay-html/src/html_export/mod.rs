@@ -18,8 +18,9 @@ use crate::fold::FoldPolicy;
 use crate::highlight;
 use crate::model::{AssistantPhase, AttachmentContent, Block, LoadedAttachment, ToolStatus};
 use crate::present::{
-    compaction_summary, display_name, edit_summary, not_applied, spawn_chip, thinking_summary,
-    tool_execution_failed, tool_execution_summary, write_content, NotApplied, WRITE_PREVIEW,
+    compaction_summary, display_name, edit_summary, not_applied, run_changes, spawn_chip,
+    thinking_summary, tool_execution_failed, tool_execution_summary, write_content, NotApplied,
+    WRITE_PREVIEW,
 };
 use crate::{discover, Agent, Transcript};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -831,17 +832,6 @@ fn numbered_part(content: &str, token: &str, cap: usize) -> Value {
 /// logic the TUI renders), so real-file-line-number (patch) vs local-numbering (fallback)
 /// behavior can't drift between the two presenters. The gutter grouping is a TUI concern —
 /// here the groups are simply flattened.
-/// A fresh-file Write: the TUI's FOLD of it is the preview Claude Code shows — `Wrote N lines`
-/// and the first `WRITE_PREVIEW` of them — and this page's OPEN body is that same capped preview,
-/// so it opens wherever the TUI's fold would show it (#s21). A shut card held the new file's
-/// contents out of sight: 5,659 writes on the owner's machine. A Write over an existing file
-/// carries a diff and folds as an edit already (`fold_key`).
-fn previews_when_folded(b: &Block) -> bool {
-    matches!(b, Block::ToolUse { name, patch, .. }
-        if matches!(name.as_str(), "Write" | "NotebookEdit")
-            && patch.as_deref().is_none_or(<[_]>::is_empty))
-}
-
 /// A change's `+N` / `−N` head chips, each only when non-zero.
 fn change_chips(adds: usize, dels: usize) -> Vec<Value> {
     let mut chips = Vec::new();
@@ -1080,8 +1070,7 @@ impl Emitter<'_> {
         o.insert("kind".into(), json!(kind));
         if is_fold(b) {
             o.insert("fold".into(), json!(true));
-            let open = !self.fold.collapses(b) || previews_when_folded(b);
-            o.insert("open".into(), json!(u8::from(open)));
+            o.insert("open".into(), json!(u8::from(!self.fold.collapses(b))));
         }
 
         let mut head = Map::new();
@@ -1354,6 +1343,17 @@ impl Emitter<'_> {
                 // can't drift; HTML prepends the `✻` glyph.
                 let summary = thinking_summary(text, *duration_secs, tools);
                 head.insert("summary".into(), json!(format!("✻ {summary}")));
+                // #s23: what the run CHANGED rides its line, green and red — both counts, as the
+                // Claude app draws a run ("+158 −0"): the edits it holds are one tap away.
+                if let Some((adds, dels)) = run_changes(tools) {
+                    head.insert(
+                        "chips".into(),
+                        json!([
+                            chip_class("add", format!("+{adds}")),
+                            chip_class("del", format!("−{dels}")),
+                        ]),
+                    );
+                }
                 if !tools.is_empty() {
                     let items: Vec<Value> =
                         tools.iter().map(|t| self.block(t, None, None)).collect();
@@ -1568,9 +1568,11 @@ impl Emitter<'_> {
                             }
                             None => {
                                 let n = content.lines().count();
+                                // #s23: a new file is its lines ADDED, `+N` in green as every
+                                // other change says it, where it used to read `N lines`.
                                 head.insert(
                                     "chips".into(),
-                                    json!([chip_class("add", format!("{n} lines"))]),
+                                    json!([chip_class("add", format!("+{n}"))]),
                                 );
                                 body.push(json!({
                                     "p": "note",
@@ -4865,6 +4867,72 @@ mod tests {
             out[0]["head"]["interaction"]["answers"][0]["label"],
             "恢复 Classic 默认 (Recommended)"
         );
+    }
+
+    /// #s23: on the pages a run carries what it changed — `+N` and `−N`, green and red, both
+    /// counts — and the edits inside it start closed (the pages' default folds edits; the TUI's
+    /// does not). A fresh-file Write says its size as `+N`.
+    #[test]
+    fn a_run_carries_its_change_and_its_edits_start_closed() {
+        let fresh = Block::ToolUse {
+            name: "Write".into(),
+            target: "new.md".into(),
+            diffs: vec![(String::new(), "a\nb\n".into())],
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+        };
+        let run = Block::Thinking {
+            text: String::new(),
+            duration_secs: Some(4),
+            tools: vec![edit_with_patch(), fresh.clone()],
+        };
+        let out = stream(&[run], &FoldPolicy::pages_default());
+        let chips: Vec<(String, String)> = out[0]["head"]["chips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                (
+                    c["c"].as_str().unwrap().into(),
+                    c["x"].as_str().unwrap().into(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            chips,
+            [
+                ("add".to_string(), "+4".to_string()),
+                ("del".to_string(), "−1".to_string())
+            ],
+            "the edit's +2 −1 and the new file's +2, summed"
+        );
+        assert!(
+            out[0]["head"]["summary"]
+                .as_str()
+                .unwrap()
+                .contains("edited 1 file, created 1 file"),
+            "{}",
+            out[0]["head"]["summary"]
+        );
+        let items = out[0]["body"][0]["items"].as_array().unwrap();
+        assert!(
+            items.iter().all(|i| i["open"] == json!(0)),
+            "its edits start closed on the pages: {items:?}"
+        );
+        let open = stream(&[edit_with_patch()], &FoldPolicy::default());
+        assert_eq!(
+            open[0]["open"],
+            json!(1),
+            "…and open under the TUI's default"
+        );
+        let written = stream(&[fresh], &FoldPolicy::pages_default());
+        assert_eq!(written[0]["head"]["chips"][0]["x"], json!("+2"));
     }
 
     /// #s22: an edit that changed nothing says why in place of its diff (failed), or says it was

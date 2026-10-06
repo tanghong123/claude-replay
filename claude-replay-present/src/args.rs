@@ -204,4 +204,10 @@ impl Args {
     pub fn fold_policy(&self) -> FoldPolicy {
         FoldPolicy::from_flags(self.full, self.fold.as_deref(), self.unfold.as_deref())
     }
+
+    /// The same flags over the PAGES' default, which folds edits too (#s23): what every html
+    /// page renders with — `--html`, `--dump-html`, the monitors.
+    pub fn page_fold_policy(&self) -> FoldPolicy {
+        FoldPolicy::pages_from_flags(self.full, self.fold.as_deref(), self.unfold.as_deref())
+    }
 }

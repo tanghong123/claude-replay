@@ -64,7 +64,7 @@ fn masked(args: &Args, jsonl: String) -> String {
 /// path links (their absolute `file://` paths don't resolve on another machine).
 pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
-    let fold = args.fold_policy();
+    let fold = args.page_fold_policy();
     let reveal = false;
     let (jsonl, turns) = build_stream(agent, path, &fold, reveal)?;
     let jsonl = masked(args, jsonl);
@@ -155,7 +155,7 @@ fn agent_stream(
 /// one-shot export) and materializes embedded attachments into `assets/`.
 pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     let agent = discover::detect_agent(path);
-    let fold = args.fold_policy();
+    let fold = args.page_fold_policy();
     let out_dir = match args.dump_all_html.as_ref().and_then(|o| o.as_deref()) {
         Some(s) => std::path::PathBuf::from(s),
         None => std::path::PathBuf::from(crate::sys::deduce_stem(path, None)),

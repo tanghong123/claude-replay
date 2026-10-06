@@ -151,8 +151,8 @@ function renderRenderer(view, index, state, inherited) {
     ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${REFERENCE_TITLES[referenceAction({ ...view, reveal: revealHere() })]}"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`
     : `<span class="renderer-target"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`;
   const head = noninteractive
-    ? `<div class="renderer-head" aria-label="${escapeText(title)}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}<span class="renderer-state"></span></div>`
-    : `<button class="renderer-head" type="button" aria-expanded="${!closed}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}<span class="renderer-state" title="${escapeText(status)}">${escapeText(view.state ? view.pill : status === "completed" ? "" : status)}</span></button>`;
+    ? `<div class="renderer-head" aria-label="${escapeText(title)}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}${changeBadgeHtml(view.change)}<span class="renderer-state"></span></div>`
+    : `<button class="renderer-head" type="button" aria-expanded="${!closed}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}${changeBadgeHtml(view.change)}<span class="renderer-state" title="${escapeText(status)}">${escapeText(view.state ? view.pill : status === "completed" ? "" : status)}</span></button>`;
   const toolName = view.t === "tool" ? ` data-tool-name="${escapeText(view.name)}"` : "";
   // The tool `o(…)` asks of this record (#367) — app.js `toolNameOf`'s reading, for marks and dimming.
   const searchTool = /^(bash|read|write|edit|skill|tool)$/.test(view.raw?.kind || "") ? ` data-search-tool="${escapeText(view.raw.tool || view.raw.head?.name || "")}"` : "";
@@ -188,24 +188,19 @@ export function fleetHtml(run, state) {
 // that would lead to all images being downloaded." The `src` is still emitted only for an id in
 // `state.openImages`, so an opened record shows a button and fetches nothing; expand-all over a
 // hundred screenshots is still a hundred buttons and zero bytes.
+//
+// #s21 opened every change and exempted it from the process cap; #s23 withdrew that (the owner:
+// compact everywhere) — a change is a one-line card whose head carries its `+N −N`
+// (`changeBadgeHtml`), and in a run it is nested in the run, whose line carries the sum.
 export const rendererStartsClosed = view =>
-  !view.running && !view.interaction && !view.attachment && view.renderer !== "queue" && !showsAChange(view);
+  !view.running && !view.interaction && !view.attachment && view.renderer !== "queue";
 
-// A record that CHANGED a file starts open with its change in view, and the process surface's
-// cap never holds it back (#s21, the owner: "all edit changes in transcripts are not buried").
-// The server's fold policy is the one rule for which those are, as on the classic page: it
-// opens a tool record (`open`) exactly when it is an edit, a Write, or a shell command or patch
-// that recorded a diff — or an edit that tried and says why it changed nothing (#s22). It used to be every finished card closed with the diff behind a click
-// (parity row 3.5), and past the seventh event of a busy turn not even the head was in view.
-export const showsAChange = view => view.t === "tool" && !!view.raw?.open;
-
-/** Which of a process surface's events its cap holds back: past the first `limit` events that
- *  are not changes. A change is always in view (#s21), so it neither hides past the cap nor
- *  spends one of its slots. One flag per group (a pointer run is one event, #254). */
-export function cappedEvents(groups, limit) {
-  let counted = 0;
-  return groups.map(group => !(group.item && showsAChange(group.item.view)) && counted++ >= limit);
-}
+/** What a change did, on its head (#s23): green `+N`, red `−N`, beside the target and never in
+ *  the state pill — which a phone hides, and which is where the owner looked for it. Empty for
+ *  a record that changed no file. */
+export const changeBadgeHtml = change => change?.length
+  ? `<span class="renderer-change">${change.map(c => `<span class="${c.kind === "del" ? "del" : "add"}">${escapeText(c.text)}</span>`).join("")}</span>`
+  : "";
 
 function renderProcess(unit, state) {
   const key = unit.key;
@@ -225,10 +220,9 @@ function renderProcess(unit, state) {
   // counts as ONE event against the cap below, which is the point: five pointers must not eat
   // five of the seven visible slots that real work needs.
   const groups = groupPointerRuns(unit.views, item => item.view?.attachment);
-  const capped = cappedEvents(groups, visibleLimit);
   const events = groups.map((group, position) => {
-    const hidden = capped[position] && !expanded;
-    const frame = inner => `<div class="process-event ${hidden ? "progressive-hidden" : ""}" data-progressive="${capped[position]}">${inner}</div>`;
+    const hidden = position >= visibleLimit && !expanded;
+    const frame = inner => `<div class="process-event ${hidden ? "progressive-hidden" : ""}" data-progressive="${position >= visibleLimit}">${inner}</div>`;
     if (group.run) {
       const links = group.items.map(({ view }) => {
         const h = view.attachment || {};
@@ -247,7 +241,7 @@ function renderProcess(unit, state) {
   }).join("");
   // Counted over GROUPS, not raw views (#254): a collapsed run is one event on screen, so
   // "Show N more" must agree with what the reader would actually reveal.
-  const hidden = capped.filter(Boolean).length;
+  const hidden = Math.max(0, groups.length - visibleLimit);
   return `<section class="process-surface process-${tone} ${closed ? "closed" : ""}" data-process-surface data-process-key="${escapeText(key)}" data-process-state="${tone}" data-turn="${escapeText(unit.turn)}" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}" aria-label="Agent process"><div class="process-surface-headbar"><div class="process-surface-summary"><button class="process-section-toggle" type="button" data-process-toggle aria-expanded="${!closed}" title="${closed ? "Expand" : "Collapse"} this section">${svg("chev")}</button><span class="process-surface-label" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}">Agent process</span><span class="process-surface-preview">${escapeText(preview)}</span><span class="process-surface-count">${unit.views.length} events${updates ? ` · ${updates} updates` : ""}</span><button class="process-bulk-toggle" type="button" data-process-bulk aria-pressed="false" title="Expand every detail in this section">${svg("expandStack")}</button></div></div><div class="process-surface-body">${events}${hidden ? `<button class="process-more" type="button" data-process-more aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span>${svg("chev")}</button>` : ""}</div></section>`;
 }
 

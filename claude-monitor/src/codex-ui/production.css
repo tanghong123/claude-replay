@@ -858,6 +858,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    than any viewport; keep the tail (the file name) and clip the head" (export.css, `.lb-cap`).
    Same technique here, so the two shells clip the same way. */
 .renderer>.renderer-head{grid-template-columns:11px max-content minmax(0,1fr) minmax(0,max-content)}
+/* #s23: what a change did rides its head as a badge — green `+N`, red `−N` — right after the
+   target and in a column of its own, so the target ellipsizes before the badge ever does; at
+   every width, because a phone hides the state pill the counts used to share. The target column
+   shrinks to its text, so the badge sits beside it rather than across the card. */
+.renderer>.renderer-head:has(>.renderer-change){grid-template-columns:11px max-content minmax(0,max-content) max-content minmax(0,1fr)}
+.renderer-change{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font:600 10.5px/18px var(--mono);direction:ltr}
+.renderer-change>span{padding:0 5px;border-radius:5px}
+.renderer-change>.add{color:var(--green);background:var(--green-bg)}
+.renderer-change>.del{color:var(--red);background:var(--red-bg)}
 /* `direction:rtl` ALONE. The classic page's own path line pairs it with `text-align:left`, but
    that element clips without an ellipsis; here the two fight — rtl puts the ellipsis at the
    visual left, and then left-alignment pushes the overflow back out to the right, losing the

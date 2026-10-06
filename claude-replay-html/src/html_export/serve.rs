@@ -138,7 +138,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // the user attached) carries a `Cap::Handed` stamp in `fsig`/`att_fsig`.
     // v19: #s21 — a Write over an existing file (its diff) and a fresh-file Write (its capped
     // preview) are `open`.
-    const RECORD_SCHEMA: u16 = 19;
+    // v20: #s23 — a run's head carries its `+N`/`−N` chips, a fresh Write says `+N` where it said
+    // `N lines`, and a fresh Write is no longer opened on the pages (v19's rule withdrawn).
+    const RECORD_SCHEMA: u16 = 20;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
@@ -1278,7 +1280,7 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
     let live = Arc::new(SessionService::new(ServiceConfig {
         cache_root: shared_root.clone(),
         presentation: Presentation::Html,
-        fold: args.fold_policy(),
+        fold: args.page_fold_policy(),
         scratch: dir.clone(),
         root_lock: RootLock::PerSession,
     })?);

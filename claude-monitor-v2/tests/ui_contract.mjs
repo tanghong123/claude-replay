@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
-import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed, cappedEvents, showsAChange } from "../../claude-monitor/src/codex-ui/components.js";
+import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed, changeBadgeHtml } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, canReveal, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
 import { fleetGroups } from "../../claude-replay-html/src/html/shared/fleet.js";
@@ -1750,7 +1750,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const view = viewRecord({ kind: "bash", id: "b1", head: { name: "Bash", target: "cargo test", chips: [{ c: "fail", x: "exit 1 · 2.50s" }] }, body: [{ p: "pre", x: "error" }] });
   assert.deepEqual([view.state, view.error, view.exit, view.duration, view.pill], ["failed", true, 1, "2.50s", "failed · exit 1 · 2.50s"]);
   const edit = viewRecord({ kind: "edit", id: "e1", head: { name: "Edit", target: "README.md", chips: [{ c: "add", x: "+1" }, { c: "del", x: "−1" }] }, body: [] });
-  assert.deepEqual([edit.name, edit.state, edit.pill], ["Update", "completed", "+1 · −1"]);
+  // #s23: an edit's counts are its BADGE, not its pill (a phone hides the pill).
+  assert.deepEqual([edit.name, edit.state, edit.pill, edit.change.map(c => c.text)], ["Update", null, "", ["+1", "−1"]]);
   assert.equal(viewRecord({ kind: "think", id: "t1", head: {}, body: [{ p: "md", x: "hm" }] }).state, null);
   const spawn = viewRecord({ kind: "agent", id: "a1", head: { name: "Agent", chips: [{ x: "launched" }] }, body: [] });
   assert.deepEqual([spawn.state, spawn.running, spawn.pill], ["completed", false, "launched"], "a finished session's spawns are not left running");
@@ -2856,29 +2857,30 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#203 favicon cases passed");
 }
 
-// ── #s21: a record that changed a file is never buried ────────────────────────────────────
+// ── #s23: a change is compact, and says what it did ────────────────────────────────────────
 {
-  // The owner: "all edit changes in transcripts are not buried". The server's fold policy opens a
-  // tool record exactly when it changed a file; the shell opens it too, and the process surface's
-  // cap neither hides it nor spends a slot on it.
-  const record = (id, kind, open, extra = {}) => ({ t: "block", id, kind, fold: true, open, tool: kind === "edit" ? "Edit" : "Bash", head: { name: kind === "edit" ? "Edit" : "Bash", target: `${id}.rs` }, body: [{ p: "pre", x: "out" }], ...extra });
-  const edit = viewRecord(record("b9", "edit", 1));
-  const bash = viewRecord(record("b1", "bash", 0));
-  assert.equal(showsAChange(edit), true, "an edit the policy opens is a change");
-  assert.equal(showsAChange(bash), false, "a command the policy folds is not");
-  assert.equal(rendererStartsClosed(edit), false, "a change starts open");
-  assert.equal(rendererStartsClosed(bash), true, "everything else finished still starts closed");
-  // Nine commands, then an edit: the cap shows seven commands and holds two, and the edit —
-  // tenth of ten — is in view.
-  const groups = [...Array(9).keys()].map(i => ({ item: { index: i, view: viewRecord(record(`b${i}`, "bash", 0)) } }));
-  groups.push({ item: { index: 9, view: edit } });
-  assert.deepEqual(cappedEvents(groups, 7), [false, false, false, false, false, false, false, true, true, false]);
-  // An edit early in the turn does not spend a slot: seven commands still show after it.
-  assert.deepEqual(cappedEvents([groups[9], ...groups.slice(0, 9)], 7), [false, false, false, false, false, false, false, false, true, true]);
+  // The owner, amending #s21: edits nest in their run, and the run line (or a lone edit's own
+  // head) carries the change as green/red +N −N — "compact everywhere". The counts are a badge of
+  // their own, never in the state pill, which a phone hides.
+  const record = (id, kind, chips) => ({ t: "block", id, kind, fold: true, open: 0, head: { name: kind === "act" ? undefined : "Edit", summary: kind === "act" ? "✻ Thought for 14s, ran 5 shell commands, created 1 file" : undefined, target: "src/x.rs", chips }, body: [] });
+  const add = x => ({ c: "add", x }), del = x => ({ c: "del", x });
+  const run = viewRecord(record("b5", "act", [add("+158"), del("−0")]));
+  assert.deepEqual(run.change, [{ kind: "add", text: "+158" }, { kind: "del", text: "−0" }], "the run's counts are its change");
+  assert.equal(rendererStartsClosed(run), true, "a finished run starts closed");
+  const edit = viewRecord(record("b9", "edit", [add("+3"), del("−1"), { c: "fail", x: "failed" }]));
+  assert.deepEqual(edit.change.map(c => c.text), ["+3", "−1"]);
+  assert.doesNotMatch(edit.pill || "", /\+3|−1/, "…and never part of the state pill");
+  assert.equal(edit.error, true, "the other chips still say what they said");
+  assert.equal(rendererStartsClosed(edit), true, "a lone edit is a one-line card: its diff a tap away");
+  const badge = changeBadgeHtml(run.change);
+  assert.match(badge, /^<span class="renderer-change"><span class="add">\+158<\/span><span class="del">−0<\/span><\/span>$/);
+  assert.equal(changeBadgeHtml([]), "", "no change, no badge");
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
-  assert.match(comp, /const capped = cappedEvents\(groups, visibleLimit\);/, "the process surface asks the rule");
-  assert.match(comp, /const hidden = capped\.filter\(Boolean\)\.length;/, "…and Show N more counts what it holds");
-  console.log("#s21 change visibility cases passed");
+  assert.equal((comp.match(/\$\{targetHtml\}\$\{changeBadgeHtml\(view\.change\)\}/g) || []).length, 2, "both heads carry the badge, after the target");
+  assert.match(comp, /const hidden = Math\.max\(0, groups\.length - visibleLimit\);/, "the cap counts every event again");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.renderer>\.renderer-head:has\(>\.renderer-change\)\{grid-template-columns:11px max-content minmax\(0,max-content\) max-content minmax\(0,1fr\)\}/, "the badge has a column of its own");
+  console.log("#s23 change badge cases passed");
 }
 
 // ── #228: an image is one click away, and the enlarged view zooms ───────────────────────────
