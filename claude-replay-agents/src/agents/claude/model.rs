@@ -6598,20 +6598,33 @@ mod tests {
         assert_eq!(tools.len(), 1, "did not absorb the preceding Bash");
     }
 
-    /// Edit/Write tools are NOT absorbed into a span (CC shows their diffs expanded,
-    /// and they BREAK the span); only transient activity tools (Bash/Read/…) fold in.
+    /// #s23: an Edit next to thinking JOINS its run (the owner, as the Claude app draws a run:
+    /// "Ran 5 commands, created a file +158 −0"), where it used to break the span and stand
+    /// expanded beside it. An edit with nothing beside it stays a card of its own.
     #[test]
-    fn edit_stays_expanded_next_to_thinking() {
+    fn an_edit_next_to_thinking_joins_its_run() {
         let jsonl = r#"
 {"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"go"}}
 {"type":"assistant","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/x.rs","old_string":"a","new_string":"b"}}]}}
 {"type":"assistant","timestamp":"2026-06-30T03:00:05.000Z","message":{"content":[{"type":"thinking","thinking":"ok"}]}}
 "#;
         let blocks = parse(jsonl);
+        assert_eq!(kinds(&blocks), vec!["user", "thinking"], "{blocks:?}");
+        let Block::Thinking { tools, .. } = &blocks[1] else {
+            panic!("not a run: {blocks:?}");
+        };
+        assert_eq!(kinds(tools), vec!["edit"], "the edit is inside the run");
+        let alone = parse(
+            r#"
+{"type":"user","timestamp":"2026-06-30T03:00:00.000Z","message":{"content":"go"}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:02.000Z","message":{"content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/x.rs","old_string":"a","new_string":"b"}}]}}
+{"type":"assistant","timestamp":"2026-06-30T03:00:05.000Z","message":{"content":[{"type":"text","text":"done"}]}}
+"#,
+        );
         assert_eq!(
-            kinds(&blocks),
-            vec!["user", "edit", "thinking"],
-            "{blocks:?}"
+            kinds(&alone),
+            vec!["user", "edit", "assistant"],
+            "{alone:?}"
         );
     }
 
@@ -7275,19 +7288,19 @@ mod tests {
 {"type":"user","message":{"content":[{"type":"tool_result","content":"FILE CONTENTS"}]}}
 "#;
         let blocks = parse(jsonl);
-        // Nothing is dropped — but the consecutive Read + Bash coalesce into one
-        // activity run (their blocks live inside it), and Edit stays expanded.
+        // Nothing is dropped — the consecutive Read, Bash and (#s23) Edit coalesce into one
+        // activity run, their blocks living inside it.
         assert_eq!(
             kinds(&blocks),
-            vec!["user", "assistant", "thinking", "edit", "tool_result"]
+            vec!["user", "assistant", "thinking", "tool_result"]
         );
         let Block::Thinking { tools, .. } = &blocks[2] else {
-            panic!("expected the coalesced Read+Bash run");
+            panic!("expected the coalesced Read+Bash+Edit run");
         };
         assert_eq!(
             kinds(tools),
-            vec!["read", "bash"],
-            "both preserved in the run"
+            vec!["read", "bash", "edit"],
+            "all preserved in the run"
         );
     }
 
@@ -7349,26 +7362,25 @@ mod tests {
 {"type":"user","toolUseResult":{"stdout":"file1\nfile2","stderr":"","interrupted":false},"message":{"content":[{"type":"tool_result","tool_use_id":"t3","content":"file1\nfile2"}]}}
 "#;
         let blocks = parse(jsonl);
-        // Edit stays expanded; the boilerplate Edit result is NOT a separate block.
-        // Read + Bash are consecutive activity tools → coalesced into one activity run.
-        assert_eq!(kinds(&blocks), vec!["edit", "thinking"]);
+        // The boilerplate Edit result is NOT a separate block. The Edit, Read and Bash are one
+        // run (#s23: an edit joins the run it is in).
+        assert_eq!(kinds(&blocks), vec!["thinking"]);
 
-        let Block::ToolUse { patch, output, .. } = &blocks[0] else {
+        // Metadata is joined into the tools *before* coalescing — dig into the run.
+        let Block::Thinking { tools, .. } = &blocks[0] else {
+            panic!("expected a coalesced activity run");
+        };
+        let Block::ToolUse { patch, output, .. } = &tools[0] else {
             panic!("expected Edit ToolUse");
         };
         assert_eq!(patch.as_ref().unwrap()[0].new_start, 12, "real newStart");
         assert!(output.is_none(), "edit boilerplate dropped");
-
-        // Metadata is joined into the tools *before* coalescing — dig into the run.
-        let Block::Thinking { tools, .. } = &blocks[1] else {
-            panic!("expected a coalesced activity run");
-        };
-        let Block::ToolUse { read_lines, .. } = &tools[0] else {
+        let Block::ToolUse { read_lines, .. } = &tools[1] else {
             panic!("expected Read ToolUse");
         };
         assert_eq!(*read_lines, Some(3));
 
-        let Block::ToolUse { output, .. } = &tools[1] else {
+        let Block::ToolUse { output, .. } = &tools[2] else {
             panic!("expected Bash ToolUse");
         };
         assert_eq!(output.as_deref(), Some("file1\nfile2"));

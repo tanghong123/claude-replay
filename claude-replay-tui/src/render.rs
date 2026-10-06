@@ -5,9 +5,9 @@ use crate::diff::{diff_row_groups, line_diff, DiffKind, LineOp};
 use crate::highlight::{self, Hl};
 use crate::model::{AssistantPhase, Attachment, Block};
 use crate::present::{
-    display_name, edit_summary, file_edit_summary, not_applied, spawn_chip, thinking_summary,
-    tool_execution_failed, tool_execution_summary, turn_summary, write_content, NotApplied,
-    WRITE_PREVIEW,
+    display_name, edit_summary, file_edit_summary, not_applied, run_changes, spawn_chip,
+    thinking_summary, tool_execution_failed, tool_execution_summary, turn_summary, write_content,
+    NotApplied, WRITE_PREVIEW,
 };
 use crate::tui::{markdown, theme};
 use ratatui::style::{Color, Modifier, Style};
@@ -218,6 +218,20 @@ pub(crate) fn diff_counts(old: &str, new: &str) -> (usize, usize) {
         }
     }
     (adds, dels)
+}
+
+/// What a run CHANGED, as its line carries it (#s23): ` +N −N`, green and red, summed over the
+/// run's edits (`run_changes`) — nothing when the run changed no file.
+fn change_spans(tools: &[Block]) -> Vec<Span<'static>> {
+    let Some((adds, dels)) = run_changes(tools) else {
+        return Vec::new();
+    };
+    vec![
+        Span::raw(" "),
+        Span::styled(format!("+{adds}"), theme::diff_add()),
+        Span::raw(" "),
+        Span::styled(format!("−{dels}"), theme::diff_del()),
+    ]
 }
 
 /// One `⎿` result line per line of `text` — an edit's note, or why it changed nothing (#s22).
@@ -943,7 +957,9 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             // Shared with the HTML exporter (see `thinking_summary`); no `✻` glyph on the
             // collapsed TUI line — a plain 2-space-indented line.
             let summary = thinking_summary(text, *duration_secs, tools);
-            vec![Line::from(Span::styled(format!("  {summary}"), header))]
+            let mut line = vec![Span::styled(format!("  {summary}"), header)];
+            line.extend(change_spans(tools));
+            vec![Line::from(line)]
         }
         Block::ToolUse {
             name, execution, ..
@@ -1682,6 +1698,44 @@ mod tests {
         );
         assert!(t[0].contains("⎿ out 0"), "header wrong: {t:?}");
         assert!(t[1].contains("49 folded"), "true count wrong: {t:?}");
+    }
+
+    /// #s23: a collapsed run line carries what the run changed, ` +N −N` in green and red.
+    #[test]
+    fn a_collapsed_run_line_carries_its_change() {
+        let edit = Block::ToolUse {
+            name: "Edit".into(),
+            target: "src/y.rs".into(),
+            diffs: vec![("let a = 1;".into(), "let a = 2;\nlet b = 3;".into())],
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+        };
+        let run = Block::Thinking {
+            text: "hm".into(),
+            duration_secs: Some(4),
+            tools: vec![edit],
+        };
+        let lines = render_collapsed(&run);
+        let t = texts(&lines).join("\n");
+        assert!(t.ends_with("edited 1 file +2 −1"), "{t}");
+        let add = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content == "+2")
+            .expect("a +2 span");
+        assert_eq!(add.style.fg, theme::diff_add().fg);
+        let del = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content == "−1")
+            .expect("a −1 span");
+        assert_eq!(del.style.fg, theme::diff_del().fg);
     }
 
     /// #s22: an Edit that FAILED says why and draws no diff — the change never happened; one the

@@ -218,9 +218,120 @@ pub fn write_content(diffs: &[(String, String)]) -> &str {
         .unwrap_or("")
 }
 
+/// The lines a call ADDED and REMOVED, when it changed a file — `None` for every other call, and
+/// for an edit that changed nothing (failed, rejected, interrupted: #s22). A fresh-file write
+/// adds its whole content; an Edit, an overwrite and a shell command that recorded a diff count
+/// their diff rows, as the diff part draws them. One count for the TUI's run line and the
+/// html stream's chips (#s23).
+pub fn change_counts(b: &Block) -> Option<(usize, usize)> {
+    let Block::ToolUse {
+        name,
+        diffs,
+        patch,
+        execution,
+        ..
+    } = b
+    else {
+        return None;
+    };
+    if execution.as_ref().and_then(|e| e.status).is_some_and(|s| {
+        matches!(
+            s,
+            ToolStatus::Failed | ToolStatus::Declined | ToolStatus::Cancelled
+        )
+    }) {
+        return None;
+    }
+    let hunks = patch.as_deref().filter(|h| !h.is_empty());
+    let edit = crate::model::is_edit_tool(name);
+    if !edit && hunks.is_none() {
+        return None;
+    }
+    if matches!(name.as_str(), "Write" | "NotebookEdit") && hunks.is_none() {
+        return Some((write_content(diffs).lines().count(), 0));
+    }
+    let (mut adds, mut dels) = (0, 0);
+    for row in crate::diff::diff_row_groups(diffs, hunks)
+        .into_iter()
+        .flat_map(|g| g.rows)
+    {
+        match row.kind {
+            crate::diff::DiffKind::Add => adds += 1,
+            crate::diff::DiffKind::Del => dels += 1,
+            crate::diff::DiffKind::Ctx => {}
+        }
+    }
+    Some((adds, dels))
+}
+
+/// What a RUN changed (#s23): the sum of its calls' [`change_counts`], `None` when none of them
+/// changed a file.
+pub fn run_changes(tools: &[Block]) -> Option<(usize, usize)> {
+    tools
+        .iter()
+        .filter_map(change_counts)
+        .reduce(|(a, d), (x, y)| (a + x, d + y))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #s23: what a call changed, and a run: a fresh Write adds its lines, an Edit counts its
+    /// diff, a shell command counts the diff it recorded, a failed edit and any other call count
+    /// nothing, and a run sums its calls.
+    #[test]
+    fn change_counts_and_a_runs_sum() {
+        let call = |name: &str,
+                    diffs: Vec<(&str, &str)>,
+                    patch: Option<Vec<crate::model::Hunk>>| Block::ToolUse {
+            name: name.into(),
+            target: "x".into(),
+            diffs: diffs
+                .into_iter()
+                .map(|(o, n)| (o.into(), n.into()))
+                .collect(),
+            output: None,
+            patch,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+        };
+        let fresh = call("Write", vec![("", "a\nb\nc\n")], None);
+        let edit = call("Edit", vec![("one\ntwo", "one\nTWO\nthree")], None);
+        let bash = call(
+            "Bash",
+            vec![],
+            Some(vec![crate::model::Hunk {
+                old_start: 1,
+                new_start: 1,
+                lines: vec!["-x".into(), "+y".into(), "+z".into()],
+                file: Some("f.py".into()),
+            }]),
+        );
+        let read = call("Bash", vec![], None);
+        assert_eq!(change_counts(&fresh), Some((3, 0)));
+        assert_eq!(change_counts(&edit), Some((2, 1)));
+        assert_eq!(change_counts(&bash), Some((2, 1)));
+        assert_eq!(change_counts(&read), None);
+        let mut failed = edit.clone();
+        if let Block::ToolUse { execution, .. } = &mut failed {
+            *execution = Some(ToolExecution {
+                status: Some(ToolStatus::Failed),
+                exit_code: None,
+                duration: None,
+            });
+        }
+        assert_eq!(change_counts(&failed), None, "an edit that changed nothing");
+        assert_eq!(
+            run_changes(&[fresh, read.clone(), edit, bash, failed]),
+            Some((7, 2))
+        );
+        assert_eq!(run_changes(&[read]), None);
+    }
 
     /// #s22: what a file-changing call says when it changed nothing.
     #[test]

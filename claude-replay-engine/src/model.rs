@@ -825,11 +825,19 @@ pub(crate) fn is_activity_tool(name: &str) -> bool {
     ) || name.starts_with("mcp__")
 }
 
-/// Coalesce each **span** of consecutive thinking + activity tool calls into one
-/// `Thinking` block — Claude Code's between-outputs rule (#57; the full empirical
-/// derivation is `design/cc-activity-coalescing.md`). Any other block ends the span:
-/// assistant text, user turns/commands, expanded tools (Edit/Write/WebFetch/spawns/…, and since
-/// #s20 an activity tool whose result carries an edit diff),
+/// The tools that change a file by name. Since #s23 they JOIN an activity run rather than end
+/// it — the owner's rule, as the Claude app draws a run ("Ran 5 commands, created a file
+/// +158 −0"): a change made in the middle of a process is part of that process, and the run's
+/// line names it and carries its size. A run made of nothing BUT changes is no run at all:
+/// those stay as their own cards (see `coalesce_spans`).
+pub fn is_edit_tool(name: &str) -> bool {
+    matches!(name, "Edit" | "MultiEdit" | "Write" | "NotebookEdit")
+}
+
+/// Coalesce each **span** of consecutive thinking + activity tool calls (and, since #s23, the
+/// calls that change files) into one `Thinking` block — Claude Code's between-outputs rule (#57;
+/// the full empirical derivation is `design/cc-activity-coalescing.md`). Any other block ends
+/// the span: assistant text, user turns/commands, the other expanded tools (WebFetch/spawns/…),
 /// and the task-bookkeeping tools (TaskUpdate & co — CC renders them
 /// invisibly but they still split the span; we keep their blocks visible). The one
 /// exception: `Attachment` blocks are span-transparent — CC doesn't render them and
@@ -842,7 +850,8 @@ pub(crate) fn is_activity_tool(name: &str) -> bool {
 /// which is what #256 reported. Holding them keeps the run un-split (#90) and puts them back
 /// on the side of the run they actually happened on.
 /// Thinking texts join blank-line separated; durations sum; even a LONE activity
-/// tool folds (CC never leaves one expanded).
+/// tool folds (CC never leaves one expanded). A run of nothing but edits — no thinking, no other
+/// call — is not a process and is not folded: each edit stays a card of its own (#s23).
 pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
     fn flush(
         texts: &mut Vec<String>,
@@ -851,7 +860,14 @@ pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
         held: &mut Vec<Block>,
         out: &mut Vec<Block>,
     ) {
-        if !texts.is_empty() || !tools.is_empty() {
+        let only_edits = texts.is_empty()
+            && dur.is_none()
+            && tools
+                .iter()
+                .all(|t| matches!(t, Block::ToolUse { name, .. } if is_edit_tool(name)));
+        if only_edits {
+            out.append(tools);
+        } else if !texts.is_empty() || !tools.is_empty() {
             out.push(Block::Thinking {
                 text: std::mem::take(texts).join("\n\n"),
                 duration_secs: dur.take(),
@@ -881,15 +897,12 @@ pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
                     dur = Some(dur.unwrap_or(0) + d);
                 }
             }
-            // #s20: an activity tool that CHANGED files is durable output, not activity — a Bash
-            // command whose result carries an edit diff (Claude Code's `bashEditDiff`, #263) is drawn
-            // on its own with its diff, never inside a `ran N shell commands` line, so it ends the
-            // run as an Edit does.
-            Block::ToolUse {
-                ref name,
-                ref patch,
-                ..
-            } if is_activity_tool(name) && patch.is_none() => tools.push(b),
+            // #s23: a change joins the run it happened in — an Edit or Write, and a shell command
+            // whose result carries an edit diff (`bashEditDiff`, #263), which #s20 had lifted out.
+            // The run's line names it and carries its +N −N.
+            Block::ToolUse { ref name, .. } if is_activity_tool(name) || is_edit_tool(name) => {
+                tools.push(b)
+            }
             // #256: inside an open run it waits for the run; with no run open there is nothing
             // to wait for, and it emits exactly where it is. That second case is a pasted image
             // in a prompt, and it was always right.
@@ -950,13 +963,13 @@ mod tests {
         );
     }
 
-    /// #s20: a shell command that CHANGED files stands on its own, as Claude Code draws it — it ends
-    /// the run before it and opens a new one after it, it folds as an edit (open by default), and its
-    /// kind stays Bash. A command that changed nothing still folds into the run.
+    /// #s23 (amending #s20): a change JOINS the run it happened in — a shell command that edited a
+    /// file, an Edit, a Write — so a run reads as one line naming its changes, as the Claude app
+    /// draws it. A run of nothing but edits is no run: each stays a card of its own.
     #[test]
-    fn a_shell_command_that_edited_a_file_stands_out_of_the_activity_run() {
-        let bash = |cmd: &str, patch: Option<Vec<Hunk>>| Block::ToolUse {
-            name: "Bash".into(),
+    fn a_change_joins_its_run_and_edits_alone_stand_alone() {
+        let tool = |name: &str, cmd: &str, patch: Option<Vec<Hunk>>| Block::ToolUse {
+            name: name.into(),
             target: cmd.into(),
             diffs: Vec::new(),
             output: None,
@@ -984,31 +997,44 @@ mod tests {
         };
         let out = coalesce_spans(vec![
             thought("a"),
-            bash("grep -n told x.py", None),
-            bash("python3 - <<PY", Some(vec![hunk])),
+            tool("Bash", "grep -n told x.py", None),
+            tool("Bash", "python3 - <<PY", Some(vec![hunk])),
+            tool("Edit", "x.py", None),
             thought("b"),
-            bash("sed -n 1,9p x.py", None),
+            tool("Write", "notes.md", None),
+            Block::AssistantText("done".into()),
+            tool("Edit", "y.py", None),
+            tool("Write", "z.md", None),
+            Block::AssistantText("and".into()),
         ]);
-        assert_eq!(out.len(), 3, "{out:?}");
-        assert!(
-            matches!(&out[0], Block::Thinking { tools, .. } if tools.len() == 1),
-            "the read-only command folds into the run before: {out:?}"
-        );
-        assert!(
-            matches!(&out[1], Block::ToolUse { target, patch: Some(_), .. } if target == "python3 - <<PY"),
-            "the editing command stands alone: {out:?}"
-        );
-        assert!(
-            matches!(&out[2], Block::Thinking { tools, .. } if tools.len() == 1),
-            "and a new run follows it: {out:?}"
-        );
+        let names = |b: &Block| match b {
+            Block::Thinking { tools, .. } => format!(
+                "run[{}]",
+                tools
+                    .iter()
+                    .map(|t| match t {
+                        Block::ToolUse { target, .. } => target.as_str(),
+                        _ => "?",
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Block::ToolUse { target, .. } => target.clone(),
+            Block::AssistantText(t) => t.clone(),
+            other => format!("{other:?}"),
+        };
         assert_eq!(
-            fold_key(&out[1]),
-            "edit",
-            "it folds as an edit, open by default"
+            out.iter().map(names).collect::<Vec<_>>(),
+            [
+                "run[grep -n told x.py, python3 - <<PY, x.py, notes.md]",
+                "done",
+                "y.py",
+                "z.md",
+                "and",
+            ],
+            "the changes join the run they are in; two edits alone stay two cards"
         );
-        assert_eq!(block_kind(&out[1]), BlockKind::Bash, "its kind stays Bash");
-        assert_eq!(fold_key(&bash("ls", None)), "bash");
+        assert_eq!(fold_key(&tool("Bash", "ls", None)), "bash");
     }
 
     /// #s21: a Write OVER AN EXISTING FILE records a diff (its `structuredPatch`, #92) and folds as

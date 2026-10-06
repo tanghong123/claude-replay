@@ -20,4 +20,6 @@ pub use cache::SessionCache;
 // Alias the core's modules at this crate's root so the moved modules keep referring to
 // `crate::engine`, `crate::model`, … unchanged (the same transparency trick the original
 // core split used).
-pub(crate) use claude_replay_core::{engine, follow, metrics, model, summary, Agent, Transcript};
+pub(crate) use claude_replay_core::{
+    diff, engine, follow, metrics, model, summary, Agent, Transcript,
+};

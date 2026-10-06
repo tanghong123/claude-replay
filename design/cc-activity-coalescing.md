@@ -19,8 +19,7 @@ It is flushed as ONE summary line when a **breaker** renders:
 
 - assistant text output
 - a user turn / slash command / queue marker
-- an expanded tool: Edit/Write/NotebookEdit (`⏺ Update(file)` + diff),
-  WebFetch (`⏺ Fetch(url)`), Task/Agent spawns, Skill, and any other
+- an expanded tool: WebFetch (`⏺ Fetch(url)`), Task/Agent spawns, Skill, and any other
   non-activity tool. **MCP tools no longer break** (#90, revising S4's
   observation): CC 2.x coalesces `mcp__<server>__<tool>` calls into the span
   and phrases them per server — observed live (session 530339ac, 2026-07-31):
@@ -30,13 +29,16 @@ It is flushed as ONE summary line when a **breaker** renders:
 - task-bookkeeping tools — TaskCreate/TaskUpdate/TaskGet/TaskList/TodoWrite —
   **break the span but render nothing at all** in CC (verified twice: the
   synthetic probe and the real-session split above)
-- **an activity tool that recorded a diff** (#s20): a Bash command whose result
-  carries `bashEditDiff` (CC 2.1.270+) changed files, and CC draws it on its own
-  with the diff, as it draws an Edit. It ends the span before it, folds as an
-  edit (open by default; its kind stays Bash) and a new span starts after it.
-  7,554 such calls on the owner's machine had folded into `ran N shell commands`
-  with their change out of sight. The same rule folds a Write OVER AN EXISTING
-  FILE (its `structuredPatch`) as an edit (#s21).
+**replay deviation (deliberate, #s23, the owner 2026-10-06): a change JOINS its run.** CC's TUI
+breaks a span at Edit/Write/NotebookEdit and draws each expanded with its diff. The owner chose the
+Claude app's grouping instead, on every surface: an Edit, MultiEdit, Write or NotebookEdit, and a
+Bash command whose result carries `bashEditDiff` (CC 2.1.270+; #s20 had lifted these out of the
+run), is a member of the run it happened in. The run's line names it ("edited 2 files, created 1
+file", and "N edits not applied" for one that changed nothing) and carries the run's change as
+`+N −N`, green and red (`present::run_changes`; the TUI's collapsed line, the pages' run head). A
+run made of NOTHING but edits — no thinking, no other call — is not a process: each edit stays a
+card of its own. Expanding a run shows each edit with its diff in the TUI; the pages start an
+edit closed (`FoldPolicy::pages_default`), its `+N −N` on its head and the diff one tap away.
 
 **Transparent** (does NOT break, invisible to CC): attachment events
 (`edited_text_file` etc.) — CC's 22s span carries across one. replay keeps

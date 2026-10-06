@@ -262,11 +262,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// v47: #s22 — a Claude edit that failed keeps the client's reason as its output, and one the
 /// reader refused is Declined. A v46 stream has no reason on them and calls a refusal Failed.
 ///
+/// v48: #s23 — a change JOINS the activity run it happened in (an Edit, a Write, a shell command
+/// with a diff), and the run names it ("edited 2 files, created 1 file"). A v47 stream holds each
+/// as a block of its own between the run's halves.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 47;
+pub const FOLD_VERSION: u16 = 48;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

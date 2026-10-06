@@ -163,6 +163,9 @@ pub fn activities(tools: &[Block]) -> String {
     let mut file_seen = std::collections::HashSet::new();
     let mut hashes: Vec<String> = Vec::new();
     let mut branches: Vec<String> = Vec::new();
+    // #s23: the changes a run made, by distinct file, and the edits that changed nothing.
+    let (mut edited, mut created) = (Vec::<&str>::new(), Vec::<&str>::new());
+    let mut failed_edits = 0usize;
     let mut push_file = |f: String, seen: &mut std::collections::HashSet<String>| {
         if seen.insert(f.clone()) {
             files.push(f);
@@ -173,9 +176,30 @@ pub fn activities(tools: &[Block]) -> String {
             name,
             target,
             output,
+            patch,
+            execution,
             ..
         } = t
         {
+            let not_applied = execution.as_ref().and_then(|e| e.status).is_some_and(|s| {
+                matches!(
+                    s,
+                    crate::model::ToolStatus::Failed
+                        | crate::model::ToolStatus::Declined
+                        | crate::model::ToolStatus::Cancelled
+                )
+            });
+            if crate::model::is_edit_tool(name) {
+                let fresh = matches!(name.as_str(), "Write" | "NotebookEdit")
+                    && patch.as_deref().is_none_or(<[_]>::is_empty);
+                let list = if fresh { &mut created } else { &mut edited };
+                if not_applied {
+                    failed_edits += 1;
+                } else if !list.contains(&target.as_str()) {
+                    list.push(target.as_str());
+                }
+                continue;
+            }
             match name.as_str() {
                 "Bash" => match classify_bash(target, output.as_deref()) {
                     BashClass::Git {
@@ -238,6 +262,20 @@ pub fn activities(tools: &[Block]) -> String {
     if ran > 0 {
         parts.push(format!("ran {ran} shell command{}", s(ran)));
     }
+    if !edited.is_empty() {
+        let n = edited.len();
+        parts.push(format!("edited {n} file{}", s(n)));
+    }
+    if !created.is_empty() {
+        let n = created.len();
+        parts.push(format!("created {n} file{}", s(n)));
+    }
+    if failed_edits > 0 {
+        parts.push(format!(
+            "{failed_edits} edit{} not applied",
+            s(failed_edits)
+        ));
+    }
     parts.join(", ")
 }
 
@@ -259,6 +297,49 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
         }
+    }
+
+    /// #s23: a run names the files it changed — edited (an Edit, or a Write over a file) and
+    /// created (a fresh Write), each counted once per file — and an edit that changed nothing
+    /// is said apart rather than counted as a change.
+    #[test]
+    fn a_run_names_the_files_it_edited_and_created() {
+        use crate::model::{Hunk, ToolExecution, ToolStatus};
+        let overwrite = {
+            let mut b = tool("Write", "b.md", None);
+            if let Block::ToolUse { patch, .. } = &mut b {
+                *patch = Some(vec![Hunk {
+                    old_start: 1,
+                    new_start: 1,
+                    lines: vec!["-x".into(), "+y".into()],
+                    file: None,
+                }]);
+            }
+            b
+        };
+        let failed = {
+            let mut b = tool("Edit", "c.rs", None);
+            if let Block::ToolUse { execution, .. } = &mut b {
+                *execution = Some(ToolExecution {
+                    status: Some(ToolStatus::Failed),
+                    exit_code: None,
+                    duration: None,
+                });
+            }
+            b
+        };
+        let run = [
+            tool("Bash", "cargo build", None),
+            tool("Edit", "a.rs", None),
+            tool("Edit", "a.rs", None),
+            overwrite,
+            tool("Write", "new.md", None),
+            failed,
+        ];
+        assert_eq!(
+            activities(&run),
+            "ran 1 shell command, edited 2 files, created 1 file, 1 edit not applied"
+        );
     }
 
     /// The CC bash classes (#57, `design/cc-activity-coalescing.md`): single-segment
