@@ -1011,12 +1011,25 @@ fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
         &tab,
         "document.querySelector('.preview-review').click(); 'ok'",
     );
+    // The sheet's guest is mounted on the REVIEW prefix (#s10), and that prefix, asked for the store
+    // with the sheet's own document facts, answers paired. Not "the guest asked": when mdrev asks is
+    // its own business — it differs with the layout it picks for the device — and reading it off the
+    // browser's resource timing was intermittently red on CI's Linux runner.
     until(
         &tab,
-        "!!document.querySelector('.review-sheet .mdrev-host h1') && performance.getEntriesByType('resource').some(e => e.name.indexOf('/api/mdrev-review/review?') >= 0 && e.responseStatus === 200)",
-        "the review sheet, its guest answered with the store's state",
+        "!!document.querySelector('.review-sheet .mdrev-host h1') && (document.querySelector('.review-sheet .mdrev-pane') || {dataset: {}}).dataset.contract === '/api/mdrev-review'",
+        "the review sheet, mounted on the review prefix",
         Duration::from_secs(30),
-        "(function(){ var s = document.querySelector('.review-sheet'); return s ? s.innerText.slice(0, 200) : 'no sheet'; })()",
+        "(function(){ var s = document.querySelector('.review-sheet'); return s ? s.innerText.slice(0, 200) + ' | ' + JSON.stringify((s.querySelector('.mdrev-pane') || {dataset: {}}).dataset) : 'no sheet'; })()",
+    );
+    let paired_as = eval(
+        &tab,
+        "(async function(){ var d = document.querySelector('.review-sheet .mdrev-pane').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var r = await fetch(d.contract + '/review?' + q); var j = await r.json(); return r.status + ' ' + (j.paired && j.paired.email); })()",
+    );
+    assert_eq!(
+        paired_as.as_str().unwrap_or(""),
+        "200 t@example.invalid",
+        "the sheet's prefix answers with the store's state, paired as the case paired"
     );
     // The document is READ there: its heading across the sheet's width and the thing a tap on it
     // hits — not mdrev squeezed into a shrink-to-fit column (a rect alone would not say so).
