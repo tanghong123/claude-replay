@@ -216,7 +216,14 @@ export class Preview {
       if (response.status === 401) throw new Error("Reading local files requires pairing — run `agent-monitor --pair`.");
       // #s7: the route says which — 410 for a file that is gone, 403 for one this monitor may not
       // read, with the words — so the pane says it, not "may be gone, or outside".
-      if (response.status === 410) throw refusal("This file is gone", `Nothing is at ${item.path} any more: it was moved or deleted after the session named it.`);
+      // #s24: a file that went with a Claude worktree removed after the session says so — the
+      // route names the worktree (the owner: "just say it's gone", naming it).
+      if (response.status === 410) {
+        const worktree = response.headers.get("x-gone-worktree");
+        throw refusal("This file is gone", worktree
+          ? `Nothing is at ${item.path} any more: the worktree ${worktree} was removed after the session, and this file went with it.`
+          : `Nothing is at ${item.path} any more: it was moved or deleted after the session named it.`);
+      }
       if (response.status === 403) return response.text().then(words => { throw refusal("This monitor may not read this file", words || "It is outside what this monitor may read."); });
       if (!response.ok) throw new Error(`HTTP ${response.status} · This monitor did not offer this path. Reload the session for fresh links.`);
       const type = response.headers.get("content-type") || "";

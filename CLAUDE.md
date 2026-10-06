@@ -279,7 +279,12 @@ the counts agree (the inline copy is a re-encoded, downscaled JPEG — 921×2000
 PNG, measured), so the image gets reveal and the app shell's lightbox opens the original, falling back
 to the embedded copy if the original is gone. A sub-agent gets its root's uploads. A refusal says
 which (`Unservable`, #s7): 410 for a file that is gone, 403 with the ceiling's words for one held
-back, 404 only for a path the page never offered; the preview pane shows them as they are.
+back, 404 only for a path the page never offered; the preview pane shows them as they are. A path that is gone
+when the page is drawn is still offered under an allowlist, judged by its nearest existing ancestor
+(`sig::resolved`, #s24): it used to get no file stamp, so a phone could only copy it. A file that went
+with a Claude worktree removed after the session (`<repo>/.claude/worktrees/<name>/…`, the usual end
+of a worktree whose work merged) is answered 410 naming the worktree (`X-Gone-Worktree`), and the pane
+says so; nothing is shown in its place (the owner: "just say it's gone").
 
 **A file the transcript HANDS to the reader is served wherever it lives** (#374, the owner): what an
 agent sent with `SendUserFile` (unless the send failed or was declined) and what the user attached to

@@ -837,6 +837,15 @@ fn a_phone_reads_a_mentioned_file_outside_the_session_under_the_allowlist() {
         jsonl += &read_tool_at(&format!("t{i}"), &path, &ts);
         jsonl += &tool_result_at(&format!("t{i}"), &ts);
     }
+    // #s24: a file in a Claude worktree of the session's repo, which was removed afterwards —
+    // the owner's `~/code/agent-metrics/.claude/worktrees/s39/crates/am-web/src/page.rs`.
+    let removed = repo.join(".claude/worktrees/s39/crates");
+    jsonl += &read_tool_at(
+        "t9",
+        &removed.join("page.rs").display().to_string(),
+        &at("00:19"),
+    );
+    jsonl += &tool_result_at("t9", &at("00:19"));
     let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID, &jsonl);
     let state = base.join("state-2937");
@@ -856,8 +865,8 @@ fn a_phone_reads_a_mentioned_file_outside_the_session_under_the_allowlist() {
     m.open(&tab, &format!("?ui=app&session={SID}"));
     until(
         &tab,
-        "document.querySelectorAll('[data-reference-path]').length >= 2",
-        "the two read paths",
+        "document.querySelectorAll('[data-reference-path]').length >= 3",
+        "the three read paths",
         Duration::from_secs(30),
         "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
     );
@@ -890,6 +899,16 @@ fn a_phone_reads_a_mentioned_file_outside_the_session_under_the_allowlist() {
     assert!(
         !pane.contains("may be gone, or"),
         "and no longer says it may be either: {pane}"
+    );
+
+    // #s24: gone with its worktree, and the pane says which worktree.
+    click_path(&tab, &removed, "page.rs");
+    until(
+        &tab,
+        "(document.getElementById('previewBody').innerText || '').indexOf('the worktree s39 was removed after the session') >= 0",
+        "the pane naming the removed worktree",
+        Duration::from_secs(20),
+        PANE,
     );
 }
 

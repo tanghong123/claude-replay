@@ -25,7 +25,7 @@
 //! serve time ([`ceiling`]): the allowlist, or, with no allowlist, containment as before.
 
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 // Both uses sit behind `#[cfg(not(test))]` — under test the key and the policy are fixed.
 #[cfg(not(test))]
 use std::sync::OnceLock;
@@ -248,6 +248,34 @@ fn hands(policy: &Policy) -> bool {
     !matches!(policy, Policy::Never)
 }
 
+/// Where `path` lives on disk for the ceiling's question: the path itself resolved, or — for one
+/// that is not there (#s24: a file in a worktree removed before the page was rendered) — its
+/// nearest existing ancestor resolved, with the rest joined on. A path that is gone is still
+/// offered under the allowlist, so a tap reaches `/file`, which re-asks existence and the ceiling
+/// when it serves and says the file is gone (naming a removed worktree). Without this the page
+/// offered no file stamp, and a phone could only copy the path.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    if let Ok(real) = path.canonicalize() {
+        return Some(real);
+    }
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        let name = at.file_name()?;
+        if name == ".." {
+            return None;
+        }
+        rest.push(name.to_owned());
+        at = at.parent()?;
+        if let Ok(real) = at.canonicalize() {
+            return Some(rest.iter().rev().fold(real, |p, n| p.join(n)));
+        }
+    }
+}
+
 /// The decision itself, taken apart from where the policy comes from so a test can put every
 /// setting through the real function instead of restating it.
 fn decide(policy: &Policy, path: &str) -> bool {
@@ -255,7 +283,7 @@ fn decide(policy: &Policy, path: &str) -> bool {
         Policy::Never => false,
         Policy::Offered => true,
         Policy::Allow(dirs) => {
-            let Ok(real) = PathBuf::from(path).canonicalize() else {
+            let Some(real) = resolved(Path::new(path)) else {
                 return false;
             };
             dirs.iter().any(|d| real.starts_with(d))
@@ -461,9 +489,34 @@ mod tests {
             decide(&Policy::Allow(vec![PathBuf::from(here)]), &real),
             "inside an allowed directory"
         );
+        // #s24: a path that is gone is judged by where it would be — its nearest existing
+        // ancestor, resolved — so a file in a worktree removed before the page was drawn is still
+        // offered, and a tap reaches `/file`, which says it is gone. It used to be refused however
+        // wide the list, and a phone could only copy the path.
         assert!(
-            !decide(&Policy::Allow(vec![PathBuf::from("/")]), &gone),
-            "a path that does not resolve is not allowed, however wide the list"
+            decide(&Policy::Allow(vec![PathBuf::from(here)]), &gone),
+            "a gone path inside an allowed directory"
+        );
+        assert!(
+            decide(
+                &Policy::Allow(vec![PathBuf::from(here)]),
+                &format!("{here}/.claude/worktrees/s39/src/page.rs")
+            ),
+            "…however deep the part that is gone"
+        );
+        assert!(
+            !decide(
+                &Policy::Allow(vec![PathBuf::from(here).join("src")]),
+                &format!("{here}/no-such-dir/x.rs")
+            ),
+            "a gone path outside every allowed directory"
+        );
+        assert!(
+            !decide(
+                &Policy::Allow(vec![PathBuf::from("/")]),
+                "no-such-relative-path"
+            ),
+            "a relative path is never resolved"
         );
         assert!(
             !decide(&Policy::Allow(vec![PathBuf::from(here).join("src")]), &real),

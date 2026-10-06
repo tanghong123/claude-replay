@@ -140,7 +140,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // preview) are `open`.
     // v20: #s23 — a run's head carries its `+N`/`−N` chips, a fresh Write says `+N` where it said
     // `N lines`, and a fresh Write is no longer opened on the pages (v19's rule withdrawn).
-    const RECORD_SCHEMA: u16 = 20;
+    // v21: #s24 — under an allowlist, a path that is gone when the page is drawn is stamped by its
+    // nearest existing ancestor, where it got no file stamp at all.
+    const RECORD_SCHEMA: u16 = 21;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
@@ -585,7 +587,9 @@ impl SessionService {
             .canonicalize()
             .ok()
             .or_else(|| self.remap_reveal(want)?.canonicalize().ok())
-            .ok_or(Unservable::Gone)?;
+            .ok_or_else(|| {
+                removed_worktree(want).map_or(Unservable::Gone, Unservable::WorktreeRemoved)
+            })?;
         if !real.is_file() {
             return Err(Unservable::NotAFile);
         }
@@ -2008,12 +2012,16 @@ pub(super) const MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
 /// page tells a reader which, in words: "it may be gone, or outside what this monitor may read"
 /// was the one sentence for all of them, and the owner's file was neither gone nor outside
 /// anything they had chosen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Unservable {
     /// No stamp of this server's for this path: the page never offered it. Says nothing more.
     NotOffered,
     /// Offered, and no longer there — moved or deleted after the session named it.
     Gone,
+    /// Offered, and gone with the Claude worktree it lived in (`<repo>/.claude/worktrees/<name>/`),
+    /// which was removed after the session — the usual end of a worktree whose work merged (#s24,
+    /// the owner: "just say it's gone", naming the worktree; nothing else is shown in its place).
+    WorktreeRemoved(String),
     /// There, and a directory or something else with no bytes to show.
     NotAFile,
     /// There, and outside the ceiling.
@@ -2040,6 +2048,27 @@ impl Unservable {
                 "410 Gone",
                 "The file is no longer there: it was moved or deleted after the session named it.",
             ),
+            // The page words its own sentence (it names the path), so the worktree also rides a
+            // header — restricted to a name's characters, since it came from a transcript.
+            Unservable::WorktreeRemoved(name) => {
+                let mut headers = artifact_headers();
+                let safe: String = name
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+                    .collect();
+                headers.push(format!("X-Gone-Worktree: {safe}"));
+                HttpResponse {
+                    code: "410 Gone",
+                    content_type: TEXT_PLAIN,
+                    body: format!(
+                        "The worktree {name} was removed after the session, and this file went \
+                         with it."
+                    )
+                    .into_bytes(),
+                    headers,
+                    stream: None,
+                }
+            }
             Unservable::NotAFile => artifact_refused("415 Unsupported Media Type", "not a file"),
             Unservable::Refused(Refusal::Allowlist) => artifact_refused(
                 "403 Forbidden",
@@ -2058,6 +2087,17 @@ impl Unservable {
             ),
         }
     }
+}
+
+/// The Claude worktree a gone path lived in, when that whole worktree is gone: the `<name>` of a
+/// `<repo>/.claude/worktrees/<name>/…` path whose `<repo>/.claude/worktrees/<name>` no longer
+/// exists. `None` for any other path, and for a file deleted from a worktree that is still there.
+fn removed_worktree(path: &Path) -> Option<String> {
+    let text = path.to_str()?;
+    let (repo, rest) = text.split_once("/.claude/worktrees/")?;
+    let name = rest.split('/').next().filter(|n| !n.is_empty())?;
+    let root = Path::new(repo).join(".claude/worktrees").join(name);
+    (!root.exists()).then(|| name.to_string())
 }
 
 /// The raster image types `/file` will serve as images. Deliberately no `image/svg+xml`: an
@@ -4924,6 +4964,25 @@ mod tests {
         assert_eq!(
             decide(Path::new("code/x.rs"), Cap::File, &allow),
             Err(Unservable::NotOffered)
+        );
+        // #s24: a file in a Claude worktree that was removed says so, naming the worktree; one
+        // deleted from a worktree that is still there is plainly gone.
+        let wt = repo.join(".claude/worktrees");
+        std::fs::create_dir_all(wt.join("kept")).unwrap();
+        assert_eq!(
+            decide(&wt.join("s39/crates/am-web/src/page.rs"), Cap::File, &allow),
+            Err(Unservable::WorktreeRemoved("s39".into()))
+        );
+        assert_eq!(
+            decide(&wt.join("kept/page.rs"), Cap::File, &allow),
+            Err(Unservable::Gone)
+        );
+        let said = Unservable::WorktreeRemoved("s39".into()).response();
+        assert_eq!(said.code, "410 Gone");
+        assert!(said.headers.contains(&"X-Gone-Worktree: s39".to_string()));
+        assert_eq!(
+            String::from_utf8(said.body).unwrap(),
+            "The worktree s39 was removed after the session, and this file went with it."
         );
         // The replies: a page tells gone from refused by the status, and shows the words.
         assert_eq!(Unservable::Gone.response().code, "410 Gone");
