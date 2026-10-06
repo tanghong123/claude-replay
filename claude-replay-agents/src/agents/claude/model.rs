@@ -1273,6 +1273,11 @@ const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
     "version",
 ];
 
+/// Every key a Skill result was met with (#s19, measured 2026-10-06 over 42 results on this machine:
+/// `{commandName, success}` 38, plus `allowedTools` 2 (clients 2.1.287 and 2.1.289, a skill bundled
+/// with the client), plus `status` 2).
+const SKILL_SHAPE: &[&str] = &["allowedTools", "commandName", "status", "success"];
+
 const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // CronCreate returns all four and CronDelete `{id}` alone; the result text already states the
     // job id, its schedule in words, whether it recurs and whether it is session-only.
@@ -1317,6 +1322,14 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // Artifact's publish result (#325): `icon` is a generic word, so it is known only in the
     // publish's own shape; the adapter takes the word from the call's input, not from here.
     ("icon", ARTIFACT_PUBLISH_SHAPE),
+    // #s19 (client 2.1.287+): a Skill result names the tools its skill's frontmatter grants
+    // without a permission prompt. A static grant, not something the run did: the Skill card names
+    // the skill, every tool it then used is a card of its own, and permission bookkeeping is not
+    // drawn (`permissionMode`, the `command_permissions` attachment, which carries an
+    // `allowedTools` of its own). Known only in the Skill shape, since the same word could mean
+    // something else on a future tool. Revisit, as a RENDER question for the owner, if a skill
+    // that grants a mutating tool (Bash, Write, Edit) turns up: a quiet "allows: …" on the card.
+    ("allowedTools", SKILL_SHAPE),
 ];
 
 /// The `toolUseResult` keys this adapter neither reads nor has already met (#264), in the
@@ -5480,6 +5493,25 @@ mod tests {
             "a key the adapter READS or has already met says nothing — 125 keys appear in the \
              corpus and 117 are deliberately unread, so reporting those is the noise that \
              makes a log unreadable: {seen:?}"
+        );
+        // #s19: a Skill result's `allowedTools` is known in the Skill shape, and only there.
+        let skill = serde_json::json!({"success": true, "commandName": "a-skill", "allowedTools": ["Bash"]});
+        assert_eq!(
+            unknown_tool_result_keys(&skill),
+            Vec::<&str>::new(),
+            "{skill}"
+        );
+        let forked = serde_json::json!({"success": true, "commandName": "a-skill", "status": "forked", "allowedTools": ["Read"]});
+        assert_eq!(
+            unknown_tool_result_keys(&forked),
+            Vec::<&str>::new(),
+            "{forked}"
+        );
+        let elsewhere = serde_json::json!({"allowedTools": ["Bash"], "stdout": "ok"});
+        assert_eq!(
+            unknown_tool_result_keys(&elsewhere),
+            vec!["allowedTools"],
+            "beside a key the Skill shape lacks, it is reported like any new key"
         );
     }
 
