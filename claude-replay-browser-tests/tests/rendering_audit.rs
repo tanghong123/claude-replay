@@ -276,17 +276,25 @@ const AUDIT_JS: &str = r##"(function () {
     // measured font, never from a class. A cell present on one page and absent on the other is
     // a rendering difference; a cell present on both where only one page's control reaches it
     // is an equivalence GAP, and that is what P3 exists to find.
+    //
+    // An element is only judged when it was measured on BOTH sides of the press. A windowing page
+    // remounts its range when a control changes heights (wrap does, a lot), so an element at the
+    // edge of the range can be gone afterwards; that is the window, not the control, and counting
+    // it "present but unchanged" named a rendering gap that was not one (#s21: `b29|pre`, the top
+    // edge of the shell's window on CI's fonts). Such cells are reported as `gone` so a failure
+    // says which it was.
     reportCells: function (prop) {
       var before = this.snap, after = capture(this.sel, this.idAttr);
-      var present = {}, changed = {};
+      var present = {}, changed = {}, gone = {};
       before.forEach(function (a, key) {
         var id = key.slice(0, key.indexOf("/"));
         var cell = id + "|" + groupOf(a);
-        present[cell] = (present[cell] || 0) + 1;
         var b = after.get(key);
-        if (b && a.props[prop] !== b.props[prop]) changed[cell] = (changed[cell] || 0) + 1;
+        if (!b) { gone[cell] = (gone[cell] || 0) + 1; return; }
+        present[cell] = (present[cell] || 0) + 1;
+        if (a.props[prop] !== b.props[prop]) changed[cell] = (changed[cell] || 0) + 1;
       });
-      return { present: present, changed: changed, kind: before.kind };
+      return { present: present, changed: changed, gone: gone, kind: before.kind };
     },
     // The same effect set, partitioned by RECORD instead of by kind of content. A control that
     // sits ON a record (a fold head, a pane's own bar, a turn's raw toggle) claims to act on
@@ -937,6 +945,8 @@ fn app_shell_a_fold_acts_on_its_own_record() {
 struct Cells {
     present: std::collections::BTreeMap<String, i64>,
     changed: std::collections::BTreeMap<String, i64>,
+    /// Cells whose elements the page unmounted across the press — not judged (see `reportCells`).
+    gone: std::collections::BTreeMap<String, i64>,
     kind: std::collections::BTreeMap<String, String>,
 }
 
@@ -960,6 +970,7 @@ fn cells(tab: &headless_chrome::Tab, surface: Surface, key: &str, prop: &str) ->
     Cells {
         present: map("present"),
         changed: map("changed"),
+        gone: map("gone"),
         kind: got["kind"]
             .as_object()
             .into_iter()
@@ -1067,8 +1078,11 @@ fn report_rendering_differences(classic: &Cells, shell: &Cells, control: &str) {
         .filter(|c| !classic.present.contains_key(*c))
         .collect();
     println!(
-        "RENDERING-DIFF {control}: classic-only {:?} | shell-only {:?}",
-        only_classic, only_shell
+        "RENDERING-DIFF {control}: classic-only {:?} | shell-only {:?} | unmounted across the press: classic {:?}, shell {:?}",
+        only_classic,
+        only_shell,
+        classic.gone.keys().collect::<Vec<_>>(),
+        shell.gone.keys().collect::<Vec<_>>()
     );
 }
 
