@@ -345,6 +345,12 @@
 .mdrev-host .mdv-pill {width:100%;color:var(--ink-soft);background:var(--bg-soft);border:1px dashed var(--rule);text-align:center;border-radius:8px;margin:12px 0;padding:5px 12px;font-size:12px;display:block}
 .mdrev-host .mdv-pill:hover {color:var(--ink);border-color:var(--ink-faint);background:var(--bg-inset)}
 .mdrev-host .source-view {border:1px solid var(--rule-soft);max-width:60rem;font-family:var(--read-mono);background:0 0;border-radius:8px;margin:16px auto;padding:16px 20px;font-size:13px;line-height:1.55;overflow-x:auto}
+.mdrev-host .source-view.size-xs {font-size:11.375px}
+.mdrev-host .source-view.size-s {font-size:12.1875px}
+.mdrev-host .source-view.size-l {font-size:13.8125px}
+.mdrev-host .source-view.size-xl {font-size:15.4375px}
+.mdrev-host .source-view.size-xxl {font-size:17.0625px}
+.mdrev-host .source-view.density-compact {line-height:1.3}
 .mdrev-host .width-medium .source-view {max-width:76rem}
 .mdrev-host .is-wide .source-view {max-width:none;margin:16px 24px}
 .mdrev-host .source-view .src-line {grid-template-columns:var(--src-num-w,4ch) 2ch minmax(0, 1fr);align-items:start;display:grid}

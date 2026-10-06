@@ -1234,6 +1234,44 @@ fn mdrev_shows_a_local_code_file_as_highlighted_numbered_source() {
         Some(true),
         "no shared review on code: it is threads on a document's notes"
     );
+    // #s26 (mdrev 1.1.23): the display menu reaches the source view — its text-size step makes the
+    // code larger in OUR pane, where no host rule stands in its way. Through mdrev's own control,
+    // as a reader would: its Aa, then "larger".
+    let size = "(function(){ var v = document.querySelector('#previewBody .mdrev-host .source-view'); return v ? getComputedStyle(v).fontSize : 'none'; })()";
+    let before = eval(&tab, size).as_str().unwrap_or("").to_string();
+    let pressed = eval(
+        &tab,
+        "(function(){ var aa = [...document.querySelectorAll('#previewBody .mdrev-host button')].find(function (b) { return b.textContent === 'Aa'; }); if (!aa) return 'no Aa'; aa.click(); return 'opened'; })()",
+    );
+    assert_eq!(
+        pressed.as_str(),
+        Some("opened"),
+        "mdrev's display control is on the pane's toolbar"
+    );
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host .display-menu .size-large')",
+        "mdrev's display menu",
+        Duration::from_secs(10),
+        PANE,
+    );
+    eval(
+        &tab,
+        "(function(){ document.querySelector('#previewBody .mdrev-host .display-menu .size-large').closest('button').click(); return 'ok'; })()",
+    );
+    until(
+        &tab,
+        &format!("{size} !== {before:?}"),
+        "the source view's text to grow",
+        Duration::from_secs(10),
+        PANE,
+    );
+    let after = eval(&tab, size).as_str().unwrap_or("").to_string();
+    let px = |s: &str| s.trim_end_matches("px").parse::<f64>().unwrap_or(0.0);
+    assert!(
+        px(&after) > px(&before),
+        "the larger step makes the code larger in the pane: {before} -> {after}"
+    );
 }
 
 /// #s13: what the pane does NOT hand mdrev stays exactly as it was — and held code goes to mdrev as
