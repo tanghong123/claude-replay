@@ -618,10 +618,12 @@ mod tests {
 
     /// #s32, #s33: ONE phone, in the scripts and in both stylesheets. A phone is `PHONE_QUERY` — 760px,
     /// or a finger on a short side (a phone held sideways, at any width) — and every media query that
-    /// names the breakpoint says exactly that. Every `min-width` rule means "not a phone", so each of
-    /// its queries also needs `(min-height:501px)` or `(pointer:fine)`: written as `min-width:761px`
+    /// names the breakpoint says exactly that. A `min-width` rule either means "not a phone", so each of
+    /// its queries also needs `(min-height:501px)` or `(pointer:fine)` — written as `min-width:761px`
     /// alone, one put a landscape phone's drawer back into the page's flow, which pushed the owner's
-    /// session view off the screen.
+    /// session view off the screen — or it is a rule FOR a phone held sideways (#s37: the wide phone's
+    /// two columns), which says so with `(pointer:coarse) and (max-height:500px)`, and then it is
+    /// `WIDE_PHONE_QUERY` exactly.
     #[test]
     fn every_media_query_agrees_on_what_a_phone_is() {
         let body = |name: &str| String::from_utf8(asset(name).unwrap().body).unwrap();
@@ -632,8 +634,15 @@ mod tests {
             .and_then(|rest| rest.split('"').next())
             .expect("capabilities.js defines PHONE_QUERY")
             .replace(", ", ",");
+        let wide_phone = capabilities
+            .split("const WIDE_PHONE_QUERY = \"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("capabilities.js defines WIDE_PHONE_QUERY")
+            .to_string();
         let mut phones = 0;
         let mut wides = 0;
+        let mut wide_phones = 0;
         for name in ["monitor-ui/reference.css", "monitor-ui/production.css"] {
             let css = body(name);
             for prelude in css
@@ -646,7 +655,15 @@ mod tests {
                     assert_eq!(prelude, phone, "{name}: a phone rule says what a phone is");
                     phones += 1;
                 }
-                if prelude.contains("min-width:") {
+                if prelude.contains("min-width:")
+                    && prelude.contains("(pointer:coarse) and (max-height:500px)")
+                {
+                    assert_eq!(
+                        prelude, wide_phone,
+                        "{name}: a rule for a wide phone held sideways says what one is"
+                    );
+                    wide_phones += 1;
+                } else if prelude.contains("min-width:") {
                     for query in prelude.split(',') {
                         assert!(
                             query.contains("(min-height:501px)") || query.contains("(pointer:fine)"),
@@ -658,8 +675,8 @@ mod tests {
             }
         }
         assert!(
-            phones >= 14 && wides >= 8,
-            "read the stylesheets: {phones} phone rules, {wides} wide ones"
+            phones >= 15 && wides >= 8 && wide_phones >= 1,
+            "read the stylesheets: {phones} phone rules, {wides} wide ones, {wide_phones} for a wide phone"
         );
     }
 }

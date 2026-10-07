@@ -2874,6 +2874,34 @@ pub fn phone(tab: &headless_chrome::Tab, width: u32, height: u32) {
     .expect("touch emulation");
 }
 
+/// #s37: the phone's safe area — where its status bar, island, rounded corners and home indicator
+/// are — as the page's `env(safe-area-inset-*)` reads it (it asks for `viewport-fit=cover`). Chrome's
+/// own override, checked on Chrome 154 to reach `env()`. [`PORTRAIT_INSETS`] and
+/// [`SIDEWAYS_INSETS`] are the largest iPhone's.
+pub fn safe_area(tab: &headless_chrome::Tab, (top, right, bottom, left): (u32, u32, u32, u32)) {
+    use headless_chrome::protocol::cdp::Emulation::{SafeAreaInsets, SetSafeAreaInsetsOverride};
+    tab.call_method(SetSafeAreaInsetsOverride {
+        insets: SafeAreaInsets {
+            top: Some(top),
+            top_max: Some(top),
+            left: Some(left),
+            left_max: Some(left),
+            bottom: Some(bottom),
+            bottom_max: Some(bottom),
+            right: Some(right),
+            right_max: Some(right),
+        },
+    })
+    .expect("safe-area insets");
+}
+
+/// The largest iPhone's safe area upright (top, right, bottom, left): the status bar and the island
+/// above, the home indicator below.
+pub const PORTRAIT_INSETS: (u32, u32, u32, u32) = (62, 0, 34, 0);
+/// The same phone held sideways: the island at one side (iOS reports both sides), the home
+/// indicator below.
+pub const SIDEWAYS_INSETS: (u32, u32, u32, u32) = (0, 62, 20, 62);
+
 /// #372: a finger's fling on the app shell's transcript, as iOS runs it — the touch lands and lifts,
 /// then the glide moves the offset by about `distance` (negative reads further up) on a 16ms timer
 /// from ITS OWN position, whatever else wrote in between (#340: a write into an iOS glide does not

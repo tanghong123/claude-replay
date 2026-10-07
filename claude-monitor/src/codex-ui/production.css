@@ -1250,6 +1250,49 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .topbar>.reading-cluster{order:4}
   #app .topbar>.phone-info{order:5}
   #app .topbar>#previewBtn{order:6}
+  /* #s37 (design/phone-landscape.md §3.3): held sideways the transcript is a reading column — about
+     75 characters of prose a line (measured: 580px still set 88), where the full width ran to ~119 —
+     and the spare width is margin. */
+  #app .session-main .transcript-inner{width:min(500px,calc(100% - 26px))}
+}
+
+/* #s37 (design/phone-landscape.md §3.1) — the safe area. The page asks for the whole screen
+   (`viewport-fit=cover`), so on a phone every control and every line keeps inside
+   `env(safe-area-inset-*)`: held sideways the island sits at one side, the corners are rounded and
+   the home indicator runs along the bottom, and none of it was respected (the shell read only the
+   top inset). Backgrounds still run to the edges. Portrait's side insets are 0, so this moves nothing
+   there. */
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){
+  #app .topbar{padding-left:calc(6px + env(safe-area-inset-left,0px));padding-right:calc(6px + env(safe-area-inset-right,0px))}
+  .drawer-handle{left:calc(4px + env(safe-area-inset-left,0px))}
+  #app>.sidebar{width:calc(min(86vw,360px) + env(safe-area-inset-left,0px));padding-top:env(safe-area-inset-top,0px);padding-left:env(safe-area-inset-left,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+  #app .transcript{padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}
+  #app .header-search-cluster>.navigator-options,#app .reading-cluster>.reading-options,#app .header-search-cluster>.search-suggest,.phone-pane-menu:not([hidden]),#app .info-popover{left:calc(8px + env(safe-area-inset-left,0px));right:calc(8px + env(safe-area-inset-right,0px))}
+  #taskPopover.task-popover{left:calc(8px + env(safe-area-inset-left,0px))!important;right:calc(8px + env(safe-area-inset-right,0px))}
+  /* The full-screen sheets pad themselves, so their heads clear the status bar and the island. */
+  #app>.preview,.review-sheet{padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
+}
+
+/* #s37 (design/phone-landscape.md §3.2) — a WIDE phone held sideways (`WIDE_PHONE_QUERY`: the Plus
+   and Max iPhones, which iOS counts as a regular width sideways) shows two columns, as Mail, Messages
+   and Notes do there: the session list docked at the left, no scrim, the session beside it at its
+   reading width. The handle hides and shows the column (`phone-column-off`, remembered under its own
+   key, never the desktop's rail nor the drawer's `mobile-detail`, #s33). A switcher at the column's
+   top shows Sessions, or one of the outline's panes — the same live lists the drop-downs borrow. */
+.column-switch,.column-pane{display:none}
+@media(pointer:coarse) and (max-height:500px) and (min-width:900px){
+  #app:not(.phone-column-off){display:grid;grid-template-columns:calc(300px + env(safe-area-inset-left,0px)) minmax(0,1fr)}
+  #app:not(.phone-column-off)>.sidebar{position:relative;inset:auto;transform:none;width:auto;height:100dvh;grid-column:1;grid-row:1;box-shadow:1px 0 0 var(--line);transition:none}
+  #app:not(.phone-column-off)>.workspace{grid-column:2;grid-row:1;min-width:0}
+  #app.phone-column-off>.sidebar{display:none}
+  #app>.drawer-scrim{display:none}
+  #app .topbar>.phone-pane{display:none}
+  #app:not(.phone-column-off) .column-switch{display:flex;flex:none;gap:2px;margin:2px 10px 8px;padding:2px;border-radius:11px;background:var(--hover)}
+  .column-switch button{flex:1 1 0;min-width:0;height:44px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border-radius:9px;background:transparent;color:var(--sub);font:600 12.5px/1 var(--sans);cursor:pointer}
+  .column-switch button.on{background:var(--bg);color:var(--ink);box-shadow:0 1px 3px rgba(20,26,40,.14)}
+  .column-switch-count{font:500 10.5px/1 var(--mono);color:var(--faint)}
+  #app.column-pane-on:not(.phone-column-off) .column-pane{display:block}
+  #app.column-pane-on>.sidebar>.nav,#app.column-pane-on>.sidebar>.tree{display:none}
 }
 
 /* #s32 — between the phone and 1180px the preview is an overlay (reference.css), and at

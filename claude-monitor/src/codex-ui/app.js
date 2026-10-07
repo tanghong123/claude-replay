@@ -1,7 +1,7 @@
 import { agentLogo, svg } from "./icons.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml, pendingHeadText } from "./components.js";
-import { PHONE_QUERY, referenceAction, revealHere } from "./shared/capabilities.js";
+import { PHONE_QUERY, referenceAction, revealHere, WIDE_PHONE_QUERY } from "./shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "./shared/cost-display.js";
 import { chainWalk, toolTree } from "./shared/filter.js";
 import { taskCardHtml, taskRowMeta, TASK_NO_TITLE } from "./shared/task-card.js";
@@ -3170,6 +3170,7 @@ var mobileShell;
 var infoPopoverToggle;
 {
   const PHONE = matchMedia(PHONE_QUERY);
+  const WIDE = matchMedia(WIDE_PHONE_QUERY);
   const topbar = document.querySelector(".topbar");
   const handle = document.createElement("button");
   handle.type = "button";
@@ -3295,17 +3296,83 @@ var infoPopoverToggle;
   // The card's own jump to the turn leaves for the transcript: the list goes with the card.
   taskPopover.addEventListener("click", event => { if (event.target.closest("[data-task-record]")) closePane(); });
 
-  const setDrawer = open => {
-    app.classList.toggle("mobile-detail", !open);
+  // #s37 (design/phone-landscape.md §3.2): on a WIDE phone held sideways the session list is a
+  // column beside the session, and the handle hides and shows it. That is its own remembered choice
+  // (`am-phone-column`): the drawer's `mobile-detail` and the desktop's rail mean other things, and
+  // #s33 was one layout's state governing another.
+  const COLUMN_KEY = "am-phone-column";
+  let columnOff = (() => { try { return localStorage.getItem(COLUMN_KEY) === "0"; } catch (_) { return false; } })();
+  const labelHandle = () => {
+    const open = WIDE.matches ? !columnOff : !app.classList.contains("mobile-detail");
+    const words = WIDE.matches ? (open ? "Hide the session list" : "Show the session list") : open ? "Close the session list" : "Open the session list";
     handle.setAttribute("aria-expanded", String(open));
-    const words = open ? "Close the session list" : "Open the session list";
     handle.title = words;
     handle.setAttribute("aria-label", words);
+  };
+  const setColumn = open => {
+    columnOff = !open;
+    try { localStorage.setItem(COLUMN_KEY, open ? "1" : "0"); } catch (_) {}
+    app.classList.toggle("phone-column-off", columnOff);
+    labelHandle();
+  };
+  app.classList.toggle("phone-column-off", columnOff);
+  // The drawer keeps its own state on a wide phone too — choosing a session still shuts it — so a
+  // turn to portrait finds it as a phone leaves it; only the column is shown in its place.
+  const setDrawer = open => {
+    app.classList.toggle("mobile-detail", !open);
+    labelHandle();
     if (open) closePane();
   };
-  handle.onclick = () => setDrawer(app.classList.contains("mobile-detail"));
+  handle.onclick = () => (WIDE.matches ? setColumn(columnOff) : setDrawer(app.classList.contains("mobile-detail")));
   scrim.addEventListener("click", () => setDrawer(false));
   setDrawer(!app.classList.contains("mobile-detail"));
+
+  // The column's switcher: Sessions, or one of the outline's panes, holding the SAME live list the
+  // drop-downs borrow (moved in while shown, back after) — one renderer, one click handler. A row
+  // chosen here moves the transcript and leaves the column as it is, as Mail does.
+  const columnSwitch = document.createElement("div");
+  columnSwitch.className = "column-switch";
+  columnSwitch.id = "columnSwitch";
+  columnSwitch.setAttribute("role", "tablist");
+  columnSwitch.setAttribute("aria-label", "Show in the column");
+  columnSwitch.innerHTML = [["sessions", "Sessions"], ...panes.map(p => [p.key, p.label])]
+    .map(([key, label]) => `<button type="button" role="tab" data-column-tab="${key}" aria-selected="${key === "sessions"}"${key === "sessions" ? ' class="on"' : ""}><span>${label}</span><span class="column-switch-count"></span></button>`)
+    .join("");
+  const columnPane = document.createElement("div");
+  columnPane.className = "column-pane phone-pane-body";
+  columnPane.id = "columnPane";
+  document.querySelector("#app>.sidebar>.side-head").after(columnSwitch, columnPane);
+  let columnNode = null, columnHome = null;
+  const returnColumnList = () => {
+    if (columnNode && columnHome) columnHome.parent.insertBefore(columnNode, columnHome.next && columnHome.next.parentNode === columnHome.parent ? columnHome.next : null);
+    columnNode = null;
+    columnHome = null;
+  };
+  const showColumnTab = key => {
+    returnColumnList();
+    app.classList.toggle("column-pane-on", key !== "sessions");
+    for (const tab of columnSwitch.querySelectorAll("[data-column-tab]")) {
+      const on = tab.dataset.columnTab === key;
+      tab.classList.toggle("on", on);
+      tab.setAttribute("aria-selected", String(on));
+    }
+    const pane = panes.find(p => p.key === key);
+    const node = pane && byId(pane.body);
+    if (!node) return;
+    closePane();
+    columnHome = { parent: node.parentNode, next: node.nextSibling };
+    columnNode = node;
+    columnPane.append(node);
+    // The current turn in the middle of the column, by its OWN scroller (the contract's rule).
+    columnPane.scrollTop = 0;
+    const current = node.querySelector(".outline-turn-row.current");
+    if (current) {
+      const box = columnPane.getBoundingClientRect(), row = current.getBoundingClientRect();
+      columnPane.scrollTop += row.top - box.top - (box.height - row.height) / 2;
+    }
+  };
+  columnSwitch.addEventListener("click", event => { const tab = event.target.closest("[data-column-tab]"); if (tab) showColumnTab(tab.dataset.columnTab); });
+  columnPane.addEventListener("click", navigatorClick);
 
   const place = () => {
     const bottom = Math.round(topbar.getBoundingClientRect().bottom);
@@ -3315,6 +3382,9 @@ var infoPopoverToggle;
   // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone), and
   // the desktop's rail comes off or goes back on (#s33, `applySidebar`).
   PHONE.addEventListener("change", () => { place(); applySidebar(); if (!PHONE.matches) closePane(); renderNavigator(); });
+  // Into the wide layout the drop-down has no button (the column shows its panes); out of it, the
+  // column's borrowed list goes home and the handle speaks of the drawer again.
+  WIDE.addEventListener("change", () => { if (WIDE.matches) closePane(); else showColumnTab("sessions"); labelHandle(); place(); });
   place();
 
   mobileShell = {
@@ -3325,6 +3395,8 @@ var infoPopoverToggle;
         badge.hidden = !n;
         // #339: a long session's turns and tasks run to hundreds; 99+ hid how many.
         badge.textContent = n > 999 ? "999+" : String(n);
+        const tab = columnSwitch.querySelector(`[data-column-tab="${pane.key}"] .column-switch-count`);
+        if (tab) tab.textContent = n ? badge.textContent : "";
       }
     },
     tasksChanged: renderJumps,

@@ -89,6 +89,12 @@ const revealHere = () => {
  *  breakpoint reads this one string, so the two cannot disagree. */
 const PHONE_QUERY = "(max-width:760px), (pointer:coarse) and (max-height:500px)";
 
+/** A WIDE phone held sideways (#s37, design/phone-landscape.md §3.2): a finger on a short side at
+ *  least 900px wide — the Plus and Max iPhones, which iOS itself counts as a regular width sideways
+ *  and where Apple's two-level apps show two columns. There the session list is a column beside the
+ *  session instead of a drawer over it. The CSS writes the same query; a test holds the two equal. */
+const WIDE_PHONE_QUERY = "(pointer:coarse) and (max-height:500px) and (min-width:900px)";
+
 /** Whether the page is laid out for a phone (`PHONE_QUERY`): what a phone's layout withholds for its
  *  own reasons — a tab of its own, which has no way back there (#335) — and offers instead (the
  *  review sheet, #s12). Not a question of where the reader is. */
@@ -153,4 +159,4 @@ function groupPointerRuns(items, headOf) {
   return out.map(g => (g.run && g.items.length === 1 ? { run: false, item: g.items[0] } : g));
 }
 
-export { attachmentCapability, besideAction, canDownload, canReveal, groupPointerRuns, isPointerAttachment, onPhone, PHONE_QUERY, POINTER_KINDS, RASTER_FILE, referenceAction, revealHere, revealQuery, stampQuery };
+export { attachmentCapability, besideAction, canDownload, canReveal, groupPointerRuns, isPointerAttachment, onPhone, PHONE_QUERY, POINTER_KINDS, RASTER_FILE, referenceAction, revealHere, revealQuery, stampQuery, WIDE_PHONE_QUERY };

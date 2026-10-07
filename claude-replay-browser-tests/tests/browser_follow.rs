@@ -11791,6 +11791,8 @@ fn drawer_world(
     w: u32,
     h: u32,
     rail: bool,
+    turns: usize,
+    insets: Option<(u32, u32, u32, u32)>,
 ) -> (
     harness::Monitor,
     headless_chrome::Browser,
@@ -11808,18 +11810,30 @@ fn drawer_world(
         .replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"/r{i}\""));
         stores.claude_session(&format!("aaaa1111-0000-4000-8000-0000000033{i:02}"), &t);
     }
-    let t = [
-        harness::user_at("question: the open session", "2026-09-01T05:00:00.000Z"),
-        harness::assistant_at(
-            "answer: a long enough answer to fill a line of the transcript, so the column has text in it",
-            "2026-09-01T05:00:01.000Z",
-        ),
-    ]
-    .concat();
+    // The open session: `turns` prompts, each answered at length, so a jump between turns moves the
+    // view and a line of prose runs as long as the column lets it.
+    let t: String = (0..turns)
+        .map(|i| {
+            [
+                harness::user_at(
+                    &format!("question {i}: the open session"),
+                    &format!("2026-09-01T05:{i:02}:00.000Z"),
+                ),
+                harness::assistant_at(
+                    &format!("answer {i}: {}", "a long enough answer to fill a line of the transcript, so the column has text in it. ".repeat(6)),
+                    &format!("2026-09-01T05:{i:02}:01.000Z"),
+                ),
+            ]
+            .concat()
+        })
+        .collect();
     stores.claude_session(PHONE_SID, &t);
     let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     harness::phone(&tab, w, h);
+    if let Some(insets) = insets {
+        harness::safe_area(&tab, insets);
+    }
     m.pair(&tab);
     if rail {
         harness::eval(
@@ -11840,7 +11854,7 @@ fn drawer_world(
 
 /// #s33: where the session view and the drawer are, and whether the drawer's list can be reached:
 /// the first session row wholly on screen is hit-tested at its middle.
-const DRAWER_FACTS: &str = "(function(){ var app = document.getElementById('app'); var ws = document.querySelector('#app>.workspace').getBoundingClientRect(); var sb = document.querySelector('#app>.sidebar'); var s = sb.getBoundingClientRect(); var tree = sb.querySelector('.tree'); var rows = [...sb.querySelectorAll('.tree-row.session')]; var row = rows.find(function (r) { var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 0 && b.bottom <= innerHeight && b.left >= 0; }); var hit = false; if (row) { var b = row.getBoundingClientRect(); var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); hit = !!e && row.contains(e); } var title = document.getElementById('sessionTitle').getBoundingClientRect(); var th = document.elementFromPoint(title.left + Math.min(title.width / 2, 20), title.top + title.height / 2); return JSON.stringify({ open: !app.classList.contains('mobile-detail'), rail: app.classList.contains('sidebar-off'), wsTop: Math.round(ws.top), wsHeight: Math.round(ws.height), h: innerHeight, sbPosition: getComputedStyle(sb).position, sbRight: Math.round(s.right), rowHit: hit, treeShown: !!tree && getComputedStyle(tree).display !== 'none', treeScroll: tree ? tree.scrollHeight - tree.clientHeight : -1, treeTop: tree ? tree.scrollTop : -1, titleOnTop: !!th && document.getElementById('sessionTitle').contains(th) }); })()";
+const DRAWER_FACTS: &str = "(function(){ var app = document.getElementById('app'); var ws = document.querySelector('#app>.workspace').getBoundingClientRect(); var sb = document.querySelector('#app>.sidebar'); var s = sb.getBoundingClientRect(); var tree = sb.querySelector('.tree'); var rows = [...sb.querySelectorAll('.tree-row.session')]; var row = rows.find(function (r) { var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 0 && b.bottom <= innerHeight && b.left >= 0; }); var hit = false; if (row) { var b = row.getBoundingClientRect(); var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); hit = !!e && row.contains(e); } var title = document.getElementById('sessionTitle').getBoundingClientRect(); var th = document.elementFromPoint(title.left + Math.min(title.width / 2, 20), title.top + title.height / 2); return JSON.stringify({ open: !app.classList.contains('mobile-detail'), rail: app.classList.contains('sidebar-off'), wsTop: Math.round(ws.top), wsLeft: Math.round(ws.left), wsHeight: Math.round(ws.height), h: innerHeight, sbPosition: getComputedStyle(sb).position, sbRight: Math.round(s.right), rowHit: hit, treeShown: !!tree && getComputedStyle(tree).display !== 'none', treeScroll: tree ? tree.scrollHeight - tree.clientHeight : -1, treeTop: tree ? tree.scrollTop : -1, titleOnTop: !!th && document.getElementById('sessionTitle').contains(th) }); })()";
 
 fn drawer_facts(tab: &headless_chrome::Tab) -> serde_json::Value {
     serde_json::from_str(harness::eval(tab, DRAWER_FACTS).as_str().unwrap_or("{}"))
@@ -11853,9 +11867,6 @@ fn drawer_facts(tab: &headless_chrome::Tab) -> serde_json::Value {
 /// hit test), not Chrome's synthesized TOUCH scroll: that moved the list on macOS and nothing on
 /// Linux, where Chrome's synthesized gestures stop short (#366's tap, again on CI's first run).
 fn the_drawer_opens_and_its_list_scrolls(tab: &headless_chrome::Tab, at: &str) {
-    use headless_chrome::protocol::cdp::Input::{
-        DispatchMouseEvent, DispatchMouseEventTypeOption as Kind,
-    };
     let handle = harness::eval(
         tab,
         "(function(){ var b = document.getElementById('drawerHandle').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()",
@@ -11870,6 +11881,16 @@ fn the_drawer_opens_and_its_list_scrolls(tab: &headless_chrome::Tab, at: &str) {
         Duration::from_secs(10),
         DRAWER_FACTS,
     );
+    the_list_scrolls(tab, at);
+}
+
+/// #s33, #s37: the session list — the drawer, or a wide phone's column — shows its rows, one takes a
+/// tap, and the list SCROLLS under the reader's input at a point inside it (a real wheel there; see
+/// [`the_drawer_opens_and_its_list_scrolls`]), with the session view staying where it is.
+fn the_list_scrolls(tab: &headless_chrome::Tab, at: &str) {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption as Kind,
+    };
     let open = drawer_facts(tab);
     assert_eq!(
         open["treeShown"], true,
@@ -11927,11 +11948,14 @@ fn the_drawer_opens_and_its_list_scrolls(tab: &headless_chrome::Tab, at: &str) {
 /// pushed the session view down by its own height, off the screen. #s32's case ran at 932×430 but
 /// its list was one session long, so the title stayed in view. Here the list is long and the
 /// session view's own top is asserted, at the widest phone and at one inside the 761–900px band.
+/// Since #s37 the widest phone shows the list as a column BESIDE the session (its own case,
+/// `a_wide_phone_held_sideways_shows_the_session_list_beside_the_session`); the narrower one keeps
+/// the drawer over it.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn a_phone_held_sideways_has_its_session_on_screen_and_its_drawer_over_it() {
+fn a_phone_held_sideways_has_its_session_on_screen_and_its_list_in_reach() {
     let _serial = serial();
-    let (_m, _b, tab) = drawer_world(2744, "landscape-drawer", 956, 440, false);
+    let (_m, _b, tab) = drawer_world(2744, "landscape-drawer", 956, 440, false, 1, None);
     for (w, h) in [(956, 440), (852, 393)] {
         harness::phone(&tab, w, h);
         harness::until(
@@ -11963,15 +11987,29 @@ fn a_phone_held_sideways_has_its_session_on_screen_and_its_drawer_over_it() {
             "{at}: and fills it: {shut}"
         );
         assert_eq!(
-            shut["sbPosition"], "fixed",
-            "{at}: the drawer lies over the view, never in its flow: {shut}"
-        );
-        assert_eq!(
             shut["titleOnTop"], true,
             "{at}: the session's title can be read: {shut}"
         );
-        the_drawer_opens_and_its_list_scrolls(&tab, &at);
-        harness::eval(&tab, "(function(){ document.getElementById('drawerScrim').click(); document.querySelector('#app>.sidebar .tree').scrollTop = 0; return 'ok'; })()");
+        if w >= 900 {
+            assert_ne!(
+                shut["sbPosition"], "fixed",
+                "{at}: the list is a column beside the view: {shut}"
+            );
+            assert!(
+                shut["wsLeft"].as_i64().unwrap_or(0)
+                    >= shut["sbRight"].as_i64().unwrap_or(9999) - 1,
+                "{at}: and the session view starts where it ends: {shut}"
+            );
+            the_list_scrolls(&tab, &at);
+            harness::eval(&tab, "(function(){ document.querySelector('#app>.sidebar .tree').scrollTop = 0; return 'ok'; })()");
+        } else {
+            assert_eq!(
+                shut["sbPosition"], "fixed",
+                "{at}: the drawer lies over the view, never in its flow: {shut}"
+            );
+            the_drawer_opens_and_its_list_scrolls(&tab, &at);
+            harness::eval(&tab, "(function(){ document.getElementById('drawerScrim').click(); document.querySelector('#app>.sidebar .tree').scrollTop = 0; return 'ok'; })()");
+        }
     }
 }
 
@@ -11984,7 +12022,7 @@ fn a_phone_held_sideways_has_its_session_on_screen_and_its_drawer_over_it() {
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_phone_with_the_desktop_s_rail_stored_opens_a_drawer_with_its_list() {
     let _serial = serial();
-    let (_m, _b, tab) = drawer_world(2745, "rail-drawer", 390, 844, true);
+    let (_m, _b, tab) = drawer_world(2745, "rail-drawer", 390, 844, true, 1, None);
     let shut = drawer_facts(&tab);
     assert_eq!(
         shut["rail"], false,
@@ -12005,4 +12043,329 @@ fn a_phone_with_the_desktop_s_rail_stored_opens_a_drawer_with_its_list() {
         Duration::from_secs(10),
         "innerWidth + ' ' + document.getElementById('app').className",
     );
+}
+
+/// #s37 (design/phone-landscape.md §3.1): what lies outside the phone's safe area — the status bar
+/// and the island, a rounded corner, the home indicator — given the insets in force. Every visible
+/// control the reader can reach (on screen whole, on top at its middle) that is not part of a
+/// scrolling list lies inside the safe rectangle; the transcript's text column and the open list lie
+/// inside it across. Returns the offenders by name and place, and the two columns' edges.
+fn safe_area_facts(
+    tab: &headless_chrome::Tab,
+    (top, right, bottom, left): (u32, u32, u32, u32),
+) -> serde_json::Value {
+    let probe = format!(
+        r#"(function(){{
+        var T = {top}, R = {right}, B = {bottom}, L = {left}, W = innerWidth, H = innerHeight;
+        var scrolling = '.transcript, .tree, .column-pane, .phone-pane-body, .preview-body';
+        var bad = [];
+        document.querySelectorAll('button, a[href], input, select, textarea, [role=button], [role=tab]').forEach(function (e) {{
+            if (e.closest(scrolling)) return;
+            var cs = getComputedStyle(e);
+            if (cs.visibility !== 'visible' || Number(cs.opacity) === 0) return;
+            var r = e.getBoundingClientRect();
+            if (r.width < 1 || r.height < 1 || r.left < 0 || r.top < 0 || r.right > W || r.bottom > H) return;
+            var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            if (!hit || !(hit === e || e.contains(hit) || hit.contains(e))) return;
+            if (r.left < L - 1 || r.top < T - 1 || r.right > W - R + 1 || r.bottom > H - B + 1)
+                bad.push(String(e.id || e.getAttribute('aria-label') || e.className || e.tagName).slice(0, 40) + ' @' + [r.left, r.top, r.right, r.bottom].map(Math.round).join(','));
+        }});
+        var inner = document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect();
+        var tree = document.querySelector('#app>.sidebar .tree');
+        var t = tree && getComputedStyle(tree).display !== 'none' ? tree.getBoundingClientRect() : null;
+        return JSON.stringify({{ bad: bad, inner: [Math.round(inner.left), Math.round(W - inner.right)], tree: t && t.right > 0 ? Math.round(t.left) : null, insets: [T, R, B, L], size: [W, H] }});
+    }})()"#
+    );
+    serde_json::from_str(harness::eval(tab, &probe).as_str().unwrap_or("{}")).unwrap_or_default()
+}
+
+/// #s37 (design/phone-landscape.md §3.1), the owner on 1.357.0 with the largest iPhone held sideways:
+/// "the island clips the UX" and "the round corner also clips some UI elements". The page asks for
+/// the whole screen (`viewport-fit=cover`) and read only the TOP inset, so sideways — where the
+/// island sits at a side and the corners are rounded — nothing kept clear of either. Every control
+/// and line now keeps inside `env(safe-area-inset-*)`: upright, sideways on the widest phone (two
+/// columns) and on a narrower one (a drawer), shut and with the session list open.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_keeps_its_controls_and_lines_inside_the_safe_area() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(
+        2746,
+        "safe-area",
+        430,
+        932,
+        false,
+        3,
+        Some(harness::PORTRAIT_INSETS),
+    );
+    for (w, h, insets) in [
+        (430, 932, harness::PORTRAIT_INSETS),
+        (956, 440, harness::SIDEWAYS_INSETS),
+        (852, 393, (0, 59, 21, 59)),
+    ] {
+        harness::phone(&tab, w, h);
+        harness::safe_area(&tab, insets);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {w} && innerHeight === {h} && getComputedStyle(document.querySelector('#app .topbar')).paddingRight === '{}px'", 6 + insets.1),
+            "the phone at its size, with its safe area",
+            Duration::from_secs(10),
+            "innerWidth + 'x' + innerHeight + ' ' + getComputedStyle(document.querySelector('#app .topbar')).paddingRight",
+        );
+        let at = format!("{w}x{h}");
+        let shut = safe_area_facts(&tab, insets);
+        assert_eq!(
+            shut["bad"],
+            serde_json::json!([]),
+            "{at}: every control inside the safe area: {shut}"
+        );
+        assert!(
+            shut["inner"][0].as_i64().unwrap_or(-1) >= i64::from(insets.3)
+                && shut["inner"][1].as_i64().unwrap_or(-1) >= i64::from(insets.1),
+            "{at}: the transcript's lines keep clear of the island and the corners: {shut}"
+        );
+        if w < 900 {
+            the_drawer_opens_and_its_list_scrolls(&tab, &at);
+        }
+        let open = safe_area_facts(&tab, insets);
+        assert_eq!(
+            open["bad"],
+            serde_json::json!([]),
+            "{at}: with the session list open, every control inside the safe area: {open}"
+        );
+        assert!(
+            open["tree"].as_i64().unwrap_or(-1) >= i64::from(insets.3),
+            "{at}: the session list's rows keep clear of the island: {open}"
+        );
+        if w < 900 {
+            harness::eval(&tab, "(function(){ document.getElementById('drawerScrim').click(); document.querySelector('#app>.sidebar .tree').scrollTop = 0; return 'ok'; })()");
+        }
+    }
+}
+
+/// #s37: a point on the page, read by `expr` (a JSON array of numbers) — panicking with what it saw
+/// when the page gave none, rather than indexing into nothing.
+fn page_point(tab: &headless_chrome::Tab, what: &str, expr: &str) -> Vec<f64> {
+    let raw = harness::eval(tab, &format!("(function(){{ try {{ return {expr}; }} catch (e) {{ return 'error: ' + e.message; }} }})()"));
+    serde_json::from_str(raw.as_str().unwrap_or(""))
+        .unwrap_or_else(|_| panic!("{what}: the page gave no point: {raw}"))
+}
+
+/// #s37: the number of characters on the first line of the longest answer — the reading measure as
+/// the reader sees it, counted from the line boxes, not estimated from a width.
+const FIRST_LINE_CHARS: &str = "(function(){ var p = [...document.querySelectorAll('.transcript p')].filter(function (e) { return e.textContent.indexOf('answer') === 0; }).sort(function (a, b) { return b.textContent.length - a.textContent.length; })[0]; if (!p) return -1; var walk = document.createTreeWalker(p, NodeFilter.SHOW_TEXT), range = document.createRange(), node, count = 0, top = null; while ((node = walk.nextNode())) { for (var i = 0; i < node.length; i++) { range.setStart(node, i); range.setEnd(node, i + 1); var rects = range.getClientRects(); if (!rects.length) continue; var t = Math.round(rects[0].top); if (top === null) top = t; if (t > top + 2) return count; count++; } } return count; })()";
+
+/// #s37 (design/phone-landscape.md §3.2), the owner's choice for the largest iPhones held sideways:
+/// two columns, as Mail, Messages and Notes do there. The session list is a column BESIDE the
+/// session, never over it; its switcher shows Sessions or one of the outline's panes (Turns, Tasks,
+/// Agents), and a turn chosen there moves the transcript and leaves the column as it is. The
+/// transcript runs at a reading measure beside it. The handle hides and shows the column, and that
+/// choice is the column's own: it survives a reload, it touches neither the desktop's rail nor the
+/// drawer, and turning the phone upright finds the drawer as a phone left it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
+    let _serial = serial();
+    let (m, _b, tab) = drawer_world(
+        2747,
+        "wide-column",
+        956,
+        440,
+        false,
+        8,
+        Some(harness::SIDEWAYS_INSETS),
+    );
+    let beside = drawer_facts(&tab);
+    assert_ne!(
+        beside["sbPosition"], "fixed",
+        "the list is a column, not a drawer: {beside}"
+    );
+    assert!(
+        beside["wsLeft"].as_i64().unwrap_or(0) >= beside["sbRight"].as_i64().unwrap_or(9999) - 1
+            && beside["sbRight"].as_i64().unwrap_or(9999) <= 380,
+        "the session starts where the ~300px column (and the island's inset) ends: {beside}"
+    );
+    let chars = harness::eval(&tab, FIRST_LINE_CHARS).as_i64().unwrap_or(-1);
+    assert!(
+        (40..=78).contains(&chars),
+        "the transcript reads at a measure beside it, not ~119 a line: {chars}"
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "getComputedStyle(document.getElementById('drawerScrim')).display"
+        ),
+        serde_json::Value::String("none".into()),
+        "nothing dims the session beside the column"
+    );
+    // The switcher: Turns shows the outline's turn list in the column.
+    let tab_at = |key: &str| -> Vec<f64> {
+        page_point(&tab, key, &format!("(function(){{ var b = document.querySelector('#columnSwitch [data-column-tab={key}]').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2, b.height]); }})()"))
+    };
+    let turns = tab_at("turns");
+    assert!(
+        turns[2] >= 44.0,
+        "a switcher tab is finger-sized: {turns:?}"
+    );
+    harness::finger_tap(&tab, turns[0], turns[1]);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#columnPane .outline-turn-row').length === 8 && getComputedStyle(document.querySelector('#app>.sidebar .tree')).display === 'none'",
+        "the column showing the session's eight turns in place of the sessions",
+        Duration::from_secs(10),
+        "document.querySelectorAll('#columnPane .outline-turn-row').length + ' ' + document.getElementById('app').className",
+    );
+    let row = page_point(&tab, "the third turn's row", "(function(){ var r = document.querySelectorAll('#columnPane .outline-turn-row')[2].getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]); })()");
+    harness::finger_tap(&tab, row[0], row[1]);
+    harness::until(
+        &tab,
+        "(function(){ var b = document.getElementById('turnStickyBar'); return b.classList.contains('on') && /question 2:/.test(b.textContent); })()",
+        "the transcript at the third turn",
+        Duration::from_secs(10),
+        "document.getElementById('turnStickyBar').textContent + ' ' + document.getElementById('app').className",
+    );
+    let after = drawer_facts(&tab);
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "document.querySelectorAll('#columnPane .outline-turn-row').length"
+        ),
+        serde_json::json!(8),
+        "the column still shows the turns once one is chosen: {after}"
+    );
+    assert_eq!(
+        after["sbRight"], beside["sbRight"],
+        "and has not moved: {after}"
+    );
+    // Sessions puts the session list back, and the turn list goes home to the outline.
+    let sessions = tab_at("sessions");
+    harness::finger_tap(&tab, sessions[0], sessions[1]);
+    harness::until(
+        &tab,
+        "getComputedStyle(document.querySelector('#app>.sidebar .tree')).display !== 'none' && !!document.getElementById('navigatorTurns').closest('.session-navigator')",
+        "the sessions in the column, the turn list back in the outline",
+        Duration::from_secs(10),
+        "document.getElementById('app').className",
+    );
+    // Choosing a session leaves the column where it is.
+    // The column is short sideways (its head, switcher and nav above the list), so the next session
+    // is brought into view first.
+    harness::eval(&tab, "(function(){ var t = document.querySelector('#app>.sidebar .tree'), r = [...t.querySelectorAll('.tree-row.session')][1]; t.scrollTop += r.getBoundingClientRect().top - t.getBoundingClientRect().top - 8; return 'ok'; })()");
+    let pick = page_point(&tab, "another session's row", "(function(){ var rows = [...document.querySelectorAll('#app>.sidebar .tree-row.session')].filter(function (r) { var b = r.getBoundingClientRect(); return b.top > 0 && b.bottom < innerHeight && !r.classList.contains('selected'); }); if (!rows.length) return 'no row: ' + document.querySelectorAll('#app>.sidebar .tree-row.session').length + ' rows, tree ' + JSON.stringify(document.querySelector('#app>.sidebar .tree').getBoundingClientRect()) + ' scrollTop ' + document.querySelector('#app>.sidebar .tree').scrollTop + ' first ' + [...document.querySelectorAll('#app>.sidebar .tree-row.session')].slice(0, 4).map(function (r) { var b = r.getBoundingClientRect(); return Math.round(b.top) + '-' + Math.round(b.bottom) + (r.classList.contains('selected') ? 's' : ''); }).join(' '); var b = rows[0].getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
+    harness::finger_tap(&tab, pick[0], pick[1]);
+    harness::until(
+        &tab,
+        &format!("location.search.indexOf('{PHONE_SID}') < 0 && location.search.indexOf('session=') >= 0"),
+        "another session chosen",
+        Duration::from_secs(10),
+        "location.search",
+    );
+    let chosen = drawer_facts(&tab);
+    assert_eq!(
+        chosen["sbRight"], beside["sbRight"],
+        "the column stays once a session is chosen: {chosen}"
+    );
+    // The handle hides the column; the transcript stays at its reading measure, centred.
+    let handle = page_point(&tab, "the handle", "(function(){ var b = document.getElementById('drawerHandle').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
+    harness::finger_tap(&tab, handle[0], handle[1]);
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#app>.workspace').getBoundingClientRect().left === 0",
+        "the column hidden and the session across the screen",
+        Duration::from_secs(10),
+        DRAWER_FACTS,
+    );
+    let centred = harness::eval(&tab, "(function(){ var t = document.querySelector('#app .transcript').getBoundingClientRect(), i = document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect(); return JSON.stringify([Math.round(i.width), Math.round(i.left - t.left), Math.round(t.right - i.right)]); })()");
+    let centred: Vec<i64> =
+        serde_json::from_str(centred.as_str().unwrap_or("[]")).unwrap_or_default();
+    assert!(
+        centred[0] <= 500 && (centred[1] - centred[2]).abs() <= 2,
+        "with the column hidden the transcript is a centred reading column, not the whole width: {centred:?}"
+    );
+    // The choice is the column's own: a reload keeps it, and the desktop's rail is untouched.
+    tab.reload(false, None).unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && document.getElementById('app').classList.contains('phone-column-off')",
+        "the column still hidden after a reload",
+        Duration::from_secs(20),
+        "document.getElementById('app').className",
+    );
+    assert_ne!(
+        harness::eval(&tab, "localStorage.getItem('am-demo-sidebar')"),
+        serde_json::Value::String("0".into()),
+        "hiding the column never collapsed the desktop's rail"
+    );
+    // Upright, the drawer is as a phone left it — shut — whatever the column's state.
+    harness::phone(&tab, 430, 932);
+    harness::safe_area(&tab, harness::PORTRAIT_INSETS);
+    harness::until(
+        &tab,
+        "innerWidth === 430 && document.getElementById('app').classList.contains('mobile-detail') && document.querySelector('#app>.sidebar').getBoundingClientRect().right <= 1",
+        "upright, the drawer shut",
+        Duration::from_secs(10),
+        DRAWER_FACTS,
+    );
+    the_drawer_opens_and_its_list_scrolls(&tab, "upright after the column was hidden");
+    // Sideways again, the column is as it was left: hidden, until the handle shows it.
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerScrim').click(); return 'ok'; })()",
+    );
+    harness::phone(&tab, 956, 440);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    harness::until(
+        &tab,
+        "innerWidth === 956 && document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#app>.workspace').getBoundingClientRect().left === 0",
+        "sideways again, the column still hidden",
+        Duration::from_secs(10),
+        DRAWER_FACTS,
+    );
+    let handle = page_point(&tab, "the handle", "(function(){ var b = document.getElementById('drawerHandle').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
+    harness::finger_tap(&tab, handle[0], handle[1]);
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#app>.workspace').getBoundingClientRect().left > 300",
+        "the handle shows the column again",
+        Duration::from_secs(10),
+        DRAWER_FACTS,
+    );
+    drop(m);
+}
+
+/// #s37 (design/phone-landscape.md §3.3), the owner on 1.357.0: "the screen is actually too wide to
+/// read the transcript comfortably" — about 119 characters a line held sideways. On a phone too
+/// narrow for two columns the session list stays a drawer, and the transcript is a centred reading
+/// column at most about 75 characters wide, the spare width its margin.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_narrow_phone_held_sideways_reads_at_a_measure() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(
+        2748,
+        "narrow-measure",
+        852,
+        393,
+        false,
+        2,
+        Some((0, 59, 21, 59)),
+    );
+    let chars = harness::eval(&tab, FIRST_LINE_CHARS).as_i64().unwrap_or(-1);
+    assert!(
+        (40..=78).contains(&chars),
+        "about 70 characters a line, not ~119: {chars}"
+    );
+    let centred = harness::eval(&tab, "(function(){ var t = document.querySelector('#app .transcript'), r = t.getBoundingClientRect(), cs = getComputedStyle(t), i = document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect(); var left = r.left + parseFloat(cs.paddingLeft), right = r.right - parseFloat(cs.paddingRight); return JSON.stringify([Math.round(i.width), Math.round(i.left - left), Math.round(right - i.right)]); })()");
+    let centred: Vec<i64> =
+        serde_json::from_str(centred.as_str().unwrap_or("[]")).unwrap_or_default();
+    assert!(
+        centred[0] <= 500 && (centred[1] - centred[2]).abs() <= 2,
+        "a centred column of at most 500px: {centred:?}"
+    );
+    let facts = drawer_facts(&tab);
+    assert_eq!(
+        facts["sbPosition"], "fixed",
+        "the session list is still a drawer here: {facts}"
+    );
+    the_drawer_opens_and_its_list_scrolls(&tab, "852x393");
 }
