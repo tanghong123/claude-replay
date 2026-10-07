@@ -9568,14 +9568,14 @@ fn app_shell_a_search_typed_before_the_head_lands_finds_it_after() {
 }
 
 /// #332, the owner: "move to the tail button is on the bottom right and hard to click, instead,
-/// move it to bottom center for mobile version" — a small button in the corner. Since #s37 (the
-/// mockups the owner approved, design/phone-landscape.md §3.6) it floats just above the dock at the
-/// right, over the search, finger-sized and clear of the line being read — and so does the pill it
-/// becomes when new messages arrive below the reader — and a tap on it follows the tail again. The
-/// desktop keeps its corner.
+/// move it to bottom center for mobile version". On a phone the jump to the latest sits at the
+/// bottom CENTRE of the view, finger-sized — and so does the pill it becomes when new messages
+/// arrive below the reader — and a tap on it follows the tail again. Since #s37 it floats just above
+/// the dock, never on it (the owner, on the redesign: "Jump to last should be positioned in the
+/// middle"). The desktop keeps its corner.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn a_phone_jumps_to_the_latest_from_above_the_dock() {
+fn a_phone_jumps_to_the_latest_from_the_bottom_centre() {
     let _serial = serial();
     let (m, _b, tab, path) = phone_world_at(2706, "phone-jump", 390, 844, "");
     harness::wheel_scroll(&tab, harness::APP_SCROLLER, "s.scrollTop = 0");
@@ -9591,12 +9591,12 @@ fn a_phone_jumps_to_the_latest_from_above_the_dock() {
     );
     let geometry = harness::eval(
         &tab,
-        "(function(){ var r = document.querySelector('.jump-to-bottom').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return JSON.stringify({ right: Math.round(innerWidth - r.right), w: Math.round(r.width), h: Math.round(r.height), aboveDock: Math.round(d.top - r.bottom) }); })()",
+        "(function(){ var r = document.querySelector('.jump-to-bottom').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return JSON.stringify({ centre: Math.round((r.left + r.right) / 2 - innerWidth / 2), w: Math.round(r.width), h: Math.round(r.height), aboveDock: Math.round(d.top - r.bottom) }); })()",
     );
     let g: serde_json::Value = serde_json::from_str(geometry.as_str().unwrap_or("{}")).unwrap();
     assert!(
-        (4..=24).contains(&g["right"].as_i64().unwrap_or(-1)),
-        "the jump sits at the right: {g}"
+        g["centre"].as_i64().unwrap_or(99).abs() <= 2,
+        "the jump sits at the bottom centre: {g}"
     );
     assert!(
         g["w"].as_i64().unwrap_or(0) >= 44 && g["h"].as_i64().unwrap_or(0) >= 44,
@@ -9606,7 +9606,8 @@ fn a_phone_jumps_to_the_latest_from_above_the_dock() {
         (4..=40).contains(&g["aboveDock"].as_i64().unwrap_or(-1)),
         "just above the dock, clear of it: {g}"
     );
-    // New messages below the reader: the jump becomes a pill that counts them, still above the dock.
+    // New messages below the reader: the jump becomes a pill that counts them, still centred above
+    // the dock.
     harness::append(
         &path,
         &[
@@ -9616,12 +9617,12 @@ fn a_phone_jumps_to_the_latest_from_above_the_dock() {
         .concat(),
     );
     let pill = format!(
-        "(function(){{ var j = document.querySelector('.jump-to-bottom'), r = j.getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return j.classList.contains('has-new') && r.bottom <= d.top && r.height >= 44 && r.left >= 0 && r.right <= innerWidth && ({PHONE_HITTABLE})(j); }})()"
+        "(function(){{ var j = document.querySelector('.jump-to-bottom'), r = j.getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return j.classList.contains('has-new') && Math.abs((r.left + r.right) / 2 - innerWidth / 2) <= 2 && r.bottom <= d.top && r.height >= 44 && r.right <= innerWidth && ({PHONE_HITTABLE})(j); }})()"
     );
     harness::until(
         &tab,
         &pill,
-        "the pill counting new messages, above the dock",
+        "the pill counting new messages, at the bottom centre above the dock",
         Duration::from_secs(15),
         "(function(){ var j = document.querySelector('.jump-to-bottom'), r = j.getBoundingClientRect(); return j.className + ' ' + Math.round(r.left) + '..' + Math.round(r.right) + ' of ' + innerWidth; })()",
     );

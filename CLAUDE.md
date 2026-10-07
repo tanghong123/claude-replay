@@ -112,8 +112,9 @@ exist there: each pane opens from its icon as a SHEET rising from the pill that 
 live list (moved in while open, back after), so one renderer and one click handler (`navigatorClick`)
 serve both. Info hangs at `--phone-top` (the bar's measured bottom); the dock's sheets (panes, Aa, the
 filter, the suggestions) rise from `--phone-bottom` (the dock's measured top) and stop 72px short of
-the bar, the band `phone_tap_outside` taps to dismiss them. The jump to the latest floats above the
-dock at the right (#332 had centred it; the owner's approved mockups put it there). Inputs are 16px (iOS zooms into anything
+the bar, the band `phone_tap_outside` taps to dismiss them. The jump to the latest sits at the
+bottom CENTRE of the session (#332), just above the dock (the owner kept the centre over the
+mockups' right). Inputs are 16px (iOS zooms into anything
 smaller), targets 44px. Choosing a session shuts the drawer at once and a veil (`sessionLoading`, every
 width) dims the session area with how much of the records has arrived. The rules are `production.css`
 under `#313`; the cases are `a_phone*` in `browser_follow.rs` and the preview pinch in `files.rs`,

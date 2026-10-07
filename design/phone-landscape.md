@@ -190,10 +190,9 @@ found four things, and the build follows the first three:
 
 ### 3.6 Jump to latest
 
-The ↓ (and its "N new" pill) floats at the bottom RIGHT, inside the safe area: clear of the text
-column on both kinds of phone (issue 7). As built it floats just above the dock, over the search
-circle, 44px. #332 had moved it to the bottom centre because the old corner button was small and
-hard to hit; the approved mockups put it back at the right, at a finger's size.
+The ↓ (and its "N new" pill) was proposed at the bottom RIGHT, inside the safe area: clear of the text
+column on both kinds of phone (issue 7). As built, the owner kept it at the bottom CENTRE of the
+session (#332: "Jump to last should be positioned in the middle"), 44px, just above the dock.
 
 ### 3.7 The landscape layout's state is its own
 
