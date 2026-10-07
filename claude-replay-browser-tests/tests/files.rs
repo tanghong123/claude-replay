@@ -785,6 +785,13 @@ fn a_phone_downloads_what_the_session_handed_over_wherever_it_lives() {
         pane.as_str().unwrap_or("").contains("9.0 MB"),
         "the film's own size, from the streamed download's head: {pane:?}"
     );
+    // #s36: a touch device hands a download to the share sheet where the browser has one (Chrome on
+    // macOS does, on a loopback page; Linux's does not). This case holds the SAVE, so the sheet is
+    // taken away; `a_phone_download_opens_the_share_sheet_and_a_desktop_saves` holds the sheet.
+    eval(
+        &tab,
+        "delete Navigator.prototype.share; delete Navigator.prototype.canShare; 'ok'",
+    );
     eval(
         &tab,
         "document.querySelector('#previewBody [data-preview-download]').click(); 'ok'",
@@ -1458,5 +1465,140 @@ fn a_phone_is_never_offered_the_file_manager_on_either_page() {
         "the pane's reveal, offered to a reader at this machine",
         Duration::from_secs(20),
         PANE,
+    );
+}
+
+/// #s36, the owner: Download on a phone opened iOS's preview box ("Open in Preview", "More…"); it
+/// should offer where the file goes — Photos, Files, or an app — and a desktop should simply save it
+/// to Downloads. On a touch device the file goes to the system share sheet (the Web Share API, which
+/// a case records rather than shows); a sheet the tap had expired for leaves it ready, and the next
+/// tap shares it; a file over the in-memory limit streams to the browser's own download instead; a
+/// desktop saves it. The world: a 9 MB film the agent sent (over the viewer cap, so the pane offers it
+/// as a download), on a loopback page, which is a secure context.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_download_opens_the_share_sheet_and_a_desktop_saves() {
+    const SID: &str = "5e5510a1-0000-4000-8000-000000000036";
+    let _serial = serial();
+    let base = base("files-share");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let film = repo.join("tour.mp4");
+    let mut bytes = vec![
+        0u8, 0, 0, 0x20, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm', 0xff,
+    ];
+    bytes.resize(9 * 1024 * 1024, 0);
+    std::fs::write(&film, &bytes).unwrap();
+    let mut jsonl = user_at("send me the film", &at("00:10"));
+    jsonl += &format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"s1\",\"name\":\"SendUserFile\",\"input\":{{\"files\":[{:?}],\"caption\":\"the film\",\"status\":\"normal\"}}}}]}},\"timestamp\":\"{}\"}}\n",
+        film.display().to_string(),
+        at("00:11")
+    );
+    jsonl += &tool_result_at("s1", &at("00:12"));
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(SID, &jsonl);
+    let m = Monitor::spawn(Kind::V2, 2936, &base, Some(&stores), true);
+    let selector = format!("[data-reference-path={:?}]", film.display().to_string());
+    // The sheet and the save, recorded: `navigator.share` keeps what it was handed (and can be told to
+    // refuse an expired tap); an anchor's click records the download it would start.
+    let record = "(function(){ window.__shares = []; window.__saves = []; window.__refuse = 0; Navigator.prototype.canShare = function (d) { return !!(d && d.files && d.files.length); }; Navigator.prototype.share = function (d) { if (window.__refuse > 0) { window.__refuse--; var e = new Error('expired'); e.name = 'NotAllowedError'; return Promise.reject(e); } window.__shares.push(d.files.map(function (f) { return [f.name, f.size]; })); return Promise.resolve(); }; HTMLAnchorElement.prototype.click = function () { window.__saves.push([this.download, this.getAttribute('href').slice(0, 6)]); }; return 'ok'; })()";
+    let open_film = |tab: &headless_chrome::Tab, query: &str| {
+        m.open(tab, &format!("?ui=app&session={SID}{query}"));
+        until(
+            tab,
+            &format!("!!document.querySelector({selector:?})"),
+            "the delivered film",
+            Duration::from_secs(30),
+            "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 200) : 'no transcript'",
+        );
+        eval(tab, record);
+        eval(
+            tab,
+            &format!("document.querySelector({selector:?}).click(); 'ok'"),
+        );
+        until(
+            tab,
+            "!!document.querySelector('#previewBody [data-preview-download]')",
+            "the pane offering the film as a download",
+            Duration::from_secs(20),
+            PANE,
+        );
+    };
+    let download = "document.querySelector('#previewBody [data-preview-download]').click(); 'ok'";
+
+    // A phone: the share sheet, with the film itself — and nothing saved.
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 440, 956);
+    m.pair(&tab);
+    open_film(&tab, "");
+    eval(&tab, download);
+    until(
+        &tab,
+        "window.__shares.length === 1",
+        "the film handed to the share sheet",
+        Duration::from_secs(20),
+        "JSON.stringify({ shares: window.__shares, saves: window.__saves, toast: document.getElementById('toast').textContent })",
+    );
+    assert_eq!(
+        eval(&tab, "JSON.stringify([window.__shares, window.__saves])"),
+        serde_json::Value::String(format!("[[[[\"tour.mp4\",{}]]],[]]", 9 * 1024 * 1024)),
+        "the sheet gets the whole film under its own name, and no preview-box download starts"
+    );
+    // A tap that had expired by the time the file arrived: ready, and the next tap shares it.
+    eval(&tab, "window.__refuse = 1; window.__shares = []; 'ok'");
+    eval(&tab, download);
+    until(
+        &tab,
+        "document.getElementById('toast').textContent === 'Ready — tap Download again to share it'",
+        "the sheet refused for an expired tap, the film kept ready",
+        Duration::from_secs(20),
+        "document.getElementById('toast').textContent",
+    );
+    eval(&tab, download);
+    until(
+        &tab,
+        "window.__shares.length === 1 && window.__saves.length === 0",
+        "the next tap sharing the film at once",
+        Duration::from_secs(20),
+        "JSON.stringify({ shares: window.__shares, saves: window.__saves })",
+    );
+    // Over the in-memory limit: never read into the phone's memory, streamed to the browser's download.
+    open_film(&tab, "&inMemoryMax=1048576");
+    eval(&tab, download);
+    until(
+        &tab,
+        "window.__saves.length === 1",
+        "a file over the limit streamed rather than shared",
+        Duration::from_secs(20),
+        "JSON.stringify({ shares: window.__shares, saves: window.__saves })",
+    );
+    assert_eq!(
+        eval(&tab, "JSON.stringify([window.__shares, window.__saves])"),
+        serde_json::Value::String("[[],[[\"tour.mp4\",\"/file?\"]]]".into()),
+        "the save follows /file itself, which streams it, and no sheet opens"
+    );
+
+    // A desktop: saved straight to Downloads, never a sheet.
+    let (_desk_browser, desk) = chrome_tab();
+    harness::resize(&desk, 1400.0, 900.0);
+    m.pair(&desk);
+    open_film(&desk, "");
+    eval(&desk, download);
+    until(
+        &desk,
+        "window.__saves.length === 1 && document.getElementById('toast').textContent === 'Download started'",
+        "the film saved on a desktop",
+        Duration::from_secs(20),
+        "JSON.stringify({ shares: window.__shares, saves: window.__saves, toast: document.getElementById('toast').textContent })",
+    );
+    assert_eq!(
+        eval(
+            &desk,
+            "JSON.stringify([window.__shares, window.__saves.map(function (s) { return s[0]; })])"
+        ),
+        serde_json::Value::String("[[],[\"tour.mp4\"]]".into()),
+        "a desktop saves the file under its name and opens no sheet"
     );
 }

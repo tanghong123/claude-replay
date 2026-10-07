@@ -380,7 +380,13 @@ desktop), each where the server offered what it needs; a reveal-only path is COP
 the classic page's refusal no longer falls back to a reveal for a remote reader. It was the 760px
 breakpoint (#335), which missed a remote desktop and a narrow local window both; the width still
 decides what a phone's LAYOUT withholds (`onPhone()`: the pane's ↗, whose page has no way back) and
-offers (the review sheet). `a_phone_is_never_offered_the_file_manager_on_either_page` is the audit:
+offers (the review sheet). **A download on a touch-first device is the system share sheet** (#s36, the
+owner: Photos, Files, or an app, where Safari showed a preview box): `attachment-viewer.js` hands the
+file to `navigator.share` on `pointer: coarse` (a phone or a tablet; never a desktop, whose share sheet
+is not a download), keeps it ready for the next tap when iOS says the tap expired during the fetch,
+and streams anything over 64 MB (`?inMemoryMax=` for a case) to the browser's own download from
+`/file`; a desktop saves to Downloads as before
+(`a_phone_download_opens_the_share_sheet_and_a_desktop_saves`). `a_phone_is_never_offered_the_file_manager_on_either_page` is the audit:
 a remote phone clicks every kind of offered path on both pages and meets no reveal and sends no
 `/__reveal`; a local narrow window keeps its reveal. A case about what a REMOTE reader is offered
 opens the monitor as one (`Monitor::spawn_remote`, `harness::remote_phone`, `open_remote`).
