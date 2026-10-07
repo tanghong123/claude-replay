@@ -1,6 +1,8 @@
 # A phone held sideways (#s35)
 
-**Status: a proposal for the owner to choose from (three decisions, §7). Nothing is built yet.**
+**Status: the owner chose two columns on a wide phone and a top bar that never hides (2026-10-07,
+§7); the find bar at the keyboard is shown step by step in the mockups and awaits the owner's
+answer. Nothing is built yet.**
 Since #s32 a phone held sideways gets the phone layout, and since #s33 that layout stays on the
 screen. The owner's verdict on 1.357.0: "kind of works, but not ideal", with five issues and a
 request for "a proper design session to think through them holistically", leaning on how other
@@ -107,18 +109,19 @@ subtitle. A tap on the subtitle opens the turn menu the turn bar opens today. Th
 ### 3.5 Find on Page, at the keyboard
 
 The search icon opens a **find bar docked right above the keyboard**: the field, "3 of 12", the
-result arrows and Done. While it is open, the top bar and the drawer handle step aside, as Safari's
-own bars do during Find on Page, so nothing overlaps anything (issue 5); Done brings them back.
+result arrows and Done. The top bar stays where it is (the owner: "keep the top bar"), and nothing
+lies over the drawer handle any more, because the search no longer lives at the top (issue 5).
 The arrows sit next to the count, so they read as result steppers and not as the keyboard's
 field-to-field arrows. The page cannot remove those (§6). When the keyboard closes, the find bar
-stays at the bottom, above the home indicator, with the count and the arrows, until Done, and the
-top bar returns above, since there is room again. That is Safari's behaviour too. The query language (#367) and the chips (#353) are unchanged; only
+stays at the bottom, above the home indicator, with the count and the arrows, until Done, so the
+reader reads and steps with one thumb. That is Safari's behaviour too. The query language (#367) and the chips (#353) are unchanged; only
 where the box lives changes.
 
-With the keyboard up, the transcript runs from the top of the screen to the find bar: about 173pt,
-against 136pt today. That only holds with the top bar stepping aside: kept, it would leave 129pt,
-less than today. More than the points, the field, the count and the arrows sit together right
-above the thumbs, where typing already is.
+With the keyboard up and the top bar kept, the transcript has about what it has today (129pt
+against 136): a keyboard held sideways takes most of the height whatever the page does. The gain is
+WHERE the controls are (the field, the count and the arrows together, right above the thumbs) and
+what is left once the keyboard closes (the whole height, with the arrows still under a thumb). The
+mockups' "Find on Page at the keyboard, step by step" shows it in portrait and held sideways.
 
 ### 3.6 Jump to latest
 
@@ -150,11 +153,9 @@ restores each layout as it was left.
 2. **Find on Page at the keyboard** (3.5). The keyboard is tracked through `window.visualViewport`
    (iOS does not move a `position: fixed; bottom: 0` element above the keyboard on its own). That
    is iOS-specific behaviour and needs the real device or the Simulator to confirm.
-3. **The bar hides while reading** (Safari's pattern), if the owner wants it after living with phase
-   1. The risk is named in advance. Hiding the bar changes the transcript's height, and a height
-   change in the middle of a touch glide is exactly the kind of write #372 keeps out of a glide.
-   The bar would have to slide over the transcript, not resize it, or wait for the view to be
-   still.
+3. ~~The bar hides while reading~~: dropped, the owner keeps the top bar (§7). Had it been built,
+   hiding the bar changes the transcript's height in the middle of a touch glide, exactly the kind of
+   write #372 keeps out of one.
 
 ## 6. Constraints and risks
 
@@ -169,9 +170,13 @@ restores each layout as it was left.
 
 ## 7. Decisions for the owner
 
-1. **Two columns on a Max phone (recommended), or one reading column everywhere (A)?**
-2. **The find bar at the keyboard, sideways only (recommended),** or also in portrait?
-3. **The bar that hides while reading:** later, after living with phase 1 (recommended), or never?
+1. **Two columns on a Max phone, or one reading column everywhere (A)?** Decided (2026-10-07): two
+   columns.
+2. **The find bar at the keyboard, sideways only, or also in portrait?** Open: the owner asked to
+   see it first, and the mockups now show it step by step. Portrait gains the most from it, since
+   the top right corner of a large phone is the hardest place for a thumb to reach.
+3. **The bar that hides while reading?** Decided (2026-10-07): no, the top bar stays. Phase 3 is
+   dropped.
 
 ## 8. How it will be held
 
