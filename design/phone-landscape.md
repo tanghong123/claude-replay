@@ -188,6 +188,23 @@ found four things, and the build follows the first three:
 - **Kept:** while a search holds the dock, the toolbar pill steps aside, so Turns is a tap on ✕
   away. Safari's Find on Page replaces its toolbar the same way until Done.
 
+### 3.5c Proposed: the compose box beside the pill (#s39, awaiting the owner)
+
+Today the compose box is a card over the transcript's foot, opened by a floating button. Since #s37 it
+rests above the dock. Proposed, as iOS Messages does it:
+
+- **One more mode for the dock.** The compose box becomes the dock's third mode, after the toolbar
+  and search. When write mode is on and the session can take a message, a ✎ circle joins the dock
+  beside search, in place of the floating compose button.
+- **Composing.** Tapping ✎ turns the dock into the reply box. It rides the keyboard as the find pill
+  does, the field grows with its text, and ↑ sends. The target and its warning ("To tmux %12 · writes
+  to the live session") stay in sight just above the field.
+- **Closing.** A ✕ circle closes the box and keeps the draft. The toolbar pill returns, and a dot on
+  ✎ says a draft is waiting.
+- **On a wide phone held sideways,** the box spans the transcript's column, as the find pill does.
+
+The mockups are the section "The compose box beside the pill (#s39)".
+
 ### 3.6 Jump to latest
 
 The ↓ (and its "N new" pill) was proposed at the bottom RIGHT, inside the safe area: clear of the text
