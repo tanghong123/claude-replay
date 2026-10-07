@@ -24,8 +24,8 @@ measured on 1.357.0 from the owner's screenshots and in WebKit at that size.
    The extra width buys nothing but eye travel.
 4. **Navigation moved to the other side.** Portrait puts Turns, Tasks and Agents at the LEFT of the
    bar's second row. Sideways, #s32 folded the bar to one row, and they landed on the RIGHT, after
-   the title. (This reads the owner's "quick navigation control" as those three icons; correct
-   this if another control was meant.)
+   the title. (The owner's "quick navigation control" is those three icons: confirmed by the owner,
+   2026-10-07.)
 5. **Search fights for the top.** The open search is an overlay across the whole bar, and it lies
    over the drawer handle. With the keyboard up, the transcript has **136pt**: the space between
    the turn bar, which ends at 81pt, and the keyboard's ↑ ↓ ✓ bar, which starts at 217pt. That is
