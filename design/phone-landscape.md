@@ -123,6 +123,45 @@ WHERE the controls are (the field, the count and the arrows together, right abov
 what is left once the keyboard closes (the whole height, with the arrows still under a thumb). The
 mockups' "Find on Page at the keyboard, step by step" shows it in portrait and held sideways.
 
+### 3.5a The owner's idea: the toolbar at the bottom, in a pill
+
+The owner (2026-10-07): "move the toolbar to the bottom and put them in a pill instead of docked at
+the bottom which would collide with the home bar". It is iOS 26's own pattern, and it makes §3.5
+simpler rather than adding to it:
+
+- **Precedent.** In iOS 26, Safari's bottom bar is a back circle and a pill (share, reload, compass);
+  Mail, Notes, Music and Photos float their tab bar as a capsule with search as a separate circle
+  beside it, which grows into a field above the keyboard. Controls float in a glass layer inset from
+  the edges and lifted above the home indicator, and the content scrolls under them.
+- **What moves.** Portrait's second top row (Turns, Tasks, Agents, search, Aa) goes into a floating
+  pill above the home indicator, with search as its own circle at the right and ↓ floating above
+  it. The top keeps ONE row: ☰, the session with the current turn as its subtitle (§3.4), ⓘ and ▣.
+  It never hides (the owner's decision 3). That gives back about 70pt at the top in portrait.
+- **Panes become sheets.** Turns, Tasks and Agents open as sheets rising from the pill, by the thumb
+  that tapped them, instead of drop-downs from the top. They are the same live lists (one renderer,
+  one click handler).
+- **Search is the pill's other state.** The search circle grows into the field above the keyboard;
+  with the keyboard closed, a find pill takes the toolbar pill's place. It holds the funnel, the
+  chips, the count and the arrows, and ✕ brings the toolbar back. Filtering keeps everything it has
+  today. The query language and its chips are unchanged, and the funnel opens the same filter
+  (User messages, Agent replies, Thinking, Tools and each tool, Whole words) as a sheet above the
+  pill, so the count is in view while the reader ticks. Nothing sits on the home indicator any
+  more, which is the collision the owner saw in the flat bar.
+- **Sideways.** On a narrower phone, the same pill as portrait. On a wide phone, the left column
+  already holds Sessions, Turns, Tasks and Agents, so the pill carries what is left (Aa) beside the
+  search circle, at the bottom right of the transcript.
+
+What it costs, named in advance:
+
+- **The pill floats over the transcript.** The transcript's end gets bottom padding the pill's
+  height, so its last line, and a reader following the tail, rest above the pill, never under it.
+  That is a static change to the scroller's padding, outside the touch-glide rules of #372.
+- **The compose box shares the bottom.** When write mode offers the compose box, the bottom is the
+  composer's, as in Messages. The toolbar tucks into one circle beside the composer, and a tap opens
+  the pill above it. This needs its own mockup before it is built.
+- **Portrait changes, not only sideways.** This reworks the phone toolbar that #313, #352 and #353
+  shaped. Their cases move with it: a control's place changes, its behaviour does not.
+
 ### 3.6 Jump to latest
 
 The ↓ (and its "N new" pill) floats at the bottom RIGHT, inside the safe area: clear of the text
@@ -172,9 +211,11 @@ restores each layout as it was left.
 
 1. **Two columns on a Max phone, or one reading column everywhere (A)?** Decided (2026-10-07): two
    columns.
-2. **The find bar at the keyboard, sideways only, or also in portrait?** Open: the owner asked to
-   see it first, and the mockups now show it step by step. Portrait gains the most from it, since
-   the top right corner of a large phone is the hardest place for a thumb to reach.
+2. **The find bar at the keyboard, sideways only, or also in portrait?** The owner asked to see it
+   first (the mockups show it step by step), asked whether filtering survives (it does, §3.5a), and
+   proposed the toolbar at the bottom in a pill. The question is now: **the bottom pill (§3.5a), in
+   portrait and sideways (recommended)?** If yes, search docks at the keyboard everywhere as the
+   pill's other state, and the flat find bar of §3.5 is not built.
 3. **The bar that hides while reading?** Decided (2026-10-07): no, the top bar stays. Phase 3 is
    dropped.
 
