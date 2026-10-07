@@ -2534,7 +2534,13 @@ function updateStickyHeaders() { const top = transcript.getBoundingClientRect().
 
 byId("themeBtn").onclick = () => { const dark = document.documentElement.dataset.theme !== "dark"; document.documentElement.dataset.theme = dark ? "dark" : ""; localStorage.setItem("am-demo-theme", dark ? "dark" : "light"); };
 if (localStorage.getItem("am-demo-theme") === "dark") document.documentElement.dataset.theme = "dark";
-function toggleSidebar(open) { if (open && !railFlyout.hidden) closeRailFlyout(false); indexState.sidebarOpen = open; app.classList.toggle("sidebar-off", !open); persist(); viewport.remeasure(); }
+// #s33: the collapsed rail is the DESKTOP's. On a phone the sidebar is the drawer, and the rail's
+// rules hide its head, its nav and its list: a phone that had the rail stored (1.355 drew a phone
+// held sideways as a desktop, and the owner collapsed it there) opened a blank drawer with no
+// control left to expand it. So the class never goes on there; the choice stays remembered, and a
+// window grown past the phone wears it again.
+function applySidebar() { app.classList.toggle("sidebar-off", !indexState.sidebarOpen && !matchMedia(PHONE_QUERY).matches); }
+function toggleSidebar(open) { if (open && !railFlyout.hidden) closeRailFlyout(false); indexState.sidebarOpen = open; applySidebar(); persist(); viewport.remeasure(); }
 byId("sidebarCollapse").onclick = () => toggleSidebar(false); byId("sidebarMiniExpand").onclick = () => toggleSidebar(true); byId("sidebarReopen").onclick = () => toggleSidebar(true);
 // The rail's write button reaches the write switch itself (#54): the demo clicks the write
 // BUTTON, whose handler ignores a click that lands on a button — a programmatic click does.
@@ -3306,8 +3312,9 @@ var infoPopoverToggle;
     if (bottom > 0) document.documentElement.style.setProperty("--phone-top", `${bottom}px`);
   };
   new ResizeObserver(place).observe(topbar);
-  // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone).
-  PHONE.addEventListener("change", () => { place(); if (!PHONE.matches) closePane(); renderNavigator(); });
+  // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone), and
+  // the desktop's rail comes off or goes back on (#s33, `applySidebar`).
+  PHONE.addEventListener("change", () => { place(); applySidebar(); if (!PHONE.matches) closePane(); renderNavigator(); });
   place();
 
   mobileShell = {
@@ -3324,7 +3331,7 @@ var infoPopoverToggle;
   };
 }
 
-app.classList.toggle("sidebar-off", !indexState.sidebarOpen);
+applySidebar();
 tree.innerHTML = '<div class="no-results">Scanning sessions…</div>';
 byId("sidebarMiniAgents").innerHTML = "";
 renderHeader(); renderNavigator(); paintJump(); sessionIndex.start();

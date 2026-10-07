@@ -11780,3 +11780,221 @@ fn a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver() {
         edges,
     );
 }
+
+/// #s33: a phone with a session open and a session list long enough to scroll — thirty sessions in
+/// projects of their own beside the one it opens — served by v2 on `port`, on a phone of `w`×`h`. With `rail`, the
+/// desktop's collapsed rail is stored first (`am-demo-sidebar`), as the owner's phone had it: 1.355
+/// drew a landscape phone as a desktop, and the owner collapsed the sidebar there.
+fn drawer_world(
+    port: u16,
+    case: &str,
+    w: u32,
+    h: u32,
+    rail: bool,
+) -> (
+    harness::Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    let base = harness::base(case);
+    let stores = harness::Stores::new(&base);
+    for i in 0..30 {
+        let t = [
+            harness::user_at(&format!("question {i}"), "2026-09-01T04:00:00.000Z"),
+            harness::assistant_at(&format!("answer {i}"), "2026-09-01T04:00:01.000Z"),
+        ]
+        .concat()
+        // A project of its own each: the tree lists a project's first few sessions and folds the rest.
+        .replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"/r{i}\""));
+        stores.claude_session(&format!("aaaa1111-0000-4000-8000-0000000033{i:02}"), &t);
+    }
+    let t = [
+        harness::user_at("question: the open session", "2026-09-01T05:00:00.000Z"),
+        harness::assistant_at(
+            "answer: a long enough answer to fill a line of the transcript, so the column has text in it",
+            "2026-09-01T05:00:01.000Z",
+        ),
+    ]
+    .concat();
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let (browser, tab) = harness::chrome_tab();
+    harness::phone(&tab, w, h);
+    m.pair(&tab);
+    if rail {
+        harness::eval(
+            &tab,
+            "(function(){ localStorage.setItem('am-demo-sidebar', '0'); return 'ok'; })()",
+        );
+    }
+    harness::show_every_session(&tab, &m.url(&format!("?ui=app&session={PHONE_SID}")));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.transcript .turn.user') && innerWidth === {w} && document.querySelectorAll('#app>.sidebar .tree-row.session').length > 30"),
+        "the session and the whole list at the phone's size",
+        Duration::from_secs(20),
+        "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className + ' rows ' + document.querySelectorAll('#app>.sidebar .tree-row.session').length",
+    );
+    (m, browser, tab)
+}
+
+/// #s33: where the session view and the drawer are, and whether the drawer's list can be reached:
+/// the first session row wholly on screen is hit-tested at its middle.
+const DRAWER_FACTS: &str = "(function(){ var app = document.getElementById('app'); var ws = document.querySelector('#app>.workspace').getBoundingClientRect(); var sb = document.querySelector('#app>.sidebar'); var s = sb.getBoundingClientRect(); var tree = sb.querySelector('.tree'); var rows = [...sb.querySelectorAll('.tree-row.session')]; var row = rows.find(function (r) { var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 0 && b.bottom <= innerHeight && b.left >= 0; }); var hit = false; if (row) { var b = row.getBoundingClientRect(); var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); hit = !!e && row.contains(e); } var title = document.getElementById('sessionTitle').getBoundingClientRect(); var th = document.elementFromPoint(title.left + Math.min(title.width / 2, 20), title.top + title.height / 2); return JSON.stringify({ open: !app.classList.contains('mobile-detail'), rail: app.classList.contains('sidebar-off'), wsTop: Math.round(ws.top), wsHeight: Math.round(ws.height), h: innerHeight, sbPosition: getComputedStyle(sb).position, sbRight: Math.round(s.right), rowHit: hit, treeShown: !!tree && getComputedStyle(tree).display !== 'none', treeScroll: tree ? tree.scrollHeight - tree.clientHeight : -1, treeTop: tree ? tree.scrollTop : -1, titleOnTop: !!th && document.getElementById('sessionTitle').contains(th) }); })()";
+
+fn drawer_facts(tab: &headless_chrome::Tab) -> serde_json::Value {
+    serde_json::from_str(harness::eval(tab, DRAWER_FACTS).as_str().unwrap_or("{}"))
+        .unwrap_or_default()
+}
+
+/// #s33: a finger opens the drawer, and its list must be there and SCROLL under a finger — Chrome's
+/// own synthesized touch scroll, the gesture the owner made — which a list that is not painted, or
+/// not a scroller of its own height, does not.
+fn the_drawer_opens_and_its_list_scrolls(tab: &headless_chrome::Tab, at: &str) {
+    use headless_chrome::protocol::cdp::Input::{GestureSourceType, SynthesizeScrollGesture};
+    let handle = harness::eval(
+        tab,
+        "(function(){ var b = document.getElementById('drawerHandle').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()",
+    );
+    let handle: Vec<f64> =
+        serde_json::from_str(handle.as_str().unwrap_or("[]")).unwrap_or_default();
+    harness::finger_tap(tab, handle[0], handle[1]);
+    harness::until(
+        tab,
+        "(function(){ var s = document.querySelector('#app>.sidebar').getBoundingClientRect(); return !document.getElementById('app').classList.contains('mobile-detail') && Math.abs(s.left) < 1; })()",
+        "the drawer open and in place",
+        Duration::from_secs(10),
+        DRAWER_FACTS,
+    );
+    let open = drawer_facts(tab);
+    assert_eq!(
+        open["treeShown"], true,
+        "{at}: the open drawer shows its list: {open}"
+    );
+    assert_eq!(
+        open["rowHit"], true,
+        "{at}: a session in it is on screen and takes a tap: {open}"
+    );
+    assert!(
+        open["treeScroll"].as_i64().unwrap_or(-1) > 100,
+        "{at}: thirty sessions overflow the drawer's list: {open}"
+    );
+    let tree = harness::eval(
+        tab,
+        "(function(){ var b = document.querySelector('#app>.sidebar .tree').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height * 0.7]); })()",
+    );
+    let tree: Vec<f64> = serde_json::from_str(tree.as_str().unwrap_or("[]")).unwrap_or_default();
+    tab.call_method(SynthesizeScrollGesture {
+        x: tree[0],
+        y: tree[1],
+        x_distance: Some(0.0),
+        y_distance: Some(-120.0),
+        x_overscroll: None,
+        y_overscroll: None,
+        prevent_fling: Some(true),
+        speed: Some(800),
+        gesture_source_Type: Some(GestureSourceType::Touch),
+        repeat_count: None,
+        repeat_delay_ms: None,
+        interaction_marker_name: None,
+    })
+    .expect("a finger's scroll on the drawer's list");
+    harness::until(
+        tab,
+        "document.querySelector('#app>.sidebar .tree').scrollTop > 40",
+        "the drawer's list scrolled under the finger",
+        Duration::from_secs(10),
+        DRAWER_FACTS,
+    );
+    assert_eq!(
+        drawer_facts(tab)["wsTop"].as_i64(),
+        Some(0),
+        "{at}: the session view stays where it was, under the drawer"
+    );
+}
+
+/// #s33, the owner on 1.356.0 with a phone held sideways (956×440): the drawer showed its list and
+/// the session view behind it was blank grey. A `min-width:761px` rule — "not a phone" until #s32
+/// made a landscape phone a phone at any width — put the drawer back into the page's flow, and it
+/// pushed the session view down by its own height, off the screen. #s32's case ran at 932×430 but
+/// its list was one session long, so the title stayed in view. Here the list is long and the
+/// session view's own top is asserted, at the widest phone and at one inside the 761–900px band.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_held_sideways_has_its_session_on_screen_and_its_drawer_over_it() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(2744, "landscape-drawer", 956, 440, false);
+    for (w, h) in [(956, 440), (852, 393)] {
+        harness::phone(&tab, w, h);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {w} && innerHeight === {h}"),
+            "the phone at its size",
+            Duration::from_secs(10),
+            "innerWidth + 'x' + innerHeight",
+        );
+        let at = format!("{w}x{h}");
+        if harness::eval(
+            &tab,
+            "document.getElementById('app').classList.contains('mobile-detail')",
+        ) != serde_json::Value::Bool(true)
+        {
+            harness::eval(
+                &tab,
+                "(function(){ document.getElementById('drawerScrim').click(); return 'ok'; })()",
+            );
+        }
+        let shut = drawer_facts(&tab);
+        assert_eq!(
+            shut["wsTop"].as_i64(),
+            Some(0),
+            "{at}: the session view is at the top of the screen: {shut}"
+        );
+        assert!(
+            shut["wsHeight"].as_i64().unwrap_or(0) >= h as i64 - 1,
+            "{at}: and fills it: {shut}"
+        );
+        assert_eq!(
+            shut["sbPosition"], "fixed",
+            "{at}: the drawer lies over the view, never in its flow: {shut}"
+        );
+        assert_eq!(
+            shut["titleOnTop"], true,
+            "{at}: the session's title can be read: {shut}"
+        );
+        the_drawer_opens_and_its_list_scrolls(&tab, &at);
+        harness::eval(&tab, "(function(){ document.getElementById('drawerScrim').click(); document.querySelector('#app>.sidebar .tree').scrollTop = 0; return 'ok'; })()");
+    }
+}
+
+/// #s33, the owner on 1.356.0 in portrait: the drawer opened BLANK, its background alone, and would
+/// not scroll. The phone had the desktop's collapsed rail stored (written while 1.355 drew it, held
+/// sideways, as a desktop), and that rail's rules hide the sidebar's head, nav and list; since #s32 a
+/// phone has no control that expands it. On a phone the rail is never applied — the drawer is the
+/// whole list — and the desktop's choice is still remembered for the desktop.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_with_the_desktop_s_rail_stored_opens_a_drawer_with_its_list() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(2745, "rail-drawer", 390, 844, true);
+    let shut = drawer_facts(&tab);
+    assert_eq!(
+        shut["rail"], false,
+        "a phone never wears the desktop's rail: {shut}"
+    );
+    the_drawer_opens_and_its_list_scrolls(&tab, "390x844 with the rail stored");
+    assert_eq!(
+        harness::eval(&tab, "localStorage.getItem('am-demo-sidebar')"),
+        serde_json::Value::String("0".into()),
+        "the desktop's choice is still remembered"
+    );
+    // The same page grown past the phone (neither narrow nor short) wears the rail again.
+    harness::phone(&tab, 1400, 900);
+    harness::until(
+        &tab,
+        "innerWidth === 1400 && document.getElementById('app').classList.contains('sidebar-off')",
+        "the desktop's rail back on a desktop-sized window",
+        Duration::from_secs(10),
+        "innerWidth + ' ' + document.getElementById('app').className",
+    );
+}

@@ -2249,7 +2249,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(productionCss, /\.side-head>\.brand\{flex:0 0 100%/, "the brand takes the first line, so the head is two lines by construction (#223)");
   assert.match(productionCss, /\.side-head>\.head-actions\{flex:0 1 100%;flex-wrap:wrap;justify-content:flex-end\}/, "…the controls take the second and wrap within it");
   assert.match(productionCss, /#app\.sidebar-tight \.side-head \.iconbtn\.shell-toggle\{width:auto;flex:none;padding:0 6px\}/, "…and the switch keeps its content width when the glyphs are squeezed");
-  assert.match(productionCss, /@media\(min-width:761px\)\{\s*\.app\{--sidebar:var\(--sidebar-user,300px\)\}/, "the viewer's width reaches the grid only above the mobile breakpoint");
+  assert.match(productionCss, /@media\(min-width:761px\) and \(min-height:501px\),\(min-width:761px\) and \(pointer:fine\)\{\s*\.app\{--sidebar:var\(--sidebar-user,300px\)\}/, "the viewer's width reaches the grid only off a phone — above 760px and not a phone held sideways (#s33)");
   assert.match(productionCss, /\.app\.sidebar-off \.sidebar-resizer\{display:none\}/, "…and the rail has nothing to drag");
   assert.match(appSource, /const SIDEBAR_MIN = 232, SIDEBAR_MAX = 520, SIDEBAR_DEFAULT = 300;/, "the width is clamped at both ends");
   assert.match(appSource, /Math\.max\(SIDEBAR_MIN, Math\.min\(SIDEBAR_MAX, Math\.round\(Number\.isFinite\(asked\) \? asked : SIDEBAR_DEFAULT\)\)\)/, "…on every path that sets it, and a drag to x=0 clamps to the minimum rather than falling back to the default");

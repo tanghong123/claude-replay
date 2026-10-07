@@ -396,9 +396,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    Wrapping puts the switch on a line of its own instead of shaving it (#223). */
 .side-head>.head-actions{flex:0 1 100%;flex-wrap:wrap;justify-content:flex-end}
 /* #96: the session list's own resize handle, on the sidebar's right edge. `--sidebar-user`
-   reaches the grid only above the mobile breakpoint, where the sidebar is a full-width sheet
-   and a drag makes no sense; the rail has no width to drag either. */
-@media(min-width:761px){
+   reaches the grid only off a phone, where the sidebar is a drawer and a drag makes no sense; the
+   rail has no width to drag either. "Off a phone" is wider than 760px AND not a phone held
+   sideways (#s33): as `min-width:761px` alone it put a landscape phone's drawer back into the
+   page's flow, which pushed the whole session view off the bottom of the screen. */
+@media(min-width:761px) and (min-height:501px),(min-width:761px) and (pointer:fine){
   .app{--sidebar:var(--sidebar-user,300px)}
   .sidebar{position:relative}
 }
@@ -963,16 +965,16 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    in the sidebar row too. */
 .session-heading>.crumb{min-width:0;flex-shrink:8;overflow:hidden;text-overflow:ellipsis}
 .session-heading>.status-chip{min-width:0;flex-shrink:4}
-@media(min-width:1181px){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)),.header-searchbox:has(.search-chips.has-chips){width:min(460px,36vw)}}
+@media(min-width:1181px) and (min-height:501px),(min-width:1181px) and (pointer:fine){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)),.header-searchbox:has(.search-chips.has-chips){width:min(460px,36vw)}}
 /* #303 widened this: the box may hold chips now (`scope:o`, `tool:Read`), and at 1100px a 400px box
    left the text 34px — "needle" needs 43. */
-@media(min-width:901px) and (max-width:1180px){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)),.header-searchbox:has(.search-chips.has-chips){width:min(460px,42vw)}}
+@media(min-width:901px) and (max-width:1180px) and (min-height:501px),(min-width:901px) and (max-width:1180px) and (pointer:fine){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)),.header-searchbox:has(.search-chips.has-chips){width:min(460px,42vw)}}
 /* Below 900px the bar has no room for both (about 520px beside the sidebar), and a box sharing it
    left the title 10px wide: there the box takes the heading's place while the reader TYPES, and at
    rest — a query held, the reader clicked away — gives it back at its resting width. There the
    count and the steps fold away until the box is focused again: at 180px they pushed the filter
    button out past the box's edge, and a wider resting box took the same pixels from the title. */
-@media(min-width:701px) and (max-width:900px){.header-searchbox:focus-within{width:min(392px,52vw)}.topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}.header-searchbox:not(:focus-within) .search-field~:is(.find-count,.find-nav,.search-clear){display:none}}
+@media(min-width:701px) and (max-width:900px) and (min-height:501px),(min-width:701px) and (max-width:900px) and (pointer:fine){.header-searchbox:focus-within{width:min(392px,52vw)}.topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}.header-searchbox:not(:focus-within) .search-field~:is(.find-count,.find-nav,.search-clear){display:none}}
 
 
 
@@ -1002,7 +1004,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .search-chips.has-chips{display:flex}
 /* Below 900px a focused box with chips has no room for its count as well: 360px less the chips, the
    steps and the filter left the text 7px. The count steps aside while the reader types there. */
-@media(min-width:701px) and (max-width:900px){.header-searchbox:focus-within:has(.search-chips.has-chips) .find-count{display:none}}
+@media(min-width:701px) and (max-width:900px) and (min-height:501px),(min-width:701px) and (max-width:900px) and (pointer:fine){.header-searchbox:focus-within:has(.search-chips.has-chips) .find-count{display:none}}
 .search-chip{display:inline-flex;align-items:center;min-width:0;height:22px;padding:0 2px 0 7px;border-radius:6px;background:color-mix(in srgb,var(--primary) 10%,var(--panel));color:var(--ink);font:10.5px/1 var(--mono);white-space:nowrap}
 .search-chip-key{color:var(--primary);flex:none}
 .search-chip-value{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:2px}
@@ -1060,13 +1062,16 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .search-suggest-row.on .scope-check:after{opacity:1}
 .search-suggest-empty{padding:8px;color:var(--faint);font-size:11px}
 
-/* #313 — the phone shell (the owner: "it does not feel native at all"), one breakpoint: 760px.
+/* #313 — the phone shell (the owner: "it does not feel native at all"), one breakpoint: `PHONE_QUERY`
+   (760px, or a phone held sideways, #s32; every `min-width` rule says "not a phone" the same way, #s33).
    - The session list is a DRAWER over part of the session view, never all of it, with a scrim over
      the rest that closes it on a tap and a handle fixed at the top left that opens and closes it.
      The workspace is isolated so its own layers (the turn bar, sticky heads, popovers) stay under
      the scrim and the drawer — #310's list sat under them and took no taps. A remembered desktop
-     collapse (`sidebar-off`) must not make the drawer invisible, and the rail, the collapse, the
-     resizer, Back and the shell switch have no job in a drawer.
+     collapse (`sidebar-off`) never reaches a phone (app.js `applySidebar`, #s33: the rail's rules
+     hide the drawer's head, nav and list, and a rule here that undid only their visibility left the
+     owner a blank drawer), and the rail, the collapse, the resizer, Back and the shell switch have no
+     job in a drawer.
    - The top bar is two rows: the handle's slot, the title, Info and the right pane; then Turns,
      Tasks, Agents, search and Aa. The turn header is the third row (the transcript's sticky bar).
      Every sheet that hangs from the bar is placed at `--phone-top`, its measured bottom.
@@ -1082,7 +1087,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   :root{--sidebar:min(86vw,360px)}
   #app>.sidebar{right:auto;width:min(86vw,360px);background:var(--side);box-shadow:1px 0 0 var(--line),14px 0 36px -20px rgba(20,26,40,.5)}
   #app.mobile-detail>.sidebar{box-shadow:none}
-  #app.sidebar-off>.sidebar{visibility:visible;opacity:1;pointer-events:auto}
   #app .sidebar-mini,#app .sidebar-resizer,#app #mobileBack,#app #sidebarReopen,#app #sidebarCollapse,#app #shellToggle{display:none!important}
   #app>.workspace{isolation:isolate}
   .drawer-scrim{display:block;position:fixed;inset:0;z-index:15;background:rgba(14,19,31,.42);opacity:0;pointer-events:none;transition:opacity .22s}

@@ -50,7 +50,12 @@ then Turns, Tasks, Agents, search/filter, Aa; the turn header is the third. **Th
 (#s32, `PHONE_QUERY` in `shared/capabilities.js`: `(max-width:760px), (pointer:coarse) and
 (max-height:500px)`, mdrev's own phone test), written in the demo's and production's CSS and read by every
 JS check, so a landscape phone is a phone — its top bar folds to ONE row, since its height is what is
-short. Between the phone and 1180px an open preview covers the whole session area beside the sidebar
+short. Its complement is just as strict (#s33): every `min-width` rule means "not a phone", so each of
+its queries also carries `(min-height:501px)` or `(pointer:fine)` — a bare `min-width:761px` put a
+932–956px landscape phone's drawer back into the flow and pushed the session view off the screen
+(`every_media_query_agrees_on_what_a_phone_is` in `ui.rs` reads both stylesheets) — and the desktop's
+collapsed rail (`sidebar-off`) never goes on a phone (`applySidebar`), where its rules emptied the
+drawer. Between the phone and 1180px an open preview covers the whole session area beside the sidebar
 (it was a 72vw overlay over a sliver nobody could read); `a_phone_held_sideways_gets_the_phone_layout_in_one_row`
 and `a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver` hold both. That second row never
 wraps (#352): the search takes at most what the four 44px glyphs leave, and the CLOSED box with a

@@ -615,6 +615,53 @@ mod tests {
             .iter()
             .any(|header| header == "Cache-Control: no-store"));
     }
+
+    /// #s32, #s33: ONE phone, in the scripts and in both stylesheets. A phone is `PHONE_QUERY` — 760px,
+    /// or a finger on a short side (a phone held sideways, at any width) — and every media query that
+    /// names the breakpoint says exactly that. Every `min-width` rule means "not a phone", so each of
+    /// its queries also needs `(min-height:501px)` or `(pointer:fine)`: written as `min-width:761px`
+    /// alone, one put a landscape phone's drawer back into the page's flow, which pushed the owner's
+    /// session view off the screen.
+    #[test]
+    fn every_media_query_agrees_on_what_a_phone_is() {
+        let body = |name: &str| String::from_utf8(asset(name).unwrap().body).unwrap();
+        let capabilities = body("monitor-ui/shared/capabilities.js");
+        let phone = capabilities
+            .split("const PHONE_QUERY = \"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("capabilities.js defines PHONE_QUERY")
+            .replace(", ", ",");
+        let mut phones = 0;
+        let mut wides = 0;
+        for name in ["monitor-ui/reference.css", "monitor-ui/production.css"] {
+            let css = body(name);
+            for prelude in css
+                .split("@media")
+                .skip(1)
+                .map(|rest| rest.split('{').next().unwrap())
+            {
+                let prelude = prelude.trim();
+                if prelude.contains("max-width:760px") && !prelude.contains("(hover:hover)") {
+                    assert_eq!(prelude, phone, "{name}: a phone rule says what a phone is");
+                    phones += 1;
+                }
+                if prelude.contains("min-width:") {
+                    for query in prelude.split(',') {
+                        assert!(
+                            query.contains("(min-height:501px)") || query.contains("(pointer:fine)"),
+                            "{name}: `{prelude}` is a wide window's rule, and `{query}` also matches a phone held sideways"
+                        );
+                    }
+                    wides += 1;
+                }
+            }
+        }
+        assert!(
+            phones >= 14 && wides >= 8,
+            "read the stylesheets: {phones} phone rules, {wides} wide ones"
+        );
+    }
 }
 
 #[cfg(test)]
