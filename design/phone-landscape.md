@@ -1,8 +1,9 @@
 # A phone held sideways (#s35)
 
-**Status: the owner chose two columns on a wide phone and a top bar that never hides (2026-10-07,
-§7); the find bar at the keyboard is shown step by step in the mockups and awaits the owner's
-answer. Nothing is built yet.**
+**Status: approved for building (the owner, 2026-10-07: "This looks really nice now. Proceed").**
+Two columns on a wide phone, a top bar that never hides, and the toolbar at the bottom in a pill
+(§3.5a) with search as the pill's other state, in portrait and sideways. Built in steps: #s37 (the
+layout and the pill), #s38 (search in the pill), #s39 (the compose box beside the pill).
 Since #s32 a phone held sideways gets the phone layout, and since #s33 that layout stays on the
 screen. The owner's verdict on 1.357.0: "kind of works, but not ideal", with five issues and a
 request for "a proper design session to think through them holistically", leaning on how other
@@ -213,9 +214,9 @@ restores each layout as it was left.
    columns.
 2. **The find bar at the keyboard, sideways only, or also in portrait?** The owner asked to see it
    first (the mockups show it step by step), asked whether filtering survives (it does, §3.5a), and
-   proposed the toolbar at the bottom in a pill. The question is now: **the bottom pill (§3.5a), in
-   portrait and sideways (recommended)?** If yes, search docks at the keyboard everywhere as the
-   pill's other state, and the flat find bar of §3.5 is not built.
+   proposed the toolbar at the bottom in a pill. Decided (2026-10-07): **the bottom pill (§3.5a), in
+   portrait and sideways**; search docks at the keyboard everywhere as the pill's other state, and
+   the flat find bar of §3.5 is not built.
 3. **The bar that hides while reading?** Decided (2026-10-07): no, the top bar stays. Phase 3 is
    dropped.
 
