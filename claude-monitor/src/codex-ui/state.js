@@ -1,5 +1,6 @@
 import { DEFAULT_READING, READING_KEY, parseReading } from "./shared/reading.js";
 import { composeCapability } from "./shared/control-protocol.js";
+import { PHONE_QUERY } from "./shared/capabilities.js";
 
 const json = (key, fallback) => {
   try { return JSON.parse(localStorage.getItem(key) || "") || fallback; }
@@ -65,7 +66,7 @@ export const uiState = {
   preview: false, previewTabs: [], previewId: null,
   // Until the reader chooses, the outline starts open — except on a phone (#310), where it is an
   // overlay over most of the transcript rather than a column beside it.
-  navigatorOpen: (stored => stored === null ? !matchMedia("(max-width:760px)").matches : stored !== "0")(localStorage.getItem("am-demo-navigator")),
+  navigatorOpen: (stored => stored === null ? !matchMedia(PHONE_QUERY).matches : stored !== "0")(localStorage.getItem("am-demo-navigator")),
   navCards: new Set(json("am-prod-nav-cards", ["turns"])),
   // Which panes EXIST in the outline at all (#159). Distinct from `navCards`, which is whether a
   // pane that exists is open: a pane turned off here costs nothing — no body, no head, no slot,

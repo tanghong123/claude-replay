@@ -1,7 +1,7 @@
 import { agentLogo, svg } from "./icons.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml, pendingHeadText } from "./components.js";
-import { referenceAction, revealHere } from "./shared/capabilities.js";
+import { PHONE_QUERY, referenceAction, revealHere } from "./shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "./shared/cost-display.js";
 import { chainWalk, toolTree } from "./shared/filter.js";
 import { taskCardHtml, taskRowMeta, TASK_NO_TITLE } from "./shared/task-card.js";
@@ -1243,7 +1243,7 @@ function renderNavigator() {
   // #319: except on a phone, which has no way to reach that filter (it lives in the outline's
   // menu) — its Tasks drop-down lists every state, and its head jumps between them. The reader's
   // remembered choice is left as it is, for the desktop.
-  const shownGroups = matchMedia("(max-width:760px)").matches ? new Set(TASK_GROUP_ROWS.map(g => g.key)) : uiState.taskGroupsShown;
+  const shownGroups = matchMedia(PHONE_QUERY).matches ? new Set(TASK_GROUP_ROWS.map(g => g.key)) : uiState.taskGroupsShown;
   const liveTasksOnly = !TASK_GROUP_ROWS.every(g => shownGroups.has(g.key));
   // Filter the GROUPS, never the list. Each row carries `index`, the position in `meta.tasks`,
   // and `data-task-open` hands that index straight to `openTaskPopover`, which reads the FULL
@@ -1780,12 +1780,12 @@ function fitSearchField() {
   if (input.selectionStart === input.value.length) searchField.scrollLeft = searchField.scrollWidth;
 }
 addEventListener("resize", () => fitSearchField());
-// #310, #313: at phone width (760px, the shell's one breakpoint) the search box is an icon with its
+// #310, #313: on a phone (`PHONE_QUERY`, the shell's one breakpoint; #s32 a landscape phone too) the search box is an icon with its
 // input hidden. A tap on it OPENS it across the bar's second row, and it stays open until a tap lands outside the search's own
 // surfaces (the box, the drop-down, the filter popover) or Escape — never on blur, since a touch
 // browser does not focus a tapped button and the steps would vanish under the finger. The query,
 // its count and its marks outlive the box closing, as they outlive a blur on a wider window.
-const phoneSearch = matchMedia("(max-width:760px)"), searchBox = document.querySelector(".header-searchbox");
+const phoneSearch = matchMedia(PHONE_QUERY), searchBox = document.querySelector(".header-searchbox");
 function setPhoneSearch(open) {
   searchBox.classList.toggle("phone-open", open && phoneSearch.matches);
   fitSearchField();
@@ -2181,7 +2181,7 @@ function applyToolFilter() {
 // is drawn.
 // #338: and the wrap BASELINE, which only the `w` key set once #173 moved the per-block bars off it —
 // a phone has no `w` key, and the owner found it gone from here, beside a wide-transcript switch a
-// phone's edge-to-edge text has no use for (production.css hides that one at 760px or below).
+// phone's edge-to-edge text has no use for (production.css hides that one on a phone, `PHONE_QUERY`).
 const readingSection = document.createElement("div");
 readingSection.className = "reading-section";
 readingSection.innerHTML = `<div class="scope-menu-head"><strong>Reading</strong><button class="scope-menu-action" type="button" data-reading-reset>Reset</button></div>
@@ -3148,7 +3148,7 @@ var sessionLoading;
   };
 }
 
-// #313 — the phone shell (the owner: "it does not feel native at all"). One breakpoint, 760px:
+// #313 — the phone shell (the owner: "it does not feel native at all"). One breakpoint, `PHONE_QUERY` (760px, or a landscape phone, #s32):
 //  - The session list is a DRAWER over part of the session view, never all of it. A handle fixed at
 //    the top left opens and closes it, and stays where it is either way — it is a sibling of the
 //    drawer in #app, not inside the top bar, whose layer sits under the drawer. A tap on the dimmed
@@ -3163,7 +3163,7 @@ var sessionLoading;
 var mobileShell;
 var infoPopoverToggle;
 {
-  const PHONE = matchMedia("(max-width:760px)");
+  const PHONE = matchMedia(PHONE_QUERY);
   const topbar = document.querySelector(".topbar");
   const handle = document.createElement("button");
   handle.type = "button";

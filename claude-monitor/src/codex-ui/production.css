@@ -406,7 +406,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .sidebar-resizer:hover,.sidebar-resizer.dragging,.sidebar-resizer:focus-visible{background:var(--blue);outline:0}
 .sidebar-resizer.dragging:after{content:"";position:fixed;inset:0;cursor:col-resize;z-index:9999}
 .app.sidebar-off .sidebar-resizer{display:none}
-@media(max-width:760px){.sidebar-resizer{display:none}}
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){.sidebar-resizer{display:none}}
 /* #78 / #95: the published-artifact roster — the right pane's pinned first tab, and the
    count on the pane's button so a closed pane still says there is something to see. */
 #previewBtn{position:relative}
@@ -486,7 +486,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .codebox .codebar .code-copy.copied{color:var(--green)}
 .code-bar-word{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .cap-more-btn{white-space:nowrap}
-@media(max-width:760px){.codebox .codebar button{min-width:44px;height:44px}.cap-more-range{display:none}}
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){.codebox .codebar button{min-width:44px;height:44px}.cap-more-range{display:none}}
 /* #116: a link to a tool call — beside its head, shown on hover like the turns' spot links. */
 /* #162. A fold head's anchor gets a REAL SLOT, on every head. It cannot be a flex item the way
    the classic page's `.alink` is — the head is a <button> and the anchor cannot nest inside one —
@@ -1078,7 +1078,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      focused field (the search box zoomed the page and pushed the filter off the edge). */
 .drawer-handle,.drawer-scrim,.phone-only,.phone-row-break,.phone-pane-menu,.task-scrim{display:none}
 @media(max-width:760px) and (hover:hover){.drawer-handle:hover{background:var(--hover)}}
-@media(max-width:760px){
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){
   :root{--sidebar:min(86vw,360px)}
   #app>.sidebar{right:auto;width:min(86vw,360px);background:var(--side);box-shadow:1px 0 0 var(--line),14px 0 36px -20px rgba(20,26,40,.5)}
   #app.mobile-detail>.sidebar{box-shadow:none}
@@ -1231,6 +1231,32 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .preview-head .preview-print,#app .preview-head .preview-download,#app .preview-head .preview-reveal{width:40px;height:44px}
 
   input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{font-size:16px!important}
+}
+
+/* #s32 — a phone held sideways is a phone (the shells' breakpoint, `PHONE_QUERY`), and its height is
+   what is short: the top bar is ONE row — the title, the outline's panes, the search, Aa, Info and
+   the right pane — so the transcript keeps the height the second row would take. Sheets hang from the
+   bar's measured bottom (`--phone-top`), so they follow it up. */
+@media(pointer:coarse) and (max-height:500px){
+  #app .topbar{flex-wrap:nowrap}
+  #app .topbar>.phone-row-break{display:none}
+  #app .topbar>.session-heading{order:1}
+  #app .topbar>.phone-pane{order:2}
+  #app .topbar>.header-search-cluster{order:3;max-width:min(360px,38%)}
+  #app .topbar>.reading-cluster{order:4}
+  #app .topbar>.phone-info{order:5}
+  #app .topbar>#previewBtn{order:6}
+}
+
+/* #s32 — between the phone and 1180px the preview is an overlay (reference.css), and at
+   min(620px,72vw) it covered most of a session still laid out at full width, leaving a sliver no one
+   could read: an outline column and a few characters of transcript beside a header cut off mid-word
+   (the owner's screenshot, sidebar closed), or a single letter with the sidebar open. An open preview
+   now covers the whole session area beside the sidebar. Not on a phone, whose preview is its own sheet:
+   the query is "tall enough, or a fine pointer", the complement of a landscape phone. */
+@media(min-width:761px) and (max-width:1180px) and (min-height:501px),(min-width:761px) and (max-width:1180px) and (pointer:fine){
+  .app:not(.preview-off)>.preview{left:calc(var(--sidebar) + 10px);width:auto}
+  .app.sidebar-off:not(.preview-off)>.preview{left:10px}
 }
 
 /* #313 — while a session loads: a veil over the session area (below the top bars, which already

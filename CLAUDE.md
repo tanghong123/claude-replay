@@ -40,13 +40,19 @@ so all six stay inside the sidebar at its 232px minimum (#210); the switch is ex
 glyph width there, since shaving a word is what clipped it. Nothing is hidden at any width; a new
 control in that row is measured against the minimum, not the default, and the case hit-tests the
 switch against the brand and the theme glyph rather than eyeballing it.
-**On a phone (≤760px, #310 then #313) the app shell is a reader and a native-feeling app**, the
-owner's rules: the transcript runs edge to edge (a 13px gutter), controls may FLOAT, and controls of
+**On a phone (≤760px, #310 then #313 — or a finger on a phone-sized short side, a phone held sideways,
+#s32) the app shell is a reader and a native-feeling app**, the owner's rules: the transcript runs edge to edge (a 13px gutter), controls may FLOAT, and controls of
 little use on a phone are hidden. The session list is a DRAWER over part of the view (a scrim over the
 rest closes it on a tap; `mobile-detail` = shut), opened and closed by a handle fixed at the top left —
 a sibling of the drawer in `#app`, because the workspace is isolated under the scrim and anything in
 the top bar would sit under the drawer. The top bar is two rows: handle slot, title, Info, right pane;
-then Turns, Tasks, Agents, search/filter, Aa; the turn header is the third. That second row never
+then Turns, Tasks, Agents, search/filter, Aa; the turn header is the third. **The breakpoint is ONE query**
+(#s32, `PHONE_QUERY` in `shared/capabilities.js`: `(max-width:760px), (pointer:coarse) and
+(max-height:500px)`, mdrev's own phone test), written in the demo's and production's CSS and read by every
+JS check, so a landscape phone is a phone — its top bar folds to ONE row, since its height is what is
+short. Between the phone and 1180px an open preview covers the whole session area beside the sidebar
+(it was a 72vw overlay over a sliver nobody could read); `a_phone_held_sideways_gets_the_phone_layout_in_one_row`
+and `a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver` hold both. That second row never
 wraps (#352): the search takes at most what the four 44px glyphs leave, and the CLOSED box with a
 query is its count and steps only — its chips (a scope chip is its letters alone, a tool chip wears
 a wrench; the word visually hidden, #353) and the clear control (×, every width, whenever there is a

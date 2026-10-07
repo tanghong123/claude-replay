@@ -81,10 +81,18 @@ const revealHere = () => {
   return host === "" || host === "localhost" || /^127(\.\d{1,3}){3}$/.test(host) || host === "[::1]" || host === "::1";
 };
 
-/** Whether the page is laid out for a phone (the shells' 760px breakpoint, #310/#313): what a
- *  phone's layout withholds for its own reasons — a tab of its own, which has no way back there
- *  (#335) — and offers instead (the review sheet, #s12). Not a question of where the reader is. */
-const onPhone = () => typeof matchMedia === "function" && matchMedia("(max-width:760px)").matches;
+/** The shells' phone breakpoint (#310/#313), as a media query: a screen at most 760px wide, OR a
+ *  finger on a screen whose short side is a phone's — a phone held sideways (#s32, the owner's
+ *  screenshots of a landscape phone laid out as a narrow desktop). The test mdrev applies to its own
+ *  phone layout ("one side of the screen is a phone's, either way up"). The CSS writes the same
+ *  query (`@media(max-width:760px),(pointer:coarse) and (max-height:500px)`); every JS check of the
+ *  breakpoint reads this one string, so the two cannot disagree. */
+const PHONE_QUERY = "(max-width:760px), (pointer:coarse) and (max-height:500px)";
+
+/** Whether the page is laid out for a phone (`PHONE_QUERY`): what a phone's layout withholds for its
+ *  own reasons — a tab of its own, which has no way back there (#335) — and offers instead (the
+ *  review sheet, #s12). Not a question of where the reader is. */
+const onPhone = () => typeof matchMedia === "function" && matchMedia(PHONE_QUERY).matches;
 
 /** The `/__reveal` query for a path and its reveal stamp — encoded once, verbatim. */
 const revealQuery = ({ path, sig }) => `/__reveal?path=${encodeURIComponent(path || "")}&sig=${encodeURIComponent(sig || "")}`;
@@ -145,4 +153,4 @@ function groupPointerRuns(items, headOf) {
   return out.map(g => (g.run && g.items.length === 1 ? { run: false, item: g.items[0] } : g));
 }
 
-export { attachmentCapability, besideAction, canDownload, canReveal, groupPointerRuns, isPointerAttachment, onPhone, POINTER_KINDS, RASTER_FILE, referenceAction, revealHere, revealQuery, stampQuery };
+export { attachmentCapability, besideAction, canDownload, canReveal, groupPointerRuns, isPointerAttachment, onPhone, PHONE_QUERY, POINTER_KINDS, RASTER_FILE, referenceAction, revealHere, revealQuery, stampQuery };

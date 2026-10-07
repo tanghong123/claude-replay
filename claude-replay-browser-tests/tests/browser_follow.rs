@@ -11626,3 +11626,157 @@ fn a_phone_reader_who_opens_a_file_and_closes_the_pane_stays_on_its_turn() {
         "the reader is where they were: (anchor, turn at the top, the bar's turn)"
     );
 }
+
+/// A session that read one file, served by v2 on `port`, and a browser on it at `w`×`h` — a phone
+/// (touch) when `phone`, a desktop window otherwise (#s32).
+fn landscape_world(
+    port: u16,
+    case: &str,
+    w: u32,
+    h: u32,
+    phone: bool,
+) -> (
+    harness::Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+    String,
+) {
+    let base = harness::base(case);
+    let stores = harness::Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let file = repo.join("notes.md");
+    std::fs::write(&file, "# Notes\n\nThe document the reader opens.\n").unwrap();
+    let path = file.display().to_string();
+    let t = [
+        harness::user_at("question 1: read the notes", "2026-09-01T04:00:00.000Z"),
+        harness::read_tool_at("r1", &path, "2026-09-01T04:00:01.000Z"),
+        harness::tool_result_at("r1", "2026-09-01T04:00:02.000Z"),
+        harness::assistant_at(
+            "answer 1: a long enough answer to fill a line of the transcript, so the column has text in it",
+            "2026-09-01T04:00:03.000Z",
+        ),
+    ]
+    .concat()
+    .replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let (browser, tab) = harness::chrome_tab();
+    if phone {
+        harness::phone(&tab, w, h);
+    } else {
+        harness::resize(&tab, f64::from(w), f64::from(h));
+    }
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.transcript .turn.user') && innerWidth === {w}"),
+        "the session at its size",
+        Duration::from_secs(20),
+        "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className",
+    );
+    (m, browser, tab, path)
+}
+
+/// #s32, the owner (two screenshots of a phone held sideways, ~930×430): "landscape mode, when the
+/// left pane closes, the layout looks weird". The phone layout was width-only, so a landscape phone
+/// got the desktop structure with the preview drawn as a 72vw overlay over a sliver of the session.
+/// Now a finger on a phone-sized short side is a phone: the phone layout (the drawer, no outline
+/// column), the top bar in ONE row so the transcript keeps its height, nothing in it clipped or
+/// covered, and the preview a sheet across the whole screen.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_held_sideways_gets_the_phone_layout_in_one_row() {
+    let _serial = serial();
+    let (_m, _b, tab, path) = landscape_world(2742, "landscape-phone", 932, 430, true);
+    let shape = harness::eval(
+        &tab,
+        "(function(){ var app = document.getElementById('app'); var bar = document.querySelector('.topbar'); var r = bar.getBoundingClientRect(); var kids = [...bar.children].filter(function (e) { var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(e).display !== 'none'; }); var mids = kids.map(function (e) { var b = e.getBoundingClientRect(); return b.top + b.height / 2; }); var title = document.getElementById('sessionTitle'); var tr = title.getBoundingClientRect(); var hit = document.elementFromPoint(tr.left + Math.min(tr.width / 2, 20), tr.top + tr.height / 2); var nav = document.querySelector('.session-navigator'); var nr = nav ? nav.getBoundingClientRect() : { width: 0 }; return JSON.stringify({ phone: app.classList.contains('mobile-detail') || app.classList.contains('mobile-list'), barHeight: Math.round(r.height), spread: Math.round(Math.max.apply(null, mids) - Math.min.apply(null, mids)), overflow: Math.round(bar.scrollWidth - bar.clientWidth), titleOnTop: !!hit && title.contains(hit), outlineColumn: !!nav && getComputedStyle(nav).display !== 'none' && nr.width > 120 && nr.height > innerHeight / 2 }); })()",
+    );
+    let shape: serde_json::Value =
+        serde_json::from_str(shape.as_str().unwrap_or("{}")).unwrap_or_default();
+    assert_eq!(
+        shape["phone"], true,
+        "a landscape phone gets the phone layout: {shape}"
+    );
+    assert!(
+        shape["spread"].as_i64().unwrap_or(999) <= 8,
+        "its top bar is one row — every control on one line: {shape}"
+    );
+    assert!(
+        shape["barHeight"].as_i64().unwrap_or(999) <= 60,
+        "and no taller than one row: {shape}"
+    );
+    assert_eq!(
+        shape["overflow"], 0,
+        "nothing in the bar is pushed out of it: {shape}"
+    );
+    assert_eq!(
+        shape["titleOnTop"], true,
+        "the session's title is not covered: {shape}"
+    );
+    assert_eq!(
+        shape["outlineColumn"], false,
+        "and there is no outline column beside the transcript: {shape}"
+    );
+    // The preview is a sheet across the screen, never an overlay beside a sliver of the session.
+    let link = format!(
+        "document.querySelector('[data-reference-path={}]')",
+        serde_json::to_string(&path).unwrap()
+    );
+    harness::until(
+        &tab,
+        &format!("!!{link}"),
+        "the file link",
+        Duration::from_secs(20),
+        "''",
+    );
+    harness::eval(&tab, &format!("{link}.click(); 'ok'"));
+    harness::until(
+        &tab,
+        "(function(){ var p = document.getElementById('preview').getBoundingClientRect(); return p.left <= 1 && p.right >= innerWidth - 1 && p.width > 0; })()",
+        "the preview across the whole screen",
+        Duration::from_secs(15),
+        "JSON.stringify(document.getElementById('preview').getBoundingClientRect())",
+    );
+}
+
+/// #s32, part 2: between the phone and 1180px the preview is an overlay; it covered 72vw of a
+/// session still laid out at full width and left a sliver no one could read. An open preview now
+/// covers the whole session area beside the sidebar — and all of it with the sidebar closed.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver() {
+    let _serial = serial();
+    let (_m, _b, tab, path) = landscape_world(2743, "narrow-preview", 1000, 800, false);
+    let link = format!(
+        "document.querySelector('[data-reference-path={}]')",
+        serde_json::to_string(&path).unwrap()
+    );
+    harness::until(
+        &tab,
+        &format!("!!{link}"),
+        "the file link",
+        Duration::from_secs(20),
+        "''",
+    );
+    harness::eval(&tab, &format!("{link}.click(); 'ok'"));
+    let edges = "(function(){ var p = document.getElementById('preview').getBoundingClientRect(); var s = document.querySelector('.sidebar').getBoundingClientRect(); var off = document.getElementById('app').classList.contains('sidebar-off'); return JSON.stringify({ left: Math.round(p.left), right: Math.round(innerWidth - p.right), sidebar: off ? 0 : Math.round(s.right) }); })()";
+    harness::until(
+        &tab,
+        &format!("(function(){{ var e = JSON.parse({edges}); return e.left <= e.sidebar + 12 && e.right <= 12; }})()"),
+        "the preview from the sidebar's edge to the window's",
+        Duration::from_secs(15),
+        edges,
+    );
+    // The sidebar closed: the preview takes the whole window.
+    harness::eval(&tab, "(function(){ document.getElementById('app').classList.add('sidebar-off'); return 'ok'; })()");
+    harness::until(
+        &tab,
+        &format!("(function(){{ var e = JSON.parse({edges}); return e.left <= 12 && e.right <= 12; }})()"),
+        "the preview across the whole window with the sidebar closed",
+        Duration::from_secs(15),
+        edges,
+    );
+}
