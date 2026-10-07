@@ -110,6 +110,8 @@ sessionTitle.addEventListener("pointerleave", event => { if (leftByHover(event))
 sessionTitle.addEventListener("focus", () => setSessionCopyMenu(true));
 sessionTitle.addEventListener("blur", scheduleSessionCopyClose);
 sessionTitle.addEventListener("click", () => setSessionCopyMenu(true));
+// #s37: on a phone the turn's subtitle under the title is the same target (see `turnSubtitle`).
+document.querySelector(".topbar .session-heading").addEventListener("click", event => { if (event.target.closest("#turnSubtitle")) setSessionCopyMenu(true); });
 sessionTitle.addEventListener("keydown", event => {
   if (["Enter", " ", "ArrowDown"].includes(event.key)) {
     event.preventDefault(); setSessionCopyMenu(true);
@@ -120,7 +122,7 @@ sessionCopyMenu.addEventListener("pointerenter", () => clearTimeout(sessionCopyC
 sessionCopyMenu.addEventListener("pointerleave", event => { if (leftByHover(event)) scheduleSessionCopyClose(); });
 sessionCopyMenu.addEventListener("focusout", scheduleSessionCopyClose);
 document.addEventListener("pointerdown", event => {
-  if (event.target !== sessionTitle && !sessionCopyMenu.contains(event.target)) setSessionCopyMenu(false);
+  if (event.target !== sessionTitle && !event.target.closest?.("#turnSubtitle") && !sessionCopyMenu.contains(event.target)) setSessionCopyMenu(false);
 });
 
 async function copyText(text) {
@@ -183,6 +185,17 @@ turnStickyBar.append(turnStickyCaret, turnStickyText);
 byId("transcript").prepend(turnStickyBar);
 let turnStickyAt = null;
 turnStickyBar.onclick = () => { if (turnStickyAt != null) viewport.jumpToRecord(turnStickyAt, "turn"); };
+// #s37 (design/phone-landscape.md §3.4): on a phone the turn is the top bar's SUBTITLE, under the
+// session's title, where the strip above was a third row of chrome (production.css hides that strip
+// there). It always names the turn the reader is in — the strip waited until its card had scrolled
+// past. It is part of the title's target, not one of its own: two targets stacked in a 48px row are
+// each half a finger, so a tap on either line opens the session's menu (below), and turns are chosen
+// in the Turns pane, one tap away in the pill.
+const turnSubtitle = document.createElement("span");
+turnSubtitle.className = "turn-subtitle";
+turnSubtitle.id = "turnSubtitle";
+turnSubtitle.hidden = true;
+document.querySelector(".topbar .session-heading").append(turnSubtitle);
 bindComponentEvents(transcript, recordState, {
   // #185: `bindComponentEvents` is a CLICK handler, so everything that reaches `rerender` is the
   // reader reshaping the page themselves — a fold, a cap, a prompt expanded, a raw toggle. Parked
@@ -1640,7 +1653,10 @@ function landOnCurrentMark() {
   // with the match out of sight. The block's own scrollLeft, never the transcript's offset.
   revealSideways(mark);
   const box = mark.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
-  if (box.top >= view.top && box.bottom <= view.bottom) return;
+  // #s37: on a phone the toolbar floats over the transcript's foot (and the find pill with it), so a
+  // match under it is not on screen.
+  const floor = phoneDock && getComputedStyle(phoneDock).display !== "none" ? Math.min(view.bottom, phoneDock.getBoundingClientRect().top) : view.bottom;
+  if (box.top >= view.top && box.bottom <= floor) return;
   viewport.reveal(mark, { top: Math.min(120, view.height / 3) });
 }
 /** Scroll the nearest horizontally scrolling block holding `mark` so the mark sits in it, with a
@@ -1729,13 +1745,16 @@ searchClear.innerHTML = svg("x");
 byId("transcriptSearchInput").insertAdjacentElement("afterend", searchClear);
 searchClear.addEventListener("click", () => {
   const input = byId("transcriptSearchInput");
+  // #s37: the ✕ clears to type again and keeps the field — in an open box. Done ends a phone's search
+  // (the dock) and clears through here without raising the keyboard.
+  const refocus = !phoneSearch.matches || searchBox.classList.contains("phone-open");
   input.value = "";
   uiState.chips = { scope: "", tools: [] };
   recordState.pendingSearch = false;
   updateSearch(true);
   if (searchSuggest) searchSuggest.hidden = true;
   suggestState = null;
-  input.focus();
+  if (refocus) input.focus();
 });
 
 // ---- The search box's prefix (#303, #367, design/in-session-search.md §8) ---------------------------
@@ -3023,6 +3042,8 @@ function updateTurnBar(atKey) {
   turnStickyBar.setAttribute("aria-hidden", String(!on));
   turnStickyBar.tabIndex = on ? 0 : -1;
   turnStickyAt = on ? unit.from : null;
+  turnSubtitle.hidden = !unit;
+  if (unit) turnSubtitle.textContent = `Turn ${unit.turn} — ${unit.label || ""}`.trimEnd();
   if (!on) return;
   turnStickyText.textContent = `Turn ${unit.turn} — ${unit.label || ""}`.trimEnd();
   turnStickyBar.title = `Back to turn ${unit.turn}`;
@@ -3160,14 +3181,17 @@ var sessionLoading;
 //    drawer in #app, not inside the top bar, whose layer sits under the drawer. A tap on the dimmed
 //    part of the view closes it; choosing a session closes it at once (`selectSession`).
 //    `mobile-detail` keeps its meaning from #310: present = the drawer is shut.
-//  - The top bar is two rows: the handle's slot, the session's title, Info and the right pane; then
-//    Turns, Tasks, Agents, search and Aa. The turn header is the third row, as the transcript's own
-//    sticky bar. The outline column does not exist at this width; its three panes open from their
-//    icons as drop-downs holding the SAME live lists (moved in while open, moved back after), so
-//    the outline's rendering, its filters and its one click handler serve both.
-//  - `--phone-top`, the bar's measured bottom, places every sheet that hangs from it.
+//  - #s37 (design/phone-landscape.md): the top bar is ONE row — the handle's slot, the session's
+//    title with the current turn as its subtitle, Info and the right pane — and never hides. Turns,
+//    Tasks, Agents and Aa float at the bottom in a pill above the home indicator, search beside it.
+//    The outline column does not exist at this width; its three panes open from their icons as
+//    sheets rising from the pill, holding the SAME live lists (moved in while open, moved back
+//    after), so the outline's rendering, its filters and its one click handler serve both.
+//  - `--phone-top`, the bar's measured bottom, places the sheets that hang from the top (Info);
+//    `--phone-bottom`, the dock's top, the sheets that rise from the pill.
 var mobileShell;
 var infoPopoverToggle;
+var phoneDock;
 {
   const PHONE = matchMedia(PHONE_QUERY);
   const WIDE = matchMedia(WIDE_PHONE_QUERY);
@@ -3191,9 +3215,6 @@ var infoPopoverToggle;
   info.setAttribute("aria-label", "Session details");
   info.innerHTML = svg("info");
   info.onclick = () => infoPopoverToggle?.();
-  const rowBreak = document.createElement("span");
-  rowBreak.className = "phone-row-break";
-  rowBreak.setAttribute("aria-hidden", "true");
   const panes = [["turns", "Turns", "navigatorTurns"], ["tasks", "Tasks", "navigatorWork"], ["agents", "Agents", "navigatorAgents"]].map(([key, label, body]) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -3207,10 +3228,53 @@ var infoPopoverToggle;
     button.innerHTML = `${svg(key)}<span class="phone-pane-count" hidden></span>`;
     return { key, label, body, button };
   });
-  const previewButton = byId("previewBtn");
-  previewButton.before(info);
-  previewButton.after(rowBreak);
-  rowBreak.after(...panes.map(p => p.button));
+  byId("previewBtn").before(info);
+
+  // #s37 (design/phone-landscape.md §3.5a, the owner's idea): the toolbar floats at the bottom in a
+  // PILL above the home indicator — Turns, Tasks, Agents and Aa — with search its own control beside
+  // it, iOS 26's own pattern (Safari's bottom bar, the tab bar and search circle of Mail, Notes,
+  // Music). The top keeps one row. On a phone the reading and the search clusters move into the dock
+  // (the SAME nodes, so every handler and state comes along) and back to the top bar off a phone.
+  // The search's states decide the dock's look in CSS: closed and empty, a circle beside the pill;
+  // open or holding a query, the find pill across the dock, the toolbar pill stepping aside.
+  const dock = document.createElement("div");
+  dock.className = "phone-dock";
+  dock.id = "phoneDock";
+  const dockPill = document.createElement("div");
+  dockPill.className = "dock-pill";
+  dockPill.id = "dockPill";
+  dockPill.setAttribute("role", "toolbar");
+  dockPill.setAttribute("aria-label", "Session tools");
+  dockPill.append(...panes.map(p => p.button));
+  dock.append(dockPill);
+  app.append(dock);
+  phoneDock = dock;
+  const searchCluster = document.querySelector(".header-search-cluster");
+  // While the find pill holds the dock, a glass ✕ beside it ENDS the search — the query and its marks
+  // go, the keyboard goes down and the toolbar pill comes back — the way an iOS 26 search closes
+  // beside its field. The field's own small ✕ only clears it to type again: one control, one meaning.
+  const searchDone = document.createElement("button");
+  searchDone.type = "button";
+  searchDone.className = "phone-search-done";
+  searchDone.id = "phoneSearchDone";
+  searchDone.innerHTML = svg("x");
+  searchDone.title = "End the search";
+  searchDone.setAttribute("aria-label", "End the search");
+  searchDone.onclick = () => {
+    searchClear.click();
+    byId("transcriptSearchInput").blur();
+    setPhoneSearch(false);
+  };
+  const placeToolbar = () => {
+    if (PHONE.matches) {
+      dockPill.append(readingCluster);
+      dock.append(searchCluster, searchDone);
+    } else {
+      topbar.querySelector(".top-spacer").after(searchCluster);
+      byId("sessionFoldAll").after(readingCluster);
+    }
+  };
+  placeToolbar();
 
   const menu = document.createElement("div");
   menu.className = "phone-pane-menu";
@@ -3329,19 +3393,23 @@ var infoPopoverToggle;
 
   // The column's switcher: Sessions, or one of the outline's panes, holding the SAME live list the
   // drop-downs borrow (moved in while shown, back after) — one renderer, one click handler. A row
-  // chosen here moves the transcript and leaves the column as it is, as Mail does.
+  // chosen here moves the transcript and leaves the column as it is, as Mail does. Glyphs with their
+  // counts, in the head's one row before the sidebar's own glyphs (the owner: glyphs, "so the side bar
+  // width can be relatively small"; no brand row, which only took the height).
   const columnSwitch = document.createElement("div");
   columnSwitch.className = "column-switch";
   columnSwitch.id = "columnSwitch";
   columnSwitch.setAttribute("role", "tablist");
   columnSwitch.setAttribute("aria-label", "Show in the column");
-  columnSwitch.innerHTML = [["sessions", "Sessions"], ...panes.map(p => [p.key, p.label])]
-    .map(([key, label]) => `<button type="button" role="tab" data-column-tab="${key}" aria-selected="${key === "sessions"}"${key === "sessions" ? ' class="on"' : ""}><span>${label}</span><span class="column-switch-count"></span></button>`)
+  columnSwitch.innerHTML = [["sessions", "Sessions", "sidebar"], ...panes.map(p => [p.key, p.label, p.key])]
+    .map(([key, label, icon]) => `<button type="button" class="iconbtn${key === "sessions" ? " on" : ""}" role="tab" data-column-tab="${key}" title="${label}" aria-label="${label}" aria-selected="${key === "sessions"}">${svg(icon)}<span class="column-switch-count"></span></button>`)
     .join("");
   const columnPane = document.createElement("div");
   columnPane.className = "column-pane phone-pane-body";
   columnPane.id = "columnPane";
-  document.querySelector("#app>.sidebar>.side-head").after(columnSwitch, columnPane);
+  const sideHead = document.querySelector("#app>.sidebar>.side-head");
+  sideHead.querySelector(".head-actions").before(columnSwitch);
+  sideHead.after(columnPane);
   let columnNode = null, columnHome = null;
   const returnColumnList = () => {
     if (columnNode && columnHome) columnHome.parent.insertBefore(columnNode, columnHome.next && columnHome.next.parentNode === columnHome.parent ? columnHome.next : null);
@@ -3374,14 +3442,36 @@ var infoPopoverToggle;
   columnSwitch.addEventListener("click", event => { const tab = event.target.closest("[data-column-tab]"); if (tab) showColumnTab(tab.dataset.columnTab); });
   columnPane.addEventListener("click", navigatorClick);
 
+  // `--phone-top` (the bar's bottom) places the sheets that hang from the top, `--phone-bottom` (the
+  // dock's top, from the screen's foot) the sheets that rise from the dock.
   const place = () => {
     const bottom = Math.round(topbar.getBoundingClientRect().bottom);
     if (bottom > 0) document.documentElement.style.setProperty("--phone-top", `${bottom}px`);
+    const rise = Math.round(innerHeight - dock.getBoundingClientRect().top);
+    if (getComputedStyle(dock).display !== "none" && rise > 0) document.documentElement.style.setProperty("--phone-bottom", `${rise}px`);
   };
   new ResizeObserver(place).observe(topbar);
+  new ResizeObserver(place).observe(dock);
+  addEventListener("resize", place);
+  // #s37 (design/phone-landscape.md §3.5): the dock rides the keyboard. iOS never lifts a fixed bottom
+  // element above its keyboard — the layout viewport keeps its height and the keyboard covers its foot
+  // — so the find pill would type behind it. What the keyboard (and its accessory bar) covers is the
+  // layout viewport below the visual one; `--phone-kb` lifts the dock by that much, and only the dock:
+  // the transcript keeps its height (a moving foot would move the reader, #372).
+  const viewport2 = window.visualViewport;
+  if (viewport2) {
+    const ride = () => {
+      const covered = PHONE.matches ? Math.max(0, Math.round(innerHeight - viewport2.height - viewport2.offsetTop)) : 0;
+      document.documentElement.style.setProperty("--phone-kb", `${covered}px`);
+      place();
+    };
+    viewport2.addEventListener("resize", ride);
+    viewport2.addEventListener("scroll", ride);
+    ride();
+  }
   // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone), and
   // the desktop's rail comes off or goes back on (#s33, `applySidebar`).
-  PHONE.addEventListener("change", () => { place(); applySidebar(); if (!PHONE.matches) closePane(); renderNavigator(); });
+  PHONE.addEventListener("change", () => { placeToolbar(); place(); applySidebar(); if (!PHONE.matches) closePane(); renderNavigator(); });
   // Into the wide layout the drop-down has no button (the column shows its panes); out of it, the
   // column's borrowed list goes home and the handle speaks of the drawer again.
   WIDE.addEventListener("change", () => { if (WIDE.matches) closePane(); else showColumnTab("sessions"); labelHandle(); place(); });

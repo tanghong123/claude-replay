@@ -45,12 +45,28 @@ switch against the brand and the theme glyph rather than eyeballing it.
 little use on a phone are hidden. The session list is a DRAWER over part of the view (a scrim over the
 rest closes it on a tap; `mobile-detail` = shut), opened and closed by a handle fixed at the top left —
 a sibling of the drawer in `#app`, because the workspace is isolated under the scrim and anything in
-the top bar would sit under the drawer. The top bar is two rows: handle slot, title, Info, right pane;
-then Turns, Tasks, Agents, search/filter, Aa; the turn header is the third. **The breakpoint is ONE query**
+the top bar would sit under the drawer. **The top bar is ONE row and never hides** (#s37,
+`design/phone-landscape.md`, the owner): handle slot, the title with the current turn as its SUBTITLE
+(`#turnSubtitle`; the transcript's sticky strip is hidden on a phone but still updated, which
+`harness::sticky_turn` reads), Info, right pane. The title and its subtitle are ONE target — two
+stacked in a 48px row would each be half a finger — opening the session's menu; turns are chosen in
+the Turns pane. **The tools float at the foot in
+a DOCK** (#s37, the owner's idea, iOS 26's own pattern): Turns, Tasks, Agents and Aa in a glass pill
+above the home indicator, search beside it as a circle — the SAME reading and search clusters,
+moved between the top bar and the dock across the breakpoint (`placeToolbar`). The pill's glass is
+its `::before`: a backdrop-filter on the pill would make it the containing block of Aa's fixed sheet.
+While the search is open or holds a query the find pill takes the dock (CSS `:has`, no script)
+with a glass ✕ circle beside it that ENDS the search (`#phoneSearchDone`: the query and its marks
+go, the keyboard goes down, the toolbar pill returns); the field's own small ✕ only clears it to type
+again — one control, one meaning, as an iOS 26 search closes beside its field. While the field has
+the keyboard the magnifier and the funnel give way, so two chips and a word keep their room; the dock
+rides the keyboard through `visualViewport` (`--phone-kb`; iOS never lifts a fixed bottom element
+above it), held by `a_phone_find_pill_rides_the_keyboard`, which shadows `visualViewport.height`. The transcript's foot is padded by the dock's static height
+(`--phone-dock-h`, never a measured value a keyboard would move under a glide), and the search's
+landing treats the dock as an obstacle. **The breakpoint is ONE query**
 (#s32, `PHONE_QUERY` in `shared/capabilities.js`: `(max-width:760px), (pointer:coarse) and
 (max-height:500px)`, mdrev's own phone test), written in the demo's and production's CSS and read by every
-JS check, so a landscape phone is a phone — its top bar folds to ONE row, since its height is what is
-short. Its complement is just as strict (#s33): every `min-width` rule means "not a phone", so each of
+JS check, so a landscape phone is a phone. Its complement is just as strict (#s33): every `min-width` rule means "not a phone", so each of
 its queries also carries `(min-height:501px)` or `(pointer:fine)` — a bare `min-width:761px` put a
 932–956px landscape phone's drawer back into the flow and pushed the session view off the screen
 (`every_media_query_agrees_on_what_a_phone_is` in `ui.rs` reads both stylesheets) — unless it is a
@@ -63,18 +79,22 @@ over the drawer's head upright; `harness::safe_area` emulates them through Chrom
 `setSafeAreaInsetsOverride`, `a_phone_keeps_its_controls_and_lines_inside_the_safe_area`); held
 sideways the transcript is a centred reading column (500px, about 75 characters of prose); and a
 WIDE phone held sideways (`WIDE_PHONE_QUERY`, ≥900px: the Plus and Max iPhones) shows the session
-list as a COLUMN beside the session, with a Sessions / Turns / Tasks / Agents switcher that borrows
-the outline's live lists as the drop-downs do, hidden and shown by the handle under its own key
-(`am-phone-column`; never the rail's, never `mobile-detail`). Between the phone and 1180px an open preview covers the whole session area beside the sidebar
+list as a 280px COLUMN beside the session, its head ONE row of glyphs and no brand (the owner): the
+switcher (Sessions / Turns / Tasks / Agents, borrowing the outline's live lists as the sheets do), then
+the sidebar's own (Collapse all, Expand all and the session filter go while a pane is shown: they act
+on the list alone); the pill keeps only Aa beside search — and takes the panes back while the column
+is hidden, or nothing would reach them. The handle sits at the session's top left, by
+the title (as iPad apps keep their sidebar button), and hides and shows the column under its own key
+(`am-phone-column`; never the rail's, never `mobile-detail`); hidden, the session stays at its
+reading width, and the Reading menu's Wide transcript (hidden upright, #338) widens it. Between the phone and 1180px an open preview covers the whole session area beside the sidebar
 (it was a 72vw overlay over a sliver nobody could read); `a_phone_held_sideways_gets_the_phone_layout_in_one_row`
-and `a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver` hold both. That second row never
-wraps (#352): the search takes at most what the four 44px glyphs leave, and the CLOSED box with a
-query is its count and steps only — its chips (a scope chip is its letters alone, a tool chip wears
-a wrench; the word visually hidden, #353) and the clear control (×, every width, whenever there is a
-query) wait in the open box. There the chips and the field are ONE strip (`.search-field`, wrapped at
-load) that scrolls as a whole, the field as wide as its text, so the end being typed stays in view;
-the count hangs as a tag under the box (the open box stacks above the turn's sticky bar, z 27 > 26);
-and the step arrows are SVG, centred. A tool chip is its wrench and the tools' own single-character
+and `a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver` hold both. The dock
+never wraps (#352, `a_phone_dock_keeps_one_row_with_a_query_and_a_chip`): the CLOSED box with a query
+is its count, steps and ✕ — its chips (a scope chip is its letters alone, a tool chip wears a wrench;
+the word visually hidden, #353) wait in the open box. There the chips and the field are ONE strip
+(`.search-field`, wrapped at load) that scrolls as a whole, the field as wide as its text, so the end
+being typed stays in view; the count hangs as a tag ABOVE the find pill at its left (the jump to the
+latest floats above its right); and the step arrows are SVG, centred. A tool chip is its wrench and the tools' own single-character
 selectors (`o(B)` reads "B", #355), and beside chips the field shows no placeholder. **The query is
 ONE prefix at the start of the box** (#367, `design/in-session-search.md` §9): letters u a t o w
 then a colon, `o(…)` naming tools by letter (`o(BR)`) or name (`o(Bash,Read)`); `scope:`, `tool:` and
@@ -88,9 +108,12 @@ the match into view on BOTH axes (#354): outputs do not wrap on a phone, so a hi
 sat past its block's right edge while the vertical landing was exact (the owner's export: every
 step inside one 175,539 px agent process, at the right offset) — `landOnCurrentMark` now scrolls
 the mark's own horizontally scrolling block (its `scrollLeft`, never the transcript's offset). The outline column does not
-exist there: each pane opens from its icon as a drop-down that holds the outline's OWN live list (moved
-in while open, back after), so one renderer and one click handler (`navigatorClick`) serve both. Every
-sheet hangs at `--phone-top` (the bar's measured bottom). Inputs are 16px (iOS zooms into anything
+exist there: each pane opens from its icon as a SHEET rising from the pill that holds the outline's OWN
+live list (moved in while open, back after), so one renderer and one click handler (`navigatorClick`)
+serve both. Info hangs at `--phone-top` (the bar's measured bottom); the dock's sheets (panes, Aa, the
+filter, the suggestions) rise from `--phone-bottom` (the dock's measured top) and stop 72px short of
+the bar, the band `phone_tap_outside` taps to dismiss them. The jump to the latest floats above the
+dock at the right (#332 had centred it; the owner's approved mockups put it there). Inputs are 16px (iOS zooms into anything
 smaller), targets 44px. Choosing a session shuts the drawer at once and a veil (`sessionLoading`, every
 width) dims the session area with how much of the records has arrived. The rules are `production.css`
 under `#313`; the cases are `a_phone*` in `browser_follow.rs` and the preview pinch in `files.rs`,

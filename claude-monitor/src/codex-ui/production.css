@@ -1072,16 +1072,18 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      hide the drawer's head, nav and list, and a rule here that undid only their visibility left the
      owner a blank drawer), and the rail, the collapse, the resizer, Back and the shell switch have no
      job in a drawer.
-   - The top bar is two rows: the handle's slot, the title, Info and the right pane; then Turns,
-     Tasks, Agents, search and Aa. The turn header is the third row (the transcript's sticky bar).
-     Every sheet that hangs from the bar is placed at `--phone-top`, its measured bottom.
-   - The outline column does not exist here; its panes open from their icons as drop-downs, and its
+   - #s37 (design/phone-landscape.md): the top bar is ONE row — the handle's slot, the title with
+     the current turn as its subtitle (the transcript's sticky strip is hidden here), Info and the
+     right pane — and never hides. Turns, Tasks, Agents and Aa float in a pill at the bottom, above
+     the home indicator, with search beside it (the dock, below). Info hangs from the bar
+     (`--phone-top`, its measured bottom); the dock's sheets rise from it (`--phone-bottom`).
+   - The outline column does not exist here; its panes open from their icons as sheets, and its
      footer's cost line goes, its Info opening from the bar.
    - The text reads edge to edge (#310): a 13px gutter, a user turn's time under its bubble, and no
      per-block link / raw chips, which a touch screen draws permanently since hover cannot reveal them.
    - Targets are at least 44px tall; inputs are 16px, the size under which iOS zooms the page into a
      focused field (the search box zoomed the page and pushed the filter off the edge). */
-.drawer-handle,.drawer-scrim,.phone-only,.phone-row-break,.phone-pane-menu,.task-scrim{display:none}
+.drawer-handle,.drawer-scrim,.phone-only,.phone-pane-menu,.task-scrim,.phone-dock,.turn-subtitle{display:none}
 @media(max-width:760px) and (hover:hover){.drawer-handle:hover{background:var(--hover)}}
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
   :root{--sidebar:min(86vw,360px)}
@@ -1100,9 +1102,14 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 
   #app .workspace{grid-template-rows:auto minmax(0,1fr)}
   #app .workspace.info-open{grid-template-rows:auto minmax(210px,44vh) minmax(0,1fr)}
-  #app .topbar{height:auto;min-height:0;flex-wrap:wrap;align-items:center;justify-content:space-between;column-gap:2px;row-gap:0;padding:env(safe-area-inset-top,0px) 6px 2px;position:relative}
+  #app .topbar{height:auto;min-height:0;flex-wrap:nowrap;align-items:center;justify-content:space-between;column-gap:2px;row-gap:0;padding:env(safe-area-inset-top,0px) 6px 2px;position:relative}
   #app .topbar>.top-spacer,#app .topbar>.header-divider,#app #sessionFoldAll{display:none}
-  #app .topbar>.session-heading{order:1;flex:1 1 0;min-width:0;max-width:none;height:48px;padding-left:44px;gap:8px}
+  #app .topbar>.session-heading{order:1;flex:1 1 0;min-width:0;max-width:none;height:auto;min-height:48px;padding-left:44px;flex-wrap:wrap;align-content:center;column-gap:8px;row-gap:0}
+  #app .session-heading>:is(.header-divider,.crumb){display:none}
+  #app .session-heading>.status-chip{height:auto;min-height:0;padding:0;line-height:1.25;font-size:12.5px}
+  #app .session-heading>.turn-subtitle:not([hidden]){display:block;flex:0 0 100%;min-width:0;padding:1px 0 0;color:var(--faint);font:12.5px/1.25 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+  #app .turn-stickybar{display:none}
+  #app .transcript{scroll-padding-top:12px}
   #app .topbar>.session-heading>#sessionTitle{max-width:none;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}
   /* #322: the way back to a parent session was the one control the rows did not place, so it kept
      order 0 and sat under the handle. It takes the slot after the handle — the heading gives up the
@@ -1114,10 +1121,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .topbar:has(>#sessionParent.is-live)>.session-heading{padding-left:6px}
   #app .topbar>.phone-info{order:2}
   #app .topbar>#previewBtn{order:3}
-  #app .topbar>.phone-row-break{display:block;order:4;flex:0 0 100%;height:0}
-  #app .topbar>.phone-pane{order:5}
-  #app .topbar>.header-search-cluster{order:6;position:static}
-  #app .topbar>.reading-cluster{order:7}
   #app .phone-only{display:grid}
   #app .topbar .iconbtn{width:44px;height:44px;flex:none}
   #app .phone-pane{position:relative}
@@ -1129,11 +1132,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .header-searchbox.phone-open .find-count{display:block!important;flex:none}
   #app .header-searchbox.phone-open .find-nav{display:grid!important;flex:none;width:34px;height:40px}
   #app .header-filter{width:40px;height:40px}
-  #app .header-search-cluster>.navigator-options,#app .reading-cluster>.reading-options,#app .header-search-cluster>.search-suggest{position:fixed;left:8px;right:8px;top:calc(var(--phone-top,100px) + 4px);width:auto;max-height:calc(100dvh - var(--phone-top,100px) - 16px);overflow:auto;background:var(--bg);transition:none;animation:none}
+  #app .header-search-cluster>.navigator-options,#app .reading-cluster>.reading-options,#app .header-search-cluster>.search-suggest{position:fixed;left:8px;right:8px;top:auto;bottom:calc(var(--phone-bottom,var(--phone-dock-h)) + 8px);width:auto;max-height:calc(100dvh - var(--phone-top,100px) - var(--phone-bottom,var(--phone-dock-h)) - 72px);overflow:auto;background:var(--bg);transition:none;animation:none}
   #app .navigator-options .scope-option,#app .navigator-options .tool-type-option,#app .reading-options .reading-row{height:44px;font-size:14px}
   #app .navigator-options .scope-menu-action{min-height:36px;padding:0 8px}
 
-  .phone-pane-menu:not([hidden]){display:flex;flex-direction:column;position:fixed;z-index:17;left:8px;right:8px;top:calc(var(--phone-top,100px) + 4px);max-height:calc(100dvh - var(--phone-top,100px) - 16px);border:1px solid var(--line);border-radius:14px;background:var(--bg);box-shadow:0 18px 44px -12px rgba(20,26,40,.35);overflow:hidden}
+  .phone-pane-menu:not([hidden]){display:flex;flex-direction:column;position:fixed;z-index:17;left:8px;right:8px;top:auto;bottom:calc(var(--phone-bottom,var(--phone-dock-h)) + 8px);max-height:calc(100dvh - var(--phone-top,100px) - var(--phone-bottom,var(--phone-dock-h)) - 72px);border:1px solid var(--line);border-radius:14px;background:var(--bg);box-shadow:0 18px 44px -12px rgba(20,26,40,.35);overflow:hidden}
   .phone-pane-head{display:flex;align-items:center;justify-content:space-between;flex:none;padding:0 2px 0 16px;border-bottom:1px solid var(--line)}
   .phone-pane-head strong{font-size:14px;color:var(--ink)}
   .phone-pane-close{width:44px;height:44px;border-radius:10px;background:transparent;color:var(--sub);font-size:17px;cursor:pointer}
@@ -1180,9 +1183,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .turn.user .turn-time{flex-basis:100%;order:2;margin:4px 2px 0 0;text-align:right}
   #app .spot-link,#app .renderer>.renderer-spot{display:none!important}
 
-  /* #332: the jump to the latest at the bottom CENTRE, finger-sized, above the home indicator — the
-     corner was hard to hit. `translate`, not `transform`, which its show/hide animation owns. */
-  #app .jump-to-bottom{right:auto;left:50%;translate:-50% 0;min-width:44px;height:44px;bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+  /* #332, #s37: the jump to the latest is finger-sized and floats just above the dock at the right,
+     over the search, as iOS 26 floats a control beside its tab bar; it was centred, over the line
+     being read (design/phone-landscape.md issue 7). */
+  #app .jump-to-bottom{left:auto;right:calc(14px + env(safe-area-inset-right,0px));min-width:44px;height:44px;bottom:calc(var(--phone-dock-h) + 10px)}
   #app .jump-to-bottom:not(.has-new){width:44px}
   #app .jump-to-bottom.has-new{border-radius:22px}
   /* #333: a query outlives the box closing, and so do its count and its steps — in the room the
@@ -1191,11 +1195,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .header-searchbox.has-query:not(.phone-open) .find-count{display:block!important;flex:none;max-width:64px;margin:0 2px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
   #app .header-searchbox.has-query:not(.phone-open) :is(#findPrev,#findNext){display:grid!important;flex:none;width:30px;height:44px}
   #app .header-searchbox.has-query:not(.phone-open) :is(.find-whole,#filterTranscriptBtn){display:none!important}
-  /* #352: the closed box never wraps the row (the owner's toolbar did, with a chip in it). The row's
-     other four are 44px glyphs, so the search takes at most what they leave — the box gives way,
-     its count ellipsizes — and the chips, which the count already names ("3 hits in u"), wait in
-     the open box with the clear control. */
-  #app .topbar>.header-search-cluster{min-width:0;max-width:calc(100% - 4 * 44px - 4 * 2px)}
+  /* #352, #s37: the closed box never wraps the dock (the owner's toolbar did, with a chip in it): it
+     holds its count and steps and gives way — its count ellipsizes — and the chips, which the count
+     already names ("3 hits in u"), wait in the open box with the clear control. */
   #app .header-searchbox.has-query:not(.phone-open){max-width:100%;min-width:0}
   #app .header-searchbox.has-query:not(.phone-open) .find-count{flex:0 1 auto;min-width:0;max-width:none}
   #app .header-searchbox:not(.phone-open) :is(.search-chips,.search-clear){display:none!important}
@@ -1207,18 +1209,18 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .header-searchbox.phone-open{column-gap:2px}
   #app .header-searchbox.phone-open .find-whole{display:none!important}
   /* #353: the strip scrolls rather than squeezing — the chips keep their whole width, the field is as
-     wide as its text (app.js), and the count leaves the row for a tag just under the box's right edge,
-     so it is never cut ("0 hi…") and never costs the strip a pixel. It yields to the facet drop-down,
-     which hangs in the same place. */
+     wide as its text (app.js), and the count leaves the row for a tag beside the box — above the find
+     pill at its left since #s37 (the dock's rule below) — so it is never cut ("0 hi…") and never
+     costs the strip a pixel. It yields to the facet suggestions, which rise in the same place. */
   #app .header-searchbox.phone-open .search-field{gap:4px}
-  /* The count's tag hangs below the box, where the turn's sticky bar (z-index 26) is: the OPEN box
-     stacks above it — still under the facet drop-down (49), the task card (59, 60) and the drawer
-     handle's own layer once a tap outside has closed the box. */
+  /* The OPEN box stacks above the transcript's layers, so its count's tag is never painted over —
+     still under the facet suggestions (49), the task card (59, 60) and the drawer handle's own layer
+     once a tap outside has closed the box. */
   #app .header-searchbox.phone-open{z-index:27}
   #app .header-searchbox.phone-open .search-field input{flex:none;min-width:48px}
   #app .header-searchbox.phone-open .search-field>.search-chips{flex:none;max-width:none;overflow:visible}
   #app .header-searchbox:not(.phone-open) .search-field{display:none}
-  #app .header-searchbox.phone-open .find-count{position:absolute;top:calc(100% + 4px);right:8px;max-width:calc(100% - 16px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 9px;border-radius:11px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 6px 14px -10px rgba(34,43,73,.3);color:var(--sub);font-size:11.5px;line-height:16px;z-index:7}
+  #app .header-searchbox.phone-open .find-count{position:absolute;top:auto;bottom:calc(100% + 6px);right:8px;max-width:calc(100% - 16px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 9px;border-radius:11px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 6px 14px -10px rgba(34,43,73,.3);color:var(--sub);font-size:11.5px;line-height:16px;z-index:7}
   #app .header-searchbox.phone-open .find-count:empty,#app .header-search-cluster:has(#searchSuggest:not([hidden])) .header-searchbox.phone-open .find-count{display:none!important}
   #app .header-searchbox .find-nav .icon{width:18px;height:18px}
   /* #334: an option of a question card stacks — label, then description — rather than squeezing its
@@ -1238,22 +1240,67 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 }
 
 /* #s32 — a phone held sideways is a phone (the shells' breakpoint, `PHONE_QUERY`), and its height is
-   what is short: the top bar is ONE row — the title, the outline's panes, the search, Aa, Info and
-   the right pane — so the transcript keeps the height the second row would take. Sheets hang from the
-   bar's measured bottom (`--phone-top`), so they follow it up. */
+   what is short. Since #s37 every phone's top bar is one row and its tools float in the dock. */
 @media(pointer:coarse) and (max-height:500px){
-  #app .topbar{flex-wrap:nowrap}
-  #app .topbar>.phone-row-break{display:none}
-  #app .topbar>.session-heading{order:1}
-  #app .topbar>.phone-pane{order:2}
-  #app .topbar>.header-search-cluster{order:3;max-width:min(360px,38%)}
-  #app .topbar>.reading-cluster{order:4}
-  #app .topbar>.phone-info{order:5}
-  #app .topbar>#previewBtn{order:6}
   /* #s37 (design/phone-landscape.md §3.3): held sideways the transcript is a reading column — about
      75 characters of prose a line (measured: 580px still set 88), where the full width ran to ~119 —
      and the spare width is margin. */
   #app .session-main .transcript-inner{width:min(500px,calc(100% - 26px))}
+  /* …and the Reading menu's Wide transcript widens it to the whole width, as on a desktop (for
+     source code, a wide table), where upright it has nothing to widen (#338). */
+  #app .reading-options .reading-row.reading-wide{display:grid}
+  #app.wide .session-main .transcript-inner{width:calc(100% - 26px)}
+}
+
+/* #s37 (design/phone-landscape.md §3.5a, the owner's idea) — the dock: the toolbar floats in a glass
+   PILL above the home indicator, search beside it, the way iOS 26 lays out Safari's bottom bar and
+   the tab bar and search circle of Mail, Notes and Music. The transcript scrolls under it, so its
+   foot is padded by the dock's own height (`--phone-dock-h`, static: a moving value would change the
+   transcript's height under a reader's finger, #372). While the search is open or holds a query, the
+   find pill takes the dock and the toolbar pill steps aside (no script decides it: `:has`). */
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){
+  #app{--phone-dock-h:calc(64px + env(safe-area-inset-bottom,0px));--phone-glass:color-mix(in srgb,var(--bg) 78%,transparent)}
+  /* Over the keyboard (`--phone-kb`, app.js) the dock rests 8px above it; the home indicator is
+     under the keyboard then, so its inset does not add. */
+  .phone-dock{display:flex;align-items:center;gap:8px;position:fixed;z-index:14;left:calc(12px + env(safe-area-inset-left,0px));right:calc(12px + env(safe-area-inset-right,0px));bottom:max(calc(8px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 8px));height:56px;pointer-events:none}
+  .phone-dock>*{pointer-events:auto}
+  /* The glass is the pill's own layer underneath it: a backdrop-filter on the pill itself would make
+     it the containing block of the fixed sheets inside it (Aa's), pinning them to the pill. */
+  .dock-pill{position:relative;isolation:isolate;display:flex;align-items:center;gap:2px;height:56px;padding:0 6px;border-radius:28px}
+  .dock-pill::before{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38)}
+  #app .dock-pill .iconbtn{width:48px;height:48px;border-radius:24px}
+  #app .dock-pill .phone-pane-count{top:2px;right:2px}
+  #app .dock-pill>.reading-cluster{position:static}
+  #app .phone-dock>.header-search-cluster{margin-left:auto;position:relative;min-width:0}
+  #app .phone-dock .header-searchbox{height:56px;border-radius:28px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38)}
+  #app .phone-dock .header-searchbox:not(.phone-open):not(.has-query){width:56px;padding:0;justify-content:center}
+  #app .phone-dock .header-searchbox:not(.phone-open):not(.has-query) #filterTranscriptBtn{display:none!important}
+  #app .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.dock-pill{display:none}
+  #app .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.header-search-cluster{flex:1 1 auto;margin-left:0}
+  #app .phone-dock .header-searchbox:is(.phone-open,.has-query){position:relative;left:auto;right:auto;bottom:auto;flex:1 1 auto;width:auto;min-width:0;max-width:none;padding:0 6px 0 16px}
+  /* The count hangs above the find pill at its LEFT: the jump to the latest floats above its right. */
+  #app .phone-dock .header-searchbox.phone-open .find-count{left:16px;right:auto}
+  .phone-search-done{display:none}
+  #app .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.phone-search-done{display:grid;place-items:center;flex:none;width:48px;height:48px;padding:0;border-radius:24px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--ink);cursor:pointer}
+  #app .phone-search-done .icon{width:20px;height:20px}
+  /* While the field has the keyboard, the find pill keeps its room for the chips and the word being
+     typed (measured: two chips and a word wanted 167px of a 102px strip): the magnifier and the funnel
+     give way, and are back once the keyboard is down (a tap on the funnel would put it down anyway). */
+  #app .phone-dock .header-searchbox.phone-open:focus-within>:is([data-icon="search"],#filterTranscriptBtn){display:none!important}
+  #app .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 16px)}
+  /* The compose box and its button rest above the dock, never under it (#s39 designs them beside it). */
+  #app .workspace .composer{bottom:calc(var(--phone-dock-h) + 8px)}
+  #app .workspace .compose-fab{bottom:calc(var(--phone-dock-h) + 8px);right:calc(14px + env(safe-area-inset-right,0px))}
+  #app .workspace:has(.compose-fab.show) .jump-to-bottom{bottom:calc(var(--phone-dock-h) + 62px)}
+}
+/* A wide phone held sideways: the column holds Sessions, Turns, Tasks and Agents, so the pill keeps
+   Aa beside the search, at the transcript's foot on the right — and takes the panes back while the
+   column is hidden, or nothing would reach them; the find pill spans the transcript. */
+@media(pointer:coarse) and (max-height:500px) and (min-width:900px){
+  .phone-dock{left:auto}
+  #app:not(.phone-column-off) .dock-pill .phone-pane{display:none}
+  #app:not(.phone-column-off) .phone-dock:has(.header-searchbox:is(.phone-open,.has-query)){left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 12px)}
+  #app.phone-column-off .phone-dock:has(.header-searchbox:is(.phone-open,.has-query)){left:calc(12px + env(safe-area-inset-left,0px))}
 }
 
 /* #s37 (design/phone-landscape.md §3.1) — the safe area. The page asks for the whole screen
@@ -1277,22 +1324,41 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    and Max iPhones, which iOS counts as a regular width sideways) shows two columns, as Mail, Messages
    and Notes do there: the session list docked at the left, no scrim, the session beside it at its
    reading width. The handle hides and shows the column (`phone-column-off`, remembered under its own
-   key, never the desktop's rail nor the drawer's `mobile-detail`, #s33). A switcher at the column's
-   top shows Sessions, or one of the outline's panes — the same live lists the drop-downs borrow. */
+   key, never the desktop's rail nor the drawer's `mobile-detail`, #s33), and sits at the session's
+   top left, by its title, as iPad apps keep their sidebar button with the content. The column's head
+   is ONE row and no brand (the owner): the switcher's glyphs — Sessions, or one of the outline's
+   panes, the same live lists the drop-downs borrow — then the sidebar's own glyphs; glyphs rather
+   than words, so the column stays narrow. Hidden, the column leaves the session at its reading width:
+   the Reading menu's Wide transcript widens it, as on a desktop. */
 .column-switch,.column-pane{display:none}
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
-  #app:not(.phone-column-off){display:grid;grid-template-columns:calc(300px + env(safe-area-inset-left,0px)) minmax(0,1fr)}
+  /* The sidebar's head, nav and list are sized by `--sidebar` (reference.css), which a phone sets to
+     the drawer's width: the column is 280px, so its contents are too. */
+  #app{--sidebar:280px}
+  #app:not(.phone-column-off){display:grid;grid-template-columns:calc(var(--sidebar) + env(safe-area-inset-left,0px)) minmax(0,1fr)}
   #app:not(.phone-column-off)>.sidebar{position:relative;inset:auto;transform:none;width:auto;height:100dvh;grid-column:1;grid-row:1;box-shadow:1px 0 0 var(--line);transition:none}
   #app:not(.phone-column-off)>.workspace{grid-column:2;grid-row:1;min-width:0}
   #app.phone-column-off>.sidebar{display:none}
   #app>.drawer-scrim{display:none}
-  #app .topbar>.phone-pane{display:none}
-  #app:not(.phone-column-off) .column-switch{display:flex;flex:none;gap:2px;margin:2px 10px 8px;padding:2px;border-radius:11px;background:var(--hover)}
-  .column-switch button{flex:1 1 0;min-width:0;height:44px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border-radius:9px;background:transparent;color:var(--sub);font:600 12.5px/1 var(--sans);cursor:pointer}
-  .column-switch button.on{background:var(--bg);color:var(--ink);box-shadow:0 1px 3px rgba(20,26,40,.14)}
-  .column-switch-count{font:500 10.5px/1 var(--mono);color:var(--faint)}
+  #app .side-head{height:auto;min-height:0;padding:4px 6px;flex-wrap:nowrap;align-items:center;column-gap:2px}
+  #app .side-head>.brand{display:none}
+  #app .side-head>.head-actions{flex:0 0 auto;margin-left:auto;flex-wrap:nowrap}
+  #app .side-head .iconbtn{width:32px;height:44px}
+  #app:not(.phone-column-off) .column-switch{display:flex;flex:none;gap:2px}
+  .column-switch .iconbtn{position:relative;display:grid;place-items:center;border-radius:9px;background:transparent;color:var(--sub)}
+  .column-switch .iconbtn.on{background:var(--hover);color:var(--ink)}
+  .column-switch-count{position:absolute;top:2px;right:-1px;min-width:14px;height:14px;padding:0 3px;border-radius:7px;background:var(--hover);color:var(--sub);font:600 9px/14px var(--mono);text-align:center}
+  .column-switch .iconbtn.on .column-switch-count{background:var(--bg)}
+  .column-switch-count:empty{display:none}
+  #app:not(.phone-column-off) .drawer-handle{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 4px)}
+  /* The column covers the island's side, so the session beside it pads only the other. */
+  #app:not(.phone-column-off) .topbar{padding-left:6px}
+  #app:not(.phone-column-off) .transcript{padding-left:0}
   #app.column-pane-on:not(.phone-column-off) .column-pane{display:block}
   #app.column-pane-on>.sidebar>.nav,#app.column-pane-on>.sidebar>.tree{display:none}
+  /* Collapse all, Expand all and the session filter act on the session list alone: while the column
+     shows a pane they go (the owner); the theme applies everywhere and stays. */
+  #app.column-pane-on .side-head .head-actions>:is(#collapseBtn,#expandBtn,#filterBtn){display:none}
 }
 
 /* #s32 — between the phone and 1180px the preview is an overlay (reference.css), and at

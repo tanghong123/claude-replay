@@ -7814,6 +7814,29 @@ fn phone_tap_at(tab: &headless_chrome::Tab, x: f64, y: f64) {
         .expect("tap at a point");
 }
 
+/// #s37: the point a reader taps to dismiss something — the transcript just under the top bar,
+/// which none of the phone's chrome covers: the sheets rise from the dock at the foot and stop well
+/// short of the bar (production.css keeps that band), and the dock floats below. The taps it
+/// replaces sat at fixed points in the lower half, where the dock and its sheets now are.
+fn phone_outside_point(tab: &headless_chrome::Tab) -> (f64, f64) {
+    let at = harness::eval(
+        tab,
+        "JSON.stringify([innerWidth / 2, parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--phone-top')) + 40])",
+    );
+    let at: Vec<f64> = serde_json::from_str(at.as_str().unwrap_or("[]")).unwrap_or_default();
+    assert_eq!(
+        at.len(),
+        2,
+        "the phone's top bar is measured (--phone-top): {at:?}"
+    );
+    (at[0], at[1])
+}
+
+fn phone_tap_outside(tab: &headless_chrome::Tab) {
+    let (x, y) = phone_outside_point(tab);
+    phone_tap_at(tab, x, y);
+}
+
 /// True when the element `sel` names is where a finger lands: its centre hit-tests to it.
 const PHONE_HITTABLE: &str = "function (el) { if (!el) return false; var r = el.getBoundingClientRect(); if (r.width < 4 || r.height < 4 || r.right <= 0 || r.left >= innerWidth) return false; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(hit && (hit === el || el.contains(hit))); }";
 
@@ -7935,17 +7958,20 @@ fn a_phone_session_list_is_a_drawer_over_part_of_the_view() {
     );
 }
 
-/// #313, the owner: the session title on its own line at the top, with the drawer's handle, Info
-/// and the right pane; the second row Turns, Tasks, Agents, search/filter and Aa; the turn header
-/// third. At 390 and 360: in that order, every control reachable, nothing past the right edge.
+/// #313, the owner: the session title at the top with the drawer's handle, Info and the right pane,
+/// and the outline's panes, search and Aa within reach. Since #s37 (design/phone-landscape.md §3.4,
+/// §3.5a) that is ONE top row — the handle, the title with the current turn as its subtitle (the
+/// strip that was a third row is gone), Info, the right pane — and the tools float at the bottom in a
+/// pill above the home indicator: Turns, Tasks, Agents, Aa, with search beside it. At 390 and 360: in
+/// that order, every control reachable, nothing past the right edge.
 #[test]
 #[ignore]
-fn a_phone_header_is_title_then_controls_then_the_turn() {
+fn a_phone_header_is_one_row_and_its_tools_float_in_a_pill() {
     let _serial = serial();
     let (m, _b, _t) = phone_world(2809, "phone-header", 390, 844);
     for (w, h) in [(390u32, 844u32), (360, 780)] {
         let (_browser, tab) = phone_tab(&m, w, h);
-        let js = format!("(function(){{ var ok = {PHONE_HITTABLE}; var ids = ['#drawerHandle', '#sessionTitle', '#phoneInfo', '#previewBtn', '#phonePane-turns', '#phonePane-tasks', '#phonePane-agents', '.header-searchbox', '#readingBtn', '#turnStickyBar']; var out = {{}}; ids.forEach(function(sel){{ var e = document.querySelector(sel); var r = e ? e.getBoundingClientRect() : null; out[sel] = r ? {{ l: Math.round(r.left), r: Math.round(r.right), t: Math.round(r.top), b: Math.round(r.bottom), cy: Math.round(r.top + r.height / 2), hit: sel === '#sessionTitle' || sel === '#turnStickyBar' ? true : ok(e) }} : null; }}); return JSON.stringify(out); }})()");
+        let js = format!("(function(){{ var ok = {PHONE_HITTABLE}; var ids = ['#drawerHandle', '.topbar .session-heading', '#sessionTitle', '#turnSubtitle', '#phoneInfo', '#previewBtn', '#phonePane-turns', '#phonePane-tasks', '#phonePane-agents', '#readingBtn', '.header-searchbox', '#phoneDock']; var out = {{}}; ids.forEach(function(sel){{ var e = document.querySelector(sel); var r = e ? e.getBoundingClientRect() : null; out[sel] = r ? {{ l: Math.round(r.left), r: Math.round(r.right), t: Math.round(r.top), b: Math.round(r.bottom), cy: Math.round(r.top + r.height / 2), hit: /session-heading|sessionTitle|turnSubtitle|phoneDock/.test(sel) ? true : ok(e) }} : null; }}); out.subtitle = document.getElementById('turnSubtitle').textContent; out.strip = getComputedStyle(document.getElementById('turnStickyBar')).display; return JSON.stringify(out); }})()");
         let at: serde_json::Value =
             serde_json::from_str(harness::eval(&tab, &js).as_str().unwrap()).unwrap();
         let get = |sel: &str, k: &str| {
@@ -7953,20 +7979,20 @@ fn a_phone_header_is_title_then_controls_then_the_turn() {
                 .as_i64()
                 .unwrap_or_else(|| panic!("{w}px: {sel} missing: {at}"))
         };
-        let row1 = [
+        let top = [
             "#drawerHandle",
-            "#sessionTitle",
+            ".topbar .session-heading",
             "#phoneInfo",
             "#previewBtn",
         ];
-        let row2 = [
+        let dock = [
             "#phonePane-turns",
             "#phonePane-tasks",
             "#phonePane-agents",
-            ".header-searchbox",
             "#readingBtn",
+            ".header-searchbox",
         ];
-        for row in [&row1[..], &row2[..]] {
+        for row in [&top[..], &dock[..]] {
             for pair in row.windows(2) {
                 assert!(
                     (get(pair[0], "cy") - get(pair[1], "cy")).abs() <= 6,
@@ -7990,12 +8016,32 @@ fn a_phone_header_is_title_then_controls_then_the_turn() {
             }
         }
         assert!(
-            get("#phonePane-turns", "cy") > get("#sessionTitle", "cy") + 30,
-            "{w}px: the controls are the SECOND row: {at}"
+            get("#turnSubtitle", "t") >= get("#sessionTitle", "b") - 2
+                && at["subtitle"].as_str().unwrap_or("").starts_with("Turn "),
+            "{w}px: the current turn is the title's subtitle: {at}"
+        );
+        assert_eq!(at["strip"], "none", "{w}px: and not a third row: {at}");
+        // The title and its subtitle are ONE target (two stacked in a 48px row would each be half a
+        // finger): a tap on the subtitle opens the session's menu, as a tap on the title does.
+        phone_tap(&tab, "#turnSubtitle");
+        harness::until(
+            &tab,
+            "document.getElementById('sessionCopyMenu').classList.contains('open')",
+            "a tap on the subtitle to open the session's menu",
+            Duration::from_secs(5),
+            "document.getElementById('sessionCopyMenu').className",
+        );
+        phone_tap_outside(&tab);
+        harness::until(
+            &tab,
+            "!document.getElementById('sessionCopyMenu').classList.contains('open')",
+            "a tap outside to close it",
+            Duration::from_secs(5),
+            "document.getElementById('sessionCopyMenu').className",
         );
         assert!(
-            get("#turnStickyBar", "t") >= get("#readingBtn", "b") - 1,
-            "{w}px: the turn header is the third: {at}"
+            get("#phoneDock", "t") > (h as i64) * 3 / 4 && get("#phoneDock", "b") <= h as i64 - 4,
+            "{w}px: the tools float at the foot of the screen, clear of its edge: {at}"
         );
         let probe: serde_json::Value =
             serde_json::from_str(harness::eval(&tab, harness::PHONE_PROBE).as_str().unwrap())
@@ -8012,7 +8058,8 @@ fn a_phone_header_is_title_then_controls_then_the_turn() {
 
 /// #313, the owner: "the control of outline pane selection is not usable via fingers … move the
 /// controls of the three panes to the top area (showing the icons, press-open drop down for
-/// selection)". Each pane opens from its icon as a drop-down of finger-sized rows; choosing a row
+/// selection)". Since #s37 the icons float in the pill at the foot and each pane is a sheet rising
+/// from it. Each pane opens from its icon as a list of finger-sized rows; choosing a row
 /// acts as it does in the outline and closes the drop-down — except a task, whose card opens OVER
 /// the Tasks drop-down, which stays open under it (#319) — and a tap elsewhere closes it too.
 #[test]
@@ -8021,7 +8068,7 @@ fn a_phone_opens_each_outline_pane_from_its_icon() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2818, "phone-panes", 390, 844);
     let menu_rows = |sel: &str| {
-        format!("(function(){{ var ok = {PHONE_HITTABLE}; var m = document.getElementById('phonePaneMenu'); if (!m || m.hidden) return JSON.stringify({{ open: false }}); var rows = [].slice.call(m.querySelectorAll('{sel}')); var top = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--phone-top')); return JSON.stringify({{ open: true, rows: rows.length, tall: rows.every(function(r){{ return r.getBoundingClientRect().height >= 44; }}), first: rows.length ? ok(rows[0]) : false, below: m.getBoundingClientRect().top >= top }}); }})()")
+        format!("(function(){{ var ok = {PHONE_HITTABLE}; var m = document.getElementById('phonePaneMenu'); if (!m || m.hidden) return JSON.stringify({{ open: false }}); var rows = [].slice.call(m.querySelectorAll('{sel}')); var top = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--phone-top')); var mr = m.getBoundingClientRect(), dock = document.getElementById('phoneDock').getBoundingClientRect(); return JSON.stringify({{ open: true, rows: rows.length, tall: rows.every(function(r){{ return r.getBoundingClientRect().height >= 44; }}), first: rows.length ? ok(rows[0]) : false, rises: mr.bottom <= dock.top + 1 && mr.top >= top + 40 }}); }})()")
     };
     let read = |sel: &str| -> serde_json::Value {
         serde_json::from_str(harness::eval(&tab, &menu_rows(sel)).as_str().unwrap()).unwrap()
@@ -8041,8 +8088,8 @@ fn a_phone_opens_each_outline_pane_from_its_icon() {
     assert_eq!(turns["tall"], true, "finger-sized rows: {turns}");
     assert_eq!(turns["first"], true, "a row takes a tap: {turns}");
     assert_eq!(
-        turns["below"], true,
-        "the drop-down hangs below the bar: {turns}"
+        turns["rises"], true,
+        "the sheet rises from the pill, short of the top bar (#s37): {turns}"
     );
     let third = harness::eval(&tab, "(function(){ var r = [].slice.call(document.querySelectorAll('#phonePaneMenu .outline-turn-row'))[2]; return r.dataset.turnRecord; })()");
     phone_tap(
@@ -8110,7 +8157,7 @@ fn a_phone_opens_each_outline_pane_from_its_icon() {
     assert_eq!(agents["rows"], 1, "the running sub-agent: {agents}");
     assert_eq!(agents["tall"], true, "{agents}");
 
-    phone_tap_at(&tab, 195.0, 700.0);
+    phone_tap_outside(&tab);
     harness::until(
         &tab,
         menu_shut,
@@ -8543,7 +8590,7 @@ fn a_phones_controls_are_finger_sized() {
         let measure = "(function(){ function sz(e){ var r = e.getBoundingClientRect(); return (e.id || e.className.split(' ')[0]) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height); } function under(e){ var r = e.getBoundingClientRect(); return r.width > 0 && (r.height < 44 || r.width < 40); } var sel = VIEW; return JSON.stringify([].slice.call(document.querySelectorAll(sel)).filter(function(e){ var r = e.getBoundingClientRect(); return r.width > 0 && r.left < innerWidth && r.right > 0; }).filter(under).map(sz)); })()";
         let session = measure.replace(
             "VIEW",
-            "'#drawerHandle, .topbar .iconbtn, .topbar .header-searchbox'",
+            "'#drawerHandle, .topbar .iconbtn, .topbar .header-searchbox, .phone-dock .iconbtn, .phone-dock .header-searchbox'",
         );
         let list = measure.replace("VIEW", "'.side-head .iconbtn, .tree-row.session'");
         let check = |what: &str| {
@@ -8713,7 +8760,7 @@ fn a_phone_can_search_the_session() {
         true,
         "a step leaves the box open"
     );
-    phone_tap_at(&tab, 195.0, 700.0);
+    phone_tap_outside(&tab);
     harness::until(
         &tab,
         "!document.querySelector('.header-searchbox').classList.contains('phone-open') && getComputedStyle(document.getElementById('transcriptSearchInput')).display === 'none' && document.getElementById('transcriptSearchInput').value === 'answer'",
@@ -8864,7 +8911,8 @@ fn a_phone_taps_the_title_and_copies_the_session_id() {
         true,
         "a second tap opens it again"
     );
-    harness::finger_tap(&tab, 195.0, 700.0);
+    let (ox, oy) = phone_outside_point(&tab);
+    harness::finger_tap(&tab, ox, oy);
     harness::until(
         &tab,
         &format!("!({menu_open})"),
@@ -9520,12 +9568,14 @@ fn app_shell_a_search_typed_before_the_head_lands_finds_it_after() {
 }
 
 /// #332, the owner: "move to the tail button is on the bottom right and hard to click, instead,
-/// move it to bottom center for mobile version". On a phone the jump to the latest sits at the
-/// bottom CENTRE of the view, finger-sized — and so does the pill it becomes when new messages
-/// arrive below the reader — and a tap on it follows the tail again. The desktop keeps its corner.
+/// move it to bottom center for mobile version" — a small button in the corner. Since #s37 (the
+/// mockups the owner approved, design/phone-landscape.md §3.6) it floats just above the dock at the
+/// right, over the search, finger-sized and clear of the line being read — and so does the pill it
+/// becomes when new messages arrive below the reader — and a tap on it follows the tail again. The
+/// desktop keeps its corner.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn a_phone_jumps_to_the_latest_from_the_bottom_centre() {
+fn a_phone_jumps_to_the_latest_from_above_the_dock() {
     let _serial = serial();
     let (m, _b, tab, path) = phone_world_at(2706, "phone-jump", 390, 844, "");
     harness::wheel_scroll(&tab, harness::APP_SCROLLER, "s.scrollTop = 0");
@@ -9541,22 +9591,22 @@ fn a_phone_jumps_to_the_latest_from_the_bottom_centre() {
     );
     let geometry = harness::eval(
         &tab,
-        "(function(){ var r = document.querySelector('.jump-to-bottom').getBoundingClientRect(); return JSON.stringify({ centre: Math.round((r.left + r.right) / 2 - innerWidth / 2), w: Math.round(r.width), h: Math.round(r.height), gap: Math.round(innerHeight - r.bottom) }); })()",
+        "(function(){ var r = document.querySelector('.jump-to-bottom').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return JSON.stringify({ right: Math.round(innerWidth - r.right), w: Math.round(r.width), h: Math.round(r.height), aboveDock: Math.round(d.top - r.bottom) }); })()",
     );
     let g: serde_json::Value = serde_json::from_str(geometry.as_str().unwrap_or("{}")).unwrap();
     assert!(
-        g["centre"].as_i64().unwrap_or(99).abs() <= 2,
-        "the jump sits at the bottom centre: {g}"
+        (4..=24).contains(&g["right"].as_i64().unwrap_or(-1)),
+        "the jump sits at the right: {g}"
     );
     assert!(
         g["w"].as_i64().unwrap_or(0) >= 44 && g["h"].as_i64().unwrap_or(0) >= 44,
         "a finger-sized target: {g}"
     );
     assert!(
-        (8..=80).contains(&g["gap"].as_i64().unwrap_or(-1)),
-        "near the bottom edge, clear of it: {g}"
+        (4..=40).contains(&g["aboveDock"].as_i64().unwrap_or(-1)),
+        "just above the dock, clear of it: {g}"
     );
-    // New messages below the reader: the jump becomes a pill that counts them, still centred.
+    // New messages below the reader: the jump becomes a pill that counts them, still above the dock.
     harness::append(
         &path,
         &[
@@ -9566,12 +9616,12 @@ fn a_phone_jumps_to_the_latest_from_the_bottom_centre() {
         .concat(),
     );
     let pill = format!(
-        "(function(){{ var j = document.querySelector('.jump-to-bottom'), r = j.getBoundingClientRect(); return j.classList.contains('has-new') && Math.abs((r.left + r.right) / 2 - innerWidth / 2) <= 2 && r.height >= 44 && r.right <= innerWidth && ({PHONE_HITTABLE})(j); }})()"
+        "(function(){{ var j = document.querySelector('.jump-to-bottom'), r = j.getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return j.classList.contains('has-new') && r.bottom <= d.top && r.height >= 44 && r.left >= 0 && r.right <= innerWidth && ({PHONE_HITTABLE})(j); }})()"
     );
     harness::until(
         &tab,
         &pill,
-        "the pill counting new messages, at the bottom centre",
+        "the pill counting new messages, above the dock",
         Duration::from_secs(15),
         "(function(){ var j = document.querySelector('.jump-to-bottom'), r = j.getBoundingClientRect(); return j.className + ' ' + Math.round(r.left) + '..' + Math.round(r.right) + ' of ' + innerWidth; })()",
     );
@@ -9637,7 +9687,7 @@ fn a_phone_keeps_the_match_count_and_steps_once_the_box_closes() {
         Duration::from_secs(10),
         "document.getElementById('transcriptSearchCount').textContent",
     );
-    phone_tap_at(&tab, 195.0, 640.0);
+    phone_tap_outside(&tab);
     harness::until(
         &tab,
         "!document.querySelector('.header-searchbox').classList.contains('phone-open') && getComputedStyle(document.getElementById('transcriptSearchInput')).display === 'none'",
@@ -10966,23 +11016,33 @@ fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
 }
 
 /// #352, the owner's second screenshot: with a query and a scope chip, the CLOSED phone box (#333:
-/// the count and both arrows) grew until Aa dropped to a third row. The box gives way now — the
-/// chips wait in the open box, the count ellipsizes — so the header keeps its two rows at 360px and
-/// at 390px.
+/// the count and both arrows) grew until Aa dropped to a third row. The box gives way — the chips
+/// wait in the open box, the count ellipsizes. Since #s37 the tools float in the dock at the foot:
+/// with a query held, the find pill takes the dock in place of the toolbar pill and the dock stays ONE
+/// row at 360px and at 390px, with the count and both arrows reachable; the ✕ circle beside it ends
+/// the search and gives the dock back to the toolbar pill.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn a_phone_toolbar_keeps_one_row_with_a_query_and_a_chip() {
+fn a_phone_dock_keeps_one_row_with_a_query_and_a_chip() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2729, "phone-search-row", 360, 780);
-    let rows = "(function(){ var t = document.querySelector('.topbar'), aa = document.querySelector('.topbar>.reading-cluster'), pane = document.querySelector('.topbar>.phone-pane'), box = document.querySelector('.header-searchbox'); var mid = function (e) { var r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }; return JSON.stringify({ height: Math.round(t.getBoundingClientRect().height), aa: mid(aa), pane: mid(pane), box: mid(box), right: Math.round(box.getBoundingClientRect().right), aaRight: Math.round(aa.getBoundingClientRect().right), w: innerWidth }); })()";
-    let before: serde_json::Value =
-        serde_json::from_str(harness::eval(&tab, rows).as_str().unwrap_or("{}")).unwrap();
-    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
+    let rows = "(function(){ var d = document.getElementById('phoneDock'), pill = document.getElementById('dockPill'), box = document.querySelector('.header-searchbox'); var mid = function (e) { var r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }; var br = box.getBoundingClientRect(); return JSON.stringify({ height: Math.round(d.getBoundingClientRect().height), dock: mid(d), box: mid(box), pill: getComputedStyle(pill).display !== 'none', inside: br.left >= 0 && br.right <= innerWidth, w: innerWidth }); })()";
+    let read = |what: &str| -> serde_json::Value {
+        let raw = harness::eval(&tab, rows);
+        serde_json::from_str(raw.as_str().unwrap_or(""))
+            .unwrap_or_else(|_| panic!("{what}: the dock was not read: {raw}"))
+    };
+    let before = read("before the search");
+    assert_eq!(
+        before["pill"], true,
+        "the toolbar pill is there before a search: {before}"
+    );
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
     phone_tap_at(&tab, gx, gy);
     harness::until(
         &tab,
         "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
-        "a tap on the glass to open the box",
+        "a tap on the search to open it",
         Duration::from_secs(5),
         "document.querySelector('.header-searchbox').className",
     );
@@ -10995,7 +11055,7 @@ fn a_phone_toolbar_keeps_one_row_with_a_query_and_a_chip() {
         Duration::from_secs(10),
         "document.getElementById('searchChips').innerText + ' | ' + document.getElementById('transcriptSearchCount').textContent",
     );
-    phone_tap_at(&tab, 180.0, 600.0);
+    phone_tap_outside(&tab);
     harness::until(
         &tab,
         "!document.querySelector('.header-searchbox').classList.contains('phone-open') && document.querySelector('.header-searchbox').classList.contains('has-query')",
@@ -11015,31 +11075,43 @@ fn a_phone_toolbar_keeps_one_row_with_a_query_and_a_chip() {
             );
             std::thread::sleep(Duration::from_millis(300));
         }
-        let after: serde_json::Value =
-            serde_json::from_str(harness::eval(&tab, rows).as_str().unwrap_or("{}")).unwrap();
+        let after = read("with a query held");
         assert_eq!(
             after["height"], before["height"],
-            "{width}px: the header keeps its height — no third row ({before} → {after})"
+            "{width}px: the dock keeps its height — one row ({before} → {after})"
         );
         assert_eq!(
-            after["aa"], after["pane"],
-            "{width}px: Aa stays on the row with the panes and the box: {after}"
+            after["box"], after["dock"],
+            "{width}px: the find pill is the dock's row: {after}"
         );
         assert_eq!(
-            after["box"], after["pane"],
-            "{width}px: so does the box: {after}"
+            after["pill"], false,
+            "{width}px: in place of the toolbar pill: {after}"
+        );
+        assert_eq!(
+            after["inside"], true,
+            "{width}px: inside the screen: {after}"
         );
         let shown = format!(
-            "(function(){{ var c = document.getElementById('transcriptSearchCount'), r = c.getBoundingClientRect(); return JSON.stringify({{ count: r.width >= 12 && getComputedStyle(c).display !== 'none', prev: ({PHONE_HITTABLE})(document.getElementById('findPrev')), next: ({PHONE_HITTABLE})(document.getElementById('findNext')) }}); }})()"
+            "(function(){{ var c = document.getElementById('transcriptSearchCount'), r = c.getBoundingClientRect(); return JSON.stringify({{ count: r.width >= 12 && getComputedStyle(c).display !== 'none', prev: ({PHONE_HITTABLE})(document.getElementById('findPrev')), next: ({PHONE_HITTABLE})(document.getElementById('findNext')), end: ({PHONE_HITTABLE})(document.getElementById('phoneSearchDone')) }}); }})()"
         );
         let s: serde_json::Value =
             serde_json::from_str(harness::eval(&tab, &shown).as_str().unwrap_or("{}")).unwrap();
         assert_eq!(
             s,
-            serde_json::json!({"count": true, "prev": true, "next": true}),
-            "{width}px: the closed box keeps its count and both arrows (#333): {s}"
+            serde_json::json!({"count": true, "prev": true, "next": true, "end": true}),
+            "{width}px: the find pill keeps its count and both arrows (#333), the ✕ circle beside it: {s}"
         );
     }
+    // The ✕ circle ends the search: the query, its marks and the find pill go, the toolbar is back.
+    phone_tap(&tab, "#phoneSearchDone");
+    harness::until(
+        &tab,
+        "!document.querySelector('.header-searchbox').classList.contains('has-query') && !document.querySelector('.header-searchbox').classList.contains('phone-open') && getComputedStyle(document.getElementById('dockPill')).display !== 'none' && !document.querySelector('mark.search-mark')",
+        "the ✕ circle to end the search and give the dock back to the toolbar pill",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className + ' ' + document.querySelectorAll('mark.search-mark').length",
+    );
 }
 
 /// #353, the owner's phone on 1.339.0 (typing in the open box beside a scope chip and a tool chip:
@@ -11049,7 +11121,7 @@ fn a_phone_toolbar_keeps_one_row_with_a_query_and_a_chip() {
 /// 4) make the up/down match arrow vertically centered".
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn a_phone_search_strip_scrolls_whole_and_counts_under_the_box() {
+fn a_phone_search_strip_scrolls_whole_and_counts_beside_the_box() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2730, "phone-search-strip", 390, 844);
     let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
@@ -11073,7 +11145,7 @@ fn a_phone_search_strip_scrolls_whole_and_counts_under_the_box() {
     tab.type_str("question answer lorem ipsum").unwrap();
     std::thread::sleep(Duration::from_millis(400));
     let probe = format!(
-        "(function(){{ var whole = {PHONE_WHOLLY_IN}, box = document.querySelector('.header-searchbox'), b = box.getBoundingClientRect(), input = document.getElementById('transcriptSearchInput'), ir = input.getBoundingClientRect(), strip = input.parentElement, sr = strip.getBoundingClientRect(), scope = document.querySelector('#searchChips [data-chip=\"scope\"]'), count = document.getElementById('transcriptSearchCount'), cr = count.getBoundingClientRect(); var arrow = function (id) {{ var g = document.querySelector('#' + id + ' svg'); if (!g) return null; var r = g.getBoundingClientRect(); return Math.round((r.top + r.height / 2 - (b.top + b.height / 2)) * 10) / 10; }}; return JSON.stringify({{ scopeText: scope.querySelector('.search-chip-value').innerText, scopeKey: Math.round(scope.querySelector('.search-chip-key').getBoundingClientRect().width), scopeGlyph: !!scope.querySelector('svg'), toolGlyph: !!document.querySelector('#searchChips [data-chip=\"tools\"] svg'), fieldWhole: input.scrollWidth <= input.clientWidth + 1, scrolled: strip !== box && strip.scrollLeft > 0, endInView: ir.right <= sr.right + 1 && ir.right > sr.left, count: count.textContent, countBelow: cr.top >= b.bottom - 0.5, countWhole: cr.width > 0 && count.scrollWidth <= count.clientWidth + 1 && cr.left >= 0 && cr.right <= innerWidth, countSeen: (function () {{ var h = document.elementFromPoint(cr.left + cr.width / 2, cr.top + cr.height / 2); return !!h && (h === count || count.contains(h)); }})(), prev: arrow('findPrev'), next: arrow('findNext') }}); }})()"
+        "(function(){{ var whole = {PHONE_WHOLLY_IN}, box = document.querySelector('.header-searchbox'), b = box.getBoundingClientRect(), input = document.getElementById('transcriptSearchInput'), ir = input.getBoundingClientRect(), strip = input.parentElement, sr = strip.getBoundingClientRect(), scope = document.querySelector('#searchChips [data-chip=\"scope\"]'), count = document.getElementById('transcriptSearchCount'), cr = count.getBoundingClientRect(); var arrow = function (id) {{ var g = document.querySelector('#' + id + ' svg'); if (!g) return null; var r = g.getBoundingClientRect(); return Math.round((r.top + r.height / 2 - (b.top + b.height / 2)) * 10) / 10; }}; return JSON.stringify({{ scopeText: scope.querySelector('.search-chip-value').innerText, scopeKey: Math.round(scope.querySelector('.search-chip-key').getBoundingClientRect().width), scopeGlyph: !!scope.querySelector('svg'), toolGlyph: !!document.querySelector('#searchChips [data-chip=\"tools\"] svg'), fieldWhole: input.scrollWidth <= input.clientWidth + 1, scrolled: strip !== box && strip.scrollLeft > 0, endInView: ir.right <= sr.right + 1 && ir.right > sr.left, count: count.textContent, countAbove: cr.bottom <= b.top + 0.5, countWhole: cr.width > 0 && count.scrollWidth <= count.clientWidth + 1 && cr.left >= 0 && cr.right <= innerWidth, countSeen: (function () {{ var h = document.elementFromPoint(cr.left + cr.width / 2, cr.top + cr.height / 2); return !!h && (h === count || count.contains(h)); }})(), prev: arrow('findPrev'), next: arrow('findNext') }}); }})()"
     );
     let p: serde_json::Value =
         serde_json::from_str(harness::eval(&tab, &probe).as_str().unwrap_or("{}")).unwrap();
@@ -11095,16 +11167,20 @@ fn a_phone_search_strip_scrolls_whole_and_counts_under_the_box() {
     );
     assert_eq!(p["scrolled"], true, "the strip scrolled left: {p}");
     assert_eq!(p["endInView"], true, "the end being typed is in view: {p}");
-    // 3) the count lies whole under the box while typing.
+    // 3) the count lies whole beside the box while typing — above it since #s37, where the box is
+    //    the find pill at the foot of the screen.
     assert!(
         !p["count"].as_str().unwrap_or("").is_empty(),
         "the count says something: {p}"
     );
-    assert_eq!(p["countBelow"], true, "the count sits under the box: {p}");
+    assert_eq!(
+        p["countAbove"], true,
+        "the count hangs above the find pill: {p}"
+    );
     assert_eq!(p["countWhole"], true, "and is not cut: {p}");
     assert_eq!(
         p["countSeen"], true,
-        "and nothing is painted over it — the turn's sticky bar sits right there: {p}"
+        "and nothing is painted over it — the transcript's text runs right there: {p}"
     );
     // 4) each arrow's glyph is centred on the box's centre line.
     for k in ["prev", "next"] {
@@ -11304,7 +11380,7 @@ fn the_app_shell_lists_and_opens_a_qwenwork_session() {
 /// their screenshot, a Bash output whose lines all run past the right edge. On a phone an output
 /// does not wrap, so a hit far along a line sat beyond its block's right edge, and the step only
 /// moved up and down. After every step the current match must be wholly visible — both axes —
-/// below the bars.
+/// between the top bar and the dock at the foot (#s37).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_phone_search_step_shows_a_match_far_along_a_long_line() {
@@ -11353,7 +11429,7 @@ fn a_phone_search_step_shows_a_match_far_along_a_long_line() {
     .as_i64()
     .unwrap_or(0);
     assert!(hits >= 6, "the fixture's hits: {hits}");
-    let seen = "(function(){ var m = document.querySelector('.transcript mark.search-mark.current'); if (!m) return JSON.stringify({ none: true }); var r = m.getBoundingClientRect(), t = document.querySelector('.transcript').getBoundingClientRect(); var top = Math.max(t.top, document.querySelector('.topbar').getBoundingClientRect().bottom); var bar = document.getElementById('turnStickyBar'); if (bar && bar.getAttribute('aria-hidden') !== 'true') { var b = bar.getBoundingClientRect(); if (b.height > 0) top = Math.max(top, b.bottom); } var x = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return JSON.stringify({ inBand: r.top >= top - 0.5 && r.bottom <= t.bottom + 0.5, inWidth: r.left >= t.left - 0.5 && r.right <= t.right + 0.5, hit: !!h && (h === m || m.contains(h)), left: Math.round(r.left), top: Math.round(r.top) }); })()";
+    let seen = "(function(){ var m = document.querySelector('.transcript mark.search-mark.current'); if (!m) return JSON.stringify({ none: true }); var r = m.getBoundingClientRect(), t = document.querySelector('.transcript').getBoundingClientRect(); var top = Math.max(t.top, document.querySelector('.topbar').getBoundingClientRect().bottom); var bar = document.getElementById('turnStickyBar'); if (bar && bar.getAttribute('aria-hidden') !== 'true') { var b = bar.getBoundingClientRect(); if (b.height > 0) top = Math.max(top, b.bottom); } var x = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); var dock = document.getElementById('phoneDock'), floor = t.bottom; if (dock && getComputedStyle(dock).display !== 'none') floor = Math.min(floor, dock.getBoundingClientRect().top); return JSON.stringify({ inBand: r.top >= top - 0.5 && r.bottom <= floor + 0.5, inWidth: r.left >= t.left - 0.5 && r.right <= t.right + 0.5, hit: !!h && (h === m || m.contains(h)), left: Math.round(r.left), top: Math.round(r.top) }); })()";
     let still = "(function(){ var s = document.querySelector('.transcript'); return new Promise(function(res){ var a = s.scrollTop; setTimeout(function(){ requestAnimationFrame(function(){ requestAnimationFrame(function(){ res(Math.abs(s.scrollTop - a) < 1); }); }); }, 250); }); })()";
     let mut misses = Vec::new();
     for (dir, button) in [("down", "#findNext"), ("up", "#findPrev")] {
@@ -12282,6 +12358,23 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
         centred[0] <= 500 && (centred[1] - centred[2]).abs() <= 2,
         "with the column hidden the transcript is a centred reading column, not the whole width: {centred:?}"
     );
+    // With the column hidden the panes are back in the pill — or nothing would reach them.
+    phone_tap(&tab, "#phonePane-turns");
+    harness::until(
+        &tab,
+        "!document.getElementById('phonePaneMenu').hidden && document.querySelectorAll('#phonePaneMenu .outline-turn-row').length >= 1",
+        "the pill's Turns opening its sheet (the session chosen above) while the column is hidden",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').hidden",
+    );
+    phone_tap(&tab, "#phonePaneMenu .phone-pane-close");
+    harness::until(
+        &tab,
+        "document.getElementById('phonePaneMenu').hidden",
+        "the sheet closed",
+        Duration::from_secs(5),
+        "1",
+    );
     // The choice is the column's own: a reload keeps it, and the desktop's rail is untouched.
     tab.reload(false, None).unwrap();
     harness::until(
@@ -12336,7 +12429,8 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
 /// #s37 (design/phone-landscape.md §3.3), the owner on 1.357.0: "the screen is actually too wide to
 /// read the transcript comfortably" — about 119 characters a line held sideways. On a phone too
 /// narrow for two columns the session list stays a drawer, and the transcript is a centred reading
-/// column at most about 75 characters wide, the spare width its margin.
+/// column at most about 75 characters wide, the spare width its margin — and Aa offers the whole
+/// width, as on a desktop, for source code or a wide table.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_narrow_phone_held_sideways_reads_at_a_measure() {
@@ -12362,10 +12456,98 @@ fn a_narrow_phone_held_sideways_reads_at_a_measure() {
         centred[0] <= 500 && (centred[1] - centred[2]).abs() <= 2,
         "a centred column of at most 500px: {centred:?}"
     );
+    // The owner: "the aA control should offer the take whole width option" — the Reading menu's Wide
+    // transcript, which a phone upright hides (#338: its text already runs edge to edge), is offered
+    // sideways and takes the transcript to the whole width; off again, the measure is back.
+    phone_tap(&tab, "#readingBtn");
+    harness::until(
+        &tab,
+        &format!("document.getElementById('readingOptions').classList.contains('open') && ({PHONE_HITTABLE})(document.querySelector('#readingOptions [data-reading-toggle=wide]'))"),
+        "Aa offering Wide transcript",
+        Duration::from_secs(5),
+        "document.getElementById('readingOptions').className",
+    );
+    let inner = "Math.round(document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect().width)";
+    phone_tap(&tab, "#readingOptions [data-reading-toggle=wide]");
+    harness::until(
+        &tab,
+        &format!("{inner} > 650"),
+        "the transcript across the whole width",
+        Duration::from_secs(5),
+        inner,
+    );
+    phone_tap(&tab, "#readingOptions [data-reading-toggle=wide]");
+    harness::until(
+        &tab,
+        &format!("{inner} <= 500"),
+        "the reading measure back",
+        Duration::from_secs(5),
+        inner,
+    );
+    phone_tap_outside(&tab);
     let facts = drawer_facts(&tab);
     assert_eq!(
         facts["sbPosition"], "fixed",
         "the session list is still a drawer here: {facts}"
     );
     the_drawer_opens_and_its_list_scrolls(&tab, "852x393");
+}
+
+/// #s37 (design/phone-landscape.md §3.5): the search docked at the keyboard, as Safari's Find on
+/// Page is. iOS never lifts a fixed bottom element above its keyboard — the layout viewport keeps its
+/// height and the keyboard covers its foot — so the find pill rides the VISUAL viewport. Headless
+/// Chrome has no soft keyboard; the case gives the page one the way iOS does, by shrinking
+/// `visualViewport.height` (shadowed on the instance) and firing its `resize`. The find pill rests
+/// just above it, the transcript keeps its height (a moving foot would move the reader, #372), and
+/// the keyboard going brings the dock back to its place above the home indicator.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_find_pill_rides_the_keyboard() {
+    let _serial = serial();
+    let (_m, _b, tab, _path) = phone_world_at(2749, "phone-keyboard", 390, 844, "");
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open')",
+        "a tap on the search to open the find pill",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    let facts = "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(), b = document.querySelector('.header-searchbox').getBoundingClientRect(); return JSON.stringify({ dockBottom: Math.round(d.bottom), boxBottom: Math.round(b.bottom), transcript: document.querySelector('.transcript').clientHeight, h: innerHeight }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    let rest = read();
+    // The keyboard (and its accessory bar) up: 336px of the layout viewport's foot covered.
+    harness::eval(&tab, "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 336; } }); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(); return Math.abs(d.bottom - (innerHeight - 336 - 8)) <= 1; })()",
+        "the find pill resting just above the keyboard",
+        Duration::from_secs(5),
+        facts,
+    );
+    let up = read();
+    assert!(
+        up["boxBottom"].as_i64().unwrap_or(9999) <= up["h"].as_i64().unwrap_or(0) - 336,
+        "the field the reader types into is above the keyboard: {up}"
+    );
+    assert_eq!(
+        up["transcript"], rest["transcript"],
+        "the transcript keeps its height under the keyboard: {rest} → {up}"
+    );
+    // The keyboard goes: the dock is back above the home indicator.
+    harness::eval(&tab, "(function(){ delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
+    harness::until(
+        &tab,
+        &format!(
+            "document.getElementById('phoneDock').getBoundingClientRect().bottom === {}",
+            rest["dockBottom"]
+        ),
+        "the dock back in its place once the keyboard goes",
+        Duration::from_secs(5),
+        facts,
+    );
 }

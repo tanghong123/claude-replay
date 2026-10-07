@@ -85,6 +85,13 @@ side changes with the direction the phone is turned). This alone fixes issues 1 
   renderer and one click handler still serve every layout. Navigation is now on the LEFT, where
   portrait has it and where the desktop keeps its outline (issue 4). Choosing a turn, a task or an
   agent moves the transcript and leaves the column where it is, as Mail does.
+- **As built (the owner, 2026-10-08, on seeing it):** the switcher is four GLYPHS with their counts,
+  not words, "so the side bar width can be relatively small" (280px); it sits in ONE row with the
+  sidebar's own glyphs (the switcher first), and the "Agent Monitor" brand row is gone ("waste
+  space"). The ☰ moves to the session's top left, by its title, as iPad apps keep their sidebar
+  button with the content. The column can be hidden completely, and the session then stays at its
+  reading width; the Reading menu's Wide transcript widens it, as on a desktop (for source code or a
+  wide table).
 - **The transcript gets what is left:** about 530pt, 65–70 characters a line. The width that made
   lines too long now holds the navigation (issue 3).
 - **The handle hides and shows the column.** With it hidden, the transcript is centred at its
@@ -104,8 +111,7 @@ In landscape the top bar and the turn bar merge into one bar, about 44pt tall (i
 > ☰ │ ⌸ ✓ ⌘ (narrow phone only) │ **session name** ▸ Turn 77 — the turn's first words … │ 🔍 Aa ⓘ ▣
 
 The session's name is the title and the current turn is its subtitle, the way iOS bars carry a
-subtitle. A tap on the subtitle opens the turn menu the turn bar opens today. The chrome goes from
-81pt to 44pt.
+subtitle (as built, the two are one target: §3.5b). The chrome goes from 81pt to 44pt.
 
 ### 3.5 Find on Page, at the keyboard
 
@@ -163,10 +169,31 @@ What it costs, named in advance:
 - **Portrait changes, not only sideways.** This reworks the phone toolbar that #313, #352 and #353
   shaped. Their cases move with it: a control's place changes, its behaviour does not.
 
+### 3.5b As built: what the critical pass changed
+
+The owner asked for a critical pass ("make sure everything is logical") before this shipped. It
+found four things, and the build follows the first three:
+
+- **One target in the title.** A subtitle that jumped to its turn, under a title that opened the
+  session's menu, made two targets of about 22pt each in a 48pt row — half a finger each. The title
+  and the subtitle are one target now (the session's menu); turns are chosen in the Turns pane.
+- **One control, one meaning, to end a search.** With the keyboard dismissed the box stayed open, so
+  its ✕ cleared the text and raised the keyboard again when the reader wanted out. A glass ✕ circle
+  beside the find pill ends the search (iOS 26 closes a search beside its field); the field's own
+  small ✕ only clears. While the field has the keyboard the magnifier and the funnel give way, so two
+  chips and a word keep their room (measured: 167px wanted, 102px given before).
+- **The panes stay reachable.** On a wide phone with the column hidden, the pill had no Turns, Tasks
+  or Agents and the column held them: nothing reached them. The pill takes them back while the
+  column is hidden.
+- **Kept:** while a search holds the dock, the toolbar pill steps aside, so Turns is a tap on ✕
+  away. Safari's Find on Page replaces its toolbar the same way until Done.
+
 ### 3.6 Jump to latest
 
 The ↓ (and its "N new" pill) floats at the bottom RIGHT, inside the safe area: clear of the text
-column on both kinds of phone (issue 7).
+column on both kinds of phone (issue 7). As built it floats just above the dock, over the search
+circle, 44px. #332 had moved it to the bottom centre because the old corner button was small and
+hard to hit; the approved mockups put it back at the right, at a finger's size.
 
 ### 3.7 The landscape layout's state is its own
 
