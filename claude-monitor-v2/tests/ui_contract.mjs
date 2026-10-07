@@ -2886,7 +2886,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   const preview = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
   assert.match(preview, /this\.printBtn\.onclick = \(\) => this\.markdown\?\.print\?\.\(\);/, "mdrev's own print, never the page's");
-  assert.match(preview, /this\.printBtn\.hidden = !isMarkdownName\(item\.name\) \|\| !\(onPhone\(\) \|\| handle\.held\);/, "Markdown only, where mdrev offers none");
+  assert.match(preview, /this\.printBtn\.hidden = !isMarkdownName\(item\.name\) \|\| !handle\.held;/, "Markdown only, where mdrev offers none: a held reader (#s31)");
   const pane = readFileSync(new URL("../../claude-monitor/src/codex-ui/mdrev-pane.js", import.meta.url), "utf8");
   assert.match(pane, /print\(\) \{ mounted\?\.print\?\.\(\); \}/, "the handle carries mdrev's print");
   console.log("#s30 pane print cases passed");

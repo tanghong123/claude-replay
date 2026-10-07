@@ -191,10 +191,10 @@ page (the owner, 2026-10-06), nor an image it draws itself. The cases are
 display menu's text size and density reach the source view too; the first case presses its larger
 step in the pane, so a host rule that stood in the way would fail it.
 **The pane prints a Markdown document where mdrev offers no print** (#s30, the owner: "print still
-makes sense"): mdrev's own toolbar prints on a desktop, but its phone layout drops print and a held
-reader has no toolbar, so there the pane head carries a print control (`.preview-print`, hit-tested at
-390px) that calls mdrev's own `mounted.print()` — the document alone on the paper; never for code.
-No mdrev change was needed. **SHARED review is the detached tab's, never the pane's** (#s6, then #s10, the owner: "maybe not in
+makes sense"): mdrev's own toolbar prints — on a phone from its Aa menu since 1.1.24 (#s31), which also
+made the print start from the tap in Safari — but a held reader has no toolbar, so there the pane head
+carries a print control (`.preview-print`, hit-tested at 390px) that calls mdrev's own
+`mounted.print()` — the document alone on the paper; never for code. **SHARED review is the detached tab's, never the pane's** (#s6, then #s10, the owner: "maybe not in
 the main interface, but in the full detached view"; mdrev 1.1.18+: threads in a review store,
 pairing, a Push). The split is by PREFIX: the pane mounts the guest on `api/mdrev/`, where every
 `review` route and a thread's `hide` answer the contract's 404 (the guest then draws no Share and no

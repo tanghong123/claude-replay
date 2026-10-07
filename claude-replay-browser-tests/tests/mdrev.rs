@@ -1340,10 +1340,10 @@ fn the_pane_hands_mdrev_held_code_and_keeps_its_own_view_of_the_rest() {
 const PRINT_CONTROL: &str = "(function(){ var b = document.querySelector('#previewHead .preview-print, .preview-head .preview-print'); if (!b || b.hidden || !b.offsetWidth) return 'hidden'; var r = b.getBoundingClientRect(); if (r.right > innerWidth || r.left < 0) return 'off-screen'; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return hit && b.contains(hit) ? 'shown' : 'covered by ' + (hit ? hit.className : 'nothing'); })()";
 
 /// #s30, the owner: "for markdown, in mdrev, I actually think print still makes sense, though we
-/// have to make sure we can fit the icon on the toolbar". mdrev's own toolbar offers print on a
-/// desktop; its phone layout drops it, and a held reader has no toolbar at all. There the pane head
-/// offers mdrev's own print (`mounted.print()`) for a Markdown document — on screen and hit-tested
-/// at a phone's width, beside the head's other controls — and nothing for a code file.
+/// have to make sure we can fit the icon on the toolbar". mdrev's own toolbar prints — on a phone
+/// from its Aa menu since 1.1.24 (#s31) — and a held reader has no toolbar at all. There the pane
+/// head offers mdrev's own print (`mounted.print()`) for a Markdown document — on screen and
+/// hit-tested at a phone's width, beside the head's other controls — and nothing for a code file.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn the_pane_prints_a_markdown_document_where_mdrev_offers_no_print() {
@@ -1376,6 +1376,53 @@ fn the_pane_prints_a_markdown_document_where_mdrev_offers_no_print() {
         Duration::from_secs(30),
         PANE,
     );
+    // #s31 (mdrev 1.1.24): a file prints from mdrev's own Aa menu on a phone, so the pane adds no
+    // second print control there.
+    let opened = eval(
+        &phone,
+        "(function(){ var aa = [...document.querySelectorAll('#previewBody .mdrev-host button')].find(function (b) { return b.textContent === 'Aa'; }); if (!aa) return 'no Aa'; aa.click(); return 'opened'; })()",
+    );
+    assert_eq!(
+        opened.as_str(),
+        Some("opened"),
+        "mdrev's display menu on a phone"
+    );
+    until(
+        &phone,
+        "(function(){ var b = document.querySelector('#previewBody .mdrev-host .display-print-btn'); return !!b && !!b.offsetWidth; })()",
+        "mdrev's own print in its Aa menu on a phone",
+        Duration::from_secs(10),
+        PANE,
+    );
+    eval(
+        &phone,
+        "document.querySelector('#previewBody .mdrev-host .display-print-btn').click(); 'ok'",
+    );
+    until(
+        &phone,
+        "window.__printed === 1",
+        "mdrev's print to run from its menu",
+        Duration::from_secs(10),
+        "String(window.__printed)",
+    );
+    assert_eq!(
+        eval(&phone, PRINT_CONTROL).as_str(),
+        Some("hidden"),
+        "no second print control in the pane head"
+    );
+    // A held reader on a phone has no mdrev toolbar: the pane's own print, on screen and on top at
+    // 390px, beside the head's other controls.
+    eval(
+        &phone,
+        "window.__printed = 0; document.querySelector('[data-attachment-action=\"preview\"]').click(); 'ok'",
+    );
+    until(
+        &phone,
+        "(function(){ var h = document.querySelector('#previewBody .mdrev-host'); return !!h && h.dataset.root === 'held'; })()",
+        "the carried notes, held, on a phone",
+        Duration::from_secs(30),
+        PANE,
+    );
     until(
         &phone,
         &format!("{PRINT_CONTROL} === 'shown'"),
@@ -1390,7 +1437,7 @@ fn the_pane_prints_a_markdown_document_where_mdrev_offers_no_print() {
     until(
         &phone,
         "window.__printed === 1",
-        "mdrev's print to run",
+        "mdrev's print to run from the pane",
         Duration::from_secs(10),
         "String(window.__printed)",
     );
