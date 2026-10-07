@@ -11847,11 +11847,15 @@ fn drawer_facts(tab: &headless_chrome::Tab) -> serde_json::Value {
         .unwrap_or_default()
 }
 
-/// #s33: a finger opens the drawer, and its list must be there and SCROLL under a finger — Chrome's
-/// own synthesized touch scroll, the gesture the owner made — which a list that is not painted, or
-/// not a scroller of its own height, does not.
+/// #s33: a finger opens the drawer, and its list must be there and SCROLL under the reader's input at
+/// a point inside it — which a list that is not painted, or not a scroller of its own height, does
+/// not. The input is a real wheel at that point (CDP `mouseWheel`, scrolled by the browser's own
+/// hit test), not Chrome's synthesized TOUCH scroll: that moved the list on macOS and nothing on
+/// Linux, where Chrome's synthesized gestures stop short (#366's tap, again on CI's first run).
 fn the_drawer_opens_and_its_list_scrolls(tab: &headless_chrome::Tab, at: &str) {
-    use headless_chrome::protocol::cdp::Input::{GestureSourceType, SynthesizeScrollGesture};
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption as Kind,
+    };
     let handle = harness::eval(
         tab,
         "(function(){ var b = document.getElementById('drawerHandle').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()",
@@ -11884,25 +11888,29 @@ fn the_drawer_opens_and_its_list_scrolls(tab: &headless_chrome::Tab, at: &str) {
         "(function(){ var b = document.querySelector('#app>.sidebar .tree').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height * 0.7]); })()",
     );
     let tree: Vec<f64> = serde_json::from_str(tree.as_str().unwrap_or("[]")).unwrap_or_default();
-    tab.call_method(SynthesizeScrollGesture {
+    tab.call_method(DispatchMouseEvent {
+        Type: Kind::MouseWheel,
         x: tree[0],
         y: tree[1],
-        x_distance: Some(0.0),
-        y_distance: Some(-120.0),
-        x_overscroll: None,
-        y_overscroll: None,
-        prevent_fling: Some(true),
-        speed: Some(800),
-        gesture_source_Type: Some(GestureSourceType::Touch),
-        repeat_count: None,
-        repeat_delay_ms: None,
-        interaction_marker_name: None,
+        modifiers: None,
+        timestamp: None,
+        button: None,
+        buttons: None,
+        click_count: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        delta_x: Some(0.0),
+        delta_y: Some(240.0),
+        pointer_Type: None,
     })
-    .expect("a finger's scroll on the drawer's list");
+    .expect("a wheel on the drawer's list");
     harness::until(
         tab,
         "document.querySelector('#app>.sidebar .tree').scrollTop > 40",
-        "the drawer's list scrolled under the finger",
+        "the drawer's list scrolled under the wheel",
         Duration::from_secs(10),
         DRAWER_FACTS,
     );
