@@ -928,7 +928,7 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
     );
     let paired_as = eval(
         &own,
-        "(async function(){ var d = document.getElementById('doc').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var r = await fetch(d.contract + '/review?' + q); var j = await r.json(); return r.status + ' ' + (j.paired && j.paired.email); })()",
+        "(async function(){ var d = document.getElementById('doc').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var r = await fetch(d.contract + '/review?' + q); var j = await r.json(); return r.status + ' ' + (j.paired && j.paired.email) + (j.error ? ' — ' + j.error : ''); })()",
     );
     assert_eq!(
         paired_as.as_str().unwrap_or(""),
@@ -1023,12 +1023,12 @@ fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
     );
     let paired_as = eval(
         &tab,
-        "(async function(){ var d = document.querySelector('.review-sheet .mdrev-pane').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var r = await fetch(d.contract + '/review?' + q); var j = await r.json(); return r.status + ' ' + (j.paired && j.paired.email); })()",
+        "(async function(){ var d = document.querySelector('.review-sheet .mdrev-pane').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var r = await fetch(d.contract + '/review?' + q); var j = await r.json(); return r.status + ' ' + (j.paired && j.paired.email) + (j.error ? ' — ' + j.error : ''); })()",
     );
     assert_eq!(
         paired_as.as_str().unwrap_or(""),
         "200 t@example.invalid",
-        "the sheet's prefix answers with the store's state, paired as the case paired"
+        "the sheet's prefix answers with the store's state, paired as the case paired (#s34: a red run names mdrev-cli's error)"
     );
     // The document is READ there: its heading across the sheet's width and the thing a tap on it
     // hits — not mdrev squeezed into a shrink-to-fit column (a rect alone would not say so).
