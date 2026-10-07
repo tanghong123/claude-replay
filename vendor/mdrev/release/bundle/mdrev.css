@@ -799,6 +799,15 @@
 }
 .mdrev-host .build-toast {z-index:40;color:var(--ink);background:var(--bg-soft);border:1px solid var(--rule-soft);border-radius:8px;align-items:center;gap:10px;padding:8px 12px;font-size:13px;display:flex;position:fixed;bottom:16px;right:16px;box-shadow:0 4px 16px #0000001f}
 .mdrev-host .build-toast button {font:inherit;color:var(--accent);background:var(--bg);border:1px solid var(--rule-soft);cursor:pointer;border-radius:6px;padding:4px 10px}
+.mdrev-host .print-notice {max-width:min(26rem, calc(var(--mdv-app-w,100vw) - 32px));line-height:1.4}
+.mdrev-host .print-spinner {border:2px solid var(--rule);border-top-color:var(--accent);border-radius:50%;flex:none;width:12px;height:12px;animation:.8s linear infinite mdv-spin}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .print-spinner {animation-duration:2.4s}
+}
+@media print {
+.mdrev-host .build-toast {display:none!important}
+}
+.mdrev-host .display-print-btn {font:inherit;color:var(--accent);border:1px solid var(--rule);cursor:pointer;text-overflow:ellipsis;white-space:nowrap;background:0 0;border-radius:6px;max-width:12rem;padding:3px 10px;font-size:12.5px;overflow:hidden}
 @font-face {font-display:block;font-family:mdvKaTeX_AMS;font-style:normal;font-weight:400;src:url(./assets/KaTeX_AMS-Regular-BQhdFMY1.woff2)format("woff2"),url(./assets/KaTeX_AMS-Regular-DMm9YOAa.woff)format("woff"),url(./assets/KaTeX_AMS-Regular-DRggAlZN.ttf)format("truetype")}
 @font-face {font-display:block;font-family:mdvKaTeX_Caligraphic;font-style:normal;font-weight:700;src:url(./assets/KaTeX_Caligraphic-Bold-Dq_IR9rO.woff2)format("woff2"),url(./assets/KaTeX_Caligraphic-Bold-BEiXGLvX.woff)format("woff"),url(./assets/KaTeX_Caligraphic-Bold-ATXxdsX0.ttf)format("truetype")}
 @font-face {font-display:block;font-family:mdvKaTeX_Caligraphic;font-style:normal;font-weight:400;src:url(./assets/KaTeX_Caligraphic-Regular-Di6jR-x-.woff2)format("woff2"),url(./assets/KaTeX_Caligraphic-Regular-CTRA-rTL.woff)format("woff"),url(./assets/KaTeX_Caligraphic-Regular-wX97UBjC.ttf)format("truetype")}
