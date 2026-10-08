@@ -3275,16 +3275,53 @@ var phoneDock;
     byId("transcriptSearchInput").blur();
     setPhoneSearch(false);
   };
+  // #s39 (design/phone-landscape.md §3.5c, approved 2026-10-08): the compose box is the dock's third
+  // mode, as Messages does it. With write mode on and a session that can take a message, a ✎ circle
+  // joins the dock beside search in place of the floating compose button; a tap turns the dock into
+  // the reply box — the SAME #composer and its store, restyled on a phone (production.css) — which
+  // rides the keyboard as the find pill does, its target and warning in sight above the field. Its ✕
+  // keeps the draft, and a dot on ✎ says one is waiting.
+  const composeFab = byId("composeFab"), composer = byId("composer"), composeInput = byId("composeInput");
+  const dockCompose = document.createElement("button");
+  dockCompose.type = "button";
+  dockCompose.className = "dock-compose";
+  dockCompose.id = "dockCompose";
+  dockCompose.hidden = true;
+  dockCompose.innerHTML = `${svg("edit")}<span class="dock-compose-dot" aria-hidden="true"></span>`;
+  dockCompose.title = "Write to this session";
+  dockCompose.setAttribute("aria-label", "Write to this session");
+  dockCompose.onclick = () => composeFab.click();
+  const composeNote = document.createElement("div");
+  composeNote.className = "compose-note";
+  composer.prepend(composeNote);
+  // The field grows with its text to five lines, then scrolls.
+  const fitCompose = () => {
+    composeInput.style.height = "";
+    if (PHONE.matches && composer.classList.contains("production-show")) composeInput.style.height = `${Math.min(composeInput.scrollHeight, 132)}px`;
+  };
+  const paintCompose = () => {
+    dockCompose.hidden = !composeFab.classList.contains("show");
+    const draft = !!composeInput.value.trim();
+    dockCompose.classList.toggle("has-draft", draft);
+    dockCompose.setAttribute("aria-label", draft ? "Write to this session — a draft is waiting" : "Write to this session");
+    app.classList.toggle("composing", PHONE.matches && composer.classList.contains("production-show"));
+    composeNote.textContent = `To ${byId("composeTarget").textContent}${composer.classList.contains("live") ? " · writes to the live session" : ""}`;
+    fitCompose();
+  };
+  new MutationObserver(paintCompose).observe(composeFab, { attributes: true, attributeFilter: ["class"] });
+  new MutationObserver(paintCompose).observe(composer, { attributes: true, attributeFilter: ["class"] });
+  composeInput.addEventListener("input", paintCompose);
   const placeToolbar = () => {
     if (PHONE.matches) {
       dockPill.append(readingCluster);
-      dock.append(searchCluster, searchDone);
+      dock.append(searchCluster, searchDone, dockCompose);
     } else {
       topbar.querySelector(".top-spacer").after(searchCluster);
       byId("sessionFoldAll").after(readingCluster);
     }
   };
   placeToolbar();
+  paintCompose();
 
   const menu = document.createElement("div");
   menu.className = "phone-pane-menu";
@@ -3504,7 +3541,7 @@ var phoneDock;
   }
   // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone), and
   // the desktop's rail comes off or goes back on (#s33, `applySidebar`).
-  PHONE.addEventListener("change", () => { placeToolbar(); place(); applySidebar(); if (!PHONE.matches) closePane(); renderNavigator(); });
+  PHONE.addEventListener("change", () => { placeToolbar(); place(); applySidebar(); if (!PHONE.matches) closePane(); renderNavigator(); paintCompose(); });
   // Into the wide layout the drop-down has no button (the column shows its panes); out of it, the
   // column's borrowed list goes home and the handle speaks of the drawer again.
   WIDE.addEventListener("change", () => { if (WIDE.matches) closePane(); else showColumnTab("sessions"); labelHandle(); place(); });

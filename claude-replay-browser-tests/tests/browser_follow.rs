@@ -12498,6 +12498,98 @@ fn a_narrow_phone_held_sideways_reads_at_a_measure() {
     the_drawer_opens_and_its_list_scrolls(&tab, "852x393");
 }
 
+/// #s39 (design/phone-landscape.md §3.5c, approved by the owner on 2026-10-08): on a phone the compose
+/// box is the dock's third mode, as Messages does it. With write mode on, a ✎ circle joins the dock in
+/// place of the floating compose button; a tap turns the dock into the reply box, which rides the
+/// keyboard as the find pill does and grows with its text; its ✕ keeps the draft, and a dot on ✎
+/// says one is waiting. Held sideways on a wide phone the box spans the session's column.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
+    let _serial = serial();
+    let (_m, _b, tab, _path) = phone_world_at(2751, "phone-compose", 390, 844, "");
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        &format!("(function(){{ var b = document.getElementById('dockCompose'); return !b.hidden && ({PHONE_HITTABLE})(b) && getComputedStyle(document.getElementById('composeFab')).display === 'none'; }})()"),
+        "write mode to put ✎ in the dock, in place of the floating button",
+        Duration::from_secs(10),
+        "document.getElementById('dockCompose').hidden + ' ' + document.getElementById('composeFab').className",
+    );
+    phone_tap(&tab, "#dockCompose");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('composing') && document.getElementById('composer').classList.contains('production-show')",
+        "✎ to open the reply box",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    let facts = "(function(){ var c = document.getElementById('composer').getBoundingClientRect(), f = document.getElementById('composeInput').getBoundingClientRect(); return JSON.stringify({ left: Math.round(c.left), right: Math.round(c.right), bottom: Math.round(c.bottom), field: Math.round(f.height), w: innerWidth, h: innerHeight, dock: getComputedStyle(document.getElementById('phoneDock')).display, note: document.querySelector('#composer .compose-note').textContent }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    let open = read();
+    assert!(
+        open["dock"] == "none"
+            && open["left"].as_i64().unwrap_or(-1) >= 8
+            && open["right"].as_i64().unwrap_or(9999) <= open["w"].as_i64().unwrap_or(0) - 8
+            && open["bottom"].as_i64().unwrap_or(9999) <= open["h"].as_i64().unwrap_or(0) - 8
+            && open["note"].as_str().is_some_and(|n| n.starts_with("To ")),
+        "the reply box takes the dock's place at the foot, its target above the field: {open}"
+    );
+    // The keyboard up: the box rides it, as the find pill does.
+    harness::eval(&tab, "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 336; } }); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "Math.abs(document.getElementById('composer').getBoundingClientRect().bottom - (innerHeight - 336 - 8)) <= 1",
+        "the reply box resting just above the keyboard",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::eval(&tab, "(function(){ var i = document.getElementById('composeInput'); i.value = 'Run the tests again and show me only the failures. Then, if the browser suite is the one failing, run just that file with the case name, and tell me which assertion it stops at.'; i.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    let grown = read();
+    assert!(
+        grown["field"].as_i64().unwrap_or(0) > open["field"].as_i64().unwrap_or(9999),
+        "the field grows with its text: {open} → {grown}"
+    );
+    harness::eval(&tab, "(function(){ delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
+    // ✕ closes it and keeps the draft; ✎ says one is waiting and brings it back.
+    phone_tap(&tab, "#closeComposer");
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('composing') && document.getElementById('dockCompose').classList.contains('has-draft') && getComputedStyle(document.querySelector('#dockCompose .dock-compose-dot')).display !== 'none'",
+        "✕ to close the box, the dock back with a draft dot on ✎",
+        Duration::from_secs(5),
+        "document.getElementById('app').className + ' ' + document.getElementById('dockCompose').className",
+    );
+    phone_tap(&tab, "#dockCompose");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('composing') && /^Run the tests again/.test(document.getElementById('composeInput').value)",
+        "✎ to reopen the box with the draft",
+        Duration::from_secs(5),
+        "document.getElementById('composeInput').value.slice(0, 20)",
+    );
+    // Held sideways on a wide phone the box spans the session's column, beside the list.
+    harness::phone(&tab, 956, 440);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    harness::until(
+        &tab,
+        "innerWidth === 956 && getComputedStyle(document.querySelector('#app>.sidebar')).position !== 'fixed'",
+        "the wide phone's two columns",
+        Duration::from_secs(10),
+        "innerWidth + ' ' + document.getElementById('app').className",
+    );
+    let side = harness::eval(&tab, "(function(){ var c = document.getElementById('composer').getBoundingClientRect(), s = document.querySelector('#app>.sidebar').getBoundingClientRect(); return JSON.stringify({ left: Math.round(c.left), column: Math.round(s.right), right: Math.round(c.right), w: innerWidth }); })()");
+    let side: serde_json::Value = serde_json::from_str(side.as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        side["left"].as_i64().unwrap_or(0) >= side["column"].as_i64().unwrap_or(9999)
+            && side["right"].as_i64().unwrap_or(9999) <= side["w"].as_i64().unwrap_or(0),
+        "sideways the reply box spans the session's column: {side}"
+    );
+}
+
 /// #s41, the owner's iPhone on 1.358.0, held sideways: "Aa menu in landscape shows a black page"
 /// (the sheet was a band across the screen and the session list covered its labels; Info lost its
 /// labels the same way), "the left most drawer button has no effect" (the Sessions tab wore the

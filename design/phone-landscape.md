@@ -5,7 +5,7 @@ shipped in 1.358.0 (#s37): two columns on a wide phone, a top bar that never hid
 at the bottom in a pill (§3.5a) with search as the pill's other state, in portrait and sideways. The
 owner's iPhone then found seven bugs in it, fixed in #s41 together with what a walk of every control
 on the iOS Simulator found (§3.5d). The compose box beside the pill (§3.5c, #s39) was approved on
-2026-10-08 and is being built. Where an earlier section and §3.5b–§3.5d disagree, the later
+2026-10-08 and built. Where an earlier section and §3.5b–§3.5d disagree, the later
 section is what ships.
 Since #s32 a phone held sideways gets the phone layout, and since #s33 that layout stays on the
 screen. The owner's verdict on 1.357.0: "kind of works, but not ideal", with five issues and a
@@ -200,7 +200,11 @@ found four things, and the build follows the first three:
 - **Kept:** while a search holds the dock, the toolbar pill steps aside, so Turns is a tap on ✕
   away. Safari's Find on Page replaces its toolbar the same way until Done.
 
-### 3.5c The compose box beside the pill (#s39; approved by the owner on 2026-10-08)
+### 3.5c The compose box beside the pill (#s39; approved by the owner on 2026-10-08, built)
+
+*Built as proposed below, and walked on the iOS Simulator upright and sideways with the real
+keyboard. The box is the same compose box and send path as the desktop's, restyled on a phone. Its
+note names the target ("To claude · app") and, for a live pane, adds "writes to the live session".*
 
 Today the compose box is a card over the transcript's foot, opened by a floating button. Since #s37 it
 rests above the dock. Proposed, as iOS Messages does it:

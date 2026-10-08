@@ -71,7 +71,16 @@ app's box — iOS reports an `innerHeight` that shrinks as it scrolls, and a `vi
 equal to the page offset. Held by `a_phone_find_pill_rides_the_keyboard`, which shadows
 `visualViewport.height` and `pageTop`. The transcript's foot is padded by the dock's static height
 (`--phone-dock-h`, never a measured value a keyboard would move under a glide), and the search's
-landing treats the dock as an obstacle. **The breakpoint is ONE query**
+landing treats the dock as an obstacle. **The compose box is the dock's third mode** (#s39,
+`design/phone-landscape.md` §3.5c, the owner approved the mockup): with write mode on and a writable
+session, a ✎ circle (`#dockCompose`) joins the dock beside search in place of the floating compose
+button; a tap turns the dock into the reply box — the SAME `#composer` and `ControlStore`, restyled on
+a phone (its head and foot `display:contents` in a grid: ✕ at the left, the field growing with its
+text to five lines with ↑ inside it, a `.compose-note` naming the target and, for a live pane, its
+warning above) — riding the keyboard by `--phone-kb` like the find pill, the toolbar, search and the
+jump stepping aside (`#app.composing`). Its ✕ keeps the draft and a dot on ✎ says one is waiting;
+on a wide phone held sideways it spans the session's column
+(`a_phone_writes_from_the_dock_and_keeps_the_draft`). The desktop's card and button are unchanged. **The breakpoint is ONE query**
 (#s32, `PHONE_QUERY` in `shared/capabilities.js`: `(max-width:760px), (pointer:coarse) and
 (max-height:500px)`, mdrev's own phone test), written in the demo's and production's CSS and read by every
 JS check, so a landscape phone is a phone. Its complement is just as strict (#s33): every `min-width` rule means "not a phone", so each of
@@ -135,7 +144,8 @@ latest sits at the bottom CENTRE of the session (#332): just above the dock upri
 row sideways, where the middle of that row is free (the owner: "should move to the bottom"), and
 gone while the find pill holds the dock (#s41). Inputs are 16px (iOS zooms into anything
 smaller), targets 44px — a reading row's whole width flips its switch, a facet suggestion is a 44px
-row. **On a touch screen hover reveals nothing** (#s41): WebKit spends a tap on a hover that SHOWS
+row, a delivered file a 36px chip (at 14px WebKit's tap adjustment gave its tap to the row's head,
+which folded the row), and the jump is offered only where something is below. **On a touch screen hover reveals nothing** (#s41): WebKit spends a tap on a hover that SHOWS
 content — a session row's action fading in from nothing — and sends no click, so choosing a session
 from an iPhone's drawer took two taps (the first tap's `touchend` came and its click never did); the
 action stays hidden there (`@media(hover:none)`), and since iOS leaves `:hover` on whatever was tapped

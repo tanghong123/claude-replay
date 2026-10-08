@@ -1323,9 +1323,33 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app :is(.renderer-target-link,.pointer-run-file[data-reference-path]){padding:10px 0}
   .toast{bottom:calc(max(var(--phone-dock-h,64px),calc(var(--phone-kb,0px) + 64px)) + 10px)}
   #app .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 16px)}
-  /* The compose box and its button rest above the dock, never under it (#s39 designs them beside it). */
-  #app .workspace .composer{bottom:calc(var(--phone-dock-h) + 8px)}
-  #app .workspace .compose-fab{bottom:calc(var(--phone-dock-h) + 8px);right:calc(14px + env(safe-area-inset-right,0px))}
+  /* #s39 (design/phone-landscape.md §3.5c, approved by the owner): the compose box is the dock's third
+     mode. A ✎ circle in the dock replaces the floating compose button; open, the box takes the dock's
+     place — ✕ at the left, the field (growing with its text, ↑ inside it) beside it, the target and
+     its warning above — and rides the keyboard by the same `--phone-kb`. The toolbar, search and the
+     jump to the latest step aside while it is open; a dot on ✎ says a draft is waiting. */
+  #app .compose-fab{display:none!important}
+  .dock-compose,.compose-note{display:none}
+  #app .phone-dock>.dock-compose:not([hidden]){display:grid;place-items:center;position:relative;flex:none;width:56px;height:56px;padding:0;border-radius:28px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--primary);cursor:pointer}
+  #app .phone-dock>.dock-compose .icon{width:22px;height:22px}
+  #app .dock-compose.has-draft .dock-compose-dot{display:block;position:absolute;top:11px;right:12px;width:9px;height:9px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 2px var(--bg)}
+  .dock-compose-dot{display:none}
+  #app .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.dock-compose{display:none}
+  #app.composing .phone-dock,#app.composing .jump-to-bottom{display:none!important}
+  #app.composing .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 110px)}
+  #app .workspace .composer.production-show{position:fixed;z-index:14;left:calc(12px + env(safe-area-inset-left,0px));right:calc(12px + env(safe-area-inset-right,0px));top:auto;bottom:max(calc(8px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 8px));width:auto;max-width:none;min-height:0;transform:none;display:grid;grid-template-columns:48px minmax(0,1fr);grid-template-areas:"note note" "close field";align-items:end;column-gap:8px;row-gap:6px;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+  #app .composer.production-show>.composer-head,#app .composer.production-show>.compose-foot{display:contents}
+  #app .composer.production-show>.composer-head>span,#app .composer.production-show #composerTitle,#app .composer.production-show #composeTarget,#app .composer.production-show .risk{display:none}
+  #app .composer.production-show .compose-note{display:flex;align-items:center;gap:6px;grid-area:note;justify-self:start;max-width:100%;min-width:0;padding:4px 10px;border-radius:12px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);color:var(--sub);font:600 12px/1.3 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #app .composer.production-show.live .compose-note{color:var(--amber)}
+  #app .composer.production-show.live .compose-note:before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:var(--amber)}
+  #app .composer.production-show .production-revoke{grid-area:note;justify-self:end;min-height:28px;padding:0 8px;border-radius:12px;background:var(--phone-glass);font-size:11.5px}
+  #app .composer.production-show #closeComposer{grid-area:close;width:48px;height:48px;margin:0 0 4px;border-radius:24px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--ink)}
+  #app .composer.production-show #closeComposer .icon{width:20px;height:20px}
+  #app .composer.production-show textarea{grid-area:field;box-sizing:border-box;width:100%;min-height:56px;max-height:none;padding:16px 54px 16px 18px;border-radius:28px;background:var(--bg);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--ink);font-size:16px;line-height:1.35;overflow-y:auto}
+  #app .composer.production-show .compose-foot:before{display:none}
+  #app .composer.production-show #sendBtn{grid-area:field;justify-self:end;align-self:end;margin:0 11px 11px 0;width:34px;height:34px;background:var(--primary);color:#fff}
+  #app .composer.production-show #sendBtn .icon{width:18px;height:18px}
 }
 /* A wide phone held sideways: the column holds Sessions, Turns, Tasks and Agents, so the pill keeps
    Aa beside the search, at the transcript's foot on the right — and takes the panes back while the
@@ -1335,6 +1359,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app:not(.phone-column-off) .dock-pill .phone-pane{display:none}
   #app:not(.phone-column-off) .phone-dock:has(.header-searchbox:is(.phone-open,.has-query)){left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 12px)}
   #app.phone-column-off .phone-dock:has(.header-searchbox:is(.phone-open,.has-query)){left:calc(12px + env(safe-area-inset-left,0px))}
+  /* The reply box spans the transcript's column, as the find pill does (#s39). */
+  #app:not(.phone-column-off) .workspace .composer.production-show{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 12px)}
 }
 
 /* #s37 (design/phone-landscape.md §3.1) — the safe area. The page asks for the whole screen
