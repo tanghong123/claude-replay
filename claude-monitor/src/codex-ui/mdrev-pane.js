@@ -118,6 +118,45 @@ async function capFor(root, origin, target) {
  * mdrev's guide shapes, §10). A theme toggle remounts at that place, since mdrev cannot re-theme a
  * live mount; `moved` hears every move.
  */
+/**
+ * Print the document mounted on `el` alone (#s57). mdrev isolates its mount with a print stylesheet
+ * (`#mdrev-print-isolation`: everything hidden but `.mdrev-print-target`) around `window.print()`
+ * and removes it in a `finally`. That holds on a desktop, whose print() returns once the sheet is
+ * done; iOS Safari returns at once and captures the page AFTER, with the isolation already gone, so
+ * the owner's iPhone printed the monitor itself. So the host carries the print (mdrev's `onPrint`):
+ * mdrev's own isolation, from the bundle's `__mdvPrint`, kept until `afterprint`, or until the
+ * reader touches the page again, where a browser never says afterprint. A bundle without the hook
+ * prints the page as before rather than nothing.
+ */
+function printDocument(el, path) {
+  const isolate = window.__mdvPrint;
+  if (typeof isolate !== "function") { window.print(); return; }
+  // The name a PDF takes its filename from, as mdrev names it: the file's, less its extension.
+  const name = String(path || "").split("/").pop().replace(/\.[^./]+$/, "");
+  const restore = isolate({ mount: el, name });
+  // mdrev's isolation hides the page's elements but cannot reach the BODY's own background (the
+  // monitor's grey, which iOS prints) nor the hidden app's full-screen height (a second page). So the
+  // mount steps out of the app for the print — a child of the body, the app `display:none` on the
+  // paper (production.css, `printing-document`) — and goes back where it was afterwards.
+  const home = { parent: el.parentNode, next: el.nextSibling };
+  document.documentElement.classList.add("printing-document");
+  document.body.append(el);
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    removeEventListener("afterprint", finish);
+    removeEventListener("pointerdown", finish, true);
+    home.parent?.insertBefore(el, home.next && home.next.parentNode === home.parent ? home.next : null);
+    document.documentElement.classList.remove("printing-document");
+    restore();
+  };
+  addEventListener("afterprint", finish);
+  // Armed after this tap, which is still being dispatched.
+  setTimeout(() => addEventListener("pointerdown", finish, true), 0);
+  window.print();
+}
+
 function mountAt(mountMdrev, el, facts, moved, contract = CONTRACT) {
   const origin = { path: facts.path, cap: facts.cap || "" };
   const place = { root: facts.root, path: facts.path, cap: origin.cap, range: facts.range || null };
@@ -145,7 +184,7 @@ function mountAt(mountMdrev, el, facts, moved, contract = CONTRACT) {
   let mounted = null;
   const mount = () => {
     const at = place.cap ? place : { ...place, ...origin };
-    mounted = mountMdrev(el, { contract, ...facts, path: at.path, cap: at.cap || undefined, range: at.range || undefined, theme: theme(), onNavigate });
+    mounted = mountMdrev(el, { contract, ...facts, path: at.path, cap: at.cap || undefined, range: at.range || undefined, theme: theme(), onNavigate, onPrint: () => printDocument(el, place.path) });
   };
   show();
   mount();
@@ -154,8 +193,9 @@ function mountAt(mountMdrev, el, facts, moved, contract = CONTRACT) {
   return {
     place,
     unmount() { watch.disconnect(); mounted?.unmount(); mounted = null; },
-    /** mdrev's own print (#s30): the document alone on the paper, under its own name. */
-    print() { mounted?.print?.(); },
+    /** mdrev's own print (#s30): the document alone on the paper, under its own name — carried by
+     *  the host (#s57), as mdrev's toolbar print is. */
+    print() { if (mounted) printDocument(el, place.path); },
   };
 }
 

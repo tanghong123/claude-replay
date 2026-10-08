@@ -322,7 +322,17 @@ step in the pane, so a host rule that stood in the way would fail it.
 makes sense"): mdrev's own toolbar prints — on a phone from its Aa menu since 1.1.24 (#s31), which also
 made the print start from the tap in Safari — but a held reader has no toolbar, so there the pane head
 carries a print control (`.preview-print`, hit-tested at 390px) that calls mdrev's own
-`mounted.print()` — the document alone on the paper; never for code. **SHARED review is the detached tab's, never the pane's** (#s6, then #s10, the owner: "maybe not in
+`mounted.print()` — the document alone on the paper; never for code. **The host carries every print**
+(#s57): mdrev isolates the mount with a print stylesheet around `window.print()` and dropped it in a
+`finally`, which iOS Safari runs before it captures the page (print() returns at once there), so the
+owner's iPhone printed the monitor. The pane hands mdrev `onPrint` and `printDocument` (`mdrev-pane.js`)
+keeps mdrev's own isolation (`window.__mdvPrint`) until `afterprint` (or the next touch), steps the mount
+out of the app into the body meanwhile, and `printing-document` drops the app and prints the body white
+(iOS prints backgrounds: the monitor's grey and the hidden app's full height made a grey sheet and a
+second page). On a phone mdrev's Aa menu hangs from its toolbar, never its button: in a reader toolbar
+(a document outside git) at a middle tier the button sat at the left and the menu ran off the screen.
+Both are workarounds for mdrev (mdviewer #s34); `a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen`
+makes print() return at once, as iOS does. **SHARED review is the detached tab's, never the pane's** (#s6, then #s10, the owner: "maybe not in
 the main interface, but in the full detached view"; mdrev 1.1.18+: threads in a review store,
 pairing, a Push). The split is by PREFIX: the pane mounts the guest on `api/mdrev/`, where every
 `review` route and a thread's `hide` answer the contract's 404 (the guest then draws no Share and no

@@ -1995,3 +1995,279 @@ fn the_detached_tab_reads_subscribes_and_notifies_through_draft_8() {
         "the push took her read mark of Bob's reply with it"
     );
 }
+
+/// #s57, the owner on 1.362.0 from an iPhone: "The aA menu was clipped sometimes, the print menu
+/// print the page not the document" — in the pane and the review sheet alike.
+///
+/// The menu: mdrev anchors it to the Aa button's right edge except at its narrowest toolbar tiers,
+/// so a wider tier with the controls row at the left (a long document name) ran it off the left
+/// edge. The case puts the toolbar in such a tier and opens the menu: it must lie wholly on screen.
+///
+/// The print: mdrev isolates the document with a print stylesheet around `window.print()` and took
+/// it away in a `finally` — right after, on iOS, whose print() returns before the page is captured.
+/// The case makes print() return at once, as iOS does, and prints from the menu: the isolation must
+/// still hold (the pane's own head hidden on the paper, the document shown) until `afterprint`.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("mdrev-phone-print");
+    // A long document name with no history, as the owner's (a memory file outside any checkout):
+    // mdrev gives it its reader toolbar, whose controls row sits at the LEFT at its middle tiers.
+    std::fs::write(
+        repo.join("docs/guide.md"),
+        "# The guide\n\nSee [decisions](decisions-become-person-tasks.md).\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "."][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "long",
+        ][..],
+    ] {
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
+    }
+    std::fs::write(
+        repo.join("docs/decisions-become-person-tasks.md"),
+        "# Decisions\n\nWhen a deliverable ends with awaiting your decision, file it.\n",
+    )
+    .unwrap();
+    let m = Monitor::spawn(Kind::V2, 2731, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 440, 956);
+    // A phone, as mdrev tests for one (its toolbar's phone layout keys on these).
+    tab.call_method(
+        headless_chrome::protocol::cdp::Emulation::SetEmulatedMedia {
+            media: None,
+            features: Some(vec![
+                headless_chrome::protocol::cdp::Emulation::MediaFeature {
+                    name: "hover".into(),
+                    value: "none".into(),
+                },
+                headless_chrome::protocol::cdp::Emulation::MediaFeature {
+                    name: "pointer".into(),
+                    value: "coarse".into(),
+                },
+            ]),
+        },
+    )
+    .unwrap();
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#preview .mdrev-host .topbar .display-wrap')",
+        "mdrev's toolbar in the pane",
+        Duration::from_secs(30),
+        PANE,
+    );
+    eval(&tab, "(function(){ var a = [...document.querySelectorAll('#preview .mdrev-host a')].find(function (a) { return /decisions/.test(a.getAttribute('href') || ''); }); a.click(); return 1; })()");
+    until(&tab, "/Decisions/.test((document.querySelector('#preview .mdrev-host h1') || {}).textContent || '')", "the long-named document", Duration::from_secs(20), PANE);
+
+    // The owner's document was a memory file outside any checkout: mdrev gave it its READER toolbar,
+    // four controls in a row at the LEFT, and hung the menu from the Aa button, so it ran off the
+    // left edge. A window here gets the full toolbar with Aa at the right; the case moves Aa to the
+    // start of its row, where the owner's was, and asks where the menu hangs from.
+    eval(&tab, "(function(){ var bar = document.querySelector('#preview .mdrev-host .topbar'); bar.className = bar.className.replace(/\\bset-\\w+\\b/, 'set-read').replace(/\\btier-\\d\\b/, 'tier-2'); var w = bar.querySelector('.display-wrap'); w.parentNode.prepend(w); return 1; })()");
+    let aa = eval(&tab, "Math.round(document.querySelector('#preview .mdrev-host .display-wrap button').getBoundingClientRect().right)");
+    assert!(
+        aa.as_i64().unwrap_or(999) < 260,
+        "the Aa control sits at the left, as on the owner's iPhone: {aa}"
+    );
+    eval(&tab, "(function(){ document.querySelector('#preview .mdrev-host .display-wrap button').click(); return 1; })()");
+    until(
+        &tab,
+        "!!document.querySelector('#preview .mdrev-host .display-menu')",
+        "the Aa menu",
+        Duration::from_secs(10),
+        PANE,
+    );
+    let menu = eval(&tab, "(function(){ var r = document.querySelector('#preview .mdrev-host .display-menu').getBoundingClientRect(); return JSON.stringify([Math.round(r.left), Math.round(r.right), innerWidth]); })()");
+    let menu: Vec<i64> = serde_json::from_str(menu.as_str().unwrap()).unwrap();
+    assert!(
+        menu[0] >= 0 && menu[1] <= menu[2],
+        "the Aa menu lies wholly on screen: {menu:?}"
+    );
+
+    // print() returns at once, as on iOS.
+    eval(&tab, "(function(){ window.__printed = 0; window.print = function () { window.__printed++; }; return 1; })()");
+    until(
+        &tab,
+        "!!document.querySelector('#preview .mdrev-host .display-print-btn')",
+        "the menu's print",
+        Duration::from_secs(10),
+        PANE,
+    );
+    eval(&tab, "(function(){ document.querySelector('#preview .mdrev-host .display-print-btn').click(); return 1; })()");
+    until(
+        &tab,
+        "window.__printed === 1",
+        "the print asked for",
+        Duration::from_secs(10),
+        "String(window.__printed)",
+    );
+    let held = eval(&tab, "(function(){ var host = document.querySelector('.mdrev-print-target'); return JSON.stringify({ sheet: !!document.getElementById('mdrev-print-isolation'), target: !!host && host.classList.contains('mdrev-pane'), out: !!host && host.parentNode === document.body, title: document.title }); })()");
+    let held: serde_json::Value = serde_json::from_str(held.as_str().unwrap()).unwrap();
+    assert_eq!(
+        held["sheet"], true,
+        "the isolation outlives print() returning: {held}"
+    );
+    assert_eq!(
+        held["target"], true,
+        "the document is what it isolates: {held}"
+    );
+    assert_eq!(
+        held["out"], true,
+        "stepped out of the app into the body for the print: {held}"
+    );
+    assert_eq!(
+        held["title"], "decisions-become-person-tasks",
+        "under the document's own name: {held}"
+    );
+    // On the paper: the document, and none of the monitor around it.
+    tab.call_method(
+        headless_chrome::protocol::cdp::Emulation::SetEmulatedMedia {
+            media: Some("print".into()),
+            features: None,
+        },
+    )
+    .unwrap();
+    let paper = eval(&tab, "(function(){ var v = function (s) { var e = document.querySelector(s); return e ? getComputedStyle(e).visibility : 'none'; }; return JSON.stringify({ head: v('#preview .preview-head'), title: v('#sessionTitle'), doc: v('.mdrev-print-target h1'), app: getComputedStyle(document.getElementById('app')).display, body: getComputedStyle(document.body).backgroundColor }); })()");
+    tab.call_method(
+        headless_chrome::protocol::cdp::Emulation::SetEmulatedMedia {
+            media: Some(String::new()),
+            features: None,
+        },
+    )
+    .unwrap();
+    let paper: serde_json::Value = serde_json::from_str(paper.as_str().unwrap()).unwrap();
+    assert_eq!(
+        paper["doc"], "visible",
+        "the document is on the paper: {paper}"
+    );
+    assert_eq!(
+        paper["head"], "hidden",
+        "the pane's own head is not: {paper}"
+    );
+    assert_eq!(
+        paper["title"], "hidden",
+        "nor the monitor's top bar: {paper}"
+    );
+    assert_eq!(
+        paper["app"], "none",
+        "the app takes no room on the paper, so no second page: {paper}"
+    );
+    assert_eq!(
+        paper["body"], "rgb(255, 255, 255)",
+        "and the paper is white, not the monitor's grey (iOS prints backgrounds): {paper}"
+    );
+    // …and the print over, the page is the monitor again.
+    eval(
+        &tab,
+        "(function(){ dispatchEvent(new Event('afterprint')); return 1; })()",
+    );
+    let after = eval(&tab, "(function(){ var host = document.querySelector('#preview .mdrev-host'); return JSON.stringify([!!document.getElementById('mdrev-print-isolation'), !host || host.classList.contains('mdrev-print-target') || document.documentElement.classList.contains('printing-document'), document.title]); })()");
+    let after: serde_json::Value = serde_json::from_str(after.as_str().unwrap()).unwrap();
+    assert_eq!(
+        after[0], false,
+        "the isolation goes after the print: {after}"
+    );
+    assert_eq!(
+        after[1], false,
+        "the document back in the pane, unmarked: {after}"
+    );
+    assert_ne!(
+        after[2], "decisions-become-person-tasks",
+        "the page's own title back: {after}"
+    );
+}
+
+/// #s57 probe: the PDF the pane's print makes, written to the scratch for a look.
+#[test]
+#[ignore = "probe"]
+fn probe_pane_print_pdf() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("mdrev-print-pdf");
+    let m = Monitor::spawn(Kind::V2, 2739, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 440, 956);
+    tab.call_method(
+        headless_chrome::protocol::cdp::Emulation::SetEmulatedMedia {
+            media: None,
+            features: Some(vec![
+                headless_chrome::protocol::cdp::Emulation::MediaFeature {
+                    name: "hover".into(),
+                    value: "none".into(),
+                },
+                headless_chrome::protocol::cdp::Emulation::MediaFeature {
+                    name: "pointer".into(),
+                    value: "coarse".into(),
+                },
+            ]),
+        },
+    )
+    .unwrap();
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#preview .mdrev-host h1')",
+        "the guide",
+        Duration::from_secs(30),
+        PANE,
+    );
+    eval(
+        &tab,
+        "(function(){ window.print = function () {}; return 1; })()",
+    );
+    eval(&tab, "(function(){ document.querySelector('#preview .mdrev-host .display-wrap button').click(); return 1; })()");
+    until(
+        &tab,
+        "!!document.querySelector('#preview .mdrev-host .display-print-btn')",
+        "print",
+        Duration::from_secs(10),
+        PANE,
+    );
+    eval(&tab, "(function(){ document.querySelector('#preview .mdrev-host .display-print-btn').click(); return 1; })()");
+    std::thread::sleep(Duration::from_millis(500));
+    tab.call_method(
+        headless_chrome::protocol::cdp::Emulation::SetEmulatedMedia {
+            media: Some("print".into()),
+            features: None,
+        },
+    )
+    .unwrap();
+    println!("BG: {}", eval(&tab, "(function(){ var out = []; [document.documentElement, document.body, document.getElementById('app'), document.querySelector('#app>.workspace'), document.getElementById('preview'), document.querySelector('#preview .preview-body'), document.querySelector('#preview .mdrev-host')].forEach(function (e) { if (!e) return; var c = getComputedStyle(e); out.push((e.id || e.className || e.tagName).toString().slice(0, 30) + ' bg=' + c.backgroundColor + ' vis=' + c.visibility + ' pos=' + c.position + ' h=' + Math.round(e.getBoundingClientRect().height)); }); return out.join(' | '); })()"));
+    tab.call_method(
+        headless_chrome::protocol::cdp::Emulation::SetEmulatedMedia {
+            media: Some(String::new()),
+            features: None,
+        },
+    )
+    .unwrap();
+    let pdf = tab
+        .print_to_pdf(Some(headless_chrome::types::PrintToPdfOptions {
+            print_background: Some(true),
+            ..Default::default()
+        }))
+        .unwrap();
+    let out = std::path::PathBuf::from(
+        std::env::var("PROBE_OUT").unwrap_or_else(|_| "/tmp/pane-print.pdf".into()),
+    );
+    std::fs::write(&out, pdf).unwrap();
+    println!("PDF: {}", out.display());
+}
