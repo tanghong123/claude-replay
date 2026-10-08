@@ -10214,11 +10214,11 @@ fn a_phone_pane_counts_its_open_files_and_steps_through_their_tabs() {
 /// #338, the owner: "looks like we lose the global wrap line control for the viewing dropdown, but
 /// keeps a pointless wide transcript control." The reading drop-down carries the wrap baseline again
 /// — the one control a phone, with no `w` key, has for it — as a finger-sized switch that wraps a
-/// code block, and a phone is not offered the width switch its edge-to-edge text has no use for.
-/// The desktop's drop-down carries both.
+/// code block. Since #s55 (the owner) upright text keeps a margin, so the width switch is offered on a
+/// phone too — it gives the text the whole width — as on the desktop's drop-down.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn a_phone_reading_menu_wraps_and_has_no_wide_switch() {
+fn a_phone_reading_menu_wraps_and_offers_the_wide_switch() {
     let _serial = serial();
     let code = harness::write_tool_at("w1", "/r/long_line.py", 6, &harness::now_minus(30));
     let (m, _b, tab, _) = phone_world_at(2720, "phone-reading", 390, 844, &code);
@@ -10251,8 +10251,8 @@ fn a_phone_reading_menu_wraps_and_has_no_wide_switch() {
     );
     assert_eq!(
         rows.as_str(),
-        Some("{\"wide\":false,\"row\":44,\"checked\":\"false\"}"),
-        "a 44px wrap row, off, and no width switch"
+        Some("{\"wide\":true,\"row\":44,\"checked\":\"false\"}"),
+        "a 44px wrap row, off, and the width switch offered (#s55)"
     );
     phone_tap(&tab, ".reading-options [data-reading-toggle=\"wrap\"]");
     harness::until(
