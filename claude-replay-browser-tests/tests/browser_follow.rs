@@ -12498,6 +12498,228 @@ fn a_narrow_phone_held_sideways_reads_at_a_measure() {
     the_drawer_opens_and_its_list_scrolls(&tab, "852x393");
 }
 
+/// #s49, the owner: "On landscape mode, opening of the right pane, I think it is better to do two
+/// columns. If the left side bar is already open, then right pane overlaps with the session view,
+/// otherwise, put both session view and right side pane side by side. User can further expand the
+/// side pane to take the whole screen." Held sideways the pane is a second column; upright it stays the
+/// whole screen, with no expand control.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_held_sideways_opens_the_pane_as_a_second_column() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(
+        2752,
+        "pane-columns",
+        956,
+        440,
+        false,
+        8,
+        Some(harness::SIDEWAYS_INSETS),
+    );
+    let facts = "(function(){ var w = document.querySelector('#app>.workspace').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), s = document.querySelector('#app>.sidebar').getBoundingClientRect(), d = document.getElementById('phoneDock'), e = document.querySelector('.preview-expand'); return JSON.stringify({ ws: Math.round(w.width), pane: Math.round(p.left), paneW: Math.round(p.width), col: Math.round(s.right), dock: getComputedStyle(d).display === 'none' ? -1 : Math.round(d.getBoundingClientRect().right), w: innerWidth, expand: getComputedStyle(e).display, full: document.getElementById('app').classList.contains('preview-full') }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    let num = |v: &serde_json::Value, k: &str| v[k].as_i64().unwrap_or(-9999);
+    // The list shown: the pane covers the session beside it, the dock under it with the session.
+    phone_tap(&tab, "#previewBtn");
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('preview-off')",
+        "the pane open",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    let over = read();
+    assert!(
+        (num(&over, "pane") - num(&over, "col")).abs() <= 1 && num(&over, "dock") == -1 && over["expand"] != "none",
+        "with the list shown the pane covers the session beside it, its expand control shown: {over}"
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            &format!("({PHONE_HITTABLE})(document.getElementById('drawerHandle'))")
+        ),
+        serde_json::Value::Bool(true),
+        "the handle by the title stays a tap away over the pane"
+    );
+    // The list hidden: session and pane side by side, the dock in the session's half.
+    let h = page_point(&tab, "the handle", "(function(){ var r = document.getElementById('drawerHandle').getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]); })()");
+    harness::finger_tap(&tab, h[0], h[1]);
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('phone-column-off')",
+        "the list hidden",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    let side = read();
+    let half = num(&side, "w") / 2;
+    assert!(
+        (num(&side, "ws") - half).abs() <= 2 && (num(&side, "pane") - half).abs() <= 2 && num(&side, "dock") <= half,
+        "with the list hidden the session and the pane sit side by side, the dock in the session's half: {side}"
+    );
+    // ⤢ takes the whole screen, and back.
+    phone_tap(&tab, ".preview-expand");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('preview-full')",
+        "the pane at the whole screen",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    let full = read();
+    assert!(
+        num(&full, "pane") == 0 && num(&full, "paneW") == num(&full, "w"),
+        "⤢ gives the pane the whole screen: {full}"
+    );
+    phone_tap(&tab, ".preview-expand");
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('preview-full')",
+        "back to two columns",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    assert!(
+        (num(&read(), "pane") - half).abs() <= 2,
+        "⤡ gives the session its half back"
+    );
+    // Closed: the session has the whole width again.
+    phone_tap(&tab, "#closePreview");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('preview-off')",
+        "the pane closed",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    let shut = read();
+    assert!(
+        num(&shut, "ws") == num(&shut, "w") && shut["full"] == false,
+        "closing the pane gives the session the whole width: {shut}"
+    );
+    // Upright the pane is the whole screen, and nothing offers to expand it.
+    harness::phone(&tab, 440, 956);
+    harness::until(
+        &tab,
+        "innerWidth === 440",
+        "the phone upright",
+        Duration::from_secs(5),
+        "innerWidth",
+    );
+    phone_tap(&tab, "#previewBtn");
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('preview-off')",
+        "the pane open upright",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    let up = read();
+    assert!(
+        num(&up, "pane") == 0 && num(&up, "paneW") == 440 && up["expand"] == "none",
+        "upright the pane is the whole screen, with no expand control: {up}"
+    );
+}
+
+/// #s49, the owner: "when filter menu is on the screen, automatically hide the keyboard, and always keep
+/// the search box open. When keyboard is up, always hide the filter menu" — then "the filter icon may
+/// only get visual changes when it is on", and, after closing the menu, "the layout of the search pill
+/// changed". The filter and the keyboard never share a phone's screen; a tap outside dismisses the top
+/// layer only; the funnel is lit by an active filter, never by its open menu.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_s_filter_and_keyboard_never_share_the_screen() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(2753, "phone-filter-keyboard", 390, 844);
+    let state = "(function(){ var n = document.getElementById('navigatorOptions'), b = document.querySelector('.header-searchbox'), f = document.getElementById('filterTranscriptBtn'); return JSON.stringify({ menu: n.classList.contains('open'), box: b.classList.contains('phone-open'), typing: document.activeElement === document.getElementById('transcriptSearchInput'), lit: f.classList.contains('on') }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, state).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(&tab, "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')", "the box open with the keyboard", Duration::from_secs(5), state);
+    // Clicked the way iOS delivers a tap on a button: focus stays where it was (Chrome would move it to
+    // the button, which puts the keyboard down by itself and hid the bug the owner met).
+    let funnel = "document.getElementById('filterTranscriptBtn').click(); 'ok'";
+    harness::eval(&tab, funnel);
+    harness::until(
+        &tab,
+        "document.getElementById('navigatorOptions').classList.contains('open')",
+        "the filter open",
+        Duration::from_secs(5),
+        state,
+    );
+    assert_eq!(
+        read(),
+        serde_json::json!({"menu": true, "box": true, "typing": false, "lit": false}),
+        "the filter puts the keyboard down, keeps the box open, and its menu lights nothing"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorOptions [data-scope=\"u\"]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('filterTranscriptBtn').classList.contains('on')",
+        "a narrowed scope to light the funnel",
+        Duration::from_secs(5),
+        state,
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('transcriptSearchInput').focus(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!document.getElementById('navigatorOptions').classList.contains('open')",
+        "the keyboard coming up to close the filter",
+        Duration::from_secs(5),
+        state,
+    );
+    harness::eval(&tab, funnel);
+    harness::until(
+        &tab,
+        "document.getElementById('navigatorOptions').classList.contains('open')",
+        "the filter open again",
+        Duration::from_secs(5),
+        state,
+    );
+    phone_tap_outside(&tab);
+    harness::until(
+        &tab,
+        "!document.getElementById('navigatorOptions').classList.contains('open')",
+        "a tap outside to close the filter",
+        Duration::from_secs(5),
+        state,
+    );
+    assert_eq!(
+        read()["box"],
+        true,
+        "…and only the filter: the box stays as it was"
+    );
+    phone_tap_outside(&tab);
+    harness::until(
+        &tab,
+        "!document.querySelector('.header-searchbox').classList.contains('phone-open')",
+        "the next tap outside to close the box",
+        Duration::from_secs(5),
+        state,
+    );
+    // And the box closed with its query held: opening the filter opens the box with it.
+    harness::eval(&tab, funnel);
+    harness::until(
+        &tab,
+        "document.getElementById('navigatorOptions').classList.contains('open') && document.querySelector('.header-searchbox').classList.contains('phone-open')",
+        "the filter to open the box with it",
+        Duration::from_secs(5),
+        state,
+    );
+}
+
 /// #s39 (design/phone-landscape.md §3.5c, approved by the owner on 2026-10-08): on a phone the compose
 /// box is the dock's third mode, as Messages does it. With write mode on, a ✎ circle joins the dock in
 /// place of the floating compose button; a tap turns the dock into the reply box, which rides the

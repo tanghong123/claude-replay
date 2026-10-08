@@ -113,6 +113,13 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    old touch). An open control says so by its own state — and a LIT one (`.on`, the session filter
    leaving something out) keeps its own fill: Linux's headless Chrome reports `hover: none` too,
    and the browser job caught the open filter losing its tint. */
+@media(hover:none){#app .header-filter:hover:not(.on){background:transparent;color:var(--faint)}}
+/* The same for every control a phone keeps on screen after a tap and whose resting background is
+   clear (each checked: transparent at rest): the search box's steps, clear and chip ✕ (the owner saw
+   ↓ keep a grey shade after stepping), the transcript's fold heads and toggles, Aa's size steps, the
+   preview's tabs, the outline's rows, the sidebar's rows, the session title and the reply box's ✕.
+   A selected or open one keeps its own state. */
+@media(hover:none){#app :is(.find-nav,.search-clear,.search-chip-remove,.scope-chip,.reading-step button,.renderer-head,.process-surface-head,.command-head,.activity-row:not(.expanded),.renderer-children-toggle,.process-children-toggle,.process-section-toggle,.process-bulk-toggle,.composer-close,.preview-tab:not(.on),.preview-tab-close,.outline-turn-row:not(.current),.outline-turn-head,.outline-agent,.filter-option,.artifact-row,.navbtn:not(.on),.session-heading>#sessionTitle:not([aria-expanded="true"])):hover{background:transparent}}
 @media(hover:none){#app .iconbtn:hover:not(.on):not(.active){background:transparent}#app .iconbtn[aria-expanded="true"]:not(.active):not(.on){background:var(--hover);color:var(--ink)}}
 .tree-row.project .tree-action{margin-left:auto}
 .tree-row.is-hidden{opacity:.55}
@@ -1113,27 +1120,27 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 
   #app .workspace{grid-template-rows:auto minmax(0,1fr)}
   #app .workspace.info-open{grid-template-rows:auto minmax(210px,44vh) minmax(0,1fr)}
-  #app .topbar{height:auto;min-height:0;flex-wrap:nowrap;align-items:center;justify-content:space-between;column-gap:2px;row-gap:0;padding:env(safe-area-inset-top,0px) 6px 2px;position:relative}
-  #app .topbar>.top-spacer,#app .topbar>.header-divider,#app #sessionFoldAll{display:none}
-  #app .topbar>.session-heading{order:1;flex:1 1 0;min-width:0;max-width:none;height:auto;min-height:48px;padding-left:44px;flex-wrap:wrap;align-content:center;column-gap:8px;row-gap:0}
+  #app .workspace>.topbar{height:auto;min-height:0;flex-wrap:nowrap;align-items:center;justify-content:space-between;column-gap:2px;row-gap:0;padding:env(safe-area-inset-top,0px) 6px 2px;position:relative}
+  #app .workspace>.topbar>.top-spacer,#app .workspace>.topbar>.header-divider,#app #sessionFoldAll{display:none}
+  #app .workspace>.topbar>.session-heading{order:1;flex:1 1 0;min-width:0;max-width:none;height:auto;min-height:48px;padding-left:44px;flex-wrap:wrap;align-content:center;column-gap:8px;row-gap:0}
   #app .session-heading>:is(.header-divider,.crumb){display:none}
   #app .session-heading>.status-chip{height:auto;min-height:0;padding:0;line-height:1.25;font-size:12.5px}
   #app .session-heading>.turn-subtitle:not([hidden]){display:block;flex:0 0 100%;min-width:0;padding:1px 0 0;color:var(--faint);font:12.5px/1.25 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
   #app .turn-stickybar{display:none}
   #app .transcript{scroll-padding-top:12px}
-  #app .topbar>.session-heading>#sessionTitle{max-width:none;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}
+  #app .workspace>.topbar>.session-heading>#sessionTitle{max-width:none;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}
   /* #322: the way back to a parent session was the one control the rows did not place, so it kept
      order 0 and sat under the handle. It takes the slot after the handle — the heading gives up the
      room it held there, keeping 6px so the title's box (drawn 5px outside its text) stays clear —
      as a 44px back arrow without its words, so the title keeps its room. */
-  #app .topbar>#sessionParent.is-live{order:0;margin-left:44px;width:44px;height:44px;padding:0;border:0;justify-content:center}
-  #app .topbar>#sessionParent.is-live .session-parent-label{display:none}
-  #app .topbar>#sessionParent.is-live .icon{width:20px;height:20px}
-  #app .topbar:has(>#sessionParent.is-live)>.session-heading{padding-left:6px}
-  #app .topbar>.phone-info{order:2}
-  #app .topbar>#previewBtn{order:3}
+  #app .workspace>.topbar>#sessionParent.is-live{order:0;margin-left:44px;width:44px;height:44px;padding:0;border:0;justify-content:center}
+  #app .workspace>.topbar>#sessionParent.is-live .session-parent-label{display:none}
+  #app .workspace>.topbar>#sessionParent.is-live .icon{width:20px;height:20px}
+  #app .workspace>.topbar:has(>#sessionParent.is-live)>.session-heading{padding-left:6px}
+  #app .workspace>.topbar>.phone-info{order:2}
+  #app .workspace>.topbar>#previewBtn{order:3}
   #app .phone-only{display:grid}
-  #app .topbar .iconbtn{width:44px;height:44px;flex:none}
+  #app .workspace>.topbar .iconbtn{width:44px;height:44px;flex:none}
   #app .phone-pane{position:relative}
   #app .phone-pane-count{position:absolute;right:1px;top:3px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--hover);color:var(--sub);font:600 9.5px/16px var(--mono);text-align:center}
   #app .header-searchbox:not(.phone-open){width:80px;height:44px;padding:0 4px 0 12px}
@@ -1303,7 +1310,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      search was open on iOS — which focuses the field as it opens — and the owner found no filter in
      either orientation. The strip scrolls as a whole (#353), so the funnel costs it no chip. */
   #app .phone-dock .header-searchbox.phone-open:focus-within>[data-icon="search"]{display:none!important}
-  #app .phone-dock .header-searchbox:is(.phone-open,.has-query) #filterTranscriptBtn{display:grid!important;flex:none;width:44px;height:44px}
+  #app .phone-dock .header-searchbox:is(.phone-open,.has-query) #filterTranscriptBtn{display:grid!important;flex:none;width:44px;height:44px;border-radius:22px}
+  /* The funnel changes only when a filter is ON — narrowing the search (#s49, the owner: "the filter
+     icon may only get visual changes when it is on … no visual feedback whether menu is open or
+     closed") — and then reads as selected, round like the dock's other controls. The grey square the
+     owner saw was iOS's sticky :hover on the funnel's own hover rule, which no tap clears. */
+  #app .phone-dock #filterTranscriptBtn.on{background:var(--primary-soft);color:var(--primary);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 55%,transparent)}
   /* …and the jump to the latest steps aside while the find pill holds the dock (the owner): over the
      keyboard it floated on the text, and the arrows step through the matches anyway. */
   #app:has(.phone-dock .header-searchbox:is(.phone-open,.has-query)) .jump-to-bottom{display:none!important}
@@ -1372,7 +1384,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    top inset). Backgrounds still run to the edges. Portrait's side insets are 0, so this moves nothing
    there. */
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
-  #app .topbar{padding-left:calc(6px + env(safe-area-inset-left,0px));padding-right:calc(6px + env(safe-area-inset-right,0px))}
+  #app .workspace>.topbar{padding-left:calc(6px + env(safe-area-inset-left,0px));padding-right:calc(6px + env(safe-area-inset-right,0px))}
   .drawer-handle{left:calc(4px + env(safe-area-inset-left,0px))}
   #app>.sidebar{width:calc(min(86vw,360px) + env(safe-area-inset-left,0px));padding-top:env(safe-area-inset-top,0px);padding-left:env(safe-area-inset-left,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
   #app .transcript{padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}
@@ -1416,7 +1428,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   .column-switch-count:empty{display:none}
   #app:not(.phone-column-off) .drawer-handle{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 4px)}
   /* The column covers the island's side, so the session beside it pads only the other. */
-  #app:not(.phone-column-off) .topbar{padding-left:6px}
+  #app:not(.phone-column-off) .workspace>.topbar{padding-left:6px}
   #app:not(.phone-column-off) .transcript{padding-left:0}
   #app.column-pane-on:not(.phone-column-off) .column-pane{display:block}
   #app.column-pane-on>.sidebar>.nav,#app.column-pane-on>.sidebar>.tree{display:none}
@@ -1441,6 +1453,46 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 }
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
   #app .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]){left:auto;right:calc(12px + env(safe-area-inset-right,0px))}
+}
+
+/* #s49 — held sideways the right pane is a second COLUMN, not a sheet over everything (the owner:
+   "if the left side bar is already open, then right pane overlaps with the session view, otherwise,
+   put both session view and right side pane side by side. User can further expand the side pane to
+   take the whole screen"). Side by side the session keeps the left half — the transcript remeasures
+   once, through `paneLayoutChanged` — and what floats over it (the dock, its sheets, Info, the reply
+   box) keeps to that half; a wide phone's shown list leaves the pane the session's area instead,
+   and the dock goes under it with the session. ⤢ in the pane's head takes the whole screen; the
+   session stays laid out at its half beneath, so going back costs nothing. Upright, the pane is
+   the whole screen as before. */
+.preview-expand{display:none}
+@media(pointer:coarse) and (max-height:500px){
+  #app:not(.preview-off)>.workspace{width:50%}
+  #app:not(.preview-off)>.preview{left:50%;right:0;width:auto;padding-left:0;box-shadow:-1px 0 0 var(--line)}
+  #app:not(.preview-off) .transcript{padding-right:0}
+  #app:not(.preview-off) .workspace>.topbar{padding-right:6px}
+  #app:not(.preview-off) .phone-dock{right:calc(50% + 12px)}
+  #app:not(.preview-off) .workspace .composer.production-show{right:calc(50% + 12px)}
+  #app:not(.preview-off) .header-search-cluster>.navigator-options,#app:not(.preview-off) .header-search-cluster>.search-suggest{right:calc(50% + 12px);width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
+  #app:not(.preview-off) .info-popover{right:calc(50% + 8px);width:min(420px,calc(50% - 16px - env(safe-area-inset-left,0px)))}
+  #app:not(.preview-off) .reading-cluster>.reading-options,#app:not(.preview-off) .phone-pane-menu:not([hidden]){width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
+  #app .preview-head .preview-expand{display:grid;place-items:center;width:44px;height:44px}
+}
+@media(pointer:coarse) and (max-height:500px) and (min-width:900px){
+  #app:not(.preview-off) .reading-cluster>.reading-options,#app:not(.preview-off) .phone-pane-menu:not([hidden]){right:calc(50% + 12px)}
+  #app:not(.phone-column-off):not(.preview-off)>.workspace{width:auto}
+  #app:not(.phone-column-off):not(.preview-off)>.preview{left:calc(var(--sidebar) + env(safe-area-inset-left,0px))}
+  #app:not(.phone-column-off):not(.preview-off) .phone-dock{display:none}
+  /* The handle by the title stays reachable over the pane (it hides the list, which turns the pane
+     into the second column), the pane's head making room for it; at the whole screen it waits. */
+  #app:not(.phone-column-off):not(.preview-off):not(.preview-full) .drawer-handle{z-index:56}
+  #app:not(.phone-column-off):not(.preview-off):not(.preview-full)>.preview .preview-head{padding-left:52px}
+  /* …and the session under it keeps its width exactly, so opening the pane there remeasures nothing. */
+  #app:not(.phone-column-off):not(.preview-off) .transcript{padding-right:env(safe-area-inset-right,0px)}
+  #app:not(.phone-column-off):not(.preview-off) .workspace>.topbar{padding-right:calc(6px + env(safe-area-inset-right,0px))}
+}
+@media(pointer:coarse) and (max-height:500px){
+  #app.preview-full:not(.preview-off)>.preview{left:0;padding-left:env(safe-area-inset-left,0px);box-shadow:none}
+  #app.preview-full:not(.preview-off) .drawer-handle{display:none}
 }
 
 /* #s32 — between the phone and 1180px the preview is an overlay (reference.css), and at

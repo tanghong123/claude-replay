@@ -1806,6 +1806,7 @@ addEventListener("resize", () => fitSearchField());
 // its count and its marks outlive the box closing, as they outlive a blur on a wider window.
 const phoneSearch = matchMedia(PHONE_QUERY), searchBox = document.querySelector(".header-searchbox");
 function setPhoneSearch(open) {
+  if (!open && byId("navigatorOptions").classList.contains("open")) setPopover(null);
   searchBox.classList.toggle("phone-open", open && phoneSearch.matches);
   fitSearchField();
   if (open && phoneSearch.matches) byId("transcriptSearchInput").focus();
@@ -1815,10 +1816,16 @@ searchBox.addEventListener("click", event => {
   if (!phoneSearch.matches || searchBox.classList.contains("phone-open") || event.target.closest("#filterTranscriptBtn, .find-nav")) return;
   setPhoneSearch(true);
 });
+// A tap outside dismisses the TOP layer only (#s49, the owner: "after opening and closing the filter
+// menu, the layout of the search pill changed"): with the filter open it closes the filter and leaves
+// the box as it was; the next one closes the box.
 document.addEventListener("pointerdown", event => {
-  if (searchBox.classList.contains("phone-open") && !event.target.closest(".header-search-cluster")) setPhoneSearch(false);
+  if (!searchBox.classList.contains("phone-open") || event.target.closest(".header-search-cluster")) return;
+  if (phoneSearch.matches && byId("navigatorOptions").classList.contains("open")) { setPopover(null); return; }
+  setPhoneSearch(false);
 }, true);
 phoneSearch.addEventListener("change", () => { if (!phoneSearch.matches) setPhoneSearch(false); });
+byId("transcriptSearchInput").addEventListener("focus", () => { if (phoneSearch.matches && byId("navigatorOptions").classList.contains("open")) setPopover(null); });
 const SCOPE_ROWS = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "Tools"], ["w", "Whole words"]];
 // #367: the session's tools are secondary checkboxes under the Tools scope row — the last row of the
 // scope list — not a section of their own. The reference shell draws them as one; production moves
@@ -2046,6 +2053,8 @@ function renderFilterMenu() {
   // truth. `searchWhole` is a match option, not a facet, and is not counted.
   const classes = ALL_SCOPES.every(k => uiState.searchScopes.has(k)) ? 0 : [...uiState.searchScopes].filter(k => !(k === "o" && uiState.toolFilters.size)).length;
   byId("filterBadge").textContent = uiState.toolFilters.size + classes || "";
+  // #s49, the owner: the funnel says when a filter is on, and nothing else (not whether its menu is open).
+  byId("filterTranscriptBtn").classList.toggle("on", uiState.toolFilters.size + classes > 0);
 }
 /** Tick or untick one tool: write the BOX and let `updateSearch` do the rest (#292). Nothing sets
  *  the tool state directly any more — the box is the query. A tool is chosen inside Tools (#367):
@@ -2247,6 +2256,10 @@ function setPopover(which) {
   readingBtn.setAttribute("aria-expanded", String(reading));
   byId("navigatorOptions").classList.toggle("open", filter);
   byId("filterTranscriptBtn").setAttribute("aria-expanded", String(filter));
+  // #s49, the owner: on a phone the filter and the keyboard never share the screen. The filter opening
+  // puts the keyboard down and keeps the box open; the keyboard coming up closes the filter (the
+  // field's focus handler), and so does the box closing (`setPhoneSearch`).
+  if (filter && phoneSearch.matches) { searchBox.classList.add("phone-open"); fitSearchField(); byId("transcriptSearchInput").blur(); }
 }
 readingBtn.onclick = () => setPopover(readingOptions.classList.contains("open") ? null : "reading");
 addEventListener("pointerdown", event => {

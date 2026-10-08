@@ -968,6 +968,47 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
     );
 }
 
+/// #s49, the owner on 1.360.0: "the layout of mdrev is messed up … I mean the tool bar area", upright
+/// and sideways, and sometimes it "could magically fix itself". mdrev's toolbar is a `header.topbar`, and
+/// the app shell's phone rules for its OWN top bar were written `#app .topbar` — an id that outranked
+/// mdrev's own rules inside the pane (no wrapping, the row spread, the shell's padding). They are
+/// scoped to `.workspace>.topbar` now, so the pane's toolbar keeps mdrev's own layout.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_pane_leaves_mdrevs_toolbar_its_own_layout() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("mdrev-toolbar");
+    let m = Monitor::spawn(Kind::V2, 2943, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 440, 956);
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1') && !!document.querySelector('#preview .mdrev-host .topbar')",
+        "the guide in the pane with mdrev's toolbar",
+        Duration::from_secs(30),
+        PANE,
+    );
+    let bar = "(function(){ var t = document.querySelector('#preview .mdrev-host .topbar'), c = getComputedStyle(t); return JSON.stringify({ wrap: c.flexWrap, justify: c.justifyContent }); })()";
+    for (w, h) in [(440u32, 956u32), (956, 440)] {
+        harness::phone(&tab, w, h);
+        until(
+            &tab,
+            &format!("innerWidth === {w}"),
+            "the new size",
+            Duration::from_secs(5),
+            "innerWidth",
+        );
+        let seen: serde_json::Value =
+            serde_json::from_str(eval(&tab, bar).as_str().unwrap_or("{}")).unwrap();
+        assert!(
+            seen["wrap"] != "nowrap" && seen["justify"] != "space-between",
+            "{w}x{h}: mdrev's toolbar keeps its own layout, none of the shell's top bar rules: {seen}"
+        );
+    }
+}
+
 /// #s12, the owner chose it: on a phone, where a tab of its own has no way back (#335), shared review
 /// is a FULL-SCREEN SHEET over the app. The pane's Markdown shows a Review control there; the sheet
 /// mounts the document on the review prefix (#s10), its guest asking for and fetching the store, and

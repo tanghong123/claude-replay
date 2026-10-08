@@ -273,6 +273,30 @@ How it is held: the browser cases cover what Chrome can model, namely the find p
 keyboard and page scroll, and a wide phone's sheets, head, jump and filter. The iOS behaviours
 (the page scroll, the swallowed tap, the sticky hover) are walked on the Simulator before a release.
 
+### 3.5e The right pane sideways, and the filter's discipline (#s49)
+
+The owner, after using 1.360.0:
+
+- **The right pane is a second column sideways:** "If the left side bar is already open, then right
+  pane overlaps with the session view, otherwise, put both session view and right side pane side
+  by side. User can further expand the side pane to take the whole screen."
+  - With a wide phone's list shown, the pane covers the session's area beside the list. The handle
+    by the title stays above it, so hiding the list turns the pane into the second column.
+  - With the list hidden, or on a narrower phone, the session takes the left half and the pane the
+    right. What floats over the session (the dock, its sheets, Info, the reply box) keeps to its half.
+  - ⤢ in the pane's head takes the whole screen and back. Upright the pane is the whole screen, as
+    before.
+- **The filter and the keyboard never share the screen:** "when filter menu is on the screen,
+  automatically hide the keyboard, and always keep the search box open. When keyboard is up, always
+  hide the filter menu."
+  - A tap outside closes the filter first and the box on the next tap, so closing the menu never
+    refolds the pill.
+  - The funnel lights only while a filter narrows the search ("the filter icon may only get visual
+    changes when it is on").
+- **mdrev's toolbar was being styled as the shell's top bar.** Both are a `header.topbar`, and the
+  shell's phone rules (`#app .topbar`) reached into the pane. They are scoped to the shell's own bar
+  now.
+
 ### 3.7 The landscape layout's state is its own
 
 #s33's lesson: a choice made in one layout must never silently govern another. The wide phone's

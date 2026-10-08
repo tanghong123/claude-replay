@@ -75,7 +75,13 @@ export class Preview {
     this.printBtn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M7 14h10v7H7z"/></svg>`;
     this.printBtn.setAttribute("aria-label", "Print this document");
     this.printBtn.onclick = () => this.markdown?.print?.();
-    byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, this.newTab, this.reviewBtn);
+    // #s49, the owner: held sideways the pane is a second column (production.css), and this takes it
+    // to the whole screen and back. Only a phone held sideways shows it; elsewhere the pane is a
+    // column with a resizer (a desktop) or the whole screen already (a phone upright).
+    this.expandBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-expand" });
+    this.expandBtn.onclick = () => this.setFull(!byId("app").classList.contains("preview-full"));
+    this.setFull(false);
+    byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, this.newTab, this.reviewBtn, this.expandBtn);
     // #337, the owner: with many files open the strip squeezed every tab to a few letters and the
     // CURRENT one to nothing. The tabs now keep their width and the strip scrolls; while it
     // overflows, ‹ and › beside it step to the previous and next tab (the pinned roster first),
@@ -111,7 +117,17 @@ export class Preview {
     };
     resizer.ondblclick = () => this.setWidth(420, true);
   }
-  setOpen(open) { uiState.preview = open; byId("app").classList.toggle("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (open) this.render(); this.actions.layoutChanged?.(); }
+  setOpen(open) { uiState.preview = open; byId("app").classList.toggle("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }
+  setFull(full) {
+    byId("app").classList.toggle("preview-full", full);
+    this.expandBtn.innerHTML = full
+      ? '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>';
+    const words = full ? "Back to two columns" : "Take the whole screen";
+    this.expandBtn.title = words;
+    this.expandBtn.setAttribute("aria-label", words);
+    this.expandBtn.setAttribute("aria-pressed", String(full));
+  }
   setWidth(value, persist) { const width = Math.max(340, Math.min(680, Number(value) || 420)); document.documentElement.style.setProperty("--preview", `${width}px`); if (persist) localStorage.setItem("am-demo-preview", width); this.actions.layoutChanged?.(); }
   restoreWidth() { this.setWidth(localStorage.getItem("am-demo-preview") || 420, false); }
   setSession(sessionId) {

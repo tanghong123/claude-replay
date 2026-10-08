@@ -59,7 +59,14 @@ While the search is open or holds a query the find pill takes the dock (CSS `:ha
 with a glass ✕ circle beside it that ENDS the search (`#phoneSearchDone`: the query and its marks
 go, the keyboard goes down, the toolbar pill returns); the field's own small ✕ only clears it to type
 again — one control, one meaning, as an iOS 26 search closes beside its field; it closes the filter
-with it. While the field has the keyboard the magnifier gives way and the FUNNEL NEVER DOES (#s41:
+with it. **The filter and the keyboard never share a phone's screen** (#s49, the owner's rule): the
+filter opening puts the keyboard down and keeps the box open (`setPopover`, which also reopens a box
+closed with its query held); the field taking focus closes the filter; the box closing closes it too;
+and a tap outside dismisses the TOP layer only — the filter first, the box on the next tap — so
+closing the menu never refolds the pill. The funnel is lit (`.on`, the selected tint) only while a
+filter narrows the search, never because its menu is open (the owner). On iOS a tapped button keeps
+focus off it, so the cases click the funnel by script, which leaves focus where it was as iOS does;
+Chrome would move focus to the button and hide the bug (`a_phone_s_filter_and_keyboard_never_share_the_screen`). While the field has the keyboard the magnifier gives way and the FUNNEL NEVER DOES (#s41:
 iOS focuses the field as the search opens, so hiding the funnel while typing hid it always — the
 owner found no filter in either orientation). The dock rides the keyboard through `visualViewport`
 (`--phone-kb` = the app's height less the visible one; iOS never lifts a fixed bottom element above
@@ -80,7 +87,21 @@ text to five lines with ↑ inside it, a `.compose-note` naming the target and, 
 warning above) — riding the keyboard by `--phone-kb` like the find pill, the toolbar, search and the
 jump stepping aside (`#app.composing`). Its ✕ keeps the draft and a dot on ✎ says one is waiting;
 on a wide phone held sideways it spans the session's column
-(`a_phone_writes_from_the_dock_and_keeps_the_draft`). The desktop's card and button are unchanged. **The breakpoint is ONE query**
+(`a_phone_writes_from_the_dock_and_keeps_the_draft`). The desktop's card and button are unchanged.
+**Held sideways the right pane is a second COLUMN** (#s49, the owner): with a wide phone's list shown
+it covers the session's area beside the list (the session keeps its width beneath, so nothing
+remeasures; the dock goes under it; the handle by the title stays above it, the pane's head making
+room), with the list hidden or on a narrower phone the session and the pane sit side by side (the
+session at half the width, remeasured once through `paneLayoutChanged`; the dock, its sheets, Info
+and the reply box keep to that half), and ⤢ in the pane's head (`.preview-expand`, sideways only)
+takes the whole screen and back without disturbing the session beneath
+(`a_phone_held_sideways_opens_the_pane_as_a_second_column`). Upright the pane is the whole screen.
+**The shell's phone rules for its own top bar are scoped to `.workspace>.topbar`** (#s49): mdrev's
+toolbar in the pane is a `header.topbar` too, and `#app .topbar` outranked mdrev's own rules there
+(no wrap, the row spread, the shell's padding) — the owner saw the toolbar wrap beside a cut title,
+fixed by a later re-measure, upright and sideways (`a_phone_pane_leaves_mdrevs_toolbar_its_own_layout`).
+A rule for the shell's chrome that names a generic class (`.topbar`, `.iconbtn`) inside `#app` must
+not reach into the guest. **The breakpoint is ONE query**
 (#s32, `PHONE_QUERY` in `shared/capabilities.js`: `(max-width:760px), (pointer:coarse) and
 (max-height:500px)`, mdrev's own phone test), written in the demo's and production's CSS and read by every
 JS check, so a landscape phone is a phone. Its complement is just as strict (#s33): every `min-width` rule means "not a phone", so each of
@@ -149,7 +170,10 @@ which folded the row), and the jump is offered only where something is below. **
 content — a session row's action fading in from nothing — and sends no click, so choosing a session
 from an iPhone's drawer took two taps (the first tap's `touchend` came and its click never did); the
 action stays hidden there (`@media(hover:none)`), and since iOS leaves `:hover` on whatever was tapped
-last, a glyph button takes its tint from `aria-expanded` rather than hover. Chrome's touch emulation
+last, a glyph button takes its tint from `aria-expanded` rather than hover, and every control a phone
+keeps on screen after a tap whose resting background is clear (the search box's steps, clear and chip
+✕, the funnel, fold heads and toggles, Aa's steps, the preview's tabs, outline and sidebar rows, the
+session title) has its hover tint cleared on a touch screen (the owner saw ↓ keep a grey shade). Chrome's touch emulation
 models neither, so these are walked on the iOS Simulator. Choosing a session shuts the drawer at once and a veil (`sessionLoading`, every
 width) dims the session area with how much of the records has arrived. The rules are `production.css`
 under `#313`; the cases are `a_phone*` in `browser_follow.rs` and the preview pinch in `files.rs`,
