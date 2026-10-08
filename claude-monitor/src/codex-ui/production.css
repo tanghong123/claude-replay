@@ -103,6 +103,15 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .tree-action .icon{width:14px;height:14px}
 .tree-action:hover{background:var(--hover);color:var(--ink)}
 .tree-row:hover .tree-action,.tree-row:focus-within .tree-action,.tree-row.is-hidden .tree-action,.tree-action:focus-visible{opacity:1}
+/* #s41: never on a touch screen. WebKit spends a tap on a HOVER that shows content — here the row's
+   action fading in from nothing — and sends no click, so choosing a session from an iPhone's drawer
+   took two taps (measured on iOS 26: the first tap's touchend came and its click never did). A
+   hidden session keeps its action, which brings it back. */
+@media(hover:none){.tree-row:not(.is-hidden) .tree-action:not(:focus-visible){opacity:0}}
+/* …and a glyph button keeps no hover tint there: iOS leaves `:hover` on whatever was tapped last, so a
+   closed Info or Aa still looked pressed (and, after a turn of the phone, whatever now sat under the
+   old touch). An open control says so by its own state. */
+@media(hover:none){#app .iconbtn:hover:not(.on):not(.active){background:transparent}#app .iconbtn[aria-expanded="true"]:not(.active){background:var(--hover);color:var(--ink)}}
 .tree-row.project .tree-action{margin-left:auto}
 .tree-row.is-hidden{opacity:.55}
 .tree-row.is-hidden.selected{opacity:.8}
@@ -1250,6 +1259,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      source code, a wide table), where upright it has nothing to widen (#338). */
   #app .reading-options .reading-row.reading-wide{display:grid}
   #app.wide .session-main .transcript-inner{width:calc(100% - 26px)}
+  /* #s41: the jump to the latest sits at the FOOT, on the dock's row, centred in the session (the
+     owner: "should move to the bottom") — sideways the dock leaves the middle of that row free (its
+     pill at one end, search at the other), where upright the pill reaches the middle. */
+  #app .jump-to-bottom{bottom:calc(14px + env(safe-area-inset-bottom,0px))}
 }
 
 /* #s37 (design/phone-landscape.md §3.5a, the owner's idea) — the dock: the toolbar floats in a glass
@@ -1283,10 +1296,24 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   .phone-search-done{display:none}
   #app .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.phone-search-done{display:grid;place-items:center;flex:none;width:48px;height:48px;padding:0;border-radius:24px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--ink);cursor:pointer}
   #app .phone-search-done .icon{width:20px;height:20px}
-  /* While the field has the keyboard, the find pill keeps its room for the chips and the word being
-     typed (measured: two chips and a word wanted 167px of a 102px strip): the magnifier and the funnel
-     give way, and are back once the keyboard is down (a tap on the funnel would put it down anyway). */
-  #app .phone-dock .header-searchbox.phone-open:focus-within>:is([data-icon="search"],#filterTranscriptBtn){display:none!important}
+  /* While the field has the keyboard the magnifier gives way, so the chips and the word being typed
+     keep their room. The funnel never does (#s41): hidden while typing, it was hidden whenever the
+     search was open on iOS — which focuses the field as it opens — and the owner found no filter in
+     either orientation. The strip scrolls as a whole (#353), so the funnel costs it no chip. */
+  #app .phone-dock .header-searchbox.phone-open:focus-within>[data-icon="search"]{display:none!important}
+  #app .phone-dock .header-searchbox:is(.phone-open,.has-query) #filterTranscriptBtn{display:grid!important;flex:none;width:44px;height:44px}
+  /* …and the jump to the latest steps aside while the find pill holds the dock (the owner): over the
+     keyboard it floated on the text, and the arrows step through the matches anyway. */
+  #app:has(.phone-dock .header-searchbox:is(.phone-open,.has-query)) .jump-to-bottom{display:none!important}
+  /* A sheet hanging from the bar stops above the dock, which is drawn over it. */
+  #app .info-popover{max-height:calc(100dvh - var(--phone-top,100px) - var(--phone-bottom,var(--phone-dock-h)) - 12px)}
+  /* Touch polish (#s41): a long press on a control is not a text selection — iOS selected a button's
+     glyph ("Aa", a count) and showed its loupe — and the toast and the preview's close clear the dock
+     and take a finger. */
+  #app button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  #app .preview-head #closePreview{width:44px;height:44px}
+  #app .search-suggest-row{min-height:44px}
+  .toast{bottom:calc(max(var(--phone-dock-h,64px),calc(var(--phone-kb,0px) + 64px)) + 10px)}
   #app .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 16px)}
   /* The compose box and its button rest above the dock, never under it (#s39 designs them beside it). */
   #app .workspace .composer{bottom:calc(var(--phone-dock-h) + 8px)}
@@ -1339,7 +1366,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app:not(.phone-column-off)>.workspace{grid-column:2;grid-row:1;min-width:0}
   #app.phone-column-off>.sidebar{display:none}
   #app>.drawer-scrim{display:none}
-  #app .side-head{height:auto;min-height:0;padding:4px 6px;flex-wrap:nowrap;align-items:center;column-gap:2px}
+  /* `flex:none`: the column is a flex column, and a long pane squeezed its head to 11px, the glyphs cut
+     in half under the pane's pinned state head (the owner's screenshot, #s41). */
+  #app .side-head{flex:none;height:auto;min-height:0;padding:4px 6px;flex-wrap:nowrap;align-items:center;column-gap:2px}
   #app .side-head>.brand{display:none}
   #app .side-head>.head-actions{flex:0 0 auto;margin-left:auto;flex-wrap:nowrap}
   #app .side-head .iconbtn{width:32px;height:44px}
@@ -1358,6 +1387,24 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   /* Collapse all, Expand all and the session filter act on the session list alone: while the column
      shows a pane they go (the owner); the theme applies everywhere and stays. */
   #app.column-pane-on .side-head .head-actions>:is(#collapseBtn,#expandBtn,#filterBtn){display:none}
+}
+
+/* #s41 — held sideways a sheet is a POPOVER at its control's side, as iOS draws them at a regular
+   width, never a band across the screen: a band 900px wide held four switches, and on a wide phone it
+   ran under the session list, which hid every label (the owner: "Aa menu in landscape shows a black
+   page"; Info lost its labels the same way). The toolbar pill's sheets (Aa, the panes) rise at the
+   pill's end — the left on a narrow phone, the right on a wide one, whose dock sits right — the
+   find pill's (the filter, the facets) at its right, by the funnel, and Info hangs under Info. */
+@media(pointer:coarse) and (max-height:500px){
+  #app .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]){left:calc(12px + env(safe-area-inset-left,0px));right:auto;width:min(380px,calc(100vw - 24px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}
+  #app .header-search-cluster>.navigator-options,#app .header-search-cluster>.search-suggest{left:auto;right:calc(12px + env(safe-area-inset-right,0px));width:min(380px,calc(100vw - 24px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}
+  #app .info-popover{left:auto;right:calc(8px + env(safe-area-inset-right,0px));width:min(420px,calc(100vw - 16px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}
+  /* The height is what is short here (330px in Safari with its tab bar showing), so a sheet rising
+     from the dock may cover the top bar rather than show two rows of four. */
+  #app .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]),#app .header-search-cluster>.navigator-options,#app .header-search-cluster>.search-suggest{max-height:calc(100dvh - var(--phone-bottom,var(--phone-dock-h)) - 16px - env(safe-area-inset-top,0px))}
+}
+@media(pointer:coarse) and (max-height:500px) and (min-width:900px){
+  #app .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]){left:auto;right:calc(12px + env(safe-area-inset-right,0px))}
 }
 
 /* #s32 — between the phone and 1180px the preview is an overlay (reference.css), and at

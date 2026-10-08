@@ -2336,7 +2336,9 @@ function applyReading() {
 }
 function setReading(patch) { uiState.reading = { ...uiState.reading, ...patch, size: clampSize(patch.size ?? uiState.reading.size) }; uiState.readingChosen = true; persist(); applyReading(); }
 readingSection.onclick = event => {
-  const toggle = event.target.closest("[data-reading-toggle]"); if (toggle) { const key = toggle.dataset.readingToggle; setReading({ [key]: !uiState.reading[key] }); return; }
+  // The whole row is the switch's target (#s41: the switch alone is 34×20, under a finger's size),
+  // as a settings row is on iOS and as the sidebar's Write mode row already was.
+  const toggle = event.target.closest("[data-reading-toggle]") || (!event.target.closest("button") && event.target.closest(".reading-row")?.querySelector("[data-reading-toggle]")); if (toggle) { const key = toggle.dataset.readingToggle; setReading({ [key]: !uiState.reading[key] }); return; }
   if (event.target.closest("[data-history-save]")) { saveHistory(); return; }
   if (event.target.closest("[data-reading-reset]")) setReading({ size: 12, wrap: false, wide: false });
 };
@@ -3200,7 +3202,10 @@ var phoneDock;
   handle.type = "button";
   handle.className = "drawer-handle";
   handle.id = "drawerHandle";
-  handle.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>';
+  // ☰ for the drawer; held sideways on a wide phone, where it hides and shows a COLUMN, the sidebar
+  // glyph, as an iPad keeps its sidebar button by the content (`labelHandle` swaps them).
+  const DRAWER_GLYPH = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>';
+  handle.innerHTML = DRAWER_GLYPH;
   const scrim = document.createElement("div");
   scrim.className = "drawer-scrim";
   scrim.id = "drawerScrim";
@@ -3261,6 +3266,8 @@ var phoneDock;
   searchDone.title = "End the search";
   searchDone.setAttribute("aria-label", "End the search");
   searchDone.onclick = () => {
+    // The search's own sheets go with it (#s41: the filter stayed open over the transcript).
+    setPopover(null);
     searchClear.click();
     byId("transcriptSearchInput").blur();
     setPhoneSearch(false);
@@ -3367,6 +3374,8 @@ var phoneDock;
   const COLUMN_KEY = "am-phone-column";
   let columnOff = (() => { try { return localStorage.getItem(COLUMN_KEY) === "0"; } catch (_) { return false; } })();
   const labelHandle = () => {
+    const glyph = WIDE.matches ? svg("sidebar") : DRAWER_GLYPH;
+    if (handle.dataset.glyph !== (WIDE.matches ? "column" : "drawer")) { handle.innerHTML = glyph; handle.dataset.glyph = WIDE.matches ? "column" : "drawer"; }
     const open = WIDE.matches ? !columnOff : !app.classList.contains("mobile-detail");
     const words = WIDE.matches ? (open ? "Hide the session list" : "Show the session list") : open ? "Close the session list" : "Open the session list";
     handle.setAttribute("aria-expanded", String(open));
@@ -3401,8 +3410,11 @@ var phoneDock;
   columnSwitch.id = "columnSwitch";
   columnSwitch.setAttribute("role", "tablist");
   columnSwitch.setAttribute("aria-label", "Show in the column");
-  columnSwitch.innerHTML = [["sessions", "Sessions", "sidebar"], ...panes.map(p => [p.key, p.label, p.key])]
-    .map(([key, label, icon]) => `<button type="button" class="iconbtn${key === "sessions" ? " on" : ""}" role="tab" data-column-tab="${key}" title="${label}" aria-label="${label}" aria-selected="${key === "sessions"}">${svg(icon)}<span class="column-switch-count"></span></button>`)
+  // Sessions wears a conversation, never the sidebar glyph: that one means "hide the sidebar" on every
+  // desktop and iPad, and the owner tapped it to hide the column and read the tab as dead (#s41).
+  const SESSIONS_GLYPH = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5a7.5 7.5 0 0 1-11 6.6L4 19.5l1.4-4.3A7.5 7.5 0 1 1 20 11.5Z"/></svg>';
+  columnSwitch.innerHTML = [["sessions", "Sessions", null], ...panes.map(p => [p.key, p.label, p.key])]
+    .map(([key, label, icon]) => `<button type="button" class="iconbtn${key === "sessions" ? " on" : ""}" role="tab" data-column-tab="${key}" title="${label}" aria-label="${label}" aria-selected="${key === "sessions"}">${icon ? svg(icon) : SESSIONS_GLYPH}<span class="column-switch-count"></span></button>`)
     .join("");
   const columnPane = document.createElement("div");
   columnPane.className = "column-pane phone-pane-body";
@@ -3444,10 +3456,13 @@ var phoneDock;
 
   // `--phone-top` (the bar's bottom) places the sheets that hang from the top, `--phone-bottom` (the
   // dock's top, from the screen's foot) the sheets that rise from the dock.
+  // Both are measured against the APP's box, not the window's: while the keyboard is up iOS reports an
+  // `innerHeight` that shrinks as it scrolls the page, and the app is moved back over that scroll.
   const place = () => {
-    const bottom = Math.round(topbar.getBoundingClientRect().bottom);
+    const box = app.getBoundingClientRect();
+    const bottom = Math.round(topbar.getBoundingClientRect().bottom - box.top);
     if (bottom > 0) document.documentElement.style.setProperty("--phone-top", `${bottom}px`);
-    const rise = Math.round(innerHeight - dock.getBoundingClientRect().top);
+    const rise = Math.round(box.bottom - dock.getBoundingClientRect().top);
     if (getComputedStyle(dock).display !== "none" && rise > 0) document.documentElement.style.setProperty("--phone-bottom", `${rise}px`);
   };
   new ResizeObserver(place).observe(topbar);
@@ -3456,17 +3471,32 @@ var phoneDock;
   // #s37 (design/phone-landscape.md §3.5): the dock rides the keyboard. iOS never lifts a fixed bottom
   // element above its keyboard — the layout viewport keeps its height and the keyboard covers its foot
   // — so the find pill would type behind it. What the keyboard (and its accessory bar) covers is the
-  // layout viewport below the visual one; `--phone-kb` lifts the dock by that much, and only the dock:
+  // app's height less the visible one; `--phone-kb` lifts the dock by that much, and only the dock:
   // the transcript keeps its height (a moving foot would move the reader, #372).
+  // #s41 (the owner's iPhone): iOS also SCROLLS THE PAGE to bring the focused field above its keyboard
+  // — measured on iOS 26, 322px upright, the find field being at the foot when it is focused — and the
+  // top bar, the drawer's handle and a wide phone's column head went off the top of the screen. Pinning
+  // the page back with `scrollTo` fights iOS (it scrolls again, the view jitters), so the app is moved
+  // back over the scroll instead (`translateY` of the visual viewport's page offset) and looks as if
+  // nothing scrolled; the field, lifted above the keyboard, gives iOS no reason to scroll again. The
+  // transform makes the app the box its fixed children are placed in, which is the screen's box here.
   const viewport2 = window.visualViewport;
   if (viewport2) {
+    const root = document.documentElement;
     const ride = () => {
-      const covered = PHONE.matches ? Math.max(0, Math.round(innerHeight - viewport2.height - viewport2.offsetTop)) : 0;
-      document.documentElement.style.setProperty("--phone-kb", `${covered}px`);
+      const steady = PHONE.matches && Math.abs(viewport2.scale - 1) < 0.01;
+      const covered = steady ? Math.max(0, Math.round(root.clientHeight - viewport2.height)) : 0;
+      const shift = steady ? Math.max(0, Math.round(viewport2.pageTop)) : 0;
+      // Once the keyboard is down there is nothing to fight: the page goes back to the top.
+      if (steady && !covered && shift) scrollTo(0, 0);
+      app.style.transform = shift ? `translateY(${shift}px)` : "";
+      app.classList.toggle("keyboard-up", covered > 0);
+      root.style.setProperty("--phone-kb", `${covered}px`);
       place();
     };
     viewport2.addEventListener("resize", ride);
     viewport2.addEventListener("scroll", ride);
+    addEventListener("scroll", ride, { passive: true });
     ride();
   }
   // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone), and

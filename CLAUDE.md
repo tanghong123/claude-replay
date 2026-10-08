@@ -58,10 +58,18 @@ its `::before`: a backdrop-filter on the pill would make it the containing block
 While the search is open or holds a query the find pill takes the dock (CSS `:has`, no script)
 with a glass ✕ circle beside it that ENDS the search (`#phoneSearchDone`: the query and its marks
 go, the keyboard goes down, the toolbar pill returns); the field's own small ✕ only clears it to type
-again — one control, one meaning, as an iOS 26 search closes beside its field. While the field has
-the keyboard the magnifier and the funnel give way, so two chips and a word keep their room; the dock
-rides the keyboard through `visualViewport` (`--phone-kb`; iOS never lifts a fixed bottom element
-above it), held by `a_phone_find_pill_rides_the_keyboard`, which shadows `visualViewport.height`. The transcript's foot is padded by the dock's static height
+again — one control, one meaning, as an iOS 26 search closes beside its field; it closes the filter
+with it. While the field has the keyboard the magnifier gives way and the FUNNEL NEVER DOES (#s41:
+iOS focuses the field as the search opens, so hiding the funnel while typing hid it always — the
+owner found no filter in either orientation). The dock rides the keyboard through `visualViewport`
+(`--phone-kb` = the app's height less the visible one; iOS never lifts a fixed bottom element above
+it), and iOS also SCROLLS THE PAGE to bring the focused field above its keyboard (322px upright on
+iOS 26), which took the top bar and a wide phone's column head off the screen (#s41): pinning the page
+back with `scrollTo` fights iOS and jitters, so the app is moved back over the scroll
+(`translateY(visualViewport.pageTop)`) and `--phone-top`/`--phone-bottom` are measured against the
+app's box — iOS reports an `innerHeight` that shrinks as it scrolls, and a `visualViewport.offsetTop`
+equal to the page offset. Held by `a_phone_find_pill_rides_the_keyboard`, which shadows
+`visualViewport.height` and `pageTop`. The transcript's foot is padded by the dock's static height
 (`--phone-dock-h`, never a measured value a keyboard would move under a glide), and the search's
 landing treats the dock as an obstacle. **The breakpoint is ONE query**
 (#s32, `PHONE_QUERY` in `shared/capabilities.js`: `(max-width:760px), (pointer:coarse) and
@@ -79,12 +87,16 @@ over the drawer's head upright; `harness::safe_area` emulates them through Chrom
 `setSafeAreaInsetsOverride`, `a_phone_keeps_its_controls_and_lines_inside_the_safe_area`); held
 sideways the transcript is a centred reading column (500px, about 75 characters of prose); and a
 WIDE phone held sideways (`WIDE_PHONE_QUERY`, ≥900px: the Plus and Max iPhones) shows the session
-list as a 280px COLUMN beside the session, its head ONE row of glyphs and no brand (the owner): the
-switcher (Sessions / Turns / Tasks / Agents, borrowing the outline's live lists as the sheets do), then
+list as a 280px COLUMN beside the session, its head ONE row of glyphs and no brand (the owner), never
+shrunk by a long pane under it (`flex:none`; #s41, it was cut to 11px): the
+switcher (Sessions / Turns / Tasks / Agents, borrowing the outline's live lists as the sheets do —
+Sessions wears a conversation glyph, never the sidebar glyph, which every desktop reads as "hide the
+sidebar": the owner tapped it to hide the column and called it dead, #s41), then
 the sidebar's own (Collapse all, Expand all and the session filter go while a pane is shown: they act
 on the list alone); the pill keeps only Aa beside search — and takes the panes back while the column
 is hidden, or nothing would reach them. The handle sits at the session's top left, by
-the title (as iPad apps keep their sidebar button), and hides and shows the column under its own key
+the title (as iPad apps keep their sidebar button, and wearing its sidebar glyph there; ☰ is the
+drawer's), and hides and shows the column under its own key
 (`am-phone-column`; never the rail's, never `mobile-detail`); hidden, the session stays at its
 reading width, and the Reading menu's Wide transcript (hidden upright, #338) widens it. Between the phone and 1180px an open preview covers the whole session area beside the sidebar
 (it was a 72vw overlay over a sliver nobody could read); `a_phone_held_sideways_gets_the_phone_layout_in_one_row`
@@ -93,8 +105,8 @@ never wraps (#352, `a_phone_dock_keeps_one_row_with_a_query_and_a_chip`): the CL
 is its count, steps and ✕ — its chips (a scope chip is its letters alone, a tool chip wears a wrench;
 the word visually hidden, #353) wait in the open box. There the chips and the field are ONE strip
 (`.search-field`, wrapped at load) that scrolls as a whole, the field as wide as its text, so the end
-being typed stays in view; the count hangs as a tag ABOVE the find pill at its left (the jump to the
-latest floats above its right); and the step arrows are SVG, centred. A tool chip is its wrench and the tools' own single-character
+being typed stays in view; the count hangs as a tag ABOVE the find pill at its left; and the step
+arrows are SVG, centred. A tool chip is its wrench and the tools' own single-character
 selectors (`o(B)` reads "B", #355), and beside chips the field shows no placeholder. **The query is
 ONE prefix at the start of the box** (#367, `design/in-session-search.md` §9): letters u a t o w
 then a colon, `o(…)` naming tools by letter (`o(BR)`) or name (`o(Bash,Read)`); `scope:`, `tool:` and
@@ -110,12 +122,25 @@ step inside one 175,539 px agent process, at the right offset) — `landOnCurren
 the mark's own horizontally scrolling block (its `scrollLeft`, never the transcript's offset). The outline column does not
 exist there: each pane opens from its icon as a SHEET rising from the pill that holds the outline's OWN
 live list (moved in while open, back after), so one renderer and one click handler (`navigatorClick`)
-serve both. Info hangs at `--phone-top` (the bar's measured bottom); the dock's sheets (panes, Aa, the
-filter, the suggestions) rise from `--phone-bottom` (the dock's measured top) and stop 72px short of
-the bar, the band `phone_tap_outside` taps to dismiss them. The jump to the latest sits at the
-bottom CENTRE of the session (#332), just above the dock (the owner kept the centre over the
-mockups' right). Inputs are 16px (iOS zooms into anything
-smaller), targets 44px. Choosing a session shuts the drawer at once and a veil (`sessionLoading`, every
+serve both. Info hangs at `--phone-top` (the bar's measured bottom) and ends above the dock; the
+dock's sheets (panes, Aa, the filter, the suggestions) rise from `--phone-bottom` (the dock's measured
+top) and stop 72px short of the bar upright, the band `phone_tap_outside` taps to dismiss them. Held
+sideways each is a POPOVER at its control's side (#s41), never a band across the screen — a band ran
+under a wide phone's column and hid every label ("Aa menu in landscape shows a black page"): the
+toolbar pill's (Aa, the panes) at the pill's end (left on a narrow phone, right on a wide one), the
+find pill's at its right by the funnel, Info under Info; there the height is what is short (330px in
+Safari with its tab bar), so they may rise over the top bar
+(`a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_whole`). The jump to the
+latest sits at the bottom CENTRE of the session (#332): just above the dock upright, ON the dock's
+row sideways, where the middle of that row is free (the owner: "should move to the bottom"), and
+gone while the find pill holds the dock (#s41). Inputs are 16px (iOS zooms into anything
+smaller), targets 44px — a reading row's whole width flips its switch, a facet suggestion is a 44px
+row. **On a touch screen hover reveals nothing** (#s41): WebKit spends a tap on a hover that SHOWS
+content — a session row's action fading in from nothing — and sends no click, so choosing a session
+from an iPhone's drawer took two taps (the first tap's `touchend` came and its click never did); the
+action stays hidden there (`@media(hover:none)`), and since iOS leaves `:hover` on whatever was tapped
+last, a glyph button takes its tint from `aria-expanded` rather than hover. Chrome's touch emulation
+models neither, so these are walked on the iOS Simulator. Choosing a session shuts the drawer at once and a veil (`sessionLoading`, every
 width) dims the session area with how much of the records has arrived. The rules are `production.css`
 under `#313`; the cases are `a_phone*` in `browser_follow.rs` and the preview pinch in `files.rs`,
 driven by `harness::phone` (emulated BEFORE the first load, since the page stores its outline

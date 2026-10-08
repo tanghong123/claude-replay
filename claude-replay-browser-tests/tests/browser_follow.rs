@@ -12494,6 +12494,162 @@ fn a_narrow_phone_held_sideways_reads_at_a_measure() {
     the_drawer_opens_and_its_list_scrolls(&tab, "852x393");
 }
 
+/// #s41, the owner's iPhone on 1.358.0, held sideways: "Aa menu in landscape shows a black page"
+/// (the sheet was a band across the screen and the session list covered its labels; Info lost its
+/// labels the same way), "the left most drawer button has no effect" (the Sessions tab wore the
+/// sidebar glyph), the column's head cut in half under a long pane, "the go to bottom chip should
+/// move to the bottom", "hide go to bottom when in search", and no filter in the find pill. Each
+/// sheet is now a popover at its control's side, beside the column; the head never shrinks; the
+/// jump sits on the dock's row and steps aside for the search; the funnel stays.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_whole() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(
+        2750,
+        "wide-sheets",
+        956,
+        440,
+        false,
+        30,
+        Some(harness::SIDEWAYS_INSETS),
+    );
+    let column_right = harness::eval(
+        &tab,
+        "Math.round(document.querySelector('#app>.sidebar').getBoundingClientRect().right)",
+    )
+    .as_i64()
+    .unwrap_or(9999);
+    // The handle by the title wears the sidebar glyph; the Sessions tab does not.
+    assert_eq!(
+        harness::eval(&tab, "!!document.querySelector('#drawerHandle svg rect') && !document.querySelector('#columnSwitch [data-column-tab=sessions] svg rect')"),
+        serde_json::Value::Bool(true),
+        "the sidebar glyph is the handle's, never the Sessions tab's"
+    );
+    // A long pane in the column leaves its head whole.
+    let tab_at = |key: &str| -> Vec<f64> {
+        page_point(&tab, key, &format!("(function(){{ var b = document.querySelector('#columnSwitch [data-column-tab={key}]').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); }})()"))
+    };
+    let turns = tab_at("turns");
+    harness::finger_tap(&tab, turns[0], turns[1]);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#columnPane .outline-turn-row').length === 30",
+        "the column showing thirty turns",
+        Duration::from_secs(10),
+        "document.querySelectorAll('#columnPane .outline-turn-row').length",
+    );
+    let head = harness::eval(&tab, &format!("(function(){{ var h = document.querySelector('.side-head').getBoundingClientRect(); return JSON.stringify({{ height: Math.round(h.height), tabs: [...document.querySelectorAll('#columnSwitch [data-column-tab]')].every({PHONE_HITTABLE}) }}); }})()"));
+    let head: serde_json::Value = serde_json::from_str(head.as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        head["height"].as_i64().unwrap_or(0) >= 44 && head["tabs"] == true,
+        "the column's head keeps its height and every tab answers a tap: {head}"
+    );
+    let sessions = tab_at("sessions");
+    harness::finger_tap(&tab, sessions[0], sessions[1]);
+    // Aa: a popover beside the column, every label readable, and a tap on a label flips its switch.
+    phone_tap(&tab, "#readingBtn");
+    harness::until(
+        &tab,
+        "document.getElementById('readingOptions').classList.contains('open')",
+        "the Reading sheet open",
+        Duration::from_secs(5),
+        "document.getElementById('readingOptions').className",
+    );
+    let sheet = harness::eval(&tab, &format!("(function(){{ var o = document.getElementById('readingOptions'), r = o.getBoundingClientRect(); return JSON.stringify({{ left: Math.round(r.left), labels: [...o.querySelectorAll('.reading-row')].filter(function (x) {{ return getComputedStyle(x).display !== 'none'; }}).map(function (x) {{ return ({PHONE_HITTABLE})(x.firstElementChild); }}) }}); }})()"));
+    let sheet: serde_json::Value = serde_json::from_str(sheet.as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        sheet["left"].as_i64().unwrap_or(0) >= column_right
+            && sheet["labels"].as_array().is_some_and(|l| l.len() >= 3 && l.iter().all(|v| v == true)),
+        "the Reading sheet sits beside the column ({column_right}) and every label is on top: {sheet}"
+    );
+    let raw = page_point(&tab, "the raw-text row's label", "(function(){ var row = document.querySelector('#readingOptions [data-reading-toggle=rawUser]').closest('.reading-row'), b = row.firstElementChild.getBoundingClientRect(); return JSON.stringify([b.left + 12, b.top + b.height / 2]); })()");
+    harness::finger_tap(&tab, raw[0], raw[1]);
+    harness::until(
+        &tab,
+        "document.querySelector('#readingOptions [data-reading-toggle=rawUser]').getAttribute('aria-checked') === 'true'",
+        "a tap on the row's label to flip its switch",
+        Duration::from_secs(5),
+        "document.querySelector('#readingOptions [data-reading-toggle=rawUser]').getAttribute('aria-checked')",
+    );
+    harness::finger_tap(&tab, raw[0], raw[1]);
+    phone_tap(&tab, "#readingBtn");
+    // Info: under Info, beside the column, above the dock.
+    phone_tap(&tab, "#phoneInfo");
+    harness::until(
+        &tab,
+        "document.getElementById('infoPopover').classList.contains('open')",
+        "Info open",
+        Duration::from_secs(5),
+        "document.getElementById('infoPopover').className",
+    );
+    let info = harness::eval(&tab, "(function(){ var r = document.getElementById('infoPopover').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return JSON.stringify({ left: Math.round(r.left), bottom: Math.round(r.bottom), dockTop: Math.round(d.top) }); })()");
+    let info: serde_json::Value = serde_json::from_str(info.as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        info["left"].as_i64().unwrap_or(0) >= column_right
+            && info["bottom"].as_i64().unwrap_or(9999) <= info["dockTop"].as_i64().unwrap_or(0),
+        "Info sits beside the column and ends above the dock: {info}"
+    );
+    phone_tap(&tab, "#phoneInfo");
+    // The jump to the latest: on the dock's row, centred in the session.
+    harness::wheel_scroll(&tab, harness::APP_SCROLLER, "s.scrollTop = 0");
+    harness::until(
+        &tab,
+        "document.querySelector('.jump-to-bottom').classList.contains('show')",
+        "the jump to the latest once the reader has moved up",
+        Duration::from_secs(10),
+        "document.querySelector('.jump-to-bottom').className",
+    );
+    let jump = harness::eval(&tab, "(function(){ var j = document.querySelector('.jump-to-bottom').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(), w = document.querySelector('#app>.workspace').getBoundingClientRect(); return JSON.stringify({ dy: Math.round(Math.abs((j.top + j.bottom) / 2 - (d.top + d.bottom) / 2)), dx: Math.round(Math.abs((j.left + j.right) / 2 - (w.left + w.right) / 2)) }); })()");
+    let jump: serde_json::Value = serde_json::from_str(jump.as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        jump["dy"].as_i64().unwrap_or(99) <= 4 && jump["dx"].as_i64().unwrap_or(99) <= 2,
+        "the jump sits on the dock's row at the session's centre: {jump}"
+    );
+    // The search: the jump steps aside, the funnel is there while typing, one tap opens the filter,
+    // and the ✕ ends the search and its filter with it.
+    phone_tap(&tab, ".header-searchbox");
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open')",
+        "the find pill open",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    harness::eval(&tab, "(function(){ var i = document.getElementById('transcriptSearchInput'); i.focus(); i.value = 'answer'; i.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    assert_eq!(
+        harness::eval(&tab, &format!("getComputedStyle(document.querySelector('.jump-to-bottom')).display === 'none' && ({PHONE_HITTABLE})(document.getElementById('filterTranscriptBtn'))")),
+        serde_json::Value::Bool(true),
+        "while searching the jump is gone and the funnel is a tap away"
+    );
+    phone_tap(&tab, "#filterTranscriptBtn");
+    harness::until(
+        &tab,
+        "document.getElementById('navigatorOptions').classList.contains('open')",
+        "one tap on the funnel to open the filter",
+        Duration::from_secs(5),
+        "document.getElementById('navigatorOptions').className",
+    );
+    let filter_left = harness::eval(
+        &tab,
+        "Math.round(document.getElementById('navigatorOptions').getBoundingClientRect().left)",
+    )
+    .as_i64()
+    .unwrap_or(0);
+    assert!(
+        filter_left >= column_right,
+        "the filter rises beside the column: {filter_left} ≥ {column_right}"
+    );
+    phone_tap(&tab, "#phoneSearchDone");
+    harness::until(
+        &tab,
+        "!document.getElementById('navigatorOptions').classList.contains('open') && !document.querySelector('.header-searchbox').classList.contains('has-query')",
+        "the ✕ to end the search and close its filter",
+        Duration::from_secs(5),
+        "document.getElementById('navigatorOptions').className + ' ' + document.querySelector('.header-searchbox').className",
+    );
+}
+
 /// #s37 (design/phone-landscape.md §3.5): the search docked at the keyboard, as Safari's Find on
 /// Page is. iOS never lifts a fixed bottom element above its keyboard — the layout viewport keeps its
 /// height and the keyboard covers its foot — so the find pill rides the VISUAL viewport. Headless
@@ -12538,6 +12694,45 @@ fn a_phone_find_pill_rides_the_keyboard() {
     assert_eq!(
         up["transcript"], rest["transcript"],
         "the transcript keeps its height under the keyboard: {rest} → {up}"
+    );
+    // #s41 (the owner's iPhone): the filter is in the find pill while the field has the keyboard —
+    // iOS focuses the field as the search opens, and hiding the funnel while typing hid it always.
+    assert_eq!(
+        harness::eval(&tab, &format!("document.activeElement === document.getElementById('transcriptSearchInput') && ({PHONE_HITTABLE})(document.getElementById('filterTranscriptBtn'))")),
+        serde_json::Value::Bool(true),
+        "the funnel is a tap away while the field has the keyboard"
+    );
+    // …and iOS SCROLLS THE PAGE to bring the field above its keyboard (322px upright on iOS 26), which
+    // took the top bar off the screen. The app is moved back over that scroll, measured from the visual
+    // viewport's page offset (shadowed here as the height is), and the sheets keep their places, since
+    // they are measured against the app's own box.
+    let bottom_before = harness::eval(
+        &tab,
+        "getComputedStyle(document.documentElement).getPropertyValue('--phone-bottom')",
+    );
+    harness::eval(&tab, "(function(){ Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 300; } }); visualViewport.dispatchEvent(new Event('scroll')); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "document.getElementById('app').style.transform === 'translateY(300px)'",
+        "the app moved back over the page's keyboard scroll",
+        Duration::from_secs(5),
+        "document.getElementById('app').style.transform",
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "getComputedStyle(document.documentElement).getPropertyValue('--phone-bottom')"
+        ),
+        bottom_before,
+        "the sheets rise from the same place in the app's box"
+    );
+    harness::eval(&tab, "(function(){ delete visualViewport.pageTop; visualViewport.dispatchEvent(new Event('scroll')); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "document.getElementById('app').style.transform === ''",
+        "the app back in place once the page is",
+        Duration::from_secs(5),
+        "document.getElementById('app').style.transform",
     );
     // The keyboard goes: the dock is back above the home indicator.
     harness::eval(&tab, "(function(){ delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
