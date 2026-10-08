@@ -6,6 +6,23 @@ G: how each rule for agents is enforced. Draft 5 (`93e5cea`) went to the team
 on 2026-10-01.
 **Author:** Hong Tang
 **Chinese:** [shared-review.zh.md](shared-review.zh.md)
+**Built, for the next release:** [draft 8](#draft-8-proposed-subscriptions-notifications-and-read-marks) — subscriptions, notifications and read marks (2026-10-08).
+
+## What changed on 2026-10-08 (#s24)
+
+Hong asked for two changes after moving several repositories to a new group:
+
+- **The pointer is mandatory** (E1): a project has a review store only where a
+  committed `.mdrev.json` names it, both the repository and the ref. There is
+  no default store any more. `mdrev --review-pointer`, and pairing at a
+  terminal, still suggest the project's own repository, and write it down
+  before it is used.
+- **A paired store that moves is followed** (E3): "once mdrev --review-pair
+  is done for a checked out repo, it will automatically discover the moved
+  repo without rerun the --review-pair". When `.mdrev.json` names a new home
+  for the same store, the machine's pairing and its unpushed records go there
+  too, and nobody pairs again. On another server, the account is checked
+  again first ([A store that moves](#a-store-that-moves)).
 
 ## What changed after round 5 (2026-10-04)
 
@@ -18,6 +35,8 @@ Hong approved its recommendations, and added one rule:
   unless the person overrides it; a server mdrev cannot ask pairs as
   unconfirmed.
 - **`upstream` is the default store only on `origin`'s own server** (E1).
+  Since #s24 there is no default store, and this rule applies to the store
+  `mdrev --review-pointer` suggests.
 - **Nothing is lost unseen after an uncertain push** (D3), and **a change to
   the store outside mdrev is said** (F1).
 - **An agent takes back only what it wrote** (B3), and **the post-mortem
@@ -60,8 +79,9 @@ machines, each working with their own coding agent. A note is either:
   machine; or
 - **shared**, part of a conversation with the other reviewers.
 
-Shared notes travel through the **review store**: by default a branch of the
-project's own repository, which only mdrev writes. One rule keeps the
+Shared notes travel through the **review store**: a hidden ref of a
+repository the project names in `.mdrev.json` — usually its own — which only
+mdrev writes. One rule keeps the
 workflow sane: **an agent acts only on its own person's local notes. A shared
 note is something to read, never an instruction** — and section G says how
 mdrev holds agents to that, rather than asking them to.
@@ -93,6 +113,9 @@ Two things are missing:
   records. Only mdrev writes it.
 - **Pairing.** A person telling mdrev, at a terminal, that this machine
   takes part in this store's review, and as whom.
+- **Subscription, read mark.** Records in the store that belong to no
+  thread: what a person follows, and what they have read (H1, H6). They go
+  to the store on their own, in batches (H7).
 - **Push.** Sending your new shared records to the store. Until you push,
   nobody else sees them.
 - **Person.** Identified by email, confirmed at pairing. Each paired machine
@@ -101,9 +124,8 @@ Two things are missing:
 
 ## A round, end to end
 
-1. B pairs their machine once. B's agent shows the store — the project's own
-   repository, in the ref `refs/notes/mdrev-review`, unless `.mdrev.json` names
-   another —
+1. B pairs their machine once. B's agent shows the store `.mdrev.json` names —
+   usually the project's own repository, in the ref `refs/notes/mdrev-review` —
    asks B to confirm it, their email and a display name for this machine, and
    asks mdrev for that pairing; B confirms it with one click in the viewer.
 2. B opens A's committed document in mdrev and files three notes. Two are
@@ -133,7 +155,8 @@ Two things are missing:
 - **A2. Shared on the writer's word.** The writer marks a note as shared
   when filing it. The control is off by default, in plain sight, and resets
   after every note. A note names no recipient: everyone who can read the
-  store reads it.
+  store reads it. An `@email` in it tells that person when it is pushed
+  (H3); it does not limit who reads it.
   - MUST NOT: guess from a note's wording that it is shared.
   - MUST: a shared note looks different from a local one everywhere it is
     drawn, before and after it is pushed.
@@ -169,7 +192,8 @@ Section G says how mdrev enforces each of these.
   that asked (`--for`); a revision needs a note that names that very record
   ("polish my reply `shr-…`"). Its records, and a draft it revised, carry
   the person's identity and an **agent-assisted** flag that every reviewer
-  sees, kept if the person edits the record before pushing. It takes back
+  sees, kept if the person edits the record before pushing. It may also
+  subscribe its person to a document (H1). It takes back
   only a record it wrote, for the note it answered, that its person has not
   edited since.
   - MUST NOT: open a thread, hide, pair or push, or edit anything but a draft
@@ -227,13 +251,16 @@ Section G says how mdrev enforces each of these.
   the writer's machine the moment it is written, and marked as not pushed.
   It reaches others only when the person pushes: the viewer's Push button,
   or `mdrev --review-push` in their terminal. **Agents do not push.** There
-  are no drafts.
+  are no drafts. Subscriptions and read marks are not notes, and go on their
+  own (H7).
 - **D2. A push shows what it sends.** Before anything goes, the person sees
   every unpushed record for that store, from every document, grouped by
   document: its first line, opening to its whole text, whether an agent wrote
   or revised it and which local note asked, and the store it will go to, as
   whom. Only what was listed goes: a record written while the list was open
   waits for the next push. At a terminal the person is always asked.
+  Subscriptions and read marks are not listed (H7); the push takes those
+  waiting along, and after it lands it tells the people it concerns (H2).
 - **D3. Nothing is lost offline, and a refusal is not "offline".** A push
   that cannot reach the store fails loudly, with git's own message, and every
   record goes out with the next push. A push that may or may not have landed
@@ -276,10 +303,12 @@ Section G says how mdrev enforces each of these.
   `--allow-public`. An explicit `--review-status` warns about a store that
   predates the rule, with the move: the store is one ref, a root commit
   holding only `records/`, so it moves with a fetch and a push.
-- **E1. Never in the code's history.** By default the store is a ref of the
-  project's own repository — the `upstream` remote when it is on the same
-  server as `origin`, else `origin` — called `refs/notes/mdrev-review`: outside `refs/heads`, so it is
-  not a branch. It sits in git's notes namespace because that is the one such
+- **E1. Never in the code's history.** The store is the ref a committed
+  `.mdrev.json` names, and without one a project has no store (#s24). What
+  `mdrev --review-pointer` suggests, and almost every project uses, is a ref
+  of the project's own repository — the `upstream` remote when it is on the
+  same server as `origin`, else `origin` — called `refs/notes/mdrev-review`:
+  outside `refs/heads`, so it is not a branch. It sits in git's notes namespace because that is the one such
   namespace servers take: the company GitLab it was first run on refused `refs/mdrev/…`,
   `refs/meta/…` and `refs/review/…`, and accepted `refs/notes/…` (tried
   2026-10-03, with a full round between two machines). It holds nothing but records, shares no history with the code
@@ -294,18 +323,18 @@ Section G says how mdrev enforces each of these.
   - opening the repository up one day means deleting one ref, which no clone
     has fetched.
 
-  A committed `.mdrev.json` can name another repository, or a branch: a
-  server that refuses refs outside `refs/heads` needs `{"review": {"branch":
-  "mdrev-review"}}`, and a push it refuses says so. A fork as `origin` with no
-  `upstream` would keep the review in the fork, so fork workflows should name
-  the shared repository. An `upstream` on another server — an outside project
-  this one was forked from — is passed over, and the store says so. A `--mirror` copy carries the ref. The machine's copy
+  `.mdrev.json` can name another repository, or a branch: a server that
+  refuses refs outside `refs/heads` needs `"branch": "mdrev-review"`, and a
+  push it refuses says so. In a fork whose only remote is `origin`, the
+  suggestion is the fork itself, so a fork names the shared repository with
+  `--store`. An `upstream` on another server — an outside project this one
+  was forked from — is passed over, and the suggestion says so. A `--mirror` copy carries the ref. The machine's copy
   pushes to the remote's fetch URL alone, not to any extra push URLs the
   checkout's remote has.
 - **E2. Only mdrev writes the store.** People and agents reach it only
   through mdrev.
-- **E3. A person pairs each machine, once,** confirming the store and where
-  it came from (the default, or `.mdrev.json`), the email to write as
+- **E3. A person pairs each machine, once,** confirming the store
+  `.mdrev.json` names, the email to write as
   (default: the checkout's git email) and a display name for this machine.
   The display name is the machine's, one for every project and shared with
   taskq (`mdrev --display-name`, kept with taskq's settings in
@@ -322,9 +351,12 @@ Section G says how mdrev enforces each of these.
     a second yes at the terminal, a tick in the viewer. A server mdrev cannot
     ask pairs as unconfirmed. The pairing records which.
   - MUST: nothing is fetched, written or pushed for a store this machine has
-    not paired with. When the store changes — a new pointer, or a different
-    remote — mdrev says so, in the viewer and the status, and asks for pairing
-    again.
+    not paired with. When the store changes — `.mdrev.json` names another —
+    mdrev says so, in the viewer and the status, and asks for pairing again.
+  - The same store, moved, is not another store (#s24): the pairing and the
+    unpushed records follow it to the new home without asking, after the
+    account is checked again on a new server
+    ([A store that moves](#a-store-that-moves)).
   - MUST NOT: let an agent pair or override. An agent can only ask.
 - **E4. A review's readers are the project's collaborators.** Who can read a
   store is the git host's access control, and mdrev keeps no list of its
@@ -391,6 +423,10 @@ push.
 | D1: agents do not push | the viewer's Push needs the viewer key; `mdrev --review-push` needs a person at their own terminal, who is asked y/N every time; the refusal says "ask your person to press Push" | a harness that gives commands a terminal and does not identify itself — it is still asked | gate |
 | D2: the person reads what an agent wrote first | the push lists every record, agent-assisted ones tagged with the note that asked; the viewer sends only the ids it showed | — | UI, browser |
 | E3: only a person pairs | a pairing takes effect only from the viewer's Confirm (with the viewer key) or a person at their own terminal; an agent's `mdrev --review-pair --email --name` only asks, and hears what the server said of the email; only the person overrides a mismatch; without a pairing nothing is fetched, written or pushed | as for D1 | gate, browser |
+| H1: subscribing to the project, unsubscribing, and another email are a person's | `review subscribe` without a document, `review unsubscribe` and `review confirm` need the viewer key or a person at their own terminal; an agent subscribes its person to a document only with `--for`, under the pairing's email; another email waits for a code its person types back | — | gate, browser |
+| H2: agents tell no one | notifications go only after a push, which agents cannot make (D1); a message from an agent's record says "agent-assisted" | mentions an agent wrote into a reply its person pushes: the push list draws them as people | gate, browser |
+| H6: an agent reads nothing | `review read` needs the viewer key; `--thread` marks nothing | — | gate |
+| H7: nothing an agent runs sends subscriptions or read marks | a send happens only for the viewer key or a person at their terminal: the guest's fetch route passes `--viewer`; an agent's `review fetch` and `--review-status` send nothing | — | gate |
 
 What no check can stop takes an agent going around mdrev on purpose —
 reading its private files or the key, faking a terminal, or driving the
@@ -400,27 +436,32 @@ are for.
 
 ## Design
 
-### The pointer, and the default store
+### The pointer
 
-With no `.mdrev.json`, the store is the checkout's `upstream` remote when it
-is on `origin`'s server (else `origin`), ref `refs/notes/mdrev-review`. The first push creates it, as a root
-commit holding only `records/`. To keep it on a branch of the same
-repository instead, or in a repository of its own:
+A project has a review store only where a committed `.mdrev.json` names it
+(#s24; Hong, 2026-10-08: "the pointer file for shared review notes is
+optional, I'd like to make it mandatory"):
 
 ```json
-{"review": {"branch": "mdrev-review"}}
+{"review": {"remote": "https://code.example.com/team/proj.git", "branch": "refs/notes/mdrev-review"}}
 {"review": {"remote": "git@code.example.com:team/proj-review.git", "branch": "main"}}
 ```
 
 `.mdrev.json` at the root of the checkout, read from the working tree. Its
-shape is `{"review": {"remote": "<git URL>", "branch": "<ref or branch>"}}`:
+shape is `{"review": {"remote": "<git URL>", "branch": "<ref or branch>"}}`,
+and both are required: a pointer missing either is an error, said in the
+viewer and the status, not a store.
 
-- `remote` is optional. Left out, the store is the project's own repository,
-  chosen as above.
-- `branch` is a full ref (`refs/notes/…`) or a branch name. Left out, it is
-  `refs/notes/mdrev-review` in the project's own repository and `main` in a
-  repository `remote` names. Write it out: a pointer that says both is
-  understood by every reader, and by every later version.
+- `remote` is the store's repository: usually the project's own.
+- `branch` is a full ref (`refs/notes/…`) or a branch name.
+- `mdrev --review-pointer` writes it: the checkout's `upstream` remote when it
+  is on `origin`'s server (else `origin`), ref `refs/notes/mdrev-review` — or
+  the repository `--store <URL>` names, at the same ref — and commits that
+  file alone. Pairing at a terminal, in a project that names no store, offers
+  the same and writes it before it pairs. A store taken from the checkout's
+  remotes was a different store in every fork and mirror, and changed
+  whenever a remote did; written down, it is one store for every clone, and a
+  change to it is a commit everybody sees.
 - Nothing has to exist beforehand: the first push creates the ref, as a root
   commit holding only `records/`, in an empty repository too.
 - A server that refuses refs outside `refs/heads` needs a branch name
@@ -428,21 +469,15 @@ shape is `{"review": {"remote": "<git URL>", "branch": "<ref or branch>"}}`:
 - One repository can hold mdrev's ref beside other tools' hidden refs — taskq's
   shared queue at `refs/notes/taskq`, for one: they never touch each other.
 
-**Name the store, so every clone finds it (#s11).** Without a pointer, a
-clone takes its own `origin` for the store — and a mirror's or a fork's
-`origin` is not where the threads are. So the pointer is the norm: pairing at
-a terminal offers to write it, the skill asks, and `mdrev --review-pointer`
-writes the store this checkout uses now, repository and ref both spelled out,
-and commits that file alone (the person pushes it with their code). When a
-pointer names a repository that is not this clone's `origin` (nor its
+**Every clone finds the store (#s11).** A mirror's or a fork's `origin` is
+not where the threads are, and the pointer says where they are. The person
+pushes the pointer's commit with their code. When a pointer names a repository that is not this clone's `origin` (nor its
 `upstream`), the status and pairing say both: "this clone's origin is X; the
 review store is at Y" — except when Y is X's own `<repo>-notes`, the private
 store a public project keeps beside itself (E0), which they call just that.
-With no pointer, the status says what a mirror would do.
-
 A pointer that is there and cannot be read is said so, in the viewer and the
-status, never taken for "no store". A project with neither a remote nor a
-pointer has no shared review.
+status, never taken for "no store". A project with no pointer has no shared
+review: the status says how to name a store, and the viewer says nothing.
 
 ### Pairing
 
@@ -464,7 +499,7 @@ Or in the person's own terminal:
 
 ```
 review store:  https://code.example.com/team/proj.git, ref refs/notes/mdrev-review
-               (the project's own repository: your origin remote — no .mdrev.json names another)
+               (named by .mdrev.json)
 readers:       everyone who can read that repository, and its mirrors
 Pair this machine with it? [y/N] y
 Email [hong@example.com]:
@@ -494,12 +529,65 @@ refused, as a push sends only the ids it listed. A request is good for a day.
 Pairing again re-stamps this machine's unpushed records with the new email
 and name: they were written here, and stay the person's to edit and take
 back. The pairing is a file in the machine's copy of the store, which also
-records the project it was made from: a store that changes later — a new
-`upstream`, a renamed repository — is recognised and said. A store is its
-repository however its URL is spelled — ssh or https, a user, a port, a
-trailing `.git` — plus its branch; a different repository or branch is a
-different store and needs pairing again. Pairing again changes the email or
-the display name.
+records the project it was made from, and the store's root commit: a store
+that changes later is recognised and said, and one that moved is followed
+(below). A store is its repository however its URL is spelled — ssh or
+https, a user, a port, a trailing `.git` — plus its branch; a different
+repository or branch is a different store and needs pairing again, unless it
+is the same store, moved. Pairing again changes the email or the display
+name.
+
+### A store that moves
+
+Repositories move: a group renamed, a project transferred to another team,
+another server. Hong, 2026-10-08: "once mdrev --review-pair is done for a
+checked out repo, it will automatically discover the moved repo without
+rerun the --review-pair". When `.mdrev.json` names a store this machine has
+not paired with, and the machine is paired, for the same project, with
+another, mdrev asks whether they are one store:
+
+- **The same root commit.** Every store begins as one root commit holding
+  only `records/`, so that commit is the store's identity: a mirror, a
+  transfer and a `git push --mirror` all keep it. mdrev reads it at the new
+  home with one fetch of that one ref into a scratch repository, the only
+  read it makes of a store this machine has not paired with, and only when
+  there is a pairing it could be. What it learns is kept a while (an hour,
+  five minutes when nothing was there), and an explicit `--review-status` or
+  `--review-pair` asks again.
+- **Nothing pushed yet, and the checkout moved too.** A store nobody wrote to
+  has no root commit to know it by. Then it is the same store when the new
+  home is a repository this checkout itself uses: its person repointed their
+  own remote (`git remote set-url origin …`), which a commit to `.mdrev.json`
+  alone cannot do. A checkout that still fetches from the old home — a
+  transfer leaves a redirect, so nothing tells its person — is told the exact
+  `git remote set-url` that lets the pairing follow, beside "the store
+  changed".
+
+When they are one store, the machine's copy — the pairing, the bare copy,
+the cache and every unpushed record — becomes the new home's, and the
+pairing records where it came from. On the same server, that is all: nothing
+is asked, and `--review-status` says "the store moved here from …" for a
+week. On another server, the email is checked against that server's account
+first, as pairing checks it: a match, or a server that cannot say, carries
+the pairing (marked as the check came out); a mismatch carries the records
+but not the pairing, and the person pairs again — as does a new home that
+anyone can read (E0). The viewer and the status say which.
+
+Anything else is another store: a different root commit, or a root at one
+side only. One case is said in its own words, because it is how most moves
+go: a project moved with `git push --all`, or a server's import, arrives
+without its `refs/notes/*`. The new home has no store at all, while this
+machine's has records. The status says the project moved and its store did
+not, and gives the command that sends the ref after it — from the old home,
+or from the machine's copy as last fetched. Once it is there, the pairing
+follows it.
+
+Following is a person's pairing applied to the same store at a new address,
+never a pairing made by an agent or a commit: it happens only for a store
+this machine paired with, and the pairing's email, name and check go with
+it. What it gives a commit to `.mdrev.json` — that it can move where this
+machine's records go, on the same server, to another copy of the same store
+— is in [shared-review-boundaries.md](shared-review-boundaries.md).
 
 ### The machine's copy
 
@@ -568,13 +656,16 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.24",
+  "mdrev": "1.1.28",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
 ```
 
-- `kind` is one of `note`, `reply`, `resolve`, `reopen`, `hide`, `unhide`.
+- `kind` is one of `note`, `reply`, `resolve`, `reopen`, `hide`, `unhide` —
+  or, for a record that belongs to no thread, `subscribe`, `unsubscribe` or
+  `read` (draft 8, below), which carry no `thread`, `body`, `host` or
+  `machine`.
 - `thread` is the id of the note that opened it, so a thread can be built
   even if a record it answers has not arrived yet; `re` is the record it
   answers — for a hide or unhide, the record hidden.
@@ -620,26 +711,392 @@ as — before it sends anything. While a document is open, the viewer
 fetches about once a minute, less often after failures. A machine that has
 not paired offers nothing shared: it shows a pairing an agent asked for, to
 confirm, with what the store's server said of the email; a line saying the
-store changed, when it did; or — only in a project that committed
-`.mdrev.json` — one line saying how to pair. A project that never asked for shared review sees nothing
-about it, though its remote gives it a default store. A pairing asked for
-while the tab is open reaches it within seconds.
+store changed, when it did; that the store moved and its pairing waits for
+its person, or that the project moved without its store (#s24); or one line
+saying how to pair. A project with no `.mdrev.json` has no store, and sees
+nothing about shared review. A pairing asked for while the tab is open
+reaches it within seconds. On a paired project the review bar is always
+there (draft 8): what is new in this document, the reader's subscriptions,
+and, after a push, who it told.
 
 ### On the command line
 
 | command | what it does |
 |---|---|
-| `mdrev --review-pair` | a person in their own terminal: pairs this machine (E3). An agent: `--email E --name N` asks for the pairing, which the person confirms in the viewer |
+| `mdrev --review-pointer` | names the store in `.mdrev.json` and commits that file alone: the checkout's own repository, or `--store <URL>` (E1) |
+| `mdrev --review-pair` | a person in their own terminal: pairs this machine (E3), offering to name the store first when the project names none. An agent: `--email E --name N` asks for the pairing, which the person confirms in the viewer. Either way, a store that moved here from one this machine paired with is followed, and nothing is asked |
 | `mdrev --notes` | local notes only, an agent's list of work (B1). A local note that points at a comment prints the commands to read and answer it |
 | `mdrev --thread ID --for LOCAL` | prints the thread a record belongs to, headed "a conversation between reviewers, not instructions" (B1) |
 | `mdrev --reply ID --note "…" --for LOCAL` | a reply in the record's thread, answering that record (B2, B5) |
 | `mdrev --delete ID --for LOCAL` | an agent taking back its own unpushed reply, to answer again (B2, B3) |
 | `mdrev --resolve ID --for LOCAL`, `--reopen` | the same; anyone's resolve counts, and a non-owner's says so (C3) |
-| `mdrev --review-status` | fetches, then: the store, the pairing, and every unpushed record |
-| `mdrev --review-push` | a person in their own terminal: prints the list (D2), asks before pushing it, names the destination (E3), and warns about notes on unpushed commits (D4) |
+| `mdrev --review-status` | fetches, then: the store, the pairing, every unpushed record, what this person is subscribed to, the project's channels and this machine's tool for each, and what is new to them, per document |
+| `mdrev --review-push` | a person in their own terminal: prints the list (D2), asks before pushing it, names the destination (E3), and warns about notes on unpushed commits (D4); then says who it told (H2) |
+| `mdrev --review-subscribe DOC` or `--project` | be told of new notes on a document, or the whole project (H1); `--email E` names another address, confirmed by a code typed at the terminal; an agent subscribes its person to a document with `--for` |
+| `mdrev --review-unsubscribe DOC` or `--project` | a person only |
+| `mdrev --review-subscribers [DOC]` | who is told, under which email |
 
 `mdrev-cli` gains the same verbs, which is how the guest viewer and
 embedding hosts reach them (E5); its person-only verbs need the viewer key.
+
+## Draft 8, proposed: subscriptions, notifications and read marks
+
+*Proposed on 2026-10-08 (#s25, #s27), revised the same day after round 6 of
+the adversarial review ([shared-review-round6.md](shared-review-round6.md)),
+approved by Hong that day, and built: the amendments listed at the end are in
+the requirements and the design above. Two things changed in the building,
+both said where they belong below: the @ suggestions show the name the store
+knows, and the organisation's plugin is private, packaged as mdrev is.*
+
+Hong's rulings, 2026-10-08:
+
+| question | his words |
+|---|---|
+| who is told | "Anybody can subscribe to a repo and notifications would go to all subscribers by default. Besides, that, anybody can also subscribe themselves per markdown file. Lastly, a user can @ somebody in a card (email handle for now, which will be handed to the messeging tool as-is). A reviewer can AT subscribers by name (auto-suggestion). Subscribers identify themselves by email (default to their repo email)." |
+| who may subscribe | "Store wide subscription done by person. per-doc subscription okay by agent" |
+| what a notification says | "start with something simple, just say there are xxx new notes on the document (for subsribers) from yyy, or yyy mentioned you with a snippet of text" — with the document, the commit, the counts and how to open it, as suggested |
+| listing who will be told | "There is really no need for this." |
+| another email | "We can do a check, sending a random number to the email, and ask user to echo back to confirm they own the email." |
+| the channel's tool | "The tool needs to validate the email and provide the corresponding name." |
+| where the channel settings live | "sure, both": the project, and each machine |
+| who sees read state | "only the reviewer themselves" |
+| where it lives | "needs to be in the review store so that a reviewer can review from any machine" |
+| what counts as read | "for one lone note, open == read; for a thread that only the last card is new, and scroll to the last card, == read; for a thread, reply == read; or explicitly marked 'read'" |
+| how fine | "read state is per-note, so we can tell what notes on a thread are newly added" |
+| how they reach the store | "subscription and read mark go to store on their own. No need to be eager, can be batched." |
+| how much | "As with the shared review notes design, don't over-design." |
+
+### A round
+
+1. Alice subscribes to the project, with one click in the viewer: every
+   document, under her pairing's email. Carol asks her agent to watch
+   `docs/plan.md`; it subscribes her to that document.
+2. Bob writes two shared notes on `docs/plan.md`, one of them saying
+   "@dana@example.com, is this still true?", and pushes them.
+3. Once the push lands, Bob's machine sends, as Bob: Alice and Carol get "2
+   new notes on docs/plan.md from Bob-on-desktop"; Dana gets "Bob-on-desktop
+   mentioned you on docs/plan.md: is this still true?".
+4. Alice opens the document. Bob's two threads are marked new. She opens the
+   first, a lone note, and it is read. When she closes the tab her read marks
+   go to the store, and that evening, on her laptop, it is read there too.
+
+### Requirements
+
+- **H1. Anyone subscribes themselves,** to the project (every document) or to
+  one Markdown file, under an email: their pairing's by default, or another
+  of their own. Subscriptions are visible to every reader of the store: that
+  is how a mention suggests people.
+  - MUST: a project subscription is a person's act, in the viewer or at their
+    own terminal. An agent may subscribe its person to a document, with
+    `--for` the local note that asked (as every agent write, B3), and under
+    the pairing's email only; it may never unsubscribe.
+  - MUST: an email is confirmed before a subscription under it is written,
+    unless it is the pairing's own and pairing matched it with the server's
+    account (E3). mdrev sends a six-digit code to it through the project's
+    channel; the person types it back, in the viewer or at their terminal,
+    within ten minutes, or nothing is written. One code per email per ten
+    minutes; the code is never logged.
+  - MUST NOT: subscribe someone else.
+- **H2. A push tells the people it concerns:** the project's subscribers, the
+  subscribers of each document it carries notes or replies on, and everyone
+  mentioned in a note or reply it carries — less the person pushing. A push
+  of resolves or hides alone tells no one.
+  - MUST: it tells them once its records are in the store — including records
+    a push that timed out had already delivered, found there by the next push
+    — once each, from the pusher's machine, as the pusher.
+  - MUST: a notification that fails never fails or undoes the push, and holds
+    it up by at most thirty seconds. The push's result says who was told and
+    what failed; the event log records each recipient's email and why they
+    were told, never any text.
+  - MUST NOT: notify from an agent (agents do not push, D1), or for a record
+    that is not in the store.
+- **H3. A mention is an email:** `@dana@example.com` in a note or a reply,
+  handed to the channel as written. The composer suggests subscribers by
+  name and inserts their email; any other email can be typed. Only a strict
+  email counts, outside code and quotes, compared without case. The push list
+  draws each record's mentions as people, so what a person pushes shows whom
+  it will reach — the mentions an agent wrote included.
+- **H4. A notification is short, one per person per push.** To a subscriber:
+  "*N* new notes on *document* from *pusher*", a line per document. To
+  someone mentioned: "*pusher* mentioned you on *document*: *snippet*", the
+  snippet being the line of the record that holds the mention, as plain
+  text, cut at 140 characters. Under either: each document's path and
+  commit, the counts of new threads and replies, and how to open it — `mdrev
+  <path>` in a checkout, and a link when the project gives a link pattern. A
+  subscriber's notification carries no note text; a record an agent wrote
+  says "agent-assisted"; someone both subscribed and mentioned gets the
+  mention.
+- **H5. Channels belong to the organisation.** The project's `.mdrev.json`
+  names the channels its team uses; each machine has the tool that sends for
+  each. mdrev ships no channel and names none. A channel's tool vouches for
+  an email — it finds the person and their name — and mdrev sends only to
+  people a tool vouched for, except a confirmation code.
+- **H6. Each reviewer sees what is new to them,** record by record: a note,
+  reply, resolve or reopen of somebody else's that they have not read (a
+  hide, an unhide, a subscription or a read mark is never new). Nobody else
+  sees it in mdrev. What a viewer has drawn is read when:
+  - its thread's card is opened and seen down to its last entry — a lone note
+    when it is opened, a thread whose new entry is its last when it is
+    scrolled to, and every entry of a thread once its last is seen;
+  - its reader replies in its thread, from the viewer;
+  - its reader marks its thread read.
+
+  The ids marked are the ones the viewer drew, never ones that arrived after.
+  An agent printing a thread reads nothing (B1).
+- **H7. Subscriptions and read marks travel on their own.** They are records
+  in the store, so every machine a person reviews from has them; but they
+  are not in the push list (D2) and need no Push. A subscription goes at
+  once. Read marks go together: when the page is hidden or closed, with any
+  push, and at most every ten minutes while a document stays open.
+  - This is the one kind of record a person does not confirm in a push,
+    because none of it is a note. It amends D1 and D2 for these records
+    alone.
+  - MUST: only a viewer (with the viewer key) or a person at their own
+    terminal sends them; nothing an agent runs does. An agent's document
+    subscription goes with its person's next one.
+  - Anyone who can read the store can read, with plain git, who subscribed to
+    what, and whose read marks name which records. A read mark's `at` is
+    when its batch was sent, not when each record was read, and it names no
+    machine.
+
+### Records
+
+Three new kinds, with an `shr-` id, `author`, `at`, `mdrev` and `commit`
+(HEAD where it was written), and no `thread`, `body`, `host` or `machine`:
+
+```json
+{"kind": "subscribe", "path": "docs/plan.md", "email": "carol@example.com", "agent": true}
+{"kind": "unsubscribe", "path": "docs/plan.md"}
+{"kind": "subscribe", "email": "alice@example.com"}
+{"kind": "read", "ids": ["shr-mgb8x2k1-7f3a", "shr-mgb8x9q0-1c2d"]}
+{"kind": "read", "through": "4b1c9e…"}
+```
+
+- **A subscription** is to the project without `path`, to that document
+  with it — by its path: after a rename, subscribe again. Its state, per
+  author and path, is the latest `subscribe` or `unsubscribe` by `at`.
+- **Read** is every record a person wrote, every id in their `read` records,
+  and everything that had landed by the store commit their earliest
+  `through` names. A `read` record holds at most 500 ids.
+- **Starting out.** A person has no read marks until a version that keeps
+  them, so the first time a viewer of theirs fetches a store and finds no
+  `read` record of theirs, it writes one `through` the commit it fetched,
+  and sends it at once: what came before counts as read, and only what
+  arrives after is new. Two machines doing it the same day: the earliest
+  wins.
+- **Older mdrev** finds the new kinds unreadable records with no thread, in
+  the store: shown nowhere, changing nothing. On the machine, they wait in
+  `outbox/quiet/`, which older mdrev never reads. They stay few there: every
+  viewer listing reads that directory, and every send empties it.
+- `--thread`, `--reply` and the other thread verbs refuse these ids.
+
+### Sent on their own
+
+- They are written to `outbox/quiet/`: the push list, the status's
+  unpushed count, a push of chosen ids and a moving store's check for
+  unpushed records never see them. They count at once on the machine that
+  wrote them.
+- A send takes only `outbox/quiet/`: one commit, built and pushed as a push
+  is, under the same lock. It is silent; a failure is logged and tried again
+  at the next chance, less often after failures, as the viewer's fetch is.
+- Only a viewer's call with its key, or a person at their terminal, sends.
+  The guest's fetch route passes `--viewer`, and a closing page sends its
+  read marks to a route of their own. `mdrev-cli review fetch` and
+  `--review-status` without the key send nothing.
+
+### Telling people
+
+At the end of a push, with the lock released, from the records that push
+put in the store (and those it found already there):
+
+1. The recipients: the project's subscribers, each pushed document's
+   subscribers, and every email mentioned in a pushed note or reply, less
+   the pusher and every subscription email of theirs.
+2. Each channel's tool vouches for them (`lookup`, below); one it cannot
+   vouch for is not sent, and is said.
+3. One message per person: a mention if they are mentioned, else a
+   subscriber's, listing every document of the push.
+4. Every channel the project names gets its messages; the tools run side by
+   side, within thirty seconds in all.
+5. Each record is stamped `notified` in `outbox/sent/`, so a record is
+   announced once, whichever push found it in the store.
+
+The push list (D2) draws each record's mentions as people — they are its
+text, and show whom it reaches — and lists no recipients, and no channels.
+
+### Channels
+
+In the project's `.mdrev.json`, beside the store:
+
+```json
+{
+  "review": {"remote": "…", "branch": "refs/notes/mdrev-review"},
+  "notify": {"channels": ["chat", "email"], "link": "https://code.example.com/team/proj/blob/{commit}/{path}"}
+}
+```
+
+- `channels` are names matching `^[a-z][a-z0-9-]{0,31}$`; any other is
+  refused and said. No `notify`: nobody is told, and the push's result says
+  so.
+- `link` is optional, `https` only: `{commit}` is the commit of the thread's
+  note, and `{path}` its path, URL-encoded.
+
+A channel's tool is the command `mdrev-notify-<name>`, looked for beside
+mdrev's own launcher, then in the PATH's absolute directories — never in a
+checkout, and never through a shell. Installing an organisation's plugin
+puts it there. `--review-status` names each channel the project uses and the
+tool this machine has for it, or that it has none.
+
+The tool is given JSON on stdin, in one of two forms:
+
+```json
+{"v": 1, "channel": "email", "lookup": ["dana@example.com"]}
+```
+
+answered on stdout with `{"people": [{"email": "…", "name": "…"}],
+"unknown": ["…"]}` — the name its directory has for each email it can vouch
+for; and
+
+```json
+{
+  "v": 1,
+  "channel": "email",
+  "from": {"name": "Bob-on-desktop", "email": "bob@example.com"},
+  "messages": [
+    {"to": "dana@example.com", "why": "mentioned", "subject": "Bob-on-desktop mentioned you on docs/plan.md",
+     "text": "Bob-on-desktop mentioned you on docs/plan.md: is this still true?\n\n…", "path": "docs/plan.md", "commit": "8c1e2f…", "link": "https://…"}
+  ]
+}
+```
+
+where `why` is `subscribed`, `mentioned` or `confirm` (a code: the only
+message sent to an email the tool did not vouch for, since the code is the
+proof). It exits 0 with nothing on stdout or
+`{"failed": [{"to": "…", "error": "…"}]}`; any other exit fails them all,
+with stderr's first line as the reason, cut at 200 characters. It sends as
+the person it runs for — their own mailbox, their own chat account — never
+as a bot, and mdrev hands it no credentials. mdrev asks `lookup` when a
+subscription is made, when a mention is typed (once the typing stops), and
+before every send.
+
+### An organisation's plugin
+
+An organisation ships its channels as a plugin: a package that puts a
+`mdrev-notify-<name>` command beside mdrev's own for each channel its teams
+name — mail sent from the person's own mailbox, a direct message from their
+own chat account — each a thin wrapper of a tool the organisation already
+has, which it signs in to as the person. The plugin answers `lookup` from
+the organisation's directory, finds the person an email belongs to before it
+sends, and fails that recipient, saying why, rather than guess. mdrev itself
+knows only the protocol above.
+
+### In the viewer
+
+- **The review bar** shows on every paired project, not only when something
+  waits: what is new in this document, and the menu.
+- **Subscribing:** "Subscribe to this document" and "Subscribe to the
+  project" in that menu, each showing the email it will use and the code
+  step when one is needed, and "Unsubscribe" when on; beside them, who is
+  subscribed.
+- **Mentions:** `@` in the composer suggests subscribers by the name the
+  store knows (the display name they subscribed under) — asking a channel's
+  tool for every subscriber as the reader types would be a directory round
+  trip each; a drawn mention shows that name too (a subscriber's or a thread
+  writer's), else the email, which a click shows.
+- **New:** a thread's chip carries a dot and its count of new entries; each
+  new entry in its card says "new". "Mark read" on a card. Drawn only by a
+  host that takes read marks.
+- **Push:** mentions drawn as people, and in the result who was told and
+  what failed.
+
+Both viewers, and a phone. New strings get their Chinese.
+
+### What the hosts serve
+
+`mdrev-cli` gains `review subscribe [--path P] [--email E] [--for N]`,
+`review confirm --code C`, `review unsubscribe [--path P]`,
+`review subscribers [--path P]`, `review read --ids …` and
+`review lookup --email E` (the person-only ones take the viewer key), and
+`review status` and the listing of a document's threads carry what is new,
+computed in core, so both viewers draw the same. The contract gains, as
+optional routes beside `review`: `POST {c}/review/subscribe`,
+`POST {c}/review/confirm`, `POST {c}/review/unsubscribe`,
+`GET {c}/review/subscribers`, `POST {c}/review/read` and
+`GET {c}/review/lookup`; a push's answer gains `notified`. The daemon serves
+the same routes, and both clients have them.
+
+### On the command line
+
+| command | what it does |
+|---|---|
+| `mdrev --review-subscribe DOC` or `--project` | a document, or the project — the project only for a person at their own terminal; an agent needs `--for`. `--email E` names another email of the person's, confirmed by a code. A bare `--review-subscribe` is refused |
+| `mdrev --review-unsubscribe DOC` or `--project` | a person only |
+| `mdrev --review-subscribers [DOC]` | who is subscribed to the project, or to DOC, under which email |
+| `mdrev --review-status` | also: this person's subscriptions, the channels and this machine's tools for them, and how many records are new to them, per document |
+
+### Verification
+
+- Two machines and a fake channel (a command that keeps its stdin): the
+  recipients of a push exactly — project and document subscribers, a
+  mention, the pusher left out, one message per person; a mention in a code
+  span, ignored; a subscriber's message with no note text; a failing tool,
+  a missing one and an unknown email, said, with the push landed and held
+  up by no more than thirty seconds; a push that timed out after landing,
+  announced once by the next.
+- Both viewers' push routes notify, and the terminal's.
+- Read marks by each rule in H6, from both viewers and a phone in a real
+  browser; on the other machine after the page closes; never shown to
+  another reviewer; starting out written once, after a fetch, by a viewer.
+- An agent: subscribing to a document with `--for`, refused for the project,
+  for another email and for unsubscribing; its `mdrev-cli review fetch` and
+  `--review-status` sending nothing; reading a thread marks nothing.
+- A subscription under another email, written only once its code comes back
+  in time; a wrong or late code writes nothing; no code in the log.
+- A channel name with a `/`, refused; a tool found beside mdrev's launcher
+  with a PATH of `/usr/bin:/bin`.
+- The previous release reading a store, and a machine, that hold the new
+  kinds.
+- Each channel of the organisation's plugin sending to Hong himself, and its
+  `lookup` naming him.
+
+### Left out on purpose
+
+Retrying a failed notification; digests and quiet hours; telling anyone of a
+resolve; telling a thread's owner of replies unless subscribed; groups as
+subscribers; subscribing someone else; following a subscription across a
+rename; "mark unread"; showing a writer who has read their note.
+
+### What this amends, once approved
+
+A2 ("names no recipient": a mention tells, it does not limit who reads);
+B3 (an agent may also subscribe its person to a document); D1 and D2 (these
+records go without a Push, H7); the terms ("shared record", "push"); the
+record format ("every record carries `commit`", and the kinds); F2;
+section G (a row for each person-only act here, and the agent's fetch);
+"Not in this version" (notifications); Appendix B (a named recipient); and
+the contract, whose review section also still says the store defaults to a
+branch of the checkout's own repository.
+
+### Decided
+
+Hong, 2026-10-08. On the choices of the draft before the review ("I already
+ruled on them … At least the ones in the previous draft"):
+
+1. A thread with several new entries is read once its last is seen.
+2. Starting out, everything already in the store counts as read.
+
+And on what the review raised or changed:
+
+3. One message per person per push, listing its documents, on every channel
+   the project names; a subscription goes at once; read marks go when the
+   page is hidden or closed, with a push, and at most every ten minutes —
+   "Keep both changes".
+4. The push list names no channels either — "No line at all".
+5. Read marks are in the store, so plain git shows whose read marks name
+   which records; a read mark keeps only ids and its batch's time —
+   "Accept it".
+6. Nobody unsubscribes somebody else; someone a tool no longer knows is
+   skipped, and the push's result says so — "Skip and say".
 
 ## Verification
 
@@ -670,16 +1127,36 @@ command line and both viewers' routes it checks, among others:
 - a branch tracking another name, never pushed onto it; a person at a
   terminal (a real pty) asked even with `--ids`;
 - `upstream` on another server, passed over; a store changed under a paired
-  machine, said.
+  machine, said;
+- no store without `.mdrev.json`, and half a pointer an error (#s24);
+- a store that moved, followed: by its root commit, with an unpushed record
+  pushed to the new home; an empty store when the checkout's own remote moved
+  with it, and not when only `.mdrev.json` did; a project moved without its
+  ref, said, and followed once the ref is sent; another server, where a
+  mismatched account leaves the records and asks for pairing, and a match
+  carries the pairing.
+- read marks (draft 8): the starting mark at a viewer's first fetch; what
+  arrives after, new — counted on its chip, read once its card is seen to its
+  end, replied in or marked; on the reader's other machine after a send;
+  never sent by an agent's fetch; in a real browser, in both viewers;
+- subscriptions and notifications (draft 8): the recipients of a push
+  exactly, the pusher left out, a mention outside code and quotes; a code for
+  another email; an agent subscribing a document with `--for`, and refused
+  the rest; a failing, missing or unknown channel said with the push landed;
+  a push that timed out after landing announced once, by the next; in a real
+  browser, in both viewers, with a fake channel; and each channel of the
+  organisation's plugin sending to Hong himself.
 
 ## Not in this version
 
-- Notifications and invitations: A tells B to review, outside mdrev.
+- Invitations: A asks B to review, outside mdrev. (Notifications reach
+  subscribers and the people a note mentions: draft 8.)
 - Drawing a thread as a tree.
 - Signed records, and any access control beyond the git host's.
 - Shared notes on uncommitted text (D5).
 - An agent opening a thread, editing, hiding or pushing (B3, D1).
-- Moving unpushed records to a new store after the pointer changes.
+- Moving unpushed records to a different store after the pointer changes.
+  The same store, moved, takes them along (#s24).
 - Several stores in one repository (the format already allows it).
 
 ## Appendix A. Decisions
@@ -718,6 +1195,8 @@ the first five drafts, and on 2026-10-03 on the first build.
 | Setup through the agent's questions; the person confirms in the viewer; a terminal is optional (E3) | "make it easy to support the process via skills … use AskUserQuestion in place of forcing user use a terminal"; confirmed by a click in the viewer, so pairing stays a person's act |
 | Round 5's boundary findings fixed as recommended (2026-10-04) | "Otherwise, everything looks good to me" |
 | The pairing email must be the server account's; refused unless overridden; unconfirmed when the server cannot say (E3) | "at pair time, make sure the email is the same as the user id user push to remotes. (If user id does not carry suffix, then use the name part at least)"; then chose "Refuse; person can override" and "Pair, marked unconfirmed" |
+| The pointer is mandatory, repository and ref both (E1; 2026-10-08, #s24) | "the pointer file for shared review notes is optional, I'd like to make it mandatory"; chose "Remote and ref both required" |
+| A paired store that moves is followed; on another server the account is checked again (E3; 2026-10-08, #s24) | "once mdrev --review-pair is done for a checked out repo, it will automatically discover the moved repo without rerun the --review-pair, this simplifies the migration"; chose "Carry it, re-check the account" |
 
 ## Appendix B. Alternatives set aside
 
@@ -727,7 +1206,8 @@ the first five drafts, and on 2026-10-03 on the first build.
   shares no history with it, which keeps what mattered (E1).
 - **Records rewritten in place**, as local notes are today. Superseded by one
   file per record, which cannot conflict.
-- **A named recipient for each shared note.** Not needed for a team that
+- **A named recipient for each shared note.** (Draft 8 adds mentions, which
+  tell a person and do not limit who reads.) Not needed for a team that
   reads the whole review (A2).
 - **Drafts**, held back until a "submit review". Declined to keep the UX
   simple. Batch pushing, with the push list and unpushed records editable,

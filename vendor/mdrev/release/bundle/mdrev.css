@@ -570,6 +570,25 @@
 .mdrev-host details.ann-review-item>summary {cursor:pointer}
 .mdrev-host .ann-review-body {white-space:pre-wrap;border-left:2px solid var(--rule,#7f7f7f4d);color:var(--ink-soft);margin:2px 0 4px 10px;padding-left:6px}
 .mdrev-host .ann-badge-agent {color:var(--accent);background:var(--accent-soft)}
+.mdrev-host .ann-badge-new {color:var(--shared);background:var(--shared-soft);font-weight:600}
+.mdrev-host .ann-new-count {background:var(--shared);min-width:15px;height:15px;color:var(--on-accent);text-align:center;pointer-events:none;border-radius:8px;padding:0 3px;font-size:9px;font-weight:700;line-height:15px;position:absolute;top:-6px;left:-7px}
+.mdrev-host .ann-mark-read {color:var(--shared);cursor:pointer;background:0 0;border:0;padding:0 4px;font-size:11px}
+.mdrev-host .ann-mark-read:hover {text-decoration:underline}
+.mdrev-host .ann-end {height:1px}
+.mdrev-host .ann-mention {color:var(--shared);cursor:pointer;font-weight:600}
+.mdrev-host .ann-suggest {border:1px solid var(--rule);background:var(--bg);border-radius:6px;flex-direction:column;margin:2px 0 4px;display:flex;overflow:hidden}
+.mdrev-host .ann-suggest button {text-align:left;font:inherit;cursor:pointer;background:0 0;border:0;align-items:baseline;gap:6px;padding:4px 8px;font-size:12px;display:flex}
+.mdrev-host .ann-suggest button:hover {background:var(--shared-soft)}
+.mdrev-host .ann-suggest-email {color:var(--ink-faint);font-size:11px}
+.mdrev-host .ann-review-new {color:var(--shared);font-weight:600}
+.mdrev-host .ann-review-follow {border:1px solid var(--rule);cursor:pointer;background:0 0;border-radius:10px;padding:1px 8px;font-size:12px}
+.mdrev-host .ann-review-follow.is-on {border-color:var(--shared);color:var(--shared)}
+.mdrev-host .ann-follow-row {flex-wrap:wrap;align-items:center;gap:8px;margin:4px 0;display:flex}
+.mdrev-host .ann-follow-row>span:first-child {min-width:8em;color:var(--ink-faint)}
+.mdrev-host .ann-follow-email {color:var(--ink-faint);flex-direction:column;gap:2px;margin:6px 0;font-size:12px;display:flex}
+.mdrev-host .ann-follow-email input, .mdrev-host .ann-follow-code input {font:inherit;border:1px solid var(--rule);background:var(--bg);color:var(--ink);border-radius:4px;padding:2px 6px}
+.mdrev-host .ann-follow-code input {letter-spacing:.1em;width:6.5em}
+.mdrev-host .ann-follow-who {color:var(--ink-faint);margin:6px 0;font-size:12px}
 .mdrev-host button.ann-id.ann-copy-id {font:inherit;color:inherit;cursor:copy;background:0 0;border:none;padding:0 2px}
 .mdrev-host button.ann-id.ann-copy-id:hover {color:var(--accent);-webkit-text-decoration:underline dotted;text-decoration:underline dotted}
 .mdrev-host .ann-hidden {text-align:left;border:1px dashed var(--rule);width:100%;color:var(--ink-soft);cursor:pointer;background:0 0;border-radius:6px;padding:2px 6px;font-size:11.5px;display:block}
