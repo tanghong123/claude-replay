@@ -1321,7 +1321,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .renderer-delivered{align-items:center;gap:6px;margin:4px 0 10px}
   #app .renderer-delivered-file{display:inline-flex;align-items:center;min-height:36px;padding:0 12px;border-radius:18px;background:var(--hover);color:var(--ink);text-decoration:none}
   #app :is(.renderer-target-link,.pointer-run-file[data-reference-path]){padding:10px 0}
-  .toast{bottom:calc(max(var(--phone-dock-h,64px),calc(var(--phone-kb,0px) + 64px)) + 10px)}
+  .toast{bottom:calc(max(calc(64px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 64px)) + 10px)}
   #app .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 16px)}
   /* #s39 (design/phone-landscape.md §3.5c, approved by the owner): the compose box is the dock's third
      mode. A ✎ circle in the dock replaces the floating compose button; open, the box takes the dock's

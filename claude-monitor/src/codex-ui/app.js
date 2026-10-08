@@ -3536,7 +3536,8 @@ var phoneDock;
     };
     viewport2.addEventListener("resize", ride);
     viewport2.addEventListener("scroll", ride);
-    addEventListener("scroll", ride, { passive: true });
+    // The page itself scrolls only under iOS's keyboard; off a phone this listener has nothing to do.
+    addEventListener("scroll", () => { if (PHONE.matches || app.style.transform) ride(); }, { passive: true });
     ride();
   }
   // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone), and
