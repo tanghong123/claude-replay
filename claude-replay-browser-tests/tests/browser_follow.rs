@@ -8684,9 +8684,10 @@ fn a_phone_parent_button_clears_the_drawer_handle() {
     );
 }
 
-/// #310, #313: a phone READS. The text runs to a 16px gutter on both sides, a long prompt takes the
-/// row, the per-block link / raw chips are not drawn, and nothing of the outline sits over the
-/// text — its panes open from the bar.
+/// #310, #313: a phone READS. A long prompt takes the row, the per-block link / raw chips are not
+/// drawn, and nothing of the outline sits over the text — its panes open from the bar. The text keeps
+/// a margin either side by default since #s55 (the owner), and runs to a 16px gutter with the
+/// Reading menu's Wide transcript.
 #[test]
 #[ignore]
 fn a_phone_reads_edge_to_edge() {
@@ -8697,8 +8698,9 @@ fn a_phone_reads_edge_to_edge() {
         serde_json::from_str(harness::eval(&tab, geo).as_str().unwrap()).unwrap();
     let inner = &seen["inner"];
     assert!(
-        inner[0].as_i64().unwrap() <= 16 && inner[1].as_i64().unwrap() >= 390 - 16,
-        "the transcript runs to a 16px gutter on both sides: {seen}"
+        (22..=26).contains(&inner[0].as_i64().unwrap())
+            && (390 - 26..=390 - 22).contains(&inner[1].as_i64().unwrap()),
+        "upright the transcript keeps a margin either side (#s55): {seen}"
     );
     assert!(
         seen["prompt"][2].as_i64().unwrap() >= 300,
@@ -13271,5 +13273,93 @@ fn a_phone_reaches_a_session_s_workers_from_its_agents_sheet() {
         "back on the coordinator",
         Duration::from_secs(20),
         "location.search",
+    );
+}
+
+/// #s55, the owner from an iPhone (a Turns sheet over the transcript; a document with margins):
+/// "darken the background when any of the outline panes are open", and upright "default to leave
+/// margin on either side, and allow aA to set full width". An open pane sheet dims the session —
+/// the dock above the dim, so its icons still switch panes — and a tap on the dim closes the sheet
+/// without reaching what lies beneath; upright the text keeps a 24px margin, and the Reading menu's
+/// Wide transcript, offered upright now, gives it the 13px gutter, remembered.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(2734, "phone-dim", 440, 956);
+    let gutter = "(function(){ var r = document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect(); return JSON.stringify([Math.round(r.left), Math.round(innerWidth - r.right)]); })()";
+    let read = |js: &str| -> Vec<i64> {
+        serde_json::from_str(harness::eval(&tab, js).as_str().unwrap()).unwrap()
+    };
+    assert_eq!(
+        read(gutter),
+        vec![24, 24],
+        "upright, a 24px margin either side"
+    );
+
+    phone_tap(&tab, "#phonePane-turns");
+    harness::until(
+        &tab,
+        "!document.getElementById('phonePaneMenu').hidden && getComputedStyle(document.querySelector('#app>.pane-scrim')).opacity === '1'",
+        "the Turns sheet, the session dimmed",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    let layers = harness::eval(&tab, "(function(){ var at = function (x, y) { var e = document.elementFromPoint(x, y); return e ? (e.closest('#phonePaneMenu') ? 'sheet' : e.closest('.pane-scrim') ? 'dim' : e.closest('#phoneDock') ? 'dock' : e.className || e.tagName) : 'none'; }; var d = document.getElementById('phonePane-tasks').getBoundingClientRect(); return JSON.stringify({ top: at(innerWidth / 2, 120), dock: at(d.left + d.width / 2, d.top + d.height / 2) }); })()");
+    let layers: serde_json::Value = serde_json::from_str(layers.as_str().unwrap()).unwrap();
+    assert_eq!(
+        layers["top"], "dim",
+        "the session under the sheet is dimmed: {layers}"
+    );
+    assert_eq!(
+        layers["dock"], "dock",
+        "the dock is above the dim: {layers}"
+    );
+    // Another pane's icon switches the sheet, through the dim.
+    phone_tap(&tab, "#phonePane-tasks");
+    harness::until(&tab, "document.querySelector('#phonePaneMenu .phone-pane-head strong').textContent === 'Tasks' && document.getElementById('app').classList.contains('pane-open')", "the Tasks sheet, still dimmed", Duration::from_secs(5), "document.querySelector('#phonePaneMenu .phone-pane-head strong').textContent");
+    // A tap on the dim closes the sheet, and reaches nothing beneath it.
+    harness::eval(&tab, "(function(){ window.__clicked = 0; document.querySelector('#app .transcript').addEventListener('click', function () { window.__clicked++; }, true); return 1; })()");
+    harness::finger_tap(&tab, 220.0, 200.0);
+    harness::until(&tab, "document.getElementById('phonePaneMenu').hidden && !document.getElementById('app').classList.contains('pane-open')", "the sheet closed by a tap on the dim", Duration::from_secs(5), "document.getElementById('app').className");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        harness::eval(&tab, "window.__clicked"),
+        serde_json::json!(0),
+        "the tap that closed it reached nothing beneath"
+    );
+
+    // Upright, Aa offers Wide transcript, and it gives the whole width, remembered.
+    phone_tap(&tab, "#readingBtn");
+    harness::until(&tab, "(function(){ var r = document.querySelector('.reading-row.reading-wide'); return !!r && r.getBoundingClientRect().height > 0; })()", "Wide transcript in the Reading menu, upright", Duration::from_secs(5), "document.querySelector('.reading-options') && document.querySelector('.reading-options').innerText");
+    phone_tap(&tab, "[data-reading-toggle=\"wide\"]");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('wide')",
+        "wide on",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    harness::until(
+        &tab,
+        &format!("JSON.stringify(JSON.parse({gutter})) === '[13,13]'"),
+        "the 13px gutter",
+        Duration::from_secs(5),
+        gutter,
+    );
+    tab.reload(false, None).unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user')",
+        "the session again",
+        Duration::from_secs(20),
+        "''",
+    );
+    harness::until(
+        &tab,
+        &format!("JSON.stringify(JSON.parse({gutter})) === '[13,13]'"),
+        "still the whole width after a reload",
+        Duration::from_secs(10),
+        gutter,
     );
 }

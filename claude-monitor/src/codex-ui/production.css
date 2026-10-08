@@ -1101,7 +1101,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      per-block link / raw chips, which a touch screen draws permanently since hover cannot reveal them.
    - Targets are at least 44px tall; inputs are 16px, the size under which iOS zooms the page into a
      focused field (the search box zoomed the page and pushed the filter off the edge). */
-.drawer-handle,.drawer-scrim,.phone-only,.phone-pane-menu,.task-scrim,.phone-dock,.turn-subtitle{display:none}
+.drawer-handle,.drawer-scrim,.pane-scrim,.phone-only,.phone-pane-menu,.task-scrim,.phone-dock,.turn-subtitle{display:none}
 @media(max-width:760px) and (hover:hover){.drawer-handle:hover{background:var(--hover)}}
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
   :root{--sidebar:min(86vw,360px)}
@@ -1154,6 +1154,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .navigator-options .scope-option,#app .navigator-options .tool-type-option,#app .reading-options .reading-row{height:44px;font-size:14px}
   #app .navigator-options .scope-menu-action{min-height:36px;padding:0 8px}
 
+  /* #s55, the owner: "darken the background when any of the outline panes are open". The dim lies
+     under the dock (z 14), so its pane icons still switch panes and Aa and search stay in reach; a
+     tap on it closes the sheet, as a tap outside always did. */
+  .pane-scrim{display:block;position:fixed;inset:0;z-index:13;background:rgba(14,19,31,.32);opacity:0;pointer-events:none;transition:opacity .22s}
+  #app.pane-open>.pane-scrim,#app>.pane-scrim.catching{pointer-events:auto}
+  #app.pane-open>.pane-scrim{opacity:1}
   .phone-pane-menu:not([hidden]){display:flex;flex-direction:column;position:fixed;z-index:17;left:8px;right:8px;top:auto;bottom:calc(var(--phone-bottom,var(--phone-dock-h)) + 8px);max-height:calc(100dvh - var(--phone-top,100px) - var(--phone-bottom,var(--phone-dock-h)) - 72px);border:1px solid var(--line);border-radius:14px;background:var(--bg);box-shadow:0 18px 44px -12px rgba(20,26,40,.35);overflow:hidden}
   .phone-pane-head{display:flex;align-items:center;justify-content:space-between;flex:none;padding:0 2px 0 16px;border-bottom:1px solid var(--line)}
   .phone-pane-head strong{font-size:14px;color:var(--ink)}
@@ -1194,7 +1200,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #taskPopover.task-popover{left:8px!important;right:8px;top:auto!important;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;max-height:70dvh}
   #taskPopover .task-popover-close{width:44px;height:44px}
 
-  #app .session-main .transcript-inner{width:calc(100% - 26px);padding-top:16px}
+  /* #s55, the owner: upright the transcript keeps a margin on either side; the Reading menu's Wide
+     transcript gives it the whole width (a 13px gutter, #310's edge to edge). */
+  #app .session-main .transcript-inner{width:calc(100% - 48px);padding-top:16px}
+  #app.wide .session-main .transcript-inner{width:calc(100% - 26px)}
   #app .turn-stickybar{margin:0 8px}
   #app .turn.user{flex-wrap:wrap}
   #app .turn.user .user-prompt{max-width:100%}
@@ -1248,8 +1257,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   /* #335: the pane's ↗ opens a page with no way back on a phone. (A reveal is not a question of
      width since #s29 — the shells offer it to a reader at this machine and nobody else.) */
   #app .preview-newtab{display:none!important}
-  /* #338: a phone's text already runs edge to edge, so the width switch has nothing to widen. */
-  #app .reading-options .reading-row.reading-wide{display:none}
   #app .preview-tab-step{width:40px;height:44px}
   /* #s30: the head's file controls are a finger's target on a phone too. */
   #app .preview-head .preview-print,#app .preview-head .preview-download,#app .preview-head .preview-reveal{width:40px;height:44px}
@@ -1283,8 +1290,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      and the spare width is margin. */
   #app .session-main .transcript-inner{width:min(500px,calc(100% - 26px))}
   /* …and the Reading menu's Wide transcript widens it to the whole width, as on a desktop (for
-     source code, a wide table), where upright it has nothing to widen (#338). */
-  #app .reading-options .reading-row.reading-wide{display:grid}
+     source code, a wide table), and upright too since #s55. */
   #app.wide .session-main .transcript-inner{width:calc(100% - 26px)}
   /* #s41: the jump to the latest sits at the FOOT, on the dock's row, centred in the session (the
      owner: "should move to the bottom") — sideways the dock leaves the middle of that row free (its

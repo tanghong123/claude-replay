@@ -41,7 +41,8 @@ glyph width there, since shaving a word is what clipped it. Nothing is hidden at
 control in that row is measured against the minimum, not the default, and the case hit-tests the
 switch against the brand and the theme glyph rather than eyeballing it.
 **On a phone (≤760px, #310 then #313 — or a finger on a phone-sized short side, a phone held sideways,
-#s32) the app shell is a reader and a native-feeling app**, the owner's rules: the transcript runs edge to edge (a 13px gutter), controls may FLOAT, and controls of
+#s32) the app shell is a reader and a native-feeling app**, the owner's rules: upright the transcript keeps a 24px margin either side (#s55; the Reading menu's Wide
+transcript gives it the whole width, a 13px gutter), controls may FLOAT, and controls of
 little use on a phone are hidden. The session list is a DRAWER over part of the view (a scrim over the
 rest closes it on a tap; `mobile-detail` = shut), opened and closed by a handle fixed at the top left —
 a sibling of the drawer in `#app`, because the workspace is isolated under the scrim and anything in
@@ -128,7 +129,7 @@ is hidden, or nothing would reach them. The handle sits at the session's top lef
 the title (as iPad apps keep their sidebar button, and wearing its sidebar glyph there; ☰ is the
 drawer's), and hides and shows the column under its own key
 (`am-phone-column`; never the rail's, never `mobile-detail`); hidden, the session stays at its
-reading width, and the Reading menu's Wide transcript (hidden upright, #338) widens it. Between the phone and 1180px an open preview covers the whole session area beside the sidebar
+reading width, and the Reading menu's Wide transcript (offered upright too since #s55) widens it. Between the phone and 1180px an open preview covers the whole session area beside the sidebar
 (it was a 72vw overlay over a sliver nobody could read); `a_phone_held_sideways_gets_the_phone_layout_in_one_row`
 and `a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver` hold both. The dock
 never wraps (#352, `a_phone_dock_keeps_one_row_with_a_query_and_a_chip`): the CLOSED box with a query
@@ -152,7 +153,9 @@ step inside one 175,539 px agent process, at the right offset) — `landOnCurren
 the mark's own horizontally scrolling block (its `scrollLeft`, never the transcript's offset). The outline column does not
 exist there: each pane opens from its icon as a SHEET rising from the pill that holds the outline's OWN
 live list (moved in while open, back after), so one renderer and one click handler (`navigatorClick`)
-serve both. Info hangs at `--phone-top` (the bar's measured bottom) and ends above the dock; the
+serve both; while one is open the session DIMS behind it (#s55, `.pane-scrim` under the dock, so the
+dock's icons still switch panes; a tap on the dim closes the sheet and is swallowed, never reaching a
+link beneath). Info hangs at `--phone-top` (the bar's measured bottom) and ends above the dock; the
 dock's sheets (panes, Aa, the filter, the suggestions) rise from `--phone-bottom` (the dock's measured
 top) and stop 72px short of the bar upright, the band `phone_tap_outside` taps to dismiss them. Held
 sideways each is a POPOVER at its control's side (#s41), never a band across the screen — a band ran

@@ -2245,8 +2245,8 @@ function applyToolFilter() {
 // move a single block off it. What is left here is the page: its width, and how a user turn
 // is drawn.
 // #338: and the wrap BASELINE, which only the `w` key set once #173 moved the per-block bars off it —
-// a phone has no `w` key, and the owner found it gone from here, beside a wide-transcript switch a
-// phone's edge-to-edge text has no use for (production.css hides that one on a phone, `PHONE_QUERY`).
+// a phone has no `w` key, and the owner found it gone from here. Wide transcript is a phone's too
+// since #s55: upright the text keeps a margin by default, and the switch gives it the whole width.
 const readingSection = document.createElement("div");
 readingSection.className = "reading-section";
 readingSection.innerHTML = `<div class="scope-menu-head"><strong>Reading</strong><button class="scope-menu-action" type="button" data-reading-reset>Reset</button></div>
@@ -3379,7 +3379,11 @@ var phoneDock;
   menu.hidden = true;
   menu.setAttribute("role", "dialog");
   menu.innerHTML = '<div class="phone-pane-head"><strong></strong><button type="button" class="phone-pane-close" aria-label="Close">✕</button></div><div class="phone-pane-jumps" role="toolbar" aria-label="Jump to a state" hidden></div><div class="phone-pane-body"></div>';
-  app.append(menu);
+  // #s55: the session dims behind an open sheet; a tap there closes it (the outside tap below).
+  const paneScrim = document.createElement("div");
+  paneScrim.className = "pane-scrim";
+  paneScrim.setAttribute("aria-hidden", "true");
+  app.append(paneScrim, menu);
   const menuBody = menu.querySelector(".phone-pane-body");
   const jumps = menu.querySelector(".phone-pane-jumps");
   let openPane = null, home = null;
@@ -3412,6 +3416,7 @@ var phoneDock;
     openPane = null;
     home = null;
     menu.hidden = true;
+    app.classList.remove("pane-open");
     renderJumps();
   };
   const showPane = pane => {
@@ -3424,6 +3429,7 @@ var phoneDock;
     openPane = pane;
     pane.button.setAttribute("aria-expanded", "true");
     menu.hidden = false;
+    app.classList.add("pane-open");
     renderJumps();
     menuBody.scrollTop = 0;
     // The current turn in the middle of the list — by moving the drop-down's OWN scroller, never
@@ -3451,8 +3457,15 @@ var phoneDock;
   // A tap outside closes the list — unless a task's card is open over it, when the tap is the
   // card's (it closes the card; its own handler), and the list is still there after it.
   addEventListener("pointerdown", event => {
+    // A tap on the dim (#s55) is spent closing: the dim keeps catching until that tap's click has
+    // passed, or it would land on whatever lies beneath — a link in the transcript.
+    if (openPane && event.target === paneScrim) {
+      paneScrim.classList.add("catching");
+      setTimeout(() => paneScrim.classList.remove("catching"), 700);
+    }
     if (openPane && taskPopover.hidden && !menu.contains(event.target) && !event.target.closest?.("[data-phone-pane]")) closePane();
   }, true);
+  paneScrim.addEventListener("click", event => { event.preventDefault(); paneScrim.classList.remove("catching"); });
   addEventListener("keydown", event => { if (event.key === "Escape") closePane(); });
   // The card's own jump to the turn leaves for the transcript: the list goes with the card.
   taskPopover.addEventListener("click", event => { if (event.target.closest("[data-task-record]")) closePane(); });
