@@ -1545,3 +1545,453 @@ fn the_pane_prints_a_markdown_document_where_mdrev_offers_no_print() {
         "String(window.__printed)",
     );
 }
+
+/// #s54: mdrev's draft 8 in the detached tab, end to end with the pinned mdrev — the shape of
+/// mdrev's own `scripts/check-shared-review.mjs`. The project tells people through one channel, a
+/// fake `mdrev-notify-fake` on the MONITOR's PATH that keeps what it is asked to send (agent-monitor
+/// runs its vendored mdrev-cli with its own environment, so the plugin's commands are found on PATH).
+/// A second reviewer, Bob, works from his own checkout: he opens a thread, pushes it and subscribes
+/// to the project. The case's reader ("Alice", paired as `t@example.invalid`) then, in the tab:
+/// - her first fetch writes her starting read mark to the store;
+/// - Bob's reply arrives new, is read once its card is seen, and the page leaving sends that mark;
+/// - she subscribes to the document, typing back the code the channel was asked to send her;
+/// - she opens a thread mentioning Carol and pushes it, and the push tells Bob (subscribed) and
+///   Carol (mentioned), as her.
+///
+/// The pane's prefix still answers 404 to every draft 8 route.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+fn the_detached_tab_reads_subscribes_and_notifies_through_draft_8() {
+    let _serial = serial();
+    let (base, stores, repo, state) = shared_review_world("mdrev-draft8");
+    let r = repo.display().to_string();
+    let git = |dir: &Path, args: &[&str]| -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    // The project's channel: a fake that keeps what it is asked, and knows three people.
+    let fake = base.join("fake-bin");
+    std::fs::create_dir_all(&fake).unwrap();
+    let calls = fake.join("calls.jsonl");
+    std::fs::write(
+        fake.join("people.json"),
+        r#"{"t@example.invalid":"Alice A","bob@example.com":"Bob B","carol@example.com":"Carol C"}"#,
+    )
+    .unwrap();
+    let script = format!(
+        "#!/usr/bin/env node\nconst fs = require('fs');\nlet input = '';\nprocess.stdin.on('data', d => (input += d)).on('end', () => {{\n  const req = JSON.parse(input);\n  fs.appendFileSync({calls:?}, JSON.stringify(req) + '\\n');\n  const known = JSON.parse(fs.readFileSync({people:?}, 'utf8'));\n  if (req.lookup) process.stdout.write(JSON.stringify({{people: req.lookup.filter(e => known[e]).map(e => ({{email: e, name: known[e]}})), unknown: req.lookup.filter(e => !known[e])}}));\n}});\n",
+        calls = calls.display().to_string(),
+        people = fake.join("people.json").display().to_string(),
+    );
+    let notifier = fake.join("mdrev-notify-fake");
+    std::fs::write(&notifier, script).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&notifier, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        fake.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    // The project names its channel (committed, so Bob's clone carries it).
+    let config = std::fs::read_to_string(repo.join(".mdrev.json")).unwrap();
+    let config: serde_json::Value = serde_json::from_str(&config).unwrap();
+    let mut config = config.as_object().unwrap().clone();
+    config.insert("notify".into(), serde_json::json!({"channels": ["fake"]}));
+    std::fs::write(
+        repo.join(".mdrev.json"),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
+    git(&repo, &["add", ".mdrev.json"]);
+    git(&repo, &["commit", "-qm", "the project's channel"]);
+    let sha = git(&repo, &["rev-parse", "HEAD"]);
+    // What the channel was asked to send, as (to, why, from, text).
+    let told = || -> Vec<(String, String, String, String)> {
+        std::fs::read_to_string(&calls)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .flat_map(|c| {
+                let from = c["from"]["email"].as_str().unwrap_or("").to_string();
+                c["messages"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(move |m| {
+                        let s = |k: &str| m[k].as_str().unwrap_or("").to_string();
+                        (s("to"), s("why"), from.clone(), s("text"))
+                    })
+            })
+            .collect()
+    };
+    let code_for = |email: &str| -> String {
+        let text = told()
+            .into_iter()
+            .rev()
+            .find(|(to, why, _, _)| to == email && why == "confirm")
+            .map(|t| t.3)
+            .unwrap_or_default();
+        text.split(|c: char| !c.is_ascii_digit())
+            .find(|w| w.len() == 6)
+            .unwrap_or_else(|| panic!("no code sent to {email}: {text}"))
+            .to_string()
+    };
+
+    // Bob, on his own machine: a clone, his own viewer key, paired; a thread pushed; the project followed.
+    let bob = base.join("bob");
+    let bob_state = base.join("bob-state");
+    std::fs::create_dir_all(&bob_state).unwrap();
+    let bob_key = "b0b0000000000000000000000000000000000000000000000000000000000001";
+    std::fs::write(bob_state.join("token"), bob_key).unwrap();
+    git(&base, &["clone", "-q", &r, &bob.display().to_string()]);
+    git(&bob, &["config", "user.email", "bob@example.com"]);
+    git(&bob, &["config", "user.name", "Bob"]);
+    let bob_cli = |args: &[&str], input: &str, viewer: bool| -> String {
+        let mut c = mdrev_cli();
+        c.args(args)
+            .args(["--root", &bob.display().to_string()])
+            .env("MDREV_STATE_DIR", &bob_state)
+            .env("PATH", &path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if viewer {
+            c.env("MDREV_VIEWER_KEY", bob_key);
+        } else {
+            c.env_remove("MDREV_VIEWER_KEY").env("CLAUDECODE", "1");
+        }
+        let mut child = c.spawn().expect("mdrev-cli runs");
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "mdrev-cli {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    bob_cli(
+        &[
+            "review",
+            "pair",
+            "--email",
+            "bob@example.com",
+            "--name",
+            "Bob-on-desktop",
+        ],
+        "",
+        false,
+    );
+    bob_cli(&["review", "pair", "--confirm", "--viewer"], "", true);
+    let doc = std::fs::read_to_string(repo.join("docs/guide.md")).unwrap();
+    let quote = "prose";
+    let start = doc.find(quote).unwrap();
+    let thread: serde_json::Value = serde_json::from_str(&bob_cli(
+        &["notes", "add", "--path", "docs/guide.md", "--viewer"],
+        &serde_json::json!({"body": "Why bold here?", "anchor": {"exact": quote, "start": start, "end": start + quote.len(), "space": "source", "side": "to", "trail": ["The guide"]}, "shared": true, "rev": sha}).to_string(),
+        true,
+    ))
+    .unwrap();
+    let thread = thread["id"].as_str().expect("the thread's id").to_string();
+    bob_cli(&["review", "push", "--viewer"], "", true);
+    let asked: serde_json::Value =
+        serde_json::from_str(&bob_cli(&["review", "subscribe", "--viewer"], "", true)).unwrap();
+    if asked.get("confirm").is_some() {
+        bob_cli(
+            &[
+                "review",
+                "confirm",
+                "--code",
+                &code_for("bob@example.com"),
+                "--viewer",
+            ],
+            "",
+            true,
+        );
+    }
+
+    // Alice's monitor, its mdrev-cli finding the channel on the monitor's PATH.
+    let store = base.join("store.git");
+    let alice_read = |id: Option<&str>| -> bool {
+        let log = Command::new("git")
+            .args([
+                "--git-dir",
+                &store.display().to_string(),
+                "log",
+                "--author=t@example.invalid",
+                "--format=%H",
+                "--all",
+            ])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&log.stdout).lines().any(|h| {
+            let shown = Command::new("git")
+                .args(["--git-dir", &store.display().to_string(), "show", h])
+                .output()
+                .unwrap();
+            let shown = String::from_utf8_lossy(&shown.stdout);
+            shown.contains("\"kind\": \"read\"")
+                && id.is_none_or(|id| shown.contains(&format!("\"{id}\"")))
+        })
+    };
+    let port = 2756;
+    let m = Monitor::spawn_with(
+        Kind::V2,
+        port,
+        &base,
+        Some(&stores),
+        true,
+        &[
+            ("MDREV_STATE_DIR", &state.display().to_string()),
+            ("PATH", &path),
+        ],
+    );
+    let (browser, tab) = chrome_tab();
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1')",
+        "the guide in the pane",
+        Duration::from_secs(30),
+        PANE,
+    );
+    // The pane offers none of it.
+    let pane = eval(
+        &tab,
+        "(async function(){ var d = document.querySelector('.mdrev-pane').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var out = []; for (const r of ['review/subscribers', 'review/lookup']) out.push((await fetch(d.contract + '/' + r + '?' + q)).status); for (const r of ['review/subscribe', 'review/read', 'review/confirm', 'review/unsubscribe']) out.push((await fetch(d.contract + '/' + r + '?' + q, {method: 'POST', headers: {'content-type': 'application/json'}, body: '{\"doc\":true,\"ids\":[\"shr-1\"],\"code\":\"123456\"}'})).status); return out.join(','); })()",
+    );
+    assert_eq!(
+        pane.as_str().unwrap_or(""),
+        "404,404,404,404,404,404",
+        "the pane offers no draft 8"
+    );
+
+    open_in_a_tab(&tab);
+    let own = opened_tab(&browser);
+    until(
+        &own,
+        "!!document.querySelector('#doc.mdrev-host h1')",
+        "the guide in a tab of its own",
+        Duration::from_secs(30),
+        OWN,
+    );
+    // mdrev speaks the reader's language (navigator.languages): English, so the words below hold on
+    // a machine whose Chrome is in another.
+    let agent = eval(&own, "navigator.userAgent")
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    own.set_user_agent(&agent, Some("en-US,en"), None).unwrap();
+    own.reload(false, None).unwrap();
+    until(
+        &own,
+        "!!document.querySelector('#doc.mdrev-host h1') && navigator.language === 'en-US'",
+        "the tab again, in English",
+        Duration::from_secs(30),
+        OWN,
+    );
+    let chip = format!(".ann-marker[data-id=\"{thread}\"], .ann-marker[data-ids~=\"{thread}\"]");
+    until(
+        &own,
+        &format!("!!document.querySelector('{chip}')"),
+        "Bob's thread on the page",
+        Duration::from_secs(30),
+        OWN,
+    );
+    // The first fetch writes her starting read mark: what was there is not new to her.
+    let mut seen = false;
+    for _ in 0..100 {
+        if alice_read(None) {
+            seen = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        seen,
+        "her first fetch put a starting read mark in the store"
+    );
+
+    // Bob answers; opened again, the reply is new; seen to its card's end, it is read.
+    let replied: serde_json::Value = serde_json::from_str(&bob_cli(
+        &[
+            "notes",
+            "reply",
+            &thread,
+            "--body",
+            "Still bold?",
+            "--viewer",
+        ],
+        "",
+        true,
+    ))
+    .unwrap();
+    let reply = replied["replies"]
+        .as_array()
+        .and_then(|a| a.last())
+        .and_then(|r| r["id"].as_str())
+        .expect("the reply's id")
+        .to_string();
+    bob_cli(&["review", "push", "--viewer"], "", true);
+    own.reload(false, None).unwrap();
+    until(&own, &format!("(document.querySelector('{chip}') || {{}}).querySelector && document.querySelector('{chip}').querySelector('.ann-new-count') && document.querySelector('{chip}').querySelector('.ann-new-count').textContent === '1'"), "Bob's reply, new to her", Duration::from_secs(30), OWN);
+    eval(&own, &format!("(function(){{ var c = document.querySelector('{chip}'); c.scrollIntoView({{block: 'center'}}); c.click(); return 1; }})()"));
+    let card = format!(".ann-card[data-id=\"{thread}\"]");
+    until(&own, &format!("!!document.querySelector('{card}') && !document.querySelector('{card} .ann-badge-new') && !document.querySelector('{chip}').querySelector('.ann-new-count')"), "the reply read once its card is seen", Duration::from_secs(30), OWN);
+
+    // She subscribes to this document from the bar; her email takes a code, which she types back.
+    eval(
+        &own,
+        "(function(){ document.querySelector('.ann-review-follow').click(); return 1; })()",
+    );
+    until(
+        &own,
+        "!!document.querySelector('.ann-follow')",
+        "the subscribe panel",
+        Duration::from_secs(20),
+        OWN,
+    );
+    let panel = eval(&own, "document.querySelector('.ann-follow').innerText")
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        panel.contains("bob@example.com"),
+        "the panel says who is subscribed: {panel}"
+    );
+    eval(&own, "(function(){ document.querySelector('.ann-follow .ann-follow-row button.primary').click(); return 1; })()");
+    until(
+        &own,
+        "!!document.querySelector('.ann-follow-code input')",
+        "the code step",
+        Duration::from_secs(20),
+        "document.querySelector('.ann-follow').innerText",
+    );
+    let code = code_for("t@example.invalid");
+    eval(
+        &own,
+        "(function(){ document.querySelector('.ann-follow-code input').focus(); return 1; })()",
+    );
+    own.call_method(headless_chrome::protocol::cdp::Input::InsertText { text: code })
+        .unwrap();
+    eval(&own, "(function(){ document.querySelector('.ann-follow-code button.primary').click(); return 1; })()");
+    until(&own, "(document.querySelector('.ann-follow') || {}).innerText && document.querySelector('.ann-follow').innerText.includes('subscribed as t@example.invalid')", "subscribed to the document", Duration::from_secs(30), "document.querySelector('.ann-follow').innerText");
+    eval(&own, "(function(){ [...document.querySelectorAll('.ann-follow button')].find(b => b.textContent === 'close').click(); return 1; })()");
+    // …and the subscription is in the store: Bob, fetching, sees her subscribed.
+    bob_cli(&["review", "fetch", "--viewer"], "", true);
+    let subs = bob_cli(
+        &["review", "subscribers", "--path", "docs/guide.md"],
+        "",
+        true,
+    );
+    assert!(
+        subs.contains("t@example.invalid"),
+        "her subscription reached the store: {subs}"
+    );
+
+    // A thread of her own mentioning Carol, then the push: it tells Bob and Carol, as her.
+    eval(&own, "(function(){ var doc = document.querySelector('.doc'); var w = document.createTreeWalker(doc, NodeFilter.SHOW_TEXT); var n; while ((n = w.nextNode()) && !n.data.includes('the other guide')); var at = n.data.indexOf('the other guide'); var r = document.createRange(); r.setStart(n, at); r.setEnd(n, at + 'the other guide'.length); var s = getSelection(); s.removeAllRanges(); s.addRange(r); document.dispatchEvent(new Event('selectionchange')); return 1; })()");
+    until(
+        &own,
+        "!!document.querySelector('.ann-invite')",
+        "the invitation to note the selection",
+        Duration::from_secs(20),
+        OWN,
+    );
+    eval(
+        &own,
+        "(function(){ document.querySelector('.ann-invite').click(); return 1; })()",
+    );
+    until(
+        &own,
+        "!!document.querySelector('.ann-draft .ann-share input')",
+        "the composer",
+        Duration::from_secs(20),
+        OWN,
+    );
+    eval(&own, "(function(){ document.querySelector('.ann-draft .ann-share input').click(); return 1; })()");
+    eval(
+        &own,
+        "(function(){ document.querySelector('.ann-draft textarea').focus(); return 1; })()",
+    );
+    own.call_method(headless_chrome::protocol::cdp::Input::InsertText {
+        text: "Which guide is this? @carol@example.com, can you check?".into(),
+    })
+    .unwrap();
+    eval(
+        &own,
+        "(function(){ document.querySelector('.ann-draft button.primary').click(); return 1; })()",
+    );
+    until(
+        &own,
+        "!!document.querySelector('.ann-marker.ann-shared.ann-unpushed')",
+        "her own thread, unpushed",
+        Duration::from_secs(20),
+        OWN,
+    );
+    let before = told().len();
+    until(&own, "[...document.querySelectorAll('.ann-review-pill button')].some(function (b) { return /^push \\d/.test(b.textContent); })", "the push control", Duration::from_secs(20), "document.querySelector('.ann-review-pill') && document.querySelector('.ann-review-pill').innerText");
+    eval(&own, "(function(){ document.querySelector('.ann-review-pill button.primary').click(); return 1; })()");
+    until(
+        &own,
+        "!!document.querySelector('.ann-review-panel')",
+        "the push list",
+        Duration::from_secs(20),
+        OWN,
+    );
+    eval(&own, "(function(){ document.querySelector('.ann-review-panel button.primary').click(); return 1; })()");
+    until(&own, "(document.querySelector('.ann-review-panel') || {}).innerText && /pushed \\d/.test(document.querySelector('.ann-review-panel').innerText)", "the push to land", Duration::from_secs(30), "document.querySelector('.ann-review-panel').innerText");
+    let sent: Vec<_> = told().into_iter().skip(before).collect();
+    assert!(
+        sent.iter().any(|(to, why, from, _)| to == "bob@example.com"
+            && why == "subscribed"
+            && from == "t@example.invalid"),
+        "the push told Bob, who follows the project, as her: {sent:?}"
+    );
+    assert!(
+        sent.iter()
+            .any(|(to, why, _, text)| to == "carol@example.com"
+                && why == "mentioned"
+                && text.contains("can you check?")),
+        "and Carol, whom her thread mentions: {sent:?}"
+    );
+    assert!(
+        !sent.iter().any(|(to, ..)| to == "t@example.invalid"),
+        "never herself: {sent:?}"
+    );
+    let panel = eval(
+        &own,
+        "document.querySelector('.ann-review-panel').innerText",
+    )
+    .as_str()
+    .unwrap_or("")
+    .to_string();
+    assert!(
+        panel.contains("told"),
+        "the page says who the push told: {panel}"
+    );
+    assert!(
+        alice_read(Some(&reply)),
+        "the push took her read mark of Bob's reply with it"
+    );
+}

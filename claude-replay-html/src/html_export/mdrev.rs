@@ -1156,7 +1156,10 @@ fn review(rel: &Release, d: &Doc, req: &Request, route: &str, viewer: &Viewer) -
             if let Some(r) = req.deny_mutation("POST") {
                 return r;
             }
-            let out = run(&["review", "fetch"]);
+            // Draft 8 (#s54): `--viewer` is what sends the read marks and subscriptions due to go, and
+            // writes the reader's starting read mark at the first fetch. A host from before draft 8
+            // must leave it off; this one answers `review/subscribers`, so it offers draft 8.
+            let out = run(&["review", "fetch", "--viewer"]);
             if out.code != 0 {
                 return gateway(&out);
             }
@@ -1178,6 +1181,11 @@ fn review(rel: &Release, d: &Doc, req: &Request, route: &str, viewer: &Viewer) -
             let mut args = vec!["review", "push"];
             if !ids.is_empty() {
                 args.extend(["--ids", &joined]);
+            }
+            // The reader ticked "push the branch too": the notes sit on commits no remote has, and
+            // the viewer offers to push that branch first (mdrev 1.1.28, as its own host does).
+            if body.get("withCode").and_then(Value::as_bool) == Some(true) {
+                args.push("--with-code");
             }
             args.push("--viewer");
             let out = run(&args);
@@ -1211,8 +1219,113 @@ fn review(rel: &Release, d: &Doc, req: &Request, route: &str, viewer: &Viewer) -
             }
             state()
         }
+        // Draft 8 (#s54, mdrev 1.1.26+, the contract's "Subscriptions"): read marks and
+        // subscriptions. Answering `review/subscribers` is how the viewer learns this host offers
+        // them; each runs mdrev-cli with the viewer key, and a refusal is 400 with its words.
+        ("GET", "review/subscribers") => {
+            json_or_error(run(&["review", "subscribers", "--path", &d.rel]))
+        }
+        ("GET", "review/lookup") => {
+            let Some(email) = param(req, "email").filter(|e| email_like(e)) else {
+                return status(
+                    "400 Bad Request",
+                    error("expected ?email= an email address"),
+                );
+            };
+            json_or_error(run(&["review", "lookup", "--email", &email]))
+        }
+        ("POST", "review/subscribe" | "review/unsubscribe") => {
+            if let Some(r) = req.deny_mutation("POST") {
+                return r;
+            }
+            let verb = route.trim_start_matches("review/");
+            let mut args = vec!["review", verb];
+            // `doc`: the document; else the project.
+            if body.get("doc").and_then(Value::as_bool) == Some(true) {
+                args.extend(["--path", &d.rel]);
+            }
+            let email = body
+                .get("email")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if verb == "subscribe" && !email.is_empty() {
+                if !email_like(email) {
+                    return status("400 Bad Request", error("not an email address"));
+                }
+                args.extend(["--email", email]);
+            }
+            args.push("--viewer");
+            json_or_error(run(&args))
+        }
+        ("POST", "review/confirm") => {
+            if let Some(r) = req.deny_mutation("POST") {
+                return r;
+            }
+            let code = body
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            if code.is_empty()
+                || code.len() > 32
+                || !code.bytes().all(|b| b.is_ascii_alphanumeric())
+            {
+                return status("400 Bad Request", error("expected {code}"));
+            }
+            json_or_error(run(&["review", "confirm", "--code", code, "--viewer"]))
+        }
+        ("POST", "review/read") => {
+            if let Some(r) = req.deny_mutation("POST") {
+                return r;
+            }
+            let ids: Vec<&str> = body
+                .get("ids")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            if ids.iter().any(|id| !record_id(id)) {
+                return status("400 Bad Request", error("no such record id"));
+            }
+            let now = body.get("now").and_then(Value::as_bool) == Some(true);
+            if ids.is_empty() && !now {
+                return status("400 Bad Request", error("expected {ids} or {now: true}"));
+            }
+            let joined = ids.join(",");
+            let mut args = vec!["review", "read"];
+            if !ids.is_empty() {
+                args.extend(["--ids", &joined]);
+            }
+            // The page hiding or closing (sent with keepalive): send what waits.
+            if now {
+                args.push("--now");
+            }
+            args.push("--viewer");
+            json_or_error(run(&args))
+        }
         _ => HttpResponse::not_found("no such route"),
     }
+}
+
+/// The CLI's JSON as the answer, or its refusal as the contract's status (400 for a refusal).
+fn json_or_error(out: Out) -> HttpResponse {
+    if out.code != 0 {
+        return cli_error(&out);
+    }
+    HttpResponse::json(String::from_utf8_lossy(&out.out).into_owned())
+}
+
+/// An email address as a route takes one: one `@` with something on each side, no space, never an
+/// option, and of a sane length — mdrev-cli judges the rest.
+fn email_like(e: &str) -> bool {
+    let Some((local, domain)) = e.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && domain.contains('.')
+        && !domain.contains('@')
+        && e.len() <= 254
+        && !e.starts_with('-')
+        && !e.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 /// A shared record's id, as the store writes it: plain characters only, so it can never reach the
@@ -1489,6 +1602,12 @@ case "$1" in
       fetch) echo '{"fetched":true}' ;;
       push) echo '{"sent":["shr-1"]}' ;;
       pair) case "$*" in *nobody@*) echo "mdrev-cli: that email is not the account's" >&2; exit 1 ;; esac; echo '{"paired":true}' ;;
+      subscribers) echo '{"project":[],"document":[{"email":"me@example.com","name":"Me"}]}' ;;
+      lookup) echo '{"email":"me@example.com","names":{"email":"me@example.com"}}' ;;
+      subscribe) case "$*" in *other@*) echo '{"confirm":{"email":"other@example.com","via":"email"}}' ;; *) echo '{"subscribed":true}' ;; esac ;;
+      confirm) case "$*" in *000000*) echo "mdrev-cli: that code does not match" >&2; exit 1 ;; esac; echo '{"subscribed":true}' ;;
+      unsubscribe) echo '{"unsubscribed":true}' ;;
+      read) echo '{"marked":2}' ;;
     esac ;;
   revisions)
     git log --format='{"rev":"%H","date":"%aI","author":"%an","subject":"%s","path":"'"$3"'"}' -- "$3" | paste -sd, - | sed 's/^/[/; s/$/]/' ;;
@@ -1740,6 +1859,170 @@ esac
         assert!(!node_fits(&d.join("absent")));
     }
 
+    /// #s54: mdrev's draft 8 on the detached tab's prefix. Each route runs mdrev-cli with the viewer
+    /// key and the contract's flags; a fetch now passes `--viewer` (it sends the read marks and
+    /// subscriptions due to go); a refusal is 400 with the CLI's words; an id, an email or a code
+    /// that is not one never reaches the CLI; and every write is a paired client's.
+    #[test]
+    fn the_detached_tab_answers_draft_8() {
+        let f = fx("draft8");
+        let held = Mutex::new(Held::default());
+        let key = Viewer {
+            state_dir: f.kit.join("state"),
+            key: "k3y".into(),
+        };
+        let q = doc_query(&f, "docs/doc.md");
+        let tab = |method: &str, route: &str, query: &str, body: &[u8], paired: bool| {
+            contract(
+                Some(&f.rel),
+                Some(&f.live),
+                &req(method, &format!("{q}{query}"), body, paired),
+                route,
+                &held,
+                Some(&key),
+            )
+        };
+        let ok = |r: HttpResponse| {
+            assert_eq!(r.code, "200 OK", "{}", String::from_utf8_lossy(&r.body));
+            String::from_utf8_lossy(&r.body).into_owned()
+        };
+        let log = || calls(&f);
+
+        let subs = ok(tab("GET", "review/subscribers", "", b"", true));
+        assert!(subs.contains("me@example.com"), "{subs}");
+        assert!(log().contains("review subscribers --path docs/doc.md --root"));
+        ok(tab(
+            "GET",
+            "review/lookup",
+            "&email=me%40example.com",
+            b"",
+            true,
+        ));
+        assert!(log().contains("review lookup --email me@example.com --root"));
+        ok(tab(
+            "POST",
+            "review/subscribe",
+            "",
+            br#"{"doc":true}"#,
+            true,
+        ));
+        assert!(log().contains("review subscribe --path docs/doc.md --viewer --root"));
+        ok(tab(
+            "POST",
+            "review/subscribe",
+            "",
+            br#"{"doc":false}"#,
+            true,
+        ));
+        assert!(
+            log().contains("review subscribe --viewer --root"),
+            "the project: no --path"
+        );
+        let code = ok(tab(
+            "POST",
+            "review/subscribe",
+            "",
+            br#"{"doc":true,"email":"other@example.com"}"#,
+            true,
+        ));
+        assert!(
+            code.contains("\"confirm\""),
+            "a code went to another email: {code}"
+        );
+        ok(tab(
+            "POST",
+            "review/confirm",
+            "",
+            br#"{"code":"123456"}"#,
+            true,
+        ));
+        assert!(log().contains("review confirm --code 123456 --viewer --root"));
+        let wrong = tab("POST", "review/confirm", "", br#"{"code":"000000"}"#, true);
+        assert_eq!(wrong.code, "400 Bad Request");
+        assert!(
+            String::from_utf8_lossy(&wrong.body).contains("does not match"),
+            "the CLI's words"
+        );
+        ok(tab(
+            "POST",
+            "review/unsubscribe",
+            "",
+            br#"{"doc":true}"#,
+            true,
+        ));
+        assert!(log().contains("review unsubscribe --path docs/doc.md --viewer --root"));
+        ok(tab(
+            "POST",
+            "review/read",
+            "",
+            br#"{"ids":["shr-1","shr-2"]}"#,
+            true,
+        ));
+        assert!(log().contains("review read --ids shr-1,shr-2 --viewer --root"));
+        ok(tab(
+            "POST",
+            "review/read",
+            "",
+            br#"{"ids":[],"now":true}"#,
+            true,
+        ));
+        assert!(log().contains("review read --now --viewer --root"));
+        ok(tab("POST", "review/fetch", "", b"{}", true));
+        assert!(
+            log().contains("review fetch --viewer --root"),
+            "a fetch sends what is due"
+        );
+        ok(tab(
+            "POST",
+            "review/push",
+            "",
+            br#"{"ids":["shr-1"],"withCode":true}"#,
+            true,
+        ));
+        assert!(log().contains("review push --ids shr-1 --with-code --viewer --root"));
+        // Nothing that is not an id, an email or a code reaches the CLI.
+        for (route, body) in [
+            ("review/read", &br#"{"ids":["--all"]}"#[..]),
+            ("review/read", br#"{"ids":[]}"#),
+            ("review/subscribe", br#"{"doc":true,"email":"--help"}"#),
+            ("review/confirm", br#"{"code":"--x"}"#),
+        ] {
+            assert_eq!(
+                tab("POST", route, "", body, true).code,
+                "400 Bad Request",
+                "{route} {body:?}"
+            );
+        }
+        assert_eq!(
+            tab("GET", "review/lookup", "&email=nobody", b"", true).code,
+            "400 Bad Request"
+        );
+        // Every write is a paired client's.
+        for route in [
+            "review/subscribe",
+            "review/unsubscribe",
+            "review/confirm",
+            "review/read",
+        ] {
+            assert_eq!(
+                tab(
+                    "POST",
+                    route,
+                    "",
+                    br#"{"doc":true,"code":"1","ids":["shr-1"]}"#,
+                    false
+                )
+                .code,
+                "401 Unauthorized",
+                "{route}"
+            );
+        }
+        assert!(
+            log().lines().all(|l| l.contains("key=set")),
+            "every call carries the viewer key"
+        );
+    }
+
     #[test]
     fn the_cli_is_written_beside_its_package_json_and_over_anything_already_there() {
         let d = scratch("write");
@@ -1892,6 +2175,13 @@ esac
             ("POST", "review/fetch", b"{}"),
             ("POST", "review/push", br#"{"ids":["shr-1"]}"#),
             ("POST", "review/pair", br#"{"email":"a@b.c","name":"n"}"#),
+            // Draft 8 (#s54): the viewer takes a 404 here for a host from before it.
+            ("GET", "review/subscribers", b""),
+            ("GET", "review/lookup", b""),
+            ("POST", "review/subscribe", br#"{"doc":true}"#),
+            ("POST", "review/confirm", br#"{"code":"123456"}"#),
+            ("POST", "review/unsubscribe", br#"{"doc":true}"#),
+            ("POST", "review/read", br#"{"ids":["shr-1"]}"#),
         ] {
             assert_eq!(
                 call(&f, &held, route, &req(method, "", body, true)).code,

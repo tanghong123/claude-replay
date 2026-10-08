@@ -337,6 +337,19 @@ the writes through `deny_mutation`; a paired client can reach the prefix directl
 withheld on a phone, the routes are not), which is the note routes' bar too. The cases are
 `the_detached_tab_offers_shared_review_and_the_pane_does_not` (unit, and the browser case with a
 hermetic store, state dir and pairing, which also runs `conform` on the review prefix).
+**The detached tab offers mdrev's draft 8** (#s54, mdrev 1.1.26+): per-reader read marks, subscriptions
+and notifications. Answering `review/subscribers` is how the viewer learns a host offers it (a 404
+there and it draws nothing new and no subscribing), so the review prefix answers it with
+`review/lookup`, `review/subscribe|unsubscribe` (`{doc}`: the document, else the project),
+`review/confirm` (a code an email was sent) and `review/read` (`{ids}`, or `{now: true}` with
+keepalive as the page leaves), each `mdrev-cli review …` with the viewer key; `review/fetch` passes
+`--viewer` (it sends the marks and subscriptions due, and writes the reader's starting mark — a host
+from before draft 8 must not), and `review/push` passes `--with-code` when the reader ticked pushing
+their branch too. The pane answers 404 to all of it. Notifications go through
+`mdrev-notify-<channel>` commands the vendored `mdrev-cli` finds on the MONITOR's PATH (the paired
+monitor's launchd PATH has `/opt/homebrew/bin`, where mdrev-plugin-alibaba puts them). The browser case
+`the_detached_tab_reads_subscribes_and_notifies_through_draft_8` runs mdrev's own check's shape with
+a fake channel on that PATH.
 **On a phone the review prefix is a full-screen SHEET** (#s12, the owner's choice: a tab has no way
 back there): the pane's Markdown from a FILE shows a Review control on a phone only; `openReviewSheet`
 (`preview.js`) mounts the document with `mountMarkdown(…, {review: true})` in `.review-sheet` over the
