@@ -239,7 +239,11 @@ best-HOSTED wins, so the pane's client beats the engine; helpers (`daemon`, `bg-
 `bg-spare`) are never directory candidates and read as detached whatever pane they inherited; and
 **a lone agent process in a session's directory is paired, confirmed** — the owner's rule
 (2026-09-23), amending the probe's "never a cwd guess": with one process there is one pane, and the
-label self-corrects on the next append. Two processes in one directory stay a pick (`ambig`).
+label self-corrects on the next append. Two processes in one directory stay a pick (`ambig`). A
+process is a candidate only for sessions of its OWN agent (#s59, `serves`): a Claude pane beside a Codex
+pane in one repo had the Codex process (the lower pid) linked to the Claude session, unconfirmed and
+unwritable; an exe the monitor cannot place (an extra pattern) stays a candidate for any agent. The send
+gate's "another live session in this project" counts the same agent only, for the same reason.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
 starts workers from its Bash, all in one repo, each inheriting the coordinator's `TMUX_PANE`, and the
 directory rule gave a process to the newest session only — so a worker deep in a long command lost

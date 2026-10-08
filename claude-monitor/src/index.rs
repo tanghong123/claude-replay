@@ -556,7 +556,13 @@ impl Index {
             sid,
             cwd.as_deref(),
             &st.send_links,
-            |o| st.rows.get(o).and_then(|r| r.cwd.clone()),
+            // #s59: a sibling of another agent drives nothing of this session.
+            |o| {
+                st.rows
+                    .get(o)
+                    .filter(|r| r.agent == agent)
+                    .and_then(|r| r.cwd.clone())
+            },
             |o| st.started_by(o).map(str::to_string),
         )?;
         Ok(SendTarget {
@@ -588,7 +594,13 @@ impl Index {
             sid,
             cwd.as_deref(),
             &st.send_links,
-            |o| st.rows.get(o).and_then(|r| r.cwd.clone()),
+            // #s59: a sibling of another agent drives nothing of this session.
+            |o| {
+                st.rows
+                    .get(o)
+                    .filter(|r| r.agent == agent)
+                    .and_then(|r| r.cwd.clone())
+            },
             |o| st.started_by(o).map(str::to_string),
         ) {
             return Err(SendRefusal::ProjectHasActiveSession);
@@ -943,8 +955,12 @@ impl Index {
             if sids.len() != 1 {
                 continue; // two sessions writing in one directory prove nothing
             }
+            let Some(agent) = st.rows.get(&sids[0]).map(|r| r.agent) else {
+                continue;
+            };
             let mut cands = st.procs.iter().filter(|p| {
                 is_agent_exe(&p.exe_base, &p.argv)
+                    && serves(p, agent)
                     && !is_helper(&p.argv)
                     && !is_one_shot(&p.argv)
                     && p.cwd.as_deref() == Some(cwd.as_str())
@@ -1006,16 +1022,23 @@ impl Index {
         // send affordance — the resume path would refuse it (ProjectHasActiveSession) and the
         // inject path is now suppressed the same way. Precompute the live sids per cwd (from the
         // prior scan's links — a ~2 s-stale hint; the route re-checks liveness on a fresh scan).
-        let mut live_sids_by_cwd: HashMap<&str, Vec<&str>> = HashMap::new();
+        // #s59: siblings of the same AGENT only — a live Codex session cannot be writing a Claude
+        // session's history nor driving its pane, so it withholds nothing from it.
+        let mut live_sids_by_cwd: HashMap<(Agent, &str), Vec<&str>> = HashMap::new();
         for (osid, l) in &st.send_links {
             if l.pid.is_some() {
-                if let Some(c) = st.rows.get(osid).and_then(|r| r.cwd.as_deref()) {
-                    live_sids_by_cwd.entry(c).or_default().push(osid.as_str());
+                if let Some(r) = st.rows.get(osid) {
+                    if let Some(c) = r.cwd.as_deref() {
+                        live_sids_by_cwd
+                            .entry((r.agent, c))
+                            .or_default()
+                            .push(osid.as_str());
+                    }
                 }
             }
         }
-        let proj_has_other_live = |sid: &str, cwd: Option<&str>| -> bool {
-            cwd.and_then(|c| live_sids_by_cwd.get(c))
+        let proj_has_other_live = |sid: &str, agent: Agent, cwd: Option<&str>| -> bool {
+            cwd.and_then(|c| live_sids_by_cwd.get(&(agent, c)))
                 .is_some_and(|v| v.iter().any(|s| *s != sid && st.started_by(s) != Some(sid)))
         };
         // #142: every session's FAMILY root — follow `fork_from` until a session that is not
@@ -1165,6 +1188,7 @@ impl Index {
                     link(
                         &st.procs,
                         sid,
+                        row.agent,
                         &row.path,
                         row.cwd.as_deref(),
                         heuristic_ok,
@@ -1272,7 +1296,7 @@ impl Index {
             // #133 constraint 2: another live session in this project → no send affordance on
             // this row (the resume path refuses it, the inject path is suppressed). The rail
             // hides `✎` when `projActive`, so the button and the route's rule agree.
-            let proj_active = proj_has_other_live(sid, row.cwd.as_deref());
+            let proj_active = proj_has_other_live(sid, row.agent, row.cwd.as_deref());
             if proj_active {
                 j["projActive"] = json!(true);
             }
@@ -1778,6 +1802,7 @@ fn pair_one_shots<'a>(
     let mut shots: HashMap<&str, Vec<(u64, u32)>> = HashMap::new();
     for p in procs {
         let headless_new = is_agent_exe(&p.exe_base, &p.argv)
+            && serves(p, Agent::CLAUDE)
             && is_one_shot(&p.argv)
             && !is_helper(&p.argv)
             && session_ref(&p.argv).is_none();
@@ -1925,6 +1950,7 @@ fn head_one_shot(path: &Path) -> Option<String> {
 fn link(
     procs: &[Proc],
     sid: &str,
+    agent: Agent,
     transcript: &Path,
     cwd: Option<&str>,
     heuristic_ok: bool,
@@ -1984,6 +2010,7 @@ fn link(
             .iter()
             .filter(|p| {
                 is_agent_exe(&p.exe_base, &p.argv)
+                    && serves(p, agent)
                     && !is_helper(&p.argv)
                     && !is_one_shot(&p.argv)
                     && p.cwd.as_deref() == Some(cwd)
@@ -2089,6 +2116,27 @@ fn is_helper(argv: &str) -> bool {
 /// one, which is what pairs it (`pair_one_shots`).
 fn is_one_shot(argv: &str) -> bool {
     argv.split_whitespace().any(|t| t == "-p" || t == "--print")
+}
+
+/// The agent a process IS, by its executable — or `None` for one the monitor cannot place (a
+/// configured extra pattern), which stays a candidate for any agent's session (#s59).
+fn proc_agent(p: &Proc) -> Option<Agent> {
+    match p.exe_base.to_ascii_lowercase().as_str() {
+        "claude" => Some(Agent::CLAUDE),
+        "codex" => Some(Agent::CODEX),
+        "qoderwork" => Some(Agent::QODERWORK),
+        "qoder" => Some(Agent::QODER),
+        "qwenwork" | "qwenworkcn" => Some(Agent::QWENWORK),
+        _ => None,
+    }
+}
+
+/// Whether `p` can be driving a session of `agent` (#s59): a Codex process never drives a Claude
+/// session. On hong-devserver a Codex pane beside a Claude one in the same repo was taken as the
+/// Claude session's process — the lower pid won the tie — and as a second candidate it made the
+/// link unconfirmed, so the session read as neither attached nor writable.
+fn serves(p: &Proc, agent: Agent) -> bool {
+    proc_agent(p).is_none_or(|a| a == agent)
 }
 
 /// The one marker of a Claude FORK the machine offers (#269): the engine's argv,
@@ -3548,6 +3596,7 @@ mod tests {
         let l = link(
             &procs,
             "99999999-1111-2222-3333-444444444444",
+            Agent::CLAUDE,
             Path::new("/nope.jsonl"),
             None,
             false,
@@ -3567,6 +3616,7 @@ mod tests {
         let l = link(
             &procs,
             "rollout-abc",
+            Agent::CODEX,
             Path::new("/Users/x/.codex/sessions/2026/08/08/rollout-abc.jsonl"),
             None,
             false,
@@ -3582,6 +3632,7 @@ mod tests {
         let l = link(
             &procs,
             "some-other-sid",
+            Agent::CLAUDE,
             Path::new("/n.jsonl"),
             Some("/Users/x/other"),
             true,
@@ -3592,6 +3643,7 @@ mod tests {
             link(
                 &procs,
                 "some-other-sid",
+                Agent::CLAUDE,
                 Path::new("/n.jsonl"),
                 Some("/Users/x/other"),
                 false,
@@ -3610,6 +3662,7 @@ mod tests {
         let l = link(
             &procs,
             "zzz",
+            Agent::CODEX,
             Path::new("/n.jsonl"),
             Some("/Users/x/code/repo"),
             true,
@@ -3640,7 +3693,16 @@ mod tests {
         );
         apply_lsof(&mut procs, "p21496\nfcwd\nn/Users/x/code/crux-web\n");
         let cwd = Some("/Users/x/code/crux-web");
-        let l = link(&procs, sid, Path::new("/n.jsonl"), cwd, true, &|_| true).expect("link");
+        let l = link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            cwd,
+            true,
+            &|_| true,
+        )
+        .expect("link");
         assert_eq!(
             l.pid, 21496,
             "the agent in the pane, never the bash that names the uuid"
@@ -3650,7 +3712,16 @@ mod tests {
         assert_eq!(l.terminal.target(), Some("%0"));
         // And when this session is not the directory's newest, nothing links — certainly not
         // the script, which is what `argv.contains(sid)` used to hand back as "confirmed".
-        assert!(link(&procs, sid, Path::new("/n.jsonl"), cwd, false, &|_| true).is_none());
+        assert!(link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            cwd,
+            false,
+            &|_| true
+        )
+        .is_none());
     }
 
     /// #269 (b)(c)(d): `claude attach <8 chars>` names the session by a prefix — linked when
@@ -3667,9 +3738,15 @@ mod tests {
             "  20277 claude TMUX=/private/tmp/tmux-502/claude-replay-d36797,5407,0 TMUX_PANE=%0\n\
              24423 claude TMUX=/private/tmp/tmux-502/mdviewer-28920a,6467,0 TMUX_PANE=%0\n",
         );
-        let l = link(&procs, sid, Path::new("/n.jsonl"), None, false, &|pf| {
-            pf == "f7e03d40"
-        })
+        let l = link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            None,
+            false,
+            &|pf| pf == "f7e03d40",
+        )
         .expect("prefix link");
         assert!(l.confirmed);
         assert_eq!(l.pid, 20277);
@@ -3677,7 +3754,16 @@ mod tests {
             matches!(&l.terminal, Terminal::Tmux { sock: Some(s), .. } if s == "claude-replay-d36797")
         );
         // (c) two known sessions share the prefix: a pick, refused.
-        assert!(link(&procs, sid, Path::new("/n.jsonl"), None, false, &|_| false).is_none());
+        assert!(link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            None,
+            false,
+            &|_| false
+        )
+        .is_none());
         // (d) the shapes, one by one.
         assert_eq!(
             session_ref("claude attach f7e03d40"),
@@ -3734,7 +3820,16 @@ mod tests {
         };
         // (e) one process, no id anywhere: paired.
         let procs = lone("  900 claude\n", "p900\nfcwd\nn/Users/x/proj\n");
-        let l = link(&procs, "s", Path::new("/n.jsonl"), cwd, true, &|_| true).expect("lone");
+        let l = link(
+            &procs,
+            "s",
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            cwd,
+            true,
+            &|_| true,
+        )
+        .expect("lone");
         assert!(l.confirmed && l.pid == 900);
         // (f) two: a pick, unconfirmed (the case the knack test pins from the other side).
         let procs = lone(
@@ -3742,9 +3837,17 @@ mod tests {
             "p700\nfcwd\nn/Users/x/proj\np900\nfcwd\nn/Users/x/proj\n",
         );
         assert!(
-            !link(&procs, "s", Path::new("/n.jsonl"), cwd, true, &|_| true)
-                .unwrap()
-                .confirmed
+            !link(
+                &procs,
+                "s",
+                Agent::CLAUDE,
+                Path::new("/n.jsonl"),
+                cwd,
+                true,
+                &|_| true
+            )
+            .unwrap()
+            .confirmed
         );
         // A pre-warmed spare pty in the same directory does not make it two.
         let mut procs = lone(
@@ -3752,7 +3855,16 @@ mod tests {
             "p900\nfcwd\nn/Users/x/proj\np19654\nfcwd\nn/Users/x/proj\n",
         );
         apply_tty(&mut procs, "  900 ??\n  19654 ttys034\n", 0);
-        let l = link(&procs, "s", Path::new("/n.jsonl"), cwd, true, &|_| true).expect("lone");
+        let l = link(
+            &procs,
+            "s",
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            cwd,
+            true,
+            &|_| true,
+        )
+        .expect("lone");
         assert!(
             l.confirmed && l.pid == 900,
             "the spare is a helper, not a candidate"
@@ -3772,7 +3884,16 @@ mod tests {
             "  52638 claude TMUX=/private/tmp/tmux-502/knack-98db47,5228,0 TMUX_PANE=%0\n",
         );
         assert!(is_helper(&procs[0].argv) && is_helper(&procs[1].argv));
-        let l = link(&procs, sid, Path::new("/n.jsonl"), cwd, true, &|_| true).expect("engine");
+        let l = link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            cwd,
+            true,
+            &|_| true,
+        )
+        .expect("engine");
         assert_eq!(l.pid, 15974);
         assert!(l.confirmed, "the engine names its session exactly");
         assert_eq!(
@@ -3781,7 +3902,16 @@ mod tests {
             "an engine is where a session runs, not where it is typed into"
         );
         assert!(
-            link(&procs, "other", Path::new("/n.jsonl"), cwd, true, &|_| true).is_none(),
+            link(
+                &procs,
+                "other",
+                Agent::CLAUDE,
+                Path::new("/n.jsonl"),
+                cwd,
+                true,
+                &|_| true
+            )
+            .is_none(),
             "neither helper is a directory candidate for any other session"
         );
     }
@@ -4082,6 +4212,7 @@ n/Users/x/proj
         let l = link(
             &procs,
             "sid",
+            Agent::CLAUDE,
             Path::new("/n.jsonl"),
             Some("/Users/hong/code/knack"),
             true,
@@ -4109,6 +4240,7 @@ n/Users/x/proj
         let l = link(
             &bare,
             "sid",
+            Agent::CLAUDE,
             Path::new("/n.jsonl"),
             Some("/Users/hong/code/knack"),
             true,
@@ -4189,7 +4321,16 @@ n/Users/x/proj
             &mut procs,
             "  401 claude TMUX=/private/tmp/tmux-501/default,88,0 TMUX_PANE=%0\n",
         );
-        let l = link(&procs, sid, Path::new("/n.jsonl"), None, false, &|_| true).expect("link");
+        let l = link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            None,
+            false,
+            &|_| true,
+        )
+        .expect("link");
         assert!(l.confirmed);
         assert_eq!(l.terminal.kind(), "detached");
     }
@@ -4499,5 +4640,56 @@ n/Users/x/proj
             r#"{"type":"user","entrypoint":"cli","message":{"role":"user","content":"hi"},"timestamp":"2026-10-08T10:00:01Z"}"#,
         );
         assert_eq!(head_one_shot(&own), None);
+    }
+
+    /// #s59, measured on hong-devserver: a Claude session and a Codex session in one repo, the
+    /// Claude client in one tmux pane and Codex in another, neither naming its session in argv. Each
+    /// session links to its OWN agent's process — confirmed, since it is the only one of its agent in
+    /// the directory — so the Claude session is writable in its pane. Before, the Codex process
+    /// (the lower pid) won the Claude session, unconfirmed, with no pane to write to.
+    #[test]
+    fn each_session_links_to_its_own_agents_process() {
+        let mut procs = parse_ps(
+            "  51668 claude --dangerously-skip-permissions --resume\n  9807 codex resume --yolo\n",
+        );
+        apply_tty(&mut procs, "  51668 ttys005\n  9807 ttys007\n", 0);
+        apply_env(
+            &mut procs,
+            "  51668 claude TMUX=/private/tmp/tmux-502/agent-metrics-0b78ae,76226,0 TMUX_PANE=%0\n\
+             9807 codex TMUX=/private/tmp/tmux-502/agent-metrics-0b78ae,76226,0 TMUX_PANE=%2\n",
+        );
+        apply_lsof(
+            &mut procs,
+            "p51668\nfcwd\nn/Users/x/code/agent-metrics\np9807\nfcwd\nn/Users/x/code/agent-metrics\n",
+        );
+        let cwd = Some("/Users/x/code/agent-metrics");
+        let claude = link(
+            &procs,
+            "d755c274-ca98-4e2f-be95-435c76353e7b",
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            cwd,
+            true,
+            &|_| true,
+        )
+        .expect("the Claude session links");
+        assert_eq!(claude.pid, 51668, "to the claude process, never codex");
+        assert!(
+            claude.confirmed,
+            "the only Claude process in the directory: confirmed"
+        );
+        assert_eq!(claude.terminal.target(), Some("%0"));
+        let codex = link(
+            &procs,
+            "019c0000-0000-7000-8000-000000000000",
+            Agent::CODEX,
+            Path::new("/r.jsonl"),
+            cwd,
+            true,
+            &|_| true,
+        )
+        .expect("the Codex session links");
+        assert_eq!((codex.pid, codex.confirmed), (9807, true));
+        assert_eq!(codex.terminal.target(), Some("%2"));
     }
 }
