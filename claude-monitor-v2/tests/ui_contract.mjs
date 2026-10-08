@@ -2888,11 +2888,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(preview, /this\.printBtn\.onclick = \(\) => this\.markdown\?\.print\?\.\(\);/, "mdrev's own print, never the page's");
   assert.match(preview, /this\.printBtn\.hidden = !isMarkdownName\(item\.name\) \|\| !handle\.held;/, "Markdown only, where mdrev offers none: a held reader (#s31)");
   const pane = readFileSync(new URL("../../claude-monitor/src/codex-ui/mdrev-pane.js", import.meta.url), "utf8");
-  // #s57: the host carries the print — mdrev's own isolation, kept until afterprint (iOS returns
-  // from print() before it captures the page) — for the handle and mdrev's toolbar alike.
-  assert.match(pane, /print\(\) \{ if \(mounted\) printDocument\(el, place\.path\); \}/, "the handle prints the document alone");
-  assert.match(pane, /onPrint: \(\) => printDocument\(el, place\.path\)/, "and mdrev's toolbar print is the host's");
-  assert.match(pane, /const restore = isolate\(\{ mount: el, name \}\);[\s\S]*addEventListener\("afterprint", finish\);[\s\S]*window\.print\(\);/, "the isolation outlives print() until afterprint");
+  assert.match(pane, /print\(\) \{ mounted\?\.print\?\.\(\); \}/, "the handle carries mdrev's print");
+  assert.doesNotMatch(pane, /onPrint/, "mdrev carries every print itself since 1.1.29 (#s58)");
   console.log("#s30 pane print cases passed");
 }
 

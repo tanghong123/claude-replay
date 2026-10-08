@@ -1260,27 +1260,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .preview-tab-step{width:40px;height:44px}
   /* #s30: the head's file controls are a finger's target on a phone too. */
   #app .preview-head .preview-print,#app .preview-head .preview-download,#app .preview-head .preview-reveal{width:40px;height:44px}
-  /* #s57: mdrev anchors its display (Aa) menu to the Aa button's right edge, and to its toolbar's
-     only at its narrowest tiers; when it measured a wider tier while the controls row sat at the
-     left (a long document name), the menu ran off the left edge — the owner's iPhone. On a phone the
-     menu always hangs from the toolbar (which mdrev positions, and sizes the menu against). Scoped
-     to the menu alone: the rest of mdrev's toolbar keeps its own layout (#s49). */
-  .mdrev-pane.mdrev-host .topbar .display-wrap{position:static}
-  .mdrev-pane.mdrev-host .topbar .display-menu{right:8px}
 
   input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{font-size:16px!important}
 }
-
-/* #s57: a document printed from the pane (or the review sheet) prints alone. mdrev's isolation hides
-   the page's elements while it prints, and the mount steps out of the app into the body for the
-   print (mdrev-pane.js `printDocument`): on the paper the app is gone — no full-screen height to
-   spill onto a second page — and the body prints white rather than the monitor's grey, which iOS
-   puts on the paper. On screen the stepped-out mount is kept out of sight behind the print sheet. */
-@media print{
-  html.printing-document #app{display:none!important}
-  html.printing-document,html.printing-document body{background:#fff!important;height:auto!important;min-height:0!important;overflow:visible!important}
-}
-@media screen{html.printing-document body>.mdrev-print-target{position:fixed!important;left:-200vw!important;top:0!important;width:100vw!important}}
 
 /* #s32 — a phone held sideways is a phone (the shells' breakpoint, `PHONE_QUERY`), and its height is
    what is short. Since #s37 every phone's top bar is one row and its tools float in the dock. */

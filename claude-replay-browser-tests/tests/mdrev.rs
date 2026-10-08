@@ -2003,10 +2003,11 @@ fn the_detached_tab_reads_subscribes_and_notifies_through_draft_8() {
 /// so a wider tier with the controls row at the left (a long document name) ran it off the left
 /// edge. The case puts the toolbar in such a tier and opens the menu: it must lie wholly on screen.
 ///
-/// The print: mdrev isolates the document with a print stylesheet around `window.print()` and took
+/// The print: mdrev isolated the document with a print stylesheet around `window.print()` and took
 /// it away in a `finally` — right after, on iOS, whose print() returns before the page is captured.
 /// The case makes print() return at once, as iOS does, and prints from the menu: the isolation must
-/// still hold (the pane's own head hidden on the paper, the document shown) until `afterprint`.
+/// still hold (the pane's own head gone from the paper, the document shown, the page white) until
+/// `afterprint`. Both are mdrev's own since 1.1.29 (#s58); the host carried them for #s57.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
@@ -2082,11 +2083,14 @@ fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
     // four controls in a row at the LEFT, and hung the menu from the Aa button, so it ran off the
     // left edge. A window here gets the full toolbar with Aa at the right; the case moves Aa to the
     // start of its row, where the owner's was, and asks where the menu hangs from.
-    eval(&tab, "(function(){ var bar = document.querySelector('#preview .mdrev-host .topbar'); bar.className = bar.className.replace(/\\bset-\\w+\\b/, 'set-read').replace(/\\btier-\\d\\b/, 'tier-2'); var w = bar.querySelector('.display-wrap'); w.parentNode.prepend(w); return 1; })()");
-    let aa = eval(&tab, "Math.round(document.querySelector('#preview .mdrev-host .display-wrap button').getBoundingClientRect().right)");
-    assert!(
-        aa.as_i64().unwrap_or(999) < 260,
-        "the Aa control sits at the left, as on the owner's iPhone: {aa}"
+    // mdrev re-tiers its toolbar as the pane settles (a busy run measured it after the move), so
+    // the move is re-applied until it holds.
+    until(
+        &tab,
+        "(function(){ var bar = document.querySelector('#preview .mdrev-host .topbar'); if (!/\\bset-read\\b/.test(bar.className) || !/\\btier-2\\b/.test(bar.className)) bar.className = bar.className.replace(/\\bset-\\w+\\b/, 'set-read').replace(/\\btier-\\d\\b/, 'tier-2'); var w = bar.querySelector('.display-wrap'); if (w.parentNode.firstElementChild !== w) w.parentNode.prepend(w); return w.querySelector('button').getBoundingClientRect().right < 260; })()",
+        "the Aa control at the left, as on the owner's iPhone",
+        Duration::from_secs(5),
+        "(function(){ var bar = document.querySelector('#preview .mdrev-host .topbar'); return bar.className + ' Aa right ' + Math.round(bar.querySelector('.display-wrap button').getBoundingClientRect().right); })()",
     );
     eval(&tab, "(function(){ document.querySelector('#preview .mdrev-host .display-wrap button').click(); return 1; })()");
     until(
@@ -2120,7 +2124,7 @@ fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
         Duration::from_secs(10),
         "String(window.__printed)",
     );
-    let held = eval(&tab, "(function(){ var host = document.querySelector('.mdrev-print-target'); return JSON.stringify({ sheet: !!document.getElementById('mdrev-print-isolation'), target: !!host && host.classList.contains('mdrev-pane'), out: !!host && host.parentNode === document.body, title: document.title }); })()");
+    let held = eval(&tab, "(function(){ var host = document.querySelector('.mdrev-print-target'); return JSON.stringify({ sheet: !!document.getElementById('mdrev-print-isolation'), target: !!host && host.classList.contains('mdrev-pane'), title: document.title }); })()");
     let held: serde_json::Value = serde_json::from_str(held.as_str().unwrap()).unwrap();
     assert_eq!(
         held["sheet"], true,
@@ -2129,10 +2133,6 @@ fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
     assert_eq!(
         held["target"], true,
         "the document is what it isolates: {held}"
-    );
-    assert_eq!(
-        held["out"], true,
-        "stepped out of the app into the body for the print: {held}"
     );
     assert_eq!(
         held["title"], "decisions-become-person-tasks",
@@ -2146,7 +2146,7 @@ fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
         },
     )
     .unwrap();
-    let paper = eval(&tab, "(function(){ var v = function (s) { var e = document.querySelector(s); return e ? getComputedStyle(e).visibility : 'none'; }; return JSON.stringify({ head: v('#preview .preview-head'), title: v('#sessionTitle'), doc: v('.mdrev-print-target h1'), app: getComputedStyle(document.getElementById('app')).display, body: getComputedStyle(document.body).backgroundColor }); })()");
+    let paper = eval(&tab, "(function(){ var v = function (s) { var e = document.querySelector(s); return e ? getComputedStyle(e).visibility : 'none'; }; return JSON.stringify({ head: v('#preview .preview-head'), title: v('#sessionTitle'), doc: v('.mdrev-print-target h1'), chrome: getComputedStyle(document.querySelector('#preview .preview-head')).display, body: getComputedStyle(document.body).backgroundColor }); })()");
     tab.call_method(
         headless_chrome::protocol::cdp::Emulation::SetEmulatedMedia {
             media: Some(String::new()),
@@ -2168,8 +2168,8 @@ fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
         "nor the monitor's top bar: {paper}"
     );
     assert_eq!(
-        paper["app"], "none",
-        "the app takes no room on the paper, so no second page: {paper}"
+        paper["chrome"], "none",
+        "the monitor's chrome takes no room on the paper, so no second page: {paper}"
     );
     assert_eq!(
         paper["body"], "rgb(255, 255, 255)",
@@ -2180,7 +2180,7 @@ fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
         &tab,
         "(function(){ dispatchEvent(new Event('afterprint')); return 1; })()",
     );
-    let after = eval(&tab, "(function(){ var host = document.querySelector('#preview .mdrev-host'); return JSON.stringify([!!document.getElementById('mdrev-print-isolation'), !host || host.classList.contains('mdrev-print-target') || document.documentElement.classList.contains('printing-document'), document.title]); })()");
+    let after = eval(&tab, "(function(){ var host = document.querySelector('#preview .mdrev-host'); return JSON.stringify([!!document.getElementById('mdrev-print-isolation'), !host || host.classList.contains('mdrev-print-target'), document.title]); })()");
     let after: serde_json::Value = serde_json::from_str(after.as_str().unwrap()).unwrap();
     assert_eq!(
         after[0], false,
