@@ -2573,10 +2573,13 @@ mod long_prompt_tests {
             long_context: Some(long_context),
             tier_confirmed: true,
         };
-        let (short, _) = context(false).cost_with(&table, "claude-haiku-5-5", MILLION);
-        let (over, _) = context(true).cost_with(&table, "claude-haiku-5-5", MILLION);
+        let (short, short_estimated) =
+            context(false).cost_with(&table, "claude-haiku-5-5", MILLION);
+        let (over, over_estimated) = context(true).cost_with(&table, "claude-haiku-5-5", MILLION);
         assert!(close(short.unwrap(), 0.735), "{short:?}");
         assert!(close(over.unwrap(), 3.675), "{over:?}");
+        // A confirmed tier and a known context, as the Claude fold names them (#s56): exact.
+        assert!(!short_estimated && !over_estimated);
     }
 
     /// A session with no long prompt serializes exactly as before, and an entry written before

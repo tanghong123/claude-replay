@@ -30,6 +30,10 @@ impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
     fn push(&mut self, v: &Value) {
         agents::claude::metrics::MetricsAcc::push(self, v)
     }
+    /// The class of a request to a model priced by prompt length (#s56).
+    fn request_pricing(&self) -> Option<claude_replay_engine::seam::RequestPricing> {
+        agents::claude::metrics::MetricsAcc::request_pricing(self)
+    }
     /// The API call (`message.id/requestId`) — shared by the Qoder family, whose records
     /// carry the same ids.
     fn usage_id(&self) -> Option<String> {

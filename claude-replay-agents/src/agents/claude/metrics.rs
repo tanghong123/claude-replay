@@ -4,8 +4,8 @@
 //! formatting live in [`claude_replay_engine::seam`].
 
 use claude_replay_engine::seam::{
-    credits_cost, long_prompt_over, parse_ts, total_cost, Metrics, ReportedCost, RuntimeInfo,
-    TimeSpan, TokenCounts,
+    credits_cost, long_prompt_over, parse_ts, total_cost, Metrics, ReportedCost, RequestPricing,
+    RuntimeInfo, ServiceTier, TimeSpan, TokenCounts,
 };
 use serde_json::Value;
 
@@ -45,6 +45,9 @@ pub(crate) struct MetricsAcc {
     /// The API call the most recent push's usage belonged to, as `message.id/requestId` —
     /// the seam's `usage_id`, cleared on every push. Transient: never in the cursor.
     usage_id: Option<String>,
+    /// The billing class of the most recent push's credit — the seam's `request_pricing`,
+    /// cleared on every push. Transient: never in the cursor.
+    request_pricing: Option<RequestPricing>,
     /// The latest runtime facts the transcript recorded (#62): Claude Code writes the reasoning
     /// `effort` on each assistant record, a `permission-mode` record whenever the mode is set,
     /// and its `version` on every record — each changes mid-session (effort per request, the
@@ -81,6 +84,7 @@ impl MetricsAcc {
 
     pub(crate) fn push(&mut self, v: &Value) {
         self.usage_id = None;
+        self.request_pricing = None;
         let field = |u: &Value, k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
         // The runtime snapshot (#62): last value wins. `permission-mode` is its own record type
         // (`{"type":"permission-mode","permissionMode":"bypassPermissions"}`); `effort` rides on
@@ -221,15 +225,36 @@ impl MetricsAcc {
             // the whole request's tokens into the long subset when its prompt is over the line.
             // The prompt is the call's, so a repeat is judged by what the call has credited in
             // all; one whose prompt grew across the line moves the call's earlier credit too.
-            let long = long_prompt_over(&m).and_then(|over| {
-                let now = self.credited.prompt() > over;
-                let before = repeat && prior.prompt() > over;
-                match (now, before) {
-                    (true, true) => Some(credit),
-                    (true, false) => Some(self.credited),
-                    (false, _) => None,
-                }
+            let over = long_prompt_over(&m).map(|over| {
+                (
+                    self.credited.prompt() > over,
+                    repeat && prior.prompt() > over,
+                )
             });
+            let long = over.and_then(|(now, before)| match (now, before) {
+                (true, true) => Some(credit),
+                (true, false) => Some(self.credited),
+                (false, _) => None,
+            });
+            // The same judgement as this push's billing class (#s56), for a consumer that keeps
+            // classes beside its token deltas — set only for a model whose price depends on the
+            // request, where a class changes the price. The tier is the one the provider
+            // returned, confirmed only on the standard speed. A repeat whose prompt crossed the
+            // line moved the call's earlier credit into the long subset, which no class of this
+            // delta can say, so it has none.
+            self.request_pricing = over
+                .filter(|&(now, before)| {
+                    credit != TokenCounts::default() && !(now && repeat && !before)
+                })
+                .map(|(now, _)| {
+                    let tier = u.get("service_tier").and_then(Value::as_str);
+                    let speed = u.get("speed").and_then(Value::as_str);
+                    RequestPricing {
+                        tier: tier.map(ServiceTier::from_recorded).unwrap_or_default(),
+                        long_context: Some(now),
+                        tier_confirmed: tier.is_some() && speed.is_none_or(|s| s == "standard"),
+                    }
+                });
             let bucket = self.per_model.entry(m).or_default();
             *bucket += credit;
             if let Some(long) = long {
@@ -277,6 +302,11 @@ impl MetricsAcc {
     /// The seam's `usage_id` for the most recent push.
     pub(crate) fn usage_id(&self) -> Option<String> {
         self.usage_id.clone()
+    }
+
+    /// The seam's `request_pricing` for the most recent push.
+    pub(crate) fn request_pricing(&self) -> Option<RequestPricing> {
+        self.request_pricing
     }
 
     pub(crate) fn state(&self) -> Value {
@@ -1181,6 +1211,79 @@ mod long_prompt_tests {
         let b = after.clone().finish().per_model["claude-haiku-5-5"];
         assert_eq!((b.output, b.long_prompt.output), (400, 400));
         assert_eq!(b.long_prompt.cache_read, 150_000);
+    }
+
+    /// #s56: a push to a model priced by prompt length names its request's billing class, the
+    /// same judgement as the subset, so a consumer that keeps classes per delta prices it alike
+    /// and knows it exact (the engine's `a_long_request_s_context_uses_the_model_s_own_factors`
+    /// prices these classes).
+    #[test]
+    fn each_request_to_a_model_priced_by_prompt_names_its_class() {
+        let standard = |line: Value| {
+            let mut line = line;
+            let usage = line.pointer_mut("/message/usage").unwrap();
+            usage["service_tier"] = "standard".into();
+            usage["speed"] = "standard".into();
+            line
+        };
+        let class = |long: bool| {
+            Some(RequestPricing {
+                tier: ServiceTier::Standard,
+                long_context: Some(long),
+                tier_confirmed: true,
+            })
+        };
+        let mut acc = MetricsAcc::default();
+        acc.push(&standard(haiku("A", 10_000, 20_000, 70_000, 1_000)));
+        assert_eq!(
+            acc.request_pricing(),
+            class(false),
+            "exactly 100,000 is standard"
+        );
+        acc.push(&standard(haiku("B", 10_000, 20_000, 70_001, 1_000)));
+        assert_eq!(acc.request_pricing(), class(true));
+        // An identical repeat credits nothing, so it has no class; growth keeps the call's.
+        acc.push(&standard(haiku("B", 10_000, 20_000, 70_001, 1_000)));
+        assert_eq!(acc.request_pricing(), None);
+        acc.push(&standard(haiku("B", 10_000, 20_000, 70_001, 1_400)));
+        assert_eq!(acc.request_pricing(), class(true));
+        // A line with no usage clears it.
+        acc.push(
+            &serde_json::json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+        );
+        assert_eq!(acc.request_pricing(), None);
+        assert!(!acc.state().to_string().contains("request_pricing"));
+
+        // A repeat whose prompt crossed the line moved the call's earlier credit: no class.
+        let mut crossing = MetricsAcc::default();
+        crossing.push(&standard(haiku("D", 5, 0, 99_000, 10)));
+        assert_eq!(crossing.request_pricing(), class(false));
+        crossing.push(&standard(haiku("D", 5, 0, 120_000, 30)));
+        assert_eq!(crossing.request_pricing(), None);
+
+        // A tier the provider did not return, or another speed, is not confirmed.
+        let mut unrecorded = MetricsAcc::default();
+        unrecorded.push(&haiku("G", 5, 0, 150_000, 10));
+        assert_eq!(
+            unrecorded.request_pricing(),
+            Some(RequestPricing {
+                tier: ServiceTier::Unknown,
+                long_context: Some(true),
+                tier_confirmed: false,
+            })
+        );
+        let mut fast = standard(haiku("H", 5, 0, 150_000, 10));
+        fast["message"]["usage"]["speed"] = "fast".into();
+        unrecorded.push(&fast);
+        assert!(!unrecorded.request_pricing().unwrap().tier_confirmed);
+
+        // A model with one rate whatever the prompt has no class to name.
+        let mut opus = MetricsAcc::default();
+        opus.push(&serde_json::json!({"type": "assistant", "requestId": "req_I",
+            "message": {"role": "assistant", "id": "msg_I", "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 2, "cache_read_input_tokens": 500_000, "output_tokens": 100,
+                    "service_tier": "standard"}}}));
+        assert_eq!(opus.request_pricing(), None);
     }
 
     /// A model the catalog prices at one rate whatever the prompt never gets a subset.
