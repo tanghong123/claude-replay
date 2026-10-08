@@ -742,10 +742,11 @@ fn text(rel: &Release, d: &Doc, req: &Request) -> HttpResponse {
             }
         }
     }
-    let out = cli_read(
+    let out = cli_as(
         rel,
         &d.root,
         &["text", "--path", &d.rel, "--rev", &rev],
+        None,
         None,
     );
     match out.code {
@@ -804,7 +805,7 @@ fn revision_list(rel: &Release, d: &Doc) -> Option<Vec<Value>> {
         }
     }
     let list: Vec<Value> = if rel.cli_argv().is_some() {
-        let out = cli_read(rel, &d.root, &["revisions", "--path", &d.rel], None);
+        let out = cli_as(rel, &d.root, &["revisions", "--path", &d.rel], None, None);
         match out.code {
             0 => serde_json::from_slice(&out.out).ok()?,
             // "No such document" in history: a draft nobody has committed yet.
@@ -981,7 +982,7 @@ fn notes_list(rel: &Release, d: &Doc, viewer: Option<&Viewer>) -> HttpResponse {
     if viewer.is_some() {
         args.push("--viewer");
     }
-    let out = cli_read(rel, &d.root, &args, viewer);
+    let out = cli_as(rel, &d.root, &args, None, viewer);
     if out.code != 0 {
         return cli_error(&out);
     }
@@ -1142,7 +1143,7 @@ fn note_op(
 fn review(rel: &Release, d: &Doc, req: &Request, route: &str, viewer: &Viewer) -> HttpResponse {
     let run = |args: &[&str]| cli_as(rel, &d.root, args, None, Some(viewer));
     let state = || {
-        let out = cli_read(rel, &d.root, &["review", "status"], Some(viewer));
+        let out = run(&["review", "status"]);
         if out.code != 0 {
             return cli_error(&out);
         }
@@ -1266,31 +1267,6 @@ struct Out {
 
 /// How long one `mdrev-cli` call may take before the request gives up on it.
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Whether `mdrev-cli` died of an unhandled EPIPE (#s34): node's own crash when it writes to a
-/// git child that has already exited. mdrev's `git()` ends the child's stdin with no error
-/// listener (1.1.24, still so in its source past 1.1.25), and on Linux a fast git can close its
-/// end first; CI's phone review-sheet case read a 400 carrying node's trace. Matched on the
-/// trace, never on a bare exit 1, which is the contract's own bad request.
-fn died_of_epipe(out: &Out) -> bool {
-    out.code == 1 && out.err.contains("Unhandled 'error' event") && out.err.contains("write EPIPE")
-}
-
-/// [`cli_as`] for a call that CHANGES NOTHING (#s34): run once more when the CLI died of the EPIPE
-/// crash, which a second run outruns. Only reads come here — `text`, `revisions`, `notes list`,
-/// `review status`; a write that crashed may have half-run, and is answered as it failed.
-fn cli_read(rel: &Release, root: &str, args: &[&str], viewer: Option<&Viewer>) -> Out {
-    let out = cli_as(rel, root, args, None, viewer);
-    if !died_of_epipe(&out) {
-        return out;
-    }
-    eprintln!(
-        "mdrev-cli {}: died of an unhandled EPIPE (a git child exited before mdrev wrote to it); \
-         running it once more",
-        args.join(" ")
-    );
-    cli_as(rel, root, args, None, viewer)
-}
 
 /// Run the kit's `mdrev-cli` in `root`, with `--root root` as mdrev-v2 does. Output is read on
 /// threads while the child runs — a note list larger than a pipe buffer would otherwise hold the
@@ -1762,66 +1738,6 @@ esac
             assert_eq!(node_fits(&node), fits, "{body}");
         }
         assert!(!node_fits(&d.join("absent")));
-    }
-
-    /// #s34: a READ that died of node's EPIPE crash runs once more and answers; a write that died
-    /// of it is answered as it failed, and a plain exit 1 — the contract's bad request — is never
-    /// run again.
-    #[test]
-    fn a_read_outruns_the_epipe_crash_and_nothing_else_runs_twice() {
-        let d = scratch("epipe");
-        let count = d.join("count");
-        let trace = d.join("trace");
-        // The head of what CI's 400 carried (run 37725137863).
-        std::fs::write(
-            &trace,
-            "node:events:497\n      throw er; // Unhandled 'error' event\n      ^\n\nError: write EPIPE\n    \
-             at afterWriteDispatched (node:internal/stream_base_commons:159:15)\n",
-        )
-        .unwrap();
-        let runs = || {
-            std::fs::read_to_string(&count)
-                .map(|t| t.lines().count())
-                .unwrap_or(0)
-        };
-        // Crashes on its first run, answers on every run after.
-        let flaky = script(
-            &d.join("flaky"),
-            &format!(
-                "#!/bin/sh\necho run >> \"{c}\"\nif [ \"$(wc -l < \"{c}\" | tr -d ' ')\" = 1 ]; then cat \"{t}\" >&2; exit 1; fi\necho ok\n",
-                c = count.display(),
-                t = trace.display()
-            ),
-        );
-        let rel = Release::fixed(Some(vec![flaky.into_os_string()]));
-        let root = d.to_str().unwrap();
-        let out = cli_read(&rel, root, &["review", "status"], None);
-        assert_eq!(
-            (out.code, String::from_utf8_lossy(&out.out).trim()),
-            (0, "ok")
-        );
-        assert_eq!(runs(), 2, "the crash ran the read once more");
-        std::fs::remove_file(&count).unwrap();
-        let out = cli_as(&rel, root, &["notes", "add"], Some(b"{}"), None);
-        assert!(died_of_epipe(&out), "{}", out.err);
-        assert_eq!(runs(), 1, "a write that crashed is answered as it failed");
-        std::fs::remove_file(&count).unwrap();
-        let refusing = script(
-            &d.join("refusing"),
-            &format!(
-                "#!/bin/sh\necho run >> \"{c}\"\necho 'mdrev-cli: no such note' >&2\nexit 1\n",
-                c = count.display()
-            ),
-        );
-        let rel = Release::fixed(Some(vec![refusing.into_os_string()]));
-        let out = cli_read(&rel, root, &["notes", "list"], None);
-        assert_eq!(out.code, 1);
-        assert!(!died_of_epipe(&out));
-        assert_eq!(
-            runs(),
-            1,
-            "a bad request is the contract's answer, never run again"
-        );
     }
 
     #[test]
