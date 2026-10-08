@@ -13067,3 +13067,203 @@ fn a_phone_find_pill_rides_the_keyboard() {
         facts,
     );
 }
+
+/// #s53: a coordinator and the two headless workers it started, the edge as the monitor keeps it
+/// (`started-by.json` in its cache root — what a restart finds). Served on `port`, the coordinator
+/// open. Returns the monitor, the browser, the tab and the three ids.
+fn workers_world(
+    port: u16,
+    case: &str,
+    phone: Option<(u32, u32)>,
+) -> (
+    Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+    [&'static str; 3],
+) {
+    let ids = [
+        "c0000000-0000-4000-8000-0000000000c0",
+        "c0000000-0000-4000-8000-0000000000c1",
+        "c0000000-0000-4000-8000-0000000000c2",
+    ];
+    let [coord, w1, w2] = ids;
+    let base = base(case);
+    let stores = Stores::new(&base);
+    stores.claude_session(coord, &harness::long_session(6, harness::Shape::default()));
+    for (sid, ask, said, minute) in [
+        (w1, "build B74", "pushed", 1),
+        (w2, "review B71", "approve", 3),
+    ] {
+        // A one-shot's head, as `claude -p` writes it: entrypoint `sdk-cli`, the prompt a string.
+        let t = [
+            format!("{{\"type\":\"user\",\"cwd\":\"/r\",\"entrypoint\":\"sdk-cli\",\"message\":{{\"role\":\"user\",\"content\":\"{ask}\\nRead the brief first.\"}},\"timestamp\":\"2026-09-01T05:0{minute}:00.000Z\"}}\n"),
+            harness::assistant_at(said, &format!("2026-09-01T05:0{minute}:30.000Z")),
+        ]
+        .concat();
+        stores.claude_session(sid, &t);
+    }
+    // v2 keeps its index under its own cache root, `$XDG_CACHE_HOME/agent-monitor-v2`.
+    let cache = base.join("agent-monitor-v2");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(
+        cache.join("started-by.json"),
+        format!("{{\"{w1}\": \"{coord}\", \"{w2}\": \"{coord}\"}}"),
+    )
+    .unwrap();
+    let m = Monitor::spawn(Kind::V2, port, &base, Some(&stores), true);
+    let (browser, tab) = harness::chrome_tab();
+    match phone {
+        Some((w, h)) => harness::phone(&tab, w, h),
+        None => harness::resize(&tab, 1400.0, 900.0),
+    }
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={coord}"));
+    // By default the Agents pane keeps only what is running, finished workers as finished
+    // sub-agents: both are counted as held back.
+    harness::until(
+        &tab,
+        "/None running — 2 finished agents hidden/.test(document.getElementById('navigatorAgents').textContent)",
+        "the finished workers held back by the pane's own filter",
+        Duration::from_secs(30),
+        "document.getElementById('navigatorAgents').innerText.slice(0, 200)",
+    );
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-live-only', '[]'); 'ok'",
+    );
+    m.open(&tab, &format!("?ui=app&session={coord}"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('[data-session=\"{coord}\"]') && document.querySelectorAll('#navigatorAgents [data-worker-session]').length === 2"),
+        "the coordinator listed, its two workers in its Agents pane",
+        Duration::from_secs(30),
+        "[...document.querySelectorAll('[data-session]')].map(function (e) { return e.dataset.session.slice(-2); }).join(',') + ' | ' + document.getElementById('navigatorAgents').innerText.slice(0, 200)",
+    );
+    (m, browser, tab, ids)
+}
+
+/// #s53, the owner: "keep them under agents outline pane, and don't put them on main session
+/// list". The list shows the coordinator and neither worker; its Agents pane lists both as workers
+/// with their state, and counts them; a click opens the worker, whose parent control leads back;
+/// and a link straight to a worker knows its starter too.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_session_s_headless_workers_live_in_its_agents_pane_not_the_list() {
+    let _serial = serial();
+    let (m, _b, tab, [coord, w1, w2]) = workers_world(2754, "workers-pane", None);
+    let seen = harness::probe(&tab, "(function(){ var rows = [...document.querySelectorAll('#navigatorAgents [data-worker-session]')]; return { listed: [...document.querySelectorAll('[data-session]')].map(function (e) { return e.dataset.session; }), pane: rows.map(function (r) { return r.dataset.workerSession; }), labels: rows.map(function (r) { return r.querySelector('small').textContent; }), names: rows.map(function (r) { return r.querySelector('strong').textContent; }), count: document.getElementById('navigatorAgentCount').textContent.replace(/\\s+/g, ' ').trim() }; })()");
+    let listed: Vec<&str> = seen["listed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(listed.contains(&coord), "the coordinator is listed: {seen}");
+    assert!(
+        !listed.contains(&w1) && !listed.contains(&w2),
+        "no worker is a list row: {seen}"
+    );
+    assert_eq!(
+        seen["pane"],
+        serde_json::json!([w1, w2]),
+        "both workers, oldest first: {seen}"
+    );
+    assert_eq!(
+        seen["names"],
+        serde_json::json!(["build B74", "review B71"]),
+        "{seen}"
+    );
+    assert!(
+        seen["labels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|l| l.as_str().is_some_and(|l| l.starts_with("worker · "))),
+        "each says it is a worker, and its state: {seen}"
+    );
+    assert_eq!(
+        seen["count"], "2/2 done",
+        "the pane's head counts them: {seen}"
+    );
+    // A click opens the worker; its parent control leads back to the coordinator.
+    harness::eval(&tab, &format!("document.querySelector('#navigatorAgents [data-worker-session=\"{w1}\"]').click(); 'ok'"));
+    harness::until(
+        &tab,
+        &format!("new URLSearchParams(location.search).get('session') === '{w1}' && document.getElementById('sessionParent').classList.contains('is-live') && document.getElementById('sessionParent').dataset.parent === '{coord}'"),
+        "the worker open, with its way back",
+        Duration::from_secs(20),
+        "location.search + ' | ' + document.getElementById('sessionParent').className",
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('sessionParent').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        &format!("new URLSearchParams(location.search).get('session') === '{coord}' && document.querySelectorAll('#navigatorAgents [data-worker-session]').length === 2"),
+        "back on the coordinator",
+        Duration::from_secs(20),
+        "location.search",
+    );
+    // A link straight to a worker: no descent was recorded, and its starter still leads back.
+    m.open(&tab, &format!("?ui=app&session={w2}"));
+    harness::until(
+        &tab,
+        &format!("document.getElementById('sessionParent').classList.contains('is-live') && document.getElementById('sessionParent').dataset.parent === '{coord}'"),
+        "a linked worker's way back to its starter",
+        Duration::from_secs(20),
+        "location.search + ' | ' + document.getElementById('sessionParent').className",
+    );
+}
+
+/// #s53 on a phone: the drawer's list has no worker, and the Agents sheet rising from the dock
+/// holds both, finger-sized; a tap opens the worker.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_phone_reaches_a_session_s_workers_from_its_agents_sheet() {
+    let _serial = serial();
+    let (_m, _b, tab, [coord, w1, w2]) = workers_world(2755, "workers-phone", Some((440, 956)));
+    let listed = harness::eval(&tab, "[...document.querySelectorAll('[data-session]')].map(function (e) { return e.dataset.session; }).join(',')");
+    let listed = listed.as_str().unwrap_or("");
+    assert!(
+        listed.contains(coord) && !listed.contains(w1) && !listed.contains(w2),
+        "the drawer lists no worker: {listed}"
+    );
+    phone_tap(&tab, "#phonePane-agents");
+    harness::until(
+        &tab,
+        "!document.getElementById('phonePaneMenu').hidden && document.querySelectorAll('#phonePaneMenu [data-worker-session]').length === 2",
+        "the Agents sheet with both workers",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+    );
+    let tall = harness::eval(&tab, "[...document.querySelectorAll('#phonePaneMenu [data-worker-session]')].every(function (r) { return r.getBoundingClientRect().height >= 44; })");
+    assert_eq!(tall, serde_json::json!(true), "finger-sized rows");
+    phone_tap(
+        &tab,
+        &format!("#phonePaneMenu [data-worker-session=\"{w2}\"]"),
+    );
+    harness::until(
+        &tab,
+        &format!("new URLSearchParams(location.search).get('session') === '{w2}' && document.getElementById('phonePaneMenu').hidden"),
+        "the worker open, the sheet closed",
+        Duration::from_secs(20),
+        "location.search",
+    );
+    // The way back is the top bar's parent control, a 44px glyph beside the handle.
+    harness::until(
+        &tab,
+        &format!("(function(){{ var b = document.getElementById('sessionParent'); if (!b.classList.contains('is-live') || b.dataset.parent !== '{coord}') return false; var r = b.getBoundingClientRect(); return r.width >= 44 && r.height >= 44 && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === b || b.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)); }})()"),
+        "the parent control in the top bar, finger-sized and on top",
+        Duration::from_secs(20),
+        "JSON.stringify(document.getElementById('sessionParent').getBoundingClientRect())",
+    );
+    phone_tap(&tab, "#sessionParent");
+    harness::until(
+        &tab,
+        &format!("new URLSearchParams(location.search).get('session') === '{coord}'"),
+        "back on the coordinator",
+        Duration::from_secs(20),
+        "location.search",
+    );
+}

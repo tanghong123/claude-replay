@@ -247,7 +247,21 @@ unclaimed one-shot session of its cwd that began in its window (3 s before, 60 s
 unless another one-shot could have taken it instead; a paired session is neither the directory's
 newest nor a sibling, so the coordinator keeps its own pane. A one-shot's prompt is in its argv, so
 only `--session-id`/`--resume` name it; and whatever linked it, its terminal is Detached — a send
-into the pane it inherited would type into the coordinator. A fork's engine (`--fork-session --resume <parent.jsonl>`) is the only marker of a Claude fork
+into the pane it inherited would type into the coordinator.
+**A headless worker lives in its starter's Agents pane, not in the session list** (#s53, the owner:
+"keep them under agents outline pane, and don't put them on main session list"). Claude Code exports
+its own session id into every Bash command (`CLAUDE_CODE_SESSION_ID`, with
+`CLAUDE_CODE_CHILD_SESSION=1`), so a worker's ENVIRONMENT (`apply_env`, `ps eww`) names its starter
+while it runs; its transcript never does. `bank_started_by` (before `assemble`) records the edge for
+a ONE-SHOT session only — an interactive session started from an agent's Bash is the owner's own —
+and keeps it in `<cache_root>/started-by.json`, so a restart or a finished worker keeps it; a one-shot
+session in another session's scratch (#373) is that session's worker with no sighting at all. A row
+carries `startedBy` only when the starter is a row here, and `brief` (the first line of its first
+prompt: a worker's own title is its project's). The app shell leaves such rows out of the tree and
+its counts, lists them in the starter's Agents pane after its sub-agents (`data-worker-session`, the
+same descent, so the parent control leads back; a linked worker falls back to `startedBy`), and the
+send gate does not count a session's own worker as "another active session". The classic rail still
+lists workers. A fork's engine (`--fork-session --resume <parent.jsonl>`) is the only marker of a Claude fork
 anywhere, and `note_forks_from_argv` is how one joins its #142 family. Diagnose against the
 machine, not the API: `term`/`injectable` describe the process the row was LINKED to, so a false
 link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.

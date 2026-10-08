@@ -15,7 +15,7 @@ use claude_replay_core::liveness::{inflight_tool_in_tail, latest_tree_activity};
 use claude_replay_core::{adapters, discover, metrics, Agent};
 use claude_replay_present::cache::{admit, MetaReader, Presentation};
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -110,16 +110,24 @@ fn tmux_target_from(
 /// data — the owner's constraint 2: with a live sibling we cannot tell which session drives
 /// the project, so neither a resume (would fork the live work) nor an injection (could hit the
 /// wrong pane) is safe. Both send paths gate on this; `cwd_of` maps a sid to its cwd.
+///
+/// A headless worker the target STARTED is part of it, not another session (#s53, the owner):
+/// a coordinator whose `claude -p` workers run in its repo keeps its compose box. `started_by`
+/// maps a sid to the session that started it.
 fn project_has_other_live(
     sid: &str,
     cwd: Option<&str>,
     links: &HashMap<String, SendLink>,
     cwd_of: impl Fn(&str) -> Option<String>,
+    started_by: impl Fn(&str) -> Option<String>,
 ) -> bool {
     let Some(cwd) = cwd else { return false };
-    links
-        .iter()
-        .any(|(other, l)| other != sid && l.pid.is_some() && cwd_of(other).as_deref() == Some(cwd))
+    links.iter().any(|(other, l)| {
+        other != sid
+            && l.pid.is_some()
+            && cwd_of(other).as_deref() == Some(cwd)
+            && started_by(other).as_deref() != Some(sid)
+    })
 }
 
 /// The liveness half of an IDLE send decision (#133 resume path), pure over one scan's data:
@@ -130,11 +138,12 @@ fn send_liveness_ok(
     cwd: Option<&str>,
     links: &HashMap<String, SendLink>,
     cwd_of: impl Fn(&str) -> Option<String>,
+    started_by: impl Fn(&str) -> Option<String>,
 ) -> Result<(), SendRefusal> {
     if links.get(sid).and_then(|l| l.pid).is_some() {
         return Err(SendRefusal::SessionIsLive);
     }
-    if project_has_other_live(sid, cwd, links, cwd_of) {
+    if project_has_other_live(sid, cwd, links, cwd_of, started_by) {
         return Err(SendRefusal::ProjectHasActiveSession);
     }
     Ok(())
@@ -207,6 +216,26 @@ struct State {
     /// tmux control address, and whether the link is proven. The send-prompt route reads
     /// this for both transports — idle-resume (no live pid) and tmux (a proven live link).
     send_links: HashMap<String, SendLink>,
+    /// Which session started each headless worker (#s53), worker sid → starter sid: banked from a
+    /// running worker's environment (`bank_started_by`) and kept in `<cache_root>/started-by.json`,
+    /// because the edge is visible only while the worker runs and its transcript never records it.
+    started_by_edges: BTreeMap<String, String>,
+}
+
+impl State {
+    /// The session that started `sid` as a headless worker (#s53), when this index knows it: the
+    /// edge banked from the worker's environment, or — needing no sighting — a one-shot session's
+    /// #373 scratch owner (knack's workers run in worktrees under their coordinator's scratchpad).
+    /// `None` for a starter that is not a row here, so such a worker stays a row of its own.
+    fn started_by(&self, sid: &str) -> Option<&str> {
+        let row = self.rows.get(sid)?;
+        let parent = self
+            .started_by_edges
+            .get(sid)
+            .map(String::as_str)
+            .or_else(|| row.one_shot.then_some(row.spawned_by.as_deref()).flatten())?;
+        (parent != sid && self.rows.contains_key(parent)).then_some(parent)
+    }
 }
 
 /// One session's attributed link, banked from the scan for the send routes (#133).
@@ -253,6 +282,10 @@ struct Row {
     /// `claude -p` records) — read once, with the start. Only such a session can pair with a
     /// one-shot process (#s50).
     one_shot: bool,
+    /// A one-shot session's BRIEF (#s53): the first line of the prompt it was started with, read
+    /// once with the start. A worker's own title is its project's — on aries-black every knack
+    /// worker read "knack" — so the Agents pane names a worker by what it was asked to do.
+    brief: Option<String>,
     /// The session this one was forked from (#142), and whether we have looked. Read once:
     /// a fork's origin is fixed when it is created and no later write changes it.
     fork_from: Option<String>,
@@ -361,6 +394,12 @@ struct Proc {
     /// When the process started, in epoch seconds (`ps -o etime=`, so to the second) — what pairs a
     /// one-shot `claude -p` with the session it created (#s50).
     started: Option<u64>,
+    /// The session whose Bash started this process (#s53), from its inherited ENVIRONMENT: Claude
+    /// Code exports `CLAUDE_CODE_SESSION_ID` (its own session) and `CLAUDE_CODE_CHILD_SESSION=1`
+    /// into every Bash tool command, and a `claude -p` started there carries both — measured on a
+    /// running worker whose parent pid was 1, so the process tree alone would not have said. Set
+    /// only when both are present.
+    parent_session: Option<String>,
 }
 
 /// How a live agent process maps to a session row, and what hosts it.
@@ -447,12 +486,14 @@ impl Index {
                 None
             })
             .unwrap_or_default();
+        let started_by_edges = read_started_by(&cache_root.join(STARTED_BY_FILE));
         Self {
             cache_root,
             only,
             state_dir,
             state: std::sync::Mutex::new(State {
                 ignored,
+                started_by_edges,
                 ..Default::default()
             }),
         }
@@ -511,9 +552,13 @@ impl Index {
             return Err(SendRefusal::UnsupportedAgent);
         }
         // The target must be finished and its project quiet (pure check, unit-tested).
-        send_liveness_ok(sid, cwd.as_deref(), &st.send_links, |o| {
-            st.rows.get(o).and_then(|r| r.cwd.clone())
-        })?;
+        send_liveness_ok(
+            sid,
+            cwd.as_deref(),
+            &st.send_links,
+            |o| st.rows.get(o).and_then(|r| r.cwd.clone()),
+            |o| st.started_by(o).map(str::to_string),
+        )?;
         Ok(SendTarget {
             sid: sid.to_string(),
             agent,
@@ -539,9 +584,13 @@ impl Index {
         let (pid, sock, pane) = tmux_target_from(agent, &link)?;
         // The project must have no OTHER live session — else injecting here while another
         // session drives the same cwd forks divergent work (constraint 2).
-        if project_has_other_live(sid, cwd.as_deref(), &st.send_links, |o| {
-            st.rows.get(o).and_then(|r| r.cwd.clone())
-        }) {
+        if project_has_other_live(
+            sid,
+            cwd.as_deref(),
+            &st.send_links,
+            |o| st.rows.get(o).and_then(|r| r.cwd.clone()),
+            |o| st.started_by(o).map(str::to_string),
+        ) {
             return Err(SendRefusal::ProjectHasActiveSession);
         }
         Ok(TmuxTarget {
@@ -599,6 +648,7 @@ impl Index {
                     first_event: None,
                     start_probed: false,
                     one_shot: false,
+                    brief: None,
                     fork_from: None,
                     fork_probed: false,
                     spawned_by: None,
@@ -620,7 +670,8 @@ impl Index {
                     row.last_event = last_event_ts(&row.path).or(row.last_event);
                     if !row.start_probed {
                         row.first_event = first_event_ts(&row.path);
-                        row.one_shot = head_is_one_shot(&row.path);
+                        row.brief = head_one_shot(&row.path);
+                        row.one_shot = row.brief.is_some();
                         row.start_probed = true;
                     }
                     match (prev_event, row.last_event) {
@@ -760,6 +811,7 @@ impl Index {
 
         self.prove_by_growth(st);
         self.note_forks_from_argv(st);
+        self.bank_started_by(st);
 
         let mut facts = Vec::new();
         let mut snapshot = self.assemble(st, &mut facts);
@@ -820,6 +872,58 @@ impl Index {
                     row.fork_from = Some(parent);
                 }
             }
+        }
+    }
+
+    /// Bank which session started each running one-shot worker (#s53): the worker's process is
+    /// found as the link finds it — paired by start time, or named by its `--resume` — and its
+    /// inherited `CLAUDE_CODE_SESSION_ID` names the starter. Runs BEFORE `assemble`, so the first
+    /// snapshot that shows a worker already shows it under its starter rather than moving it a tick
+    /// later. Only a one-shot SESSION takes an edge: an interactive session someone started from an
+    /// agent's Bash carries that agent's id too, and the owner's own sessions are never nested.
+    /// Persisted only when an edge is new; an edge is fixed at creation, like a fork's origin.
+    fn bank_started_by(&self, st: &mut State) {
+        let paired = pair_one_shots(
+            &st.procs,
+            st.rows
+                .iter()
+                .filter(|(_, r)| r.one_shot)
+                .filter_map(|(sid, r)| Some((sid.as_str(), r.cwd.as_deref()?, r.first_event?))),
+        );
+        let named = st
+            .procs
+            .iter()
+            .filter(|p| is_one_shot(&p.argv))
+            .filter_map(|p| match session_ref(&p.argv) {
+                Some(SessionRef::Exact(sid)) => Some((sid, p.pid)),
+                _ => None,
+            });
+        let found: Vec<(String, u32)> = paired
+            .into_iter()
+            .map(|(sid, (pid, _))| (sid, pid))
+            .chain(named)
+            .collect();
+        let mut fresh = false;
+        for (sid, pid) in found {
+            let Some(parent) = st
+                .procs
+                .iter()
+                .find(|p| p.pid == pid)
+                .and_then(|p| p.parent_session.clone())
+            else {
+                continue;
+            };
+            let one_shot = st.rows.get(&sid).is_some_and(|r| r.one_shot);
+            if parent != sid && one_shot && !st.started_by_edges.contains_key(&sid) {
+                st.started_by_edges.insert(sid, parent);
+                fresh = true;
+            }
+        }
+        if fresh {
+            // Bounded by the store: a worker whose transcript is gone takes its edge with it.
+            let rows = &st.rows;
+            st.started_by_edges.retain(|sid, _| rows.contains_key(sid));
+            write_started_by(&self.cache_root.join(STARTED_BY_FILE), &st.started_by_edges);
         }
     }
 
@@ -912,7 +1016,7 @@ impl Index {
         }
         let proj_has_other_live = |sid: &str, cwd: Option<&str>| -> bool {
             cwd.and_then(|c| live_sids_by_cwd.get(c))
-                .is_some_and(|v| v.iter().any(|s| *s != sid))
+                .is_some_and(|v| v.iter().any(|s| *s != sid && st.started_by(s) != Some(sid)))
         };
         // #142: every session's FAMILY root — follow `fork_from` until a session that is not
         // itself a fork. A fork's transcript is 82–99% a replay of its origin's, so the rail
@@ -1156,6 +1260,14 @@ impl Index {
             j["family"] = json!(root);
             if root != *sid {
                 j["isFork"] = json!(true);
+            }
+            // #s53: a headless worker this index knows the starter of — the shell lists it in that
+            // session's Agents pane instead of the session list.
+            if let Some(parent) = st.started_by(sid) {
+                j["startedBy"] = json!(parent);
+                if let Some(brief) = row.brief.as_deref().filter(|b| !b.is_empty()) {
+                    j["brief"] = json!(brief);
+                }
             }
             // #133 constraint 2: another live session in this project → no send affordance on
             // this row (the resume path refuses it, the inject path is suppressed). The rail
@@ -1714,19 +1826,66 @@ fn pair_one_shots<'a>(
     out
 }
 
-/// Whether the transcript's head says a one-shot run wrote it: Claude Code records
+/// Where the worker → starter edges live (#s53), under the monitor's cache root: a cache, so an
+/// unreadable file is an empty map and a deleted one only forgets workers no longer running.
+const STARTED_BY_FILE: &str = "started-by.json";
+
+fn read_started_by(path: &Path) -> BTreeMap<String, String> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Write the edges whole, through a temporary and a rename, so a reader never sees half a map.
+fn write_started_by(path: &Path, edges: &BTreeMap<String, String>) {
+    let Ok(bytes) = serde_json::to_vec_pretty(edges) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, bytes).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+/// Whether the transcript's head says a one-shot run wrote it — Claude Code records
 /// `"entrypoint":"sdk-cli"` for `claude -p` (measured 2026-10-08) where an interactive session
-/// says `cli`. 64 KB is the head of any transcript: the first prompt record carries it.
-fn head_is_one_shot(path: &Path) -> bool {
+/// says `cli` — and if so, its BRIEF: the first line of its first prompt, at most 120 characters
+/// (`Some("")` when the head holds no prompt). `None` for any other session. 64 KB is the head of
+/// any transcript: the first prompt record carries the entrypoint.
+fn head_one_shot(path: &Path) -> Option<String> {
     use std::io::Read;
     let mut buf = Vec::new();
-    let Ok(f) = std::fs::File::open(path) else {
-        return false;
-    };
-    if f.take(64 * 1024).read_to_end(&mut buf).is_err() {
-        return false;
+    std::fs::File::open(path)
+        .ok()?
+        .take(64 * 1024)
+        .read_to_end(&mut buf)
+        .ok()?;
+    let head = String::from_utf8_lossy(&buf);
+    if !head.contains("\"entrypoint\":\"sdk-cli\"") {
+        return None;
     }
-    String::from_utf8_lossy(&buf).contains("\"entrypoint\":\"sdk-cli\"")
+    let prompt = head.lines().find_map(|line| {
+        let rec: Value = serde_json::from_str(line).ok()?;
+        if rec.get("type").and_then(Value::as_str) != Some("user") {
+            return None;
+        }
+        let content = rec.pointer("/message/content")?;
+        let text = match content {
+            Value::String(t) => t.clone(),
+            Value::Array(parts) => parts
+                .iter()
+                .find_map(|p| p.get("text").and_then(Value::as_str))?
+                .to_string(),
+            _ => return None,
+        };
+        let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+        Some(line.chars().take(120).collect::<String>())
+    });
+    Some(prompt.unwrap_or_default())
 }
 
 /// Resolve which live agent process (if any) is behind session `sid` — the probe's §1
@@ -2108,6 +2267,7 @@ fn parse_ps(out: &str) -> Vec<Proc> {
             tmux_sock: None,
             screen: None,
             started: None,
+            parent_session: None,
         });
     }
     procs
@@ -2150,6 +2310,7 @@ fn apply_env(procs: &mut [Proc], out: &str) {
         let Some(p) = procs.iter_mut().find(|p| p.pid == pid) else {
             continue;
         };
+        let (mut session, mut child) = (None, false);
         for tok in rest.split_whitespace() {
             if let Some(v) = tok.strip_prefix("TMUX_PANE=") {
                 p.pane = Some(v.to_string());
@@ -2157,8 +2318,13 @@ fn apply_env(procs: &mut [Proc], out: &str) {
                 p.tmux_sock = v.split(',').next().map(str::to_string);
             } else if let Some(v) = tok.strip_prefix("STY=") {
                 p.screen = Some(v.to_string());
+            } else if let Some(v) = tok.strip_prefix("CLAUDE_CODE_SESSION_ID=") {
+                session = is_uuid(v).then(|| v.to_string());
+            } else if tok == "CLAUDE_CODE_CHILD_SESSION=1" {
+                child = true;
             }
         }
+        p.parent_session = session.filter(|_| child);
     }
 }
 
@@ -2492,23 +2658,23 @@ mod tests {
         live.insert("elsewhere".into(), link(Some(999))); // live, but a DIFFERENT project
 
         // A finished session in a quiet project: OK.
-        assert!(send_liveness_ok("idle-a", Some("/proj"), &live, cwd_of).is_ok());
+        assert!(send_liveness_ok("idle-a", Some("/proj"), &live, cwd_of, |_| None).is_ok());
         // The target itself is live → refuse (tmux path).
         live.insert("idle-a".into(), link(Some(123)));
         assert_eq!(
-            send_liveness_ok("idle-a", Some("/proj"), &live, cwd_of),
+            send_liveness_ok("idle-a", Some("/proj"), &live, cwd_of, |_| None),
             Err(SendRefusal::SessionIsLive)
         );
         // Target finished, but a SIBLING in the same project is live → refuse.
         live.insert("idle-a".into(), link(None));
         live.insert("live-b".into(), link(Some(456)));
         assert_eq!(
-            send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of),
+            send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of, |_| None),
             Err(SendRefusal::ProjectHasActiveSession)
         );
         // A live session in ANOTHER project does not block this one.
         live.remove("live-b");
-        assert!(send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of).is_ok());
+        assert!(send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of, |_| None).is_ok());
     }
 
     /// #133 tmux slice — the §3.1 refusal ladder (pure): only a live, PROVEN, in-tmux,
@@ -2568,18 +2734,42 @@ mod tests {
         links.insert("b".into(), link(None)); // a quiet sibling
 
         // Only the target is live in /proj → no other-live sibling.
-        assert!(!project_has_other_live("a", Some("/proj"), &links, cwd_of));
+        assert!(!project_has_other_live(
+            "a",
+            Some("/proj"),
+            &links,
+            cwd_of,
+            |_| None
+        ));
         // A second live session appears in the same project → other-live is true for BOTH,
         // so neither is injectable (ambiguous which drives the project — refuse, don't guess).
         links.insert("b".into(), link(Some(2)));
-        assert!(project_has_other_live("a", Some("/proj"), &links, cwd_of));
-        assert!(project_has_other_live("b", Some("/proj"), &links, cwd_of));
+        assert!(project_has_other_live(
+            "a",
+            Some("/proj"),
+            &links,
+            cwd_of,
+            |_| None
+        ));
+        assert!(project_has_other_live(
+            "b",
+            Some("/proj"),
+            &links,
+            cwd_of,
+            |_| None
+        ));
         // A live session in a DIFFERENT project does not count.
         links.insert("far".into(), link(Some(3)));
         links.insert("b".into(), link(None));
-        assert!(!project_has_other_live("a", Some("/proj"), &links, cwd_of));
+        assert!(!project_has_other_live(
+            "a",
+            Some("/proj"),
+            &links,
+            cwd_of,
+            |_| None
+        ));
         // A target with no cwd can have no project siblings.
-        assert!(!project_has_other_live("a", None, &links, cwd_of));
+        assert!(!project_has_other_live("a", None, &links, cwd_of, |_| None));
     }
 
     /// #133 resume shapes (verified against agent-jdi): claude resumes the SAME id with `-p`
@@ -3651,6 +3841,7 @@ mod tests {
             first_event: None,
             start_probed: true,
             one_shot: false,
+            brief: None,
             fork_from: None,
             fork_probed: true,
             spawned_by: None,
@@ -4114,5 +4305,185 @@ n/Users/x/proj
                 "a worker is never offered the pane it inherited"
             );
         }
+    }
+
+    /// #s53: the starter is read from the environment only when Claude Code marked the process a
+    /// child session; a stray `CLAUDE_CODE_SESSION_ID` alone, or a malformed one, names nobody.
+    #[test]
+    fn a_process_names_its_starter_only_as_a_marked_child() {
+        let parent = "491ffb04-574b-4635-bad7-74d06fa212c6";
+        let mut procs = parse_ps("  1 claude -p a\n  2 claude -p b\n  3 claude -p c\n");
+        apply_env(
+            &mut procs,
+            &format!(
+                "  1 claude CLAUDE_CODE_SESSION_ID={parent} CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_PID=46771\n\
+                 2 claude CLAUDE_CODE_SESSION_ID={parent}\n\
+                 3 claude CLAUDE_CODE_SESSION_ID=not-a-uuid CLAUDE_CODE_CHILD_SESSION=1\n"
+            ),
+        );
+        assert_eq!(procs[0].parent_session.as_deref(), Some(parent));
+        assert_eq!(procs[1].parent_session, None, "not marked a child");
+        assert_eq!(procs[2].parent_session, None, "not a session id");
+    }
+
+    /// #s53, the whole path: a running worker's environment names its coordinator, the edge is
+    /// banked before the snapshot is drawn, the row says `startedBy`, a monitor started afresh
+    /// reads the edge back after the worker is gone, and the coordinator's compose box survives
+    /// its own live worker but not an unrelated live session.
+    #[test]
+    fn a_worker_is_banked_under_its_starter_and_kept_across_a_restart() {
+        let scratch = std::env::temp_dir().join(format!("cm-started-by-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let _env = StateEnv::set(scratch.join("state"));
+        let coord = "491ffb04-574b-4635-bad7-74d06fa212c6";
+        let worker = "622a5571-da63-47a2-945c-e5c65feccc13";
+        let now = 1_791_400_000u64;
+        let mut procs = parse_ps(
+            "  100 claude --dangerously-skip-permissions --resume\n\
+             201 claude -p You are a builder --output-format stream-json --verbose\n",
+        );
+        apply_tty(&mut procs, "  100 ttys003 02:00:00\n  201 ?? 05:00\n", now);
+        apply_env(
+            &mut procs,
+            &format!(
+                "  100 claude TMUX=/private/tmp/tmux-501/default,88,0 TMUX_PANE=%0\n\
+                 201 claude TMUX=/private/tmp/tmux-501/default,88,0 TMUX_PANE=%0 \
+                 CLAUDE_CODE_SESSION_ID={coord} CLAUDE_CODE_CHILD_SESSION=1\n"
+            ),
+        );
+        apply_lsof(&mut procs, "p100\nfcwd\nn/w/knack\np201\nfcwd\nn/w/knack\n");
+        let row = |first_ago: u64, one_shot: bool| {
+            let mut r = growth_row("/w/knack", false);
+            r.first_event = Some(now - first_ago);
+            r.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 10));
+            r.one_shot = one_shot;
+            r
+        };
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        st.rows.insert(coord.into(), row(7_200, false));
+        st.rows.insert(worker.into(), row(299, true));
+        idx.bank_started_by(&mut st);
+        assert_eq!(st.started_by(worker), Some(coord));
+        assert_eq!(
+            st.started_by(coord),
+            None,
+            "the owner's own session is nobody's worker"
+        );
+        let v: Value = idx.assemble(&st, &mut Vec::new());
+        let rows: Vec<&Value> = v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rows"].as_array().unwrap())
+            .collect();
+        let started =
+            |sid: &str| rows.iter().find(|r| r["id"] == sid).unwrap()["startedBy"].clone();
+        assert_eq!(started(worker), json!(coord));
+        assert_eq!(started(coord), Value::Null);
+        // The coordinator's own live worker is part of it; an unrelated live session is not.
+        let links: HashMap<String, SendLink> =
+            [(coord, Some(100)), (worker, Some(201)), ("other", None)]
+                .into_iter()
+                .map(|(s, pid)| {
+                    (
+                        s.to_string(),
+                        SendLink {
+                            pid,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect();
+        let cwd_of = |_: &str| Some("/w/knack".to_string());
+        let starter = |o: &str| st.started_by(o).map(str::to_string);
+        assert!(!project_has_other_live(
+            coord,
+            Some("/w/knack"),
+            &links,
+            cwd_of,
+            starter
+        ));
+        let mut busy = links.clone();
+        busy.insert(
+            "other".into(),
+            SendLink {
+                pid: Some(300),
+                ..Default::default()
+            },
+        );
+        assert!(project_has_other_live(
+            coord,
+            Some("/w/knack"),
+            &busy,
+            cwd_of,
+            starter
+        ));
+        // A fresh monitor, the worker long gone: the edge comes back from the cache root.
+        let again = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut st2 = again.state.lock().unwrap();
+        st2.rows.insert(coord.into(), row(7_200, false));
+        st2.rows.insert(worker.into(), row(299, true));
+        assert_eq!(st2.started_by(worker), Some(coord), "kept across a restart");
+        // A starter this index does not know leaves the worker a row of its own.
+        st2.rows.remove(coord);
+        assert_eq!(st2.started_by(worker), None);
+    }
+
+    /// #s53 with no sighting at all: a one-shot session started in another session's scratch
+    /// (#373: knack's workers run in worktrees under their coordinator's scratchpad) is that
+    /// session's worker. An INTERACTIVE session there is not — it is the owner's own.
+    #[test]
+    fn a_one_shot_session_in_a_session_s_scratch_is_its_worker() {
+        let mut st = State::default();
+        let coord = "96b453d7-0d7b-4e63-af27-4f7e0ef030eb";
+        st.rows.insert(coord.into(), growth_row("/w/knack", false));
+        let mut worker = growth_row("/tmp/claude-502/-w-knack/x/scratchpad/wt-1", false);
+        worker.spawned_by = Some(coord.into());
+        worker.one_shot = true;
+        st.rows.insert("w".into(), worker);
+        let mut own = growth_row("/tmp/claude-502/-w-knack/x/scratchpad/wt-2", false);
+        own.spawned_by = Some(coord.into());
+        st.rows.insert("own".into(), own);
+        assert_eq!(st.started_by("w"), Some(coord));
+        assert_eq!(st.started_by("own"), None);
+    }
+
+    /// #s53: a one-shot session's head names it and its brief (the first line of its first
+    /// prompt, a string or text parts); an interactive session has no brief at all.
+    #[test]
+    fn a_one_shot_head_gives_its_brief() {
+        let dir = std::env::temp_dir().join(format!("cm-brief-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            p
+        };
+        let queued = r#"{"type":"queue-operation","operation":"enqueue","sessionId":"x","timestamp":"2026-10-08T10:00:00Z"}"#;
+        let worker = file(
+            "w.jsonl",
+            &format!(
+                "{queued}\n{}\n",
+                r#"{"type":"user","entrypoint":"sdk-cli","message":{"role":"user","content":"\n  You are a builder on B74.\nRead the rules first."},"timestamp":"2026-10-08T10:00:01Z"}"#
+            ),
+        );
+        assert_eq!(
+            head_one_shot(&worker).as_deref(),
+            Some("You are a builder on B74.")
+        );
+        let parts = file(
+            "p.jsonl",
+            r#"{"type":"user","entrypoint":"sdk-cli","message":{"role":"user","content":[{"type":"text","text":"review B71"}]},"timestamp":"2026-10-08T10:00:01Z"}"#,
+        );
+        assert_eq!(head_one_shot(&parts).as_deref(), Some("review B71"));
+        let own = file(
+            "o.jsonl",
+            r#"{"type":"user","entrypoint":"cli","message":{"role":"user","content":"hi"},"timestamp":"2026-10-08T10:00:01Z"}"#,
+        );
+        assert_eq!(head_one_shot(&own), None);
     }
 }

@@ -252,12 +252,15 @@ const sessionIndex = new SessionIndexStore({
   update: () => {
     if (indexState.selected && indexState.selectedWasRow && !selectedRow()) sessionGone();
     renderTree(); renderHeader(); controls.paint();
+    // The open session's workers (#s53) are index rows, not records: their arrival and their state
+    // reach the Agents pane on the index's poll, which redraws the outline only when they changed.
+    if (recordState.session && workersKey(sessionWorkers()) !== lastWorkers) renderNavigator();
     if (!indexState.selected) {
       // A requested id is honoured even when it is not a list row: a sub-agent child never is,
       // and a link to one must open it, not the first session. A bad id shows "Cannot read
       // this session" from the record store rather than silently opening something else.
       const requested = new URLSearchParams(location.search).get("session");
-      const first = requested || [...indexState.rows.values()].find(row => !row.hidden)?.id;
+      const first = requested || [...indexState.rows.values()].find(row => !row.hidden && !row.startedBy)?.id;
       if (first) selectSession(first, false);
     }
   },
@@ -302,8 +305,20 @@ function stateDenote(row) { return denoteState(row, Number(indexState.read[row.i
 function loadSessions() { return sessionIndex.refresh(); }
 
 function groupedSessions() {
-  return sessionIndex.grouped().map(agent => ({ ...agent, name: agentName(agent.id) }));
+  return sessionIndex.grouped().map(agent => ({
+    ...agent,
+    name: agentName(agent.id),
+    // #s53: a headless worker whose starter this index knows lives in that session's Agents pane,
+    // not in the list (the server sends `startedBy` only for a starter that is a row here).
+    projects: agent.projects.map(project => ({ ...project, sessions: project.sessions.filter(row => !row.startedBy) })).filter(project => project.sessions.length)
+  })).filter(agent => agent.projects.length);
 }
+/** The open session's headless workers (#s53): the rows it started, oldest first. */
+function sessionWorkers(id = recordState.session) {
+  if (!id) return [];
+  return [...indexState.rows.values()].filter(row => row.startedBy === id).sort((a, b) => (a.startTs || 0) - (b.startTs || 0) || String(a.id).localeCompare(String(b.id)));
+}
+const workerRunning = row => displayState(row).state !== "idle";
 const agentName = id => ({ claude: "Claude Code", codex: "Codex", qoder: "Qoder", qoderwork: "QoderWork", qwenwork: "Qwenwork" })[id] || id;
 const SIDEBAR_SESSION_LIMIT = 5;
 
@@ -362,7 +377,7 @@ function renderTree() {
   const now = Date.now() / 1000;
   const bucketsOf = row => sessionFilterBuckets(row, now);
   const counts = { recent: 0, blocked: 0, idle: 0 }; let total = 0;
-  indexState.rows.forEach(row => { if (row.hidden && !indexState.showHidden) return; total++; for (const bucket of bucketsOf(row)) counts[bucket]++; });
+  indexState.rows.forEach(row => { if (row.startedBy || (row.hidden && !indexState.showHidden)) return; total++; for (const bucket of bucketsOf(row)) counts[bucket]++; });
   const filtered = bucketFilterActive();
   const shownAgents = visibleTree(agents, { showHidden: indexState.showHidden, buckets: filtered ? indexState.buckets : null, bucketsOf });
   const shown = shownAgents.reduce((n, agent) => n + agent.projects.reduce((m, project) => m + project.rows.length, 0), 0);
@@ -642,7 +657,8 @@ function descendTo(childId) { if (!childId) return; parentHints.set(childId, ind
 let synthesizedFor = "";
 function renderParent(meta) {
   const known = recordState.session === indexState.selected ? meta?.ancestors?.at(-1) : null;
-  const hint = parentHints.get(indexState.selected);
+  // A headless worker (#s53) names its starter even when reached by a link, not a descent.
+  const hint = parentHints.get(indexState.selected) || indexState.rows.get(indexState.selected)?.startedBy;
   const parent = known || (hint ? { id: hint, title: indexState.rows.get(hint)?.name || hint } : null);
   parentBtn.classList.toggle("is-live", !!parent);
   parentBtn.dataset.parent = parent?.id || "";
@@ -813,6 +829,18 @@ function refreshFleets() {
     if (box) box.outerHTML = html;
     else shell.insertAdjacentHTML("beforeend", html);
   }
+}
+// #s53: the open session's headless workers in its Agents pane, after its in-process sub-agents.
+// A row opens the worker's own session the way a sub-agent row opens its transcript — a descent,
+// so the parent control leads back — and says it is a worker and what state it is in.
+let lastWorkers = "";
+// A worker is named by its BRIEF, the first line of the prompt it was started with: its own title
+// is its project's, the same for every worker of a coordinator.
+const workerName = row => row.brief || row.name || row.id;
+const workersKey = workers => workers.map(row => `${row.id}:${displayState(row).reason}:${workerName(row)}`).join("|");
+function workerRow(row) {
+  const state = displayState(row), name = workerName(row);
+  return `<div class="outline-agent-row"><button class="outline-agent" type="button" data-worker-session="${escapeText(row.id)}" title="Open the worker's session — ${escapeText(name)}"><span class="agent-state ${workerRunning(row) ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(name)}</strong><small>worker · ${escapeText(state.label)}</small></span><span class="outline-agent-tail"></span></button></div>`;
 }
 function directAgents(source = recordState.meta) {
   const meta = source || {}, result = [...(meta.children || [])], ids = new Set(result.map(item => item.id));
@@ -1287,14 +1315,18 @@ function renderNavigator() {
       : '<div class="activity-empty">No session tasks</div>';
   byId("navigatorWork").innerHTML = taskShown.map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("") || noTasks;
   mobileShell?.tasksChanged(); // the phone drop-down's jumps name the groups just drawn (#319)
-  const agents = directAgents(), activeAgents = agents.filter(agent => agent.running).length;
-  byId("navigatorAgentCount").innerHTML = outlineSummary(activeAgents, agents.length - activeAgents, agents.length);
+  const agents = directAgents(), workers = sessionWorkers();
+  const activeAgents = agents.filter(agent => agent.running).length + workers.filter(workerRunning).length;
+  const allAgents = agents.length + workers.length;
+  byId("navigatorAgentCount").innerHTML = outlineSummary(activeAgents, allAgents - activeAgents, allAgents);
+  lastWorkers = workersKey(workers);
   // A sub-agent row (#61): the click opens the sub-agent's OWN transcript — the whole view
   // switches, the header shows the child with its way back to the parent — and the spawn point
   // in the parent stays reachable as a small secondary control when the record stream kept it.
   const liveAgentsOnly = uiState.liveOnly.has("agents");
   const shownAgents = liveAgentsOnly ? agents.filter(agent => agent.running) : agents;
-  const hiddenAgents = agents.length - shownAgents.length;
+  const shownWorkers = liveAgentsOnly ? workers.filter(workerRunning) : workers;
+  const hiddenAgents = allAgents - shownAgents.length - shownWorkers.length;
   const noAgents = liveAgentsOnly && hiddenAgents
     ? `<div class="activity-empty">None running — ${hiddenAgents} finished ${hiddenAgents === 1 ? "agent" : "agents"} hidden</div>`
     : '<div class="activity-empty">No direct children</div>';
@@ -1302,7 +1334,7 @@ function renderNavigator() {
     const target = recordState.agentTargets.get(String(agent.id));
     const spawn = target == null ? "" : `<button class="outline-agent-spawn" type="button" data-agent-record="${target}" title="Jump to where the parent launched this agent" aria-label="Jump to where the parent launched ${escapeText(agent.title || agent.id)}"><span aria-hidden="true">↳</span></button>`;
     return `<div class="outline-agent-row"><button class="outline-agent" type="button" data-child-outline="${escapeText(agent.id)}" title="Open the sub-agent's transcript"><span class="agent-state ${agent.running ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(agent.title || agent.description || agent.id)}</strong><small>${escapeText(agent.type || agent.agent_type || "agent")}</small></span><span class="outline-agent-tail"></span></button>${spawn}</div>`;
-  }).join("") || noAgents;
+  }).concat(shownWorkers.map(workerRow)).join("") || noAgents;
   // What the filter is holding back, for the menu row that controls it to say so (#215). The head
   // reads "25 active · 253/308 done" either way, so without this the reader has no way to tell a
   // pane that is filtered from a pane that is simply short.
@@ -1314,11 +1346,11 @@ function renderNavigator() {
   // only what survived the live filter (#186), the state filter (#218) and the untitled rule
   // (#217), so on any real session its target was past the end and the click did nothing at all.
   recordState.shownTaskRows = taskShown.flatMap(group => group.rows);
-  renderSessionInfo(turnCount, agents.length);
+  renderSessionInfo(turnCount, allAgents);
   document.querySelectorAll("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   stackOutlineHeads();
   document.querySelector(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
-  mobileShell?.counts(turnCount, counted.length, agents.length);
+  mobileShell?.counts(turnCount, counted.length, allAgents);
 }
 const outlineSummary = (active, done, total) => !total ? "0" : `${active ? `<span class="outline-stat-item active"><i class="outline-stat-dot"></i>${active} active</span>` : ""}<span class="outline-stat-item done"><i class="outline-stat-dot"></i>${done}/${total} done</span>`;
 // The info pane (#67, #68): only what the shell does not already show — the title, the agent and
@@ -1426,6 +1458,7 @@ const navigatorClick = event => {
   const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); viewport.jumpToRecord(Number(task.dataset.taskRecord), "task"); return; }
   const agent = event.target.closest("[data-agent-record]"); if (agent) { viewport.jumpToRecord(Number(agent.dataset.agentRecord), "agent"); return; }
   const child = event.target.closest("[data-child-outline]"); if (child) { descendTo(child.dataset.childOutline); return; }
+  const worker = event.target.closest("[data-worker-session]"); if (worker) { descendTo(worker.dataset.workerSession); return; }
   // A card's head opens and shuts ITS drawer (#74, #139) — the whole head, and nothing else
   // changes: the other drawers keep their openness. On the one drawer that is part-way, the
   // toggle completes the movement the slide was making instead (design/outline-drawers.md).
@@ -3409,7 +3442,7 @@ var phoneDock;
     navigatorClick(event);
     // A task's card opens OVER the list, which stays open under it (#319, the owner): closing the
     // card goes back to the list, where the next task is one tap away.
-    if (event.target.closest("[data-turn-record], [data-task-record], [data-agent-record], [data-child-outline]")) closePane();
+    if (event.target.closest("[data-turn-record], [data-task-record], [data-agent-record], [data-child-outline], [data-worker-session]")) closePane();
   });
   // A tap outside closes the list — unless a task's card is open over it, when the tap is the
   // card's (it closes the card; its own handler), and the list is still there after it.
