@@ -482,12 +482,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         // last commit": the state is as-of that line, so the baseline must be too.
         for (m, c) in &e.tokens {
             let prev = self.emitted.tokens.get(m).copied().unwrap_or_default();
-            let d = crate::metrics::TokenCounts {
-                input: c.input.saturating_sub(prev.input),
-                cache_creation: c.cache_creation.saturating_sub(prev.cache_creation),
-                cache_read: c.cache_read.saturating_sub(prev.cache_read),
-                output: c.output.saturating_sub(prev.output),
-            };
+            let d = c.saturating_sub(&prev);
             if d != crate::metrics::TokenCounts::default() {
                 rec.tokens.insert(m.clone(), d);
             }

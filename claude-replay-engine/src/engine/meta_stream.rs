@@ -266,11 +266,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// with a diff), and the run names it ("edited 2 files, created 1 file"). A v47 stream holds each
 /// as a block of its own between the run's halves.
 ///
+/// v49: #s47 — a model priced by prompt length (Claude Haiku 5.5) carries the tokens of its
+/// requests over the line in `TokenCounts::long_prompt`. A v48 stream holds them only in the
+/// totals, and would price them at the standard rates as if exact.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 48;
+pub const FOLD_VERSION: u16 = 49;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

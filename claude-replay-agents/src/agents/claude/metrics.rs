@@ -4,7 +4,8 @@
 //! formatting live in [`claude_replay_engine::seam`].
 
 use claude_replay_engine::seam::{
-    credits_cost, parse_ts, total_cost, Metrics, ReportedCost, RuntimeInfo, TimeSpan, TokenCounts,
+    credits_cost, long_prompt_over, parse_ts, total_cost, Metrics, ReportedCost, RuntimeInfo,
+    TimeSpan, TokenCounts,
 };
 use serde_json::Value;
 
@@ -159,6 +160,7 @@ impl MetricsAcc {
                 cache_creation: field(u, "cache_creation_input_tokens"),
                 cache_read: field(u, "cache_read_input_tokens"),
                 output: field(u, "output_tokens"),
+                ..Default::default()
             };
             // One API call may arrive as several lines carrying the same `usage`; credit
             // only what grew since this call was last seen (see `last_usage_key`). A line
@@ -192,18 +194,21 @@ impl MetricsAcc {
                         .saturating_sub(self.credited.cache_creation),
                     cache_read: seen.cache_read.saturating_sub(self.credited.cache_read),
                     output: seen.output.saturating_sub(self.credited.output),
+                    ..Default::default()
                 }
             } else {
                 seen
             };
             // Per-field max, so a repeat that grew in one field and shrank in another
             // can never be re-credited for the shrunk one later in the same group.
+            let prior = self.credited;
             self.credited = if repeat {
                 TokenCounts {
                     input: self.credited.input.max(seen.input),
                     cache_creation: self.credited.cache_creation.max(seen.cache_creation),
                     cache_read: self.credited.cache_read.max(seen.cache_read),
                     output: self.credited.output.max(seen.output),
+                    ..Default::default()
                 }
             } else {
                 seen
@@ -212,7 +217,24 @@ impl MetricsAcc {
                 self.last_usage_key = key;
                 self.last_usage_model = Some(m.clone());
             }
-            *self.per_model.entry(m).or_default() += credit;
+            // A model priced by prompt length (#s47: Claude Haiku 5.5, 5x over 100,000) takes
+            // the whole request's tokens into the long subset when its prompt is over the line.
+            // The prompt is the call's, so a repeat is judged by what the call has credited in
+            // all; one whose prompt grew across the line moves the call's earlier credit too.
+            let long = long_prompt_over(&m).and_then(|over| {
+                let now = self.credited.prompt() > over;
+                let before = repeat && prior.prompt() > over;
+                match (now, before) {
+                    (true, true) => Some(credit),
+                    (true, false) => Some(self.credited),
+                    (false, _) => None,
+                }
+            });
+            let bucket = self.per_model.entry(m).or_default();
+            *bucket += credit;
+            if let Some(long) = long {
+                bucket.long_prompt += long.into();
+            }
             // Qoder bills in `credits` with zeroed token counts and an opaque model alias,
             // so credits are the only honest cost figure. Folded as micro-credits into the
             // reserved `credits_micro` extra key the shared footer reads. Real Claude usage
@@ -1025,5 +1047,120 @@ mod runtime_tests {
         assert_eq!(m.runtime.context_window_tokens, Some(128_000));
         let m = fold(&[r#"{"type":"runtime-config","sessionId":"q","model":"","reasoningEffort":null,"contextWindow":null,"timestamp":1}"#]).finish();
         assert!(m.runtime.reasoning_effort.is_none() && m.runtime.context_window_tokens.is_none());
+    }
+}
+
+/// #s47: a model priced by prompt length — Claude Haiku 5.5, 5x on every class over 100,000
+/// prompt tokens — has each request judged by its own prompt.
+#[cfg(test)]
+mod long_prompt_tests {
+    use super::*;
+    use claude_replay_engine::seam::LongPrompt;
+
+    /// A Haiku 5.5 call whose prompt is `input` new tokens, `write` cache writes and `read`
+    /// cache reads. Synthetic.
+    fn haiku(id: &str, input: u64, write: u64, read: u64, out: u64) -> Value {
+        serde_json::json!({"type": "assistant", "requestId": format!("req_{id}"),
+            "message": {"role": "assistant", "id": format!("msg_{id}"), "model": "claude-haiku-5-5",
+                "usage": {"input_tokens": input, "cache_creation_input_tokens": write,
+                    "cache_read_input_tokens": read, "output_tokens": out}},
+            "timestamp": "2026-10-08T10:00:00Z"})
+    }
+
+    fn usd(acc: &MetricsAcc) -> f64 {
+        let m = acc.clone().finish();
+        assert!(!m.cost_partial, "Haiku 5.5 is priced, not a lower bound");
+        m.cost_usd.expect("priced")
+    }
+
+    fn close(got: f64, want: f64) -> bool {
+        (got - want).abs() < 1e-12
+    }
+
+    /// #s47: the prompt is input + cache writes + cache reads, and the higher rate starts OVER
+    /// 100,000 — at exactly 100,000 a request pays the standard rates.
+    #[test]
+    fn haiku_5_5_prices_each_request_by_its_prompt_and_the_boundary_is_strict() {
+        // 10,000 + 20,000 + 70,000 = 100,000: standard. Output $0.50/MTok.
+        let mut at = MetricsAcc::default();
+        at.push(&haiku("A", 10_000, 20_000, 70_000, 1_000));
+        let standard =
+            (10_000.0 * 0.10 + 20_000.0 * 0.125 + 70_000.0 * 0.01 + 1_000.0 * 0.50) / 1e6;
+        assert!(close(usd(&at), standard), "{} != {standard}", usd(&at));
+        assert!(at.clone().finish().per_model["claude-haiku-5-5"]
+            .long_prompt
+            .is_empty());
+        // One more token of cache read: the whole request at 5x, every class.
+        let mut over = MetricsAcc::default();
+        over.push(&haiku("B", 10_000, 20_000, 70_001, 1_000));
+        let long =
+            5.0 * (10_000.0 * 0.10 + 20_000.0 * 0.125 + 70_001.0 * 0.01 + 1_000.0 * 0.50) / 1e6;
+        assert!(close(usd(&over), long), "{} != {long}", usd(&over));
+        // A session with both sums them.
+        let mut both = MetricsAcc::default();
+        both.push(&haiku("A", 10_000, 20_000, 70_000, 1_000));
+        both.push(&haiku("B", 10_000, 20_000, 70_001, 1_000));
+        assert!(close(usd(&both), standard + long), "{}", usd(&both));
+        let bucket = both.clone().finish().per_model["claude-haiku-5-5"];
+        assert_eq!(bucket.cache_read, 140_001, "the totals hold every token");
+        assert_eq!(
+            bucket.long_prompt.cache_read, 70_001,
+            "the subset only the long request's"
+        );
+    }
+
+    /// One call written as several lines is judged once, as a call: its later lines' growth
+    /// joins the tier its prompt put it in, and a prompt that grows over the line across the
+    /// lines moves what the call had credited before.
+    #[test]
+    fn a_call_over_several_lines_keeps_one_tier() {
+        let mut acc = MetricsAcc::default();
+        acc.push(&haiku("C", 5, 0, 150_000, 10));
+        acc.push(&haiku("C", 5, 0, 150_000, 400));
+        let b = acc.clone().finish().per_model["claude-haiku-5-5"];
+        assert_eq!((b.output, b.long_prompt.output), (400, 400));
+        assert_eq!(b.long_prompt.cache_read, 150_000, "credited once");
+
+        let mut crossing = MetricsAcc::default();
+        crossing.push(&haiku("D", 5, 0, 99_000, 10));
+        crossing.push(&haiku("D", 5, 0, 120_000, 30));
+        let b = crossing.clone().finish().per_model["claude-haiku-5-5"];
+        assert_eq!(
+            b.long_prompt,
+            LongPrompt::from(TokenCounts {
+                input: 5,
+                cache_read: 120_000,
+                output: 30,
+                ..Default::default()
+            })
+        );
+        assert_eq!(b.cache_read, 120_000);
+    }
+
+    /// The tier crosses a resume as the call does: a cursor parked inside a long call adds only
+    /// the growth, to the subset.
+    #[test]
+    fn the_tier_survives_a_resume_inside_a_call() {
+        let mut before = MetricsAcc::default();
+        before.push(&haiku("E", 5, 0, 150_000, 10));
+        let parked = before.state();
+        let mut after = MetricsAcc::default();
+        after.restore(&parked);
+        after.push(&haiku("E", 5, 0, 150_000, 400));
+        let b = after.clone().finish().per_model["claude-haiku-5-5"];
+        assert_eq!((b.output, b.long_prompt.output), (400, 400));
+        assert_eq!(b.long_prompt.cache_read, 150_000);
+    }
+
+    /// A model the catalog prices at one rate whatever the prompt never gets a subset.
+    #[test]
+    fn a_model_without_a_prompt_rule_keeps_no_subset() {
+        let mut acc = MetricsAcc::default();
+        acc.push(&serde_json::json!({"type": "assistant", "requestId": "req_F",
+            "message": {"role": "assistant", "id": "msg_F", "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 2, "cache_read_input_tokens": 500_000, "output_tokens": 100}}}));
+        assert!(acc.clone().finish().per_model["claude-opus-4-8"]
+            .long_prompt
+            .is_empty());
     }
 }

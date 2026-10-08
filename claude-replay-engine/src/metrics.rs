@@ -187,9 +187,46 @@ pub struct TokenCounts {
     pub cache_creation: u64,
     pub cache_read: u64,
     pub output: u64,
+    /// Of the four counts above, the part that came from requests whose PROMPT was over the
+    /// model's long-prompt threshold (#s47) — a SUBSET, never added on top, so a reader that
+    /// knows nothing of it still sees every token. Claude Haiku 5.5 bills a prompt over 100,000
+    /// tokens at 5x on every class, and the transcript records usage per request, so only the
+    /// fold can tell the two apart; [`price_with`](Self::price_with) prices this part at the
+    /// model's long factors. Absent from the serialized form while empty, so a session with no
+    /// long prompt serializes exactly as before.
+    #[serde(default, skip_serializing_if = "LongPrompt::is_empty")]
+    pub long_prompt: LongPrompt,
 }
 
-impl std::ops::AddAssign for TokenCounts {
+/// The four token classes of the requests over a model's long-prompt threshold — see
+/// [`TokenCounts::long_prompt`].
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct LongPrompt {
+    pub input: u64,
+    pub cache_creation: u64,
+    pub cache_read: u64,
+    pub output: u64,
+}
+
+impl LongPrompt {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl From<TokenCounts> for LongPrompt {
+    /// A request's four classes, all of them over the threshold.
+    fn from(t: TokenCounts) -> Self {
+        Self {
+            input: t.input,
+            cache_creation: t.cache_creation,
+            cache_read: t.cache_read,
+            output: t.output,
+        }
+    }
+}
+
+impl std::ops::AddAssign for LongPrompt {
     fn add_assign(&mut self, o: Self) {
         self.input += o.input;
         self.cache_creation += o.cache_creation;
@@ -198,22 +235,101 @@ impl std::ops::AddAssign for TokenCounts {
     }
 }
 
+impl std::ops::AddAssign for TokenCounts {
+    fn add_assign(&mut self, o: Self) {
+        self.input += o.input;
+        self.cache_creation += o.cache_creation;
+        self.cache_read += o.cache_read;
+        self.output += o.output;
+        self.long_prompt += o.long_prompt;
+    }
+}
+
 impl TokenCounts {
+    /// What `self` holds beyond `before`, field by field and the long-prompt subset with it —
+    /// the difference between two captures of one monotone fold.
+    pub fn saturating_sub(&self, before: &Self) -> Self {
+        let (a, b) = (self.long_prompt, before.long_prompt);
+        Self {
+            input: self.input.saturating_sub(before.input),
+            cache_creation: self.cache_creation.saturating_sub(before.cache_creation),
+            cache_read: self.cache_read.saturating_sub(before.cache_read),
+            output: self.output.saturating_sub(before.output),
+            long_prompt: LongPrompt {
+                input: a.input.saturating_sub(b.input),
+                cache_creation: a.cache_creation.saturating_sub(b.cache_creation),
+                cache_read: a.cache_read.saturating_sub(b.cache_read),
+                output: a.output.saturating_sub(b.output),
+            },
+        }
+    }
+
+    /// The prompt a request sent, by the context-windows page's own reading (#s47): new input,
+    /// cache writes and cache reads all count toward it.
+    pub fn prompt(&self) -> u64 {
+        self.input + self.cache_creation + self.cache_read
+    }
+
     /// This model context's exact estimated price, or `None` when it isn't priced.
     pub fn price(&self, model: &ModelContext) -> Option<PriceEstimate> {
         self.price_with(&PriceTable::default(), model)
     }
 
-    /// [`price`](Self::price) against host-supplied rates — see [`PriceTable`].
+    /// [`price`](Self::price) against host-supplied rates — see [`PriceTable`]. The
+    /// [`long_prompt`](Self::long_prompt) subset is priced at the model's long factors when its
+    /// catalog policy has a long-context rule, the rest at the standard rates.
     pub fn price_with(&self, prices: &PriceTable, model: &ModelContext) -> Option<PriceEstimate> {
-        estimate_price_with(
+        let long = self.long_prompt;
+        let factors = (!long.is_empty())
+            .then(|| builtin_request_policies().get(&prices.normalizer.normalize(model)))
+            .flatten()
+            .filter(|policy| policy.long_context)
+            .map(RequestPolicy::long_factors);
+        let Some(factors) = factors else {
+            return estimate_price_with(
+                prices,
+                model,
+                self.input,
+                self.cache_creation,
+                self.cache_read,
+                self.output,
+            );
+        };
+        let standard = estimate_price_with(
             prices,
             model,
-            self.input,
-            self.cache_creation,
-            self.cache_read,
-            self.output,
-        )
+            self.input.saturating_sub(long.input),
+            self.cache_creation.saturating_sub(long.cache_creation),
+            self.cache_read.saturating_sub(long.cache_read),
+            self.output.saturating_sub(long.output),
+        )?;
+        let price = prices.resolve(model)?;
+        let den = factors.den();
+        let numerator = [
+            (long.input, price.input(), factors.input),
+            (
+                long.cache_creation,
+                price.cache_write(),
+                factors.cache_write,
+            ),
+            (long.cache_read, price.cache_read(), factors.cache_read),
+            (long.output, price.output(), factors.output),
+        ]
+        .into_iter()
+        .try_fold(0u128, |sum, (tokens, rate, [n, d])| {
+            let component = u128::from(tokens)
+                .checked_mul(u128::from(rate.amount_micros()))?
+                .checked_mul(u128::from(n * (den / d)))?;
+            sum.checked_add(component)
+        })?;
+        let denominator = u128::from(price.unit().tokens())
+            .checked_mul(u128::from(AMOUNT_MICROS_PER_UNIT))?
+            .checked_mul(u128::from(den))?;
+        standard.checked_add(&PriceEstimate::new(
+            numerator,
+            denominator,
+            price.unit().currency().map(str::to_string),
+        ))
     }
 
     /// Backward-compatible USD projection for callers that still carry only a model name.
@@ -359,34 +475,35 @@ impl RequestPricing {
             _ => Some([1, 1]),
         });
         let [tier_num, tier_den] = factor.unwrap_or([1, 1]).map(u128::from);
+        // Every class over one common denominator, so the price stays one exact fraction.
+        let factors = policy.map_or(OPENAI_LONG_FACTORS, RequestPolicy::long_factors);
+        let den = factors.den();
         let mut numerator = 0u128;
-        for (count, rate, output) in [
-            (tokens.input, base.input(), false),
-            (tokens.cache_creation, base.cache_write(), false),
-            (tokens.cache_read, base.cache_read(), false),
-            (tokens.output, base.output(), true),
+        for (count, rate, [n, d]) in [
+            (tokens.input, base.input(), factors.input),
+            (
+                tokens.cache_creation,
+                base.cache_write(),
+                factors.cache_write,
+            ),
+            (tokens.cache_read, base.cache_read(), factors.cache_read),
+            (tokens.output, base.output(), factors.output),
         ] {
-            let context_num = if long {
-                if output {
-                    3
-                } else {
-                    4
-                }
-            } else {
-                2
-            };
+            let context_num = if long { n * (den / d) } else { den };
             let Some(n) = u128::from(count)
                 .checked_mul(u128::from(rate.amount_micros()))
                 .and_then(|n| n.checked_mul(tier_num))
-                .and_then(|n| n.checked_mul(context_num))
+                .and_then(|n| n.checked_mul(u128::from(context_num)))
                 .and_then(|n| numerator.checked_add(n))
             else {
                 return (None, true);
             };
             numerator = n;
         }
-        let denominator =
-            u128::from(base.unit().tokens()) * u128::from(AMOUNT_MICROS_PER_UNIT) * tier_den * 2;
+        let denominator = u128::from(base.unit().tokens())
+            * u128::from(AMOUNT_MICROS_PER_UNIT)
+            * tier_den
+            * u128::from(den);
         let price = PriceEstimate::new(
             numerator,
             denominator,
@@ -942,12 +1059,76 @@ struct PricingEntry {
 #[serde(deny_unknown_fields)]
 struct RequestPolicy {
     long_context: bool,
+    /// The prompt size over which a request is long (#s47), when the CATALOG decides it: a
+    /// request whose [`TokenCounts::prompt`] is strictly over this. `None` where the adapter
+    /// decides it from its own record (the Codex adapter's 272K for OpenAI).
+    #[serde(default)]
+    long_prompt_over: Option<u64>,
+    /// What a long request pays per class, relative to the standard rates. `None` is OpenAI's
+    /// rule, [`OPENAI_LONG_FACTORS`].
+    #[serde(default)]
+    long_factors: Option<LongFactors>,
     fast: Option<[u64; 2]>,
     fast_long: Option<[u64; 2]>,
     ultrafast: Option<[u64; 2]>,
     ultrafast_long: Option<[u64; 2]>,
     flex: Option<[u64; 2]>,
     batch: Option<[u64; 2]>,
+}
+
+impl RequestPolicy {
+    fn long_factors(&self) -> LongFactors {
+        self.long_factors.unwrap_or(OPENAI_LONG_FACTORS)
+    }
+}
+
+/// A long request's rational multiplier on each class's standard rate.
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LongFactors {
+    input: [u64; 2],
+    cache_write: [u64; 2],
+    cache_read: [u64; 2],
+    output: [u64; 2],
+}
+
+impl LongFactors {
+    fn classes(&self) -> [[u64; 2]; 4] {
+        [self.input, self.cache_write, self.cache_read, self.output]
+    }
+
+    /// The least common multiple of the four denominators: what a price over all four classes
+    /// is kept over, so it stays one exact fraction.
+    fn den(&self) -> u64 {
+        self.classes().iter().fold(1, |l, [_, d]| {
+            let (mut a, mut b) = (l, *d);
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            l / a * d
+        })
+    }
+}
+
+/// OpenAI's long-context rule (2026-09-28, <https://developers.openai.com/api/docs/pricing>):
+/// 2x input and cache, 1.5x output. What a policy without `long_factors` follows.
+const OPENAI_LONG_FACTORS: LongFactors = LongFactors {
+    input: [2, 1],
+    cache_write: [2, 1],
+    cache_read: [2, 1],
+    output: [3, 2],
+};
+
+/// The prompt size over which `model`'s requests bill at its long factors (#s47), when the
+/// catalog states one: [`TokenCounts::prompt`] strictly over it. `None` for a model with no such
+/// rule, and for one whose adapter judges a long request itself (OpenAI's 272K, read by the Codex
+/// adapter). An adapter that records usage per request puts the tokens of such a request in
+/// [`TokenCounts::long_prompt`] as well. Read through the built-in normalizer, as the catalog is.
+pub fn long_prompt_over(model: &str) -> Option<u64> {
+    builtin_request_policies()
+        .get(&normalize_model_name(model))
+        .filter(|policy| policy.long_context)
+        .and_then(|policy| policy.long_prompt_over)
 }
 
 fn builtin_request_policies() -> &'static BTreeMap<String, RequestPolicy> {
@@ -1056,10 +1237,18 @@ fn parse_pricing_catalog(json: &str) -> Result<BTreeMap<String, ModelPrice>, Str
             ]
             .into_iter()
             .flatten()
+            .chain(policy.long_factors.iter().flat_map(LongFactors::classes))
             {
                 if factor[0] == 0 || factor[1] == 0 || factor[0] > 100 || factor[1] > 100 {
                     return Err("request pricing factors must be in 1..=100".into());
                 }
+            }
+            let rule = policy.long_prompt_over.is_some() || policy.long_factors.is_some();
+            if rule && !policy.long_context {
+                return Err("a long-prompt rule needs long_context".into());
+            }
+            if policy.long_prompt_over == Some(0) {
+                return Err("long_prompt_over must be a positive token count".into());
             }
         }
         let price = entry.price(unit);
@@ -1568,6 +1757,9 @@ mod price_tests {
             ("claude-sonnet-5", p("2", "2.5", "0.2", "10")),
             ("claude-sonnet-5-5", p("2", "2.5", "0.1", "10")),
             ("claude-sonnet-5.5", p("2", "2.5", "0.1", "10")),
+            // The standard rates; over 100,000 prompt tokens 5x (#s47, `long_prompt_tests`).
+            ("claude-haiku-5-5", p("0.1", "0.125", "0.01", "0.5")),
+            ("claude-haiku-5.5", p("0.1", "0.125", "0.01", "0.5")),
             ("claude-sonnet-4-6", p("3", "3.75", "0.3", "15")),
             ("claude-3-7-sonnet-20250219", p("3", "3.75", "0.3", "15")),
             ("claude-haiku-4-5-20251001", p("1", "1.25", "0.1", "5")),
@@ -2059,6 +2251,7 @@ mod request_pricing_tests {
             cache_creation: 1_000_000,
             cache_read: 1_000_000,
             output: 1_000_000,
+            ..Default::default()
         };
         for (model, standard) in [
             ("gpt-6-astra", 122.0),
@@ -2222,6 +2415,7 @@ mod request_pricing_tests {
             cache_creation: 1_000_000,
             cache_read: 1_000_000,
             output: 1_000_000,
+            ..Default::default()
         };
         for (tier, long, expected) in [
             (ServiceTier::Standard, false, 73.5),
@@ -2250,5 +2444,186 @@ mod request_pricing_tests {
             RequestPricing::default().cost_with(&table, "unknown", tokens),
             (None, true)
         );
+    }
+}
+
+/// #s47: Claude Haiku 5.5 is priced by prompt length — a request whose prompt is over 100,000
+/// tokens pays 5x on every class, output included. The fold puts such a request's tokens in
+/// [`TokenCounts::long_prompt`] (the Claude adapter's tests hold the boundary); these hold what
+/// the catalog and the price make of them.
+#[cfg(test)]
+mod long_prompt_tests {
+    use super::*;
+
+    const MILLION: TokenCounts = TokenCounts {
+        input: 1_000_000,
+        cache_creation: 1_000_000,
+        cache_read: 1_000_000,
+        output: 1_000_000,
+        long_prompt: LongPrompt {
+            input: 0,
+            cache_creation: 0,
+            cache_read: 0,
+            output: 0,
+        },
+    };
+
+    fn usd(tokens: TokenCounts, model: &str) -> f64 {
+        tokens
+            .price(&ModelContext::new(model))
+            .and_then(|price| price.amount_in("USD"))
+            .expect("priced")
+    }
+
+    fn long(tokens: TokenCounts) -> TokenCounts {
+        TokenCounts {
+            long_prompt: tokens.into(),
+            ..tokens
+        }
+    }
+
+    fn close(got: f64, want: f64) -> bool {
+        (got - want).abs() < 1e-9
+    }
+
+    #[test]
+    fn haiku_5_5_prices_a_long_prompt_at_five_times_every_class() {
+        // $0.10 input + $0.125 cache write + $0.01 cache read + $0.50 output.
+        let standard = usd(MILLION, "claude-haiku-5-5");
+        assert!(close(standard, 0.735), "{standard}");
+        // $0.50 + $0.625 + $0.05 + $2.50: the over-100K row of the pricing page.
+        let over = usd(long(MILLION), "claude-haiku-5-5");
+        assert!(close(over, 3.675), "{over}");
+        // One class alone at a time, so a factor applied to the wrong class cannot cancel out.
+        for (class, want) in [
+            (
+                TokenCounts {
+                    input: 1_000_000,
+                    ..Default::default()
+                },
+                0.5,
+            ),
+            (
+                TokenCounts {
+                    cache_creation: 1_000_000,
+                    ..Default::default()
+                },
+                0.625,
+            ),
+            (
+                TokenCounts {
+                    cache_read: 1_000_000,
+                    ..Default::default()
+                },
+                0.05,
+            ),
+            (
+                TokenCounts {
+                    output: 1_000_000,
+                    ..Default::default()
+                },
+                2.5,
+            ),
+        ] {
+            let got = usd(long(class), "claude-haiku-5.5");
+            assert!(close(got, want), "{class:?}: {got}, not {want}");
+        }
+    }
+
+    #[test]
+    fn a_session_mixing_both_tiers_sums_them() {
+        let mut bucket = MILLION;
+        bucket += long(MILLION);
+        let got = usd(bucket, "claude-haiku-5-5");
+        assert!(close(got, 0.735 + 3.675), "{got}");
+        let per_model = BTreeMap::from([("claude-haiku-5-5".to_string(), bucket)]);
+        let (cost, partial) = total_cost(&per_model);
+        assert!(close(cost.unwrap(), 0.735 + 3.675) && !partial);
+    }
+
+    /// The subset is priced at the model's OWN rule: none for a model that has no long-context
+    /// rule, and OpenAI's 2x / 1.5x for one whose policy names no factors.
+    #[test]
+    fn the_subset_follows_each_model_s_own_rule() {
+        let sonnet = usd(long(MILLION), "claude-sonnet-5-5");
+        assert!(close(sonnet, usd(MILLION, "claude-sonnet-5-5")), "{sonnet}");
+        // gpt-6-sol: $2 input, $2.50 cache write, $0.20 cache read, $10 output.
+        let sol = usd(long(MILLION), "gpt-6-sol");
+        assert!(close(sol, 2.0 * (2.0 + 2.5 + 0.2) + 1.5 * 10.0), "{sol}");
+    }
+
+    #[test]
+    fn the_threshold_is_the_catalog_s() {
+        assert_eq!(long_prompt_over("claude-haiku-5-5"), Some(100_000));
+        assert_eq!(long_prompt_over("claude-haiku-5.5"), Some(100_000));
+        assert_eq!(long_prompt_over("claude-sonnet-5-5"), None);
+        assert_eq!(
+            long_prompt_over("gpt-6-sol"),
+            None,
+            "the Codex adapter judges OpenAI's 272K off the request itself"
+        );
+    }
+
+    /// The per-request path (a consumer that classifies each request) reads the same factors.
+    #[test]
+    fn a_long_request_s_context_uses_the_model_s_own_factors() {
+        let table = PriceTable::default();
+        let context = |long_context| RequestPricing {
+            tier: ServiceTier::Standard,
+            long_context: Some(long_context),
+            tier_confirmed: true,
+        };
+        let (short, _) = context(false).cost_with(&table, "claude-haiku-5-5", MILLION);
+        let (over, _) = context(true).cost_with(&table, "claude-haiku-5-5", MILLION);
+        assert!(close(short.unwrap(), 0.735), "{short:?}");
+        assert!(close(over.unwrap(), 3.675), "{over:?}");
+    }
+
+    /// A session with no long prompt serializes exactly as before, and an entry written before
+    /// the subset existed reads back with it empty.
+    #[test]
+    fn an_empty_subset_is_not_written() {
+        let plain = r#"{"input":1,"cache_creation":2,"cache_read":3,"output":4}"#;
+        let t: TokenCounts = serde_json::from_str(plain).unwrap();
+        assert!(t.long_prompt.is_empty());
+        assert_eq!(serde_json::to_string(&t).unwrap(), plain);
+        let l = long(t);
+        let back: TokenCounts = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+        assert_eq!(back, l);
+    }
+
+    #[test]
+    fn a_difference_carries_the_subset() {
+        let mut after = MILLION;
+        after += long(TokenCounts {
+            output: 7,
+            ..Default::default()
+        });
+        let d = after.saturating_sub(&MILLION);
+        assert_eq!(d.output, 7);
+        assert_eq!(d.long_prompt.output, 7);
+        assert_eq!(d.input, 0);
+    }
+
+    #[test]
+    fn the_catalog_refuses_a_long_prompt_rule_it_cannot_apply() {
+        let with = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut catalog: serde_json::Value = serde_json::from_str(PRICING_JSON).unwrap();
+            let entry = catalog["models"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|entry| entry["ids"][0] == "claude-haiku-5-5")
+                .unwrap();
+            edit(&mut entry["request_pricing"]);
+            parse_pricing_catalog(&catalog.to_string())
+        };
+        assert!(with(&|_| {}).is_ok());
+        let err = with(&|p| p["long_context"] = serde_json::json!(false)).unwrap_err();
+        assert!(err.contains("long_context"), "{err}");
+        let err = with(&|p| p["long_prompt_over"] = serde_json::json!(0)).unwrap_err();
+        assert!(err.contains("positive"), "{err}");
+        let err = with(&|p| p["long_factors"]["output"] = serde_json::json!([5, 0])).unwrap_err();
+        assert!(err.contains("factors"), "{err}");
     }
 }

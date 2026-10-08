@@ -267,12 +267,7 @@ fn diff_tokens(
     let mut out = BTreeMap::new();
     for (model, a) in after {
         let b = before.get(model).copied().unwrap_or_default();
-        let d = TokenCounts {
-            input: a.input.saturating_sub(b.input),
-            cache_creation: a.cache_creation.saturating_sub(b.cache_creation),
-            cache_read: a.cache_read.saturating_sub(b.cache_read),
-            output: a.output.saturating_sub(b.output),
-        };
+        let d = a.saturating_sub(&b);
         if d != TokenCounts::default() {
             out.insert(model.clone(), d);
         }

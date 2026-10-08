@@ -1134,6 +1134,7 @@ fn a_rewritten_transcript_merges_exactly_by_usage_id() {
             cache_creation: e.cache_creation.max(t.cache_creation),
             cache_read: e.cache_read.max(t.cache_read),
             output: e.output.max(t.output),
+            ..Default::default()
         };
     }
     let output = |m: &BTreeMap<String, TokenCounts>| m.values().map(|t| t.output).sum::<u64>();
@@ -2549,5 +2550,78 @@ fn a_meta_record_without_durations_still_deserializes() {
         rec.turn_durations.is_empty(),
         "an old record reads as no durations recorded, which is also what a turn with no \
          record genuinely has"
+    );
+}
+
+/// #s47: a Claude Haiku 5.5 session — one call at exactly 100,000 prompt tokens, one over the line
+/// written as two lines, then another at the standard rates — for the paths that rebuild totals
+/// from differences rather than folding the whole file.
+const HAIKU_LINES: &[&str] = &[
+    r#"{"type":"user","cwd":"/r","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-10-08T10:00:00Z"}"#,
+    r#"{"type":"assistant","requestId":"req_A","message":{"role":"assistant","id":"msg_A","model":"claude-haiku-5-5","usage":{"input_tokens":10000,"cache_creation_input_tokens":20000,"cache_read_input_tokens":70000,"output_tokens":100},"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-10-08T10:00:01Z"}"#,
+    r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]},"timestamp":"2026-10-08T10:00:02Z"}"#,
+    r#"{"type":"assistant","requestId":"req_B","message":{"role":"assistant","id":"msg_B","model":"claude-haiku-5-5","usage":{"input_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":150000,"output_tokens":10},"content":[{"type":"text","text":"reading"}]},"timestamp":"2026-10-08T10:00:03Z"}"#,
+    r#"{"type":"assistant","requestId":"req_B","message":{"role":"assistant","id":"msg_B","model":"claude-haiku-5-5","usage":{"input_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":150000,"output_tokens":400},"content":[{"type":"tool_use","id":"b2","name":"Read","input":{"file_path":"/r/x"}}]},"timestamp":"2026-10-08T10:00:04Z"}"#,
+    r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b2","content":"x"}]},"timestamp":"2026-10-08T10:00:05Z"}"#,
+    r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"next"}]},"timestamp":"2026-10-08T10:00:06Z"}"#,
+    r#"{"type":"assistant","requestId":"req_C","message":{"role":"assistant","id":"msg_C","model":"claude-haiku-5-5","usage":{"input_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":3000,"output_tokens":50},"content":[{"type":"text","text":"done"}]},"timestamp":"2026-10-08T10:00:07Z"}"#,
+    r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"third"}]},"timestamp":"2026-10-08T10:00:08Z"}"#,
+];
+
+#[test]
+fn a_long_prompt_tier_survives_every_resumed_path() {
+    use claude_replay_engine::engine::meta_stream::MaterializedMeta;
+    use claude_replay_engine::metrics_fold::{FoldStart, MetricsFold};
+    let full = HAIKU_LINES.join("\n") + "\n";
+    let cold = {
+        let p = tmp1(&full);
+        let mut f = MetricsFold::open(&ClaudeAdapter, &p, None).unwrap();
+        drain(&mut f);
+        f.metrics()
+    };
+    let bucket = cold.per_model["claude-haiku-5-5"];
+    assert_eq!(
+        (bucket.long_prompt.cache_read, bucket.long_prompt.output),
+        (150_000, 400),
+        "the long call, and only it, in the subset"
+    );
+    // The ledger's path: a cursor parked at every line boundary resumes to the cold figure.
+    for split in 0..HAIKU_LINES.len() {
+        let prefix = HAIKU_LINES[..split]
+            .iter()
+            .map(|l| format!("{l}\n"))
+            .collect::<String>();
+        let p = tmp1(&prefix);
+        let cursor = {
+            let mut run1 = MetricsFold::open(&ClaudeAdapter, &p, None).unwrap();
+            drain(&mut run1);
+            run1.cursor().unwrap()
+        };
+        std::fs::write(&p, &full).unwrap();
+        let mut run2 = MetricsFold::open(&ClaudeAdapter, &p, Some(&cursor)).unwrap();
+        assert_eq!(run2.start(), FoldStart::Resumed, "split {split}");
+        drain(&mut run2);
+        let m = run2.metrics();
+        assert_eq!(
+            (&m.per_model, m.cost_usd, m.cost_partial),
+            (&cold.per_model, cold.cost_usd, cold.cost_partial),
+            "resumed-from-line-{split} must price as cold"
+        );
+    }
+    // The durable cache's path: the meta stream's token deltas replay to the subset.
+    let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+    let mut mm = MaterializedMeta::default();
+    let mut off: claude_replay_engine::model::ByteOffset = 0;
+    for line in HAIKU_LINES {
+        acc.advance_at(off, line);
+        off += line.len() as u64 + 1;
+        for r in acc.drain_meta() {
+            mm.push(&r);
+        }
+    }
+    assert_eq!(
+        mm.tokens["claude-haiku-5-5"].long_prompt, bucket.long_prompt,
+        "the records carry the subset: {:?}",
+        mm.tokens
     );
 }

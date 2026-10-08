@@ -230,6 +230,7 @@ impl CodexMetricsAcc {
                 cache_creation: cache_write,
                 cache_read: cached,
                 output: field("output_tokens"),
+                ..Default::default()
             };
             if !self.seen_usage {
                 self.seen_usage = true;
@@ -252,6 +253,7 @@ impl CodexMetricsAcc {
                         cache_creation: now.cache_creation.saturating_sub(lcache_write),
                         cache_read: now.cache_read.saturating_sub(lcached),
                         output: now.output.saturating_sub(lfield("output_tokens")),
+                        ..Default::default()
                     };
                 }
             }
@@ -264,6 +266,7 @@ impl CodexMetricsAcc {
                     .saturating_sub(self.last_total.cache_creation),
                 cache_read: now.cache_read.saturating_sub(self.last_total.cache_read),
                 output: now.output.saturating_sub(self.last_total.output),
+                ..Default::default()
             };
             // A cumulative jump can cover several unseen requests. Only the last request
             // matching the entire increment establishes a context threshold for this delta.
@@ -276,6 +279,7 @@ impl CodexMetricsAcc {
                     cache_creation: n("cache_write_input_tokens"),
                     cache_read: n("cached_input_tokens"),
                     output: n("output_tokens"),
+                    ..Default::default()
                 };
                 if request == delta && delta != TokenCounts::default() {
                     self.request_pricing = Some(RequestPricing {
