@@ -110,8 +110,10 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 @media(hover:none){.tree-row:not(.is-hidden) .tree-action:not(:focus-visible){opacity:0}}
 /* …and a glyph button keeps no hover tint there: iOS leaves `:hover` on whatever was tapped last, so a
    closed Info or Aa still looked pressed (and, after a turn of the phone, whatever now sat under the
-   old touch). An open control says so by its own state. */
-@media(hover:none){#app .iconbtn:hover:not(.on):not(.active){background:transparent}#app .iconbtn[aria-expanded="true"]:not(.active){background:var(--hover);color:var(--ink)}}
+   old touch). An open control says so by its own state — and a LIT one (`.on`, the session filter
+   leaving something out) keeps its own fill: Linux's headless Chrome reports `hover: none` too,
+   and the browser job caught the open filter losing its tint. */
+@media(hover:none){#app .iconbtn:hover:not(.on):not(.active){background:transparent}#app .iconbtn[aria-expanded="true"]:not(.active):not(.on){background:var(--hover);color:var(--ink)}}
 .tree-row.project .tree-action{margin-left:auto}
 .tree-row.is-hidden{opacity:.55}
 .tree-row.is-hidden.selected{opacity:.8}
