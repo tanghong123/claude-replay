@@ -1,9 +1,12 @@
 # A phone held sideways (#s35)
 
-**Status: approved for building (the owner, 2026-10-07: "This looks really nice now. Proceed").**
-Two columns on a wide phone, a top bar that never hides, and the toolbar at the bottom in a pill
-(§3.5a) with search as the pill's other state, in portrait and sideways. Built in steps: #s37 (the
-layout and the pill), #s38 (search in the pill), #s39 (the compose box beside the pill).
+**Status: built.** Approved 2026-10-07 (the owner: "This looks really nice now. Proceed") and
+shipped in 1.358.0 (#s37): two columns on a wide phone, a top bar that never hides, and the toolbar
+at the bottom in a pill (§3.5a) with search as the pill's other state, in portrait and sideways. The
+owner's iPhone then found seven bugs in it, fixed in #s41 together with what a walk of every control
+on the iOS Simulator found (§3.5d). The compose box beside the pill (§3.5c, #s39) was approved on
+2026-10-08 and is being built. Where an earlier section and §3.5b–§3.5d disagree, the later
+section is what ships.
 Since #s32 a phone held sideways gets the phone layout, and since #s33 that layout stays on the
 screen. The owner's verdict on 1.357.0: "kind of works, but not ideal", with five issues and a
 request for "a proper design session to think through them holistically", leaning on how other
@@ -92,6 +95,11 @@ side changes with the direction the phone is turned). This alone fixes issues 1 
   button with the content. The column can be hidden completely, and the session then stays at its
   reading width; the Reading menu's Wide transcript widens it, as on a desktop (for source code or a
   wide table).
+- **As fixed (#s41):** the Sessions tab wears a conversation glyph. It wore the sidebar glyph,
+  which every desktop and iPad reads as "hide the sidebar"; the owner tapped it to hide the column
+  and called it dead. The sidebar glyph is now the handle's, by the title, as on an iPad, and ☰
+  stays the portrait drawer's. The column's head never shrinks under a long pane: it was a flex
+  item, and the Tasks pane squeezed it to 11px, its glyphs cut in half.
 - **The transcript gets what is left:** about 530pt, 65–70 characters a line. The width that made
   lines too long now holds the navigation (issue 3).
 - **The handle hides and shows the column.** With it hidden, the transcript is centred at its
@@ -114,6 +122,8 @@ The session's name is the title and the current turn is its subtitle, the way iO
 subtitle (as built, the two are one target: §3.5b). The chrome goes from 81pt to 44pt.
 
 ### 3.5 Find on Page, at the keyboard
+
+*Superseded by §3.5a: the flat find bar was not built; search became the pill's other state.*
 
 The search icon opens a **find bar docked right above the keyboard**: the field, "3 of 12", the
 result arrows and Done. The top bar stays where it is (the owner: "keep the top bar"), and nothing
@@ -180,15 +190,17 @@ found four things, and the build follows the first three:
 - **One control, one meaning, to end a search.** With the keyboard dismissed the box stayed open, so
   its ✕ cleared the text and raised the keyboard again when the reader wanted out. A glass ✕ circle
   beside the find pill ends the search (iOS 26 closes a search beside its field); the field's own
-  small ✕ only clears. While the field has the keyboard the magnifier and the funnel give way, so two
-  chips and a word keep their room (measured: 167px wanted, 102px given before).
+  small ✕ only clears. ~~While the field has the keyboard the magnifier and the funnel give way~~:
+  wrong, and reverted in #s41. iOS focuses the field as the search opens, so the funnel was hidden
+  whenever search was open, and the owner found no filter in either orientation. Only the magnifier
+  gives way now. The strip scrolls as a whole (#353), so the funnel costs it no chip.
 - **The panes stay reachable.** On a wide phone with the column hidden, the pill had no Turns, Tasks
   or Agents and the column held them: nothing reached them. The pill takes them back while the
   column is hidden.
 - **Kept:** while a search holds the dock, the toolbar pill steps aside, so Turns is a tap on ✕
   away. Safari's Find on Page replaces its toolbar the same way until Done.
 
-### 3.5c Proposed: the compose box beside the pill (#s39, awaiting the owner)
+### 3.5c The compose box beside the pill (#s39; approved by the owner on 2026-10-08)
 
 Today the compose box is a card over the transcript's foot, opened by a floating button. Since #s37 it
 rests above the dock. Proposed, as iOS Messages does it:
@@ -209,7 +221,53 @@ The mockups are the section "The compose box beside the pill (#s39)".
 
 The ↓ (and its "N new" pill) was proposed at the bottom RIGHT, inside the safe area: clear of the text
 column on both kinds of phone (issue 7). As built, the owner kept it at the bottom CENTRE of the
-session (#332: "Jump to last should be positioned in the middle"), 44px, just above the dock.
+session (#332: "Jump to last should be positioned in the middle"), 44px. Upright it sits just above
+the dock, because the pill reaches the middle of the dock's row. Sideways it sits ON the dock's row
+(#s41, the owner: "should move to the bottom"), where the middle is free; the dock above floated it
+mid-height in a 330pt page. It is gone while the find pill holds the dock (#s41: over the keyboard it
+floated on the text, and the arrows step through the matches anyway).
+
+### 3.5d As built after the owner's iPhone (#s41)
+
+The owner tested 1.358.0 on an iPhone 17 Pro Max and found seven bugs within minutes; the release
+had passed every Chrome case. A walk of every control on the iOS Simulator (iPhone 17 Pro Max,
+iOS 26.4, both orientations, both themes, the real keyboard), driven by an XCUITest for taps,
+typing and rotation, found their causes and more. What changed:
+
+- **The keyboard scrolls the page.** To bring the focused find field above its keyboard, iOS
+  scrolls the document (322pt upright). The top bar, the drawer's handle and a wide phone's column
+  head went off the top of the screen: the owner's "controls are shifted outside the window".
+  Scrolling the page back fights iOS, which scrolls again, and the view jitters. Instead the app is
+  moved back by the visual viewport's page offset (`translateY`), so it looks as if nothing
+  scrolled. The field, already lifted above the keyboard, gives iOS no reason to scroll again. Under
+  that scroll iOS also reports a shrinking `innerHeight`, and a `visualViewport.offsetTop` equal to
+  the page offset, so the sheets are measured against the app's own box.
+- **Sideways, a sheet is a popover at its control's side**, as iOS draws them at a regular width.
+  Before, each was a band across the screen: 900pt wide for four switches, and on a wide phone it ran
+  under the session list, which hid every label ("Aa menu in landscape shows a black page"; Info lost
+  its labels the same way).
+  - The toolbar pill's sheets (Aa, the panes) rise at the pill's end.
+  - The find pill's sheets rise at its right, by the funnel.
+  - Info hangs under Info.
+  - The height is what is short sideways (330pt in Safari with its tab bar), so a sheet may rise over
+    the top bar.
+- **The funnel stays in the find pill** (see §3.5b), and the ✕ that ends a search closes its filter
+  too.
+- **A tap is a tap.** WebKit spends a tap on a hover that SHOWS content, and sends no click. A
+  session row's action faded in on hover, so choosing a session from the drawer took two taps
+  (measured: the first tap's `touchend` came, and its click never did). On a touch screen hover now
+  reveals nothing. iOS also leaves `:hover` on the last thing tapped, so a closed Info still looked
+  pressed; glyph buttons now take their tint from their open state instead.
+- **Finger-sized:**
+  - a reading row's whole width flips its switch;
+  - a facet suggestion is a 44pt row;
+  - the preview's close is 44pt;
+  - the toast clears the dock;
+  - a long press on a control no longer selects its glyph.
+
+How it is held: the browser cases cover what Chrome can model, namely the find pill under a shadowed
+keyboard and page scroll, and a wide phone's sheets, head, jump and filter. The iOS behaviours
+(the page scroll, the swallowed tap, the sticky hover) are walked on the Simulator before a release.
 
 ### 3.7 The landscape layout's state is its own
 
@@ -248,8 +306,7 @@ restores each layout as it was left.
   turned. Only `env()` gets that right.
 - **900pt is the line between the two kinds of phone,** and it is Apple's own: today's Plus and Max
   models measure 926–956pt sideways, all the others 844–874.
-- **Portrait is unchanged.** Whether portrait's search should become a find bar too, for
-  consistency across a rotation, is a question for after the owner has used it sideways.
+- ~~Portrait is unchanged.~~ The pill (§3.5a) was decided for portrait and sideways alike.
 
 ## 7. Decisions for the owner
 
@@ -278,4 +335,6 @@ restores each layout as it was left.
 - **Each layout's state is separate:** a case shows the column, turns the phone to portrait, and
   finds portrait's drawer shut; it collapses the desktop rail, and finds the wide phone's column
   untouched.
-- **On a real phone,** the owner confirms phase 2 (the keyboard), which no emulation reproduces.
+- **On the iOS Simulator, then a real phone.** What Chrome cannot model (the keyboard, the page
+  scroll under it, WebKit's tap and hover rules) is walked on the Simulator, every control in both
+  orientations and both themes, before a release (#s41), and then on the owner's phone.
