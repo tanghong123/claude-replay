@@ -11801,7 +11801,9 @@ fn a_phone_held_sideways_gets_the_phone_layout_in_one_row() {
         shape["outlineColumn"], false,
         "and there is no outline column beside the transcript: {shape}"
     );
-    // The preview is a sheet across the screen, never an overlay beside a sliver of the session.
+    // The preview covers the whole session, never an overlay beside a sliver of it. This 932px
+    // phone is a wide one, so the session list is a column beside the session, and the pane
+    // covers the session up to that column (#s49; the second-column case holds the rest).
     let link = format!(
         "document.querySelector('[data-reference-path={}]')",
         serde_json::to_string(&path).unwrap()
@@ -11816,8 +11818,8 @@ fn a_phone_held_sideways_gets_the_phone_layout_in_one_row() {
     harness::eval(&tab, &format!("{link}.click(); 'ok'"));
     harness::until(
         &tab,
-        "(function(){ var p = document.getElementById('preview').getBoundingClientRect(); return p.left <= 1 && p.right >= innerWidth - 1 && p.width > 0; })()",
-        "the preview across the whole screen",
+        "(function(){ var p = document.getElementById('preview').getBoundingClientRect(); var col = document.querySelector('#app>.sidebar').getBoundingClientRect().right; return !document.getElementById('app').classList.contains('phone-column-off') && col > 0 && Math.abs(p.left - col) <= 1 && p.right >= innerWidth - 1 && p.width > 0; })()",
+        "the preview across the whole session",
         Duration::from_secs(15),
         "JSON.stringify(document.getElementById('preview').getBoundingClientRect())",
     );
