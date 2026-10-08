@@ -698,8 +698,12 @@ function renderHeader() {
     return;
   }
   const state = displayState(row);
-  byId("sessionTitle").textContent = row.name || row.id;
-  byId("sessionCrumb").textContent = `${agentName(row.agent)} · ${row._group?.label || ""}`;
+  // A worker (#s53) is titled by its brief and says whose worker it is: its own title is its project's.
+  const starter = row.startedBy ? indexState.rows.get(row.startedBy) : null;
+  byId("sessionTitle").textContent = row.startedBy ? workerName(row) : row.name || row.id;
+  byId("sessionCrumb").textContent = starter
+    ? `${agentName(row.agent)} · worker of ${starter.name || starter.id}`
+    : `${agentName(row.agent)} · ${row._group?.label || ""}`;
   byId("statusChip").className = `status-chip ${state.state} ${state.reason}`;
   byId("statusChip").innerHTML = `<span class="state-dot ${escapeText(state.state)} ${escapeText(state.reason)}" style="margin:0"></span>${escapeText(state.label)}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
   byId("statusChip").title = row.stateDetail || "";

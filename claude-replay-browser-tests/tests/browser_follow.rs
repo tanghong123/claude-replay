@@ -13194,6 +13194,12 @@ fn a_session_s_headless_workers_live_in_its_agents_pane_not_the_list() {
         Duration::from_secs(20),
         "location.search + ' | ' + document.getElementById('sessionParent').className",
     );
+    let head = harness::eval(&tab, "document.getElementById('sessionTitle').textContent + ' | ' + document.getElementById('sessionCrumb').textContent");
+    assert_eq!(
+        head.as_str().unwrap_or(""),
+        "build B74 | Claude Code · worker of r",
+        "titled by its brief, and whose worker it is"
+    );
     harness::eval(
         &tab,
         "document.getElementById('sessionParent').click(); 'ok'",

@@ -1864,22 +1864,27 @@ fn head_one_shot(path: &Path) -> Option<String> {
         .take(64 * 1024)
         .read_to_end(&mut buf)
         .ok()?;
-    let head = String::from_utf8_lossy(&buf);
-    if !head.contains("\"entrypoint\":\"sdk-cli\"") {
+    // Parsed, never matched as text: a writer that spaces its JSON (`"entrypoint": "sdk-cli"`) is
+    // the same record. The last line of a cut head may be partial and simply fails to parse.
+    let records: Vec<Value> = String::from_utf8_lossy(&buf)
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let entry = records
+        .iter()
+        .find_map(|r| r.get("entrypoint").and_then(Value::as_str))?;
+    if entry != "sdk-cli" {
         return None;
     }
-    let prompt = head.lines().find_map(|line| {
-        let rec: Value = serde_json::from_str(line).ok()?;
+    let prompt = records.iter().find_map(|rec| {
         if rec.get("type").and_then(Value::as_str) != Some("user") {
             return None;
         }
-        let content = rec.pointer("/message/content")?;
-        let text = match content {
-            Value::String(t) => t.clone(),
+        let text = match rec.pointer("/message/content")? {
+            Value::String(t) => t.as_str(),
             Value::Array(parts) => parts
                 .iter()
-                .find_map(|p| p.get("text").and_then(Value::as_str))?
-                .to_string(),
+                .find_map(|p| p.get("text").and_then(Value::as_str))?,
             _ => return None,
         };
         let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
@@ -4480,6 +4485,15 @@ n/Users/x/proj
             r#"{"type":"user","entrypoint":"sdk-cli","message":{"role":"user","content":[{"type":"text","text":"review B71"}]},"timestamp":"2026-10-08T10:00:01Z"}"#,
         );
         assert_eq!(head_one_shot(&parts).as_deref(), Some("review B71"));
+        let spaced = file(
+            "s.jsonl",
+            r#"{"type": "user", "entrypoint": "sdk-cli", "message": {"role": "user", "content": "spaced out"}}"#,
+        );
+        assert_eq!(
+            head_one_shot(&spaced).as_deref(),
+            Some("spaced out"),
+            "the record, not its spelling"
+        );
         let own = file(
             "o.jsonl",
             r#"{"type":"user","entrypoint":"cli","message":{"role":"user","content":"hi"},"timestamp":"2026-10-08T10:00:01Z"}"#,
