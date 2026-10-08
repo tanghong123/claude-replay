@@ -346,26 +346,33 @@ fn ps_children() -> HashMap<u32, Vec<(u32, u64)>> {
         let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>()) else {
             continue;
         };
-        map.entry(ppid).or_default().push((pid, parse_etime(etime)));
+        // Unparseable reads as 0 (recent): the direction that keeps a session busy rather than
+        // inventing a permission wait.
+        map.entry(ppid)
+            .or_default()
+            .push((pid, parse_etime(etime).unwrap_or(0)));
     }
     map
 }
 
-/// `ps` etime (`[[dd-]hh:]mm:ss`) → seconds. Unparseable reads as 0 (recent) — the
-/// direction that keeps a session busy rather than inventing a permission wait.
-fn parse_etime(s: &str) -> u64 {
+/// `ps` etime (`[[dd-]hh:]mm:ss`, macOS and procps alike) → seconds; `None` when it does not
+/// parse. Shared with the process table's start times (`index`, #s50), which must not guess.
+pub(crate) fn parse_etime(s: &str) -> Option<u64> {
     let (days, rest) = match s.split_once('-') {
-        Some((d, r)) => (d.parse::<u64>().unwrap_or(0), r),
+        Some((d, r)) => (d.parse::<u64>().ok()?, r),
         None => (0, s),
     };
-    let parts: Vec<u64> = rest.split(':').map(|p| p.parse().unwrap_or(0)).collect();
+    let parts: Vec<u64> = rest
+        .split(':')
+        .map(|p| p.parse().ok())
+        .collect::<Option<_>>()?;
     let hms = match parts.as_slice() {
         [h, m, sec] => h * 3600 + m * 60 + sec,
         [m, sec] => m * 60 + sec,
         [sec] => *sec,
-        _ => 0,
+        _ => return None,
     };
-    days * 86400 + hms
+    Some(days * 86400 + hms)
 }
 
 /// Whether `pid` has a DIRECT child younger than `max_age_secs` — the "a tool is
@@ -650,9 +657,11 @@ mod tests {
     /// The etime parser across `ps`'s shapes.
     #[test]
     fn etime_parses_all_shapes() {
-        assert_eq!(parse_etime("05"), 5);
-        assert_eq!(parse_etime("01:05"), 65);
-        assert_eq!(parse_etime("02:01:05"), 7265);
-        assert_eq!(parse_etime("3-02:01:05"), 3 * 86400 + 7265);
+        assert_eq!(parse_etime("05"), Some(5));
+        assert_eq!(parse_etime("01:05"), Some(65));
+        assert_eq!(parse_etime("02:01:05"), Some(7265));
+        assert_eq!(parse_etime("3-02:01:05"), Some(3 * 86400 + 7265));
+        assert_eq!(parse_etime("a:b"), None);
+        assert_eq!(parse_etime("1:2:3:4"), None);
     }
 }

@@ -249,6 +249,10 @@ struct Row {
     /// re-read a megabyte forever for the one session that has no head timestamp).
     first_event: Option<u64>,
     start_probed: bool,
+    /// The transcript's head says a one-shot run wrote it (`"entrypoint":"sdk-cli"`, what
+    /// `claude -p` records) — read once, with the start. Only such a session can pair with a
+    /// one-shot process (#s50).
+    one_shot: bool,
     /// The session this one was forked from (#142), and whether we have looked. Read once:
     /// a fork's origin is fixed when it is created and no later write changes it.
     fork_from: Option<String>,
@@ -354,6 +358,9 @@ struct Proc {
     tmux_sock: Option<String>,
     /// `STY=<name>` — GNU screen's equivalent.
     screen: Option<String>,
+    /// When the process started, in epoch seconds (`ps -o etime=`, so to the second) — what pairs a
+    /// one-shot `claude -p` with the session it created (#s50).
+    started: Option<u64>,
 }
 
 /// How a live agent process maps to a session row, and what hosts it.
@@ -591,6 +598,7 @@ impl Index {
                     last_event: None,
                     first_event: None,
                     start_probed: false,
+                    one_shot: false,
                     fork_from: None,
                     fork_probed: false,
                     spawned_by: None,
@@ -612,6 +620,7 @@ impl Index {
                     row.last_event = last_event_ts(&row.path).or(row.last_event);
                     if !row.start_probed {
                         row.first_event = first_event_ts(&row.path);
+                        row.one_shot = head_is_one_shot(&row.path);
                         row.start_probed = true;
                     }
                     match (prev_event, row.last_event) {
@@ -833,6 +842,7 @@ impl Index {
             let mut cands = st.procs.iter().filter(|p| {
                 is_agent_exe(&p.exe_base, &p.argv)
                     && !is_helper(&p.argv)
+                    && !is_one_shot(&p.argv)
                     && p.cwd.as_deref() == Some(cwd.as_str())
             });
             let (Some(p), None) = (cands.next(), cands.next()) else {
@@ -926,9 +936,23 @@ impl Index {
         // `siblings` counts how many sessions that cwd holds, which is the size of the doubt
         // (#145). One session in the directory means the heuristic has nothing to get wrong;
         // several means the claim is a pick among them.
+        //
+        // #s50: a one-shot worker is paired with the session it created FIRST, and a paired
+        // session is not the directory's to pick — so it is neither the newest nor a sibling, and
+        // a coordinator keeps its own process however recently its workers wrote.
+        let paired = pair_one_shots(
+            &st.procs,
+            st.rows
+                .iter()
+                .filter(|(_, r)| r.one_shot)
+                .filter_map(|(sid, r)| Some((sid.as_str(), r.cwd.as_deref()?, r.first_event?))),
+        );
         let mut newest_by_cwd: HashMap<&str, (&str, SystemTime)> = HashMap::new();
         let mut siblings: HashMap<&str, usize> = HashMap::new();
         for (sid, row) in &st.rows {
+            if paired.contains_key(sid.as_str()) {
+                continue;
+            }
             if let Some(cwd) = row.cwd.as_deref() {
                 *siblings.entry(cwd).or_insert(0) += 1;
                 if let Some(m) = row.tree_mtime {
@@ -1026,6 +1050,14 @@ impl Index {
                     terminal: Terminal::of(p),
                 })
                 .or_else(|| {
+                    let &(pid, rivals) = paired.get(sid.as_str())?;
+                    st.procs.iter().find(|p| p.pid == pid).map(|p| AgentLink {
+                        pid: p.pid,
+                        confirmed: rivals == 0,
+                        terminal: Terminal::Detached,
+                    })
+                })
+                .or_else(|| {
                     link(
                         &st.procs,
                         sid,
@@ -1053,6 +1085,9 @@ impl Index {
             // ambiguous directory here, BOTH sessions have activity after the process began).
             // So the count is the honest statement — the size of the doubt, not a guess.
             let ambiguity = match link.as_ref().filter(|l| !l.confirmed) {
+                Some(_) if paired.contains_key(sid.as_str()) => paired
+                    .get(sid.as_str())
+                    .map_or(1, |&(_, rivals)| rivals + 1),
                 Some(_) => row
                     .cwd
                     .as_deref()
@@ -1600,6 +1635,100 @@ fn fold_counters(dir: &Path) -> Option<Counters> {
     })
 }
 
+/// How far BEFORE a one-shot's recorded start its session's first record may fall: `etime` is
+/// whole seconds, so the start is known only to the second (#s50).
+const ONE_SHOT_SLACK_SECS: u64 = 3;
+/// How long after a one-shot starts its session's first record may arrive. Measured here
+/// (2026-10-08, three runs of `claude -p`): 0.7–0.9 s; the rest is room for a loaded machine.
+const ONE_SHOT_WINDOW_SECS: u64 = 60;
+
+/// Pair each one-shot process with the session it created (#s50): sid → (pid, rivals).
+///
+/// A no-id launch leaves nothing on disk naming its session (#145), and the directory rule gives
+/// a process to the NEWEST session of its cwd only. So with a coordinator and several `claude -p`
+/// workers in one repo, a worker deep in a long command was not the newest, lost its process, and
+/// read "exited with Bash pending" until its next write — knack on aries-black, 2026-10-07, where
+/// one worker flapped busy → exited-mid-work → busy on the same pid. A one-shot is not a pick,
+/// though: it starts a NEW session, whose first record lands within a second of the process. So
+/// each one-shot whose argv names no session takes, in start order, the earliest unclaimed
+/// one-shot session of its cwd that began inside its window. `rivals` counts the other one-shots
+/// of that cwd that could have taken the same session instead (their window holds its first
+/// record, and the session they took, if any, sits in this one's window too); the link is
+/// confirmed only at zero, and made either way, since every candidate is alive.
+fn pair_one_shots<'a>(
+    procs: &[Proc],
+    sessions: impl IntoIterator<Item = (&'a str, &'a str, u64)>,
+) -> HashMap<String, (u32, usize)> {
+    let mut by_cwd: HashMap<&str, Vec<(u64, &str)>> = HashMap::new();
+    for (sid, cwd, first) in sessions {
+        by_cwd.entry(cwd).or_default().push((first, sid));
+    }
+    let mut shots: HashMap<&str, Vec<(u64, u32)>> = HashMap::new();
+    for p in procs {
+        let headless_new = is_agent_exe(&p.exe_base, &p.argv)
+            && is_one_shot(&p.argv)
+            && !is_helper(&p.argv)
+            && session_ref(&p.argv).is_none();
+        if let (true, Some(cwd), Some(start)) = (headless_new, p.cwd.as_deref(), p.started) {
+            shots.entry(cwd).or_default().push((start, p.pid));
+        }
+    }
+    let within = |start: u64, first: u64| {
+        first + ONE_SHOT_SLACK_SECS >= start && first <= start + ONE_SHOT_WINDOW_SECS
+    };
+    let mut out = HashMap::new();
+    for (cwd, mut here) in shots {
+        let Some(sessions) = by_cwd.get_mut(cwd) else {
+            continue;
+        };
+        sessions.sort_unstable();
+        here.sort_unstable();
+        let mut taken = vec![false; sessions.len()];
+        // Each one-shot's claim, in start order: the index of the session it took, if any.
+        let mut claims: Vec<Option<usize>> = Vec::with_capacity(here.len());
+        for &(start, _) in &here {
+            let claim = (0..sessions.len()).find(|&i| !taken[i] && within(start, sessions[i].0));
+            if let Some(i) = claim {
+                taken[i] = true;
+            }
+            claims.push(claim);
+        }
+        // A rival is another one-shot that could have taken this session INSTEAD: one with no
+        // claim whose window holds it, or one whose claim this process could have taken in turn.
+        // A worker that began well before another already holds its own earlier session, and
+        // the two cannot be swapped.
+        for (k, &(start, pid)) in here.iter().enumerate() {
+            let Some(i) = claims[k] else { continue };
+            let (first, sid) = sessions[i];
+            let rivals = here
+                .iter()
+                .zip(&claims)
+                .enumerate()
+                .filter(|&(j, (&(s, _), claim))| {
+                    j != k && within(s, first) && claim.is_none_or(|c| within(start, sessions[c].0))
+                })
+                .count();
+            out.insert(sid.to_string(), (pid, rivals));
+        }
+    }
+    out
+}
+
+/// Whether the transcript's head says a one-shot run wrote it: Claude Code records
+/// `"entrypoint":"sdk-cli"` for `claude -p` (measured 2026-10-08) where an interactive session
+/// says `cli`. 64 KB is the head of any transcript: the first prompt record carries it.
+fn head_is_one_shot(path: &Path) -> bool {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    let Ok(f) = std::fs::File::open(path) else {
+        return false;
+    };
+    if f.take(64 * 1024).read_to_end(&mut buf).is_err() {
+        return false;
+    }
+    String::from_utf8_lossy(&buf).contains("\"entrypoint\":\"sdk-cli\"")
+}
+
 /// Resolve which live agent process (if any) is behind session `sid` — the probe's §1
 /// precedence, re-cut for Claude Code 2.1.278's daemon topology (#269), where the process in
 /// the pane is a `claude attach <prefix>` CLIENT and the session's engine runs detached in a
@@ -1642,7 +1771,7 @@ fn link(
         confirmed,
         // A helper's pane is the one it INHERITED from the client that spawned it, never
         // where a session's UI is — see `is_helper`.
-        terminal: if is_helper(&p.argv) {
+        terminal: if is_helper(&p.argv) || is_one_shot(&p.argv) {
             Terminal::Detached
         } else {
             Terminal::of(p)
@@ -1660,7 +1789,11 @@ fn link(
             Terminal::Detached => 0,
         };
         (
-            if is_helper(&p.argv) { 0 } else { rank },
+            if is_helper(&p.argv) || is_one_shot(&p.argv) {
+                0
+            } else {
+                rank
+            },
             std::cmp::Reverse(p.pid),
         )
     };
@@ -1688,6 +1821,7 @@ fn link(
             .filter(|p| {
                 is_agent_exe(&p.exe_base, &p.argv)
                     && !is_helper(&p.argv)
+                    && !is_one_shot(&p.argv)
                     && p.cwd.as_deref() == Some(cwd)
                     && session_ref(&p.argv).is_none()
             })
@@ -1744,6 +1878,11 @@ fn session_ref(argv: &str) -> Option<SessionRef> {
     if let Some(v) = after("--resume").and_then(uuid_of) {
         return Some(SessionRef::Exact(v));
     }
+    // A one-shot's argv carries its PROMPT (#s50): a session id the prompt merely mentions
+    // must not name the process. Only the flags above can.
+    if is_one_shot(argv) {
+        return None;
+    }
     if toks.get(1) == Some(&"attach") {
         if let Some(id) = toks.get(2) {
             if is_uuid(id) {
@@ -1776,6 +1915,16 @@ fn is_helper(argv: &str) -> bool {
         || argv
             .split_whitespace()
             .any(|t| t == "--bg-pty-host" || t == "--bg-spare")
+}
+
+/// A one-shot run, `claude -p` / `--print` (#s50): it answers one prompt and exits. It reads no
+/// pane — a worker a session started from its Bash INHERITS that session's `TMUX_PANE` (measured
+/// on aries-black: knack's workers read as pane %0, their coordinator's) — so, like a helper, it
+/// is never a directory candidate and its terminal is Detached whatever it inherited; a send into
+/// that pane would type into the coordinator. Unless its flags resume a session it starts a NEW
+/// one, which is what pairs it (`pair_one_shots`).
+fn is_one_shot(argv: &str) -> bool {
+    argv.split_whitespace().any(|t| t == "-p" || t == "--print")
 }
 
 /// The one marker of a Claude FORK the machine offers (#269): the engine's argv,
@@ -1913,7 +2062,14 @@ fn scan_procs() -> Vec<Proc> {
         return procs;
     }
     let pids = agent_pids.join(",");
-    apply_tty(&mut procs, &run(&["ps", "-o", "pid=,tty=", "-p", &pids]));
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    apply_tty(
+        &mut procs,
+        &run(&["ps", "-o", "pid=,tty=,etime=", "-p", &pids]),
+        now,
+    );
     // The multiplexer is visible ONLY in the environment (§2 of the probe): `ps eww`
     // appends `K=V` pairs after the command.
     apply_env(
@@ -1951,13 +2107,15 @@ fn parse_ps(out: &str) -> Vec<Proc> {
             pane: None,
             tmux_sock: None,
             screen: None,
+            started: None,
         });
     }
     procs
 }
 
-/// `pid tty` lines → the controlling tty; `??` means detached and stays `None`.
-fn apply_tty(procs: &mut [Proc], out: &str) {
+/// `pid tty etime` lines → the controlling tty (`??` means detached and stays `None`) and the
+/// start, `now` less the elapsed time.
+fn apply_tty(procs: &mut [Proc], out: &str, now: u64) {
     for line in out.lines() {
         let mut it = line.split_whitespace();
         let (Some(pid), Some(tty)) = (it.next(), it.next()) else {
@@ -1966,11 +2124,16 @@ fn apply_tty(procs: &mut [Proc], out: &str) {
         let Ok(pid) = pid.parse::<u32>() else {
             continue;
         };
+        let Some(p) = procs.iter_mut().find(|p| p.pid == pid) else {
+            continue;
+        };
         if tty != "??" {
-            if let Some(p) = procs.iter_mut().find(|p| p.pid == pid) {
-                p.tty = Some(tty.to_string());
-            }
+            p.tty = Some(tty.to_string());
         }
+        p.started = it
+            .next()
+            .and_then(crate::state::parse_etime)
+            .map(|e| now.saturating_sub(e));
     }
 }
 
@@ -3166,7 +3329,7 @@ mod tests {
             "a tool shell is not an agent exe"
         );
 
-        apply_tty(&mut procs, "  101 ttys006\n  102 ??\n  103 ttys009\n");
+        apply_tty(&mut procs, "  101 ttys006\n  102 ??\n  103 ttys009\n", 0);
         assert_eq!(procs[0].tty.as_deref(), Some("ttys006"));
         assert!(procs[1].tty.is_none(), "?? is detached");
 
@@ -3275,7 +3438,7 @@ mod tests {
             "  14121 bash /tmp/claude-502/-Users-x-crux-web/{sid}/scratchpad/flakehunt.sh /tmp/o\n\
              21496 claude --dangerously-skip-permissions --resume\n"
         ));
-        apply_tty(&mut procs, "  14121 ??\n  21496 ttys021\n");
+        apply_tty(&mut procs, "  14121 ??\n  21496 ttys021\n", 0);
         apply_env(
             &mut procs,
             "  21496 claude TMUX=/private/tmp/tmux-502/crux-web-c0b3b1,5801,0 TMUX_PANE=%0\n",
@@ -3303,7 +3466,7 @@ mod tests {
         let sid = "f7e03d40-e8c1-4fcb-a60c-31b68cc21817";
         let mut procs =
             parse_ps("  20277 claude attach f7e03d40\n  24423 claude attach 6a22e5fb\n");
-        apply_tty(&mut procs, "  20277 ttys018\n  24423 ttys023\n");
+        apply_tty(&mut procs, "  20277 ttys018\n  24423 ttys023\n", 0);
         apply_env(
             &mut procs,
             "  20277 claude TMUX=/private/tmp/tmux-502/claude-replay-d36797,5407,0 TMUX_PANE=%0\n\
@@ -3393,7 +3556,7 @@ mod tests {
             "  900 claude\n  19654 claude bg-spare --bg-spare /tmp/cc/spare/d3acb794.claim.sock\n",
             "p900\nfcwd\nn/Users/x/proj\np19654\nfcwd\nn/Users/x/proj\n",
         );
-        apply_tty(&mut procs, "  900 ??\n  19654 ttys034\n");
+        apply_tty(&mut procs, "  900 ??\n  19654 ttys034\n", 0);
         let l = link(&procs, "s", Path::new("/n.jsonl"), cwd, true, &|_| true).expect("lone");
         assert!(
             l.confirmed && l.pid == 900,
@@ -3487,6 +3650,7 @@ mod tests {
             last_event: None,
             first_event: None,
             start_probed: true,
+            one_shot: false,
             fork_from: None,
             fork_probed: true,
             spawned_by: None,
@@ -3798,5 +3962,157 @@ n/Users/x/proj
         // A bare entry is a basename, not a substring of argv.
         assert!(pats[2].matches("my-other-agent", ""));
         assert!(!pats[2].matches("bash", "bash /usr/local/bin/my-other-agent"));
+    }
+
+    /// The process table's start time is `now` less `ps`'s elapsed time (#s50).
+    #[test]
+    fn a_process_start_is_now_less_its_elapsed_time() {
+        let mut procs = parse_ps("  7 claude -p hi\n");
+        apply_tty(&mut procs, "  7 ?? 01:40\n", 1_000);
+        assert_eq!(procs[0].started, Some(900));
+        assert!(procs[0].tty.is_none());
+    }
+
+    /// #s50: a one-shot carries its PROMPT in argv, so a session id the prompt mentions never
+    /// names it; its flags still do.
+    #[test]
+    fn a_one_shot_is_named_by_its_flags_never_by_its_prompt() {
+        let sid = "19fe604e-d16f-4bbe-adfc-c6ff07463983";
+        let brief =
+            format!("claude -p Review the run of {sid} and report --output-format stream-json");
+        assert!(is_one_shot(&brief));
+        assert_eq!(session_ref(&brief), None);
+        let resumed = format!("claude -p next --resume {sid} --output-format stream-json");
+        assert_eq!(session_ref(&resumed), Some(SessionRef::Exact(sid.into())));
+        assert!(!is_one_shot(
+            "claude --dangerously-skip-permissions --resume"
+        ));
+        // Linked by its flag, a resumed one-shot is still headless: never the pane it inherited.
+        let mut procs = parse_ps(&format!("  401 {resumed}\n"));
+        apply_env(
+            &mut procs,
+            "  401 claude TMUX=/private/tmp/tmux-501/default,88,0 TMUX_PANE=%0\n",
+        );
+        let l = link(&procs, sid, Path::new("/n.jsonl"), None, false, &|_| true).expect("link");
+        assert!(l.confirmed);
+        assert_eq!(l.terminal.kind(), "detached");
+    }
+
+    /// #s50: two one-shots started inside each other's window each take a session — both are
+    /// alive — but neither pairing is confirmed.
+    #[test]
+    fn one_shots_started_together_pair_unconfirmed() {
+        let mut procs = parse_ps("  301 claude -p a\n  302 claude -p b\n  303 claude -p c\n");
+        apply_tty(
+            &mut procs,
+            "  301 ?? 10:00\n  302 ?? 09:58\n  303 ?? 01:00\n",
+            10_000,
+        );
+        apply_lsof(
+            &mut procs,
+            "p301\nfcwd\nn/w\np302\nfcwd\nn/w\np303\nfcwd\nn/w\n",
+        );
+        let pairs = pair_one_shots(
+            &procs,
+            [
+                ("s1", "/w", 9_401),
+                ("s2", "/w", 9_403),
+                ("s3", "/w", 9_941),
+            ],
+        );
+        assert_eq!(pairs["s1"], (301, 1));
+        assert_eq!(pairs["s2"], (302, 1));
+        assert_eq!(pairs["s3"], (303, 0), "alone in its window: confirmed");
+        // Two workers started fourteen seconds apart (measured here, 2026-10-08): the second's
+        // session lies in the first's window, but the first holds its own earlier session, which
+        // the second could never have begun. No swap, so both are confirmed.
+        let mut apart = parse_ps("  501 claude -p a\n  502 claude -p b\n");
+        apply_tty(&mut apart, "  501 ?? 01:00\n  502 ?? 00:46\n", 2_060);
+        apply_lsof(&mut apart, "p501\nfcwd\nn/w\np502\nfcwd\nn/w\n");
+        let pairs = pair_one_shots(&apart, [("a", "/w", 2_001), ("b", "/w", 2_015)]);
+        assert_eq!(pairs["a"], (501, 0));
+        assert_eq!(pairs["b"], (502, 0));
+        // A session that began long before any live one-shot is nobody's.
+        let none = pair_one_shots(&procs, [("old", "/w", 2_000)]);
+        assert!(none.is_empty());
+    }
+
+    /// #s50, as aries-black showed it: a coordinator and two `claude -p` workers in one repo, both
+    /// workers carrying the coordinator's `TMUX_PANE`. The first worker, deep in a long Bash, is
+    /// not the directory's newest session; the second wrote last. Each worker keeps its OWN
+    /// process, the coordinator keeps its pane (alone among the directory's candidates, so
+    /// confirmed), a finished worker session stays finished, and no worker is offered the pane.
+    #[test]
+    fn one_shot_workers_pair_with_their_sessions_and_leave_the_coordinator_its_pane() {
+        let scratch = std::env::temp_dir().join(format!("cm-one-shot-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let now = 1_791_400_000u64;
+        let mut procs = parse_ps(
+            "  100 claude --dangerously-skip-permissions --resume\n\
+             201 claude -p You are a builder on B74 --permission-mode bypassPermissions --output-format stream-json --verbose\n\
+             202 claude -p You are a reviewer on B71 --permission-mode bypassPermissions --output-format stream-json --verbose\n",
+        );
+        apply_tty(
+            &mut procs,
+            "  100 ttys003 02:00:00\n  201 ?? 10:00\n  202 ?? 02:00\n",
+            now,
+        );
+        let pane = "TMUX=/private/tmp/tmux-501/default,88,0 TMUX_PANE=%0";
+        apply_env(
+            &mut procs,
+            &format!("  100 claude {pane}\n  201 claude {pane}\n  202 claude {pane}\n"),
+        );
+        apply_lsof(
+            &mut procs,
+            "p100\nfcwd\nn/w/knack\np201\nfcwd\nn/w/knack\np202\nfcwd\nn/w/knack\n",
+        );
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        let at = |secs_ago: u64| Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - secs_ago));
+        let row = |first_ago: u64, wrote_ago: u64, one_shot: bool| {
+            let mut r = growth_row("/w/knack", false);
+            r.first_event = Some(now - first_ago);
+            r.tree_mtime = at(wrote_ago);
+            r.last_event = Some(now - wrote_ago);
+            r.one_shot = one_shot;
+            r
+        };
+        st.rows.insert("coord".into(), row(7_200, 300, false));
+        st.rows.insert("w1".into(), row(599, 240, true)); // mid-Bash: quiet for four minutes
+        st.rows.insert("w2".into(), row(119, 5, true)); // the directory's newest
+        st.rows.insert("w0".into(), row(5_000, 4_000, true)); // an earlier worker, finished
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        let fact = |sid: &str| facts.iter().find(|f| f.sid == sid).expect("a row");
+        assert_eq!(
+            fact("w1").pid,
+            Some(201),
+            "the quiet worker keeps its own process"
+        );
+        assert_eq!(fact("w2").pid, Some(202));
+        assert!(fact("w1").confirmed && fact("w2").confirmed);
+        assert_eq!(fact("w0").pid, None, "a finished worker stays finished");
+        assert_eq!(
+            fact("coord").pid,
+            Some(100),
+            "the coordinator keeps its process"
+        );
+        assert!(
+            fact("coord").confirmed,
+            "alone among the directory's candidates"
+        );
+        assert_eq!(
+            fact("coord").tmux.as_ref().map(|t| t.1.as_str()),
+            Some("%0")
+        );
+        for w in ["w1", "w2"] {
+            assert!(
+                fact(w).tmux.is_none() && fact(w).term.is_none(),
+                "a worker is never offered the pane it inherited"
+            );
+        }
     }
 }

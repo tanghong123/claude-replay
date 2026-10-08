@@ -236,8 +236,18 @@ best-HOSTED wins, so the pane's client beats the engine; helpers (`daemon`, `bg-
 `bg-spare`) are never directory candidates and read as detached whatever pane they inherited; and
 **a lone agent process in a session's directory is paired, confirmed** — the owner's rule
 (2026-09-23), amending the probe's "never a cwd guess": with one process there is one pane, and the
-label self-corrects on the next append. Two processes in one directory stay a pick (`ambig`). A
-fork's engine (`--fork-session --resume <parent.jsonl>`) is the only marker of a Claude fork
+label self-corrects on the next append. Two processes in one directory stay a pick (`ambig`).
+**A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
+starts workers from its Bash, all in one repo, each inheriting the coordinator's `TMUX_PANE`, and the
+directory rule gave a process to the newest session only — so a worker deep in a long command lost
+its process and read "exited with Bash pending" until its next write. A one-shot starts a NEW
+session (entrypoint `sdk-cli` in its head) whose first record lands within a second of the process
+(measured 0.7–0.9 s; `ps -o etime=` gives the start), so `pair_one_shots` gives each the earliest
+unclaimed one-shot session of its cwd that began in its window (3 s before, 60 s after), confirmed
+unless another one-shot could have taken it instead; a paired session is neither the directory's
+newest nor a sibling, so the coordinator keeps its own pane. A one-shot's prompt is in its argv, so
+only `--session-id`/`--resume` name it; and whatever linked it, its terminal is Detached — a send
+into the pane it inherited would type into the coordinator. A fork's engine (`--fork-session --resume <parent.jsonl>`) is the only marker of a Claude fork
 anywhere, and `note_forks_from_argv` is how one joins its #142 family. Diagnose against the
 machine, not the API: `term`/`injectable` describe the process the row was LINKED to, so a false
 link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.
