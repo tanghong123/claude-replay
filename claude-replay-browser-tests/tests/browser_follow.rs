@@ -10936,7 +10936,11 @@ const PHONE_WHOLLY_IN: &str = "function (el, box) { if (!el || !box) return fals
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
     let _serial = serial();
-    let (_m, _b, tab) = phone_world(2728, "phone-search-chips", 390, 844);
+    // 440 wide, the owner's phone: since #s41 the funnel stays in the find pill while typing (iOS
+    // focuses the field as the search opens, so hiding it then hid it always), and at 390 two chips
+    // and a word then overflow the strip, which scrolls as a whole (#353,
+    // `a_phone_search_strip_scrolls_whole_and_counts_beside_the_box`).
+    let (_m, _b, tab) = phone_world(2728, "phone-search-chips", 440, 956);
     let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
     phone_tap_at(&tab, gx, gy);
     harness::until(

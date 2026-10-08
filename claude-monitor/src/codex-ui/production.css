@@ -1313,6 +1313,14 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
   #app .preview-head #closePreview{width:44px;height:44px}
   #app .search-suggest-row{min-height:44px}
+  /* A file the transcript offers is a finger's target (#s41): at 11px a delivered file's name was 14px
+     tall, and WebKit's tap adjustment gave the tap to the row's head 12px above it, which folded the
+     row rather than opening the file (measured on iOS 26: pointerdown on the file, click on the head).
+     Delivered files are chips here; an inline path keeps its line and widens its hit area with
+     vertical padding, which an inline box hit-tests without moving the line. */
+  #app .renderer-delivered{align-items:center;gap:6px;margin:4px 0 10px}
+  #app .renderer-delivered-file{display:inline-flex;align-items:center;min-height:36px;padding:0 12px;border-radius:18px;background:var(--hover);color:var(--ink);text-decoration:none}
+  #app :is(.renderer-target-link,.pointer-run-file[data-reference-path]){padding:10px 0}
   .toast{bottom:calc(max(var(--phone-dock-h,64px),calc(var(--phone-kb,0px) + 64px)) + 10px)}
   #app .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 16px)}
   /* The compose box and its button rest above the dock, never under it (#s39 designs them beside it). */

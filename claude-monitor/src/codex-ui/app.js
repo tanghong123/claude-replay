@@ -2541,7 +2541,10 @@ function findRecord(id) { let found = null; const visit = record => { if (!recor
 function paintJump() {
   const button = byId("jumpToBottom");
   const n = recordState.newRecords;
-  button.classList.toggle("show", !recordState.following);
+  // Only where there is somewhere to jump (#s41): a fold opened in a session shorter than the screen
+  // leaves the reader not following, and the jump offered a way down to nothing below.
+  const below = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight > 4;
+  button.classList.toggle("show", !recordState.following && (below || n > 0));
   button.classList.toggle("has-new", n > 0);
   button.setAttribute("aria-hidden", String(recordState.following));
   let count = button.querySelector(".jump-count");
