@@ -284,6 +284,7 @@ impl MetricsAcc {
             "totals": self.totals(),
             "last_usage_key": self.last_usage_key,
             "last_usage_model": self.last_usage_model,
+            "model": self.model,
             "credited": self.credited,
             "runtime": self.runtime,
             "reported": self.reported.iter().map(|(k, v)| (k.to_string(), *v))
@@ -314,6 +315,12 @@ impl MetricsAcc {
             .get("last_usage_key")
             .and_then(|x| x.as_str())
             .map(str::to_string);
+        // The last model seen (#s51): without it a resume whose remaining lines hold no
+        // assistant record ended with no model at all, where a cold fold names one. A cursor
+        // parked before it existed keeps the old behaviour.
+        if let Some(model) = state.get("model").and_then(|x| x.as_str()) {
+            self.model = model.to_string();
+        }
         self.last_usage_model = state
             .get("last_usage_model")
             .and_then(|x| x.as_str())
@@ -525,6 +532,30 @@ mod tests {
         let m = after.finish();
         assert_eq!(m.output_tokens, 1400, "resumed fold must not re-credit");
         assert_eq!(m.cache_read_tokens, 45461);
+    }
+
+    /// #s51: the model crosses a resume. A fold resumed where no assistant record follows
+    /// used to end with no model, while a cold fold of the same lines names one.
+    #[test]
+    fn the_model_survives_state_and_restore() {
+        let mut before = MetricsAcc::default();
+        before.push(&msg_line("msg_01G", "req_01G", 10, 0));
+        let parked = before.state();
+        let prompt = serde_json::json!({"type": "user",
+            "message": {"role": "user", "content": "next"}});
+        let mut after = MetricsAcc::default();
+        after.restore(&parked);
+        after.push(&prompt);
+        assert_eq!(after.finish().model, "claude-opus-4-8");
+        // A cursor parked before the key existed restores as it always did.
+        let mut older = parked.clone();
+        older.as_object_mut().unwrap().remove("model");
+        let mut legacy = MetricsAcc::default();
+        legacy.restore(&older);
+        legacy.push(&prompt);
+        let m = legacy.finish();
+        assert_eq!(m.model, "");
+        assert_eq!(m.output_tokens, 10, "and its totals still reseed");
     }
 
     /// A cursor parked by an older build holds a bare `MetricsTotals`. Restoring it must

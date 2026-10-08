@@ -2601,11 +2601,10 @@ fn a_long_prompt_tier_survives_every_resumed_path() {
         let mut run2 = MetricsFold::open(&ClaudeAdapter, &p, Some(&cursor)).unwrap();
         assert_eq!(run2.start(), FoldStart::Resumed, "split {split}");
         drain(&mut run2);
-        let m = run2.metrics();
         assert_eq!(
-            (&m.per_model, m.cost_usd, m.cost_partial),
-            (&cold.per_model, cold.cost_usd, cold.cost_partial),
-            "resumed-from-line-{split} must price as cold"
+            run2.metrics(),
+            cold,
+            "resumed-from-line-{split} must equal cold"
         );
     }
     // The durable cache's path: the meta stream's token deltas replay to the subset.
