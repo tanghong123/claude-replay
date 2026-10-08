@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.28/
+mdrev-embed-1.1.29/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.28`, with two tarballs: `mdrev-1.1.28-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.28.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.29`, with two tarballs: `mdrev-1.1.29-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.29.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.28/mdrev-embed-1.1.28.tar.gz
-tar xzf mdrev-embed-1.1.28.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.28
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.29/mdrev-embed-1.1.29.tar.gz
+tar xzf mdrev-embed-1.1.29.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.29
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.28/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.29/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.28/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.28.tar.gz
-cd mdrev-embed-1.1.28
+tar xzf mdrev-embed-1.1.29.tar.gz
+cd mdrev-embed-1.1.29
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -337,14 +337,18 @@ The options, all of them:
 wherever the reader's primary pointer is a finger and one side of the screen
 is a phone's (either way up), the viewer lays itself out for it —
 
-- the text takes the screen's width, and the change bars and note chips stand
-  just off either side, an arrow away: ‹ › at the bottom right move the page a
-  side at a time, and nothing else moves it sideways, so a scroll down never
-  drifts;
-- the toolbar is two rows, without the controls a phone cannot use (print, the
-  width setting, every note open at once; full screen where the browser has
-  none), and the reader can put it away and bring it back — remembered on the
-  device;
+- upright, the text takes the screen's width, and the change bars and note
+  chips stand just off either side, an arrow away: ‹ › at the bottom right
+  move the page a side at a time, and nothing else moves it sideways, so a
+  scroll down never drifts;
+- held sideways, the text keeps the reading measure, centred, with the change
+  bars and chips in its margins and no arrows; the width setting is in the Aa
+  menu there, and its full width is the upright layout, the text taking the
+  screen — remembered on the device;
+- the toolbar is two rows, without the controls a phone cannot use on it
+  (print, which is in the Aa menu, the width setting, every note open at once;
+  full screen where the browser has none), and the reader can put it away and
+  bring it back — remembered on the device;
 - notes stay chips until tapped, the outline is a peek, and your `fileRail`, if
   you pass it, is a drawer behind a folder button rather than a column;
 - a mount with no document says to pick one from the files, with a button that

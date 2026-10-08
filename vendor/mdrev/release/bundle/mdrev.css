@@ -143,8 +143,8 @@
 .mdrev-host .topbar.tier-3 .pick-mini, .mdrev-host .topbar.tier-4 .pick-mini {display:inline-flex}
 .mdrev-host :is(.topbar.tier-4:has(.display-wrap:not([hidden])) .controls>.reading, .mdrev-host .topbar.tier-5:has(.display-wrap:not([hidden])) .controls>.reading) {display:none}
 .mdrev-host .topbar.tier-4 .display-doc, .mdrev-host .topbar.tier-5 .display-doc, .mdrev-host .topbar.tier-5 .history-picks {display:flex}
-.mdrev-host .topbar.tier-4 .display-wrap, .mdrev-host .topbar.tier-5 .display-wrap {position:static}
-.mdrev-host .topbar.tier-4 .display-menu, .mdrev-host .topbar.tier-5 .display-menu {top:calc(100% - 6px);right:8px}
+.mdrev-host .topbar.tier-4 .display-wrap, .mdrev-host .topbar.tier-5 .display-wrap, .mdrev-host .topbar.set-read.tier-2 .display-wrap, .mdrev-host .topbar.set-annotate.tier-2 .display-wrap, .mdrev-host .app.is-phone .topbar .display-wrap {position:static}
+.mdrev-host .topbar.tier-4 .display-menu, .mdrev-host .topbar.tier-5 .display-menu, .mdrev-host .topbar.set-read.tier-2 .display-menu, .mdrev-host .topbar.set-annotate.tier-2 .display-menu, .mdrev-host .app.is-phone .topbar .display-menu {top:calc(100% - 6px);right:8px}
 .mdrev-host .topbar.tier-5 .controls {justify-content:flex-start;margin-left:0}
 .mdrev-host .topbar.tier-5 .controls>.acts {display:contents}
 .mdrev-host .topbar.title-1 .note-hint, .mdrev-host .topbar.title-2 .note-hint, .mdrev-host .topbar.title-2 .file-dir, .mdrev-host .topbar.title-2 .doc-time {display:none}
@@ -501,18 +501,18 @@
 .mdrev-host .app.is-phone {--phone-gutter:28px;--phone-lane:48px;--phone-inset:12px}
 .mdrev-host .app.is-phone.no-bars {--phone-gutter:0px}
 .mdrev-host .app.is-phone.no-chips {--phone-lane:0px}
-.mdrev-host .app.is-phone:not(.is-hosted-scroll) .scrollpane {overflow-x:hidden}
-.mdrev-host .app.is-phone .layout-body {overflow-x:clip}
-.mdrev-host .app.is-phone .layout-doc {left:calc(-1 * var(--phone-gutter))}
-.mdrev-host .app.is-phone.at-bars .layout-doc {left:0}
-.mdrev-host .app.is-phone.at-notes .layout-doc {left:calc(-1 * (var(--phone-gutter) + var(--phone-lane)))}
-.mdrev-host .app.is-phone.phone-gliding .layout-doc {transition:left .22s cubic-bezier(.2,.7,.3,1)}
+.mdrev-host .app.is-phone:not(.phone-measure):not(.is-hosted-scroll) .scrollpane {overflow-x:hidden}
+.mdrev-host .app.is-phone:not(.phone-measure) .layout-body {overflow-x:clip}
+.mdrev-host .app.is-phone:not(.phone-measure) .layout-doc {left:calc(-1 * var(--phone-gutter))}
+.mdrev-host .app.is-phone:not(.phone-measure).at-bars .layout-doc {left:0}
+.mdrev-host .app.is-phone:not(.phone-measure).at-notes .layout-doc {left:calc(-1 * (var(--phone-gutter) + var(--phone-lane)))}
+.mdrev-host .app.is-phone:not(.phone-measure).phone-gliding .layout-doc {transition:left .22s cubic-bezier(.2,.7,.3,1)}
 @media (prefers-reduced-motion:reduce) {
-.mdrev-host .app.is-phone.phone-gliding .layout-doc {transition:none}
+.mdrev-host .app.is-phone:not(.phone-measure).phone-gliding .layout-doc {transition:none}
 }
-.mdrev-host .app.is-phone .layout-doc {width:calc(100% + var(--phone-gutter) + var(--phone-lane))}
-.mdrev-host .app.is-phone .layout-doc .doc, .mdrev-host .app.is-phone:not(.no-annotate) .layout-doc .doc {max-width:none;padding-left:calc(var(--phone-gutter) + var(--phone-inset));padding-right:calc(var(--phone-lane) + var(--phone-inset));margin:0}
-.mdrev-host .app.is-phone .layout-doc .source-view {max-width:none;margin-left:calc(var(--phone-gutter) + var(--phone-inset) / 2);margin-right:calc(var(--phone-lane) + var(--phone-inset) / 2)}
+.mdrev-host .app.is-phone:not(.phone-measure) .layout-doc {width:calc(100% + var(--phone-gutter) + var(--phone-lane))}
+.mdrev-host .app.is-phone:not(.phone-measure) .layout-doc .doc, .mdrev-host .app.is-phone:not(.phone-measure):not(.no-annotate) .layout-doc .doc {max-width:none;padding-left:calc(var(--phone-gutter) + var(--phone-inset));padding-right:calc(var(--phone-lane) + var(--phone-inset));margin:0}
+.mdrev-host .app.is-phone:not(.phone-measure) .layout-doc .source-view {max-width:none;margin-left:calc(var(--phone-gutter) + var(--phone-inset) / 2);margin-right:calc(var(--phone-lane) + var(--phone-inset) / 2)}
 .mdrev-host .app.is-phone .main {position:relative}
 .mdrev-host .phone-shift {z-index:30;background:var(--bg);border:1px solid var(--rule);box-shadow:var(--shadow);border-radius:23px;display:flex;position:absolute;bottom:16px;right:12px}
 .mdrev-host .phone-shift.beside-rail {right:34px}
@@ -783,7 +783,7 @@
 .mdrev-host, .mdrev-host .app, .mdrev-host .doc {color:var(--ink)!important;background:#fff!important}
 .mdrev-host, .mdrev-host, .mdrev-host .app, .mdrev-host .main {height:auto!important;min-height:0!important;display:block!important;overflow:visible!important}
 .mdrev-host .scrollpane {height:auto!important;overflow:visible!important}
-.mdrev-host .topbar, .mdrev-host .rail, .mdrev-host .file-rail, .mdrev-host .outline, .mdrev-host .mdv-canvas-bar, .mdrev-host .toast, .mdrev-host .ann-orphans, .mdrev-host .blame-pop, .mdrev-host .ann-invite-group, .mdrev-host .ann-margin, .mdrev-host .gutter-margin, .mdrev-host .find {display:none!important}
+.mdrev-host .topbar, .mdrev-host .rail, .mdrev-host .file-rail, .mdrev-host .outline, .mdrev-host .mdv-canvas-bar, .mdrev-host .toast, .mdrev-host .ann-orphans, .mdrev-host .blame-pop, .mdrev-host .ann-invite-group, .mdrev-host .ann-margin, .mdrev-host .gutter-margin, .mdrev-host .find, .mdrev-host .phone-shift, .mdrev-host .print-notice, .mdrev-host .print-wait {display:none!important}
 .mdrev-host .mdv-canvas.is-picked {border-color:var(--rule);outline:none}
 .mdrev-host .doc .mdv-block-ins:not(tr):not(code), .mdrev-host .doc .mdv-block-del:not(tr):not(code), .mdrev-host .doc .mdv-block-mod:not(tr):not(code), .mdrev-host .doc .mdv-block-shape:not(tr):not(code) {border-left:3px solid #0000;margin-left:-10px!important;padding-left:7px!important}
 .mdrev-host .doc .mdv-block-ins:not(tr):not(code) {border-left-color:var(--ins-fg)}
