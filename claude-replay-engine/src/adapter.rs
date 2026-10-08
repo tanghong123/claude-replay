@@ -547,6 +547,15 @@ pub trait TranscriptAdapter: Sync {
         None
     }
 
+    /// The account one STATUS-LINE payload names (#s43), for an agent whose payload says who is
+    /// signed in and whose configuration does not (Antigravity names the email and plan in every
+    /// payload). A consumer recording a payload's limits asks this first and falls back to
+    /// [`signed_in_account`](Self::signed_in_account). Identity only, never a credential.
+    /// Default `None`.
+    fn status_line_account(&self, _payload: &Value) -> Option<crate::metrics::AgentAccount> {
+        None
+    }
+
     /// Where this agent takes a status-line command (#375). Default `None`.
     fn status_line_hook(&self) -> Option<StatusLineHook> {
         None

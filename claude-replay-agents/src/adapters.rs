@@ -23,6 +23,7 @@ pub static REGISTRY: &[&'static dyn TranscriptAdapter] = &[
     &QoderAdapter,
     &QoderWorkAdapter,
     &QwenworkAdapter,
+    &AntigravityAdapter,
 ];
 
 impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
@@ -582,6 +583,57 @@ qwork_family_adapter!(
     false
 );
 
+/// Antigravity CLI adapter (#s43) — for now its subscription limits alone, which reach the
+/// command it runs for its status line. It claims no transcript and lists no session: reading
+/// its transcripts is #s44, until which everything below the limits is inert.
+pub struct AntigravityAdapter;
+impl TranscriptAdapter for AntigravityAdapter {
+    fn agent(&self) -> Agent {
+        Agent::ANTIGRAVITY
+    }
+    fn sniff(&self, _head: &Value) -> SniffClaim {
+        SniffClaim::No
+    }
+    // Never used: no transcript is ever this adapter's.
+    fn shaping(&self) -> &'static Shaping {
+        &agents::claude::model::CLAUDE_SHAPING
+    }
+    fn decode_line(&self, _line: &str, _cwd: &mut String, _out: &mut Vec<Message>) {}
+    fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
+        Box::new(NoMetrics)
+    }
+    fn candidates_scoped(&self, _cwd: &Path) -> Vec<Candidate> {
+        Vec::new()
+    }
+    fn resolve_id(&self, _id: &str) -> Option<PathBuf> {
+        None
+    }
+    fn status_line_limits(
+        &self,
+        payload: &Value,
+    ) -> Option<claude_replay_engine::seam::RateLimits> {
+        agents::antigravity::limits::status_line_limits(payload)
+    }
+    fn status_line_account(
+        &self,
+        payload: &Value,
+    ) -> Option<claude_replay_engine::seam::AgentAccount> {
+        agents::antigravity::limits::status_line_account(payload)
+    }
+    fn status_line_hook(&self) -> Option<claude_replay_engine::seam::StatusLineHook> {
+        Some(agents::antigravity::limits::status_line_hook())
+    }
+}
+
+/// The metrics of an adapter that reads no transcript: nothing.
+struct NoMetrics;
+impl MetricsAccumulator for NoMetrics {
+    fn push(&mut self, _v: &Value) {}
+    fn finish(&self) -> Metrics {
+        Metrics::default()
+    }
+}
+
 #[cfg(test)]
 mod sniff_tests {
     use super::*;
@@ -617,12 +669,16 @@ mod sniff_tests {
 
     /// #21: every Claude-Code-format adapter answers `true` for the human-blocking tools
     /// (one shared vocabulary, one shared list), Codex stays on the default until its
-    /// equivalents are identified, and ordinary work tools are `false` everywhere — the
-    /// consumer's hardcoded name list moves behind the seam.
+    /// equivalents are identified (as does Antigravity, which reads no tool calls yet, #s44),
+    /// and ordinary work tools are `false` everywhere — the consumer's hardcoded name list
+    /// moves behind the seam.
     #[test]
     fn interactive_tools_are_declared_by_the_adapter() {
         for a in REGISTRY {
-            let expect_claude_family = a.agent() != Agent::CODEX;
+            let expect_claude_family = matches!(
+                a.agent(),
+                Agent::CLAUDE | Agent::QODER | Agent::QODERWORK | Agent::QWENWORK
+            );
             for tool in ["AskUserQuestion", "ExitPlanMode"] {
                 assert_eq!(
                     a.tool_is_interactive(tool),
@@ -650,6 +706,8 @@ mod sniff_tests {
                 Agent::CLAUDE | Agent::QODER | Agent::QODERWORK | Agent::QWENWORK => {
                     Some(UsageKind::Call)
                 }
+                // Reads no transcript yet (#s44): no usage ids at all.
+                Agent::ANTIGRAVITY => None,
                 other => panic!("{other:?} is registered: declare what its usage ids name"),
             };
             assert_eq!(a.metrics_acc().usage_kind(), want, "{:?}", a.agent());

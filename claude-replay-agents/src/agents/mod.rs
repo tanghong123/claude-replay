@@ -27,6 +27,9 @@ pub mod qoderwork {
 pub mod qoder {
     pub mod discover;
 }
+pub mod antigravity {
+    pub mod limits;
+}
 
 #[cfg(test)]
 mod tests {
