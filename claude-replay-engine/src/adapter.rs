@@ -341,6 +341,12 @@ pub trait TranscriptAdapter: Sync {
     fn spawn_rosters(&self, _path: &Path) -> Vec<SpawnRoster> {
         Vec::new()
     }
+    /// What the client says the live session at `path` is waiting on, from a status it keeps
+    /// OUTSIDE the transcript (#s76) — see [`crate::state::ClientWait`]. Asked only for a session
+    /// with a live process. Default: nothing, no I/O.
+    fn client_wait(&self, _path: &Path) -> Option<crate::state::ClientWait> {
+        None
+    }
     /// Metrics only, from a reader. A provided method: fold every line through a fresh
     /// [`MetricsAccumulator`] — identical for every agent, so no adapter overrides it.
     fn parse_reader(&self, reader: &mut dyn io::BufRead) -> Metrics {

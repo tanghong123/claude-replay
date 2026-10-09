@@ -70,6 +70,8 @@ pub use crate::metrics::{
 #[doc(hidden)]
 pub use crate::model::attach_skill_body;
 pub use crate::model::*;
+// What a client says it waits on, outside its transcript (#s76).
+pub use crate::state::ClientWait;
 // `watch_keys` too (#361): an adapter's tests turn the per-record key census on, as the sweep does.
 pub use crate::unknown::{
     note as note_unknown, snapshot as unknown_shapes, watch_keys as unknown_watch_keys,

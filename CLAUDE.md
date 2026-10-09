@@ -219,7 +219,13 @@ purpose: an iOS standalone Home Screen app keeps cookies of its own and would op
 blocked (a wait, or an idle reason that cut the work short — this is what "needs attention"
 means and counts) and idle (`done`, `exited`); `sessionBucket` in `shared/state-labels.js` is
 the one definition, held to the tracker's enum by a test, and a turn that ended with an answer
-is idle, not blocked. The app shell's session filter (a glyph in the sidebar's head-actions row,
+is idle, not blocked. **A wait the transcript cannot show is read from the client** (#s76): Claude Code
+2.1.296 keeps a pending call — a question, a command awaiting permission, a plan awaiting approval —
+out of the transcript until it resolves, so the pending-tool rules read such a session as Thinking;
+it records the wait in `<claude home>/sessions/<pid>.json` (`status: waiting`, `waitingFor`: `input
+needed` or `permission prompt`), which `client_wait` reads for a session with a live process, found
+by the `sessionId` it names (the newest file speaks), a permission prompt in plan mode being the
+plan's approval. The app shell's session filter (a glyph in the sidebar's head-actions row,
 between Expand every group and the sidebar collapse, opening Active recently / Blocked / Idle /
 Include hidden checkboxes; Active recently and Blocked by default, remembered, never an empty
 set; "Everything" checks the three and leaves Include hidden alone) filters by a COVER of that partition: Active recently is an hour of

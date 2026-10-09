@@ -133,6 +133,20 @@ pub struct PendingTool {
     pub interactive: bool,
 }
 
+/// What the CLIENT itself says a live session is waiting on (#s76), when it says so outside the
+/// transcript. Claude Code 2.1.296 holds a pending call (a question, a command awaiting permission,
+/// a plan awaiting approval) out of the transcript until it resolves, so the pending-tool rules
+/// below never see one; it records the wait in its own per-process status file instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientWait {
+    /// The reader is asked a question (`AskUserQuestion`).
+    Question,
+    /// A tool call waits for the reader's permission.
+    Permission,
+    /// A plan waits for the reader's approval (a permission prompt while in plan mode).
+    PlanApproval,
+}
+
 /// What the bounded tail said about the conversation's last word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TailLast {
@@ -184,6 +198,9 @@ pub struct StateSignals {
     /// an API error is not a tool result and nothing else in this struct can see it. Measured:
     /// 21 of 50 real sessions contain one and 2 END on one.
     pub last_failure: bool,
+    /// The client's own word that it waits on the reader (#s76) — `None` when it says nothing,
+    /// or for an agent whose adapter reads no such status. Gathered for a live process only.
+    pub client_wait: Option<ClientWait>,
 }
 
 /// Rule 5's quiet threshold: a pending non-interactive tool with no live child reads
@@ -219,6 +236,22 @@ pub fn derive_state(s: &StateSignals) -> Verdict {
                 StateReason::Question,
                 s.final_line.clone().unwrap_or_else(|| t.name.clone()),
             )
+        };
+        return Verdict::observed(Wait, reason, what);
+    }
+    // 2b. The client SAYS it waits on the reader (#s76): its pending call is not in the
+    //     transcript yet, so rules 2 and 5 cannot see it, and without this a session held by a
+    //     question, a permission prompt or a plan reads as Thinking — not Blocked.
+    if let Some(w) = s.client_wait {
+        let (reason, what) = match w {
+            ClientWait::Question => (
+                StateReason::Question,
+                s.final_line.clone().unwrap_or_default(),
+            ),
+            ClientWait::Permission => (StateReason::Permission, String::new()),
+            ClientWait::PlanApproval => {
+                (StateReason::PlanApproval, "plan ready for approval".into())
+            }
         };
         return Verdict::observed(Wait, reason, what);
     }
@@ -557,6 +590,44 @@ mod tests {
         assert_eq!(v.detail, "Which option?");
         s.pending = vec![pending("ExitPlanMode", true)];
         assert_eq!(derive_state(&s).reason, StateReason::PlanApproval);
+    }
+
+    /// Rule 2b (#s76): the client's own word that it waits on the reader is a wait, whatever
+    /// the transcript shows — Claude Code 2.1.296 keeps the pending call out of it, so the
+    /// session otherwise reads Thinking (or Starting, before its first reply).
+    #[test]
+    fn the_clients_own_wait_is_a_wait_when_the_transcript_shows_none() {
+        for (last, grew) in [(TailLast::AssistantMid, false), (TailLast::User, true)] {
+            let mut s = base();
+            s.last = last;
+            s.grew_recently = grew;
+            assert_ne!(
+                derive_state(&s).state,
+                AgentState::Wait,
+                "no client word: no wait"
+            );
+            for (w, reason) in [
+                (ClientWait::Question, StateReason::Question),
+                (ClientWait::Permission, StateReason::Permission),
+                (ClientWait::PlanApproval, StateReason::PlanApproval),
+            ] {
+                s.client_wait = Some(w);
+                let v = derive_state(&s);
+                assert_eq!((v.state, v.reason), (AgentState::Wait, reason), "{w:?}");
+                assert_eq!(v.confidence, Confidence::Observed);
+            }
+        }
+        // A dead process's status file speaks for no one: rule 1 still answers first.
+        let mut s = base();
+        s.process_alive = false;
+        s.client_wait = Some(ClientWait::Question);
+        assert_eq!(derive_state(&s).reason, StateReason::Exited);
+        // A pending interactive tool in the transcript keeps its own detail (rule 2 first).
+        let mut s = base();
+        s.pending = vec![pending("AskUserQuestion", true)];
+        s.final_line = Some("Which option?".into());
+        s.client_wait = Some(ClientWait::Question);
+        assert_eq!(derive_state(&s).detail, "Which option?");
     }
 
     /// Rule 3: a queued prompt beats wait/idle below it — the user already acted.

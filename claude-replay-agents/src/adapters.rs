@@ -201,6 +201,10 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn spawn_rosters(&self, path: &Path) -> Vec<claude_replay_engine::seam::SpawnRoster> {
         agents::claude::model::workflow_rosters(path)
     }
+    // Claude Code 2.1.296 keeps a pending call out of the transcript until it resolves (#s76).
+    fn client_wait(&self, path: &Path) -> Option<claude_replay_engine::seam::ClientWait> {
+        agents::claude::discover::client_wait(path)
+    }
     fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
         agents::claude::model::subagent_file(root, child_id)
     }

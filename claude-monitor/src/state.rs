@@ -178,6 +178,9 @@ impl StateTracker {
                     last_tool_error: content.last_tool_error,
                     last_failure: content.last_failure,
                     fleet_running,
+                    // What the client says it waits on, outside its transcript (#s76): asked of
+                    // a live process only, since a dead one's status file speaks for no one.
+                    client_wait: f.pid.and_then(|_| adapter(f.agent).client_wait(&f.path)),
                 };
                 derive_state(&signals)
             };

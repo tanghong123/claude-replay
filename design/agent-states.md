@@ -100,6 +100,10 @@ Decision procedure (first match wins):
      → idle    · context: exited          (+ "mid-work" if S2 pending — needs attention)
 2. S2 has a pending INTERACTIVE tool (AskUserQuestion / ExitPlanMode / adapter-declared)
      → wait    · context: question | plan-approval   (+ the question text, first line)
+2b. the CLIENT says it waits on the reader, outside the transcript (#s76: Claude Code 2.1.296
+    keeps the pending call out of S2 until it resolves; it writes <claude home>/sessions/<pid>.json
+    with status "waiting" and waitingFor "input needed" | "permission prompt")
+     → wait    · context: question | permission | plan-approval (a permission prompt in plan mode)
 3. S4 shows a queued user prompt (QueueEvent unconsumed in tail)
      → busy    · context: queued-prompt   (the user already answered; progress resumes)
 4. S1 grew within GROWING_HOLD (60s, the existing hysteresis)

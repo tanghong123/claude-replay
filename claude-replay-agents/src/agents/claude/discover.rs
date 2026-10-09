@@ -5,7 +5,9 @@
 //! `detect_agent`, `first_cwd`, and the cross-agent `resolve_any`/`candidates_all`
 //! dispatchers — live in the facade crate's `discover`.
 
-use claude_replay_engine::seam::{Agent, Candidate, CardMemo, CardOutcome, SessionCard};
+use claude_replay_engine::seam::{
+    Agent, Candidate, CardMemo, CardOutcome, ClientWait, SessionCard,
+};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -221,6 +223,83 @@ fn job_home_and_session(transcript: &Path) -> Option<(PathBuf, String)> {
         )
     };
     Some((store.parent()?.to_path_buf(), session))
+}
+
+/// What Claude Code says a live session is waiting on (#s76), from its per-process status file
+/// `<claude home>/sessions/<pid>.json`: `status` `waiting` with `waitingFor` `input needed` (an
+/// `AskUserQuestion`) or `permission prompt` (a call awaiting permission — and a plan awaiting
+/// approval, which the client reports the same way). Measured on 2.1.296, which keeps the pending
+/// call itself out of the transcript until it resolves, so the transcript alone reads Thinking.
+///
+/// The file is named for a PROCESS, so the session is found by the `sessionId` it names; when
+/// more than one does (a crashed process's file left behind, then a resume), the one updated last
+/// speaks. A permission prompt while the session is in plan mode — the transcript's last
+/// `permission-mode` record says `plan` — is the plan's approval.
+pub fn client_wait(transcript: &Path) -> Option<ClientWait> {
+    let (home, session) = job_home_and_session(transcript)?;
+    let mut newest: Option<(u64, serde_json::Value)> = None;
+    for entry in std::fs::read_dir(home.join("sessions")).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(v) = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        else {
+            continue;
+        };
+        if v.get("sessionId").and_then(serde_json::Value::as_str) != Some(session.as_str()) {
+            continue;
+        }
+        let at = v
+            .get("updatedAt")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        if newest.as_ref().is_none_or(|(t, _)| at > *t) {
+            newest = Some((at, v));
+        }
+    }
+    let (_, v) = newest?;
+    if v.get("status").and_then(serde_json::Value::as_str) != Some("waiting") {
+        return None;
+    }
+    match v.get("waitingFor").and_then(serde_json::Value::as_str)? {
+        "input needed" => Some(ClientWait::Question),
+        "permission prompt" if in_plan_mode(transcript) => Some(ClientWait::PlanApproval),
+        "permission prompt" => Some(ClientWait::Permission),
+        _ => None,
+    }
+}
+
+/// Is the session in plan mode, by the last `permission-mode` record in its transcript's tail?
+/// The client writes one when the mode is set and again among the records it appends at a turn's
+/// end, so the last 256 KB is where the current one is.
+fn in_plan_mode(transcript: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 256 * 1024;
+    let Ok(mut f) = std::fs::File::open(transcript) else {
+        return false;
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    if f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).is_err() {
+        return false;
+    }
+    let mut tail = Vec::new();
+    if f.read_to_end(&mut tail).is_err() {
+        return false;
+    }
+    String::from_utf8_lossy(&tail)
+        .lines()
+        .rev()
+        .filter(|l| l.contains("\"permission-mode\""))
+        .find_map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).ok()?;
+            (v.get("type")?.as_str()? == "permission-mode")
+                .then(|| v.get("permissionMode")?.as_str().map(|m| m == "plan"))
+                .flatten()
+        })
+        .unwrap_or(false)
 }
 
 /// All transcript files under a store root — shared with the QoderWork store, whose
@@ -797,6 +876,82 @@ mod tests {
         )
         .unwrap();
         assert_eq!(scratch_owner(&cwd).as_deref(), Some(owner));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #s76: Claude Code 2.1.296 keeps a pending call out of the transcript while it waits, and
+    /// says so in `<claude home>/sessions/<pid>.json` instead. Each `waitingFor` it was seen
+    /// writing maps to its wait; a permission prompt in plan mode is the plan's approval; the
+    /// file is found by the session it names, and of two naming it the one updated last speaks.
+    #[test]
+    fn the_client_s_own_status_file_says_what_a_session_waits_on() {
+        let root = std::env::temp_dir().join(format!("cr-clientwait-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join(".claude");
+        let project = home.join("projects").join("-Users-dev-repo");
+        let sessions = home.join("sessions");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&sessions).unwrap();
+        let sid = "c1d148c9-8751-465a-a008-967370624851";
+        let transcript = project.join(format!("{sid}.jsonl"));
+        let mode = |m: &str| {
+            format!("{{\"type\":\"permission-mode\",\"permissionMode\":\"{m}\",\"sessionId\":\"{sid}\"}}\n")
+        };
+        std::fs::write(&transcript, mode("default")).unwrap();
+        let status = |pid: u32, session: &str, at: u64, status: &str, waiting: Option<&str>| {
+            let waiting = waiting.map_or(String::new(), |w| format!(",\"waitingFor\":\"{w}\""));
+            std::fs::write(
+                sessions.join(format!("{pid}.json")),
+                format!("{{\"pid\":{pid},\"sessionId\":\"{session}\",\"status\":\"{status}\",\"updatedAt\":{at}{waiting}}}"),
+            )
+            .unwrap();
+        };
+
+        assert_eq!(
+            client_wait(&transcript),
+            None,
+            "no status file: nothing said"
+        );
+        status(101, sid, 10, "busy", None);
+        assert_eq!(client_wait(&transcript), None, "busy is not a wait");
+        status(101, sid, 11, "waiting", Some("input needed"));
+        assert_eq!(client_wait(&transcript), Some(ClientWait::Question));
+        status(101, sid, 12, "waiting", Some("permission prompt"));
+        assert_eq!(client_wait(&transcript), Some(ClientWait::Permission));
+        std::fs::write(&transcript, mode("plan")).unwrap();
+        assert_eq!(
+            client_wait(&transcript),
+            Some(ClientWait::PlanApproval),
+            "a permission prompt in plan mode is the plan's approval"
+        );
+        status(101, sid, 13, "waiting", Some("something new"));
+        assert_eq!(
+            client_wait(&transcript),
+            None,
+            "an unknown wait claims nothing"
+        );
+
+        // Another session's file says nothing about this one…
+        std::fs::remove_file(sessions.join("101.json")).unwrap();
+        status(
+            202,
+            "00000000-0000-4000-8000-000000000000",
+            99,
+            "waiting",
+            Some("input needed"),
+        );
+        assert_eq!(client_wait(&transcript), None);
+        // …and of two naming this session (a crashed process's, then the resumed one's), the
+        // newer speaks.
+        status(303, sid, 20, "waiting", Some("input needed"));
+        status(404, sid, 30, "idle", None);
+        assert_eq!(
+            client_wait(&transcript),
+            None,
+            "the resumed process is idle"
+        );
+        status(404, sid, 31, "waiting", Some("input needed"));
+        assert_eq!(client_wait(&transcript), Some(ClientWait::Question));
         let _ = std::fs::remove_dir_all(&root);
     }
 
