@@ -13328,6 +13328,32 @@ fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
         serde_json::json!(0),
         "the tap that closed it reached nothing beneath"
     );
+    // …even when its click comes late, as on a slow phone and on Linux, where the harness supplies
+    // the click half a second after the touch: the dim counts from the LIFT, not the touch.
+    phone_tap(&tab, "#phonePane-turns");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('pane-open')",
+        "the Turns sheet again",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    harness::finger_tap_late_click(&tab, 220.0, 200.0, Duration::from_millis(600));
+    harness::until(&tab, "document.getElementById('phonePaneMenu').hidden && !document.getElementById('app').classList.contains('pane-open')", "the sheet closed by a tap on the dim", Duration::from_secs(5), "document.getElementById('app').className");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        harness::eval(&tab, "window.__clicked"),
+        serde_json::json!(0),
+        "a late click from the tap that closed it reached nothing beneath either"
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "document.querySelector('#app>.pane-scrim').classList.contains('catching')"
+        ),
+        serde_json::json!(false),
+        "and the dim let go once that click had passed"
+    );
 
     // Upright, Aa offers Wide transcript, and it gives the whole width, remembered.
     phone_tap(&tab, "#readingBtn");

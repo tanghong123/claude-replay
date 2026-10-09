@@ -3456,16 +3456,37 @@ var phoneDock;
   });
   // A tap outside closes the list — unless a task's card is open over it, when the tap is the
   // card's (it closes the card; its own handler), and the list is still there after it.
+  // A tap on the dim (#s55) is spent closing: the dim keeps catching until that tap's click has
+  // passed, or it would land on whatever lies beneath — a link in the transcript. The click follows
+  // the LIFT, so the wait is counted from there (a held tap outlasted a wait from the touch); a
+  // gesture the browser took over gets no click and lets go at once; and a lift that never comes
+  // still lets go, so the dim can never go on swallowing taps. A press on the dim while it catches
+  // is that tap's mouse half (a phone's compatibility events) and holds it until its own click.
+  let catchingPointer = null, catchTimer = 0;
+  const stopCatching = after => {
+    clearTimeout(catchTimer);
+    catchTimer = setTimeout(() => paneScrim.classList.remove("catching"), after);
+  };
   addEventListener("pointerdown", event => {
-    // A tap on the dim (#s55) is spent closing: the dim keeps catching until that tap's click has
-    // passed, or it would land on whatever lies beneath — a link in the transcript.
-    if (openPane && event.target === paneScrim) {
+    if (event.target === paneScrim && (openPane || paneScrim.classList.contains("catching"))) {
       paneScrim.classList.add("catching");
-      setTimeout(() => paneScrim.classList.remove("catching"), 700);
+      catchingPointer = event.pointerId;
+      stopCatching(4000);
     }
     if (openPane && taskPopover.hidden && !menu.contains(event.target) && !event.target.closest?.("[data-phone-pane]")) closePane();
   }, true);
-  paneScrim.addEventListener("click", event => { event.preventDefault(); paneScrim.classList.remove("catching"); });
+  const lifted = event => {
+    if (event.pointerId !== catchingPointer) return;
+    catchingPointer = null;
+    stopCatching(event.type === "pointercancel" ? 0 : 1000);
+  };
+  addEventListener("pointerup", lifted, true);
+  addEventListener("pointercancel", lifted, true);
+  paneScrim.addEventListener("click", event => {
+    event.preventDefault();
+    clearTimeout(catchTimer);
+    paneScrim.classList.remove("catching");
+  });
   addEventListener("keydown", event => { if (event.key === "Escape") closePane(); });
   // The card's own jump to the turn leaves for the transcript: the list goes with the card.
   taskPopover.addEventListener("click", event => { if (event.target.closest("[data-task-record]")) closePane(); });

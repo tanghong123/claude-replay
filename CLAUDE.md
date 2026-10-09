@@ -155,7 +155,8 @@ exist there: each pane opens from its icon as a SHEET rising from the pill that 
 live list (moved in while open, back after), so one renderer and one click handler (`navigatorClick`)
 serve both; while one is open the session DIMS behind it (#s55, `.pane-scrim` under the dock, so the
 dock's icons still switch panes; a tap on the dim closes the sheet and is swallowed, never reaching a
-link beneath). Info hangs at `--phone-top` (the bar's measured bottom) and ends above the dock; the
+link beneath — the dim keeps catching until that tap's click, counted from the LIFT, since on Linux the
+harness supplies the click half a second late and a slow phone may too). Info hangs at `--phone-top` (the bar's measured bottom) and ends above the dock; the
 dock's sheets (panes, Aa, the filter, the suggestions) rise from `--phone-bottom` (the dock's measured
 top) and stop 72px short of the bar upright, the band `phone_tap_outside` taps to dismiss them. Held
 sideways each is a POPOVER at its control's side (#s41), never a band across the screen — a band ran

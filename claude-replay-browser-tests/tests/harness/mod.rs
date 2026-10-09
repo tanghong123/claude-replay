@@ -3160,6 +3160,70 @@ pub fn finger_tap(tab: &headless_chrome::Tab, x: f64, y: f64) {
     }
 }
 
+/// A finger's tap at `(x, y)` whose click comes LATE: the touch (down and lifted), then `wait`, then
+/// the compatibility mouse events and the click, and no click before them. A slow phone does this, and so does
+/// [`finger_tap`] on Linux, where Chrome's own tap stops at `touchend` and the click is supplied
+/// afterwards — a page that keeps a layer up "until the tap's click" has to count from the lift,
+/// and this is the tap that tells (#s55: the dim's catch, counted from the touch, ran out on CI).
+pub fn finger_tap_late_click(tab: &headless_chrome::Tab, x: f64, y: f64, wait: Duration) {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption as Mouse, DispatchTouchEvent,
+        DispatchTouchEventTypeOption as Touch, MouseButton, TouchPoint,
+    };
+    let finger = TouchPoint {
+        x,
+        y,
+        radius_x: None,
+        radius_y: None,
+        rotation_angle: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        id: Some(0.0),
+    };
+    // Chrome's touch emulation follows `touchend` with the mouse events and the click at once, on
+    // macOS; a `touchend` whose default is prevented gets none, as Linux's tap gets none, so the
+    // click comes only when this supplies it.
+    eval(tab, "(function(){ addEventListener('touchend', function (e) { e.preventDefault(); }, { capture: true, passive: false, once: true }); return 1; })()");
+    for (kind, points) in [
+        (Touch::TouchStart, vec![finger]),
+        (Touch::TouchEnd, Vec::new()),
+    ] {
+        tab.call_method(DispatchTouchEvent {
+            Type: kind,
+            touch_points: points,
+            modifiers: None,
+            timestamp: None,
+        })
+        .expect("the finger's touch");
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    std::thread::sleep(wait);
+    for kind in [Mouse::MousePressed, Mouse::MouseReleased] {
+        tab.call_method(DispatchMouseEvent {
+            Type: kind,
+            x,
+            y,
+            modifiers: None,
+            timestamp: None,
+            button: Some(MouseButton::Left),
+            buttons: None,
+            click_count: Some(1),
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        })
+        .expect("the tap's late click");
+    }
+}
+
 /// A two-finger pinch on a phone (#313): both fingers down on either side of `(cx, cy)`, `from`
 /// px apart, spread to `to` px over `steps` moves, then lifted. Chrome's touch emulation (see
 /// [`phone`]) delivers these as the touch POINTER events a real phone sends — two pointers at
