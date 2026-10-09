@@ -13,9 +13,10 @@ invented, and a reviewer confirms the corpus is safe by **reading the script** r
 auditing generated output. The generated `.jsonl` is scratch and is never committed.
 
 The SHAPE comes from real sessions — turn lengths, how often a turn thinks, the ratio of calls
-to prose, how deep result bodies run. The CONTENT is a fictional project: `lumen`, a link
+to prose, how deep result bodies run. The CONTENT is a fictional project: `tern`, a link
 checker for static sites. The only hosts are `example.invalid` (RFC 2606's reserved TLD) and
-`localhost`; the only paths are under `/home/dev/lumen`.
+`localhost`; the only paths are under `/home/dev/tern`. Its name is no real product's either: a demo
+video of agents working on a project named like a real product reads as a real session of it.
 
 ## Running it
 

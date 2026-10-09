@@ -9,7 +9,9 @@
 //
 // The SHAPE is taken from real sessions — turn lengths, how often a turn thinks, the ratio of
 // calls to prose, how deep result bodies run — while the CONTENT is a fictional project:
-// `lumen`, a link checker for static sites. No real path, host, person or repository appears.
+// `tern`, a link checker for static sites. No real path, host, person, repository or product name
+// appears: the project's name must not be any real product's either, since a demo video of agents
+// working on it would read as a real session of that product.
 //
 // Usage:
 //   node scripts/demo-corpus.mjs --out <dir>              write the whole session at once
@@ -30,7 +32,7 @@ const OUT = value("--out", null);
 const LIVE = flag("--live");
 const SPEED = Number(value("--speed", "1")) || 1;
 const SID = "0d3f7a91-2c45-4e18-9b6a-7f2e5c81d430";
-const CWD = "/home/dev/lumen";
+const CWD = "/home/dev/tern";
 
 if (!OUT) { console.error("usage: demo-corpus.mjs --out <dir> [--live] [--speed N]"); process.exit(2); }
 
@@ -72,7 +74,7 @@ scene("a prose answer with a table, a fence and CJK", () => [
   user("Summarise what the crawler does with redirects, and show the status table.", 0),
   thinking("Worth answering with the table from the README rather than prose alone.", 8),
   assistant([
-    "`lumen` follows a redirect chain up to **five** hops and reports the LAST status it saw.",
+    "`tern` follows a redirect chain up to **five** hops and reports the LAST status it saw.",
     "",
     "| status | meaning | counted as |",
     "| --- | --- | --- |",
@@ -98,9 +100,9 @@ scene("a run of calls, one of which fails with an exit code", () => {
   const out = [user("Run the link check over the docs directory.", 40)];
   out.push(call("c-ls", "Bash", { command: "ls docs" }, 3));
   out.push(result("c-ls", "index.md\nguide.md\nchangelog.md", 2));
-  out.push(call("c-run", "Bash", { command: "lumen check docs --format json" }, 2));
+  out.push(call("c-run", "Bash", { command: "tern check docs --format json" }, 2));
   out.push(result("c-run", "checked 3 files, 118 links, 2 broken\n  guide.md:41  https://example.invalid/spec  404\n  guide.md:77  https://example.invalid/old  404", 9));
-  out.push(call("c-fail", "Bash", { command: "lumen check docs --strict" }, 3));
+  out.push(call("c-fail", "Bash", { command: "tern check docs --strict" }, 3));
   out.push(result("c-fail", "error: 2 broken links and --strict was given", 4, { is_error: true }));
   out.push(assistant("Two links are dead. `--strict` turns that into a non-zero exit, which is what CI uses.", 6));
   out.push(turnDuration(29_000, 1));
@@ -142,7 +144,7 @@ scene("a screenshot taken in the middle of a run", () => [
   result("c-nav", "navigated", 3),
   call("c-shot", "mcp__claude-in-chrome__computer", { action: "screenshot" }, 2),
   imageResult("c-shot", 4),
-  call("c-width", "Bash", { command: "lumen report --width 72 --dry-run" }, 3),
+  call("c-width", "Bash", { command: "tern report --width 72 --dry-run" }, 3),
   result("c-width", "summary fits in 68 columns", 2),
   assistant("It does not wrap at 72 columns — the summary line measures 68.", 5),
   turnDuration(22_000, 1),
@@ -155,11 +157,11 @@ scene("a /context report", () => [
 
 scene("an API error, and a hook that failed", () => [
   user("Re-run the whole check.", 20),
-  call("c-again", "Bash", { command: "lumen check docs" }, 3),
+  call("c-again", "Bash", { command: "tern check docs" }, 3),
   apiError("upstream connect error or disconnect/reset before headers", 500, 1, 3, 4),
   result("c-again", "checked 3 files, 118 links, 0 broken", 8),
-  attachment({ type: "hook_non_blocking_error", command: "lumen fmt --check", exitCode: 1, stderr: "docs/redirects.toml is not formatted" }, 1),
-  assistant("Clean now. The formatting hook failed separately — `docs/redirects.toml` needs `lumen fmt`.", 5),
+  attachment({ type: "hook_non_blocking_error", command: "tern fmt --check", exitCode: 1, stderr: "docs/redirects.toml is not formatted" }, 1),
+  assistant("Clean now. The formatting hook failed separately — `docs/redirects.toml` needs `tern fmt`.", 5),
   turnDuration(24_000, 1),
 ]);
 
@@ -205,10 +207,10 @@ scene("a compaction, and the files it carried over", () => [
 
 scene("tasks moving through the queue", () => [
   user("Log what is left as tasks.", 22),
-  call("c-task1", "Bash", { command: "taskq create --subject 'Run lumen fmt over docs'" }, 3),
-  result("c-task1", "Task #4 created successfully: Run lumen fmt over docs\n##taskq/v1 {\"rid\":\"demo-0001\",\"ts\":\"2026-04-07T10:02:00Z\",\"repo\":\"lumen\",\"op\":\"create\",\"kind\":\"content\",\"task\":\"4\",\"subject\":\"Run lumen fmt over docs\",\"changes\":{\"status\":{\"from\":null,\"to\":\"pending\"}}}", 3),
+  call("c-task1", "Bash", { command: "taskq create --subject 'Run tern fmt over docs'" }, 3),
+  result("c-task1", "Task #4 created successfully: Run tern fmt over docs\n##taskq/v1 {\"rid\":\"demo-0001\",\"ts\":\"2026-04-07T10:02:00Z\",\"repo\":\"tern\",\"op\":\"create\",\"kind\":\"content\",\"task\":\"4\",\"subject\":\"Run tern fmt over docs\",\"changes\":{\"status\":{\"from\":null,\"to\":\"pending\"}}}", 3),
   call("c-task2", "Bash", { command: "taskq done 4 --outcome 'formatted'" }, 4),
-  result("c-task2", "Completed task #4: Run lumen fmt over docs\n##taskq/v1 {\"rid\":\"demo-0002\",\"ts\":\"2026-04-07T10:03:00Z\",\"repo\":\"lumen\",\"op\":\"done\",\"kind\":\"state\",\"task\":\"4\",\"subject\":\"Run lumen fmt over docs\",\"changes\":{\"status\":{\"from\":\"pending\",\"to\":\"completed\"}}}", 3),
+  result("c-task2", "Completed task #4: Run tern fmt over docs\n##taskq/v1 {\"rid\":\"demo-0002\",\"ts\":\"2026-04-07T10:03:00Z\",\"repo\":\"tern\",\"op\":\"done\",\"kind\":\"state\",\"task\":\"4\",\"subject\":\"Run tern fmt over docs\",\"changes\":{\"status\":{\"from\":\"pending\",\"to\":\"completed\"}}}", 3),
   assistant("One task, opened and closed — it shows in the task panel with both states.", 5),
   turnDuration(18_000, 1),
 ]);
