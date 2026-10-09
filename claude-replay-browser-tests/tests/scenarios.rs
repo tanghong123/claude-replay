@@ -17155,3 +17155,131 @@ fn scenario_qwenwork_file_edit_draws_its_diff_with_real_line_numbers() {
         );
     }
 }
+
+/// A `TodoWrite` call and its result, as Qwenwork records them: refused, the result is an error
+/// carrying the client's validation keys (#s66), and the list never stood.
+fn todo_write_at(id: &str, todos: &[(&str, &str)], refused: bool, ts: &str) -> String {
+    let todos: Vec<serde_json::Value> = todos
+        .iter()
+        .map(|(text, status)| serde_json::json!({"content": text, "status": status}))
+        .collect();
+    let call = serde_json::json!({
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {"role": "assistant", "content": [{
+            "type": "tool_use", "id": id, "name": "TodoWrite", "input": {"todos": todos}}]},
+    });
+    let result = if refused {
+        serde_json::json!({
+            "type": "user",
+            "timestamp": ts,
+            "toolUseResult": {"tool_error_stage": "parameter_validation", "tool_error_subtype": "custom_semantic", "tool_error_details_json": "{}", "isHardFailure": false},
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "is_error": true, "content": "Error: only one task may be in progress"}]},
+        })
+    } else {
+        serde_json::json!({
+            "type": "user",
+            "timestamp": ts,
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": "Todos have been modified successfully."}]},
+        })
+    };
+    format!("{call}\n{result}\n")
+}
+
+/// #s69 — a `TodoWrite` the client REFUSED never stood, so the Tasks list stays the one before
+/// it until the next accepted call. The fold took the list at call time and nothing consulted the
+/// result: a Qwenwork session showed a refused list for four records, until the agent sent the
+/// corrected one, and a session that ends on a refusal kept it. The third list arrives LIVE, as an
+/// agent writes it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_refused_todo_write_leaves_the_tasks_list_as_it_was() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let base = base(match surface {
+            Surface::Classic => "refused-todo-classic",
+            Surface::AppShell => "refused-todo-app",
+        });
+        let stores = Stores::new(&base);
+        let mut t = long_session(12, Shape::default());
+        t += &user_at("question 13: plan the survey", &now_minus(200));
+        t += &todo_write_at(
+            "tw1",
+            &[
+                ("survey the stores", "in_progress"),
+                ("write the report", "pending"),
+            ],
+            false,
+            &now_minus(198),
+        );
+        t += &todo_write_at(
+            "tw2",
+            &[
+                ("survey the stores", "in_progress"),
+                ("REFUSED ITEM", "in_progress"),
+            ],
+            true,
+            &now_minus(196),
+        );
+        t += &assistant_at("Surveying now.", &now_minus(194));
+        let path = stores.qwenwork_session(SID, &t);
+        let fx = Fixture {
+            base,
+            path,
+            turns: 13,
+        };
+        let port = if surface == Surface::Classic { 0 } else { 3079 };
+        let page = open(surface, &fx, port);
+        harness::show_every_pane_row(&page.tab);
+        let shown = match surface {
+            Surface::Classic => "(function(){ var box = document.getElementById('taskbox'); var b = document.getElementById('btn-tasks'); if (b && !(box && box.offsetParent)) b.click(); return JSON.stringify([...document.querySelectorAll('#taskbox .task-subj')].map(function(e){ return e.textContent; })); })()",
+            Surface::AppShell => "(function(){ var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) { var h = c.querySelector('[data-nav-card-toggle]'); if (h) h.click(); } return JSON.stringify([...document.querySelectorAll('#navigatorWork .work-task strong')].map(function(e){ return e.textContent; })); })()",
+        };
+        let read = |what: &str| -> Vec<String> {
+            let mut last: Vec<String> = Vec::new();
+            for _ in 0..40 {
+                last = eval(&page.tab, shown)
+                    .as_str()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default();
+                if last.iter().any(|s| s.contains(what)) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            last
+        };
+        let before = read("write the report");
+        assert!(
+            before.iter().any(|s| s.contains("write the report")),
+            "{surface:?}: the list before the refused call is the one shown: {before:?}"
+        );
+        assert!(
+            !before.iter().any(|s| s.contains("REFUSED ITEM")),
+            "{surface:?}: the refused list never stood: {before:?}"
+        );
+
+        harness::append(
+            &fx.path,
+            &(todo_write_at(
+                "tw3",
+                &[
+                    ("survey the stores", "completed"),
+                    ("write the report", "in_progress"),
+                    ("ship it", "pending"),
+                ],
+                false,
+                &now_minus(10),
+            ) + &assistant_at("Surveyed; writing it up.", &now_minus(9))),
+        );
+        let after = read("ship it");
+        assert!(
+            after.iter().any(|s| s.contains("ship it")),
+            "{surface:?}: the next accepted list replaces it as it arrives: {after:?}"
+        );
+        assert!(
+            !after.iter().any(|s| s.contains("REFUSED ITEM")),
+            "{surface:?}: {after:?}"
+        );
+    }
+}

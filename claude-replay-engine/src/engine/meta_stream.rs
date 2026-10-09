@@ -273,11 +273,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// real line numbers, so the Write folds as an edit. A v49 stream holds those calls with no patch:
 /// an Edit drawn from its input strings and an overwrite drawn as a new file.
 ///
+/// v51: #s69 — a `TodoWrite` snapshot persists the id of its call, and a new task op, `Retract`,
+/// records a refused one, which puts the previous list back. A v50 stream holds a refused list as
+/// the session's tasks, and a v50 reader cannot read a `Retract`.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 50;
+pub const FOLD_VERSION: u16 = 51;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

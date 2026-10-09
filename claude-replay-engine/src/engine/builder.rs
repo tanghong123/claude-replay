@@ -395,8 +395,15 @@ impl<S: BlockStore> SessionAccumulator<S> {
             match m {
                 Message::TaskOp(op) => self.task_fold.apply(op),
                 Message::ToolResult {
-                    tool_use_id, text, ..
-                } => self.task_fold.on_tool_result(tool_use_id, text),
+                    tool_use_id,
+                    text,
+                    is_error,
+                    ..
+                } => {
+                    // A refused `TodoWrite` puts back the list it replaced (#s69).
+                    self.task_fold.on_tool_outcome(tool_use_id, *is_error);
+                    self.task_fold.on_tool_result(tool_use_id, text);
+                }
                 _ => {}
             }
         }

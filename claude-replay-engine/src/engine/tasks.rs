@@ -170,7 +170,20 @@ pub enum TaskOp {
     /// able to SHRINK when a todo is dropped. An append-only op-log can express neither, so
     /// forcing it onto `Create`/`Update` would either strand everything in `pending` (no
     /// `Resolve` ids exist) or leave deleted todos behind forever.
-    Snapshot { todos: Vec<Todo> },
+    ///
+    /// `tool_use_id` names the call when its result can still REFUSE it (#s69): the client
+    /// validates a `TodoWrite` and may reject it, and a rejected list never stood. Absent for
+    /// an agent whose results say nothing of failure (Codex), and in records written before.
+    Snapshot {
+        todos: Vec<Todo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+    },
+    /// The `TodoWrite` call `tool_use_id` was REFUSED (#s69): its result came back an error,
+    /// so the list it replaced is put back. Recorded, like [`Resolve`](Self::Resolve), because
+    /// the refusal is transcript data rather than a task op — a replay of the log without it
+    /// would rebuild the list the client never accepted.
+    Retract { tool_use_id: String },
 }
 
 /// One entry of a [`TaskOp::Snapshot`] — the neutral shape a `TodoWrite` item maps onto.
@@ -198,6 +211,14 @@ pub struct TaskFold {
     /// `TaskCreate` calls whose id hasn't arrived yet: `tool_use_id` → draft item. **Derived,
     /// never persisted** (#96): it is exactly the creates with no matching `Resolve`.
     pending: Vec<(String, TaskItem)>,
+    /// The items the latest [`Snapshot`](TaskOp::Snapshot) that names its call replaced,
+    /// under that call's id, until its result says whether the client took it (#s69): a
+    /// [`Retract`](TaskOp::Retract) puts them back. Serialized with the fold, never skipped —
+    /// a checkpoint taken between a call and its result must still be able to retract it, and
+    /// a skipped field would come back empty — and rebuilt by a replay of the log, which sets
+    /// it in the same arm that applies the snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    held: Option<(String, Vec<TaskItem>)>,
     /// Ops applied since the last [`drain_recorded`](Self::drain_recorded) — the meta record's
     /// delta. Not part of the fold's value, so it is skipped by serde and by `PartialEq`.
     #[serde(skip)]
@@ -309,7 +330,7 @@ impl TaskFold {
                 }
                 self.list.sort();
             }
-            TaskOp::Snapshot { todos } => {
+            TaskOp::Snapshot { todos, tool_use_id } => {
                 // Replace-all — but only over a list this op is entitled to own. A session
                 // mixing `TaskCreate` with `TodoWrite` would otherwise have its op-log list
                 // wiped by the first snapshot. Measured across 133 Claude transcripts: none
@@ -318,6 +339,8 @@ impl TaskFold {
                 if !Self::is_snapshot_built(&self.list) {
                     return;
                 }
+                let replaced = std::mem::take(&mut self.list.items);
+                self.held = tool_use_id.clone().map(|id| (id, replaced));
                 self.list.items = todos
                     .iter()
                     .enumerate()
@@ -333,6 +356,13 @@ impl TaskFold {
                 // the ids were non-numeric — they are indices, so sorting is a no-op that
                 // keeps the invariant honest if that ever changes.
                 self.list.sort();
+            }
+            TaskOp::Retract { tool_use_id } => {
+                if self.held.as_ref().is_some_and(|(id, _)| id == tool_use_id) {
+                    if let Some((_, items)) = self.held.take() {
+                        self.list.items = items;
+                    }
+                }
             }
         }
     }
@@ -376,6 +406,22 @@ impl TaskFold {
             tool_use_id: tool_use_id.to_string(),
             id,
         });
+    }
+
+    /// Feed every tool result's FAILURE flag through here, before
+    /// [`on_tool_result`](Self::on_tool_result) (#s69). A `TodoWrite` the client refused — its
+    /// result an error — never stood, so the list it replaced comes back, recorded as a
+    /// [`TaskOp::Retract`]. One it took changes nothing, and `held` stays until the next
+    /// snapshot: an acceptance records no op, so letting it go here would leave a live fold and
+    /// its replay differing, while only a refusal of that same call ever reads it. Measured
+    /// before this: a Qwenwork session whose refused `TodoWrite` held the pane for four records,
+    /// until the agent sent the corrected list; one that ends on the refusal kept it for good.
+    pub fn on_tool_outcome(&mut self, tool_use_id: &str, is_error: Option<bool>) {
+        if is_error == Some(true) && self.held.as_ref().is_some_and(|(id, _)| id == tool_use_id) {
+            self.apply(&TaskOp::Retract {
+                tool_use_id: tool_use_id.to_string(),
+            });
+        }
     }
 
     /// Land a pending create under `id`, or drop it when the create failed (`None`).
@@ -912,6 +958,7 @@ mod tests {
                     ..Todo::default()
                 })
                 .collect(),
+            tool_use_id: None,
         }
     }
 
@@ -979,6 +1026,140 @@ mod tests {
         g.apply(&snap(&[("x", "pending")]));
         g.apply(&snap(&[("y", "pending"), ("z", "pending")]));
         assert_eq!(g.snapshot().items.len(), 2);
+    }
+
+    /// A `TodoWrite` snapshot that names its call, as Claude's tokenizer writes one (#s69).
+    fn snap_call(id: &str, todos: &[(&str, &str)]) -> TaskOp {
+        match snap(todos) {
+            TaskOp::Snapshot { todos, .. } => TaskOp::Snapshot {
+                todos,
+                tool_use_id: Some(id.to_string()),
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    fn texts(f: &TaskFold) -> Vec<String> {
+        f.snapshot()
+            .items
+            .iter()
+            .map(|t| t.subject.clone())
+            .collect()
+    }
+
+    /// #s69: a `TodoWrite` the client refused never stood. It shows from the call, as before —
+    /// the result may be a while coming — and its refusal puts back the list it replaced,
+    /// recorded; one the client took stays.
+    #[test]
+    fn a_refused_todo_write_puts_back_the_list_it_replaced() {
+        let mut f = TaskFold::default();
+        f.apply(&snap_call("w1", &[("plan", "in_progress")]));
+        f.on_tool_outcome("w1", Some(false));
+        assert_eq!(texts(&f), ["plan"], "an accepted list stands");
+        f.drain_recorded();
+
+        f.apply(&snap_call(
+            "w2",
+            &[("plan", "completed"), ("bad", "pending")],
+        ));
+        assert_eq!(
+            texts(&f),
+            ["plan", "bad"],
+            "with no result yet, the call's list shows, as it always did"
+        );
+        f.on_tool_outcome("w2", Some(true));
+        assert_eq!(texts(&f), ["plan"], "refused: the previous list is back");
+        assert_eq!(
+            f.snapshot().items[0].status,
+            TaskStatus::InProgress,
+            "…as it was, status and all"
+        );
+        assert_eq!(
+            f.drain_recorded(),
+            [
+                snap_call("w2", &[("plan", "completed"), ("bad", "pending")]),
+                TaskOp::Retract {
+                    tool_use_id: "w2".into()
+                }
+            ],
+            "the refusal is recorded, so a replay rebuilds the same list"
+        );
+
+        f.apply(&snap_call("w3", &[("plan", "completed")]));
+        f.on_tool_outcome("w3", Some(false));
+        f.drain_recorded();
+        assert_eq!(texts(&f), ["plan"]);
+        assert_eq!(f.snapshot().items[0].status, TaskStatus::Completed);
+        // A late or repeated error for a call already settled, or one that never held a list,
+        // records nothing.
+        f.on_tool_outcome("w2", Some(true));
+        f.on_tool_outcome("unknown", Some(true));
+        assert!(f.drain_recorded().is_empty());
+        assert_eq!(f.snapshot().items[0].status, TaskStatus::Completed);
+    }
+
+    /// The refusal can arrive after a checkpoint was taken between the call and its result, or
+    /// after the fold was rebuilt from the persisted log: both still retract, and the log replays
+    /// to the same fold the live one is.
+    #[test]
+    fn a_refusal_retracts_across_a_checkpoint_and_a_replay() {
+        let mut live = TaskFold::default();
+        live.apply(&snap_call("w1", &[("first", "pending")]));
+        live.on_tool_outcome("w1", Some(false));
+        live.apply(&snap_call("w2", &[("refused", "pending")]));
+
+        let checkpoint = serde_json::to_string(&live).unwrap();
+        let mut resumed: TaskFold = serde_json::from_str(&checkpoint).unwrap();
+        resumed.on_tool_outcome("w2", Some(true));
+        assert_eq!(
+            texts(&resumed),
+            ["first"],
+            "a checkpoint keeps what it replaced"
+        );
+
+        live.on_tool_outcome("w2", Some(true));
+        let log = live.drain_recorded();
+        let mut replayed = TaskFold::default();
+        for op in &log {
+            replayed.apply_recorded(op);
+        }
+        assert_eq!(texts(&replayed), ["first"]);
+        assert_eq!(replayed, live, "the log rebuilds the live fold exactly");
+    }
+
+    /// What was persisted before #s69 still reads: a snapshot with no call id, and a fold with
+    /// nothing held. A snapshot that names no call (Codex) is written as it always was.
+    #[test]
+    fn records_from_before_a_refusal_could_be_retracted_still_read() {
+        let old: TaskOp =
+            serde_json::from_str(r#"{"Snapshot":{"todos":[{"text":"x","status":"pending"}]}}"#)
+                .unwrap();
+        assert_eq!(old, snap(&[("x", "pending")]));
+        let mut before = TaskFold::default();
+        before.apply_recorded(&snap(&[("x", "pending")]));
+        let written = serde_json::to_string(&before).unwrap();
+        assert!(
+            !written.contains("held"),
+            "a fold holding nothing writes no field"
+        );
+        let fold: TaskFold = serde_json::from_str(&written).unwrap();
+        assert_eq!(texts(&fold), ["x"]);
+        assert!(!serde_json::to_string(&snap(&[("x", "pending")]))
+            .unwrap()
+            .contains("tool_use_id"));
+    }
+
+    /// A refused rewrite that changed nothing was never applied nor recorded (#126), and its
+    /// refusal changes nothing either.
+    #[test]
+    fn a_refused_unchanged_snapshot_changes_nothing() {
+        let mut f = TaskFold::default();
+        f.apply(&snap_call("w1", &[("a", "pending")]));
+        f.drain_recorded();
+        f.apply(&snap_call("w2", &[("a", "pending")]));
+        f.on_tool_outcome("w2", Some(true));
+        assert!(f.drain_recorded().is_empty());
+        assert_eq!(texts(&f), ["a"]);
     }
 
     /// The file-schema parser maps Claude's task JSON onto the neutral shape.

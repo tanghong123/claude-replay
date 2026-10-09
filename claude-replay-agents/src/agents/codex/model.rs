@@ -1512,6 +1512,8 @@ fn codex_task_op(raw_name: &str, input: &Value) -> Option<TaskOp> {
                     })
                 })
                 .collect(),
+            // A Codex result says nothing of failure, so nothing here can be retracted (#s69).
+            tool_use_id: None,
         }),
         "create_goal" => input
             .get("objective")
@@ -1523,6 +1525,7 @@ fn codex_task_op(raw_name: &str, input: &Value) -> Option<TaskOp> {
                     status: "in_progress".to_string(),
                     active_form: String::new(),
                 }],
+                tool_use_id: None,
             }),
         "update_goal" => Some(TaskOp::Update {
             task_id: "0".to_string(),
@@ -2518,7 +2521,7 @@ mod tests {
 
         assert!(messages.iter().any(|message| matches!(
             message,
-            Message::TaskOp(TaskOp::Snapshot { todos })
+            Message::TaskOp(TaskOp::Snapshot { todos, .. })
                 if todos.len() == 2
                     && todos[0].text == "inspect"
                     && todos[0].status == "completed"
@@ -2551,7 +2554,7 @@ mod tests {
 
         assert!(matches!(
             op,
-            TaskOp::Snapshot { todos }
+            TaskOp::Snapshot { todos, .. }
                 if todos.len() == 1
                     && todos[0].text == "冻结并验证真实 E2E"
                     && todos[0].status == "in_progress"
@@ -3290,7 +3293,7 @@ mod tests {
 
         assert!(messages.iter().any(|message| matches!(
             message,
-            Message::TaskOp(TaskOp::Snapshot { todos })
+            Message::TaskOp(TaskOp::Snapshot { todos, .. })
                 if todos.len() == 1
                     && todos[0].text == "ship it"
                     && todos[0].status == "in_progress"

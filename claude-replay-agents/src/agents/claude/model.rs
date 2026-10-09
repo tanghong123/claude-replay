@@ -318,6 +318,9 @@ fn task_op(name: &str, id: &str, input: &Value) -> Option<claude_replay_engine::
                         .collect()
                 })
                 .unwrap_or_default(),
+            // The client may still refuse it; the result says, and a refusal puts the list
+            // back (#s69).
+            tool_use_id: Some(id.to_string()),
         }),
         _ => None,
     }
