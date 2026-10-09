@@ -27,6 +27,8 @@ let outlineCurrent = null;
 const byId = id => document.getElementById(id);
 const app = byId("app");
 const tree = byId("tree");
+// What `renderTree` last wrote into the list, so an unchanged refresh leaves the rows in place (#s72).
+let treeWritten = null;
 const transcript = byId("transcript");
 const projection = new Projection();
 let toastTimer = 0;
@@ -388,7 +390,12 @@ function renderTree() {
     if (!openAgent) continue;
     html += agentProjectsHtml(agent);
   }
-  tree.innerHTML = html || `<div class="no-results">${filtered ? "No sessions in this filter — Everything, in the filter, shows them all" : "No sessions"}</div>`;
+  // Written only when it reads differently (#s72). The index refreshes every 5 s and the list
+  // usually reads the same; rewriting it anyway replaced every row under the reader, and a press
+  // that straddled the write, down on a row and up on its replacement, made no click at all: the
+  // session tapped just then was not chosen.
+  const treeHtml = html || `<div class="no-results">${filtered ? "No sessions in this filter — Everything, in the filter, shows them all" : "No sessions"}</div>`;
+  if (treeHtml !== treeWritten) { tree.innerHTML = treeHtml; treeWritten = treeHtml; }
   renderFilterControl(counts, shown, total);
   refreshRailFlyout();
 
@@ -3649,7 +3656,7 @@ var phoneDock;
 }
 
 applySidebar();
-tree.innerHTML = '<div class="no-results">Scanning sessions…</div>';
+tree.innerHTML = '<div class="no-results">Scanning sessions…</div>'; treeWritten = null;
 byId("sidebarMiniAgents").innerHTML = "";
 renderHeader(); renderNavigator(); paintJump(); sessionIndex.start();
 // #114: a reload, a close or the tab going to the background saves the reader's choices with

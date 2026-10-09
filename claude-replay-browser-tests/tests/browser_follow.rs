@@ -7846,6 +7846,41 @@ const DRAWER_SHUT: &str = "(function(){ var s = document.querySelector('#app > .
 const DRAWER_OPEN: &str = "(function(){ var s = document.querySelector('#app > .sidebar').getBoundingClientRect(); return !document.getElementById('app').classList.contains('mobile-detail') && Math.abs(s.left) <= 1; })()";
 const DRAWER_STATE: &str = "(function(){ var s = document.querySelector('#app > .sidebar').getBoundingClientRect(); return document.getElementById('app').className + ' | sidebar ' + Math.round(s.left) + '..' + Math.round(s.right); })()";
 
+/// #s72: the index refreshes every 5 s and the list usually reads the same, so a refresh must leave
+/// its rows in place. It used to rewrite the whole list each time, and a press that straddled the
+/// write, down on a row and up on its replacement, made no click: a session chosen from the drawer
+/// just then was not chosen, which is how the drawer case above failed one run in four. Here a row is
+/// marked, two refreshes go by, and the marked row must still be the one in the list.
+#[test]
+#[ignore]
+fn a_session_list_refresh_that_changes_nothing_keeps_its_rows() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(2820, "list-keeps-rows", 390, 844);
+    let row = format!(".tree-row.session[data-session=\"{PHONE_OTHER}\"]");
+    let refreshes = "performance.getEntriesByType('resource').filter(function (e) { return /\\/api\\/sessions(\\?|$)/.test(e.name); }).length";
+    let before = harness::eval(
+        &tab,
+        &format!("(function () {{ document.querySelector({row:?}).__kept = true; return {refreshes}; }})()"),
+    )
+    .as_u64()
+    .expect("the refreshes so far");
+    harness::until(
+        &tab,
+        &format!("{refreshes} >= {}", before + 2),
+        "two index refreshes",
+        Duration::from_secs(20),
+        refreshes,
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            &format!("(function () {{ var r = document.querySelector({row:?}); return !!(r && r.__kept); }})()"),
+        ),
+        true,
+        "an unchanged refresh keeps the row the reader may be pressing"
+    );
+}
+
 /// #313, the owner: "Make the left bar work as a drawer that does not cover the whole session view,
 /// and have a 'sticky' button at the top left to open or close it (typical mobile app style); also
 /// allow user to hit the uncovered portion of the session view to close the drawer." #310 had made
