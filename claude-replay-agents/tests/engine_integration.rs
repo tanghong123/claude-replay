@@ -2728,3 +2728,157 @@ fn tail_pulse_reads_an_idle_compaction_and_a_local_command_as_the_ended_turn() {
         "a turn stopped in a tool call is still mid-turn"
     );
 }
+
+/// #s70: a local command run at the prompt on `user` records is not a turn. A manual `/compact`
+/// writes, as all 162 in both Macs' transcripts do: the command ECHOED as a bare prompt before
+/// the boundary, then the boundary and the summary, then a `<local-command-caveat>`, the
+/// `<command-name>` line and its `<local-command-stdout>`, then the attachments the compaction
+/// carries forward. After an answer (143 of them), every line but the summary read as the user's
+/// word: `busy · starting`, then `idle · stalled` ten minutes later, the BLOCKED bucket.
+#[test]
+fn tail_pulse_reads_a_manual_compact_at_the_prompt_as_the_ended_turn() {
+    use claude_replay_engine::state::{tail_pulse, TailLast};
+    let answer = concat!(
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-10-09T01:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"Done: shipped it."}]},"timestamp":"2026-10-09T01:15:00Z"}"#,
+        "\n",
+        r#"{"type":"system","subtype":"turn_duration","durationMs":900000,"isMeta":false,"timestamp":"2026-10-09T01:15:01Z"}"#,
+        "\n",
+    );
+    let echo = r#"{"type":"user","promptId":"p1","message":{"role":"user","content":"/compact"},"timestamp":"2026-10-09T02:00:00Z"}"#;
+    let between = concat!(
+        r#"{"type":"file-history-snapshot","messageId":"m1","snapshot":{}}"#,
+        "\n",
+        r#"{"type":"last-prompt","lastPrompt":"/compact","sessionId":"s"}"#,
+    );
+    let boundary = r#"{"type":"system","subtype":"compact_boundary","isMeta":false,"level":"info","content":"Conversation compacted","timestamp":"2026-10-09T02:01:30Z","compactMetadata":{"trigger":"manual","preTokens":100000,"postTokens":9000}}"#;
+    let summary = r#"{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"promptId":"p1","message":{"role":"user","content":"This session is being continued from a previous conversation."},"timestamp":"2026-10-09T02:01:30Z"}"#;
+    let caveat = r#"{"type":"user","isMeta":true,"promptId":"p1","message":{"role":"user","content":"<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request, and its output goes straight to the user. It's recorded here as context for later messages.</local-command-caveat>"},"timestamp":"2026-10-09T02:00:00Z"}"#;
+    let command = |name: &str| {
+        format!(
+            r#"{{"type":"user","promptId":"p1","message":{{"role":"user","content":"<command-name>/{name}</command-name>\n            <command-message>{name}</command-message>\n            <command-args></command-args>"}},"timestamp":"2026-10-09T02:00:00Z"}}"#
+        )
+    };
+    let stdout = |text: &str| {
+        format!(
+            r#"{{"type":"user","promptId":"p1","message":{{"role":"user","content":"<local-command-stdout>{text}</local-command-stdout>"}},"timestamp":"2026-10-09T02:01:30Z"}}"#
+        )
+    };
+    // What the compaction carries forward lands AFTER the stdout, larger than the pulse's first
+    // window, so the answer lies beyond it.
+    let carried = format!(
+        concat!(
+            r#"{{"type":"attachment","attachment":{{"type":"invoked_skills","content":"{bulk}"}},"timestamp":"2026-10-09T02:01:30Z"}}"#,
+            "\n",
+            r#"{{"type":"attachment","attachment":{{"type":"model","model":"m"}},"timestamp":"2026-10-09T02:01:30Z"}}"#,
+        ),
+        bulk = "x".repeat(150 * 1024),
+    );
+    let compacted = [
+        echo.to_string(),
+        between.to_string(),
+        boundary.to_string(),
+        summary.to_string(),
+        caveat.to_string(),
+        command("compact"),
+        stdout(r"\u001b[2mCompacted (ctrl+o to see full summary)\u001b[22m"),
+        carried.clone(),
+    ];
+    let file = |tail: &[String]| tmp1(&format!("{answer}{}\n", tail.join("\n")));
+
+    let p = tail_pulse(&ClaudeAdapter, &file(&compacted));
+    assert_eq!(
+        p.last,
+        TailLast::AssistantEnded,
+        "a manual /compact at the prompt: still the ended turn"
+    );
+    assert_eq!(
+        p.final_text.as_deref(),
+        Some("Done: shipped it."),
+        "and the idle verdict says what the last answer said"
+    );
+
+    // An empty stdout decodes to nothing, so only the raw line can say the command was answered.
+    let mut empty = compacted.clone();
+    empty[6] = stdout("");
+    assert_eq!(
+        tail_pulse(&ClaudeAdapter, &file(&empty)).last,
+        TailLast::AssistantEnded,
+        "a command answered by an empty stdout: still the ended turn"
+    );
+
+    // A compaction that failed answers on a `system` record, and no boundary is written.
+    let failed = [
+        echo.to_string(),
+        caveat.to_string(),
+        command("compact"),
+        r#"{"type":"system","subtype":"local_command","isMeta":false,"level":"info","content":"<local-command-stderr>Error during compaction: Login expired</local-command-stderr>","timestamp":"2026-10-09T02:00:01Z"}"#.to_string(),
+    ];
+    assert_eq!(
+        tail_pulse(&ClaudeAdapter, &file(&failed)).last,
+        TailLast::AssistantEnded,
+        "a failed /compact at the prompt: still the ended turn"
+    );
+
+    // Any local command on `user` records reads the same: `/model`, with no echo.
+    let model = [
+        caveat.to_string(),
+        command("model"),
+        stdout("Set model to m"),
+    ];
+    assert_eq!(
+        tail_pulse(&ClaudeAdapter, &file(&model)).last,
+        TailLast::AssistantEnded,
+        "/model at the prompt: still the ended turn"
+    );
+
+    // While the compaction runs only the echo is written: the client is working, and the
+    // session reads as a turn starting until the command is answered.
+    for cut in 1..6 {
+        assert_eq!(
+            tail_pulse(&ClaudeAdapter, &file(&compacted[..cut])).last,
+            TailLast::User,
+            "an unanswered /compact (cut after {cut} lines) is still a turn starting"
+        );
+    }
+}
+
+/// #s70's other half: a SKILL command at the prompt opens a turn — its body is expanded into
+/// the conversation and the model answers it — and its line looks like a local command's. What
+/// tells them apart is what follows: a skill's command is followed by its body, never by a
+/// `<local-command-stdout>` (88 of 88 across both Macs), so until the answer comes it is a turn
+/// in progress.
+#[test]
+fn a_skill_command_at_the_prompt_is_a_turn_in_progress() {
+    use claude_replay_engine::state::{tail_pulse, TailLast};
+    let answer = concat!(
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-10-09T01:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]},"timestamp":"2026-10-09T01:15:00Z"}"#,
+        "\n",
+    );
+    let command = r#"{"type":"user","message":{"role":"user","content":"<command-message>loop</command-message>\n<command-name>/loop</command-name>\n<command-args>check the queue</command-args>"},"timestamp":"2026-10-09T02:00:00Z"}"#;
+    let body = r#"{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /x/skills/loop\n\n# loop"}]},"timestamp":"2026-10-09T02:00:00Z"}"#;
+    let reply = r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":"tool_use","content":[{"type":"text","text":"Checking the queue."},{"type":"tool_use","id":"toolu_l1","name":"Bash","input":{"command":"taskq list"}}]},"timestamp":"2026-10-09T02:00:05Z"}"#;
+    for (tail, want, what) in [
+        (vec![command], TailLast::User, "the command alone"),
+        (
+            vec![command, body],
+            TailLast::User,
+            "the command and its body",
+        ),
+        (
+            vec![command, body, reply],
+            TailLast::AssistantMid,
+            "the model at work on it",
+        ),
+    ] {
+        let path = tmp1(&format!("{answer}{}\n", tail.join("\n")));
+        assert_eq!(
+            tail_pulse(&ClaudeAdapter, &path).last,
+            want,
+            "a skill command at the prompt, {what}"
+        );
+    }
+}

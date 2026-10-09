@@ -1756,14 +1756,191 @@ pub(crate) fn turn_ended(raw_line: &str) -> Option<bool> {
     None
 }
 
-/// Whether a raw line was written BESIDE the conversation (#s68): a `system` `local_command`
-/// record is a slash command the client ran ITSELF (#235: `/context`, `/model`,
-/// `/remote-control`), which neither opens a turn nor answers one. The page still shows it; the
-/// state classifier reads past it, so a `/remote-control` run at the prompt leaves the session
-/// idle there. The same command on a `user` record cannot be told by its own line from a skill's,
-/// which opens a turn, and stays one.
-pub(crate) fn turn_aside(raw_line: &str) -> bool {
-    raw_line.contains("\"type\":\"system\"") && raw_line.contains("\"subtype\":\"local_command\"")
+/// Which of a tail window's raw lines were written BESIDE the conversation (#s68, #s70): a slash
+/// command the client ran ITSELF (#235: `/compact`, `/context`, `/model`, `/remote-control`)
+/// neither opens a turn nor answers one. The page still shows it; the state classifier reads past
+/// it, so a command run at the prompt leaves the session idle there.
+///
+/// A `system` `local_command` record is one by its own line, and so are a
+/// `<local-command-caveat>` and a `<local-command-stdout>`/`-stderr>` on a `user` record. The
+/// command itself on a `user` record looks exactly like a SKILL's, which opens a turn; what tells
+/// them apart is what follows (#s70, measured over both Macs' transcripts): the client's own is
+/// answered at once by its output, on a `user` or a `system` record (417 of 417, an EMPTY stdout
+/// included, which decodes to nothing and so has to be read here), and a skill's by its expanded
+/// body, never by an output (88 of 88). (The client's own lead with `<command-name>` and a
+/// skill's with `<command-message>` there too, but nothing promises that order.) A manual
+/// `/compact` also ECHOES the command as a bare prompt before the compaction's boundary and
+/// summary (162 of them); that echo is aside when its own command, answered, follows.
+pub(crate) fn turn_aside(raw_lines: &[&str]) -> Vec<bool> {
+    let roles: Vec<LocalRole> = raw_lines.iter().map(|l| local_role(l)).collect();
+    let mut aside: Vec<bool> = roles
+        .iter()
+        .map(|r| {
+            matches!(
+                r,
+                LocalRole::SystemCommand { .. } | LocalRole::Caveat | LocalRole::Answer
+            )
+        })
+        .collect();
+    for (i, role) in roles.iter().enumerate() {
+        if let LocalRole::Command { inline, .. } = role {
+            aside[i] = *inline
+                || roles[i + 1..]
+                    .iter()
+                    .find(|r| !matches!(r, LocalRole::Quiet))
+                    .is_some_and(LocalRole::answers);
+        }
+    }
+    for (i, role) in roles.iter().enumerate() {
+        let LocalRole::Echo { name } = role else {
+            continue;
+        };
+        let next = (i + 1..roles.len()).find(|&j| {
+            !matches!(
+                roles[j],
+                LocalRole::Quiet | LocalRole::System | LocalRole::Summary | LocalRole::Caveat
+            )
+        });
+        aside[i] = next.is_some_and(|j| {
+            aside[j]
+                && match &roles[j] {
+                    LocalRole::Command { name: n, .. } => n == name,
+                    LocalRole::SystemCommand { name: n, .. } => n.as_deref() == Some(name),
+                    _ => false,
+                }
+        });
+    }
+    aside
+}
+
+/// What one raw line is to a command the client runs itself — see [`turn_aside`].
+#[derive(Debug)]
+enum LocalRole {
+    /// Not a conversation record: an attachment, a snapshot, a queue operation, a title.
+    Quiet,
+    /// A `system` `local_command` record: the command (`name`), or its output (`answer`).
+    SystemCommand { name: Option<String>, answer: bool },
+    /// Any other `system` record: the compaction's boundary, a turn's duration, a notice.
+    System,
+    /// The compaction summary, the client's own continuation (#s68).
+    Summary,
+    /// A `<local-command-caveat>` and nothing else.
+    Caveat,
+    /// A slash command on a `user` record, the client's own or a skill's; `inline` when the line
+    /// carries its own `<local-command-stdout>`, as clients did before the two were split (#124).
+    Command { name: String, inline: bool },
+    /// A `<local-command-stdout>` or `-stderr>` on a `user` record.
+    Answer,
+    /// A bare prompt that is a slash command, as `/compact` is echoed.
+    Echo { name: String },
+    /// Anything else: a prompt, a tool result, the assistant.
+    Word,
+}
+
+impl LocalRole {
+    /// Whether this line is a command's output.
+    fn answers(&self) -> bool {
+        matches!(
+            self,
+            LocalRole::Answer | LocalRole::SystemCommand { answer: true, .. }
+        )
+    }
+}
+
+/// [`LocalRole`] of one raw line. Field-level first, like [`turn_ended`]: only a line that could
+/// be a command, its output or a system record is parsed.
+fn local_role(raw_line: &str) -> LocalRole {
+    let candidate = [
+        "\"type\":\"system\"",
+        "local-command-",
+        "command-name>",
+        "command-message>",
+    ]
+    .iter()
+    .any(|k| raw_line.contains(k))
+        || raw_line.contains("\"content\":\"/")
+        || raw_line.contains("\"isCompactSummary\":true");
+    if !candidate {
+        return if raw_line.contains("\"type\":\"user\"")
+            || raw_line.contains("\"type\":\"assistant\"")
+        {
+            LocalRole::Word
+        } else {
+            LocalRole::Quiet
+        };
+    }
+    let Ok(v) = serde_json::from_str::<Value>(raw_line) else {
+        return LocalRole::Quiet;
+    };
+    match v.get("type").and_then(Value::as_str) {
+        Some("system") => {
+            if v.get("subtype").and_then(Value::as_str) != Some("local_command") {
+                return LocalRole::System;
+            }
+            let text = v.get("content").and_then(Value::as_str).unwrap_or("");
+            let rest = after_caveat(text);
+            LocalRole::SystemCommand {
+                name: tag_inner(rest, "command-name").map(|n| n.trim().to_string()),
+                answer: is_command_output(rest),
+            }
+        }
+        Some("assistant") => LocalRole::Word,
+        Some("user") => {
+            if v.get("isCompactSummary").and_then(Value::as_bool) == Some(true) {
+                return LocalRole::Summary;
+            }
+            let Some(text) = v.pointer("/message/content").and_then(Value::as_str) else {
+                return LocalRole::Word;
+            };
+            let rest = after_caveat(text);
+            if rest.len() < text.trim_start().len() && rest.trim().is_empty() {
+                return LocalRole::Caveat;
+            }
+            if is_command_output(rest) {
+                return LocalRole::Answer;
+            }
+            if rest.starts_with("<command-name>") || rest.starts_with("<command-message>") {
+                if let Some(name) = tag_inner(rest, "command-name") {
+                    return LocalRole::Command {
+                        name: name.trim().to_string(),
+                        inline: rest.contains("<local-command-stdout>"),
+                    };
+                }
+            }
+            let is_meta = v.get("isMeta").and_then(Value::as_bool) == Some(true);
+            match text.split_whitespace().next() {
+                Some(name) if !is_meta && is_slash_command(name) => LocalRole::Echo {
+                    name: name.to_string(),
+                },
+                _ => LocalRole::Word,
+            }
+        }
+        _ => LocalRole::Quiet,
+    }
+}
+
+/// `text` past a leading `<local-command-caveat>…</local-command-caveat>`, trimmed at the start.
+fn after_caveat(text: &str) -> &str {
+    let t = text.trim_start();
+    match t.strip_prefix("<local-command-caveat>") {
+        Some(inner) => match inner.find("</local-command-caveat>") {
+            Some(end) => inner[end + "</local-command-caveat>".len()..].trim_start(),
+            None => t,
+        },
+        None => t,
+    }
+}
+
+fn is_command_output(text: &str) -> bool {
+    text.starts_with("<local-command-stdout>") || text.starts_with("<local-command-stderr>")
+}
+
+/// `/compact`, `/model`, `/plugin:skill` — and not `/Users/…`, a path a prompt began with.
+fn is_slash_command(word: &str) -> bool {
+    let mut chars = word.chars();
+    chars.next() == Some('/')
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
 }
 
 pub(crate) fn enrich_tree_in(sadir: &std::path::Path, blocks: &mut [Block]) {

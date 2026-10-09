@@ -410,10 +410,16 @@ fn pulse_within(adapter: &dyn TranscriptAdapter, path: &Path, window: u64) -> Op
     if start > 0 && !lines.is_empty() {
         lines.remove(0); // the window's first line is severed — never decode it
     }
-    // A line written beside the conversation says nothing about the turn (#s68): a
-    // `/remote-control` run at the prompt left a command as the last word, and the session a
-    // turn waiting on the model.
-    lines.retain(|l| !adapter.turn_aside(l));
+    // A line written beside the conversation says nothing about the turn (#s68, #s70): a
+    // `/remote-control` or a manual `/compact` run at the prompt left a command as the last
+    // word, and the session a turn waiting on the model. Decided over the whole window before
+    // anything is dropped, since a command is paired with the output that answers it.
+    let aside = adapter.turn_aside(&lines);
+    let mut i = 0;
+    lines.retain(|_| {
+        i += 1;
+        !aside.get(i - 1).copied().unwrap_or(false)
+    });
 
     // The turn-ended fact comes from the RAW lines through the adapter's vocabulary
     // hook — the last line with an opinion wins.

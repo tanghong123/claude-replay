@@ -169,8 +169,8 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn turn_ended(&self, raw_line: &str) -> Option<bool> {
         agents::claude::model::turn_ended(raw_line)
     }
-    fn turn_aside(&self, raw_line: &str) -> bool {
-        agents::claude::model::turn_aside(raw_line)
+    fn turn_aside(&self, raw_lines: &[&str]) -> Vec<bool> {
+        agents::claude::model::turn_aside(raw_lines)
     }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         // What Claude Code's transcript records of the runtime snapshot (#62): the reasoning
@@ -418,8 +418,8 @@ impl TranscriptAdapter for QoderAdapter {
     fn turn_ended(&self, raw_line: &str) -> Option<bool> {
         agents::claude::model::turn_ended(raw_line)
     }
-    fn turn_aside(&self, raw_line: &str) -> bool {
-        agents::claude::model::turn_aside(raw_line)
+    fn turn_aside(&self, raw_lines: &[&str]) -> Vec<bool> {
+        agents::claude::model::turn_aside(raw_lines)
     }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         // The family's `runtime-config` head carries `reasoningEffort`/`contextWindow` —
@@ -549,8 +549,8 @@ macro_rules! qwork_family_adapter {
             fn turn_ended(&self, raw_line: &str) -> Option<bool> {
                 agents::claude::model::turn_ended(raw_line)
             }
-            fn turn_aside(&self, raw_line: &str) -> bool {
-                agents::claude::model::turn_aside(raw_line)
+            fn turn_aside(&self, raw_lines: &[&str]) -> Vec<bool> {
+                agents::claude::model::turn_aside(raw_lines)
             }
             fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
                 // The family's `runtime-config` head carries `reasoningEffort`/`contextWindow` —

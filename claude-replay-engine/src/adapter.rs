@@ -451,12 +451,14 @@ pub trait TranscriptAdapter: Sync {
     fn turn_ended(&self, _raw_line: &str) -> Option<bool> {
         None
     }
-    /// Whether this raw transcript line was written BESIDE the conversation (#s68) — a
-    /// command the client ran itself, which neither opens a turn nor answers one.
-    /// [`tail_pulse`](crate::state::tail_pulse) reads past it, so the turn is what the lines
-    /// around it say. Default `false`.
-    fn turn_aside(&self, _raw_line: &str) -> bool {
-        false
+    /// Which of a tail window's raw lines were written BESIDE the conversation (#s68, #s70) —
+    /// a command the client ran itself and what it printed, which neither open a turn nor
+    /// answer one. One flag per line; [`tail_pulse`](crate::state::tail_pulse) reads past
+    /// every flagged line, so the turn is what the lines around them say. Decided over the
+    /// WINDOW, not line by line: a command the client ran itself can look exactly like one
+    /// that opens a turn, and only what follows it tells them apart. Default: none.
+    fn turn_aside(&self, raw_lines: &[&str]) -> Vec<bool> {
+        vec![false; raw_lines.len()]
     }
     /// Whether a turn-ending assistant text reads as a QUESTION to the user (#194,
     /// owner-resolved: an adapter hook from day one, in the #21 mold). Only refines
