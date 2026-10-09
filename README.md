@@ -8,9 +8,9 @@ TUI that renders a session the way the agent does (assistant text, thinking,
 tool calls, `+/-` diffs, markdown, syntect-highlighted code) without ever
 continuing or mutating the session.
 
-> Extracted from [`claude-toolbox`](https://github.com/tanghong123/claude-toolbox)
-> (the `justdoit/` module), where it began life as `claude-peek-v2`. Its bash
-> predecessor, `claude-peek`, still ships there.
+> Extracted from `claude-toolbox`, the author's private toolbox (its `justdoit/`
+> module), where it began life as `claude-peek-v2`. Its bash predecessor,
+> `claude-peek`, still ships there.
 
 ## Install
 
