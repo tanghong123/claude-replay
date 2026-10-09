@@ -2458,26 +2458,79 @@ fn first_event_within(path: &Path, cap: usize) -> Option<u64> {
     None
 }
 
+/// Claude Code's word that the compaction it closes ran while the session sat IDLE at its
+/// prompt (#s68): a `system` `informational` notice — "Compacted while idle, before the prompt
+/// cache expired" — after the boundary, the summary and the attachments, about an hour after the
+/// last answer. Nobody did anything, so none of that compaction is activity, and the clock reads
+/// back to the last activity before its boundary. Counted, it set the row growing, published
+/// `busy` for the linger, and restarted the clock a stall is measured from.
+const IDLE_COMPACTION_NOTICE: &str = "Compacted while idle";
+
 /// The last ACTIVITY timestamp in a transcript's tail: scan the final 32 KiB line-wise and
-/// keep the latest timestamp on a line that is NOT [housekeeping](NON_ACTIVITY_TYPES). Each
-/// agent's format goes through the shared `parse_ts`; `None` when the window holds no
-/// parseable activity timestamp.
+/// keep the latest timestamp on a line that is NOT [housekeeping](NON_ACTIVITY_TYPES) nor part
+/// of an [idle compaction](IDLE_COMPACTION_NOTICE). Each agent's format goes through the shared
+/// `parse_ts`; `None` when the window holds no parseable activity timestamp. An idle compaction
+/// whose boundary lies beyond that window — 194 KB and 254 KB behind its notice, measured — is
+/// read again through 4 MiB.
 fn last_event_ts(path: &Path) -> Option<u64> {
-    use std::io::{Read, Seek, SeekFrom};
-    const TAIL: u64 = 32 * 1024;
-    let mut f = std::fs::File::open(path).ok()?;
-    let len = f.metadata().ok()?.len();
-    f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
-    let mut buf = String::new();
-    if f.read_to_string(&mut buf).is_err() {
-        return None; // a seek into a multi-byte char — treat as unknown
+    match last_event_within(path, 32 * 1024) {
+        Activity::At(secs) => Some(secs),
+        Activity::Nothing => None,
+        Activity::Behind => match last_event_within(path, 4 * 1024 * 1024) {
+            Activity::At(secs) => Some(secs),
+            Activity::Nothing | Activity::Behind => None,
+        },
     }
-    let mut last = None;
+}
+
+/// What one [`last_event_ts`] window says.
+enum Activity {
+    At(u64),
+    Nothing,
+    /// The window ends in an idle compaction whose boundary — or the activity before it — lies
+    /// further back than the window reaches.
+    Behind,
+}
+
+fn last_event_within(path: &Path, window: u64) -> Activity {
+    use std::io::{Read, Seek, SeekFrom};
+    let read = || -> Option<Vec<u8>> {
+        let mut f = std::fs::File::open(path).ok()?;
+        let len = f.metadata().ok()?.len();
+        f.seek(SeekFrom::Start(len.saturating_sub(window))).ok()?;
+        let mut raw = Vec::new();
+        f.read_to_end(&mut raw).ok()?;
+        Some(raw)
+    };
+    let Some(raw) = read() else {
+        return Activity::Nothing;
+    };
+    // Lossy: a seek into a multi-byte character costs that one severed line, not the window.
+    let buf = String::from_utf8_lossy(&raw);
+    let mut last: Option<u64> = None;
+    // The clock as it stood at the newest compaction boundary in the window.
+    let mut at_boundary: Option<Option<u64>> = None;
+    let mut behind = false;
     for line in buf.lines() {
         // Field-level (no per-line JSON parse — pure cost here). Skip housekeeping rows by
         // their `"type"`; take the newest timestamp on everything else.
         let ty = field_after(line, "\"type\":\"").next();
         if ty.is_some_and(|t| NON_ACTIVITY_TYPES.contains(&t)) {
+            continue;
+        }
+        if line.contains("\"subtype\":\"compact_boundary\"") {
+            at_boundary = Some(last);
+        } else if line.contains("\"subtype\":\"informational\"")
+            && line.contains(IDLE_COMPACTION_NOTICE)
+        {
+            // Everything since the boundary was the idle compaction: back to before it.
+            match at_boundary.take() {
+                Some(Some(before)) => last = Some(before),
+                _ => {
+                    last = None;
+                    behind = true;
+                }
+            }
             continue;
         }
         for ts in field_after(line, "\"timestamp\":\"") {
@@ -2486,7 +2539,11 @@ fn last_event_ts(path: &Path) -> Option<u64> {
             }
         }
     }
-    last
+    match last {
+        Some(secs) => Activity::At(secs),
+        None if behind => Activity::Behind,
+        None => Activity::Nothing,
+    }
 }
 
 /// Every quoted value following `pat` on `line`.
@@ -3552,6 +3609,54 @@ mod tests {
         )
         .unwrap();
         assert!(last_event_ts(&p).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #s68: Claude Code compacts a session left at its prompt about an hour after its last
+    /// answer, and says so in a notice. None of that compaction is activity — counted, it set
+    /// the row growing for a minute, published `busy`, and restarted the clock a stall is
+    /// measured from — so the clock is the last activity before its boundary, even with the
+    /// boundary far beyond the first window. A compaction that says no such thing is the agent
+    /// carrying on, and counts as it always did.
+    #[test]
+    fn an_idle_compaction_does_not_advance_the_activity_clock() {
+        let d = std::env::temp_dir().join(format!("cm-idle-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("s.jsonl");
+        let answer = "{\"type\":\"user\",\"timestamp\":\"2026-10-09T01:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n\
+             {\"type\":\"assistant\",\"timestamp\":\"2026-10-09T01:15:00Z\",\"message\":{\"role\":\"assistant\",\"content\":\"done\"}}\n";
+        let compaction = format!(
+            "{{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"timestamp\":\"2026-10-09T02:06:00Z\"}}\n\
+             {{\"type\":\"user\",\"isCompactSummary\":true,\"timestamp\":\"2026-10-09T02:06:01Z\",\"message\":{{\"role\":\"user\",\"content\":\"continued\"}}}}\n\
+             {{\"type\":\"attachment\",\"timestamp\":\"2026-10-09T02:06:01Z\",\"attachment\":{{\"type\":\"invoked_skills\",\"content\":\"{}\"}}}}\n\
+             {{\"type\":\"attachment\",\"timestamp\":\"2026-10-09T02:06:01Z\",\"attachment\":{{\"type\":\"model\"}}}}\n",
+            "x".repeat(150 * 1024)
+        );
+        let notice = "{\"type\":\"system\",\"subtype\":\"informational\",\"level\":\"notice\",\"content\":\"Compacted while idle, before the prompt cache expired\",\"timestamp\":\"2026-10-09T02:06:02Z\"}\n\
+             {\"type\":\"last-prompt\",\"lastPrompt\":\"go\"}\n";
+        let ts = |s: &str| metrics::parse_ts(s).unwrap() as u64;
+
+        std::fs::write(&p, format!("{answer}{compaction}{notice}")).unwrap();
+        assert_eq!(
+            last_event_ts(&p),
+            Some(ts("2026-10-09T01:15:00Z")),
+            "compacted while idle: the clock is the answer's"
+        );
+
+        let prompt = "{\"type\":\"user\",\"timestamp\":\"2026-10-09T03:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"next\"}}\n";
+        std::fs::write(&p, format!("{answer}{compaction}{notice}{prompt}")).unwrap();
+        assert_eq!(
+            last_event_ts(&p),
+            Some(ts("2026-10-09T03:00:00Z")),
+            "a prompt after it is activity again"
+        );
+
+        std::fs::write(&p, format!("{answer}{compaction}")).unwrap();
+        assert_eq!(
+            last_event_ts(&p),
+            Some(ts("2026-10-09T02:06:01Z")),
+            "a compaction that says nothing of idleness is the agent working"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

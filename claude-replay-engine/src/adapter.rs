@@ -451,6 +451,13 @@ pub trait TranscriptAdapter: Sync {
     fn turn_ended(&self, _raw_line: &str) -> Option<bool> {
         None
     }
+    /// Whether this raw transcript line was written BESIDE the conversation (#s68) — a
+    /// command the client ran itself, which neither opens a turn nor answers one.
+    /// [`tail_pulse`](crate::state::tail_pulse) reads past it, so the turn is what the lines
+    /// around it say. Default `false`.
+    fn turn_aside(&self, _raw_line: &str) -> bool {
+        false
+    }
     /// Whether a turn-ending assistant text reads as a QUESTION to the user (#194,
     /// owner-resolved: an adapter hook from day one, in the #21 mold). Only refines
     /// idle's context — never flips busy/wait. The default is the engine's generic

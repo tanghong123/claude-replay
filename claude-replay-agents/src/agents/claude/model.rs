@@ -1742,9 +1742,28 @@ pub(crate) fn turn_ended(raw_line: &str) -> Option<bool> {
         );
     }
     if raw_line.contains("\"type\":\"user\"") {
+        // A compaction's summary is the client's own continuation, not a prompt, so it says
+        // nothing about the turn (#s68): the line before its boundary does. Measured over every
+        // compaction in this machine's last month of transcripts: a tool call or its result
+        // before one run mid-turn, the prompt before one run on submit (written BEFORE the
+        // boundary), the answer before one run while the session sat idle at its prompt —
+        // which this line, read as a user's, turned into a turn waiting on the model.
+        if raw_line.contains("\"isCompactSummary\":true") {
+            return None;
+        }
         return Some(false);
     }
     None
+}
+
+/// Whether a raw line was written BESIDE the conversation (#s68): a `system` `local_command`
+/// record is a slash command the client ran ITSELF (#235: `/context`, `/model`,
+/// `/remote-control`), which neither opens a turn nor answers one. The page still shows it; the
+/// state classifier reads past it, so a `/remote-control` run at the prompt leaves the session
+/// idle there. The same command on a `user` record cannot be told by its own line from a skill's,
+/// which opens a turn, and stays one.
+pub(crate) fn turn_aside(raw_line: &str) -> bool {
+    raw_line.contains("\"type\":\"system\"") && raw_line.contains("\"subtype\":\"local_command\"")
 }
 
 pub(crate) fn enrich_tree_in(sadir: &std::path::Path, blocks: &mut [Block]) {

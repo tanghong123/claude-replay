@@ -169,6 +169,9 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn turn_ended(&self, raw_line: &str) -> Option<bool> {
         agents::claude::model::turn_ended(raw_line)
     }
+    fn turn_aside(&self, raw_line: &str) -> bool {
+        agents::claude::model::turn_aside(raw_line)
+    }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         // What Claude Code's transcript records of the runtime snapshot (#62): the reasoning
         // effort, the permission mode and the client version — no sandbox, no context window.
@@ -415,6 +418,9 @@ impl TranscriptAdapter for QoderAdapter {
     fn turn_ended(&self, raw_line: &str) -> Option<bool> {
         agents::claude::model::turn_ended(raw_line)
     }
+    fn turn_aside(&self, raw_line: &str) -> bool {
+        agents::claude::model::turn_aside(raw_line)
+    }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         // The family's `runtime-config` head carries `reasoningEffort`/`contextWindow` —
         // present-and-null in real stores, which is exactly "recorded, unknown" (#62).
@@ -542,6 +548,9 @@ macro_rules! qwork_family_adapter {
             // …and Claude's turn-lifecycle vocabulary (#194), for the same reason.
             fn turn_ended(&self, raw_line: &str) -> Option<bool> {
                 agents::claude::model::turn_ended(raw_line)
+            }
+            fn turn_aside(&self, raw_line: &str) -> bool {
+                agents::claude::model::turn_aside(raw_line)
             }
             fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
                 // The family's `runtime-config` head carries `reasoningEffort`/`contextWindow` —

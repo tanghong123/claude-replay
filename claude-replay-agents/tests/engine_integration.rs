@@ -2624,3 +2624,107 @@ fn a_long_prompt_tier_survives_every_resumed_path() {
         mm.tokens
     );
 }
+
+/// #s68: a session left at its prompt is idle, whatever the client writes after its last answer.
+/// Claude Code compacts a session about an hour after its last answer, before the prompt cache
+/// expires, and writes a `compact_boundary`, a `user` entry flagged `isCompactSummary` that
+/// nothing answers, the attachments it carries forward, and a `system` `informational`
+/// "Compacted while idle" notice; on the two measured here that put 194 KB and 254 KB between
+/// the answer and the end, so the bulk below puts the answer beyond the pulse's first window. A
+/// `/remote-control` run at the prompt writes only `system` entries (two `local_command`, one
+/// `bridge_status`). Both read as a turn waiting on the model: `busy · thinking`, then
+/// `idle · stalled` after ten minutes, which is the BLOCKED bucket.
+#[test]
+fn tail_pulse_reads_an_idle_compaction_and_a_local_command_as_the_ended_turn() {
+    use claude_replay_engine::state::{tail_pulse, TailLast};
+    let answer = concat!(
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-10-09T01:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"Done: shipped it."}]},"timestamp":"2026-10-09T01:15:00Z"}"#,
+        "\n",
+        r#"{"type":"system","subtype":"turn_duration","isMeta":false,"timestamp":"2026-10-09T01:15:01Z"}"#,
+        "\n",
+    );
+    // What a compaction writes, its notice aside: the boundary, the summary, and attachments
+    // larger than the pulse's first window.
+    let compaction = |at: &str| {
+        format!(
+            concat!(
+                r#"{{"type":"system","subtype":"compact_boundary","isMeta":false,"level":"info","content":"Conversation compacted","timestamp":"{at}:00Z","compactMetadata":{{"trigger":"auto","preTokens":100000,"postTokens":9000}}}}"#,
+                "\n",
+                r#"{{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{{"role":"user","content":"This session is being continued from a previous conversation."}},"timestamp":"{at}:01Z"}}"#,
+                "\n",
+                r#"{{"type":"attachment","attachment":{{"type":"invoked_skills","content":"{bulk}"}},"timestamp":"{at}:01Z"}}"#,
+                "\n",
+                r#"{{"type":"attachment","attachment":{{"type":"model","model":"m"}},"timestamp":"{at}:01Z"}}"#,
+                "\n",
+            ),
+            at = at,
+            bulk = "x".repeat(150 * 1024),
+        )
+    };
+    let idle_notice = concat!(
+        r#"{"type":"system","subtype":"informational","isMeta":false,"level":"notice","content":"Compacted while idle, before the prompt cache expired","timestamp":"2026-10-09T02:06:02Z"}"#,
+        "\n",
+        r#"{"type":"last-prompt","lastPrompt":"go","sessionId":"s"}"#,
+        "\n",
+    );
+    let compacted = tmp1(&format!(
+        "{answer}{}{idle_notice}",
+        compaction("2026-10-09T02:06")
+    ));
+    let p = tail_pulse(&ClaudeAdapter, &compacted);
+    assert_eq!(
+        p.last,
+        TailLast::AssistantEnded,
+        "compacted while idle: still the ended turn"
+    );
+    assert_eq!(
+        p.final_text.as_deref(),
+        Some("Done: shipped it."),
+        "and the idle verdict says what the last answer said, so a question is still one"
+    );
+
+    let remote = tmp1(&format!(
+        "{answer}{}",
+        concat!(
+            r#"{"type":"system","subtype":"local_command","isMeta":false,"level":"info","content":"<command-name>/remote-control</command-name>\n<command-message>remote-control</command-message>\n<command-args></command-args>","timestamp":"2026-10-09T02:10:00Z"}"#,
+            "\n",
+            r#"{"type":"system","subtype":"local_command","isMeta":false,"level":"info","content":"<local-command-stdout></local-command-stdout>","timestamp":"2026-10-09T02:10:00Z"}"#,
+            "\n",
+            r#"{"type":"system","subtype":"bridge_status","isMeta":false,"content":"/remote-control is active","timestamp":"2026-10-09T02:10:01Z"}"#,
+            "\n",
+        )
+    ));
+    let p = tail_pulse(&ClaudeAdapter, &remote);
+    assert_eq!(
+        p.last,
+        TailLast::AssistantEnded,
+        "a local command at the prompt: still the ended turn"
+    );
+
+    // A compaction MID-turn (the client compacts to carry on working, and says nothing of
+    // idleness) is still a turn in progress, at the same size.
+    let working = concat!(
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-10-09T01:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":"tool_use","content":[{"type":"text","text":"working"},{"type":"tool_use","id":"toolu_m1","name":"Bash","input":{"command":"make"}}]},"timestamp":"2026-10-09T01:05:00Z"}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_m1","content":"built"}]},"timestamp":"2026-10-09T01:05:30Z"}"#,
+        "\n",
+    );
+    let mid = tmp1(&format!("{working}{}", compaction("2026-10-09T01:06")));
+    assert_eq!(
+        tail_pulse(&ClaudeAdapter, &mid).last,
+        TailLast::AssistantMid,
+        "a compaction mid-turn is still a turn in progress"
+    );
+
+    // …and a turn stopped in a tool call reads as it always did.
+    let stopped = tmp1(&working[..working.rfind(r#"{"type":"user""#).unwrap()]);
+    assert_eq!(
+        tail_pulse(&ClaudeAdapter, &stopped).last,
+        TailLast::AssistantMid,
+        "a turn stopped in a tool call is still mid-turn"
+    );
+}

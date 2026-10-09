@@ -357,34 +357,63 @@ pub struct TailPulse {
     pub last_failure: bool,
 }
 
-/// How many tail bytes [`tail_pulse`] decodes. Smaller than the liveness in-flight
+/// How many tail bytes [`tail_pulse`] decodes first. Smaller than the liveness in-flight
 /// window: this read is per changed session per tick, and the SEMANTIC facts it wants
 /// live at the very end of the file.
 pub const PULSE_TAIL_BYTES: u64 = 64 * 1024;
+
+/// The widest tail [`tail_pulse`] reads (#s68). The end of a file can hold no turn at all:
+/// Claude Code compacts a session left at its prompt, and what that writes — the summary and
+/// the attachments it carries forward, one of them 150 KB — put 194 KB and 254 KB between the
+/// last answer and the end of the two measured here, so the first window read neither, and the
+/// session a turn with no word yet: `busy · thinking`, then `idle · stalled`. A window in which
+/// no line has an opinion on the turn is widened fourfold until one does, the file is read
+/// whole, or this is reached.
+pub const PULSE_TAIL_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Decode the transcript's bounded tail through the adapter's OWN decoder and report
 /// the conversation's last word (design §4 S4). Lossy on the window edge for the same
 /// reason the liveness scan is (#82): a split character must not cost the whole signal.
 pub fn tail_pulse(adapter: &dyn TranscriptAdapter, path: &Path) -> TailPulse {
+    let mut window = PULSE_TAIL_BYTES;
+    loop {
+        let Some(read) = pulse_within(adapter, path, window) else {
+            return TailPulse::default();
+        };
+        if read.had_opinion || read.whole || window >= PULSE_TAIL_MAX_BYTES {
+            return read.pulse;
+        }
+        window *= 4;
+    }
+}
+
+/// One [`tail_pulse`] read of a file's last bytes.
+struct PulseRead {
+    pulse: TailPulse,
+    /// Some line in the window had an opinion on the turn ([`TranscriptAdapter::turn_ended`]).
+    had_opinion: bool,
+    /// The window began at the start of the file.
+    whole: bool,
+}
+
+fn pulse_within(adapter: &dyn TranscriptAdapter, path: &Path, window: u64) -> Option<PulseRead> {
     use std::io::{Read, Seek, SeekFrom};
     let mut pulse = TailPulse::default();
-    let Ok(mut f) = std::fs::File::open(path) else {
-        return pulse;
-    };
+    let mut f = std::fs::File::open(path).ok()?;
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = len.saturating_sub(PULSE_TAIL_BYTES);
-    if f.seek(SeekFrom::Start(start)).is_err() {
-        return pulse;
-    }
+    let start = len.saturating_sub(window);
+    f.seek(SeekFrom::Start(start)).ok()?;
     let mut raw = Vec::new();
-    if f.read_to_end(&mut raw).is_err() {
-        return pulse;
-    }
+    f.read_to_end(&mut raw).ok()?;
     let buf = String::from_utf8_lossy(&raw);
     let mut lines: Vec<&str> = buf.lines().collect();
     if start > 0 && !lines.is_empty() {
         lines.remove(0); // the window's first line is severed — never decode it
     }
+    // A line written beside the conversation says nothing about the turn (#s68): a
+    // `/remote-control` run at the prompt left a command as the last word, and the session a
+    // turn waiting on the model.
+    lines.retain(|l| !adapter.turn_aside(l));
 
     // The turn-ended fact comes from the RAW lines through the adapter's vocabulary
     // hook — the last line with an opinion wins.
@@ -465,7 +494,11 @@ pub fn tail_pulse(adapter: &dyn TranscriptAdapter, path: &Path) -> TailPulse {
     } else {
         TailLast::AssistantMid
     };
-    pulse
+    Some(PulseRead {
+        pulse,
+        had_opinion: ended.is_some(),
+        whole: start == 0,
+    })
 }
 
 #[cfg(test)]

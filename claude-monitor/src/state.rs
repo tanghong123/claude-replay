@@ -586,6 +586,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// #s68 end to end: a session Claude Code compacted while idle at its prompt stays
+    /// `idle · done`, idle since its answer. The compaction put that answer far beyond the
+    /// tail's first window, and read there the session was a turn with no word yet:
+    /// `busy · thinking`, then — the clock run out — `idle · stalled`, the BLOCKED bucket.
+    #[test]
+    fn an_idle_compaction_leaves_the_session_idle_since_its_answer() {
+        let root = scratch("idlecompact");
+        let t = root.join("s1.jsonl");
+        std::fs::write(&t, concat!(
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-10-09T01:00:00Z"}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"Shipped it."}]},"timestamp":"2026-10-09T01:15:00Z"}"#, "\n",
+        )).unwrap();
+        let published = |root: &Path| -> (String, String, String) {
+            let cur: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(root.join("state/current.json")).unwrap(),
+            )
+            .unwrap();
+            let s = &cur["sessions"][0];
+            let field = |k: &str| s[k].as_str().unwrap_or("?").to_string();
+            (field("state"), field("reason"), field("since"))
+        };
+        let mut tr = StateTracker::default();
+        tr.tick(&root, &[facts("s1", &t, Some(5151), 5)]);
+        tr.tick(&root, &[facts("s1", &t, Some(5151), 6)]);
+        let idle = published(&root);
+        assert_eq!((idle.0.as_str(), idle.1.as_str()), ("idle", "done"));
+
+        // Fifty-one minutes on, Claude Code compacts it while idle.
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+        writeln!(f, r#"{{"type":"system","subtype":"compact_boundary","level":"info","content":"Conversation compacted","timestamp":"2026-10-09T02:06:00Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{{"role":"user","content":"This session is being continued."}},"timestamp":"2026-10-09T02:06:01Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"attachment","attachment":{{"type":"invoked_skills","content":"{}"}},"timestamp":"2026-10-09T02:06:01Z"}}"#, "x".repeat(150 * 1024)).unwrap();
+        writeln!(f, r#"{{"type":"system","subtype":"informational","level":"notice","content":"Compacted while idle, before the prompt cache expired","timestamp":"2026-10-09T02:06:02Z"}}"#).unwrap();
+        drop(f);
+        tr.tick(&root, &[facts("s1", &t, Some(5151), 3060)]);
+        tr.tick(&root, &[facts("s1", &t, Some(5151), 3061)]);
+        assert_eq!(
+            published(&root),
+            idle,
+            "still idle · done, and idle since the answer"
+        );
+        let ev = std::fs::read_to_string(root.join("state/events.jsonl")).unwrap();
+        assert_eq!(ev.lines().count(), 1, "nothing new to report:\n{ev}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A long-dead session costs no content reads and publishes nothing — a monitor
     /// restart over a machine of old transcripts must not bury consumers in
     /// `idle · exited` bookkeeping.
