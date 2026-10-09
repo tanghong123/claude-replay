@@ -1143,6 +1143,15 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     // card shows the error from that. "Hard" is the client's own retry classification; revisit
     // if hard failures should ever look different from soft ones.
     "isHardFailure",
+    // #s66 (Qwenwork 1.1.59, one record): a tool call refused BEFORE it ran carries exactly
+    // `{tool_error_stage, tool_error_subtype, tool_error_details_json, isHardFailure}` — met on a
+    // TodoWrite refused at stage "parameter_validation", subtype "custom_semantic", the details a
+    // JSON object as a string. The client's classification of a refusal whose text the card already
+    // shows; `is_error` already draws it as failed (#36). Revisit if a stage other than
+    // parameter_validation turns up whose text does not say what happened.
+    "tool_error_details_json",
+    "tool_error_stage",
+    "tool_error_subtype",
     "isAsync",
     "isBase64",
     "isImage",
@@ -5721,6 +5730,17 @@ mod tests {
     ///
     /// The snapshot is process-global and the suite runs in parallel, so this asserts about
     /// the names it introduced rather than about the whole table.
+    /// #s66: a refusal before the call ran (Qwenwork 1.1.59) reports nothing to `--unknown`.
+    #[test]
+    fn a_refused_call_reports_nothing_unknown() {
+        let refused = serde_json::json!({"tool_error_stage": "parameter_validation", "tool_error_subtype": "custom_semantic", "tool_error_details_json": "{\"rule\":\"one in_progress\"}", "isHardFailure": false});
+        assert_eq!(
+            unknown_tool_result_keys(&refused),
+            Vec::<&str>::new(),
+            "{refused}"
+        );
+    }
+
     /// #s65: a Qwenwork sub-agent result, completed or failed, reports nothing to `--unknown`; its
     /// five unread keys are known only in that shape, so one beside a key outside it is reported.
     #[test]
