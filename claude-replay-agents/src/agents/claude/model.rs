@@ -1770,7 +1770,12 @@ pub(crate) fn turn_ended(raw_line: &str) -> Option<bool> {
 /// body, never by an output (88 of 88). (The client's own lead with `<command-name>` and a
 /// skill's with `<command-message>` there too, but nothing promises that order.) A manual
 /// `/compact` also ECHOES the command as a bare prompt before the compaction's boundary and
-/// summary (162 of them); that echo is aside when its own command, answered, follows.
+/// summary (162 of them); that echo is aside when its own command, answered, follows. And some
+/// commands leave the model a NOTE right after their output — `/context` its report again,
+/// `/rename` a reminder of the new name — as an `isMeta` string: aside when it follows an output.
+/// A prompt the client sends on its own (a scheduled task firing, another session's message) is
+/// `isMeta` too and may follow an output just as closely, but it opens a turn and says so with
+/// `turnOrigin`/`promptSource`, which no note carries (both Macs: 56 notes, 7 such prompts).
 pub(crate) fn turn_aside(raw_lines: &[&str]) -> Vec<bool> {
     let roles: Vec<LocalRole> = raw_lines.iter().map(|l| local_role(l)).collect();
     let mut aside: Vec<bool> = roles
@@ -1789,6 +1794,14 @@ pub(crate) fn turn_aside(raw_lines: &[&str]) -> Vec<bool> {
                     .iter()
                     .find(|r| !matches!(r, LocalRole::Quiet))
                     .is_some_and(LocalRole::answers);
+        }
+    }
+    for (i, role) in roles.iter().enumerate() {
+        if matches!(role, LocalRole::Note) {
+            aside[i] = roles[..i]
+                .iter()
+                .rfind(|r| !matches!(r, LocalRole::Quiet))
+                .is_some_and(LocalRole::answers);
         }
     }
     for (i, role) in roles.iter().enumerate() {
@@ -1833,6 +1846,8 @@ enum LocalRole {
     Answer,
     /// A bare prompt that is a slash command, as `/compact` is echoed.
     Echo { name: String },
+    /// An `isMeta` string on a `user` record that no turn's origin is claimed for.
+    Note,
     /// Anything else: a prompt, a tool result, the assistant.
     Word,
 }
@@ -1859,7 +1874,8 @@ fn local_role(raw_line: &str) -> LocalRole {
     .iter()
     .any(|k| raw_line.contains(k))
         || raw_line.contains("\"content\":\"/")
-        || raw_line.contains("\"isCompactSummary\":true");
+        || raw_line.contains("\"isCompactSummary\":true")
+        || raw_line.contains("\"isMeta\":true");
     if !candidate {
         return if raw_line.contains("\"type\":\"user\"")
             || raw_line.contains("\"type\":\"assistant\"")
@@ -1907,9 +1923,16 @@ fn local_role(raw_line: &str) -> LocalRole {
                     };
                 }
             }
-            let is_meta = v.get("isMeta").and_then(Value::as_bool) == Some(true);
+            if v.get("isMeta").and_then(Value::as_bool) == Some(true) {
+                let opens_a_turn = v.get("turnOrigin").is_some() || v.get("promptSource").is_some();
+                return if opens_a_turn {
+                    LocalRole::Word
+                } else {
+                    LocalRole::Note
+                };
+            }
             match text.split_whitespace().next() {
-                Some(name) if !is_meta && is_slash_command(name) => LocalRole::Echo {
+                Some(name) if is_slash_command(name) => LocalRole::Echo {
                     name: name.to_string(),
                 },
                 _ => LocalRole::Word,

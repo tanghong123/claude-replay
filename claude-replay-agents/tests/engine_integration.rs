@@ -2882,3 +2882,91 @@ fn a_skill_command_at_the_prompt_is_a_turn_in_progress() {
         );
     }
 }
+
+/// #s70: some local commands leave the model a NOTE right after their output — `/context` its
+/// report again, `/rename` a reminder of the session's new name — an `isMeta` string on a `user`
+/// record, which read as the turn going on: `busy · thinking`, then `idle · stalled`. A prompt
+/// the client sends on its own (a scheduled task firing, another session's message) can follow
+/// an output just as closely; it opens a turn, and says so with `turnOrigin`/`promptSource`.
+#[test]
+fn tail_pulse_reads_a_command_s_note_for_the_model_as_aside() {
+    use claude_replay_engine::state::{tail_pulse, TailLast};
+    let answer = concat!(
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-10-09T01:00:00Z"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"Done: shipped it."}]},"timestamp":"2026-10-09T01:15:00Z"}"#,
+        "\n",
+    );
+    let system = |content: &str| {
+        format!(
+            r#"{{"type":"system","subtype":"local_command","isMeta":false,"level":"info","content":"{content}","timestamp":"2026-10-09T02:00:00Z"}}"#
+        )
+    };
+    let command = |name: &str| {
+        system(&format!(
+            r"<command-name>/{name}</command-name>\n            <command-message>{name}</command-message>\n            <command-args></command-args>"
+        ))
+    };
+    let meta = |content: &str, extra: &str| {
+        format!(
+            r#"{{"type":"user","isMeta":true,"promptId":"p2",{extra}"message":{{"role":"user","content":"{content}"}},"timestamp":"2026-10-09T02:00:00Z"}}"#
+        )
+    };
+    let context = [
+        command("context"),
+        system(r"<local-command-stdout> \u001b[1mContext Usage\u001b[22m</local-command-stdout>"),
+        meta(
+            r"## Context Usage\n\n**Model:** m  \n**Tokens:** 99.2k / 1m (10%)",
+            "",
+        ),
+    ];
+    let rename = [
+        command("rename"),
+        system("<local-command-stdout>Session renamed to: tidy</local-command-stdout>"),
+        meta(
+            r#"<system-reminder>\nThe user named this session \"tidy\". This may indicate the session's focus or intent.\n</system-reminder>"#,
+            "",
+        ),
+    ];
+    let file = |tail: &[String]| tmp1(&format!("{answer}{}\n", tail.join("\n")));
+    for (tail, what) in [(&context, "/context"), (&rename, "/rename")] {
+        let p = tail_pulse(&ClaudeAdapter, &file(tail));
+        assert_eq!(
+            p.last,
+            TailLast::AssistantEnded,
+            "{what} at the prompt, its note for the model last: still the ended turn"
+        );
+        assert_eq!(p.final_text.as_deref(), Some("Done: shipped it."));
+    }
+
+    // A `/context` and then a manual `/compact`: both aside.
+    let mut then_compact = context.to_vec();
+    then_compact.extend([
+        r#"{"type":"user","promptId":"p3","message":{"role":"user","content":"/compact"},"timestamp":"2026-10-09T02:01:00Z"}"#.to_string(),
+        r#"{"type":"system","subtype":"compact_boundary","isMeta":false,"content":"Conversation compacted","timestamp":"2026-10-09T02:02:00Z"}"#.to_string(),
+        r#"{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued from a previous conversation."},"timestamp":"2026-10-09T02:02:00Z"}"#.to_string(),
+        r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"<local-command-caveat>Caveat: run directly.</local-command-caveat>"},"timestamp":"2026-10-09T02:01:00Z"}"#.to_string(),
+        r#"{"type":"user","message":{"role":"user","content":"<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n            <command-args></command-args>"},"timestamp":"2026-10-09T02:01:00Z"}"#.to_string(),
+        r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Compacted</local-command-stdout>"},"timestamp":"2026-10-09T02:02:00Z"}"#.to_string(),
+    ]);
+    assert_eq!(
+        tail_pulse(&ClaudeAdapter, &file(&then_compact)).last,
+        TailLast::AssistantEnded,
+        "/context, then a manual /compact: still the ended turn"
+    );
+
+    // A scheduled task firing right after a `/remote-control`'s output opens a turn.
+    let fired = [
+        command("remote-control"),
+        system("<local-command-stdout></local-command-stdout>"),
+        meta(
+            "Hourly check: read the queue.",
+            r#""promptSource":"scheduled","turnOrigin":{"kind":"scheduled"},"#,
+        ),
+    ];
+    assert_eq!(
+        tail_pulse(&ClaudeAdapter, &file(&fired)).last,
+        TailLast::AssistantMid,
+        "a scheduled prompt after a command's output is a turn under way"
+    );
+}
