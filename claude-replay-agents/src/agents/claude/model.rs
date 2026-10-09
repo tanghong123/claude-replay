@@ -1340,6 +1340,24 @@ const QWENWORK_BASH_SHAPE: &[&str] = &[
     "telemetryExecutionId",
 ];
 
+/// Every key a Qwenwork Agent (sub-agent spawn) result was met with (#s65, client 1.1.59, measured
+/// 2026-10-09 over all 10 in the store): `{kind, agentId, agentType, content, state,
+/// terminateReason, outputPath, transcriptPath}`, plus `apiError` on the one that failed. `kind` is
+/// "agent-result" in all; `state` and `terminateReason` always pair (completed with GOAL, error with
+/// ERROR; QoderWork, the same family, also pairs error with MAX_TURNS). The adapter reads `state`,
+/// `content` and `agentId` (#95); the other five are known in this shape alone (rows below).
+const QWENWORK_AGENT_RESULT_SHAPE: &[&str] = &[
+    "agentId",
+    "agentType",
+    "apiError",
+    "content",
+    "kind",
+    "outputPath",
+    "state",
+    "terminateReason",
+    "transcriptPath",
+];
+
 /// Every key a Skill result was met with (#s19, measured 2026-10-06 over 42 results on this machine:
 /// `{commandName, success}` 38, plus `allowedTools` 2 (clients 2.1.287 and 2.1.289, a skill bundled
 /// with the client), plus `status` 2).
@@ -1406,6 +1424,21 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // non-zero exit is met: check whether the tool_result then also carries `is_error`.
     ("kind", QWENWORK_BASH_SHAPE),
     ("signal", QWENWORK_BASH_SHAPE),
+    // #s65 (Qwenwork 1.1.59): a sub-agent result's five keys nothing renders, each generic enough
+    // to mean something else on another tool, so each is known only in this shape. `kind` is a type
+    // tag (the block is a SubAgent by its tool name). `terminateReason` pairs with `state`, which
+    // the card reads (completed for GOAL; error, drawn failed, for ERROR and MAX_TURNS), and a
+    // failure's text names the reason; REVISIT if a MAX_TURNS or a TIMEOUT should read differently
+    // from an ERROR on the card. `outputPath` is a temp file holding the same text as `content`,
+    // shown inline (`output_file` is for an ASYNC spawn; this one is synchronous). `transcriptPath`
+    // is the child transcript beside the session, which the wrapper resolves from `agentId`;
+    // REVISIT if it ever names a file elsewhere. `apiError` is the failure message, repeated in the
+    // tool_result text and in `content`, on a result marked is_error, which the card draws failed.
+    ("kind", QWENWORK_AGENT_RESULT_SHAPE),
+    ("terminateReason", QWENWORK_AGENT_RESULT_SHAPE),
+    ("outputPath", QWENWORK_AGENT_RESULT_SHAPE),
+    ("transcriptPath", QWENWORK_AGENT_RESULT_SHAPE),
+    ("apiError", QWENWORK_AGENT_RESULT_SHAPE),
 ];
 
 /// The `toolUseResult` keys this adapter neither reads nor has already met (#264), in the
@@ -5688,6 +5721,34 @@ mod tests {
     ///
     /// The snapshot is process-global and the suite runs in parallel, so this asserts about
     /// the names it introduced rather than about the whole table.
+    /// #s65: a Qwenwork sub-agent result, completed or failed, reports nothing to `--unknown`; its
+    /// five unread keys are known only in that shape, so one beside a key outside it is reported.
+    #[test]
+    fn qwenwork_agent_result_variants_are_known_in_their_shape_only() {
+        let completed = serde_json::json!({"kind": "agent-result", "agentId": "a1", "agentType": "Explore", "content": "done", "state": "completed", "terminateReason": "GOAL", "outputPath": "/tmp/x/out.txt", "transcriptPath": "/s/subagents/agent-a1.jsonl"});
+        assert_eq!(
+            unknown_tool_result_keys(&completed),
+            Vec::<&str>::new(),
+            "{completed}"
+        );
+        let failed = serde_json::json!({"kind": "agent-result", "agentId": "a2", "agentType": "Explore", "content": "API error", "state": "error", "terminateReason": "ERROR", "apiError": "API error", "outputPath": "/tmp/x/out.txt", "transcriptPath": "/s/subagents/agent-a2.jsonl"});
+        assert_eq!(
+            unknown_tool_result_keys(&failed),
+            Vec::<&str>::new(),
+            "{failed}"
+        );
+        // Outside the shape the generic words are reported again.
+        let stray =
+            serde_json::json!({"kind": "agent-result", "outputPath": "/tmp/o", "somethingNew": 1});
+        let mut reported = unknown_tool_result_keys(&stray);
+        reported.sort_unstable();
+        assert_eq!(
+            reported,
+            vec!["kind", "outputPath", "somethingNew"],
+            "{stray}"
+        );
+    }
+
     #[test]
     fn an_unrecognised_tool_result_key_is_reported_and_a_known_one_is_not() {
         let jsonl = r##"
