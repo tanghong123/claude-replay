@@ -451,7 +451,8 @@ impl RequestPricing {
     /// <https://developers.openai.com/api/docs/models/gpt-6-astra>. Ultrafast (2026-10-04, the
     /// page's Ultrafast tab read raw, and
     /// <https://developers.openai.com/api/docs/guides/ultrafast-mode>): a request selects it with
-    /// `service_tier` "ultrafast"; listed for gpt-6-astra alone, 6x Standard short and long.
+    /// `service_tier` "ultrafast"; listed for gpt-6-astra and, since 2026-10-08, gpt-6.1-sol, 6x
+    /// Standard short and long.
     /// The boolean marks an estimate with incomplete billing evidence, not a lower bound.
     pub fn price_with(
         &self,
@@ -2331,8 +2332,9 @@ mod request_pricing_tests {
         );
     }
 
-    /// Ultrafast (the pricing page's Ultrafast tab, read raw 2026-10-04): gpt-6-astra alone, 6x
-    /// Standard on every token class, short and long. A model the tab does not list prices an
+    /// Ultrafast (the pricing page's Ultrafast tab, read raw 2026-10-04 and again 2026-10-09):
+    /// gpt-6-astra and, since 2026-10-08, gpt-6.1-sol, each 6x Standard on every token class,
+    /// short and long. A model the tab does not list prices an
     /// ultrafast request at Standard as an estimate, as Fast does without a long-context rate. The
     /// tier is reached through `from_recorded`, where the old code lost it (Unknown: 1x, estimate).
     #[test]
@@ -2349,6 +2351,8 @@ mod request_pricing_tests {
         for (model, long, expected, estimated) in [
             ("gpt-6-astra", false, 60.0, false),
             ("gpt-6-astra", true, 120.0, false),
+            ("gpt-6.1-sol", false, 12.0, false),
+            ("gpt-6.1-sol", true, 24.0, false),
             ("gpt-6-sol", false, 2.0, true),
             ("gpt-5.6-sol", true, 8.0, true),
         ] {
