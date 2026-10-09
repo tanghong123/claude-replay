@@ -570,6 +570,15 @@
 .mdrev-host .ann-review-pill, .mdrev-host .ann-review-panel {background:var(--bg);border:1px solid var(--rule);border-left:3px solid var(--shared);box-shadow:var(--shadow,0 2px 10px #1f232814);border-radius:8px;padding:6px 10px}
 .mdrev-host .ann-review-pill {flex-wrap:wrap;align-items:center;gap:8px;display:flex}
 .mdrev-host .ann-review-panel {max-height:calc(var(--mdv-app-h,100vh) * .6);padding:10px 12px;overflow:auto}
+.mdrev-host .ann-review-panel>.ann-composer-row, .mdrev-host .ann-review-panel>form>.ann-composer-row {background:var(--bg);margin-bottom:-10px;padding:6px 0 10px;position:sticky;bottom:-10px}
+@media (height<=520px) {
+.mdrev-host .ann-review-panel:not(.is-asking):not(:has(.ann-pair-setup)) {max-height:calc(var(--mdv-app-h,100vh) * .45 - 32px)}
+}
+@media (hover:none) and (pointer:coarse) {
+.mdrev-host .ann-review .ann-composer-row button {min-width:44px;min-height:44px;padding:0 14px}
+.mdrev-host .ann-review .ann-share {min-height:44px;margin:0}
+.mdrev-host .ann-review input:not([type=checkbox]) {min-height:44px;font-size:16px}
+}
 .mdrev-host .ann-review-dest code, .mdrev-host .ann-review-panel code {overflow-wrap:anywhere}
 .mdrev-host .ann-review-as {color:var(--ink-soft);margin-bottom:6px}
 .mdrev-host .ann-review-doc {margin:6px 0}

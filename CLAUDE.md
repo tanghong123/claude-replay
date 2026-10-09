@@ -279,7 +279,7 @@ link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.31, #s67), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.35, #s71), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor both binaries go through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
@@ -349,7 +349,11 @@ its environment; the detached tab (`markdown-page.js` → `mountStandalone`) mou
 passes `--viewer` on every note write and listing. The page's own calls (`hold`, `open`, `resolve`)
 stay on `api/mdrev/`. Every review route goes through the document's stamp like the note routes, and
 the writes through `deny_mutation`; a paired client can reach the prefix directly (the tab is
-withheld on a phone, the routes are not), which is the note routes' bar too. The cases are
+withheld on a phone, the routes are not), which is the note routes' bar too. mdrev's "Set up shared
+review" form (1.1.32+) sits behind two OPTIONAL routes, `GET review/pair` and `POST review/pair/request`
+(#s71); neither prefix offers them, and the unpaired notice, which asks the first as it opens (1.1.34),
+shows the terminal instructions on their 404. `POST review/pair` passes the reader's `keepName` tick on
+as `--keep-name` (1.1.33). The cases are
 `the_detached_tab_offers_shared_review_and_the_pane_does_not` (unit, and the browser case with a
 hermetic store, state dir and pairing, which also runs `conform` on the review prefix).
 **The detached tab offers mdrev's draft 8** (#s54, mdrev 1.1.26+): per-reader read marks, subscriptions

@@ -32244,8 +32244,8 @@ var SharedStore = class {
     return pairing;
   }
   /**
-   * A pairing an agent asked for, waiting for its person to confirm it in the
-   * viewer (E3): who, as whom, and for exactly this store.
+   * A pairing requested in chat or in the viewer, waiting for its person to
+   * confirm it in the viewer (E3): who, as whom, and for exactly this store.
    */
   pairRequest() {
     try {
@@ -32257,7 +32257,7 @@ var SharedStore = class {
       return null;
     }
   }
-  /** Record what an agent asked for — with what the server said, for the viewer to show; confirming asks the server again. */
+  /** Record the requested identity with the server's check for the viewer to show; confirming checks again. */
   requestPairing(identity, check) {
     this.ensureDirs();
     writeAtomic(join6(this.dir, "pair-request.json"), JSON.stringify({ remote: this.pointer.remote, branch: this.pointer.branch, email: identity.email.trim().toLowerCase(), name: identity.name.trim(), at: (/* @__PURE__ */ new Date()).toISOString(), ...check ? { check } : {} }, null, 2));
@@ -33227,6 +33227,10 @@ function machineDisplayName() {
   const name = machineConfig().display_name;
   return typeof name === "string" && name.trim() ? name.trim() : null;
 }
+async function pairingDefaults(root5) {
+  const git2 = await identityOf(root5);
+  return { root: root5, email: git2.email, name: machineDisplayName() ?? defaultDisplayName(git2.name) };
+}
 function setMachineDisplayName(name) {
   const cfg = machineConfig();
   if (name.trim())
@@ -33346,7 +33350,11 @@ async function confirmPairing(root5, who, shown, opts = {}) {
   if (shown && (shown.email.trim().toLowerCase() !== asked.email || shown.name.trim() !== asked.name)) {
     throw new StoreError(`the pairing request changed since it was shown (now ${asked.name} <${asked.email}>) \u2014 look again before confirming`, "other");
   }
-  return pairStore(root5, { email: asked.email, name: asked.name }, who, opts);
+  const paired = await pairStore(root5, { email: asked.email, name: asked.name }, who, { override: opts.override });
+  if (!opts.keepName || machineDisplayName())
+    return paired;
+  setMachineDisplayName(asked.name);
+  return { ...paired, machineName: asked.name };
 }
 var mint = () => `shr-${Date.now().toString(36)}-${randomBytes(3).toString("hex").slice(0, 4)}`;
 async function headOf(root5) {
@@ -35497,6 +35505,9 @@ var USAGE = `mdrev-cli \u2014 mdrev's store, from the command line, for a host a
   mdrev-cli review lookup --email E             the name each of the project's channels has for E
   mdrev-cli review pair [--email E --name N]    pair this machine with the store: a person at their terminal
                                                 answers here; an agent can only ask, and its person confirms in the viewer
+  mdrev-cli review pair --prepare               the checkout, email and display name a viewer offers; reads only
+  mdrev-cli review pair --confirm [--keep-name] the person's click in the viewer; --keep-name, their tick: the
+                                                pairing's name becomes the machine's, when it has none
   mdrev-cli notes edit ID --body "\u2026"            a person's, in a viewer: an unpushed shared record, or an open local note
   mdrev-cli notes hide|unhide ID                a person's, in a viewer: a pushed shared record of theirs
   mdrev-cli notes follow-renames [--path P]     move each note into the sidecar of the document it is about, after a rename
@@ -35525,7 +35536,7 @@ Options:
 Exit codes: 0 done \xB7 1 error (message on stderr) \xB7 2 no such note or document
 `;
 function parse5(argv) {
-  const o = { all: false, json: false, text: false, records: false, headers: {}, version: false, viewer: false, fetch: false, confirm: false, override: false, quick: false, now: false, withCode: false, positional: [] };
+  const o = { all: false, json: false, text: false, records: false, headers: {}, version: false, viewer: false, fetch: false, confirm: false, prepare: false, override: false, keepName: false, quick: false, now: false, withCode: false, positional: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next2 = () => {
@@ -35588,8 +35599,12 @@ function parse5(argv) {
       o.name = next2();
     else if (a === "--confirm")
       o.confirm = true;
+    else if (a === "--prepare")
+      o.prepare = true;
     else if (a === "--override")
       o.override = true;
+    else if (a === "--keep-name")
+      o.keepName = true;
     else if (a === "--allow-public")
       o.allowPublic = true;
     else if (a === "--store")
@@ -35972,19 +35987,28 @@ async function run3(argv, out = (s2) => process.stdout.write(s2), input = readSt
           return 0;
         }
         case "pair": {
+          if (o.prepare) {
+            if (o.confirm || o.override || o.allowPublic || o.keepName)
+              throw new UsageError("--prepare reads pairing defaults; it cannot confirm or override a pairing");
+            emit(await pairingDefaults(source.repoRoot));
+            return 0;
+          }
           if (o.confirm) {
             if (o.override && who.via !== "viewer")
               throw new UsageError("--override is the person's, confirming in the viewer");
-            const p2 = await confirmPairing(source.repoRoot, who, o.email && o.name ? { email: o.email, name: o.name } : void 0, { override: o.override });
+            const p2 = await confirmPairing(source.repoRoot, who, o.email && o.name ? { email: o.email, name: o.name } : void 0, { override: o.override, keepName: o.keepName });
             if (o.text)
               out(`paired: you write as ${p2.name} <${p2.email}>
-`);
+${p2.machineName ? `this machine's display name is now ${p2.machineName}, for every project (mdrev and taskq)
+` : ""}`);
             else
               emit(p2);
             return 0;
           }
           if (o.override)
             throw new UsageError("--override goes with --confirm, in the viewer; at a terminal, pairing asks");
+          if (o.keepName)
+            throw new UsageError("--keep-name goes with --confirm, in the viewer; at a terminal, pairing asks");
           if (o.allowPublic && personal.via !== "person")
             throw new UsageError("--allow-public is a person's, at their own terminal: a store anyone can read makes every thread public");
           const git2 = await identityOf(source.repoRoot);

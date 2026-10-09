@@ -1213,6 +1213,11 @@ fn review(rel: &Release, d: &Doc, req: &Request, route: &str, viewer: &Viewer) -
             if body.get("override").and_then(Value::as_bool) == Some(true) {
                 args.push("--override");
             }
+            // The reader ticked keeping the name for every project (mdrev 1.1.33, #s71): the
+            // pairing's name becomes the machine's display name where it has none.
+            if body.get("keepName").and_then(Value::as_bool) == Some(true) {
+                args.push("--keep-name");
+            }
             let out = run(&args);
             if out.code != 0 {
                 return cli_error(&out);
@@ -2291,6 +2296,19 @@ esac
         assert!(
             calls(&f).contains("review pair --confirm --viewer --email me@example.com --name Me")
         );
+        let kept = tab(
+            "POST",
+            "review/pair",
+            br#"{"email":"me@example.com","name":"Me","keepName":true}"#,
+            true,
+        );
+        assert_eq!(kept.code, "200 OK");
+        assert!(
+            calls(&f).contains(
+                "review pair --confirm --viewer --email me@example.com --name Me --keep-name"
+            ),
+            "the reader's keep-the-name tick reaches mdrev-cli"
+        );
         let refused = tab(
             "POST",
             "review/pair",
@@ -2302,6 +2320,32 @@ esac
             "the store's words, as a 400"
         );
         assert!(String::from_utf8_lossy(&refused.body).contains("not the account"));
+        // mdrev 1.1.32 (#s71) offers a "Set up shared review" form behind two OPTIONAL routes; this
+        // host does not offer them, and their 404 is what keeps the viewer on the terminal
+        // instructions (since 1.1.34 at once: the notice asks GET review/pair as it opens).
+        // Neither reaches mdrev-cli: `review pair --prepare` would read the checkout's git
+        // identity, and a request is the person's to make.
+        let before = calls(&f);
+        for (method, route, body) in [
+            ("GET", "review/pair", &b""[..]),
+            (
+                "POST",
+                "review/pair/request",
+                br#"{"email":"me@example.com","name":"Me"}"#,
+            ),
+        ] {
+            assert_eq!(
+                tab(method, route, body, true).code,
+                "404 Not Found",
+                "{method} {route}"
+            );
+            assert_eq!(
+                pane(method, route, body),
+                "404 Not Found",
+                "{method} {route}, pane"
+            );
+        }
+        assert_eq!(calls(&f), before, "no pairing form route ran mdrev-cli");
 
         assert_eq!(
             tab(

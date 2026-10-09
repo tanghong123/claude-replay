@@ -344,10 +344,20 @@ Section G says how mdrev enforces each of these.
   `~/.config/taskq/config.json`): pairing asks for it only while the machine
   has none, and `--name` overrides it for one store. The email is per store,
   because each server authenticates its own (#s10).
-  Two ways, both a person's: their agent asks them, with its question tool,
-  and asks mdrev for the pairing, which the person confirms with one click in
-  the viewer; or the person runs `mdrev --review-pair` in their own terminal,
-  which asks the same three questions (y/N, email, name).
+  The person can start in the viewer with **Set up shared review**: the host
+  resolves the document's collection to its actual checkout and reads the git
+  email and machine display name (or suggests a name). The person reviews or
+  edits the form, and **Continue** asks mdrev for a pairing; the existing
+  **Confirm** panel shows the store, identity and server account check before
+  the person's click pairs the machine. The form's display name is an override
+  for this store, like `--name`. On a machine with no display name, the
+  **Confirm** panel offers to keep it for every project (mdrev and taskq),
+  unticked, as the terminal's question defaults to no; ticked, it is written
+  once the pairing stands, and never over a name the machine has (#s46).
+  Their agent can also ask them, with its question tool, and request
+  the pairing for the same viewer confirmation. Or the person runs
+  `mdrev --review-pair` in their own terminal, which asks the same three
+  questions (y/N, email, name).
   - MUST: the email is the account's that git signs in to the store's server
     as — one of its emails, or the account itself, or at least its name part
     (Hong, 2026-10-04). A mismatch is refused unless the person overrides it:
@@ -659,7 +669,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.31",
+  "mdrev": "1.1.35",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
