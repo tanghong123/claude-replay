@@ -755,6 +755,18 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "userFeedback",
             "queueTranscriptOnly",
             "usageLimitNote",
+            // #s61 (client 2.1.295): `{decision, source, reasonType?}` on a user record carrying
+            // a tool_result — how that call was permitted or refused. Met on 79 records in two
+            // sessions on this machine, 2026-10-09, every one `source: "config"`: accept by `mode`
+            // (a permissive permission mode), `rule` (an allow rule), `subcommandResults` (each
+            // part of a compound command allowed) or with no reasonType, and reject with none
+            // (beside `toolDenialKind`). A reject already reads as the tool result the page draws;
+            // an accept from config is permission bookkeeping, which #s19 settled is not drawn
+            // (`permissionMode`, the `command_permissions` attachment, a Skill's `allowedTools`).
+            // REVISIT: the first `source` other than "config" — a person in the prompt, a hook, a
+            // classifier — is a RENDER question for the owner (a quiet "who allowed this" on the
+            // tool card); queue it with the record count and client version, never decide it here.
+            "permissionDecision",
         ],
     ),
     (
