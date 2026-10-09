@@ -1367,6 +1367,20 @@ const QWENWORK_AGENT_RESULT_SHAPE: &[&str] = &[
     "transcriptPath",
 ];
 
+/// Every key a Qwenwork Edit or Write result was met with (#s64, client 1.1.59, measured 2026-10-09
+/// over all 53 in the store): an Edit `{success, file_path, diff, additions, deletions}` (10); a
+/// Write over an existing file `{success, file_path, bytesWritten, diff, additions, deletions}` (9);
+/// a Write of a new file `{success, file_path, bytesWritten, additions: 0, deletions: 0}` with no
+/// diff (34). `diff` is read on an edit tool ([`parse_hunk_diff`]); the rest are known in this shape.
+const QWENWORK_FILE_EDIT_SHAPE: &[&str] = &[
+    "additions",
+    "bytesWritten",
+    "deletions",
+    "diff",
+    "file_path",
+    "success",
+];
+
 /// Every key a Skill result was met with (#s19, measured 2026-10-06 over 42 results on this machine:
 /// `{commandName, success}` 38, plus `allowedTools` 2 (clients 2.1.287 and 2.1.289, a skill bundled
 /// with the client), plus `status` 2).
@@ -1448,6 +1462,16 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     ("outputPath", QWENWORK_AGENT_RESULT_SHAPE),
     ("transcriptPath", QWENWORK_AGENT_RESULT_SHAPE),
     ("apiError", QWENWORK_AGENT_RESULT_SHAPE),
+    // #s64 (Qwenwork 1.1.59): an Edit or Write result. `diff` is READ on an edit tool, as a
+    // hunk-only unified diff (parse_hunk_diff), and known here only in this shape since the word is
+    // generic; `file_path` names the file the call's target already names; `additions`,
+    // `deletions` and `bytesWritten` are counts the hunks already show, or zeros beside no diff for
+    // a new file. So a `diff` on any other tool, or beside a key outside this shape, is reported.
+    ("diff", QWENWORK_FILE_EDIT_SHAPE),
+    ("file_path", QWENWORK_FILE_EDIT_SHAPE),
+    ("additions", QWENWORK_FILE_EDIT_SHAPE),
+    ("deletions", QWENWORK_FILE_EDIT_SHAPE),
+    ("bytesWritten", QWENWORK_FILE_EDIT_SHAPE),
 ];
 
 /// The `toolUseResult` keys this adapter neither reads nor has already met (#264), in the
@@ -1597,6 +1621,44 @@ fn parse_patch(tur: &Value) -> Option<Vec<Hunk>> {
         })
         .collect();
     (!hunks.is_empty()).then_some(hunks)
+}
+
+/// Parse a HUNK-ONLY unified diff string into hunks with real line numbers (#s64): a Qwenwork Edit
+/// or Write over an existing file (client 1.1.59) records its change as `toolUseResult.diff`, one
+/// string holding one or more hunks, each headed `@@ -a,b +c,d @@` (the counts may be absent) and
+/// followed by space-, minus- and plus-prefixed lines, with no `---`/`+++` file header. Measured
+/// 2026-10-09: all 19 such diffs in the store start with `@@ `. Only a string that starts with `@@`
+/// is read, and a `\ No newline at end of file` line is skipped; anything else yields `None`, so
+/// the caller falls back as before.
+fn parse_hunk_diff(diff: &str) -> Option<Vec<Hunk>> {
+    if !diff.starts_with("@@") {
+        return None;
+    }
+    let start = |field: &str, sign: char| -> Option<usize> {
+        field.strip_prefix(sign)?.split(',').next()?.parse().ok()
+    };
+    let mut out: Vec<Hunk> = Vec::new();
+    for line in diff.lines() {
+        if let Some(header) = line.strip_prefix("@@") {
+            let header = header.split("@@").next()?;
+            let mut fields = header.split_whitespace();
+            let old_start = start(fields.next()?, '-')?;
+            let new_start = start(fields.next()?, '+')?;
+            out.push(Hunk {
+                old_start,
+                new_start,
+                lines: Vec::new(),
+                // An edit is one file, and the call's target already names it.
+                file: None,
+            });
+            continue;
+        }
+        if line.starts_with('\\') || line.is_empty() {
+            continue;
+        }
+        out.last_mut()?.lines.push(line.to_string());
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// The output text to show under a tool call. Edit/Write show their diff/code,
@@ -1990,7 +2052,17 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
             }
             // An Edit's own patch first; a Bash command that edited files carries its diff
             // under a different key and never has a `structuredPatch` (#263).
-            *patch = parse_patch(tur).or_else(|| parse_bash_edit_diff(tur));
+            *patch = parse_patch(tur)
+                .or_else(|| parse_bash_edit_diff(tur))
+                // #s64: a Qwenwork Edit or Write records its change as a hunk-only `diff` string.
+                // Read on an edit tool only, never on any other tool that happens to carry a
+                // `diff` key.
+                .or_else(|| {
+                    is_edit_tool(name)
+                        .then(|| tur.get("diff").and_then(|d| d.as_str()))
+                        .flatten()
+                        .and_then(parse_hunk_diff)
+                });
             *read_lines = tur
                 .pointer("/file/numLines")
                 .and_then(|n| n.as_u64())
@@ -6485,6 +6557,91 @@ mod tests {
             reported.is_empty(),
             "todo_reminder, oldTodos and newTodos are known: {reported:?}"
         );
+    }
+
+    /// The first patch a parse carries, looking inside activity spans (where tool calls coalesce).
+    fn find_patch(blocks: &[Block]) -> Option<Vec<Hunk>> {
+        blocks.iter().find_map(|b| match b {
+            Block::ToolUse { patch, .. } => patch.clone(),
+            Block::Thinking { tools, .. } => find_patch(tools),
+            _ => None,
+        })
+    }
+
+    /// #s64: a Qwenwork Edit (client 1.1.59) records its change as a hunk-only `diff` string; it
+    /// becomes the call's patch, every hunk at its real line numbers.
+    #[test]
+    fn qwenwork_file_edit_an_edit_diff_becomes_hunks_at_their_real_starts() {
+        let jsonl = r##"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"q1","name":"Edit","input":{"file_path":"/w/a.md","old_string":"gone","new_string":"new"}}]}}
+{"type":"user","toolUseResult":{"success":true,"file_path":"/w/a.md","diff":"@@ -9,3 +9,3 @@\n ctx\n-gone\n+new\n ctx\n@@ -40,2 +40,3 @@\n tail\n+added\n end\n","additions":2,"deletions":1},"message":{"content":[{"type":"tool_result","tool_use_id":"q1","content":"ok"}]}}
+"##;
+        let patch = find_patch(&parse(jsonl)).expect("the Edit carries its diff as a patch");
+        let seen: Vec<(usize, usize, usize)> = patch
+            .iter()
+            .map(|h| (h.old_start, h.new_start, h.lines.len()))
+            .collect();
+        assert_eq!(seen, vec![(9, 9, 4), (40, 40, 3)]);
+        assert_eq!(patch[0].lines, vec![" ctx", "-gone", "+new", " ctx"]);
+        assert!(
+            patch.iter().all(|h| h.file.is_none()),
+            "one file, named by the call's target"
+        );
+    }
+
+    /// #s64: a Write over an existing file carries its hunks too (and so folds as an edit, as a
+    /// Claude Code overwrite does); a Write of a new file has no diff and keeps its write fold.
+    #[test]
+    fn qwenwork_file_edit_a_write_over_a_file_has_hunks_and_a_new_file_none() {
+        let over = r##"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"w1","name":"Write","input":{"file_path":"/w/b.md","content":"one\nTWO\n"}}]}}
+{"type":"user","toolUseResult":{"success":true,"file_path":"/w/b.md","bytesWritten":8,"diff":"@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n","additions":1,"deletions":1},"message":{"content":[{"type":"tool_result","tool_use_id":"w1","content":"ok"}]}}
+"##;
+        let patch = find_patch(&parse(over)).expect("an overwrite carries its hunks");
+        assert_eq!(
+            (patch.len(), patch[0].old_start, patch[0].new_start),
+            (1, 1, 1)
+        );
+        let fresh = r##"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"w2","name":"Write","input":{"file_path":"/w/c.md","content":"new\n"}}]}}
+{"type":"user","toolUseResult":{"success":true,"file_path":"/w/c.md","bytesWritten":4,"additions":0,"deletions":0},"message":{"content":[{"type":"tool_result","tool_use_id":"w2","content":"ok"}]}}
+"##;
+        assert_eq!(find_patch(&parse(fresh)), None, "a new file has no diff");
+    }
+
+    /// #s64: `diff` is read on an edit tool only, and the three variants report nothing to
+    /// `--unknown`; a `diff` on another tool is neither parsed nor known.
+    #[test]
+    fn qwenwork_file_edit_shape_is_known_and_diff_is_read_on_edits_only() {
+        for variant in [
+            serde_json::json!({"success": true, "file_path": "/w/a", "diff": "@@ -1 +1 @@\n-a\n+b\n", "additions": 1, "deletions": 1}),
+            serde_json::json!({"success": true, "file_path": "/w/a", "bytesWritten": 2, "diff": "@@ -1 +1 @@\n-a\n+b\n", "additions": 1, "deletions": 1}),
+            serde_json::json!({"success": true, "file_path": "/w/a", "bytesWritten": 2, "additions": 0, "deletions": 0}),
+        ] {
+            assert_eq!(
+                unknown_tool_result_keys(&variant),
+                Vec::<&str>::new(),
+                "{variant}"
+            );
+        }
+        let stray = serde_json::json!({"stdout": "x", "diff": "@@ -1 +1 @@\n-a\n+b\n"});
+        assert_eq!(unknown_tool_result_keys(&stray), vec!["diff"], "{stray}");
+        let bash = r##"
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b9","name":"Bash","input":{"command":"true"}}]}}
+{"type":"user","toolUseResult":{"stdout":"x","diff":"@@ -1 +1 @@\n-a\n+b\n"},"message":{"content":[{"type":"tool_result","tool_use_id":"b9","content":"x"}]}}
+"##;
+        assert_eq!(
+            find_patch(&parse(bash)),
+            None,
+            "a diff key on a Bash call is not an edit"
+        );
+        // Headers without counts, and a no-newline marker, parse; anything not opening with @@ does not.
+        let h = parse_hunk_diff("@@ -3 +4 @@\n-a\n\\ No newline at end of file\n+b\n").unwrap();
+        assert_eq!(
+            (h[0].old_start, h[0].new_start, h[0].lines.clone()),
+            (3, 4, vec!["-a".to_string(), "+b".to_string()])
+        );
+        assert_eq!(parse_hunk_diff("--- a\n+++ b\n@@ -1 +1 @@\n-a\n+b\n"), None);
     }
 
     /// #263 — a Bash command that edited files renders its diff, with every file the record

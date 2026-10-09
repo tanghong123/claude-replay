@@ -17057,3 +17057,101 @@ fn scenario_a_change_made_live_joins_its_run() {
         );
     }
 }
+
+/// A Qwenwork session (#s64, client 1.1.59) with one Edit and one Write over an existing file,
+/// each result carrying its change as a hunk-only `diff` string, as the store records them.
+fn qwenwork_file_edit_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at(
+        "question 13: edit the notes and rewrite the plan",
+        &now_minus(200),
+    );
+    let (call, result) = (now_minus(198), now_minus(197));
+    t += &format!(
+        r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"qe1","name":"Edit","input":{{"file_path":"/r/notes.md","old_string":"gone line","new_string":"fresh line"}}}}]}},"timestamp":"{call}"}}
+{{"type":"user","toolUseResult":{{"success":true,"file_path":"/r/notes.md","diff":"@@ -9,3 +9,3 @@\n ctx above\n-gone line\n+fresh line\n ctx below\n","additions":1,"deletions":1}},"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"qe1","content":"ok"}}]}},"timestamp":"{result}"}}
+"#
+    );
+    let (call, result) = (now_minus(196), now_minus(195));
+    t += &format!(
+        r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"qw1","name":"Write","input":{{"file_path":"/r/plan.md","content":"WHOLE FILE AS WRITTEN\nkeep\nnew plan line\n"}}}}]}},"timestamp":"{call}"}}
+{{"type":"user","toolUseResult":{{"success":true,"file_path":"/r/plan.md","bytesWritten":44,"diff":"@@ -20,3 +20,3 @@\n keep\n-old plan line\n+new plan line\n tail\n","additions":1,"deletions":1}},"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"qw1","content":"ok"}}]}},"timestamp":"{result}"}}
+"#
+    );
+    t += &assistant_at("Both changed.", &now_minus(193));
+    let path = stores.qwenwork_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #s64 — a Qwenwork Edit or Write over an existing file draws its change as the edit, with the
+/// file's real line numbers. The client records the change as a hunk-only unified diff
+/// (`toolUseResult.diff`), which nothing read: the Edit was drawn from its input strings with no
+/// line numbers, and the Write over a file was drawn as if the file were new, its whole text, so
+/// the reader could not see what changed.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_qwenwork_file_edit_draws_its_diff_with_real_line_numbers() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = qwenwork_file_edit_fixture(match surface {
+            Surface::Classic => "qwenwork-edit-classic",
+            Surface::AppShell => "qwenwork-edit-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3078 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        let seen: serde_json::Value = eval(
+            &page.tab,
+            "(function(){ var t = document.body.innerText; \
+               var add = [...document.querySelectorAll('.add')].map(function(e){ return e.textContent.trim(); }); \
+               var del = [...document.querySelectorAll('.del')].map(function(e){ return e.textContent.trim(); }); \
+               return JSON.stringify({ \
+                 fresh: add.some(function(r){ return r.indexOf('fresh line') >= 0; }), \
+                 gone: del.some(function(r){ return r.indexOf('gone line') >= 0; }), \
+                 newPlan: add.some(function(r){ return r.indexOf('new plan line') >= 0; }), \
+                 oldPlan: del.some(function(r){ return r.indexOf('old plan line') >= 0; }), \
+                 editAt10: add.some(function(r){ return /^\\s*10\\s*\\+/.test(r) && r.indexOf('fresh line') >= 0; }), \
+                 writeAt21: add.some(function(r){ return /^\\s*21\\s*\\+/.test(r) && r.indexOf('new plan line') >= 0; }), \
+                 wholeFile: t.indexOf('WHOLE FILE AS WRITTEN') >= 0, \
+                 adds: add, dels: del }); })()",
+        )
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+        for (key, why) in [
+            ("fresh", "the Edit's added line is drawn as an addition"),
+            ("gone", "…and its removed line as a removal"),
+            ("newPlan", "the Write over a file draws its added line"),
+            (
+                "oldPlan",
+                "…and its removed line, so the reader sees what changed",
+            ),
+            (
+                "editAt10",
+                "the Edit's rows carry the file's real line numbers",
+            ),
+            ("writeAt21", "…and so do the Write's"),
+        ] {
+            assert_eq!(
+                seen[key],
+                serde_json::json!(true),
+                "{surface:?}: {why}: {seen}"
+            );
+        }
+        assert_eq!(
+            seen["wholeFile"],
+            serde_json::json!(false),
+            "{surface:?}: the Write over a file is drawn as its change, not as the whole text of a new file: {seen}"
+        );
+    }
+}

@@ -269,12 +269,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// v49: #s47 — a model priced by prompt length (Claude Haiku 5.5) carries the tokens of its
 /// requests over the line in `TokenCounts::long_prompt`. A v48 stream holds them only in the
 /// totals, and would price them at the standard rates as if exact.
+/// v50: #s64 — a Qwenwork Edit or Write over an existing file carries its `diff` as a patch, with
+/// real line numbers, so the Write folds as an edit. A v49 stream holds those calls with no patch:
+/// an Edit drawn from its input strings and an overwrite drawn as a new file.
 ///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 49;
+pub const FOLD_VERSION: u16 = 50;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
