@@ -793,6 +793,17 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "apiErrorStatus",
             "supersedesUuids",
             "errorDetails",
+            // #s60 (client 2.1.295): a string beside `message` naming the model the client asked
+            // for, on every API answer. Met on 145 records in two sessions on this machine,
+            // 2026-10-09, in two relations only: equal to
+            // `message.model`, or `message.model` plus the context-variant suffix `[1m]`. The 1M
+            // variant is already drawn from the `model` attachment ("Opus 5 (1M context)"), a
+            // substituted model from the `fallback` block and the `model_*_fallback` system
+            // subtypes, and the price is keyed on `message.model` (the 1M window is priced at
+            // standard rates), so nothing a reader needs. REVISIT: a `requestedModel` differing
+            // from `message.model` by more than `[1m]` with no fallback record beside it — a
+            // substitution the page would not show.
+            "requestedModel",
         ],
     ),
     (
