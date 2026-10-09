@@ -279,7 +279,7 @@ link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.35, #s71), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.38, #s75), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor both binaries go through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
@@ -332,8 +332,11 @@ made the print start from the tap in Safari — but a held reader has no toolbar
 carries a print control (`.preview-print`, hit-tested at 390px) that calls mdrev's own
 `mounted.print()` — the document alone on the paper; never for code. **mdrev carries every print**
 (#s58, mdrev 1.1.29): its isolation (`#mdrev-print-isolation`, everything outside the mount hidden
-through `:has()`, the page printed white) holds until `afterprint` or the next touch, since iOS
-Safari's print() returns before it captures the page, and on a phone its Aa menu hangs from its
+through `:has()`, the page printed white) comes back at each `beforeprint` until the reader next
+touches, clicks or types (1.1.38, #s75: iOS lays the page out once per print-sheet preview, each in
+its own `beforeprint`…`afterprint`, and a first print that gave the page back at the first
+`afterprint` put the monitor's page on the paper), since iOS Safari's print() returns before it
+captures the page, and on a phone its Aa menu hangs from its
 toolbar — since 1.1.31 (#s67, mdviewer #s36) capped below the bar and scrolling where a sideways
 screen is short, and a second print in one Safari page load says Safari is asking (#s37). The pane carried both for #s57 (mdviewer #s34) and carries neither now: `print()` is
 `mounted.print()`. `a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen` makes print()

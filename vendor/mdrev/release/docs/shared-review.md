@@ -159,7 +159,9 @@ Two things are missing:
   (H3); it does not limit who reads it.
   - MUST NOT: guess from a note's wording that it is shared.
   - MUST: a shared note looks different from a local one everywhere it is
-    drawn, before and after it is pushed.
+    drawn, before and after it is pushed — its card always says "shared";
+    its colour gives way while the next move is the reader's own agent's
+    (A4).
 - **A3. A shared thread stays shared.** Every record in a thread is shared.
   - MUST NOT: allow a local entry inside a thread.
 - **A4. One answer, two readers.** Answering a shared record takes one box
@@ -171,7 +173,12 @@ Two things are missing:
   which thread it is about. The thread's card lists it, drawn as local and
   apart from the thread's entries, and its own card names the thread; a
   click on either raises the other's card (they share a chip, so one card
-  lies over the other).
+  lies over the other). While that local note is open, the thread's chip and
+  its card's spine say whose move it is: the local colour when the reader
+  answered only for their agent, both colours when they answered in the
+  thread too (Hong, 2026-10-10, #s54: "if a user respond to a shared comment
+  with only agent note, can we render that with a blue border instead of the
+  brown border? If it has both, maybe part brown, part blue?").
   - MUST: when the agent answers, its answer is a shared record in that
     thread, not a reply to the local note.
   - MUST NOT: let the local part reach the store, ever.
@@ -220,10 +227,13 @@ Section G says how mdrev enforces each of these.
   - MUST: when two reviewers push at the same time, both pushes land, with no
     conflict for anyone to resolve.
 - **C3. The owner resolves, as a courtesy.** Anyone may resolve or reopen a
-  thread, and the thread takes the last word; the owner usually does.
-  - MUST: a resolve by someone other than the owner says so, on the card and
-    in the thread's history, and the resolve control says the owner usually
-    does it.
+  thread, and the thread takes the last word; the owner usually does. A
+  resolved thread takes no replies until someone reopens it, as a closed local
+  note takes none: an objection to a resolve is an unresolve, which everyone
+  sees, and then a reply (Hong, 2026-10-10, #s55).
+  - MUST: a resolve by someone other than the owner says so, in the card's
+    head and in the history an agent reads, and the resolve control says the
+    owner usually does it.
 - **C4. Identity survives a new machine.** A person is their email, as
   confirmed at pairing, compared without case. Each paired machine has its
   own display name. An owner who moves to another machine still owns their
@@ -233,7 +243,10 @@ Section G says how mdrev enforces each of these.
   agent wrote as you. An edit changes the words only; a note's place is fixed,
   so a new place means taking it back and filing it again. Taking back a note
   also takes back your unpushed records in its thread; a reply, a resolve or a
-  reopen goes alone.
+  reopen goes alone. A resolve of yours undone before it is pushed is taken
+  back, not answered: reopened, it leaves nothing to push — unless another
+  reviewer's resolve has landed since, which the reopen then answers. A
+  reopen undone the same way goes the same way.
   - MUST NOT: change another person's record, or any pushed record.
 - **C6. Pushed records are hidden, never deleted.** Only a record's writer
   can hide it, and only once it is pushed (before, take it back). Everyone
@@ -260,8 +273,12 @@ Section G says how mdrev enforces each of these.
   every unpushed record for that store, from every document, grouped by
   document: its first line, opening to its whole text, whether an agent wrote
   or revised it and which local note asked, and the store it will go to, as
-  whom. Only what was listed goes: a record written while the list was open
-  waits for the next push. At a terminal the person is always asked.
+  whom. Resolves, reopens and hides fold into one line per document, which
+  counts them and opens to each under the first line of the thread it
+  changes: they change a thread's state and say nothing a reader reads as
+  words (Hong, 2026-10-10: "the messages to be pushed included many
+  'resolved' comments, hide them"). Only what was listed goes: a record
+  written while the list was open waits for the next push. At a terminal the person is always asked.
   Subscriptions and read marks are not listed (H7); the push takes those
   waiting along, and after it lands it tells the people it concerns (H2).
 - **D3. Nothing is lost offline, and a refusal is not "offline".** A push
@@ -669,7 +686,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.35",
+  "mdrev": "1.1.38",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -703,8 +720,10 @@ viewer draws it with the code it has:
 - the note's snapshot is its `blob`. A reader who has that text gets the
   exact placement a local note gets; one who does not gets the search, marked
   approximate, with the commit to pull (D4);
-- replies, resolves and reopens become entries in its history, in landing
-  order; an entry an agent wrote or revised says "agent-assisted", the opening
+- replies become entries in its history, in landing order; a resolve or a
+  reopen is the thread's state, said in the card's head, and an entry only
+  when it says why (C7) — Hong, 2026-10-10, #s56: "I think we don't need to
+  render that in the thread"; an entry an agent wrote or revised says "agent-assisted", the opening
   note included; one changed in the store after it was pushed says so; a
   writer's email is on their name, on hover;
 - a hidden record is folded to one line, which opens on a click;
@@ -715,7 +734,8 @@ viewer draws it with the code it has:
 - it is marked shared, and each entry unpushed until it is.
 
 What the viewer adds: the **Share** control in the composer, the shared and
-unpushed markings, the two-part reply box, edit and take-back on your
+unpushed markings, the two-part reply box on an open thread (an
+**unresolve** button in its place once it is resolved), edit and take-back on your
 unpushed records, edit on your unresolved local notes, hide and unhide on
 your pushed records, click-to-copy on every note's and comment's id, and a
 **Push** button with the count of unpushed records, which opens the list D2
@@ -1224,6 +1244,10 @@ the first five drafts, and on 2026-10-03 on the first build.
 | The pairing email must be the server account's; refused unless overridden; unconfirmed when the server cannot say (E3) | "at pair time, make sure the email is the same as the user id user push to remotes. (If user id does not carry suffix, then use the name part at least)"; then chose "Refuse; person can override" and "Pair, marked unconfirmed" |
 | The pointer is mandatory, repository and ref both (E1; 2026-10-08, #s24) | "the pointer file for shared review notes is optional, I'd like to make it mandatory"; chose "Remote and ref both required" |
 | A paired store that moves is followed; on another server the account is checked again (E3; 2026-10-08, #s24) | "once mdrev --review-pair is done for a checked out repo, it will automatically discover the moved repo without rerun the --review-pair, this simplifies the migration"; chose "Carry it, re-check the account" |
+| A thread answered only for the agent is drawn local; answered both ways, in both colours (A2, A4; 2026-10-10, #s54) | "if a user respond to a shared comment with only agent note, can we render that with a blue border instead of the brown border? If it has both, maybe part brown, part blue?" |
+| A resolved thread takes no replies until it is reopened, by an **unresolve** button (C3; 2026-10-10, #s55) | "Once a thread is resolved, no additional follow up comments allowed, unless one clicks "unresolve" (to be added), similar to local notes" |
+| A resolve or reopen is no line of the thread; the card's head says the state (C3; 2026-10-10, #s56) | "looks like "resolution" is rendered as part of the thread, I think we don't need to render that in the thread" |
+| State changes fold in the push list; a resolve undone before a push is taken back (D2, C5; 2026-10-10, #s57) | "the messages to be pushed included many "resolved" comments, hide them" |
 
 ## Appendix B. Alternatives set aside
 

@@ -33502,6 +33502,9 @@ async function replyShared(source, recordId, body3, who) {
   if (!found)
     throw new StoreError(`no shared record '${recordId}' \u2014 fetch first (mdrev --review-status)`, "other");
   const asked = await checkAsked(source, store, who, found.thread, "reply");
+  if (found.thread.status === "resolved") {
+    throw new StoreError(who.via === "cli" ? `${found.thread.id} is resolved, and a resolved thread takes no replies until it is reopened \u2014 if your person's note asked to reopen it: mdrev --reopen ${found.thread.id}${who.for ? ` --for ${who.for}` : ""}` : "this thread is resolved: unresolve it to reply", "other");
+  }
   if (!body3.trim())
     throw new StoreError("a reply needs a body", "other");
   const id = mint();
@@ -33519,6 +33522,12 @@ async function setSharedState(source, recordId, kind, why, who) {
   await checkAsked(source, store, who, thread, "state");
   if (kind === "resolve" === (thread.status === "resolved"))
     return thread;
+  const undo = (why ?? "").trim() ? void 0 : store.outbox().find((e) => e.record.id === thread.replies?.filter((r) => r.event === "resolved" || r.event === "reopened").at(-1)?.id);
+  if (undo && undo.record.kind !== kind && undo.record.author.email.toLowerCase() === me.email && (who.via !== "cli" || undo.local.via === "cli" && undo.local.for === who.for && !(undo.local.edits ?? []).some((e) => e.by !== "agent"))) {
+    const without = foldThreads(store.records().filter((r) => r.id !== undo.record.id), me.email).find((t) => t.id === thread.id);
+    if (without && without.status === "resolved" === (kind === "resolve") && (await store.takeBack([undo.record.id])).includes(undo.record.id))
+      return without;
+  }
   const last = thread.replies?.filter((r) => r.event !== "unreadable").at(-1);
   const id = mint();
   store.write(base2(kind, id, thread.id, last?.id ?? thread.id, me, (why ?? "").trim(), who, await headOf(source.repoRoot)), local(who, source.repoRoot));
@@ -33657,6 +33666,7 @@ async function reviewStatus(source, opts = {}) {
       kind: e.record.kind,
       path: e.record.path ?? notes.get(e.record.thread)?.path,
       thread: e.record.thread,
+      ...e.record.kind !== "note" && notes.has(e.record.thread) ? { of: (notes.get(e.record.thread).body.split("\n")[0] ?? "").slice(0, 120) } : {},
       first: (e.record.body.split("\n")[0] ?? "").slice(0, 120),
       body: e.record.body,
       cli: e.local.via === "cli",

@@ -548,6 +548,13 @@
 .mdrev-host .ann-marker.ann-shared {border-color:color-mix(in srgb, var(--shared) 45%, transparent);background:var(--shared-soft);color:var(--shared)}
 .mdrev-host .ann-marker.ann-shared.ann-unpushed {border-style:dashed}
 .mdrev-host .ann-marker.ann-shared.is-open {background:var(--shared);border-color:var(--shared);color:var(--on-accent)}
+.mdrev-host .ann-card.ann-shared.ann-agent-answer {border-left-color:var(--accent)}
+.mdrev-host .ann-marker.ann-shared.ann-agent-answer {border-color:color-mix(in srgb, var(--accent) 38%, transparent);background:var(--accent-soft);color:var(--accent)}
+.mdrev-host .ann-marker.ann-shared.ann-agent-answer.is-open {background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.mdrev-host .ann-card.ann-shared.ann-split {border-left-color:#0000}
+.mdrev-host .ann-card.ann-shared.ann-split:before {content:"";background:linear-gradient(var(--shared) 50%, var(--accent) 50%);pointer-events:none;border-radius:8px 0 0 8px;width:3px;position:absolute;top:-1px;bottom:-1px;left:-3px}
+.mdrev-host .ann-marker.ann-shared.ann-split {border-color:color-mix(in srgb, var(--shared) 45%, transparent) color-mix(in srgb, var(--accent) 38%, transparent) color-mix(in srgb, var(--accent) 38%, transparent) color-mix(in srgb, var(--shared) 45%, transparent);background:linear-gradient(135deg, var(--shared-soft) 50%, var(--accent-soft) 50%)}
+.mdrev-host .ann-marker.ann-shared.ann-split.is-open {background:linear-gradient(135deg, var(--shared) 50%, var(--accent) 50%);color:var(--on-accent);border-color:#0000}
 .mdrev-host .ann-badge {white-space:nowrap;border-radius:8px;padding:0 5px;font-size:10px;line-height:16px}
 .mdrev-host .ann-badge-shared {color:var(--shared);background:var(--shared-soft)}
 .mdrev-host .ann-badge-unpushed {color:var(--ink-soft);border:1px dashed var(--rule)}
@@ -585,6 +592,9 @@
 .mdrev-host .ann-review-path {font-size:12px;font-weight:600}
 .mdrev-host .ann-review-item {overflow-wrap:anywhere;padding:2px 0 2px 10px}
 .mdrev-host details.ann-review-item>summary {cursor:pointer}
+.mdrev-host .ann-review-states>summary {color:var(--ink-soft)}
+.mdrev-host .ann-review-state {color:var(--ink-soft);padding:1px 0 1px 10px}
+.mdrev-host .ann-review-why {color:var(--ink-faint)}
 .mdrev-host .ann-review-body {white-space:pre-wrap;border-left:2px solid var(--rule,#7f7f7f4d);color:var(--ink-soft);margin:2px 0 4px 10px;padding-left:6px}
 .mdrev-host .ann-badge-agent {color:var(--accent);background:var(--accent-soft)}
 .mdrev-host .ann-badge-new {color:var(--shared);background:var(--shared-soft);font-weight:600}
@@ -639,6 +649,9 @@
 .mdrev-host .ann-reply-box {align-items:flex-end;gap:5px;margin-top:6px;display:flex}
 .mdrev-host .ann-reply-box textarea {min-height:0;font:inherit;background:var(--bg-soft);color:var(--ink);border:1px solid var(--rule);resize:vertical;border-radius:6px;flex:1;margin:0;padding:3px 7px;font-size:11.5px}
 .mdrev-host .ann-reply-box button {white-space:nowrap}
+.mdrev-host .ann-unresolve-row {justify-content:flex-end;margin-top:6px;display:flex}
+.mdrev-host .ann-unresolve {color:var(--ink-soft);border:1px solid var(--rule);white-space:nowrap;background:0 0;border-radius:5px;padding:1px 8px;font-size:11.5px}
+.mdrev-host .ann-unresolve:hover {color:var(--ink);border-color:var(--ink-faint)}
 .mdrev-host .ann-draft[aria-busy=true] textarea, .mdrev-host .ann-reply-box[aria-busy=true] textarea {opacity:.55;border-color:var(--rule);cursor:progress;outline:none}
 .mdrev-host .ann-actions button.ann-drop-armed {color:var(--del-fg);border-color:var(--del-fg);font-weight:600}
 .mdrev-host .ann-resolution-commit {font-family:var(--read-mono,ui-monospace, monospace);color:var(--ink-faint);margin-left:5px;font-size:10.5px;display:inline-block}
