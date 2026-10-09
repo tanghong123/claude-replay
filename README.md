@@ -1,4 +1,106 @@
-# agent-replay
+# agent-monitor
+
+Every coding-agent session on this machine on one web page. Sessions from Claude Code,
+Codex, Qoder, QoderWork and Qwenwork sit in one tree, so you see first **who is waiting for
+you and why it stopped**, then find the line you want in the record.
+
+It only reads: it opens the transcripts each agent already writes to disk, installs no
+hooks, changes no commands, and serves on the loopback address. Close it and everything runs
+as before.
+
+![agent-monitor: a Claude Code session in the "payments" project is awaiting a reply, with the question it asked](docs/images/agent-monitor.png)
+
+<sub>Synthetic demo data from <code>docs/demo/make_store.py</code>; no real session.</sub>
+
+## Quick start
+
+```bash
+brew install tanghong123/tap/agent-monitor
+agent-monitor            # serves http://127.0.0.1:2727 and opens it in your browser
+```
+
+macOS and Linux, x86_64 and arm64. `--agents claude,codex` narrows the tree, `--port N` picks
+another port, and `--no-open` prints the address instead of opening a browser. The page lists
+this machine's sessions by agent, then by project. By default it shows the recently active
+and the blocked ones.
+
+## Why it exists
+
+- **Several kinds of agent, and no one place to look.** A TUI in a terminal, headless jobs in
+  the background and a desktop app each have their own interface. agent-monitor puts them in
+  one tree and marks which session is active, which is blocked and waiting for you, and why
+  it stopped.
+- **Close a window and that stretch of work is gone.** agent-monitor reads the record each
+  agent writes to disk itself, so a session whose window is closed still opens and reads.
+- **A dense record you can neither read back nor search.** Each agent's interface is built
+  for generating onward, not for going back. agent-monitor opens a session to read, with an
+  outline by turn, task and sub-agent, and two layers of search to take you to the line.
+
+## What it does
+
+- **Who is waiting for you.** Each session is *active*, *blocked* or *idle*, and a blocked
+  one carries its reason (awaiting your permission, for example). The filter offers recently
+  active, blocked, idle, and hidden sessions.
+- **Read a session.** The outline beside the record lists its turns, tasks and sub-agents.
+  Choose a turn to jump to it, open a task's card, or descend into a sub-agent's own record.
+- **Search in two layers.** Find the session in the list, then search inside it. A prefix
+  narrows by class: `u:` your turns, `a:` the agent's replies, `t:` thinking, `o:` tools.
+  `w` matches whole words only.
+- **File preview.** A text file a session mentions opens in a preview pane, highlighted by
+  language with numbered lines. An HTML page renders as a page.
+- **Phone access.** A phone on your tailnet can read a *paired* monitor (see below). On a
+  phone the page is a reader: the session list is a drawer, and the tools float at the foot.
+- **Write mode.** On a paired monitor, and only after you turn it on and grant it, you can
+  reply to a session that is waiting for you from the page.
+- **Several machines.** [`agent-monitor-fleet`](#agent-monitor-fleet--several-machines-monitors-on-one-page)
+  opens one SSH tunnel per machine and switches between their monitors on one page.
+- **Built for huge transcripts.** A streaming parser and a validated on-disk cache let
+  sessions of hundreds of megabytes open in seconds.
+
+## Pairing, phone and write mode
+
+```bash
+agent-monitor --pair           # once: mint a 0600 token; the monitor requires it from now on
+agent-monitor --pair-phone     # let a phone on your tailnet in: single-use QR code + short code, 5 minutes
+agent-monitor --set-passcode   # optional: require a passcode before write mode can inject (terminal only)
+```
+
+Pair the monitor before serving it with `tailscale serve`. On macOS an unpaired monitor
+admits any request from the same machine, including one `tailscale serve` relays.
+`--pair-phone` refuses an unpaired monitor, finds the `tailscale serve` address (or says how
+to set it up), and never shows the token itself.
+
+## Compared with
+
+- **Each agent's own session list** lists only its own sessions, in an interface built for
+  generating. agent-monitor puts every agent's sessions in one tree, with one set of state
+  words, built for reading back and searching.
+- **A terminal multiplexer** (tmux, say): a closed pane takes its stretch of work with it.
+  agent-monitor reads each agent's own record, so nothing depends on a window staying open.
+- **LangSmith-style tracing** is built for services running online, through
+  instrumentation. agent-monitor looks at the agent sessions on *this* machine, by reading
+  the files they already write.
+
+## Privacy
+
+No telemetry, and nothing is collected. The monitor's own process opens connections only to
+`127.0.0.1`. What it derives from transcripts is cached on this machine (`~/.cache/agent-monitor`,
+or `$AGENT_MONITOR_CACHE`). Content leaves the machine only if you choose to: a phone over
+your tailnet, or `agent-monitor-fleet`'s SSH tunnels to hosts you configure.
+
+## Also in this repository
+
+| Binary | What it's for |
+|---|---|
+| **agent-monitor** | the page above (crate `claude-monitor`) |
+| **[agent-replay](#agent-replay--read-one-transcript)** | a read-only terminal and browser viewer for one transcript |
+| **[agent-jdi](#agent-jdi--supervise-unattended-runs)** | runs an agent unattended and lets you hand off and take over |
+| **[agent-monitor-fleet](#agent-monitor-fleet--several-machines-monitors-on-one-page)** | several machines' monitors on one page |
+
+The repository keeps its original name, `claude-replay`, from when it held only the viewer
+for Claude Code.
+
+## agent-replay — read one transcript
 
 An interactive, **read-only** viewer for AI coding-agent session transcripts —
 *like `claude --resume`, but you can only read*: scroll, fold, search, and
@@ -12,7 +114,7 @@ continuing or mutating the session.
 > module), where it began life as `claude-peek-v2`. Its bash predecessor,
 > `claude-peek`, still ships there.
 
-## Install
+### Install
 
 **Homebrew** (macOS / Linux) — recommended:
 
@@ -54,7 +156,7 @@ cargo install --path .          # → ~/.cargo/bin/agent-replay
 cargo build --release           # → target/release/agent-replay
 ```
 
-## Usage
+### Usage
 
 ```
 agent-replay                                 pick from this dir's sessions (Claude + Codex)
@@ -137,7 +239,7 @@ skimmable; reveal with `--reads`, `--results`, `-v`/`--full`. Per-type fold cont
 via `--fold`/`--unfold` (`user, assistant, thinking, read, bash, edit, write, tool,
 tool_result, command`).
 
-### Keys
+#### Keys
 `j`/`k` line · `C-d`/`C-u` half-page · `PageDown`/`PageUp` page · `g`/`G` top/bottom ·
 `Space` toggle the focused/first-visible fold (`Enter` toggles the focused one) ·
 `T` toggle all · `]`/`[` next/prev foldable · `/` search, `n`/`N` next/prev ·
