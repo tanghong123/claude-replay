@@ -558,6 +558,14 @@
 .mdrev-host .ann-reply-box.ann-two-part {flex-wrap:wrap}
 .mdrev-host .ann-reply-box.ann-two-part textarea {flex:100%}
 .mdrev-host .ann-reply-box .ann-agent-part {border-style:dashed}
+.mdrev-host .ann-for-agent {border:1px dashed var(--rule);border-radius:6px;flex-direction:column;gap:4px;margin:8px 0 2px;padding:6px 8px;display:flex}
+.mdrev-host .ann-for-agent-label {color:var(--ink-faint);font-size:10.5px}
+.mdrev-host .ann-for-agent-note {all:unset;cursor:pointer;color:var(--ink-soft);white-space:pre-wrap;overflow-wrap:anywhere;align-items:baseline;gap:6px;font-size:12.5px;display:flex}
+.mdrev-host .ann-for-agent-note:hover .ann-for-agent-body {text-decoration:underline}
+.mdrev-host .ann-for-agent-note:focus-visible {outline:2px solid var(--accent,currentColor);outline-offset:2px}
+.mdrev-host .ann-for-agent-note.is-closed .ann-for-agent-body {color:var(--ink-faint);text-decoration:line-through}
+.mdrev-host .ann-for-agent-status {color:var(--ink-faint);flex:none;font-size:10.5px}
+.mdrev-host .ann-about-link {all:unset;cursor:pointer;font-family:ui-monospace,Menlo,monospace;text-decoration:underline}
 .mdrev-host .ann-review {z-index:30;max-width:min(420px, calc(var(--mdv-app-w,100vw) - 32px));font-size:12.5px;position:fixed;bottom:16px;left:16px}
 .mdrev-host .ann-review-pill, .mdrev-host .ann-review-panel {background:var(--bg);border:1px solid var(--rule);border-left:3px solid var(--shared);box-shadow:var(--shadow,0 2px 10px #1f232814);border-radius:8px;padding:6px 10px}
 .mdrev-host .ann-review-pill {flex-wrap:wrap;align-items:center;gap:8px;display:flex}
@@ -728,7 +736,7 @@
 .mdrev-host .app.has-outline>.toolbar-reveal-wrap {margin-left:var(--mdv-outline-w)}
 .mdrev-host .is-wide .toolbar-reveal-wrap, .mdrev-host .width-medium .toolbar-reveal-wrap {--measure:100%}
 .mdrev-host .toolbar-reveal {top:6px;right:max(8px, calc((100% - var(--measure)) / 2 - 43px));z-index:30;background:var(--bg);border:1px solid var(--rule-soft);position:absolute}
-.mdrev-host .display-menu {z-index:50;background:var(--bg);border:1px solid var(--rule);max-width:calc(100cqw - 16px);box-shadow:var(--shadow);white-space:nowrap;border-radius:10px;flex-direction:column;gap:10px;padding:10px;display:flex;position:absolute;top:calc(100% + 6px);left:auto;right:0}
+.mdrev-host .display-menu {max-width:calc(100cqw - 16px);max-height:calc(min(var(--mdv-app-h,100vh), var(--mdrev-viewport-h,100vh)) - var(--mdv-bar-h,0px) - 16px);overscroll-behavior:contain;z-index:50;background:var(--bg);border:1px solid var(--rule);box-shadow:var(--shadow);white-space:nowrap;border-radius:10px;flex-direction:column;gap:10px;padding:10px;display:flex;position:absolute;top:calc(100% + 6px);left:auto;right:0;overflow-y:auto}
 .mdrev-host .display-group {justify-content:space-between;align-items:center;gap:10px;display:flex}
 .mdrev-host .display-label {text-transform:uppercase;letter-spacing:.07em;color:var(--ink-faint);font-size:11px}
 .mdrev-host .size-seg button {justify-content:center;align-items:baseline;min-width:34px;display:inline-flex}

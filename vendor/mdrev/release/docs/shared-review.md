@@ -168,7 +168,10 @@ Two things are missing:
   - a local part, for your own agent.
 
   The local part is an ordinary local note on the same text, which says
-  which thread it is about.
+  which thread it is about. The thread's card lists it, drawn as local and
+  apart from the thread's entries, and its own card names the thread; a
+  click on either raises the other's card (they share a chip, so one card
+  lies over the other).
   - MUST: when the agent answers, its answer is a shared record in that
     thread, not a reply to the local note.
   - MUST NOT: let the local part reach the store, ever.
@@ -656,7 +659,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.29",
+  "mdrev": "1.1.31",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -940,6 +943,20 @@ In the project's `.mdrev.json`, beside the store:
   so.
 - `link` is optional, `https` only: `{commit}` is the commit of the thread's
   note, and `{path}` its path, URL-encoded.
+
+Nobody edits it by hand (#s38): `mdrev --review-pointer --notify
+<channel>[,<channel>]` writes `notify` and commits `.mdrev.json` alone, as the
+pointer is committed, leaving the review part as it is written (and naming
+the store as well, in the same commit, where none is named yet). The link is
+read off the project's own repository by its shape —
+`https://<host>/<group>/<repo>/blob/{commit}/{path}`, `/-/blob/` on
+gitlab.com — and never off the store, since a public project's store is its
+private `<repo>-notes`, which holds no document; `--link <pattern>` gives
+another, and a repository on this machine gets none, said. `--notify` again
+replaces the channels and keeps the link; `--notify none` removes `notify`.
+Where no channel is named, `--review-status`, a bare `--review-pointer`,
+pairing at a terminal and the viewer's subscribe panel each give that
+command, with the channels this machine has a tool for.
 
 A channel's tool is the command `mdrev-notify-<name>`, looked for beside
 mdrev's own launcher, then in the PATH's absolute directories — never in a

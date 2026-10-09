@@ -279,7 +279,7 @@ link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.29, #s58), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.31, #s67), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor both binaries go through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
@@ -334,7 +334,8 @@ carries a print control (`.preview-print`, hit-tested at 390px) that calls mdrev
 (#s58, mdrev 1.1.29): its isolation (`#mdrev-print-isolation`, everything outside the mount hidden
 through `:has()`, the page printed white) holds until `afterprint` or the next touch, since iOS
 Safari's print() returns before it captures the page, and on a phone its Aa menu hangs from its
-toolbar. The pane carried both for #s57 (mdviewer #s34) and carries neither now: `print()` is
+toolbar — since 1.1.31 (#s67, mdviewer #s36) capped below the bar and scrolling where a sideways
+screen is short, and a second print in one Safari page load says Safari is asking (#s37). The pane carried both for #s57 (mdviewer #s34) and carries neither now: `print()` is
 `mounted.print()`. `a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen` makes print()
 return at once, as iOS does, so a pin that loses either fails it. **SHARED review is the detached tab's, never the pane's** (#s6, then #s10, the owner: "maybe not in
 the main interface, but in the full detached view"; mdrev 1.1.18+: threads in a review store,

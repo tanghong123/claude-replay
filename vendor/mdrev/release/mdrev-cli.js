@@ -1539,7 +1539,7 @@ async function openRepo(path2) {
 
 // packages/core/dist/notify.js
 import { spawn as spawn2 } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join as join2 } from "node:path";
 var CHANNEL_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 function readNotify(root5) {
@@ -1584,20 +1584,52 @@ function launcherDirs(script = process.argv[1] ?? "") {
   dirs.push(dirname(script));
   return dirs;
 }
+var toolDirs = (path2, script) => [...launcherDirs(script), ...path2.split(delimiter).filter((d) => isAbsolute(d))];
+var executable = (at) => {
+  try {
+    const st = statSync(at);
+    return st.isFile() && (st.mode & 73) !== 0;
+  } catch {
+    return false;
+  }
+};
 function toolFor(name, path2 = process.env.PATH ?? "", script) {
   if (!CHANNEL_NAME.test(name))
     return null;
-  const dirs = [...launcherDirs(script), ...path2.split(delimiter).filter((d) => isAbsolute(d))];
-  for (const dir of dirs) {
+  for (const dir of toolDirs(path2, script)) {
     const at = join2(dir, `mdrev-notify-${name}`);
-    try {
-      const st = statSync(at);
-      if (st.isFile() && (st.mode & 73) !== 0)
-        return at;
-    } catch {
-    }
+    if (executable(at))
+      return at;
   }
   return null;
+}
+function channelsHere(path2 = process.env.PATH ?? "", script) {
+  const found = /* @__PURE__ */ new Set();
+  for (const dir of toolDirs(path2, script)) {
+    let names;
+    try {
+      names = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const n of names) {
+      const name = n.startsWith("mdrev-notify-") ? n.slice("mdrev-notify-".length) : "";
+      if (CHANNEL_NAME.test(name) && name !== "none" && executable(join2(dir, n)))
+        found.add(name);
+    }
+  }
+  return [...found].sort();
+}
+function linkFor(remote) {
+  const r = remote.trim();
+  const url = /^(?:https?|ssh|git):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/i.exec(r);
+  const scp = /^(?:[^@/]+@)?([^:/]+):(?!\/)(.+)$/.exec(r);
+  const [host, path2] = url ? [url[1], url[2]] : scp && !/^[a-z]:\\/i.test(r) ? [scp[1], scp[2]] : ["", ""];
+  const repo = path2.replace(/\.git\/?$/, "").replace(/\/+$/, "").replace(/^\/+/, "");
+  if (!host || !repo || !host.includes("."))
+    return null;
+  const blob = host.toLowerCase() === "gitlab.com" ? "-/blob" : "blob";
+  return `https://${host.toLowerCase()}/${repo}/${blob}/{commit}/{path}`;
 }
 function runTool(tool, input, timeoutMs) {
   return new Promise((done) => {
@@ -31286,12 +31318,12 @@ import { hostname as hostname2, userInfo as userInfo2 } from "node:os";
 init_annotations();
 import { spawn as spawn5 } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync3, readdirSync as readdirSync2, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync3, unlinkSync as unlinkSync2, writeFileSync } from "node:fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync3, readdirSync as readdirSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync3, unlinkSync as unlinkSync2, writeFileSync } from "node:fs";
 import { homedir, hostname, userInfo } from "node:os";
 import { basename as basename2, join as join6 } from "node:path";
 
 // packages/core/dist/events.js
-import { appendFileSync, mkdirSync, readdirSync, readFileSync as readFileSync2, renameSync, statSync as statSync2, unlinkSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync as readdirSync2, readFileSync as readFileSync2, renameSync, statSync as statSync2, unlinkSync } from "node:fs";
 import { join as join4 } from "node:path";
 var EVENTS_FILE = "events.jsonl";
 var EVENTS_MAX_BYTES = 1e6;
@@ -31340,7 +31372,7 @@ function rotate(stateDir, file) {
   } catch {
     return;
   }
-  const archives = readdirSync(stateDir).filter((f) => ARCHIVE.test(f)).sort((a, b) => Number(ARCHIVE.exec(b)[1]) - Number(ARCHIVE.exec(a)[1]));
+  const archives = readdirSync2(stateDir).filter((f) => ARCHIVE.test(f)).sort((a, b) => Number(ARCHIVE.exec(b)[1]) - Number(ARCHIVE.exec(a)[1]));
   for (const old of archives.slice(EVENTS_KEEP)) {
     try {
       unlinkSync(join4(stateDir, old));
@@ -31796,7 +31828,7 @@ function clearGitLocks(dir) {
   const walk = (d) => {
     let names;
     try {
-      names = readdirSync2(d);
+      names = readdirSync3(d);
     } catch {
       return;
     }
@@ -31952,7 +31984,7 @@ var SharedStore = class {
   /** The ids taken back before a push (not edits that came too late), newest last. */
   takenBack() {
     try {
-      return readdirSync2(join6(this.outboxDir, "deleted")).filter((n) => n.endsWith(".json") && !n.endsWith(".diverged.json")).map((n) => n.replace(/\.\d+\.json$/, ""));
+      return readdirSync3(join6(this.outboxDir, "deleted")).filter((n) => n.endsWith(".json") && !n.endsWith(".diverged.json")).map((n) => n.replace(/\.\d+\.json$/, ""));
     } catch {
       return [];
     }
@@ -31973,7 +32005,7 @@ var SharedStore = class {
   outbox() {
     let names;
     try {
-      names = readdirSync2(this.outboxDir).filter((n) => n.endsWith(".json"));
+      names = readdirSync3(this.outboxDir).filter((n) => n.endsWith(".json"));
     } catch {
       return [];
     }
@@ -31992,7 +32024,7 @@ var SharedStore = class {
   quietOutbox() {
     let names;
     try {
-      names = readdirSync2(this.quietDir).filter((n) => n.endsWith(".json") && n !== "failed.json");
+      names = readdirSync3(this.quietDir).filter((n) => n.endsWith(".json") && n !== "failed.json");
     } catch {
       return [];
     }
@@ -32761,12 +32793,10 @@ async function suggestedPointer(root5) {
     return { remote: origin, branch, source, remoteName: "origin" };
   return null;
 }
-async function writePointer(root5, storeUrl) {
+async function writePointer(root5, storeUrl, change) {
   const file = join6(root5, ".mdrev.json");
   const named = readPointer(root5);
-  if (!storeUrl?.trim() && named)
-    return { file, remote: named.remote, branch: named.branch, commit: null, already: true };
-  const p2 = storeUrl?.trim() ? { remote: storeUrl.trim(), branch: DEFAULT_BRANCH } : await suggestedPointer(root5);
+  const p2 = storeUrl?.trim() ? { remote: storeUrl.trim(), branch: DEFAULT_BRANCH } : named ?? await suggestedPointer(root5);
   if (!p2)
     throw new StoreError("this checkout has no remote to suggest a review store from: name one with mdrev --review-pointer --store <URL>", "other");
   let doc = {};
@@ -32774,14 +32804,96 @@ async function writePointer(root5, storeUrl) {
     doc = JSON.parse(readFileSync3(file, "utf8"));
   } catch {
   }
-  doc.review = { remote: p2.remote, branch: p2.branch };
+  const was = JSON.stringify(doc);
+  if (storeUrl?.trim() || !named)
+    doc.review = { remote: p2.remote, branch: p2.branch };
+  const reviewChanged = JSON.stringify(doc.review) !== JSON.stringify(JSON.parse(was).review);
+  const result = { file, remote: p2.remote, branch: p2.branch, ..."skipped" in p2 && p2.skipped ? { skipped: p2.skipped } : {} };
+  if (change)
+    Object.assign(result, await notifyFor(root5, doc, p2.remote, change));
+  if (JSON.stringify(doc) === was)
+    return { ...result, commit: null, already: true };
   writeFileSync(file, `${JSON.stringify(doc, null, 2)}
 `, "utf8");
   await gitOk(["add", "--", ".mdrev.json"], { cwd: root5 });
-  const c = await git(["commit", "--quiet", "-m", "mdrev: name the review store in .mdrev.json", "--", ".mdrev.json"], { cwd: root5 });
+  const told = result.notify === void 0 ? "" : result.notify ? `tell people through ${spoken(result.notify.channels)}` : "turn review notifications off";
+  const message = `mdrev: ${[reviewChanged ? "name the review store in .mdrev.json" : "", told].filter(Boolean).join(", and ")}`;
+  const c = await git(["commit", "--quiet", "-m", message, "--", ".mdrev.json"], { cwd: root5 });
   const commit = c.code === 0 ? (await gitOk(["rev-parse", "--short", "HEAD"], { cwd: root5 })).trim() : null;
-  logEvent("review.pointer-written", { store: p2.remote, branch: p2.branch, committed: commit ?? "no" });
-  return { file, remote: p2.remote, branch: p2.branch, commit, already: false, ..."skipped" in p2 && p2.skipped ? { skipped: p2.skipped } : {} };
+  logEvent("review.pointer-written", { store: p2.remote, branch: p2.branch, committed: commit ?? "no", ...change ? { channels: result.notify?.channels.join(",") ?? "none" } : {} });
+  return { ...result, commit, already: false };
+}
+function formatPointerWritten(w, root5) {
+  const nothing = w.already && w.notify === void 0;
+  const lines = [`${nothing ? ".mdrev.json already names the store" : "review store"}: ${w.remote} (${w.branch})${w.skipped ? `
+  (${w.skipped})` : ""}`];
+  if (w.notify === null)
+    lines.push("notifications: off \u2014 a push tells nobody");
+  else if (w.notify) {
+    lines.push(`notifications: through ${spoken(w.notify.channels)}${w.notify.link ? `, linking to ${w.notify.link}` : ""}`);
+    if (w.linkDerived)
+      lines.push("  (the link is read off the project's repository: --link <https pattern> changes it)");
+    if (w.noLink)
+      lines.push(`  (${w.noLink})`);
+    const missing = w.notify.channels.filter((c) => !toolFor(c));
+    if (missing.length)
+      lines.push(`  (this machine has no ${missing.map((c) => `mdrev-notify-${c}`).join(" or ")}: a push from here tells nobody through ${missing.length === 1 ? "it" : "them"} \u2014 your organisation's plugin brings ${missing.length === 1 ? "it" : "them"})`);
+  } else if (!readNotify(root5).channels.length) {
+    const here = channelsHere();
+    if (here.length)
+      lines.push(`notifications: none \u2014 this machine has a tool for ${spoken(here)}: ${turnOn(here)} turns them on`);
+  }
+  if (!nothing)
+    lines.push(w.already ? ".mdrev.json already says so: nothing to commit" : w.commit ? `wrote .mdrev.json, committed as ${w.commit} \u2014 push it with your code` : "wrote .mdrev.json \u2014 commit and push it with your code");
+  return `${lines.join("\n")}
+`;
+}
+function notifyChange(notify, link3) {
+  if (notify === void 0 && link3 === void 0)
+    return void 0;
+  const channels = notify?.split(",").map((c) => c.trim()).filter(Boolean);
+  if (notify !== void 0 && !channels?.length)
+    throw new StoreError("--notify names channels, comma-separated \u2014 or none, to turn notifications off", "other");
+  if (channels?.length === 1 && channels[0] === "none")
+    return { off: true, ...link3 !== void 0 ? { link: link3 } : {} };
+  return { ...channels ? { channels } : {}, ...link3 !== void 0 ? { link: link3 } : {} };
+}
+var turnOn = (here) => `mdrev --review-pointer --notify ${here?.length ? here.join(",") : "<channel>"}`;
+var spoken = (names) => names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+async function notifyFor(root5, doc, store, change) {
+  if (change.off) {
+    if (change.channels?.length || change.link)
+      throw new StoreError("--notify none turns notifications off: it takes no channel and no --link", "other");
+    delete doc.notify;
+    return { notify: null };
+  }
+  const now = readNotify(root5);
+  const channels = change.channels ?? now.channels;
+  if (channels.length === 0)
+    throw new StoreError("this project names no channel yet: --notify <channel>[,<channel>] names them, and --link goes with it", "other");
+  for (const c of channels) {
+    if (c === "none")
+      throw new StoreError("none turns notifications off, alone: --notify none", "other");
+    if (!CHANNEL_NAME.test(c))
+      throw new StoreError(`channel ${JSON.stringify(c)}: a channel's name is lower-case letters, digits and dashes \u2014 the end of its tool's name, mdrev-notify-<name>`, "other");
+  }
+  const unique = [...new Set(channels)];
+  if (change.link !== void 0 && !/^https:\/\/[^\s]+$/.test(change.link))
+    throw new StoreError("--link: an https pattern, with {commit} and {path} \u2014 such as https://<host>/<group>/<repo>/blob/{commit}/{path}", "other");
+  let link3 = change.link ?? now.link;
+  let linkDerived = false;
+  let noLink;
+  if (!link3) {
+    const project2 = (await suggestedPointer(root5))?.remote ?? store;
+    const derived = linkFor(project2);
+    if (derived) {
+      link3 = derived;
+      linkDerived = true;
+    } else
+      noLink = `${project2} is not on a server mdrev can link to: messages name the document and its commit, with no link \u2014 --link <https pattern> adds one`;
+  }
+  doc.notify = { channels: unique, ...link3 ? { link: link3 } : {} };
+  return { notify: { channels: unique, ...link3 ? { link: link3 } : {} }, ...linkDerived ? { linkDerived } : {}, ...noLink ? { noLink } : {} };
 }
 async function storeVsOrigin(root5, p2) {
   if (p2.source !== "pointer" || !p2.remote)
@@ -32802,7 +32914,7 @@ async function pairedElsewhere(root5, now) {
   const home = join6(stateHome(), "review");
   let names;
   try {
-    names = readdirSync2(home);
+    names = readdirSync3(home);
   } catch {
     return null;
   }
@@ -32855,7 +32967,7 @@ async function projectPairings(root5, except) {
   const home = join6(stateHome(), "review");
   let names;
   try {
-    names = readdirSync2(home).filter((n) => !n.startsWith("."));
+    names = readdirSync3(home).filter((n) => !n.startsWith("."));
   } catch {
     return [];
   }
@@ -33203,6 +33315,10 @@ ${offer.skipped ? `  (${offer.skipped})
     io.say(`this machine's display name is now ${name} (${setMachineDisplayName(name)})
 `);
   }
+  const here = readNotify(root5).channels.length ? [] : channelsHere();
+  if (here.length)
+    io.say(`this project names no channel to tell people through; this machine has a tool for ${spoken(here)} \u2014 ${turnOn(here)} turns notifications on, and commits .mdrev.json
+`);
   return paired;
 }
 function formatPairRequest(email, name, check) {
@@ -33241,7 +33357,7 @@ function sharedReviewInPlay(root5) {
   if (statSync3(join6(root5, ".mdrev.json"), { throwIfNoEntry: false }))
     return true;
   try {
-    return readdirSync2(join6(stateHome(), "review")).length > 0;
+    return readdirSync3(join6(stateHome(), "review")).length > 0;
   } catch {
     return false;
   }
@@ -33570,7 +33686,7 @@ async function otherOutboxes(root5, except) {
   const home = join6(stateHome(), "review");
   let names;
   try {
-    names = readdirSync2(home);
+    names = readdirSync3(home);
   } catch {
     return [];
   }
@@ -33584,7 +33700,7 @@ async function otherOutboxes(root5, except) {
       continue;
     let files;
     try {
-      files = readdirSync2(join6(dir, "outbox")).filter((f) => f.endsWith(".json"));
+      files = readdirSync3(join6(dir, "outbox")).filter((f) => f.endsWith(".json"));
     } catch {
       continue;
     }
@@ -33704,7 +33820,7 @@ async function sendCode(source, store, me, want) {
   const notify = readNotify(source.repoRoot);
   const channel = codeChannel(notify.channels);
   if (!channel)
-    throw new StoreError(`${want.email} would need a code to confirm it, and this project names no channel to send one through (notify in .mdrev.json): subscribe under your pairing's email`, "other");
+    throw new StoreError(`${want.email} would need a code to confirm it, and this project names no channel to send one through (${turnOn()} names one): subscribe under your pairing's email`, "other");
   const tool = toolFor(channel);
   if (!tool)
     throw new StoreError(`no tool for ${channel} on this machine to send the code \u2014 install your organisation's plugin`, "other");
@@ -33781,7 +33897,7 @@ async function notifyPush(source, store, me, landed) {
   };
   if (notify.channels.length === 0) {
     stamp2();
-    return { sent: [], failed: notify.refused.map((error) => ({ error })), none: "this project names no channel to tell anyone through (notify in .mdrev.json)" };
+    return { sent: [], failed: notify.refused.map((error) => ({ error })), none: `this project names no channel to tell anyone through \u2014 ${turnOn()} names one` };
   }
   const noteOf = (r) => r.kind === "note" ? r : byId.get(r.thread);
   const docs = /* @__PURE__ */ new Map();
@@ -33902,7 +34018,7 @@ function draft8Status(root5, store, me) {
   }
   return {
     ...subscriptions.length ? { subscriptions } : {},
-    ...notify.channels.length ? { channels: notify.channels.map((name) => ({ name, tool: toolFor(name) })) } : {},
+    ...notify.channels.length ? { channels: notify.channels.map((name) => ({ name, tool: toolFor(name) })) } : { channelsHere: channelsHere() },
     ...notify.refused.length ? { channelsRefused: notify.refused } : {},
     ...Object.keys(fresh).length ? { fresh } : {}
   };
@@ -33991,7 +34107,7 @@ function formatStatus(s2) {
     if (s2.channels?.length)
       lines.push(`notifications: through ${s2.channels.map((c) => c.tool ? `${c.name} (${c.tool})` : `${c.name} (no tool on this machine \u2014 install your organisation's plugin)`).join(", ")}`);
     else
-      lines.push("notifications: none \u2014 the project names no channel (notify in .mdrev.json)");
+      lines.push(`notifications: none \u2014 the project names no channel. ${turnOn(s2.channelsHere)} turns them on, and commits .mdrev.json${s2.channelsHere?.length ? ` (this machine has a tool for ${spoken(s2.channelsHere)})` : ""}`);
     for (const r of s2.channelsRefused ?? [])
       lines.push(`  refused in .mdrev.json: ${r}`);
     if (s2.fresh)
@@ -35478,6 +35594,10 @@ function parse5(argv) {
       o.allowPublic = true;
     else if (a === "--store")
       o.store = next2();
+    else if (a === "--notify")
+      o.notify = next2();
+    else if (a === "--link")
+      o.link = next2();
     else if (a === "--quick")
       o.quick = true;
     else if (a === "--with-code")
@@ -35906,12 +36026,9 @@ async function run3(argv, out = (s2) => process.stdout.write(s2), input = readSt
           return 0;
         }
         case "pointer": {
-          const w = await writePointer(source.repoRoot, o.store);
+          const w = await writePointer(source.repoRoot, o.store, notifyChange(o.notify, o.link));
           if (o.text)
-            out(w.already ? `.mdrev.json already names the store: ${w.remote} (${w.branch})
-` : `wrote .mdrev.json: ${w.remote} (${w.branch})${w.commit ? `, committed as ${w.commit} \u2014 push it with your code` : " \u2014 commit and push it with your code"}
-${w.skipped ? `  (${w.skipped})
-` : ""}`);
+            out(formatPointerWritten(w, source.repoRoot));
           else
             emit(w);
           return 0;
