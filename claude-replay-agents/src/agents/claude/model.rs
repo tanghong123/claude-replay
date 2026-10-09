@@ -1294,6 +1294,13 @@ const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
     "version",
 ];
 
+/// Every key an Artifact list result was met with (#s62, client 2.1.288, one record): `{artifacts:
+/// array, scope: string, pins_enabled: boolean}`. `pins_enabled` is a service feature flag (whether
+/// the account may pin artifacts), not something the call did; the result TEXT the page draws
+/// states the listing itself. Revisit if a list result ever carries per-artifact pin state the
+/// text does not state.
+const ARTIFACT_LIST_SHAPE: &[&str] = &["artifacts", "pins_enabled", "scope"];
+
 /// Every key a Qwenwork Bash result was met with (#s17, client 1.1.32, 20 of 20 in one session):
 /// the shared `stdout`/`stderr`/`interrupted`/`isImage`/`noOutputExpected`, plus `exitCode` (read),
 /// `kind` ("completed" in all), `signal` (null in all; a string is read as a kill) and
@@ -1359,6 +1366,9 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // Artifact's publish result (#325): `icon` is a generic word, so it is known only in the
     // publish's own shape; the adapter takes the word from the call's input, not from here.
     ("icon", ARTIFACT_PUBLISH_SHAPE),
+    // Artifact's list result (#s62): `pins_enabled` is an account's feature flag, and a word
+    // another tool could use for anything, so it is known only in the list's own shape.
+    ("pins_enabled", ARTIFACT_LIST_SHAPE),
     // #s19 (client 2.1.287+): a Skill result names the tools its skill's frontmatter grants
     // without a permission prompt. A static grant, not something the run did: the Skill card names
     // the skill, every tool it then used is a card of its own, and permission bookkeeping is not
@@ -5706,6 +5716,19 @@ mod tests {
             unknown_tool_result_keys(&elsewhere),
             vec!["allowedTools"],
             "beside a key the Skill shape lacks, it is reported like any new key"
+        );
+        // #s62: an Artifact list result's `pins_enabled` is known in the list's shape, and only there.
+        let list = serde_json::json!({"artifacts": [], "scope": "all", "pins_enabled": true});
+        assert_eq!(
+            unknown_tool_result_keys(&list),
+            Vec::<&str>::new(),
+            "{list}"
+        );
+        let elsewhere = serde_json::json!({"pins_enabled": true, "stdout": "ok"});
+        assert_eq!(
+            unknown_tool_result_keys(&elsewhere),
+            vec!["pins_enabled"],
+            "beside a key the list shape lacks, it is reported like any new key"
         );
     }
 
