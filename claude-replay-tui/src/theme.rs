@@ -28,6 +28,12 @@ pub fn agent() -> Style {
 pub fn agent_expanded_bg() -> Color {
     Color::Rgb(58, 50, 74)
 }
+/// Another agent session's message (#s79) — its `⇄` glyph, its sender and the rule down its
+/// left edge. A blue hue (256-colour 74), neither the person's cyan nor the agent purple: the card
+/// is a third voice.
+pub fn peer() -> Style {
+    Style::default().fg(Color::Indexed(74))
+}
 pub fn tool() -> Style {
     // CC's `⏺` tool-call marker + tool name are green (256-color 114).
     Style::default().fg(Color::Indexed(114))

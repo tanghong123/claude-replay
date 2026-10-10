@@ -1585,13 +1585,40 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // #113: a slash command is a turn card and a turns-pane row.
 {
   const vm = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
-  assert.match(vm, /if \(record\.kind === "user" \|\| record\.kind === "command"\) \{/, "a command starts a turn unit");
+  assert.match(vm, /if \(record\.kind === "user" \|\| record\.kind === "command" \|\| record\.kind === "peer"\) \{/, "a command starts a turn unit (and another session's message, #s79)");
   assert.match(vm, /if \(record\.kind === "command"\) return \{ t: "user", id: record\.id/, "…as a user view with the command's badge and preview");
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.match(comp, /class="turn user command" data-kind="user"/, "the card is the user's turn for filters and the spy");
   assert.match(comp, /class="command-head" type="button" data-prompt-toggle=/, "…folded until opened, through the prompt toggle");
   assert.match(comp, /<span class="command-badge">\/\$\{escapeText\(cmd\.name\)\}<\/span><span class="command-preview">/, "badge and preview");
   console.log("#113 command turn cases passed");
+}
+
+// #s79: another session's message is a turn the person did not type — the Turns pane and the
+// sticky strip count it, its card is its own (never the right-hand bubble), and the `u:` class
+// (the person's own turns) does not claim it, while a plain search finds its sender.
+{
+  const records = [
+    { kind: "user", id: "t1", turn: 1, label: "go", body: [{ p: "md", h: "<p>go</p>" }] },
+    { kind: "assistant", id: "b1", body: [{ p: "md", h: "<p>done</p>" }] },
+    { kind: "peer", id: "t2", turn: 2, label: "skua-HD: the release is out", head: { from: "skua-HD", mode: "bypass" }, body: [{ p: "md", h: "<p>the release is out</p>" }] },
+    { kind: "assistant", id: "b2", body: [{ p: "md", h: "<p>pinned</p>" }] },
+  ];
+  const p = new Projection();
+  p.rebuild(records, 0);
+  const turns = p.units.filter(unit => unit.type === "user");
+  assert.deepEqual(turns.map(unit => unit.turn), [1, 2], "the peer message opens turn 2");
+  assert.deepEqual(turns[1].view.peer, { from: "skua-HD", mode: "bypass" }, "…and carries its sender to the card");
+  assert.equal(turns[1].label, "skua-HD: the release is out", "the Turns pane names the sender");
+  assert.equal(turns[0].view.peer, undefined, "the person's own prompt is not a peer's");
+  assert.equal(directMask("peer"), 0, "u: — the person's own turns — never claims another session's message");
+  assert.equal(directMask("user") & CLASS_BIT.u, CLASS_BIT.u);
+  assert.match(recordText(records[2], stripTags), /skua-HD/, "a plain search finds the sender");
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /class="turn peer" data-kind="peer" data-record-kind="peer"/, "its card is its own kind");
+  const classic = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+  assert.match(classic, /function isTurnKind\(b\) \{ return b\.kind === "user" \|\| b\.kind === "command" \|\| b\.kind === "peer"; \}/, "the classic page counts it as a turn too");
+  console.log("#s79 peer message cases passed");
 }
 
 // #114: the reader's choices ride with the position and come back.
@@ -2211,7 +2238,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   const components174 = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   const stamped = [...components174.matchAll(/<div class="turn [^"]*"[^>]*?data-record-id="\$\{escapeText\(unit\.view\?\.id \|\| ""\)\}"/g)];
-  assert.equal(stamped.length, 3, "the three prose turn wrappers — user, slash command, assistant — each stamp the record id the classic page has always carried");
+  assert.equal(stamped.length, 4, "the four prose turn wrappers — user, slash command, another session's message (#s79), assistant — each stamp the record id the classic page has always carried");
   assert.match(components174, /data-record-id="\$\{escapeText\(key\)\}"/, "…and a tool rendering still stamps its own, on the `.renderer` inside the turn");
   // The painter that means "a tool head" must stay scoped to one, or widening the attribute
   // silently widens what it paints.
@@ -2361,7 +2388,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const arms = [...htmlBody.matchAll(/([A-Z][A-Za-z]*) => "([a-z]+)"/g)];
   assert.deepEqual(arms.map(arm => arm[1]), variants, "BlockKind::html must answer for every variant, in order");
   const kinds = [...new Set(arms.map(arm => arm[2]))];
-  assert.equal(kinds.length, 15, `the wire vocabulary is fifteen kinds: ${kinds.join(" ")}`);
+  assert.equal(kinds.length, 16, `the wire vocabulary is sixteen kinds: ${kinds.join(" ")}`);
 
   // ── the app shell: no emitted kind may reach the "fallback" renderer ────────────────────
   // Its dispatch is ten explicit branches and a hand-written Set, and a Set lookup cannot fail
@@ -2392,7 +2419,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const foldGuard = exportJs.match(/function isFoldRec\(b\) \{\s*return !\(([^)]*)\);/);
   assert.ok(foldGuard, "isFoldRec is the classic page's statement of which kinds are NOT folds");
   const special = [...foldGuard[1].matchAll(/b\.kind === "([a-z]+)"/g)].map(match => match[1]);
-  assert.equal(special.length, 4, `the four always-open cards: ${special.join(" ")}`);
+  assert.equal(special.length, 5, `the five always-open cards: ${special.join(" ")}`);
   // renderBlock's own guards are a second copy of that list; they may not drift apart.
   const guards = [...exportJs.slice(exportJs.indexOf("function renderBlock(b) {")).matchAll(/if \(b\.kind === "([a-z]+)"\)/g)].map(match => match[1]);
   assert.deepEqual([...guards].sort(), [...special].sort(), "renderBlock's special cases and isFoldRec's exclusions are the same set");
@@ -2708,13 +2735,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(siblingRules, [".process-surface + .turn.assistant{padding-top:4px}"], `every sibling-keyed box rule on a turn root has a model-keyed twin: ${JSON.stringify(siblingRules)}`);
   // #201 on the classic page: the successor's root classes are stamped from the model, re-stamped
   // after every apply, and each `:has(+ …)` rule in export.css has its `[data-next~=…]` twin.
-  assert.match(classic, /function rootWords\(b\) \{\n\s*if \(b\.kind === "user"\) return "uturn";\n\s*if \(b\.kind === "attachment"\) return "amark";\n\s*if \(b\.kind === "queue"\) return "qmarker";\n\s*if \(b\.kind === "assistant"\) return "ablock";\n\s*return b\.kind === "command" \? "fold uturn" : "fold";/, "the stamp is the successor's root classes as renderBlock gives them");
+  assert.match(classic, /function rootWords\(b\) \{\n\s*if \(b\.kind === "user"\) return "uturn";\n\s*if \(b\.kind === "peer"\) return "pturn";\n\s*if \(b\.kind === "attachment"\) return "amark";\n\s*if \(b\.kind === "queue"\) return "qmarker";\n\s*if \(b\.kind === "assistant"\) return "ablock";\n\s*return b\.kind === "command" \? "fold uturn" : "fold";/, "the stamp is the successor's root classes as renderBlock gives them");
   assert.match(classic, /function stampNext\(e, i\) \{\n\s*var j = i \+ 1;\n\s*while \(j < records\.length && isHiddenRec\(j\)\) j\+\+;/, "the stamp names the next VISIBLE record, as :has(+ …) sees it");
   assert.match(classic, /e\.dataset\.kind = b\.kind;\n\s*stampNext\(e, i\);/, "every materialized record is stamped");
   assert.match(classic, /if \(filter\) computeFilterHits\(\);\n(\s*\/\/.*\n)*\s*matEls\(\)\.forEach\(function \(e\) \{ stampNext\(e, \+e\.dataset\.idx\); \}\);/, "every apply re-stamps the kept elements");
   const exportCssStamps = readFileSync(new URL("../../claude-replay-html/src/html/export.css", import.meta.url), "utf8");
   for (const [has, twin] of [
-    ["#vwin > .blk:has(+ .uturn:not(.fold)) { margin-bottom: 16px; }", '#vwin > .blk[data-next~="uturn"]:not([data-next~="fold"]) { margin-bottom: 16px; }'],
+    ["#vwin > .blk:has(+ .uturn:not(.fold)), #vwin > .blk:has(+ .pturn) { margin-bottom: 16px; }", '#vwin > .blk[data-next~="uturn"]:not([data-next~="fold"]), #vwin > .blk[data-next~="pturn"] { margin-bottom: 16px; }'],
     ["#vwin > .blk:has(+ .amark), #vwin > .blk:has(+ .qmarker) { margin-bottom: 10px; }", '#vwin > .blk[data-next~="amark"], #vwin > .blk[data-next~="qmarker"] { margin-bottom: 10px; }'],
     ["#vwin > .ablock:has(+ .fold) { margin-bottom: 2px; }", '#vwin > .ablock[data-next~="fold"] { margin-bottom: 2px; }'],
   ]) {
@@ -2722,7 +2749,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   }
   const classicSiblingRules = (exportCssStamps.match(/^[^{}\n/*]*:has\(\+[^{}\n]*\{[^}\n]*\}/gm) || []).map(rule => rule.trim());
   assert.deepEqual(classicSiblingRules, [
-    "#vwin > .blk:has(+ .uturn:not(.fold)) { margin-bottom: 16px; }",
+    "#vwin > .blk:has(+ .uturn:not(.fold)), #vwin > .blk:has(+ .pturn) { margin-bottom: 16px; }",
     "#vwin > .blk:has(+ .amark), #vwin > .blk:has(+ .qmarker) { margin-bottom: 10px; }",
     "#vwin > .ablock:has(+ .fold) { margin-bottom: 2px; }",
   ], `every successor-keyed rule in export.css has a twin above: ${JSON.stringify(classicSiblingRules)}`);

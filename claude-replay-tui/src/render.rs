@@ -487,6 +487,34 @@ fn assistant_lines(text: &str, width: usize, phase: Option<AssistantPhase>) -> V
     md
 }
 
+/// The header of another session's message (#s79): `⇄ <sender>`, in the peer hue.
+fn peer_header(from: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("⇄ ", theme::peer()),
+        Span::styled(from.to_string(), theme::peer().add_modifier(Modifier::BOLD)),
+        Span::styled("  another session", theme::dim()),
+    ])
+}
+
+/// Another session's message: its header, then the message as Markdown behind a rule down the
+/// left edge — the card from the left that the pages draw (#s79, Hong's choice), never the
+/// person's `❯` block.
+fn peer_lines(from: &str, text: &str, width: usize) -> Vec<Line<'static>> {
+    let mut out = vec![peer_header(from)];
+    for mut line in markdown::render(text, width.saturating_sub(2).max(1)) {
+        line.spans.insert(0, Span::styled("│ ", theme::peer()));
+        out.push(line);
+    }
+    out
+}
+
+/// Is `line` the opening fence of a pasted block (#s79: the adapter writes ```` ```pasted ````,
+/// one backtick longer than any run inside)? Returns the fence, which the closing line repeats.
+fn pasted_fence(line: &str) -> Option<&str> {
+    let fence = line.strip_suffix("pasted")?;
+    (fence.len() >= 3 && fence.chars().all(|c| c == '`')).then_some(fence)
+}
+
 fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     match b {
@@ -544,17 +572,38 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
             // near-white text; `fill_bg` extends the background across the row.
             let base = Style::default().fg(theme::user_fg()).bg(theme::user_bg());
             let caret = base.fg(theme::user_marker());
+            // Pasted text (#s79) keeps its lines; its fence lines become a dim label and a rule.
+            let mut paste: Option<&str> = None;
             for (i, line) in t.lines().enumerate() {
+                let shown = match paste {
+                    Some(f) if line == f => {
+                        paste = None;
+                        Span::styled("  └", base.fg(theme::user_marker()))
+                    }
+                    Some(_) => Span::styled(format!("  │ {line}"), base),
+                    None => match pasted_fence(line) {
+                        Some(f) => {
+                            paste = Some(f);
+                            Span::styled("  ┌ pasted", base.fg(theme::user_marker()))
+                        }
+                        None if i == 0 => {
+                            out.push(Line::from(vec![
+                                Span::styled("❯ ", caret),
+                                Span::styled(line.to_string(), base),
+                            ]));
+                            continue;
+                        }
+                        None => Span::styled(format!("  {line}"), base),
+                    },
+                };
                 if i == 0 {
-                    out.push(Line::from(vec![
-                        Span::styled("❯ ", caret),
-                        Span::styled(line.to_string(), base),
-                    ]));
+                    out.push(Line::from(vec![Span::styled("❯", caret), shown]));
                 } else {
-                    out.push(Line::from(Span::styled(format!("  {line}"), base)));
+                    out.push(Line::from(shown));
                 }
             }
         }
+        Block::PeerText { from, text, .. } => out.extend(peer_lines(from, text, width)),
         Block::QueueEvent { text } => {
             // A dim `⧗ queued: …` marker for a mid-turn prompt still in flight (the
             // agent hadn't picked it up yet). Continuation lines align under the text.
@@ -1071,6 +1120,7 @@ fn render_header(b: &Block) -> Line<'static> {
             format!("⧗ queued: {}", text.lines().next().unwrap_or("")),
             Style::default().fg(theme::fold_header()),
         ),
+        Block::PeerText { from, .. } => peer_header(from),
         Block::SubAgent(sa) => agent_header(sa, false),
         Block::AgentDone {
             agent_id,
@@ -1149,7 +1199,7 @@ fn body_len(b: &Block) -> usize {
         // A turn collapses to its one-line `✻ Thought for…` summary (handled in
         // `render_collapsed`), so this count isn't consumed; approximate anyway.
         Block::Thinking { text, .. } => text.lines().count().saturating_sub(1),
-        Block::AssistantText(_) | Block::AssistantMessage { .. } => 0, // never collapsed
+        Block::AssistantText(_) | Block::AssistantMessage { .. } | Block::PeerText { .. } => 0, // never collapsed
         Block::ToolUse {
             name,
             diffs,
@@ -2051,6 +2101,64 @@ mod tests {
                 "user line missing bg: {line:?}"
             );
         }
+    }
+
+    /// #s79: another session's message is its own card — `⇄` and the sender in the peer hue, the
+    /// message as Markdown behind a rule — never the person's `❯` block; its header is the same
+    /// line `render_header` gives; and pasted text in a prompt keeps its lines inside a labelled
+    /// box rather than printing its fence.
+    #[test]
+    fn a_peer_message_is_its_own_card_and_pasted_text_a_labelled_box() {
+        let peer = Block::PeerText {
+            from: "skua-HD".into(),
+            mode: Some("bypass".into()),
+            text: "the release is out\n\n- pin it".into(),
+        };
+        let lines = render_one(&peer, 80, Hl::Styled);
+        let t = texts(&lines);
+        assert_eq!(t[0], "⇄ skua-HD  another session", "{t:?}");
+        assert_eq!(
+            texts(&[render_header(&peer)])[0],
+            t[0],
+            "the header is render_one's first line"
+        );
+        assert!(
+            t.iter().all(|l| !l.contains('❯')),
+            "never the person's caret: {t:?}"
+        );
+        assert!(
+            t[1..].iter().all(|l| l.starts_with("│ ")),
+            "the rule runs down the card: {t:?}"
+        );
+        assert!(t.iter().any(|l| l.contains("the release is out")), "{t:?}");
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.style.fg == theme::peer().fg),
+            "the sender wears the peer hue"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.spans.iter().all(|s| s.style.bg != Some(theme::user_bg()))),
+            "and none of the person's block background"
+        );
+
+        let user = Block::UserText("look:\n```pasted\n# raw\nline two\n```\nthanks".into());
+        let t = texts(&render_one(&user, 80, Hl::Styled));
+        assert_eq!(
+            t,
+            vec![
+                "❯ look:",
+                "  ┌ pasted",
+                "  │ # raw",
+                "  │ line two",
+                "  └",
+                "  thanks"
+            ],
+            "pasted lines stay verbatim inside a labelled box"
+        );
     }
 
     /// User text gets the user-tier bg; expanded thinking is the faintest tier

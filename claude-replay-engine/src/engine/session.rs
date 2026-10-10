@@ -329,7 +329,7 @@ impl SessionMeta {
     /// `count_turns` / `count_tools` / `collect_child_refs` over the same blocks (see the tests).
     pub fn push(&mut self, b: &Block) {
         match b {
-            Block::UserText(_) | Block::Command { .. } => self.turns += 1,
+            b if b.opens_turn() => self.turns += 1,
             Block::ToolUse { .. } => self.tools += 1,
             Block::Thinking { tools, .. } => self.tools += tools.len(),
             Block::SubAgent(sa) if !sa.agent_id.is_empty() => self.children.push(ChildMeta {

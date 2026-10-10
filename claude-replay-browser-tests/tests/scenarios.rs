@@ -17283,3 +17283,157 @@ fn scenario_a_refused_todo_write_leaves_the_tasks_list_as_it_was() {
         );
     }
 }
+
+// ── scenario: another session's message is its own turn; pasted text is a labelled box (#s79)
+
+/// Claude Code records a message from another session with a structured `origin` and wraps its
+/// text in `<cross-session-message>` between a preamble and a paragraph addressed to the model;
+/// it marks pasted text with `<pasted_content>`. Both pages used to show the tags raw — and a
+/// peer message picked up mid-turn as the person's own prompt. Now the message is a card of its
+/// own from the LEFT (Hong's choice), headed by its sender, opening a turn the Turns pane names;
+/// no wrapper or boilerplate is drawn anywhere; and pasted text sits verbatim in a labelled box.
+fn scenario_another_sessions_message_is_its_own_turn(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (rows, last_row, peer, prompt) = match surface {
+        Surface::Classic => (
+            "document.querySelectorAll('#turnlist .side-item').length",
+            "(function(){ var r = [...document.querySelectorAll('#turnlist .side-item')].pop(); return r ? r.textContent : ''; })()",
+            "#stream .pturn",
+            "#stream .uturn",
+        ),
+        Surface::AppShell => (
+            "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+            "(function(){ var r = [...document.querySelectorAll('#navigatorTurns .outline-turn-row')].pop(); return r ? r.textContent : ''; })()",
+            ".turn.peer .peer-card",
+            ".turn.user",
+        ),
+    };
+    assert_eq!(
+        eval(tab, rows),
+        fx.turns,
+        "{surface:?}: the pasted prompt and the peer message are both turns"
+    );
+    let row = eval(tab, last_row).as_str().unwrap_or("").to_string();
+    assert!(
+        row.contains("skua-HD") && row.contains("the release is out"),
+        "{surface:?}: the Turns pane names the sender: {row:?}"
+    );
+    let json = |js: String| -> serde_json::Value {
+        serde_json::from_str(eval(tab, &js).as_str().unwrap_or("null"))
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let card = json(format!(
+        "(function(){{ var c = [...document.querySelectorAll('{peer}')].pop(); if (!c) return 'null'; \
+         var r = c.getBoundingClientRect(); return JSON.stringify({{ text: c.textContent, left: r.left, right: r.right }}); }})()"
+    ));
+    let text = card["text"].as_str().unwrap_or_else(|| {
+        let mounted = eval(tab, "JSON.stringify([...document.querySelectorAll('.virtual-window > *, #vwin > *')].slice(-6).map(e => e.className + ' ' + (e.dataset.recordKind || e.dataset.kind || '')))");
+        panic!("{surface:?}: no peer card: {card}; last mounted: {mounted}")
+    });
+    assert!(
+        text.contains("skua-HD")
+            && text.contains("another session")
+            && text.contains("pin it with"),
+        "{surface:?}: the card names its sender and carries the message: {text:?}"
+    );
+    let body = eval(tab, "document.body.textContent")
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    for raw in [
+        "cross-session-message",
+        "Another Claude session",
+        "pasted_content",
+        "This came from another",
+    ] {
+        assert!(
+            !body.contains(raw),
+            "{surface:?}: nothing of the wrapper is drawn: {raw:?}"
+        );
+    }
+    if surface == Surface::AppShell {
+        let bubble = json(format!("(function(){{ var u = [...document.querySelectorAll('{prompt} .user-prompt')].pop(); var r = u && u.getBoundingClientRect(); return JSON.stringify(r ? {{ left: r.left, right: r.right }} : null); }})()"));
+        let (peer_left, user_right) = (
+            card["left"].as_f64().unwrap(),
+            bubble["right"].as_f64().unwrap(),
+        );
+        let user_left = bubble["left"].as_f64().unwrap();
+        assert!(
+            peer_left < user_left && user_right > card["right"].as_f64().unwrap(),
+            "{surface:?}: the peer card sits LEFT and the person's bubble right: peer {card}, prompt {bubble}"
+        );
+    }
+    let paste = json(format!(
+        "(function(){{ var f = [...document.querySelectorAll('{prompt} .fence')].pop(); if (!f) return 'null'; \
+         var l = f.querySelector('.fence-lang'), p = f.querySelector('pre'); \
+         return JSON.stringify({{ label: l ? l.textContent : '', text: p ? p.textContent : '', heading: !!f.closest('{prompt}').querySelector('h1') }}); }})()"
+    ));
+    assert_eq!(
+        paste["label"], "pasted",
+        "{surface:?}: the pasted box is labelled: {paste}"
+    );
+    assert!(
+        paste["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("# not a heading"),
+        "{surface:?}: pasted text is verbatim: {paste}"
+    );
+    assert_eq!(
+        paste["heading"], false,
+        "{surface:?}: and never read as Markdown: {paste}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_shows_another_sessions_message_as_its_own_turn() {
+    let _serial = serial();
+    let fx = peer_fixture("scenario-peer-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_another_sessions_message_is_its_own_turn(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_shows_another_sessions_message_as_its_own_turn() {
+    let _serial = serial();
+    let fx = peer_fixture("scenario-peer-app");
+    let page = open(Surface::AppShell, &fx, 3081);
+    scenario_another_sessions_message_is_its_own_turn(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Twelve turns, a prompt with pasted text and its answer, then a message from another session and
+/// the answer to it — the two record shapes Claude Code writes, built by hand.
+fn peer_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    let line = |v: serde_json::Value| format!("{v}\n");
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(60), "origin": {"kind": "human"},
+        "message": {"role": "user", "content": "it logged this:\n\n<pasted_content id=\"a6ef\">\n# not a heading\nerror: 3 cells failed\n</pasted_content id=\"a6ef\">\n"}
+    }));
+    transcript += &assistant_at("answer paste: three cells failed", &now_minus(55));
+    let body = "skua-HD here: the release is out.\n\n- pin it with `vendor.sh`";
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(40), "isMeta": true,
+        "promptSource": "system", "turnOrigin": "peer",
+        "origin": {"kind": "peer", "from": "uds:/tmp/s.sock", "verifiedPeerPid": 1, "msg_id": "m1",
+                   "name": "skua-HD", "fromMode": "bypass", "body": body},
+        "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/s.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\n{body}\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user.")}
+    }));
+    transcript += &assistant_at("answer peer: pinned", &now_minus(30));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 14,
+    }
+}

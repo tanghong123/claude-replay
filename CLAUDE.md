@@ -790,6 +790,26 @@ adapters alone (`FAMILY_RECORD_KEYS`). It walks every record's keys, so it runs 
 asks (`unknown::watch_keys`): an ordinary parse pays nothing. (`promptId` itself was measured as a
 turn key and refused, #362: it groups the client's prompt cycles, not the reader's prompts.)
 
+**Text the client wraps in tags is read from the record, not shown raw** (#s79, the owner: "claude
+now differentiates messages from another session, or including copy/pasted contents"). A message
+from ANOTHER Claude Code session is a `user` record (`isMeta`, `turnOrigin: peer`) — or, picked up
+mid-turn, a `queued_command` attachment — with a structured `origin` (`kind: peer`, `name`,
+`fromMode`, `body`), its text wrapping the body in `<cross-session-message>` between a preamble and
+a paragraph addressed to the model. It folds to `Block::PeerText` (`peer` on the wire): a turn — the
+Turns pane, the sticky strip and every turn count include it (`Block::opens_turn` is the ONE turn
+predicate) — but never the person's: no `❯`, no right-hand bubble, not in `u:` (`directMask`
+claims no class for it), drawn as a card from the LEFT under `⇄` and the sender's name (the owner's
+choice), the message alone as Markdown. `origin.body` is read, never the prose; the tag is read
+only for a meta record with no `origin` (none measured), so a person QUOTING the tag keeps their
+prompt. The mid-turn one used to render as the person's own prompt. A peer enqueue draws no `⧗
+queued` marker (that marker means the person typed it) but stays in the queue, popped at pickup by
+its raw text. Text the person PASTED is `<pasted_content id="X">…</pasted_content id="X">`; the
+adapter rewrites it as a fence labelled `pasted` (one backtick longer than any run inside), applied
+identically to the prompt, its queued attachment and the queue operation so the #52 content match
+holds: a labelled verbatim card on both pages, a `┌ pasted` box in the TUI, `[pasted]` in a turn's
+label. Cases: `another_sessions_message_is_its_own_turn_and_pasted_text_a_fence` (both parse
+paths), the `#s79` contract block, `*_shows_another_sessions_message_as_its_own_turn`.
+
 **`agent-replay --field-coverage` is the other half** (#363): `--unknown` catches a NEW shape, and
 cannot catch a KNOWN field going empty after a client update — a usage block that stops arriving
 makes the cost a silent lower bound. Each adapter declares the short list its cost and cards read

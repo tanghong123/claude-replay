@@ -1552,3 +1552,18 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .preview-review{flex:none;min-height:44px}
 /* #s28: the file a shell command changed, leading its note — a path the reader can open. */
 .renderer-note-file{color:var(--blue);cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px;overflow-wrap:anywhere}
+/* #s79. Another session's message — the card from the left (Hong's choice), a third voice beside
+   the person's right-hand bubble and the agent's prose: a rule in the peer hue down its left edge,
+   its sender above the message. */
+:root{--peer:#2b6f8e}[data-theme="dark"]{--peer:#7ab8d6}
+.turn.peer{position:relative;display:flex;flex-direction:column;align-items:flex-start}
+.turn.peer .peer-card{width:max-content;max-width:min(86%,720px);padding:10px 14px 12px 13px;border:1px solid var(--line);border-left:3px solid var(--peer);border-radius:4px 12px 12px 4px;background:var(--bg)}
+.turn.peer .peer-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;margin:0 0 6px;font-size:12.5px;line-height:1.4}
+.turn.peer .peer-glyph,.turn.peer .peer-from{color:var(--peer);font-weight:650}
+.turn.peer .peer-what{color:var(--faint)}
+.turn.peer .peer-mode{color:var(--faint);font:11px var(--mono)}
+.turn.peer .peer-card>.body{width:auto;max-width:none;padding:0;background:transparent;box-shadow:none}
+.turn.peer .turn-time{margin:4px 2px 0;font-size:11px;color:var(--faint)}
+.turn.peer .spot-link{--spot-top:10px}
+@media(max-width:620px){.turn.peer .peer-card{max-width:100%}}
+

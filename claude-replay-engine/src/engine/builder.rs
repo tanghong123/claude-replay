@@ -134,7 +134,7 @@ pub struct StreamRead {
 fn count_into(rec: &mut crate::engine::meta_stream::MetaRecord, b: &Block) {
     use crate::engine::meta_stream::{AgentEvent, Spawn};
     match b {
-        Block::UserText(_) | Block::Command { .. } => *rec.turns.get_or_insert(0) += 1,
+        b if b.opens_turn() => *rec.turns.get_or_insert(0) += 1,
         Block::ToolUse { .. } => *rec.tools.get_or_insert(0) += 1,
         // An activity-coalesced run is ONE block carrying its nested calls.
         Block::Thinking { tools, .. } if !tools.is_empty() => {

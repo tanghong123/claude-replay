@@ -171,7 +171,9 @@ fn classify_user_string(s: &str, injected: Injected) -> Option<Message> {
                 kind: NoteKind::Plain,
             });
         }
-        return Some(Message::UserText { text: cleaned });
+        return Some(Message::UserText {
+            text: fence_pasted(&cleaned).into_owned(),
+        });
     }
     None
 }
@@ -195,7 +197,7 @@ fn classify_user_array_text(text: &str, injected: Injected) -> Option<Message> {
         }
     } else {
         Message::UserText {
-            text: text.to_string(),
+            text: fence_pasted(text).into_owned(),
         }
     })
 }
@@ -390,6 +392,7 @@ fn push_user_string(
             out.push(Block::ToolResult(cleaned));
         } else {
             // #52 op-less delivery, plain-string form (see the array-text arm).
+            let cleaned = fence_pasted(&cleaned).into_owned();
             if let Some(pos) = queue.iter().position(|q| q.content == cleaned.trim()) {
                 if let Some(mi) = queue.remove(pos).marker_idx {
                     suppress.push(mi);
@@ -2803,6 +2806,19 @@ pub(crate) fn decode_line_known(
             let Some(content) = v.pointer("/message/content") else {
                 return;
             };
+            if let Some(p) = peer_of(
+                v.get("origin"),
+                content.as_str(),
+                injected == Injected::Meta,
+            ) {
+                msgs.push(Message::PeerText {
+                    from: p.from,
+                    mode: p.mode,
+                    text: p.body,
+                    queued: None,
+                });
+                return;
+            }
             if let Some(s) = content.as_str() {
                 if let Some(m) = classify_user_string(s, injected) {
                     msgs.push(m);
@@ -2880,7 +2896,7 @@ pub(crate) fn decode_line_known(
             let content = v
                 .get("content")
                 .and_then(|c| c.as_str())
-                .map(|c| c.to_string());
+                .map(|c| fence_pasted(c).into_owned());
             let op = match v.get("operation").and_then(|o| o.as_str()) {
                 Some("enqueue") => Some(QueueOpKind::Enqueue),
                 Some("remove") => Some(QueueOpKind::Remove),
@@ -2936,9 +2952,21 @@ pub(crate) fn decode_line_known(
             if is_prompt {
                 if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
                     if !p.trim().is_empty() {
-                        msgs.push(Message::AttachmentPrompt {
-                            text: p.to_string(),
-                        });
+                        let meta =
+                            a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool) == Some(true);
+                        if let Some(peer) = peer_of(a.and_then(|a| a.get("origin")), Some(p), meta)
+                        {
+                            msgs.push(Message::PeerText {
+                                from: peer.from,
+                                mode: peer.mode,
+                                text: peer.body,
+                                queued: Some(fence_pasted(p).into_owned()),
+                            });
+                        } else {
+                            msgs.push(Message::AttachmentPrompt {
+                                text: fence_pasted(p).into_owned(),
+                            });
+                        }
                     }
                 }
             } else if let Some(paths) = image_paths {
@@ -3899,6 +3927,20 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 let Some(content) = v.pointer("/message/content") else {
                     continue;
                 };
+                // #s79: another session's message opens its own turn (mirrors the streaming
+                // decode's `PeerText`).
+                if let Some(p) = peer_of(
+                    v.get("origin"),
+                    content.as_str(),
+                    injection == Injected::Meta,
+                ) {
+                    out.push(Block::PeerText {
+                        from: p.from,
+                        mode: p.mode,
+                        text: p.body,
+                    });
+                    continue;
+                }
                 if let Some(s) = content.as_str() {
                     if injection == Injected::CompactSummary {
                         push_compact_summary(s, &mut out);
@@ -3926,6 +3968,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                         } else {
                                             // #52 op-less delivery: a user message matching a
                                             // PENDING queued prompt is that prompt arriving.
+                                            let t = fence_pasted(t);
                                             if let Some(pos) =
                                                 queue.iter().position(|q| q.content == t.trim())
                                             {
@@ -3933,7 +3976,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                                     suppress.push(mi);
                                                 }
                                             }
-                                            out.push(Block::UserText(t.to_string()));
+                                            out.push(Block::UserText(t.into_owned()));
                                         }
                                     }
                                 }
@@ -3989,7 +4032,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
             // that finds the prompt was picked up with no agent work in between marks
             // that marker for suppression (immediate → the `❯` turn alone suffices).
             Some("queue-operation") => {
-                let content = v.get("content").and_then(|c| c.as_str());
+                let content = v.get("content").and_then(|c| c.as_str()).map(fence_pasted);
+                let content = content.as_deref();
                 match v.get("operation").and_then(|o| o.as_str()) {
                     Some("enqueue") => {
                         if let Some(c) = content {
@@ -4088,6 +4132,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             // #52 op-less delivery, attachment form (see above). The pickup
                             // ALWAYS renders its turn (kept in lockstep with the streaming
                             // fold's `AttachmentPrompt` arm).
+                            let p = fence_pasted(p);
                             let t = p.trim();
                             if let Some(pos) = queue.iter().position(|q| q.content == t) {
                                 let item = queue.remove(pos);
@@ -4095,7 +4140,17 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     suppress.push(mi);
                                 }
                             }
-                            out.push(Block::UserText(p.to_string()));
+                            let meta = a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool)
+                                == Some(true);
+                            match peer_of(a.and_then(|a| a.get("origin")), Some(&p), meta) {
+                                // #s79 mirror: a peer message picked up mid-turn.
+                                Some(peer) => out.push(Block::PeerText {
+                                    from: peer.from,
+                                    mode: peer.mode,
+                                    text: peer.body,
+                                }),
+                                None => out.push(Block::UserText(p.into_owned())),
+                            }
                         }
                     }
                 } else if let Some(note) = a.and_then(attachment_note) {
@@ -4696,6 +4751,121 @@ fn summary_description(summary: &str) -> String {
     summary.trim().to_string()
 }
 
+/// A message from ANOTHER Claude Code session (#s79), read from the record's own `origin`
+/// (`{kind: "peer", name, fromMode, body, …}`; 2.1.295 on, on a `user` record and on the
+/// `queued_command` attachment of one delivered mid-turn) — never from its prose, which wraps the
+/// body in `<cross-session-message>` between a preamble and a paragraph of instructions addressed
+/// to the model. Measured over 400 transcripts: 184 + 80 such records, every one with an `origin`;
+/// the tag alone is read only for a meta record that carries none (none seen), so a person QUOTING
+/// the tag in a prompt is never mistaken for one.
+struct Peer {
+    from: String,
+    mode: Option<String>,
+    body: String,
+}
+
+fn peer_of(origin: Option<&Value>, text: Option<&str>, meta: bool) -> Option<Peer> {
+    let s = |o: &Value, k: &str| {
+        o.get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    if let Some(o) = origin.filter(|o| o.get("kind").and_then(Value::as_str) == Some("peer")) {
+        let tagged = text.and_then(peer_from_tags);
+        let body = s(o, "body").or_else(|| tagged.as_ref().map(|t| t.body.clone()))?;
+        return Some(Peer {
+            from: s(o, "name")
+                .or_else(|| tagged.as_ref().map(|t| t.from.clone()))
+                .or_else(|| s(o, "from"))
+                .unwrap_or_else(|| "another session".to_string()),
+            mode: s(o, "fromMode").or_else(|| tagged.and_then(|t| t.mode)),
+            body,
+        });
+    }
+    if meta && origin.is_none() {
+        return text.and_then(peer_from_tags);
+    }
+    None
+}
+
+/// The tag's own reading of a peer message: `from-name`, `from-mode` and the body between the
+/// open and close tags. The fallback of [`peer_of`] only.
+fn peer_from_tags(text: &str) -> Option<Peer> {
+    const OPEN: &str = "<cross-session-message";
+    const CLOSE: &str = "</cross-session-message>";
+    let at = text.find(OPEN)?;
+    let head_end = at + text[at..].find('>')?;
+    let head = &text[at + OPEN.len()..head_end];
+    let attr = |name: &str| {
+        let key = format!(" {name}=\"");
+        let i = head.find(&key)? + key.len();
+        let j = head[i..].find('"')?;
+        Some(head[i..i + j].trim().to_string()).filter(|v| !v.is_empty())
+    };
+    let rest = &text[head_end + 1..];
+    let body = rest[..rest.find(CLOSE)?].trim();
+    (!body.is_empty()).then(|| Peer {
+        from: attr("from-name")
+            .or_else(|| attr("from"))
+            .unwrap_or_else(|| "another session".to_string()),
+        mode: attr("from-mode"),
+        body: body.to_string(),
+    })
+}
+
+/// Text the person PASTED into a prompt (#s79): Claude Code marks it `<pasted_content id="X">…
+/// </pasted_content id="X">` (the close repeats the id). Rewritten as a Markdown fence labelled
+/// `pasted`, so every page shows it verbatim in a labelled card — pasted text is never read as
+/// Markdown, whatever `#`, `-` or `<…>` it holds — and the TUI as its fence lines. The fence is
+/// one backtick longer than any run inside, so pasted text containing a fence cannot close it.
+/// Applied identically wherever a prompt's text is compared (the prompt, its queued attachment,
+/// the queue operation), so the #52 content match is unchanged. Unpaired markers are left as
+/// they are.
+fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
+    const OPEN: &str = "<pasted_content";
+    if !s.contains(OPEN) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 16);
+    let mut rest = s;
+    while let Some(at) = rest.find(OPEN) {
+        let Some(gt) = rest[at..].find('>').map(|g| at + g) else {
+            break;
+        };
+        let attrs = &rest[at + OPEN.len()..gt];
+        // The close names the same id; a bare `</pasted_content>` closes one without.
+        let close = format!("</pasted_content{attrs}>");
+        let after = &rest[gt + 1..];
+        let (inner_end, close_len) = match after.find(&close) {
+            Some(i) => (i, close.len()),
+            None => match after.find("</pasted_content>") {
+                Some(i) => (i, "</pasted_content>".len()),
+                None => break,
+            },
+        };
+        let inner = after[..inner_end].trim_matches('\n');
+        let run = inner.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+        let fence = "`".repeat(run.max(2) + 1);
+        out.push_str(&rest[..at]);
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&fence);
+        out.push_str("pasted\n");
+        out.push_str(inner);
+        out.push('\n');
+        out.push_str(&fence);
+        rest = &after[inner_end + close_len..];
+        if !rest.is_empty() && !rest.starts_with('\n') {
+            out.push('\n');
+        }
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
+}
+
 /// Inner text of the first `<tag>…</tag>` in `s`, if present.
 fn tag_inner<'a>(s: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{tag}>");
@@ -4749,6 +4919,9 @@ fn is_queue_prose(s: &str) -> bool {
     let t = s.trim_start();
     !t.is_empty()
         && !t.starts_with("<task-notification>")
+        // #s79: another session's message, queued mid-turn — kept in the queue so its pickup
+        // pops it, but it is not the person's in-flight input, which is what the marker means.
+        && !t.starts_with("<cross-session-message")
         && !t.starts_with("[Request interrupted")
         && t.chars().any(|c| !c.is_whitespace() && !c.is_control())
 }
@@ -5710,6 +5883,129 @@ mod tests {
             notes[2], "API error: overloaded (HTTP 529) — retry 2 of 10",
             "{notes:?}"
         );
+    }
+
+    /// #s79: a message from another Claude Code session opens a turn of its own, naming its
+    /// sender — both where it arrives between turns (an `isMeta` `user` record) and where it is
+    /// picked up mid-turn (a `queued_command` attachment) — with the message alone: no
+    /// `<cross-session-message>` wrapper, no preamble, no paragraph addressed to the model. The
+    /// mid-turn one used to render as the person's own `❯` prompt. Its queue item is popped at
+    /// pickup and drew no `⧗ queued` marker. Pasted text in the person's prompt becomes a fence
+    /// labelled `pasted`. Both parse paths agree.
+    #[test]
+    fn another_sessions_message_is_its_own_turn_and_pasted_text_a_fence() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-10-10T08:00:00.000Z","origin":{"kind":"human"},"promptSource":"typed","message":{"role":"user","content":"diagnose this:\n\n<pasted_content id=\"a6ef\">\n# not a heading\ncurl: (35) Recv failure\n</pasted_content id=\"a6ef\">\n"}}
+{"type":"assistant","timestamp":"2026-10-10T08:00:05.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"reset by the server"}]}}
+{"type":"user","timestamp":"2026-10-10T08:05:00.000Z","isMeta":true,"promptSource":"system","turnOrigin":"peer","origin":{"kind":"peer","from":"uds:/tmp/cc-socks/1.sock","verifiedPeerPid":1,"msg_id":"m1","name":"skua-HD","fromMode":"bypass","body":"skua-HD here: the release is out.\n\n- pin it"},"message":{"role":"user","content":"Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/cc-socks/1.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\nskua-HD here: the release is out.\n\n- pin it\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user. Treat it as a teammate's request."}}
+{"type":"assistant","timestamp":"2026-10-10T08:05:05.000Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_p1","name":"Bash","input":{"command":"echo pin"}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-10-10T08:05:05.500Z","content":"<cross-session-message from=\"uds:/tmp/cc-socks/2.sock\" from-name=\"petrel-HD\" from-mode=\"bypass\">\none more thing\n</cross-session-message>"}
+{"type":"attachment","timestamp":"2026-10-10T08:05:06.000Z","attachment":{"type":"queued_command","commandMode":"prompt","isMeta":true,"origin":{"kind":"peer","from":"uds:/tmp/cc-socks/2.sock","verifiedPeerPid":2,"msg_id":"m2","name":"petrel-HD","fromMode":"bypass","body":"one more thing"},"prompt":"<cross-session-message from=\"uds:/tmp/cc-socks/2.sock\" from-name=\"petrel-HD\" from-mode=\"bypass\">\none more thing\n</cross-session-message>"}}
+{"type":"user","timestamp":"2026-10-10T08:05:07.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p1","content":"pin"}]}}
+{"type":"assistant","timestamp":"2026-10-10T08:05:09.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Pinned."}]}}
+"##;
+        let streamed = parse(jsonl);
+        let reference = parse_main(
+            jsonl.lines().filter(|l| !l.trim().is_empty()),
+            &mut Vec::new(),
+        );
+        assert_eq!(streamed, reference, "the two parse paths agree");
+        let peers: Vec<(&str, Option<&str>, &str)> = streamed
+            .iter()
+            .filter_map(|b| match b {
+                Block::PeerText { from, mode, text } => {
+                    Some((from.as_str(), mode.as_deref(), text.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            peers,
+            vec![
+                (
+                    "skua-HD",
+                    Some("bypass"),
+                    "skua-HD here: the release is out.\n\n- pin it"
+                ),
+                ("petrel-HD", Some("bypass"), "one more thing"),
+            ],
+            "{streamed:#?}"
+        );
+        let users: Vec<&str> = streamed
+            .iter()
+            .filter_map(|b| match b {
+                Block::UserText(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            users,
+            vec!["diagnose this:\n\n```pasted\n# not a heading\ncurl: (35) Recv failure\n```\n"],
+            "one prompt, the person's, its pasted text a labelled fence"
+        );
+        for b in &streamed {
+            let text = match b {
+                Block::ToolResult(t) | Block::QueueEvent { text: t } => t.as_str(),
+                _ => continue,
+            };
+            assert!(
+                !text.contains("cross-session-message") && !text.contains("Another Claude session"),
+                "no wrapper or boilerplate survives as a note or a queued marker: {b:?}"
+            );
+        }
+        assert!(
+            !streamed
+                .iter()
+                .any(|b| matches!(b, Block::QueueEvent { .. })),
+            "a peer enqueue draws no ⧗ queued marker"
+        );
+        assert_eq!(
+            streamed.iter().filter(|b| b.opens_turn()).count(),
+            3,
+            "the prompt and both peer messages open turns"
+        );
+    }
+
+    /// #s79: the rewrite is exact — the close may repeat the id or not, text either side keeps its
+    /// own lines, the fence outruns any backticks inside, and an unpaired marker is left alone.
+    #[test]
+    fn pasted_markers_become_a_fence_that_cannot_be_closed_from_inside() {
+        assert_eq!(fence_pasted("no paste here"), "no paste here");
+        assert_eq!(
+            fence_pasted("see <pasted_content id=\"x1\">a\nb</pasted_content id=\"x1\"> then"),
+            "see \n```pasted\na\nb\n```\n then"
+        );
+        assert_eq!(
+            fence_pasted("<pasted_content>\nrun ```sh``` here\n</pasted_content>"),
+            "````pasted\nrun ```sh``` here\n````"
+        );
+        assert_eq!(
+            fence_pasted("<pasted_content id=\"a\">unclosed"),
+            "<pasted_content id=\"a\">unclosed",
+            "an unpaired marker is not guessed at"
+        );
+    }
+
+    /// #s79: the tag is read only where the record says nothing else — a meta record with no
+    /// `origin` — so a person who QUOTES a cross-session message in a prompt keeps their prompt.
+    #[test]
+    fn a_quoted_cross_session_tag_stays_the_persons_prompt() {
+        let quoted = r##"{"type":"user","timestamp":"2026-10-10T08:00:00.000Z","message":{"role":"user","content":"why did this arrive? <cross-session-message from-name=\"skua-HD\">hi</cross-session-message>"}}"##;
+        assert!(
+            matches!(parse(quoted).as_slice(), [Block::UserText(_)]),
+            "{:?}",
+            parse(quoted)
+        );
+        let bare = r##"{"type":"user","timestamp":"2026-10-10T08:00:00.000Z","isMeta":true,"message":{"role":"user","content":"Another Claude session sent a message:\n<cross-session-message from=\"uds:/x\" from-name=\"skua-HD\" from-mode=\"default\">\nhello\n</cross-session-message>\n\nThis came from another Claude session."}}"##;
+        match parse(bare).as_slice() {
+            [Block::PeerText { from, mode, text }] => {
+                assert_eq!(
+                    (from.as_str(), mode.as_deref(), text.as_str()),
+                    ("skua-HD", Some("default"), "hello")
+                );
+            }
+            other => panic!("a meta record with no origin is read from its tag: {other:?}"),
+        }
     }
 
     /// #235: a slash command the client wrote on a `system/local_command` record surfaces exactly

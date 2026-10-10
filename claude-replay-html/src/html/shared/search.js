@@ -23,7 +23,7 @@ function directMask(k) {
 /** A record's OWN text parts (nested records excluded), in reading order. */
 function ownTextParts(b, strip) {
   const parts = [], h = b.head || {};
-  for (const k of ["summary", "badge", "preview", "name", "target", "att_name"]) if (h[k]) parts.push(String(h[k]));
+  for (const k of ["summary", "badge", "preview", "name", "target", "att_name", "from"]) if (h[k]) parts.push(String(h[k]));
   for (const p of b.body || []) {
     if (p.p === "md" || p.p === "think") parts.push(strip(p.h));
     else if (p.p === "pre" || p.p === "note") parts.push(String(p.x));

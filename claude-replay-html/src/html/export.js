@@ -306,7 +306,8 @@
   var searchToolSpec = ""; // …as the reader wrote them, for the count label
   var pageToolCounts = {}; // tool name -> calls, refreshed by buildToolMenu: `o(…)`'s letters
 
-  function isTurnKind(b) { return b.kind === "user" || b.kind === "command"; }
+  // Another session's message (#s79) opens a turn too, though the person did not type it.
+  function isTurnKind(b) { return b.kind === "user" || b.kind === "command" || b.kind === "peer"; }
   function isHiddenRec(i) { return !!filter && !isTurnKind(records[i]) && !recHit[i]; }
   // The sums, the search and the pads are the shared engine's (#107, html/shared/virtual-window.js)
   // — the same arithmetic the app shell runs, and since #140 step 4 the same STATE MACHINE too.
@@ -330,6 +331,7 @@
   // next VISIBLE record under a filter, which is what `:has(+ …)` sees too.
   function rootWords(b) {
     if (b.kind === "user") return "uturn";
+    if (b.kind === "peer") return "pturn";
     if (b.kind === "attachment") return "amark";
     if (b.kind === "queue") return "qmarker";
     if (b.kind === "assistant") return "ablock";
@@ -553,7 +555,7 @@
     return false;
   }
   function isFoldRec(b) {
-    return !(b.kind === "user" || b.kind === "attachment" || b.kind === "queue" || b.kind === "assistant");
+    return !(b.kind === "user" || b.kind === "peer" || b.kind === "attachment" || b.kind === "queue" || b.kind === "assistant");
   }
   function setRecordOpen(id, open) {
     var ti = idIndex[id];
@@ -604,6 +606,27 @@
       if (typeof b.src === "string") card.appendChild(rawToggle(b));
       card.appendChild(anchor(b.id));
       return card;
+    }
+
+    // Another session's message (#s79) — the card from the left: `⇄`, its sender, then the
+    // message as Markdown. Never the person's ❯ card, which is what it used to be drawn as.
+    if (b.kind === "peer") {
+      var pc = el("div", "pturn blk");
+      pc.id = b.id;
+      pc.dataset.turn = b.turn;
+      pc.dataset.label = b.label;
+      var ph = el("div", "pturn-h");
+      ph.appendChild(el("span", "pturn-glyph", "⇄"));
+      ph.appendChild(el("span", "pturn-from", head.from || "another session"));
+      ph.appendChild(el("span", "pturn-what", "another session"));
+      if (head.mode) ph.appendChild(el("span", "pturn-mode", head.mode));
+      pc.appendChild(ph);
+      var pb = el("div", "pturn-body prose");
+      body.forEach(function (p) { renderPart(p, pb); });
+      pc.appendChild(pb);
+      if (b.ts) pc.appendChild(el("span", "ts", fmtTime(b.ts)));
+      pc.appendChild(anchor(b.id));
+      return pc;
     }
 
     // A surfaced attachment — an always-open card with a clickable name that either
@@ -1092,7 +1115,7 @@
     var n = 0;
     for (var i = 0; i < records.length; i++) {
       var k = records[i].kind;
-      if (k === "user" || k === "assistant") n++;
+      if (k === "user" || k === "peer" || k === "assistant") n++;
     }
     return n;
   }

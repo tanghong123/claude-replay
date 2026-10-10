@@ -690,6 +690,42 @@ fn is_fold(b: &Block) -> bool {
 }
 
 /// A short single-line label for the sidebar / sticky bar.
+/// A prompt's words for the Turns pane and the sticky strip: a pasted block (#s79, the fence the
+/// adapter writes for the client's `<pasted_content>`) is one `[pasted]` there, never its fence or
+/// its lines — what the person TYPED names the turn.
+fn prompt_label(text: &str, max: usize) -> String {
+    if !text.contains("pasted") {
+        return label_of(text, max);
+    }
+    let mut kept: Vec<&str> = Vec::new();
+    let mut fence: Option<&str> = None;
+    for line in text.lines() {
+        match fence {
+            Some(f) if line == f => fence = None,
+            Some(_) => {}
+            None => match line.strip_suffix("pasted") {
+                Some(f) if f.len() >= 3 && f.chars().all(|c| c == '`') => {
+                    fence = Some(f);
+                    kept.push("[pasted]");
+                }
+                _ => kept.push(line),
+            },
+        }
+    }
+    label_of(&kept.join("\n"), max)
+}
+
+/// The Turns-pane label of another session's message (#s79): its sender, then the message —
+/// unless the message already opens with the sender's name, as these agents' do ("skua-HD here:
+/// …"), when the name is not said twice.
+fn peer_label(from: &str, text: &str, max: usize) -> String {
+    if text.trim_start().starts_with(from) {
+        label_of(text, max)
+    } else {
+        label_of(&format!("{from}: {text}"), max)
+    }
+}
+
 fn label_of(text: &str, max: usize) -> String {
     let one = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if one.chars().count() <= max {
@@ -1081,10 +1117,10 @@ impl Emitter<'_> {
                 self.turn += 1;
                 let id = format!("t{}", self.turn);
                 self.turns
-                    .push(SideEntry::turn(id.clone(), label_of(text, 46)));
+                    .push(SideEntry::turn(id.clone(), prompt_label(text, 46)));
                 o.insert("id".into(), json!(id));
                 o.insert("turn".into(), json!(self.turn));
-                o.insert("label".into(), json!(label_of(text, 80)));
+                o.insert("label".into(), json!(prompt_label(text, 80)));
                 // The turn's SOURCE, verbatim, beside its rendered parts: the page offers a
                 // "show as raw" toggle (globally or for one turn), and markdown rendering is
                 // lossy — collapsed padding and stripped indentation cannot be recovered from
@@ -1094,6 +1130,25 @@ impl Emitter<'_> {
                 // user's typing is a rounding error beside its tool output.
                 o.insert("src".into(), json!(text));
                 body.extend(user_body_parts(text));
+            }
+            // Another session's message (#s79): it opens a turn as a prompt does — the Turns pane
+            // and the sticky strip list it, labelled with its sender — but its kind is `peer`, so
+            // nothing that means "what the person typed" (the `u:` class, the right-hand bubble)
+            // claims it. The body is the message alone, rendered as Markdown like a reply.
+            Block::PeerText { from, mode, text } => {
+                self.turn += 1;
+                let id = format!("t{}", self.turn);
+                self.turns
+                    .push(SideEntry::turn(id.clone(), peer_label(from, text, 46)));
+                o.insert("id".into(), json!(id));
+                o.insert("turn".into(), json!(self.turn));
+                o.insert("label".into(), json!(peer_label(from, text, 80)));
+                o.insert("src".into(), json!(text));
+                head.insert("from".into(), json!(from));
+                if let Some(m) = mode {
+                    head.insert("mode".into(), json!(m));
+                }
+                body.push(json!({ "p": "md", "h": md_html(text) }));
             }
             // A sub-agent spawn (kind "agent") — a fold whose header names the agent
             // and whose body carries the prompt, agent id, and result. Full drill-down
@@ -1865,7 +1920,7 @@ pub(super) fn render_blocks(
     let mut lines = Vec::with_capacity(blocks.len());
     for b in blocks {
         // `user_times[i]` is the ith user turn's timestamp (see `model::parse_main`).
-        let (ts, dur) = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
+        let (ts, dur) = if b.opens_turn() {
             let t = user_times.get(st.seen_turns).copied().flatten();
             // The same cursor: `turn_durations` is the whole session's, aligned one-for-one
             // with `user_times` (#257).
@@ -2224,10 +2279,7 @@ fn human_tokens(n: u64) -> String {
 
 /// User turns in a block list (the sidebar count).
 fn count_turns(blocks: &[Block]) -> usize {
-    blocks
-        .iter()
-        .filter(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
-        .count()
+    blocks.iter().filter(|b| b.opens_turn()).count()
 }
 
 /// Tool calls in a block list, including those absorbed into a thinking turn.

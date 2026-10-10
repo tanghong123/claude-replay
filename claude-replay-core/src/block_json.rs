@@ -45,7 +45,7 @@ pub fn write_blocks<'a, W: std::io::Write + ?Sized>(
 ) -> std::io::Result<()> {
     let mut turn: Option<usize> = None;
     for (i, b) in blocks.enumerate() {
-        if matches!(b, Block::UserText(_) | Block::Command { .. }) {
+        if b.opens_turn() {
             turn = Some(turn.map_or(0, |t| t + 1));
         }
         let mut o = Map::new();
@@ -73,6 +73,13 @@ fn block_fields(b: &Block, o: &mut Map<String, Value>) {
         }
         Block::QueueEvent { text } => {
             o.insert("text".into(), json!(text));
+        }
+        Block::PeerText { from, mode, text } => {
+            o.insert("text".into(), json!(text));
+            o.insert("from".into(), json!(from));
+            if let Some(m) = mode {
+                o.insert("mode".into(), json!(m));
+            }
         }
         Block::AssistantMessage {
             text,

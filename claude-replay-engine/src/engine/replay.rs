@@ -287,6 +287,30 @@ impl<'a> Replayer<'a> {
                     }
                     self.out.push(Block::UserText(text.clone()));
                 }
+                Message::PeerText {
+                    from,
+                    mode,
+                    text,
+                    queued,
+                } => {
+                    // Picked up from the queue mid-turn: pop its item by the raw text it was
+                    // queued under (#52's content match). A peer enqueue draws no marker, so
+                    // there is nothing to suppress; the pop keeps FIFO and the durability
+                    // frontier right for the prompts behind it.
+                    if let Some(raw) = queued {
+                        if let Some(pos) = self.queue.iter().position(|q| q.content == raw.trim()) {
+                            let item = self.queue.remove(pos);
+                            if let Some(mi) = item.marker_idx {
+                                self.suppress.push(mi);
+                            }
+                        }
+                    }
+                    self.out.push(Block::PeerText {
+                        from: from.clone(),
+                        mode: mode.clone(),
+                        text: text.clone(),
+                    });
+                }
                 Message::SystemNote { text, .. } => {
                     self.out.push(Block::ToolResult(text.clone()));
                 }
@@ -354,11 +378,7 @@ impl<'a> Replayer<'a> {
                     // an unrelated older one. The reaching cases are all the same shape: jdi
                     // injects a `jdi-handoff` body with no `Skill` call at all, and unbounded it
                     // nested thousands of lines back into whatever skill happened to come last.
-                    let turn_start = self
-                        .out
-                        .iter()
-                        .rposition(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
-                        .unwrap_or(0);
+                    let turn_start = self.out.iter().rposition(|b| b.opens_turn()).unwrap_or(0);
                     let target = self
                         .last_skill
                         .map(|i| i - self.base)
@@ -557,11 +577,7 @@ impl<'a> Replayer<'a> {
     fn finalize_completed(&mut self) {
         // The open turn starts at the last user-turn boundary in the window; everything before it is
         // complete. Nothing to drop if there's no boundary, or the only turn is the open one.
-        let Some(mut k) = self
-            .out
-            .iter()
-            .rposition(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
-        else {
+        let Some(mut k) = self.out.iter().rposition(|b| b.opens_turn()) else {
             return;
         };
         // No `last_skill` pin here. It used to cap the drop at the turn holding the last `Skill`,
@@ -680,11 +696,11 @@ impl<'a> Replayer<'a> {
         }
         let pinned = self.out[..=oldest]
             .iter()
-            .rposition(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
+            .rposition(|b| b.opens_turn())
             .unwrap_or(0);
         let lag = self.out[pinned..k]
             .iter()
-            .filter(|b| matches!(b, Block::UserText(_) | Block::Command { .. }))
+            .filter(|b| b.opens_turn())
             .count();
         (lag <= MAX_PINNED_TURNS).then_some(pinned)
     }
@@ -886,7 +902,7 @@ pub fn stamp_user_turns(
     user_times: &mut Vec<Option<EpochSeconds>>,
 ) {
     for b in &out[*stamped..] {
-        if matches!(b, Block::UserText(_) | Block::Command { .. }) {
+        if b.opens_turn() {
             user_times.push(ts);
         }
     }

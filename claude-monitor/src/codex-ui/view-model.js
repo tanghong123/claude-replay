@@ -229,6 +229,9 @@ export function compactionTick(head = {}) {
 export function viewRecord(record) {
   const head = record.head || {};
   if (record.kind === "user") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record };
+  // Another session's message (#s79): a turn like a prompt (so the Turns pane and the sticky strip
+  // count it), drawn as its own card and never as the person's bubble.
+  if (record.kind === "peer") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record, peer: { from: head.from || "another session", mode: head.mode || "" } };
   if (record.kind === "assistant") return { t: "assistant", id: record.id, phase: record.phase || "unknown", presentation: head.presentation || "", html: partsHtml(record.body), markdown: true, source: record };
   if (record.kind === "think") return rendererRecord(record, "thinking", "Thinking");
   if (record.kind === "act") return rendererRecord(record, "activity", "Activity");
@@ -436,7 +439,7 @@ function buildUnits(records, from, turn) {
       while (end + 1 < records.length && records[end + 1]?.kind === "pending") end++;
       const pendingTo = end;
       let user = end + 1;
-      while (user < records.length && !(records[user].kind === "user" || records[user].kind === "command")) user++;
+      while (user < records.length && !(records[user].kind === "user" || records[user].kind === "command" || records[user].kind === "peer")) user++;
       if (user < records.length) end = user - 1;
       flush();
       units.push({ type: "pending", key: "pending:head", from: i, to: end, turn: null, records: pendingTo - i + 1 });
@@ -444,7 +447,7 @@ function buildUnits(records, from, turn) {
       continue;
     }
     const view = viewRecord(record);
-    if (record.kind === "user" || record.kind === "command") {
+    if (record.kind === "user" || record.kind === "command" || record.kind === "peer") {
       flush(); turn = Number(record.turn || turn + 1);
       units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: record.label || plainText(record).slice(0, 80) });
     } else if (record.kind === "attachment" && !process && units.at(-1)?.type === "user") {

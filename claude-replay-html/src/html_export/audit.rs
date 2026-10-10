@@ -41,6 +41,7 @@ use std::collections::BTreeSet;
 /// the enum out of `claude-replay-engine/src/model.rs` and fails if this slice is short.
 pub const ALL_KINDS: &[BlockKind] = &[
     BlockKind::User,
+    BlockKind::Peer,
     BlockKind::Queue,
     BlockKind::Assistant,
     BlockKind::Think,
@@ -64,6 +65,7 @@ pub fn variant_name(kind: BlockKind) -> &'static str {
     use BlockKind::*;
     match kind {
         User => "User",
+        Peer => "Peer",
         Queue => "Queue",
         Assistant => "Assistant",
         Think => "Think",
@@ -102,6 +104,12 @@ pub const CLAIMS: &[KindClaim] = &[
         parts: &["md", "raw"],
         why: "the `UserText` arm's whole body is `user_body_parts`, which emits markdown and \
               lifted preformatted runs and nothing else",
+    },
+    KindClaim {
+        kind: "peer",
+        parts: &["md"],
+        why: "the `PeerText` arm (#s79) pushes exactly one `md` part, the message, and the \
+              sender rides the head",
     },
     KindClaim {
         kind: "queue",
@@ -206,9 +214,21 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
              │  cells: 15 x 8   │\n\
              │                  │\n\
              ╰──────────────────╯\n\n\
-             then it stopped."
+             then it stopped. And I pasted its log:\n\n\
+             ```pasted\n\
+             error: 3 cells failed\n\
+             # not a heading — pasted text is never Markdown\n\
+             ```"
                 .into(),
         )],
+        // Another session's message (#s79): Markdown prose with a list and inline code, under
+        // its sender.
+        Peer => vec![Block::PeerText {
+            from: "skua-HD".into(),
+            mode: Some("bypass".into()),
+            text: "skua-HD here: the release is out.\n\n- pin it with `vendor.sh`\n- then re-run the gate"
+                .into(),
+        }],
         Queue => vec![Block::QueueEvent {
             text: "and re-run the gate when that lands".into(),
         }],
@@ -465,6 +485,17 @@ pub fn audit_jsonl() -> String {
     // a leading indent is enough), which is the only way a user turn grows a `raw` part.
     push(json!({"type":"user","cwd":"/w","timestamp":stamp(),
         "message":{"role":"user","content":[{"type":"text","text":"it printed this:\n\n\u{256d}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256e}\n\u{2502} cells \u{2502}\n\u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256f}\n\nand then it stopped"}]}}));
+    // user / md again — a prompt carrying PASTED text (#s79): the client's markers become a fence
+    // labelled `pasted`, so it renders inside the md part as a verbatim, labelled card.
+    push(json!({"type":"user","cwd":"/w","timestamp":stamp(),
+        "message":{"role":"user","content":"and it logged:\n\n<pasted_content id=\"a1\">\n# not a heading\nerror: 3 cells failed\n</pasted_content id=\"a1\">"}}));
+    // peer / md — another session's message (#s79), as Claude Code records one between turns.
+    push(
+        json!({"type":"user","cwd":"/w","timestamp":stamp(),"isMeta":true,"promptSource":"system","turnOrigin":"peer",
+        "origin":{"kind":"peer","from":"uds:/tmp/s.sock","verifiedPeerPid":1,"msg_id":"m1","name":"skua-HD","fromMode":"bypass",
+                  "body":"skua-HD here: the release is out.\n\n- pin it with `vendor.sh`"},
+        "message":{"role":"user","content":"Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/s.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\nskua-HD here: the release is out.\n\n- pin it with `vendor.sh`\n</cross-session-message>\n\nThis came from another Claude session."}}),
+    );
     // queue / md — a prompt typed while the agent was busy, not yet picked up.
     push(
         json!({"type":"queue-operation","operation":"enqueue","timestamp":stamp(),
@@ -821,11 +852,11 @@ mod tests {
         );
     }
 
-    /// Fifteen wire kinds from sixteen variants: `ToolResult` and `Tool` share `"tool"`.
+    /// Sixteen wire kinds from seventeen variants: `ToolResult` and `Tool` share `"tool"`.
     #[test]
-    fn the_wire_vocabulary_is_fifteen_kinds() {
+    fn the_wire_vocabulary_is_sixteen_kinds() {
         let kinds: BTreeSet<&str> = ALL_KINDS.iter().map(|k| k.html()).collect();
-        assert_eq!(kinds.len(), 15, "the stream's kind strings: {kinds:?}");
+        assert_eq!(kinds.len(), 16, "the stream's kind strings: {kinds:?}");
         assert_eq!(BlockKind::ToolResult.html(), BlockKind::Tool.html());
         let claimed: BTreeSet<&str> = CLAIMS.iter().map(|c| c.kind).collect();
         assert_eq!(claimed, kinds, "CLAIMS must state one row per wire kind");
@@ -884,7 +915,7 @@ mod tests {
         }
     }
 
-    /// The 15 x 8 table, printed by the run that produced it — so the audit's table is
+    /// The 16 x 8 table, printed by the run that produced it — so the audit's table is
     /// measured rather than typed. `cargo test -- --nocapture the_coverage_table`.
     #[test]
     fn the_coverage_table() {

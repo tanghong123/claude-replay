@@ -24,6 +24,7 @@
   --hover: #edeade;
   --tool: #2e7d55;
   --link: #3a6ea5;
+  --peer: #2b6f8e; /* another session's message (#s79): a third voice beside the person and the agent */
   --icfg: #28567e;
   --icbg: #eae7db;
   --addbg: #e5f1e2;
@@ -52,6 +53,7 @@
   --hover: #282623;
   --tool: #7fcd90;
   --link: #8fbde8;
+  --peer: #7ab8d6;
   --icfg: #a5cdf0;
   --icbg: #252b31;
   --addbg: #20351f;
@@ -533,6 +535,21 @@ body.selecting #toolmenu, body.selecting #agentmenu {
   background: linear-gradient(transparent, var(--card)); pointer-events: none;
 }
 .clampbtn { margin-top: 4px; }
+/* Another session's message (#s79, Hong's choice: a card from the left). Never the person's
+   ❯ card: a rule in the peer hue down its left edge, its sender above the message. */
+.pturn {
+  position: relative; margin: 0 0 10px; padding: 10px 16px 12px 14px;
+  border: 1px solid var(--border); border-left: 3px solid var(--peer);
+  border-radius: 4px 10px 10px 4px; background: var(--bg);
+}
+.pturn-h { display: flex; gap: 8px; align-items: baseline; margin: 0 0 6px; font-size: 13px; }
+.pturn-glyph { color: var(--peer); font-weight: 700; }
+.pturn-from { color: var(--peer); font-weight: 650; }
+.pturn-what { color: var(--faint); }
+.pturn-mode { color: var(--faint); font-family: var(--mono); font-size: 11.5px; }
+.pturn .ts { position: absolute; top: 10px; right: 40px; }
+.pturn > .alink { position: absolute; top: 9px; right: 14px; }
+.pturn-body > :last-child { margin-bottom: 0; }
 /* A queued (in-flight) mid-turn prompt not yet picked up — dim, no card chrome, so
    it reads as a faint annotation rather than a full turn. */
 .qmarker {
@@ -701,7 +718,7 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 #stream { margin-top: 16px; }
 #vwin { flex: 0 0 auto; }
 #stream > *, #vwin > * { flex: 0 0 auto; margin-top: 0; }
-#vwin > .blk:has(+ .uturn:not(.fold)) { margin-bottom: 16px; }
+#vwin > .blk:has(+ .uturn:not(.fold)), #vwin > .blk:has(+ .pturn) { margin-bottom: 16px; }
 #vwin > .blk:has(+ .amark), #vwin > .blk:has(+ .qmarker) { margin-bottom: 10px; }
 #vwin > .ablock:has(+ .fold) { margin-bottom: 2px; }
 /* #201. Each of the three again, keyed on what the MODEL says follows (`data-next`, the successor's
@@ -710,7 +727,7 @@ body.selecting #toolmenu, body.selecting #agentmenu {
    record measured 16px less there than with it mounted — the engine's sums hold one height per
    record, margins included, and cannot know a trait of the window's edge. Same values, same
    specificity: where both apply they agree, and at the edge only these do. */
-#vwin > .blk[data-next~="uturn"]:not([data-next~="fold"]) { margin-bottom: 16px; }
+#vwin > .blk[data-next~="uturn"]:not([data-next~="fold"]), #vwin > .blk[data-next~="pturn"] { margin-bottom: 16px; }
 #vwin > .blk[data-next~="amark"], #vwin > .blk[data-next~="qmarker"] { margin-bottom: 10px; }
 #vwin > .ablock[data-next~="fold"] { margin-bottom: 2px; }
 .fold { border-radius: 8px; margin: 0 0 2px; }

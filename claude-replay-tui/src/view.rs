@@ -2501,7 +2501,8 @@ impl SearchScope {
             k @ (K::Bash | K::Edit | K::Write | K::Read | K::Skill | K::Tool | K::ToolResult) => {
                 self.admits_tool_kind(k)
             }
-            K::Queue | K::Attachment | K::Agent | K::Compaction => false,
+            // Another session's message (#s79) is in no class: `u:` is the person's own turns.
+            K::Peer | K::Queue | K::Attachment | K::Agent | K::Compaction => false,
         }
     }
 }
@@ -2757,6 +2758,7 @@ fn block_occurrences(b: &Block, needle: &str, whole: bool) -> usize {
         Block::UserText(t) | Block::AssistantText(t) | Block::ToolResult(t) => count(t, needle),
         Block::AssistantMessage { text, .. } => count(text, needle),
         Block::QueueEvent { text } => count(text, needle),
+        Block::PeerText { from, text, .. } => count(from, needle) + count(text, needle),
         Block::Thinking { text, tools, .. } => {
             count(text, needle)
                 + tools

@@ -277,11 +277,16 @@ pub const COMPACT_AFTER: usize = 256;
 /// records a refused one, which puts the previous list back. A v50 stream holds a refused list as
 /// the session's tasks, and a v50 reader cannot read a `Retract`.
 ///
+/// v52: #s79 — a message from another agent session is a `PeerText` block that opens a turn
+/// (it was a note under the previous reply, or a `UserText` when it arrived mid-turn), and pasted
+/// text in a prompt is a fence labelled `pasted` (it was the client's raw `<pasted_content>`
+/// markers). A v51 stream holds both the old way, and a v51 reader cannot read a `PeerText`.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 51;
+pub const FOLD_VERSION: u16 = 52;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

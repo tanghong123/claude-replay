@@ -114,6 +114,19 @@ pub enum Message {
     /// A genuine human turn — already cleaned by L1 (caveats stripped, classified as neither
     /// a command nor injected/system content). Becomes a `UserText` block.
     UserText { text: String },
+    /// A message from another agent session (#s79): opens a turn like a prompt and becomes a
+    /// `PeerText` block, never a `UserText` — the person did not type it. `text` is the message
+    /// alone; `from` and `mode` name the sending session as the client recorded them.
+    ///
+    /// `queued` is the RAW text the client queued it under, when it arrived mid-turn: the fold
+    /// matches the pending queue on it exactly as it does a queued prompt (#52), so a peer
+    /// message's queue item is popped at pickup. `None` for one delivered between turns.
+    PeerText {
+        from: String,
+        mode: Option<String>,
+        text: String,
+        queued: Option<String>,
+    },
     /// Injected/system content that isn't a human turn — a caveat-stripped `isMeta` body, a
     /// `/compact` summary, a task-notification's one-line summary, or an orphan skill body.
     /// Becomes a foldable `ToolResult` block. L1 has already reduced it to its final text.
@@ -238,6 +251,7 @@ impl Message {
         matches!(
             self,
             Message::UserText { .. }
+                | Message::PeerText { .. }
                 | Message::Command { .. }
                 | Message::CommandStdout { .. }
                 | Message::AttachmentPrompt { .. }

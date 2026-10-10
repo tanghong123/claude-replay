@@ -222,6 +222,18 @@ pub struct Hunk {
 pub enum Block {
     /// A human turn (a `user` event whose content is a plain string).
     UserText(String),
+    /// A message from ANOTHER agent session, delivered into this one (Claude Code's
+    /// cross-session messages, #s79). It opens a turn as a prompt does — the agent answers it —
+    /// but it is not the human's: it carries who sent it, and every consumer that asks "what did
+    /// the person type" (the `u:` search class, "your turns") must leave it out. `text` is the
+    /// message alone, Markdown, without the client's wrapper or the instructions it adds for the
+    /// model; `from` is the sending session's name as the client recorded it, and `mode` its
+    /// permission mode when the record says (`bypass`, …).
+    PeerText {
+        from: String,
+        mode: Option<String>,
+        text: String,
+    },
     /// A mid-turn prompt the human submitted while the agent was busy — recorded as
     /// a `queue-operation` `enqueue`, shown as a dim `⧗ queued: …` marker at submit
     /// time. It marks the human's in-flight input and the submit-vs-pickup lag. If the
@@ -653,6 +665,7 @@ pub struct SubAgentMeta {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockKind {
     User,
+    Peer,
     Queue,
     Assistant,
     Think,
@@ -676,6 +689,7 @@ pub fn block_kind(b: &Block) -> BlockKind {
     use BlockKind::*;
     match b {
         Block::UserText(_) => User,
+        Block::PeerText { .. } => Peer,
         Block::QueueEvent { .. } => Queue,
         Block::AssistantText(_) | Block::AssistantMessage { .. } => Assistant,
         Block::Thinking { tools, .. } => {
@@ -708,6 +722,7 @@ impl BlockKind {
         use BlockKind::*;
         match self {
             User => "user",
+            Peer => "peer",
             Queue => "queue",
             Assistant => "assistant",
             Think | Act => "thinking",
@@ -730,6 +745,7 @@ impl BlockKind {
         use BlockKind::*;
         match self {
             User => "user",
+            Peer => "peer",
             Queue => "queue",
             Assistant => "assistant",
             Think => "think",
@@ -761,6 +777,18 @@ pub fn fold_key(b: &Block) -> &'static str {
         return "edit";
     }
     block_kind(b).fold_key()
+}
+
+impl Block {
+    /// Does this block OPEN a turn — a human prompt, a slash command, or another session's
+    /// message (#s79)? The one definition every turn boundary, turn count, sticky strip and turn
+    /// list reads, so a new turn-opening block is added here and nowhere else.
+    pub fn opens_turn(&self) -> bool {
+        matches!(
+            self,
+            Block::UserText(_) | Block::Command { .. } | Block::PeerText { .. }
+        )
+    }
 }
 
 /// Whether a block can be collapsed/expanded (has foldable body content). The single

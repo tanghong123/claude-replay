@@ -318,6 +318,12 @@ export function renderUnit(unit, state) {
     const expanded = state.promptExpanded.has(unit.key);
     html = `<div class="turn user command" data-kind="user" data-record-kind="command" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt command-card"><button class="command-head" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}" title="${expanded ? "Fold this command" : "Show this command's arguments and output"}"><span class="command-badge">/${escapeText(cmd.name)}</span><span class="command-preview">${escapeText(cmd.preview)}</span>${cmd.lines ? `<span class="command-chip">${escapeText(cmd.lines)}</span>` : ""}<span class="command-chevron" aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>${expanded ? `<div class="prompt-copy-shell expanded">${resultBodyHtml(body, APP_RESULT)}</div>` : ""}${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
   }
+  else if (unit.type === "user" && unit.view.peer) {
+    // Another session's message (#s79, Hong's choice: a card from the left). It counts as a turn,
+    // but it is not the person's: no right-hand bubble, no "exactly as typed" raw toggle.
+    const peer = unit.view.peer;
+    html = `<div class="turn peer" data-kind="peer" data-record-kind="peer" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="peer-card"><div class="peer-head"><span class="peer-glyph" aria-hidden="true">⇄</span><span class="peer-from">${escapeText(peer.from)}</span><span class="peer-what">another session</span>${peer.mode ? `<span class="peer-mode" title="The sending session's permission mode">${escapeText(peer.mode)}</span>` : ""}</div><div class="body markdown">${unit.view.html}</div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}</div>`;
+  }
   else if (unit.type === "user") {
     const long = promptShouldCollapse(unit.view.html);
     const expanded = state.promptExpanded.has(unit.key);

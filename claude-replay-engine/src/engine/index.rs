@@ -85,7 +85,7 @@ impl SessionIndex {
             let b = b.borrow();
             // Advance the user-turn cursor exactly as the incremental caller would: a user turn
             // consumes the next `user_times` entry, everything else passes `None`.
-            let turn_time = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
+            let turn_time = if b.opens_turn() {
                 let t = user_times.get(turn_i).copied().flatten();
                 turn_i += 1;
                 t
@@ -275,7 +275,7 @@ mod tests {
         let mut incr = SessionIndex::default();
         let mut turn_i = 0usize;
         for (at, b) in blocks.iter().enumerate() {
-            let tt = if matches!(b, Block::UserText(_) | Block::Command { .. }) {
+            let tt = if b.opens_turn() {
                 let t = user_times.get(turn_i).copied().flatten();
                 turn_i += 1;
                 t
