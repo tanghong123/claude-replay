@@ -195,7 +195,10 @@ const AUDIT_JS: &str = r##"(function () {
           // like b24/.0.2 is unactionable without knowing what element it names.
           cls: (typeof el.className === "string" ? el.className : "").split(/\s+/).slice(0, 3).join("."),
           code: !!el.closest("[data-code]"),
-          pre: el.tagName === "PRE",
+          // A <pre> and everything inside it are one verbatim text: a Markdown fence is
+          // `<pre><code>…</code></pre>`, and its <code> is the same text as the <pre>, not inline
+          // code in prose (#s79 put the first fence inside prose into the corpus — a pasted block).
+          pre: !!el.closest("pre"),
           mono: /mono/i.test(fam),
           // A RAIL — the line-number gutter and the +/− marker — as the page itself declares
           // it, by making it unselectable (#266). Measured style, never a class name, in the
