@@ -4,8 +4,8 @@
 //! formatting live in [`claude_replay_engine::seam`].
 
 use claude_replay_engine::seam::{
-    credits_cost, long_prompt_over, parse_ts, total_cost, Metrics, ReportedCost, RequestPricing,
-    RuntimeInfo, ServiceTier, TimeSpan, TokenCounts,
+    credits_cost, long_prompt_over, parse_ts, prices_fast, total_cost, Metrics, ReportedCost,
+    RequestPricing, RuntimeInfo, ServiceTier, TimeSpan, TokenCounts,
 };
 use serde_json::Value;
 
@@ -238,23 +238,42 @@ impl MetricsAcc {
             });
             // The same judgement as this push's billing class (#s56), for a consumer that keeps
             // classes beside its token deltas — set only for a model whose price depends on the
-            // request, where a class changes the price. The tier is the one the provider
-            // returned, confirmed only on the standard speed. A repeat whose prompt crossed the
-            // line moved the call's earlier credit into the long subset, which no class of this
-            // delta can say, so it has none.
-            self.request_pricing = over
-                .filter(|&(now, before)| {
-                    credit != TokenCounts::default() && !(now && repeat && !before)
-                })
-                .map(|(now, _)| {
-                    let tier = u.get("service_tier").and_then(Value::as_str);
-                    let speed = u.get("speed").and_then(Value::as_str);
-                    RequestPricing {
-                        tier: tier.map(ServiceTier::from_recorded).unwrap_or_default(),
-                        long_context: Some(now),
-                        tier_confirmed: tier.is_some() && speed.is_none_or(|s| s == "standard"),
-                    }
-                });
+            // request, where a class changes the price: by prompt length (#s47) or by speed
+            // (#s78). The tier is the one the provider returned, confirmed only on the standard
+            // speed — except fast mode, which the request records as its SPEED ("fast") and the
+            // catalog prices for Opus 5.5, Opus 5 and Opus 4.8: that is a confirmed Fast. Claude's
+            // service_tier "priority" is the Priority Tier, not fast mode, and stays unpriced. A
+            // repeat whose prompt crossed the line moved the call's earlier credit into the long
+            // subset, which no class of this delta can say, so it has none.
+            let fast_rule = prices_fast(&m);
+            let class = |long_context: Option<bool>| {
+                let tier = u.get("service_tier").and_then(Value::as_str);
+                let speed = u.get("speed").and_then(Value::as_str);
+                if fast_rule && speed == Some("fast") {
+                    return RequestPricing {
+                        tier: ServiceTier::Fast,
+                        long_context,
+                        tier_confirmed: true,
+                    };
+                }
+                RequestPricing {
+                    tier: match tier {
+                        Some("priority") | None => ServiceTier::Unknown,
+                        Some(t) => ServiceTier::from_recorded(t),
+                    },
+                    long_context,
+                    tier_confirmed: tier.is_some() && speed.is_none_or(|s| s == "standard"),
+                }
+            };
+            self.request_pricing = match over {
+                Some(_) => over
+                    .filter(|&(now, before)| {
+                        credit != TokenCounts::default() && !(now && repeat && !before)
+                    })
+                    .map(|(now, _)| class(Some(now))),
+                None if fast_rule && credit != TokenCounts::default() => Some(class(None)),
+                None => None,
+            };
             let bucket = self.per_model.entry(m).or_default();
             *bucket += credit;
             if let Some(long) = long {
@@ -1277,13 +1296,62 @@ mod long_prompt_tests {
         unrecorded.push(&fast);
         assert!(!unrecorded.request_pricing().unwrap().tier_confirmed);
 
-        // A model with one rate whatever the prompt has no class to name.
+        // A model with one rate whatever the request has no class to name.
         let mut opus = MetricsAcc::default();
         opus.push(&serde_json::json!({"type": "assistant", "requestId": "req_I",
-            "message": {"role": "assistant", "id": "msg_I", "model": "claude-opus-4-8",
+            "message": {"role": "assistant", "id": "msg_I", "model": "claude-opus-4-7",
                 "usage": {"input_tokens": 2, "cache_read_input_tokens": 500_000, "output_tokens": 100,
                     "service_tier": "standard"}}}));
         assert_eq!(opus.request_pricing(), None);
+    }
+
+    /// #s78: fast mode is a request's SPEED. On Opus 5.5, Opus 5 and Opus 4.8, which the catalog
+    /// prices fast at 2x on every class, a push recorded with `usage.speed` "fast" names a
+    /// confirmed Fast class (the engine's `fast_mode_is_twice_standard_on_opus_5_5_5_and_4_8`
+    /// prices it at twice standard); a standard-speed push names Standard; Opus 4.7, which refuses fast mode, names none; and a
+    /// `service_tier` "priority" (the Priority Tier, not fast mode) is not taken for Fast.
+    #[test]
+    fn a_fast_mode_request_names_the_fast_class_where_the_catalog_prices_it() {
+        let line = |model: &str, id: &str, speed: &str, tier: &str| {
+            serde_json::json!({"type": "assistant", "requestId": format!("req_{id}"),
+                "message": {"role": "assistant", "id": format!("msg_{id}"), "model": model,
+                    "usage": {"input_tokens": 1_000, "cache_creation_input_tokens": 2_000,
+                        "cache_read_input_tokens": 30_000, "output_tokens": 500,
+                        "service_tier": tier, "speed": speed}}})
+        };
+        for model in ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"] {
+            let mut acc = MetricsAcc::default();
+            acc.push(&line(model, "F", "fast", "standard"));
+            let fast = acc
+                .request_pricing()
+                .expect("a fast request names its class");
+            assert_eq!(
+                fast,
+                RequestPricing {
+                    tier: ServiceTier::Fast,
+                    long_context: None,
+                    tier_confirmed: true,
+                },
+                "{model}"
+            );
+            acc.push(&line(model, "S", "standard", "standard"));
+            let standard = acc.request_pricing().expect("so does a standard one");
+            assert_eq!(
+                (standard.tier, standard.tier_confirmed),
+                (ServiceTier::Standard, true)
+            );
+
+            let mut priority = MetricsAcc::default();
+            priority.push(&line(model, "P", "standard", "priority"));
+            assert_eq!(
+                priority.request_pricing().unwrap().tier,
+                ServiceTier::Unknown,
+                "{model}: the Priority Tier is not fast mode"
+            );
+        }
+        let mut refused = MetricsAcc::default();
+        refused.push(&line("claude-opus-4-7", "R", "fast", "standard"));
+        assert_eq!(refused.request_pricing(), None, "Opus 4.7 has no fast rule");
     }
 
     /// A model the catalog prices at one rate whatever the prompt never gets a subset.

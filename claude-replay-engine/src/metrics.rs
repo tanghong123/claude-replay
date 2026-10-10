@@ -1132,6 +1132,15 @@ pub fn long_prompt_over(model: &str) -> Option<u64> {
         .and_then(|policy| policy.long_prompt_over)
 }
 
+/// Does the catalog price a Fast request of this model at its own rate (#s78)? An adapter whose
+/// client records the speed per request (Claude Code's `usage.speed`) asks it, so a request is
+/// classed Fast only where Fast changes the price.
+pub fn prices_fast(model: &str) -> bool {
+    builtin_request_policies()
+        .get(&normalize_model_name(model))
+        .is_some_and(|policy| policy.fast.is_some())
+}
+
 fn builtin_request_policies() -> &'static BTreeMap<String, RequestPolicy> {
     static POLICIES: OnceLock<BTreeMap<String, RequestPolicy>> = OnceLock::new();
     POLICIES.get_or_init(|| {
@@ -2284,6 +2293,58 @@ mod request_pricing_tests {
                 );
                 assert!(!estimated, "{model} {tier:?}");
             }
+        }
+    }
+
+    /// #s78, Anthropic fast mode (the pricing page's Fast mode pricing section, read raw
+    /// 2026-10-10): Opus 5.5 at $8 / $40 against $4 / $20, Opus 5 and Opus 4.8 at $10 / $50
+    /// against $5 / $25, the caching multipliers on top — 2x on every class, across the whole
+    /// context window. Opus 4.7, 4.6 and 4.5 share Opus 4.8's standard rates but no fast rule: a
+    /// Fast request there prices at standard, as an estimate. `prices_fast` says which is which.
+    #[test]
+    fn fast_mode_is_twice_standard_on_opus_5_5_5_and_4_8() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            cache_creation: 1_000_000,
+            cache_read: 1_000_000,
+            output: 1_000_000,
+            ..Default::default()
+        };
+        let fast = RequestPricing {
+            tier: ServiceTier::Fast,
+            long_context: None,
+            tier_confirmed: true,
+        };
+        let standard = RequestPricing {
+            tier: ServiceTier::Standard,
+            ..fast
+        };
+        for (model, standard_usd) in [
+            ("claude-opus-5-5", 4.0 + 5.0 + 0.2 + 20.0),
+            ("claude-opus-5", 5.0 + 6.25 + 0.5 + 25.0),
+            ("claude-opus-4-8", 5.0 + 6.25 + 0.5 + 25.0),
+        ] {
+            assert!(prices_fast(model), "{model}");
+            let (s, s_est) = standard.cost_with(&table, model, tokens);
+            let (f, f_est) = fast.cost_with(&table, model, tokens);
+            assert!(!s_est && !f_est, "{model}: both exact");
+            assert!(
+                (s.unwrap() - standard_usd).abs() < 1e-9,
+                "{model}: standard {s:?}"
+            );
+            assert!(
+                (f.unwrap() - 2.0 * standard_usd).abs() < 1e-9,
+                "{model}: fast {f:?}"
+            );
+        }
+        for model in ["claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5"] {
+            assert!(!prices_fast(model), "{model}");
+            let (f, _) = fast.cost_with(&table, model, tokens);
+            assert!(
+                (f.unwrap() - 36.75).abs() < 1e-9,
+                "{model}: no fast rule, standard rates"
+            );
         }
     }
 
