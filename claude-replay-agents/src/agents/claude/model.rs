@@ -807,6 +807,16 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // from `message.model` by more than `[1m]` with no fallback record beside it — a
             // substitution the page would not show.
             "requestedModel",
+            // #s77 (client 2.1.296): the `thinking.display` the client asked the API for, on exactly
+            // the assistant records that carry a `thinking` block. Met on 791 records in 15
+            // transcripts on this machine, 2026-10-09, every one "summarized": the block's text is
+            // the API's summary, which the page already draws as thinking (no display setting
+            // returns raw reasoning on a Claude 4+ model), so nothing a reader needs. REVISIT: the
+            // first value other than "summarized" — under "omitted" or "updates" a reasoning block
+            // arrives with an EMPTY `thinking` field, which the fold drops (a `redacted_thinking`
+            // block keeps a placeholder), so a session on "omitted" would lose every reasoning
+            // marker: a RENDER question for the owner, queued with the count and client version.
+            "thinkingDisplay",
         ],
     ),
     (
@@ -1103,6 +1113,12 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "backgroundTaskId",
     "backgroundedByUser",
     "bytes",
+    // #s77, Agent (client 2.1.296): the boolean `true` on the result of a background launch
+    // (`status: "async_launched"`), beside `canReadOutputFile`; 12 of 12 on this machine,
+    // 2026-10-09. It tells the model it may continue that sub-agent; the card and the Agents pane
+    // already show the launch and the agent. REVISIT if it arrives false, or on any result other
+    // than an async launch.
+    "canContinueAgent",
     "canEdit",
     "canReadOutputFile",
     "cancelledWakeups",
