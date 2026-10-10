@@ -13795,6 +13795,33 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         harness::until_drawers_settle(tab);
         settle();
     };
+    // A write the chain never sees, then the page's answer to it. The answer is the column's
+    // `scroll` handler, and the browser dispatches that event at its next frame — which a lazily
+    // ticking headless tab (#204) can hold past `settle()`'s cap. Measured on macOS (#s80): one
+    // run in four read the offset (66) before the event, and a read a moment later found it given
+    // back with exactly one event heard. So the read waits until the event has come, or until the
+    // write is seen not to have moved the column at all (then there is no event to wait for).
+    let write_unseen = |tab: &headless_chrome::Tab, write: &str| {
+        eval(
+            tab,
+            &format!(
+                "(function(){{var n=document.getElementById('sessionNavigator'); \
+                 window.__navHeard=0; if(!window.__navEar){{window.__navEar=1; \
+                 n.addEventListener('scroll',function(){{window.__navHeard++;}});}} \
+                 var before=n.scrollTop; {write}; window.__navMoved=n.scrollTop!==before; \
+                 return 'ok';}})()"
+            ),
+        );
+        harness::until(
+            tab,
+            "!window.__navMoved || window.__navHeard > 0",
+            "the column's scroll event after a write the chain never saw",
+            Duration::from_secs(10),
+            "JSON.stringify({moved: window.__navMoved, heard: window.__navHeard, \
+             scroll: document.getElementById('sessionNavigator').scrollTop})",
+        );
+        settle();
+    };
     // Ordinary windows and one no reader would choose. 1366x768 is SHORTER than 1280x800, so the
     // sweep is by height as much as by width; 950x520 is the corner where the breathing room has
     // to go for the shut chain to fit at all.
@@ -13814,11 +13841,10 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
 
         // 1. What the tape did: frame a card with `scrollIntoView`. The column takes the offset
         //    for an instant and hands it straight back, because no drawer paid for it.
-        eval(
+        write_unseen(
             &page.tab,
-            "(function(){var c=document.querySelectorAll('.outline-card'); if(c.length) c[c.length-1].scrollIntoView({block:'center'}); return 'ok';})()",
+            "var c=document.querySelectorAll('.outline-card'); if(c.length) c[c.length-1].scrollIntoView({block:'center'})",
         );
-        settle();
         let seen = read(&page.tab);
         assert!(
             seen["cards"].as_i64().unwrap_or(0) >= 3 && seen["open"].as_i64().unwrap_or(0) >= 3,
@@ -13836,11 +13862,7 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         );
 
         // 2. And a bare write, which is the same hole with the politeness removed.
-        eval(
-            &page.tab,
-            "(function(){document.getElementById('sessionNavigator').scrollTop=200;return 'ok';})()",
-        );
-        settle();
+        write_unseen(&page.tab, "n.scrollTop=200");
         let seen = read(&page.tab);
         assert_eq!(
             seen["scroll"].as_i64(),
