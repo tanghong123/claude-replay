@@ -17518,6 +17518,45 @@ fn app_shell_shows_a_message_sent_on_its_card() {
     scenario_a_message_sent_shows_on_its_card(&page.tab, Surface::AppShell, &fx);
 }
 
+/// #s84: the app shell clips a PATH target at its start (the file name is the part a reader looks
+/// for) and every other target at its END (a summary's or a command's start says what it is). It
+/// clipped them all at the start, so a SendMessage summary read "…skua-HD: release out" on a phone.
+/// Each target is narrowed to 90px so both overflow, then the side its text overflows is measured.
+/// The path is a Write's, which stands alone (a Read would join a collapsed activity run).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_clips_a_prose_target_at_its_end_and_a_path_at_its_start() {
+    let _serial = serial();
+    let fx = sent_fixture("scenario-clip-app");
+    let page = open(Surface::AppShell, &fx, 3085);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    let side = |pick: &str| -> serde_json::Value {
+        harness::probe(
+            tab,
+            &format!(
+                "(function(){{ var t = [...document.querySelectorAll('.renderer > .renderer-head > .renderer-target')].filter(function (t) {{ return {pick}; }}).pop(); \
+                 if (!t) return null; t.style.maxWidth = '90px'; var b = t.querySelector('bdi').getBoundingClientRect(), r = t.getBoundingClientRect(); \
+                 return {{ text: t.textContent, link: t.classList.contains('renderer-target-link'), start: Math.abs(b.left - r.left) < 1.5 && b.right > r.right + 4, end: Math.abs(b.right - r.right) < 1.5 && b.left < r.left - 4 }}; }})()"
+            ),
+        )
+    };
+    let summary = side("/Reply to skua-HD/.test(t.textContent)");
+    assert_eq!(
+        (summary["link"].clone(), summary["start"].clone()),
+        (serde_json::json!(false), serde_json::json!(true)),
+        "a summary keeps its start in view and is clipped at its end: {summary}"
+    );
+    let path = side("/the-release-notes-for-skua/.test(t.textContent)");
+    assert_eq!(
+        (path["link"].clone(), path["end"].clone()),
+        (serde_json::json!(true), serde_json::json!(true)),
+        "a path keeps its file name in view and is clipped at its start: {path}"
+    );
+}
+
 /// Twelve turns, then a prompt whose answer sends a message to another session — the call and the
 /// receipt as Claude Code 2.1.296 writes them, built by hand.
 fn sent_fixture(name: &str) -> Fixture {
@@ -17529,6 +17568,12 @@ fn sent_fixture(name: &str) -> Fixture {
         "type": "user", "cwd": "/r", "timestamp": now_minus(60), "origin": {"kind": "human"},
         "message": {"role": "user", "content": "tell skua the release is out"}
     }));
+    transcript += &line(serde_json::json!({
+        "type": "assistant", "cwd": "/r", "timestamp": now_minus(58),
+        "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "wr1", "name": "Write",
+            "input": {"file_path": "/r/releases/notes/2026/october/the-release-notes-for-skua.md", "content": "v2.4.0 is out\n"}}]}
+    }));
+    transcript += &tool_result_text("wr1", "File created successfully", &now_minus(57));
     let message = "skua-HD: the release is out.\n\n- pin it with `vendor.sh`";
     let receipt = "“Reply to skua-HD: release out” → uds:/tmp/cc-socks/1.sock; in that session's inbox, not yet read";
     transcript += &line(serde_json::json!({

@@ -891,7 +891,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    that element clips without an ellipsis; here the two fight — rtl puts the ellipsis at the
    visual left, and then left-alignment pushes the overflow back out to the right, losing the
    file name the rule exists to keep. Measured: name starting 230px into a 275px box. */
-.renderer-target{direction:rtl}
+/* #s84: rtl is for a PATH, and a path is always the link (`.renderer-target-link`, components.js:
+   every `view.path` is one, stamped or not). Every other target is prose or a command — a
+   SendMessage summary, a task subject, an agent's description, a shell command — and its START
+   says what it is, so it keeps the reference's own tail ellipsis, as the classic page's heads do.
+   It was `.renderer-target{direction:rtl}`: "Reply to skua-HD: v2.4.0 is out" read "…skua-HD:
+   v2.4.0 is out" on a phone. */
+.renderer-target-link{direction:rtl}
 /* #304 — …but the TEXT inside is isolated left-to-right (`<bdi dir="ltr">`). In a right-to-left
    paragraph the leading neutral characters of a path — `/`, `./`, `~/.` — resolve right-to-left and
    are drawn at the far end: `~/.claude/…/portal-models.png` read `claude/…/portal-models.png./~`.
