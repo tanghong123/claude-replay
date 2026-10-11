@@ -1352,8 +1352,21 @@ const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
 /// array, scope: string, pins_enabled: boolean}`. `pins_enabled` is a service feature flag (whether
 /// the account may pin artifacts), not something the call did; the result TEXT the page draws
 /// states the listing itself. Revisit if a list result ever carries per-artifact pin state the
-/// text does not state.
-const ARTIFACT_LIST_SHAPE: &[&str] = &["artifacts", "pins_enabled", "scope"];
+/// text does not state. Since client 2.1.296 it also carries `total` (#s81, one record, measured
+/// 2026-10-11): an integer equal to the length of `artifacts`, a count the text's listing shows.
+const ARTIFACT_LIST_SHAPE: &[&str] = &["artifacts", "pins_enabled", "scope", "total"];
+
+/// Every key a ListAgents result was met with (#s81, client 2.1.296, 8 results measured 2026-10-11;
+/// 2.1.288 and 2.1.289 wrote `listing` alone): `{listing, sections, notes}`. `sections` is a
+/// structured copy of the listing, an array of `{kind, total, rows}` whose kinds are `subagents`
+/// (rows `{id, type, status}`) and `sessions` (rows `{name, ref, type, status}`), and the listing
+/// IS the tool_result text the card draws, row for row. `notes` was an empty array in all 8.
+const LIST_AGENTS_SHAPE: &[&str] = &["listing", "notes", "sections"];
+
+/// Every key a ReadNotifications result was met with (#s81, client 2.1.296; 9 earlier results
+/// carry the first two alone): `{notifications, remaining, read_at}`. `read_at` is the moment of
+/// the read as an ISO-8601 string, 1-2 ms before the record's own timestamp.
+const READ_NOTIFICATIONS_SHAPE: &[&str] = &["notifications", "read_at", "remaining"];
 
 /// Every key a Qwenwork Bash result was met with (#s17, client 1.1.32, 20 of 20 in one session):
 /// the shared `stdout`/`stderr`/`interrupted`/`isImage`/`noOutputExpected`, plus `exitCode` (read),
@@ -1455,6 +1468,20 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // Artifact's list result (#s62): `pins_enabled` is an account's feature flag, and a word
     // another tool could use for anything, so it is known only in the list's own shape.
     ("pins_enabled", ARTIFACT_LIST_SHAPE),
+    // #s81 (client 2.1.296): the list's `total` is the number of artifacts it lists. Adding it to
+    // the shape also silences `pins_enabled` again, which came back beside it: a name here is known
+    // only while every key of the result is in the shape, so a shaped result that gains a key
+    // brings its known keys back with the new one.
+    ("total", ARTIFACT_LIST_SHAPE),
+    // #s81 (client 2.1.296): ListAgents' `sections` repeats, as structure, the listing the card
+    // draws as text; `notes` has only been met empty. Both are generic words, so each is known
+    // only in this shape. REVISIT when `notes` arrives non-empty: nobody has seen what it carries,
+    // so check then whether the listing text states it.
+    ("sections", LIST_AGENTS_SHAPE),
+    ("notes", LIST_AGENTS_SHAPE),
+    // #s81 (client 2.1.296): ReadNotifications' `read_at` is when the read happened, bookkeeping
+    // the record's own timestamp already gives to within milliseconds. Known only in this shape.
+    ("read_at", READ_NOTIFICATIONS_SHAPE),
     // #s19 (client 2.1.287+): a Skill result names the tools its skill's frontmatter grants
     // without a permission prompt. A static grant, not something the run did: the Skill card names
     // the skill, every tool it then used is a card of its own, and permission bookkeeping is not
@@ -6440,6 +6467,20 @@ mod tests {
             vec!["pins_enabled"],
             "beside a key the list shape lacks, it is reported like any new key"
         );
+        // #s81: since client 2.1.296 the list also carries `total`, known in the same shape.
+        let list =
+            serde_json::json!({"artifacts": [], "scope": "all", "pins_enabled": true, "total": 0});
+        assert_eq!(
+            unknown_tool_result_keys(&list),
+            Vec::<&str>::new(),
+            "{list}"
+        );
+        let elsewhere = serde_json::json!({"total": 0, "stdout": "ok"});
+        assert_eq!(
+            unknown_tool_result_keys(&elsewhere),
+            vec!["total"],
+            "beside a key the list shape lacks, `total` is reported like any new key"
+        );
     }
 
     /// #277 — seven shapes the daily review judged bookkeeping are known now, and the two with
@@ -6617,6 +6658,23 @@ mod tests {
             unknown(&serde_json::json!({"mode": "plan", "stdout": "ok"})),
             vec!["mode".to_string()],
             "…and `mode` from any other tool is reported"
+        );
+        // #s81: ListAgents and ReadNotifications as client 2.1.296 writes them.
+        for known in [
+            serde_json::json!({"listing": "Sub-agents (1)\n  a1  Explore  running", "sections": [{"kind": "subagents", "total": 1, "rows": [{"id": "a1", "type": "Explore", "status": "running"}]}], "notes": []}),
+            serde_json::json!({"notifications": [], "remaining": 0, "read_at": "2026-10-10T08:00:00.000Z"}),
+        ] {
+            assert_eq!(unknown(&known), Vec::<String>::new(), "known: {known}");
+        }
+        assert_eq!(
+            unknown(&serde_json::json!({"sections": [], "notes": [], "stdout": "ok"})),
+            vec!["notes".to_string(), "sections".to_string()],
+            "`sections` and `notes` are known only in ListAgents' shape"
+        );
+        assert_eq!(
+            unknown(&serde_json::json!({"read_at": "2026-10-10T08:00:00.000Z", "stdout": "ok"})),
+            vec!["read_at".to_string()],
+            "`read_at` is known only in ReadNotifications' shape"
         );
 
         // The attachment is `{type, organizationUuid}` and nothing else.
