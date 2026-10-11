@@ -315,6 +315,11 @@ pub enum Block {
         /// can stamp, open and reveal like any other. Empty for every other tool.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         delivered: Vec<String>,
+        /// The words this call SENT to another agent (#s83: `SendMessage { message }`). The
+        /// result is only the client's delivery receipt for the sending agent, so without this
+        /// the message itself was nowhere on the card. `None` for every other tool.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sent: Option<String>,
     },
     /// A tool result with no matching tool_use (rare).
     ToolResult(String),
@@ -967,6 +972,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let blocks = vec![
             Block::Thinking {
@@ -1008,6 +1014,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let hunk = Hunk {
             old_start: 1081,
@@ -1083,6 +1090,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let hunk = Hunk {
             old_start: 1,
@@ -1124,6 +1132,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let img = || {
             Block::Attachment(Attachment {
@@ -1233,6 +1242,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         assert_eq!(fold_key(&mk("Read")), "read");
         assert_eq!(fold_key(&mk("Grep")), "read");
@@ -1270,6 +1280,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let bare = Block::Thinking {
             text: "x".into(),

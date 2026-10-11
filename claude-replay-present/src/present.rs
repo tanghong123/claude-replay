@@ -135,6 +135,23 @@ pub fn file_edit_summary(file: &str, adds: usize, dels: usize) -> String {
     }
 }
 
+/// #s83: a SendMessage receipt as the reader should see it, for the terminal and the pages alike.
+/// The client writes it as the JSON of its result (`{"success":true,"message":"…","msg_id":"…"}`),
+/// whose `message` is the sentence that says where the message went ("… in that session's inbox,
+/// not yet read", or "No agent named 'x' is reachable"); a receipt that is not that JSON is kept
+/// as it is.
+pub fn send_receipt(out: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(out.trim())
+        .ok()
+        .and_then(|v| {
+            v.get("message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| out.trim().to_string())
+}
+
 /// The display name Claude Code shows for a tool — it labels Edit/MultiEdit as
 /// `Update`; everything else keeps its tool name.
 pub fn display_name(name: &str) -> &str {
@@ -299,6 +316,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let fresh = call("Write", vec![("", "a\nb\nc\n")], None);
         let edit = call("Edit", vec![("one\ntwo", "one\nTWO\nthree")], None);

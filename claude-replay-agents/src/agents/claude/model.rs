@@ -3149,6 +3149,15 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
                     .and_then(|v| v.as_str())
                     .map(str::to_string)
                     .unwrap_or_else(|| tool_target(input, cwd)),
+                // #s83: a message to another agent is named by its one-line summary, which also
+                // names the recipient where the address cannot (`uds:/tmp/cc-socks/<pid>.sock`,
+                // `bridge:session_…`): "Reply to knack-HD: s244 is done". `to` when there is none.
+                (None, false) if name == "SendMessage" => ["summary", "to"]
+                    .iter()
+                    .find_map(|k| input.get(*k).and_then(Value::as_str))
+                    .map(|v| v.trim().replace('\n', " "))
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_default(),
                 (None, false) => tool_target(input, cwd),
             },
             diffs: extract_diffs(name, input),
@@ -3164,6 +3173,7 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
             published: publish.map(Box::new),
             asked: asked_from_input(name, input).map(Box::new),
             delivered: delivered_from_input(name, input),
+            sent: sent_from_input(name, input),
         }
     }
 }
@@ -3299,6 +3309,22 @@ fn delivered_from_input(name: &str, input: &Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// #s83: the words a `SendMessage` call sent, from its `message`. Measured over 534 calls (clients
+/// 2.1.288 to 2.1.296): every one carries the whole text there, beside `to`/`recipient`, `summary`,
+/// `type: "message"`, `recipient_kind` (2.1.295+) and `content`, a 50-character preview of the
+/// same text that is not read. The result is the client's delivery receipt, addressed to the
+/// sending agent, which the card keeps under the message.
+fn sent_from_input(name: &str, input: &Value) -> Option<String> {
+    if name != "SendMessage" {
+        return None;
+    }
+    input
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|m| !m.trim().is_empty())
+        .map(str::to_string)
 }
 
 /// #281: why a call that has come back carries no answer — `None` when it carries one, and for
@@ -3764,6 +3790,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 published: None,
                                 asked: None,
                                 delivered: Vec::new(),
+                                sent: None,
                             });
                         }
                         Some("advisor_tool_result") => {
@@ -3854,6 +3881,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     published: None,
                                     asked: None,
                                     delivered: Vec::new(),
+                                    sent: None,
                                 });
                             }
                             let idx = out.len() - 1;
@@ -8851,6 +8879,70 @@ mod tests {
         }
         // An empty list is no target at all, not a crash.
         assert_eq!(tool_target(&serde_json::json!({ "files": [] }), "/w"), "");
+    }
+
+    /// #s83 — a message to another agent carries the words it SENT and is named by its summary
+    /// (`to` without one); the result stays its delivery receipt, the only place a failed send
+    /// says so. The owner found knack-HD's card showing the receipt alone.
+    #[test]
+    fn a_message_to_another_agent_carries_what_it_sent() {
+        let jsonl = r##"
+{"type":"assistant","version":"2.1.296","message":{"content":[{"type":"tool_use","id":"m1","name":"SendMessage","input":{"to":"uds:/tmp/cc-socks/29969.sock","summary":"Reply to skua-HD: both done","message":"skua-HD: thanks; both are done.\n\n- s244 closed\n- the review is posted","type":"message","recipient":"uds:/tmp/cc-socks/29969.sock","recipient_kind":"name","content":"skua-HD: thanks; both are done.…"}}]}}
+{"type":"user","version":"2.1.296","toolUseResult":{"success":true,"message":"“Reply to skua-HD: both done” → uds:/tmp/cc-socks/29969.sock; in that session's inbox, not yet read","display":"“Reply to skua-HD: both done” → uds:/tmp/cc-socks/29969.sock; in that session's inbox, not yet read","msg_id":"m-1"},"message":{"content":[{"type":"tool_result","tool_use_id":"m1","content":[{"type":"text","text":"{\"success\":true,\"message\":\"“Reply to skua-HD: both done” → uds:/tmp/cc-socks/29969.sock; in that session's inbox, not yet read\",\"msg_id\":\"m-1\"}"}]}]}}
+{"type":"assistant","version":"2.1.289","message":{"content":[{"type":"tool_use","id":"m2","name":"SendMessage","input":{"to":"petrel-HD","message":"Is the deck pushed?","type":"message","recipient":"petrel-HD","content":"Is the deck pushed?"}}]}}
+{"type":"user","version":"2.1.289","toolUseResult":{"success":false,"message":"No agent named 'petrel-HD' is reachable."},"message":{"content":[{"type":"tool_result","tool_use_id":"m2","content":"{\"success\":false,\"message\":\"No agent named 'petrel-HD' is reachable.\"}"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"TaskCreate","input":{"subject":"Ship it","message":"not a message to anyone"}}]}}
+"##;
+        fn tools(
+            blocks: &[Block],
+            out: &mut Vec<(String, String, Option<String>, Option<String>)>,
+        ) {
+            for b in blocks {
+                match b {
+                    Block::ToolUse {
+                        name,
+                        target,
+                        sent,
+                        output,
+                        ..
+                    } => out.push((name.clone(), target.clone(), sent.clone(), output.clone())),
+                    Block::Thinking { tools: t, .. } => tools(t, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut seen = Vec::new();
+        tools(&parse(jsonl), &mut seen);
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        let (name, target, sent, output) = &seen[0];
+        assert_eq!(
+            (name.as_str(), target.as_str()),
+            ("SendMessage", "Reply to skua-HD: both done")
+        );
+        assert_eq!(
+            sent.as_deref(),
+            Some("skua-HD: thanks; both are done.\n\n- s244 closed\n- the review is posted"),
+            "the whole message, never the 50-character `content` preview"
+        );
+        assert!(
+            output
+                .as_deref()
+                .is_some_and(|o| o.contains("not yet read")),
+            "the receipt is kept: {output:?}"
+        );
+        let (_, target, sent, output) = &seen[1];
+        assert_eq!(target, "petrel-HD", "no summary: the recipient names it");
+        assert_eq!(sent.as_deref(), Some("Is the deck pushed?"));
+        assert!(
+            output
+                .as_deref()
+                .is_some_and(|o| o.contains("No agent named")),
+            "a failed send keeps the words that say so: {output:?}"
+        );
+        assert_eq!(
+            seen[2].2, None,
+            "another tool's `message` is not a message sent"
+        );
     }
 
     /// #275: the block carries EVERY file a send delivered — the label above can hold only the

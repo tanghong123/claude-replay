@@ -144,7 +144,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // nearest existing ancestor, where it got no file stamp at all.
     // v22: #s28 — the note naming a file a shell command changed carries that file's offer
     // (`file: {path, sig, fsig?, name}`).
-    const RECORD_SCHEMA: u16 = 22;
+    // v23: #s83 — a SendMessage card's body is the message it sent (an `md` part) above its
+    // delivery receipt (a `note`), and its head names the summary.
+    const RECORD_SCHEMA: u16 = 23;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);

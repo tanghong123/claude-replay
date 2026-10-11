@@ -17431,6 +17431,128 @@ fn app_shell_shows_another_sessions_message_as_its_own_turn() {
     scenario_another_sessions_message_is_its_own_turn(&page.tab, Surface::AppShell, &fx);
 }
 
+/// #s83: a message the agent SENT to another session shows the message on its card, with the
+/// client's delivery receipt beneath it as a sentence. The owner found the card showing only the
+/// receipt's JSON (`{"success":true,"message":"…"}`), with the message itself nowhere. Written
+/// once, run on both pages: the card's head names the summary, and opened, its body carries the
+/// message rendered as Markdown and the receipt's sentence, never its JSON.
+fn scenario_a_message_sent_shows_on_its_card(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let head = match surface {
+        Surface::Classic => ".fold-h",
+        Surface::AppShell => "button.renderer-head",
+    };
+    let find = format!(
+        "[...document.querySelectorAll('{head}')].filter(function (h) {{ return /Reply to skua-HD/.test(h.textContent); }}).pop()"
+    );
+    until(
+        tab,
+        &format!("!!({find})"),
+        "the SendMessage card's head, named by its summary",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(-400)",
+    );
+    // Open it (and any run it sits in) until its message is drawn.
+    for _ in 0..3 {
+        let shown = eval(
+            tab,
+            "[...document.querySelectorAll('li, p')].some(function (e) { return /pin it with/.test(e.textContent) && e.offsetParent !== null; })",
+        );
+        if shown.as_bool() == Some(true) {
+            break;
+        }
+        eval(
+            tab,
+            &format!("(function(){{ var h = {find}; if (h) h.click(); return 1; }})()"),
+        );
+        settle();
+    }
+    let card = harness::probe(
+        tab,
+        &format!(
+            "(function(){{ var h = {find}; if (!h) return null; \
+             var c = h.closest('.fold, .renderer-turn, .renderer-card, [data-tool]') || h.parentElement; \
+             return {{ text: c.innerText, code: !!c.querySelector('code'), item: !!c.querySelector('li') }}; }})()"
+        ),
+    );
+    let text = card["text"].as_str().unwrap_or("").to_string();
+    assert!(
+        text.contains("skua-HD: the release is out.") && text.contains("pin it with"),
+        "{surface:?}: the card carries the message it sent: {card}"
+    );
+    assert!(
+        card["code"] == true && card["item"] == true,
+        "{surface:?}: the message is rendered as Markdown (a list, inline code): {card}"
+    );
+    assert!(
+        text.contains("in that session's inbox, not yet read"),
+        "{surface:?}: the receipt's sentence stays beneath it: {card}"
+    );
+    assert!(
+        !text.contains("\"success\"") && !text.contains("msg_id"),
+        "{surface:?}: the receipt's JSON is not drawn: {card}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_shows_a_message_sent_on_its_card() {
+    let _serial = serial();
+    let fx = sent_fixture("scenario-sent-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_message_sent_shows_on_its_card(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_shows_a_message_sent_on_its_card() {
+    let _serial = serial();
+    let fx = sent_fixture("scenario-sent-app");
+    let page = open(Surface::AppShell, &fx, 3083);
+    scenario_a_message_sent_shows_on_its_card(&page.tab, Surface::AppShell, &fx);
+}
+
+/// Twelve turns, then a prompt whose answer sends a message to another session — the call and the
+/// receipt as Claude Code 2.1.296 writes them, built by hand.
+fn sent_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    let line = |v: serde_json::Value| format!("{v}\n");
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(60), "origin": {"kind": "human"},
+        "message": {"role": "user", "content": "tell skua the release is out"}
+    }));
+    let message = "skua-HD: the release is out.\n\n- pin it with `vendor.sh`";
+    let receipt = "“Reply to skua-HD: release out” → uds:/tmp/cc-socks/1.sock; in that session's inbox, not yet read";
+    transcript += &line(serde_json::json!({
+        "type": "assistant", "cwd": "/r", "timestamp": now_minus(55), "version": "2.1.296",
+        "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "sm1", "name": "SendMessage",
+            "input": {"to": "uds:/tmp/cc-socks/1.sock", "summary": "Reply to skua-HD: release out",
+                      "message": message, "type": "message", "recipient": "uds:/tmp/cc-socks/1.sock",
+                      "recipient_kind": "name", "content": "skua-HD: the release is out.…"}}]}
+    }));
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(54), "version": "2.1.296",
+        "toolUseResult": {"success": true, "message": receipt, "display": receipt, "msg_id": "m-1"},
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "sm1",
+            "content": [{"type": "text", "text": serde_json::json!({"success": true, "message": receipt, "msg_id": "m-1"}).to_string()}]}]}
+    }));
+    transcript += &assistant_at("told skua", &now_minus(50));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
 /// Twelve turns, a prompt with pasted text and its answer, then a message from another session and
 /// the answer to it — the two record shapes Claude Code writes, built by hand.
 fn peer_fixture(name: &str) -> Fixture {

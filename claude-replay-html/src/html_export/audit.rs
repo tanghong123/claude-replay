@@ -450,6 +450,7 @@ fn tool_use(
         published: None,
         asked: None,
         delivered: Vec::new(),
+        sent: None,
     }
 }
 

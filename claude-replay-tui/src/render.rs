@@ -667,8 +667,29 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
             output,
             execution,
             published,
+            sent,
             ..
         } => {
+            // #s83: a message to another agent is the words it sent, then the client's delivery
+            // receipt, dim — the receipt alone used to be all the call showed.
+            if let Some(text) = sent.as_deref() {
+                out.push(with_execution(
+                    tool_header(name, target, None),
+                    execution.as_ref(),
+                    None,
+                ));
+                for (i, l) in text.lines().enumerate() {
+                    let p = if i == 0 { "  ⎿ \u{a0}" } else { "     " };
+                    out.push(Line::styled(format!("{p}{l}"), theme::result()));
+                }
+                if let Some(o) = output.as_deref().filter(|o| !o.trim().is_empty()) {
+                    let receipt = crate::present::send_receipt(o);
+                    for l in receipt.lines() {
+                        out.push(Line::styled(format!("     {l}"), theme::dim()));
+                    }
+                }
+                return out;
+            }
             // An artifact publish reads as the THING it published. The header already names it
             // (the adapter labels the call by the artifact); what expanding adds is the URL —
             // the only part a reader can act on — and the description. There is no output: the
@@ -1200,6 +1221,18 @@ fn body_len(b: &Block) -> usize {
         // `render_collapsed`), so this count isn't consumed; approximate anyway.
         Block::Thinking { text, .. } => text.lines().count().saturating_sub(1),
         Block::AssistantText(_) | Block::AssistantMessage { .. } | Block::PeerText { .. } => 0, // never collapsed
+        // #s83: the message, then the receipt's lines.
+        Block::ToolUse {
+            sent: Some(text),
+            output,
+            ..
+        } => {
+            text.lines().count()
+                + output
+                    .as_deref()
+                    .filter(|o| !o.trim().is_empty())
+                    .map_or(0, |o| crate::present::send_receipt(o).lines().count())
+        }
         Block::ToolUse {
             name,
             diffs,
@@ -1475,6 +1508,47 @@ mod tests {
         }
     }
 
+    /// #s83: a message to another agent shows what it SENT under the header, then the receipt's
+    /// sentence, dim — the receipt's JSON used to be all it showed. `body_len` counts the same
+    /// lines, so the folded `⋯ N` is honest.
+    #[test]
+    fn a_message_to_another_agent_shows_what_it_sent() {
+        let b = Block::ToolUse {
+            name: "SendMessage".into(),
+            target: "Reply to skua-HD: both done".into(),
+            diffs: vec![],
+            output: Some(
+                r#"{"success":false,"message":"No agent named 'skua-HD' is reachable."}"#.into(),
+            ),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+            sent: Some("skua-HD: both are done.\nThe review is posted.".into()),
+        };
+        let lines = render_one(&b, 120, Hl::Styled);
+        let t = texts(&lines);
+        assert!(
+            t[0].contains("SendMessage(Reply to skua-HD: both done)"),
+            "{t:?}"
+        );
+        assert!(
+            t[1].contains("skua-HD: both are done.") && t[1].contains("⎿"),
+            "{t:?}"
+        );
+        assert!(t[2].contains("The review is posted."), "{t:?}");
+        assert_eq!(
+            t[3].trim(),
+            "No agent named 'skua-HD' is reachable.",
+            "the receipt's sentence, not its JSON: {t:?}"
+        );
+        assert_eq!(t.len(), 4, "{t:?}");
+        assert_eq!(body_len(&b), 3, "the lines under the header");
+    }
+
     /// A multi-line shell command keeps its line breaks in the `⏺ Bash(...)`
     /// header instead of being reflowed into one line (the newline-flatten bug).
     #[test]
@@ -1491,6 +1565,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let lines = render_one(&b, 200, Hl::Styled);
         let t = texts(&lines);
@@ -1585,6 +1660,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1635,6 +1711,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let e = texts(&render_one(&block, 100, Hl::Styled));
         let all = e.join("\n");
@@ -1673,6 +1750,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
 
         // Collapsed → 10-line preview + "… +15 lines".
@@ -1765,6 +1843,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let run = Block::Thinking {
             text: "hm".into(),
@@ -1809,6 +1888,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let failed = texts(&render_one(
             &edit(
@@ -1862,6 +1942,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let t = texts(&lines);
@@ -1915,6 +1996,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1966,6 +2048,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         }
     }
 
@@ -1996,6 +2079,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let rt = texts(&render_collapsed(&read)).join("\n");
         assert!(
@@ -2431,6 +2515,7 @@ mod tests {
                 published: None,
                 asked: None,
                 delivered: Vec::new(),
+                sent: None,
             },
             Block::ToolUse {
                 name: "Read".into(),
@@ -2444,6 +2529,7 @@ mod tests {
                 published: None,
                 asked: None,
                 delivered: Vec::new(),
+                sent: None,
             },
         ];
         let turn = Block::Thinking {
@@ -2487,6 +2573,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines

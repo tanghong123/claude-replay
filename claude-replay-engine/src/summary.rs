@@ -296,6 +296,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         }
     }
 

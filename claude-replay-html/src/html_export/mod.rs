@@ -1435,6 +1435,7 @@ impl Emitter<'_> {
                 published,
                 asked,
                 delivered,
+                sent,
                 ..
             } => {
                 o.insert("id".into(), json!(self.block_id()));
@@ -1654,6 +1655,21 @@ impl Emitter<'_> {
                         }
                         if let Some(out) = output {
                             body.push(numbered_part(out, token, WRITE_PREVIEW));
+                        }
+                    }
+                    // #s83: a message to another agent is the words it SENT, as Markdown (the
+                    // receiving side, #s79, draws the same words as Markdown too), and then the
+                    // client's delivery receipt as a quiet note: "in that session's inbox, not yet
+                    // read", or the only place a failed send says "No agent named 'x' is
+                    // reachable". The receipt used to be the whole card.
+                    _ if sent.is_some() => {
+                        if let Some(text) = sent.as_deref() {
+                            body.push(json!({ "p": "md", "h": md_html(text) }));
+                        }
+                        if let Some(out) = output.as_deref().filter(|o| !o.trim().is_empty()) {
+                            body.push(
+                                json!({ "p": "note", "x": crate::present::send_receipt(out) }),
+                            );
                         }
                     }
                     _ => {
@@ -3258,6 +3274,7 @@ mod tests {
                 published: None,
                 asked: None,
                 delivered: Vec::new(),
+                sent: None,
             },
             Block::UserText("second question".into()),
             Block::AssistantText("done".into()),
@@ -3355,6 +3372,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let blocks = vec![
             Block::UserText("first".into()),
@@ -3458,6 +3476,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         }
     }
 
@@ -4023,6 +4042,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         }
     }
 
@@ -4116,6 +4136,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         }
     }
 
@@ -4767,6 +4788,7 @@ mod tests {
             published: None,
             asked: Some(Box::new(asked.clone())),
             delivered: Vec::new(),
+            sent: None,
         };
         let prose = format!(
             "The user answered: \"Exit code?\"=\"exit 2\" notes: check the installer, \
@@ -4860,6 +4882,7 @@ mod tests {
                 published: None,
                 asked: a.map(Box::new),
                 delivered: Vec::new(),
+                sent: None,
             };
             stream(&[block], &FoldPolicy::none())[0]["head"]["interaction"].clone()
         };
@@ -4931,6 +4954,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         assert_eq!(out[0]["head"]["interaction"]["kind"], "request_user_input");
@@ -4963,6 +4987,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let out = stream_from(std::slice::from_ref(&bash), &FoldPolicy::none(), None);
         let note = out[0]["body"]
@@ -5019,6 +5044,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let run = Block::Thinking {
             text: String::new(),
@@ -5095,6 +5121,7 @@ mod tests {
                 published: None,
                 asked: None,
                 delivered: Vec::new(),
+                sent: None,
             },
             _ => unreachable!(),
         };
@@ -5178,6 +5205,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         let diff = out[0]["body"]
@@ -5297,6 +5325,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         let num = out[0]["body"]
@@ -5357,6 +5386,7 @@ mod tests {
                 published: None,
                 asked: None,
                 delivered: Vec::new(),
+                sent: None,
             };
             stream(&[block], &FoldPolicy::none())[0]["head"]["chips"].clone()
         };
@@ -5477,6 +5507,7 @@ mod tests {
                 published: None,
                 asked: None,
                 delivered: Vec::new(),
+                sent: None,
             },
             bash("ls -la", "out"),
         ];
@@ -5599,6 +5630,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         }];
         let out = stream(&blocks, &FoldPolicy::none());
         assert_eq!(
@@ -5625,11 +5657,68 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         }];
         assert_eq!(
             stream(&odd, &FoldPolicy::none())[0]["head"]["path"],
             json!("/repo/notes +2"),
             "another tool's target is a path in full, spaces and all"
+        );
+    }
+
+    /// #s83: a SendMessage card is the message it sent, as Markdown, and then the receipt's
+    /// sentence as a quiet note; the receipt's JSON used to be the whole card. A receipt that is
+    /// not the client's JSON is kept as it is.
+    #[test]
+    fn a_message_card_shows_what_was_sent_above_its_receipt() {
+        let msg = |output: &str| Block::ToolUse {
+            name: "SendMessage".into(),
+            target: "Reply to skua-HD: both done".into(),
+            diffs: vec![],
+            output: Some(output.into()),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+            sent: Some("skua-HD: both are done.\n\n- `s244` closed\n- the review is posted".into()),
+        };
+        let out = stream(
+            &[msg(
+                r#"{"success":true,"message":"“Reply to skua-HD: both done” → uds:/tmp/cc-socks/1.sock; in that session's inbox, not yet read","msg_id":"m-1"}"#,
+            )],
+            &FoldPolicy::none(),
+        );
+        let rec = &out[0];
+        assert_eq!(
+            rec["head"]["target"],
+            json!("Reply to skua-HD: both done"),
+            "{rec}"
+        );
+        let body = rec["body"].as_array().expect("a body");
+        assert_eq!(
+            body[0]["p"],
+            json!("md"),
+            "the message comes first, as Markdown: {rec}"
+        );
+        let html = body[0]["h"].as_str().unwrap_or_default();
+        assert!(
+            html.contains("<li>") && html.contains("<code>s244</code>"),
+            "rendered, not verbatim: {html}"
+        );
+        assert_eq!(
+            body[1],
+            json!({"p": "note", "x": "“Reply to skua-HD: both done” → uds:/tmp/cc-socks/1.sock; in that session's inbox, not yet read"}),
+            "the receipt is its sentence, not its JSON"
+        );
+        assert_eq!(body.len(), 2, "{rec}");
+        let odd = stream(&[msg("Resuming agent ae89757")], &FoldPolicy::none());
+        assert_eq!(
+            odd[0]["body"][1],
+            json!({"p": "note", "x": "Resuming agent ae89757"}),
+            "a receipt that is not the JSON is kept as it is"
         );
     }
 
@@ -5650,6 +5739,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: delivered.iter().map(|d| d.to_string()).collect(),
+            sent: None,
         };
         let out = stream(
             &[send(&[
@@ -5707,6 +5797,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: vec!["/films/tour.mp4".into(), "/films/tour-zh.mp4".into()],
+            sent: None,
         };
         let stamps = |b: Block| -> Vec<(String, String)> {
             let out = stream(&[b], &FoldPolicy::none());
@@ -5755,6 +5846,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let out = stream(&[read], &FoldPolicy::none());
         let fsig = out[0]["head"]["fsig"].as_str().unwrap_or("");
@@ -5781,6 +5873,7 @@ mod tests {
                 published: None,
                 asked: None,
                 delivered: Vec::new(),
+                sent: None,
             },
             bash("ls -la", "out"),
         ];
@@ -5811,6 +5904,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         // reveal = false (the `--dump-html` shape): the header still names the file
         // but carries no absolute `path` for the browser to link/reveal.

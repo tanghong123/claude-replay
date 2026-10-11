@@ -282,11 +282,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// text in a prompt is a fence labelled `pasted` (it was the client's raw `<pasted_content>`
 /// markers). A v51 stream holds both the old way, and a v51 reader cannot read a `PeerText`.
 ///
+/// v53: #s83 — a `SendMessage` call carries the message it sent (`ToolUse::sent`) and names its
+/// summary as the target. A v52 stream holds the call with an empty target and the delivery
+/// receipt alone.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 52;
+pub const FOLD_VERSION: u16 = 53;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

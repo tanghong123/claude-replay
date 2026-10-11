@@ -126,10 +126,15 @@ fn block_fields(b: &Block, o: &mut Map<String, Value>) {
             output,
             read_lines,
             execution,
+            sent,
             ..
         } => {
             o.insert("name".into(), json!(name));
             o.insert("target".into(), json!(target));
+            // #s83: the words a SendMessage call sent; `output` stays its delivery receipt.
+            if let Some(text) = sent {
+                o.insert("sent".into(), json!(text));
+            }
             if let Some(out) = output {
                 o.insert("output".into(), json!(out));
             }
@@ -313,6 +318,7 @@ mod tests {
             published: None,
             asked: None,
             delivered: Vec::new(),
+            sent: None,
         };
         let mut o = Map::new();
         block_fields(&b, &mut o);
@@ -323,5 +329,33 @@ mod tests {
         assert_eq!(v["status"], "failed");
         assert_eq!(v["exit"], 101);
         assert_eq!(v["ms"], 530);
+        assert!(
+            v.get("sent").is_none(),
+            "only a message sent carries `sent`"
+        );
+    }
+
+    /// #s83: a SendMessage carries the words it sent as `sent`, beside its receipt as `output`.
+    #[test]
+    fn a_message_sent_rides_along() {
+        let b = Block::ToolUse {
+            name: "SendMessage".into(),
+            target: "Reply to skua-HD".into(),
+            diffs: Vec::new(),
+            output: Some(r#"{"success":true,"message":"sent"}"#.into()),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+            sent: Some("both are done".into()),
+        };
+        let mut o = Map::new();
+        block_fields(&b, &mut o);
+        let v = Value::Object(o);
+        assert_eq!(v["sent"], "both are done");
+        assert_eq!(v["output"], r#"{"success":true,"message":"sent"}"#);
     }
 }
