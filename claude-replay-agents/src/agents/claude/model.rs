@@ -1345,11 +1345,18 @@ const ARTIFACT_CREATE_SHAPE: &[&str] = &[
 
 /// Every key an Artifact publish-from-a-file result was met with (#325, client 2.1.283): the URL
 /// the page links (read from the result TEXT, which states it too), and ten facts nothing renders —
-/// `icon` echoes the word the call gave, which the adapter reads from the call's input.
+/// `icon` echoes the word the call gave, which the adapter reads from the call's input. Since
+/// client 2.1.296 a publish of several files also carries `files_written` (#s87, the one such
+/// result on this machine, measured 2026-10-12): an array of `{path, sha256}`, 7 entries, each
+/// `path` relative to the call input's `root` and equal, entry for entry, to the keys of the call
+/// input's `files` map. It is that map again, plus a digest per file: the client's own integrity
+/// bookkeeping. REVISIT: a `files_written` that differs from the input's `files` map, since a file
+/// asked for and not written is a failure the card would not show.
 const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
     "artifact_id",
     "audience",
     "contract",
+    "files_written",
     "icon",
     "liveSubscription",
     "path",
@@ -1359,6 +1366,15 @@ const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
     "url",
     "version",
 ];
+
+/// Every key an Artifact `open` result was met with (#s87, client 2.1.296, one record, measured
+/// 2026-10-12; the call input is `{action: "open", url}`): `{opened: true, url, artifact_id,
+/// title}`. The tool_result text says the same in prose (the artifact was opened for the user,
+/// nothing published or changed), and the card draws that text. `opened` is a boolean the text
+/// states. REVISIT: `opened` arriving false. The card's target is the bare action word ("open"),
+/// and this result's `title` is the only place the artifact is named: a label question, not a
+/// shape one.
+const ARTIFACT_OPEN_SHAPE: &[&str] = &["artifact_id", "opened", "title", "url"];
 
 /// Every key an Artifact list result was met with (#s62, client 2.1.288, one record): `{artifacts:
 /// array, scope: string, pins_enabled: boolean}`. `pins_enabled` is a service feature flag (whether
@@ -1481,6 +1497,12 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // Artifact's publish result (#325): `icon` is a generic word, so it is known only in the
     // publish's own shape; the adapter takes the word from the call's input, not from here.
     ("icon", ARTIFACT_PUBLISH_SHAPE),
+    // #s87 (client 2.1.296): a publish's `files_written` repeats the call input's `files` map with a
+    // digest per file, and an open's `opened` is a boolean its result text states. Both are generic
+    // enough to mean something else on another tool, so each is known only in its own shape;
+    // `files_written` in the publish shape also silences `icon` again, which came back beside it.
+    ("files_written", ARTIFACT_PUBLISH_SHAPE),
+    ("opened", ARTIFACT_OPEN_SHAPE),
     // Artifact's list result (#s62): `pins_enabled` is an account's feature flag, and a word
     // another tool could use for anything, so it is known only in the list's own shape.
     ("pins_enabled", ARTIFACT_LIST_SHAPE),
@@ -7698,11 +7720,46 @@ mod tests {
             "a whole publish result is known: {:?}",
             unknown_tool_result_keys(&publish)
         );
+        // #s87: since client 2.1.296 a publish of several files also lists what it wrote.
+        let mut several = publish.clone();
+        several["files_written"] = serde_json::json!([
+            {"path": "index.html", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+            {"path": "deck.css", "sha256": "1111111111111111111111111111111111111111111111111111111111111111"}
+        ]);
+        assert!(
+            unknown_tool_result_keys(&several).is_empty(),
+            "a publish that lists its files is known whole: {:?}",
+            unknown_tool_result_keys(&several)
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({"files_written": [], "stdout": "ok"})),
+            vec!["files_written"],
+            "outside the publish shape, files_written is reported"
+        );
         let elsewhere = serde_json::json!({ "icon": "chart", "somethingNew": 1 });
         assert_eq!(
             unknown_tool_result_keys(&elsewhere),
             vec!["icon", "somethingNew"],
             "outside the publish shape, icon is reported with what it came beside"
+        );
+    }
+
+    /// #s87: an Artifact `open` result (client 2.1.296) is known whole, and `opened` beside a key
+    /// from outside its shape is reported.
+    #[test]
+    fn an_artifact_open_result_is_known_in_its_own_shape() {
+        let open = serde_json::json!({
+            "opened": true, "url": "https://example.test/artifact/x", "artifact_id": "x", "title": "X"
+        });
+        assert!(
+            unknown_tool_result_keys(&open).is_empty(),
+            "a whole open result is known: {:?}",
+            unknown_tool_result_keys(&open)
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({"opened": true, "stdout": "ok"})),
+            vec!["opened"],
+            "outside the open shape, opened is reported"
         );
     }
 
