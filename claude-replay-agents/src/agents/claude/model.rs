@@ -750,6 +750,18 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "turnPosition",
             "isVisibleInTranscriptOnly",
             "isCompactSummary",
+            // #s88 (client 2.1.296): an array of prompt uuids on a compact summary (the
+            // continuation a compaction writes, `isCompactSummary` and `isVisibleInTranscriptOnly`
+            // beside it). Measured 2026-10-12: on 1 of the 12 compact summaries 2.1.296 wrote on
+            // this machine, holding ONE uuid, the human prompt 55 lines above it, with which the
+            // summary shares `promptId` and `turnPosition`: the turn the compaction interrupted and
+            // the summary continues. Why the other 11 lack it was not measured. A compact summary
+            // is not a turn here (`Injected::CompactSummary` fills the compaction divider), so the
+            // divider already sits inside the turn this names. REVISIT: an array of more than one
+            // uuid, or one naming a prompt the transcript lacks or the summary does not continue;
+            // the page could then be told which turns a compaction swallowed, a RENDER question for
+            // the owner.
+            "summarizedTurnPromptUuids",
             "toolDenialKind",
             "interruptedMessageId",
             "sourceToolUseID",
@@ -6814,6 +6826,23 @@ mod tests {
             "the new key, and `url` on a USER record (it is known on a system record only); never \
              promptId, requestId, effort or a key on a row the adapter skips"
         );
+    }
+
+    /// #s88: the 2.1.296 prompt uuids on a compact summary are known — not reported while the sweep
+    /// asks. Removing the key from the user arm of the census turns this red.
+    #[test]
+    fn a_compact_summary_s_summarized_turn_prompt_uuids_are_known() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.296","sessionId":"s-s88","uuid":"u1","promptId":"p1","message":{"content":"tidy the deck"}}
+{"type":"user","version":"2.1.296","sessionId":"s-s88","uuid":"u2","promptId":"p1","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"summarizedTurnPromptUuids":["u1"],"message":{"content":"This session is being continued from a previous conversation."}}
+"##;
+        let _ = parse(jsonl);
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s88"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
     }
 
     /// #370: the 2.1.288 placement flag on an attachment is known — not reported while the sweep
