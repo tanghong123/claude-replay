@@ -942,6 +942,15 @@ impl Index {
     fn prove_by_growth(&self, st: &mut State) {
         let mut growers: HashMap<String, Vec<String>> = HashMap::new();
         for (sid, row) in &st.rows {
+            // #s89: a ONE-SHOT session is written by its own `claude -p`, which is never a
+            // candidate below, so its growth says nothing about the interactive process sharing
+            // its directory. Counted as a grower it was the lone one while the person's session sat
+            // idle (the daily review's run beside replay-HD), the lone candidate was that person's
+            // process, and the banked proof linked the finished worker to their pane for good. A
+            // one-shot is paired by TIME (`pair_one_shots`).
+            if row.one_shot {
+                continue;
+            }
             if row.grew_at.is_some_and(|t| t.elapsed() < GROW_LINGER) {
                 if let Some(cwd) = row.cwd.as_deref() {
                     growers
@@ -969,6 +978,19 @@ impl Index {
                 continue; // zero or several candidates — no forced pairing
             };
             let pid = p.pid;
+            // #s89: a process writes ONE session at a time, so a fresh proof takes its pid from
+            // any other session's older proof (a `/resume` or `/clear` moves it on). Two rows
+            // banked on one pid read as two live sessions in one pane.
+            for (other, row) in st.rows.iter_mut() {
+                if *other != sids[0]
+                    && row
+                        .proved_pid
+                        .as_ref()
+                        .is_some_and(|(q, c)| *q == pid && c == &cwd)
+                {
+                    row.proved_pid = None;
+                }
+            }
             if let Some(row) = st.rows.get_mut(&sids[0]) {
                 row.proved_pid = Some((pid, cwd.clone()));
             }
@@ -4295,6 +4317,49 @@ n/Users/x/proj
         assert!(
             st3.rows["live"].proved_pid.is_none(),
             "which process wrote it?"
+        );
+    }
+
+    /// #s89: the daily review's `claude -p` wrote a session in a directory where the person's
+    /// interactive session sat idle. The one-shot was the lone grower and the person's process the
+    /// lone candidate, so growth "proved" the finished worker was written by that process, and the
+    /// banked proof kept it live, in the person's pane, for as long as the process lived. A
+    /// one-shot proves nothing; and once the person's session grows, the pid is its alone.
+    #[test]
+    fn a_one_shot_s_growth_never_proves_the_interactive_process_beside_it() {
+        let scratch = std::env::temp_dir().join(format!("cm-proof-s89-{}", std::process::id()));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let cwd = "/Users/x/proj";
+        let mut procs = parse_ps("  900 claude --dangerously-skip-permissions --resume\n");
+        apply_lsof(&mut procs, "p900\nfcwd\nn/Users/x/proj\n");
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        let mut worker = growth_row(cwd, true);
+        worker.one_shot = true;
+        st.rows.insert("worker".into(), worker);
+        st.rows.insert("person".into(), growth_row(cwd, false));
+        idx.prove_by_growth(&mut st);
+        assert!(
+            st.rows["worker"].proved_pid.is_none(),
+            "a one-shot's growth proves nothing about the interactive process beside it"
+        );
+
+        // A proof banked before this fix, or by a session the process has since left, gives way to
+        // the session the process writes now.
+        st.rows.get_mut("worker").unwrap().proved_pid = Some((900, cwd.to_string()));
+        st.rows.get_mut("worker").unwrap().grew_at = None;
+        st.rows.get_mut("person").unwrap().grew_at = Some(Instant::now());
+        idx.prove_by_growth(&mut st);
+        assert_eq!(
+            st.rows["person"].proved_pid.as_ref().map(|(p, _)| *p),
+            Some(900),
+            "the session it writes now holds the pid"
+        );
+        assert!(
+            st.rows["worker"].proved_pid.is_none(),
+            "and no other session keeps a proof on it"
         );
     }
 
