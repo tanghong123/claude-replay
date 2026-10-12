@@ -1371,10 +1371,14 @@ const READ_NOTIFICATIONS_SHAPE: &[&str] = &["notifications", "read_at", "remaini
 /// Every key a Qwenwork Bash result was met with (#s17, client 1.1.32, 20 of 20 in one session):
 /// the shared `stdout`/`stderr`/`interrupted`/`isImage`/`noOutputExpected`, plus `exitCode` (read),
 /// `kind` ("completed" in all), `signal` (null in all; a string is read as a kill) and
-/// `telemetryExecutionId`.
+/// `telemetryExecutionId`. A FAILED command adds a tenth, `isError` (#s86, client 1.1.59, measured
+/// 2026-10-11 over the whole store: 5 of 5 true, never false and absent on success, each beside
+/// `exitCode` 1 on a record whose tool_result already carries `is_error: true`), after
+/// `noOutputExpected`.
 const QWENWORK_BASH_SHAPE: &[&str] = &[
     "exitCode",
     "interrupted",
+    "isError",
     "isImage",
     "kind",
     "noOutputExpected",
@@ -1492,10 +1496,13 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     ("allowedTools", SKILL_SHAPE),
     // #s17: a Qwenwork Bash result's `kind` ("completed" in every one met) and `signal` (null in
     // every one met; a string is read as a kill, above) are generic words, so each is known only in
-    // that result's shape. Revisit when a kind other than "completed", a non-null signal or a
-    // non-zero exit is met: check whether the tool_result then also carries `is_error`.
+    // that result's shape. Revisit when a kind other than "completed" or a non-null signal is met.
+    // #s86 answered the non-zero exit: a failed command's tool_result carries `is_error` (which
+    // makes the call Failed) and the result adds `isError: true`, a copy of that and of `exitCode`.
+    // Known in this shape only: an MCP tool result carries an `isError` of its own, still reported.
     ("kind", QWENWORK_BASH_SHAPE),
     ("signal", QWENWORK_BASH_SHAPE),
+    ("isError", QWENWORK_BASH_SHAPE),
     // #s65 (Qwenwork 1.1.59): a sub-agent result's five keys nothing renders, each generic enough
     // to mean something else on another tool, so each is known only in this shape. `kind` is a type
     // tag (the block is a SubAgent by its tool name). `terminateReason` pairs with `state`, which
@@ -6867,7 +6874,9 @@ mod tests {
 
     /// #s17: a Qwenwork Bash result in its measured nine-key shape reports nothing, and its exit
     /// code reaches the tool's execution — 0 and 1 as written, which the head shows as `exit N`
-    /// (a failure when non-zero); a string `signal` is a kill, Cancelled.
+    /// (a failure when non-zero); a string `signal` is a kill, Cancelled. #s86: a failed command is
+    /// written as the client writes it, `is_error` on the tool_result and a tenth key `isError`,
+    /// and reads Failed with its exit code; the ten keys report nothing either.
     #[test]
     fn qwenwork_bash_exit_codes_reach_the_tool_and_its_shape_is_known() {
         let call = |id: &str, cmd: &str| {
@@ -6877,11 +6886,18 @@ mod tests {
             .to_string()
         };
         let result = |id: &str, exit: Value, signal: Value| {
-            serde_json::json!({"type": "user", "version": "1.1.32", "sessionId": "s-s17",
-                "toolUseResult": {"kind": "completed", "telemetryExecutionId": "00000000-0000-4000-8000-000000000017",
-                    "stdout": "out", "stderr": "", "exitCode": exit, "signal": signal,
-                    "interrupted": false, "isImage": false, "noOutputExpected": false},
-                "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": "out"}]}})
+            let failed = exit.as_i64().is_some_and(|e| e != 0);
+            let mut tur = serde_json::json!({"kind": "completed", "telemetryExecutionId": "00000000-0000-4000-8000-000000000017",
+                "stdout": "out", "stderr": "", "exitCode": exit, "signal": signal,
+                "interrupted": false, "isImage": false, "noOutputExpected": false});
+            let mut block =
+                serde_json::json!({"type": "tool_result", "tool_use_id": id, "content": "out"});
+            if failed {
+                tur["isError"] = Value::Bool(true);
+                block["is_error"] = Value::Bool(true);
+            }
+            serde_json::json!({"type": "user", "version": if failed { "1.1.59" } else { "1.1.32" },
+                "sessionId": "s-s17", "toolUseResult": tur, "message": {"content": [block]}})
             .to_string()
         };
         let jsonl = [
@@ -6917,8 +6933,8 @@ mod tests {
         );
         assert_eq!(
             (ex(1).exit_code, ex(1).status),
-            (Some(1), None),
-            "a failure, by its exit code"
+            (Some(1), Some(ToolStatus::Failed)),
+            "a failure: its exit code, and Failed from the result's is_error"
         );
         assert_eq!(
             (ex(2).exit_code, ex(2).status),
@@ -6929,7 +6945,10 @@ mod tests {
             .into_iter()
             .filter(|s| s.example.as_deref() == Some("s-s17"))
             .collect();
-        assert!(seen.is_empty(), "the nine keys are known: {seen:?}");
+        assert!(
+            seen.is_empty(),
+            "the nine keys, and a failure's tenth, are known: {seen:?}"
+        );
     }
 
     /// #s22: an edit that FAILED keeps the client's reason (its receipt is still dropped) and
@@ -7017,6 +7036,12 @@ mod tests {
                 &serde_json::json!({"exitCode": 0, "telemetryExecutionId": "t", "stdout": ""})
             ),
             Vec::<&str>::new()
+        );
+        // #s86: an MCP tool result carries an `isError` of its own; outside the Bash shape it is
+        // reported (`content` is a read key, so `isError` alone).
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({"content": [], "isError": true})),
+            vec!["isError"]
         );
     }
 
