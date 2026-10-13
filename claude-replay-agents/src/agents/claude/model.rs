@@ -1421,7 +1421,11 @@ const QWENWORK_BASH_SHAPE: &[&str] = &[
 /// terminateReason, outputPath, transcriptPath}`, plus `apiError` on the one that failed. `kind` is
 /// "agent-result" in all; `state` and `terminateReason` always pair (completed with GOAL, error with
 /// ERROR; QoderWork, the same family, also pairs error with MAX_TURNS). The adapter reads `state`,
-/// `content` and `agentId` (#95); the other five are known in this shape alone (rows below).
+/// `content` and `agentId` (#95); the other five are known in this shape alone (rows below). A
+/// sub-agent that hits its turn cap adds `terminationDetails` (#s91, client 1.1.59, measured
+/// 2026-10-13 over the store: 3 of 7, each `{maxTurns: 150}`): `state` error, `terminateReason`
+/// MAX_TURNS, no `apiError` and no `is_error`, the text and `content` "Reached the maximum turn
+/// limit (N)…" with the same N.
 const QWENWORK_AGENT_RESULT_SHAPE: &[&str] = &[
     "agentId",
     "agentType",
@@ -1431,6 +1435,7 @@ const QWENWORK_AGENT_RESULT_SHAPE: &[&str] = &[
     "outputPath",
     "state",
     "terminateReason",
+    "terminationDetails",
     "transcriptPath",
 ];
 
@@ -1541,8 +1546,9 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // to mean something else on another tool, so each is known only in this shape. `kind` is a type
     // tag (the block is a SubAgent by its tool name). `terminateReason` pairs with `state`, which
     // the card reads (completed for GOAL; error, drawn failed, for ERROR and MAX_TURNS), and a
-    // failure's text names the reason; REVISIT if a MAX_TURNS or a TIMEOUT should read differently
-    // from an ERROR on the card. `outputPath` is a temp file holding the same text as `content`,
+    // failure's text names the reason. #s91 answered MAX_TURNS: the client itself marks it error,
+    // and the card shows the turn-limit text in the client's words, so Failed plus that text is
+    // honest. REVISIT for a terminateReason other than GOAL, ERROR or MAX_TURNS (a TIMEOUT, say). `outputPath` is a temp file holding the same text as `content`,
     // shown inline (`output_file` is for an ASYNC spawn; this one is synchronous). `transcriptPath`
     // is the child transcript beside the session, which the wrapper resolves from `agentId`;
     // REVISIT if it ever names a file elsewhere. `apiError` is the failure message, repeated in the
@@ -1552,6 +1558,10 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     ("outputPath", QWENWORK_AGENT_RESULT_SHAPE),
     ("transcriptPath", QWENWORK_AGENT_RESULT_SHAPE),
     ("apiError", QWENWORK_AGENT_RESULT_SHAPE),
+    // #s91: a MAX_TURNS end's `terminationDetails` is `{maxTurns}`, the cap the result text already
+    // states. Known in this shape only, since the word could mean something else on a future tool.
+    // REVISIT if it carries a key other than `maxTurns`.
+    ("terminationDetails", QWENWORK_AGENT_RESULT_SHAPE),
     // #s64 (Qwenwork 1.1.59): an Edit or Write result. `diff` is READ on an edit tool, as a
     // hunk-only unified diff (parse_hunk_diff), and known here only in this shape since the word is
     // generic; `file_path` names the file the call's target already names; `additions`,
@@ -6458,6 +6468,20 @@ mod tests {
             unknown_tool_result_keys(&failed),
             Vec::<&str>::new(),
             "{failed}"
+        );
+        // #s91: a sub-agent that hit its turn cap, as client 1.1.59 writes it.
+        let capped = serde_json::json!({"kind": "agent-result", "agentId": "a3", "agentType": "Explore", "content": "Reached the maximum turn limit (150).", "state": "error", "terminateReason": "MAX_TURNS", "terminationDetails": {"maxTurns": 150}, "outputPath": "/tmp/x/out.txt", "transcriptPath": "/s/subagents/agent-a3.jsonl"});
+        assert_eq!(
+            unknown_tool_result_keys(&capped),
+            Vec::<&str>::new(),
+            "{capped}"
+        );
+        assert_eq!(
+            unknown_tool_result_keys(
+                &serde_json::json!({"terminationDetails": {"maxTurns": 1}, "stdout": "ok"})
+            ),
+            vec!["terminationDetails"],
+            "outside the shape, terminationDetails is reported"
         );
         // Outside the shape the generic words are reported again.
         let stray =
