@@ -624,6 +624,11 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "edited_text_file",
     "environment",
     "file",
+    // #s92 (client 2.1.296): `{type, content: [string], hookName, toolUseID, hookEvent}`, what a
+    // hook put in the model's context after a tool call (`toolUseID` is that call's id with a
+    // `-context` suffix). Drawn as a note like `hook_success` (`hook_note`); listed so one whose
+    // content is empty, drawn as nothing, is not reported as new.
+    "hook_additional_context",
     "hook_cancelled",
     "hook_non_blocking_error",
     // #371 (client 2.1.288): a hook that ran and succeeded. Drawn as a note when it injected
@@ -4514,6 +4519,35 @@ fn hook_note(a: &Value) -> Option<String> {
             }
             Some(out)
         }
+        // #s92 (client 2.1.296): a hook that put text in the model's context after a tool call, the
+        // same gap #371 closed for `hook_success`: the next reply may act on it and nothing else on
+        // the page says so. Its `content` is an ARRAY of strings, joined; its first non-empty line,
+        // and how many more follow; nothing for an empty one. A note in record order, after the
+        // card of the call it followed (`toolUseID` names that call, with a `-context` suffix).
+        "hook_additional_context" => {
+            let joined = a
+                .get("content")
+                .and_then(Value::as_array)
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            let mut lines = joined.lines().skip_while(|l| l.trim().is_empty());
+            let first = lines.next()?.trim();
+            let more = lines.count();
+            let mut out = format!("{} added context: {first}", name(s("hookName")));
+            if more > 0 {
+                out.push_str(&format!(
+                    " (+{more} more line{})",
+                    if more == 1 { "" } else { "s" }
+                ));
+            }
+            Some(out)
+        }
         "hook_cancelled" if a.get("timedOut").and_then(Value::as_bool).unwrap_or(false) => {
             let mut out = format!("{} timed out", name(s("hookName")));
             match (
@@ -6955,6 +6989,50 @@ mod tests {
             seen.is_empty(),
             "hook_success is known, empty or not: {seen:?}"
         );
+    }
+
+    /// #s92: what a hook put in the model's context after a tool call (client 2.1.296) is a note,
+    /// after the card of the call it followed: its first line and how many more. Its content is an
+    /// array of strings; an empty one draws nothing. Neither is reported as new.
+    #[test]
+    fn a_hook_that_added_context_after_a_tool_call_is_a_note() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.296","sessionId":"s-s92","uuid":"u1","message":{"role":"user","content":"read the guide"}}
+{"type":"assistant","version":"2.1.296","sessionId":"s-s92","uuid":"a1","message":{"content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/w/docs/guide.md"}}]}}
+{"type":"user","version":"2.1.296","sessionId":"s-s92","uuid":"u2","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":"1\tthe guide"}]}}
+{"type":"attachment","version":"2.1.296","sessionId":"s-s92","uuid":"h1","attachment":{"type":"hook_additional_context","content":["Contents of /w/docs/AGENTS.md:\nkeep the guide short"],"hookName":"tool.call","toolUseID":"r1-context","hookEvent":"PostToolUse"}}
+{"type":"attachment","version":"2.1.296","sessionId":"s-s92","uuid":"h2","attachment":{"type":"hook_additional_context","content":[],"hookName":"tool.call","toolUseID":"r1-context","hookEvent":"PostToolUse"}}
+"##;
+        let blocks = parse(jsonl);
+        let notes: Vec<&String> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolResult(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            ["tool.call added context: Contents of /w/docs/AGENTS.md: (+1 more line)"],
+            "{blocks:?}"
+        );
+        let tool_at = blocks.iter().position(|b| {
+            matches!(b, Block::ToolUse { .. })
+                || matches!(b, Block::Thinking { tools, .. } if !tools.is_empty())
+        });
+        let note_at = blocks
+            .iter()
+            .position(|b| matches!(b, Block::ToolResult(_)));
+        assert!(
+            tool_at.is_some() && note_at > tool_at,
+            "the note comes after the call it followed: {blocks:?}"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s92"))
+            .collect();
+        assert!(seen.is_empty(), "known, empty or not: {seen:?}");
     }
 
     /// #s93: the cron jobs a session carries across a compaction (client 2.1.296) draw nothing and

@@ -16431,6 +16431,101 @@ fn scenario_a_hook_that_added_context_is_named_and_turns_keep_their_numbers() {
     }
 }
 
+/// #s92: a session whose second turn reads a file, after which a hook put that directory's
+/// instructions in the model's context (`hook_additional_context`, client 2.1.296: its content an
+/// array of strings, its `toolUseID` the call's id with a `-context` suffix). Written by hand.
+fn hook_after_tool_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    let mut t = String::new();
+    for (i, q) in ["first prompt", "second prompt", "third prompt"]
+        .iter()
+        .enumerate()
+    {
+        let at = 290 - i as u64 * 20;
+        t += &user_at(q, &now_minus(at));
+        if i == 1 {
+            t += &harness::pending_call_at(
+                "read_s92",
+                "Read",
+                "{\"file_path\":\"/r/docs/guide-s92.md\"}",
+                &now_minus(at - 1),
+            );
+            t += &tool_result_text("read_s92", "the guide", &now_minus(at - 2));
+            t += &format!(
+                "{{\"type\":\"attachment\",\"timestamp\":\"{}\",\"attachment\":{{\"type\":\"hook_additional_context\",\
+\"content\":[\"PROBE-S92 Contents of /r/docs/AGENTS.md:\\nkeep the guide short\"],\"hookName\":\"tool.call\",\
+\"toolUseID\":\"read_s92-context\",\"hookEvent\":\"PostToolUse\"}}}}\n",
+                now_minus(at - 3)
+            );
+        }
+        t += &assistant_at(&answer, &now_minus(at - 5));
+    }
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 3,
+    }
+}
+
+/// #s92: what a hook put in the model's context after a tool call is named after that call's card,
+/// and the turns keep their numbers. The sibling of #371's case, on both pages.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_hook_that_added_context_after_a_tool_is_named_after_it() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = hook_after_tool_fixture(match surface {
+            Surface::Classic => "hook-after-tool-classic",
+            Surface::AppShell => "hook-after-tool-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3087 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        let seen: serde_json::Value = eval(
+            &page.tab,
+            "(function(){ var t = document.body.innerText; \
+               var note = t.indexOf('tool.call added context: PROBE-S92 Contents of /r/docs/AGENTS.md:'); \
+               var read = t.indexOf('guide-s92.md'); \
+               var turns = Array.from(document.querySelectorAll('.uturn[data-turn], .turn.user[data-turn]')) \
+                 .map(function(e){ return Number(e.dataset.turn); }); \
+               return JSON.stringify({ note: note, read: read, more: t.indexOf('(+1 more line)') >= 0, turns: turns }); })()",
+        )
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+        let (note, read) = (
+            seen["note"].as_i64().unwrap_or(-1),
+            seen["read"].as_i64().unwrap_or(-1),
+        );
+        assert!(
+            note >= 0,
+            "{surface:?}: the page names the hook and the first line it added: {seen}"
+        );
+        assert!(
+            read >= 0 && read < note,
+            "{surface:?}: …after the card of the call it followed: {seen}"
+        );
+        assert_eq!(
+            seen["more"],
+            serde_json::json!(true),
+            "{surface:?}: …and says there is more: {seen}"
+        );
+        assert_eq!(
+            seen["turns"],
+            serde_json::json!([1, 2, 3]),
+            "{surface:?}: the turns keep their numbers: {seen}"
+        );
+    }
+}
+
 /// A session whose last turn spawned an Explore agent and got its report back FRAMED, as client
 /// 2.1.289 writes it (#s5): the report has a heading, prose and a code line of its own.
 fn framed_agent_fixture(name: &str) -> Fixture {
