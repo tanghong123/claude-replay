@@ -285,6 +285,149 @@ their state schemas change. During this work Claude Code could not run on the ho
 `claude-replay`'s rendering of the equivalent Claude vocabulary remained the best approximation of
 the Claude side; native Codex was the source-side visibility oracle.
 
+## Quoted user replies
+
+**Status: proposed validation case; no parser or renderer change is claimed here.** Use the
+[annotation-reply RFC's acceptance contract](../design/monitor-response-annotations.md#when-special-presentation-is-allowed)
+and [additive presentation contract](../design/monitor-response-annotations.md#parse-once-add-presentation-without-breaking-existing-readers)
+as the expected behavior. This case study supplies synthetic source examples and a validation
+recipe; recognition rules, shared interfaces, and delivery scope belong in that RFC.
+
+### Observed clients and synthetic input
+
+The inspected clients are Codex App `26.1007.21159` (build `20052`) and Claude Desktop
+`2.31226.1`. The inspected Claude Code session records version `2.1.295` and
+`entrypoint: "claude-desktop"`, identifying a Claude Desktop Code-session envelope. A separate
+Claude Code CLI capture has not been verified for this envelope.
+
+The following examples substitute synthetic prose into the observed envelopes. They show the
+text extracted from native user-input records, not complete JSONL records or real conversations.
+The message id and offsets are also synthetic; no real assistant message is referenced. When
+building fixtures, retain each native record's measured envelope and put these synthetic strings
+in its user-input text field. Keep real captures outside git as in the workflow above.
+
+The Codex example begins with one LF before `# Response annotations:` and uses the observed
+compact, single-line array. The fence delimiters are not input:
+
+```text
+
+# Response annotations:
+Each item contains text selected from an earlier Codex response and may include a user comment. Treat items as Annotation 1, Annotation 2, and so on in array order. Use every selection as context and address every comment. For every annotation you address, include its inline directive `:codex-annotation{index="N"}`, where N is its one-based array position (for example, `:codex-annotation{index="1"}`). Do not use unstructured annotation labels.
+<response-annotations>
+[{"text":"This is the first excerpt from Codex's response.","source":{"messageId":"msg_synthetic_response","startOffset":100,"endOffset":146}},{"text":"This is the second excerpt from Codex's response.","annotation":"Please clarify this point."}]
+</response-annotations>
+
+## My request:
+Please provide a detailed example covering both excerpts.
+```
+
+For reading only, the same array pretty-printed is:
+
+```json
+[
+  {
+    "text": "This is the first excerpt from Codex's response.",
+    "source": {
+      "messageId": "msg_synthetic_response",
+      "startOffset": 100,
+      "endOffset": 146
+    }
+  },
+  {
+    "text": "This is the second excerpt from Codex's response.",
+    "annotation": "Please clarify this point."
+  }
+]
+```
+
+Keep the compact fixture distinct from this readable copy. Replacing the compact array with the
+pretty copy is a focused mutation test whose expected outcome comes from the acceptance contract.
+
+The first observed Claude layout has one `reply 1` block:
+
+```text
+<!-- reply 1 -->
+> This is the first excerpt from Claude Code's response.
+
+Please explain this point.
+```
+
+The other observed layout begins with `reply 2` and has a second, bare `reply` marker:
+
+```text
+<!-- reply 2 -->
+> This is the first excerpt from Claude Code's response.
+
+Please explain this point.
+
+<!-- reply -->
+> This is the second excerpt from Claude Code's response.
+
+Please clarify what this means.
+
+
+Please provide a detailed example covering both excerpts.
+```
+
+Preserve the sample's two LF before the bare marker and three LF before the final sentence when
+constructing the fixture. Assert the final sentence's mapping using the RFC; do not let a fixture
+writer's interpretation of its prose erase the spacing or separate it into another source record.
+
+This additional quote-only control is **proposed synthetic input**, not a verified native Claude
+capture. The JSON string makes the two LF before EOF explicit; expected separator handling and
+shared output are specified in the RFC's acceptance contract:
+
+```json
+"<!-- reply 1 -->\n> This is the first excerpt from Claude Code's response.\n\n"
+```
+
+### Validation recipe
+
+Start with a synthetic Codex native record and a synthetic Claude native record for the same
+quoted-reply case. Feed both through their Rust adapters, then compare the shared `Message`/`Block`
+facts before examining rendered output. Compare the facts both source formats encode, preserving
+any distinctions required by the RFC. Check quote text, associated text, ordering, turn count,
+and preserved context against that contract. This prevents a convincing screenshot from concealing an
+incorrect parser result. Use a single binary and fixed options for the existing default/`--full`
+dump comparison, then inspect HTML wire records and the applicable browser views separately.
+
+For preservation checks, retain the fixture's original user-input bytes before Codex
+`desktop_prompt` or Claude `strip_caveat` cleanup. Compare raw display against those bytes; current
+`src` alone is not an independent oracle because it contains the text that reached the shared
+block. Add sentinel text, files, and images around the quote envelope and request, then check that
+all expected content remains visible exactly once in the renderer and its readable fallback.
+
+Generate negative controls by mutating one aspect of an example at a time. Derive expected
+classification and fallback from the RFC rather than making the test parser define its own rules:
+
+| Control group | What to inspect |
+|---|---|
+| Codex and Claude source examples; proposed quote-only input | Shared facts, quote/associated-text order, one turn, and byte-preserved following text |
+| Changed preamble, tags, marker numbers, prefixes, separators, case, or LF/CRLF boundaries | Acceptance decision and complete ordinary-input fallback against the RFC |
+| Pretty/reordered JSON, alternate escapes, unknown fields, empty present values, invalid source, or malformed array | Contract-defined classification; distinguish absent optional fields from invalid present values |
+| Ordinary Markdown quotes, marker-like prose, quoted/fenced markers, and JSON strings containing an envelope | No unintended conversion or recursive recognition |
+| Multiline code/tables, repeated quotes, source offsets, and all request/context/attachment combinations | Selected text comes from the fixture, with preserved order and no hidden or duplicated content |
+| An exact hand-typed copy of an envelope | Presentation and any provenance claim agree with the RFC's stated text-only limitation |
+
+Finally, exercise regressions through the same new wire record with the adapted view and the
+unchanged consumers identified by the RFC. Include old records with no metadata and invalid or
+unsupported metadata; check readable body fallback, raw display, search, copying, and Turns
+navigation. Test the existing TUI/dump path for content preservation without assuming that every
+consumer receives new styling.
+
+Compare a cold parse with incremental parsing at meaningful envelope boundaries, then with durable
+resume and a pre-change cache. Inspect whether the required `FOLD_VERSION` and HTML
+`RECORD_SCHEMA` boundaries rebuild incompatible output under the RFC's additive contract. Use
+`--no-cache` for initial comparisons so stale rendered records cannot produce a false result;
+re-enable caching for the explicit regression controls. Run the repository gates and review any
+intentional baseline changes as in the workflow above. These are implementation checks to perform,
+not checks reported as passed by this proposed case study.
+
+`--unknown` inventories record/content types and keys; it does not detect changed prose inside a
+known user-text field. Include a preamble/marker mutation that leaves the surrounding record shape
+unchanged, and inspect adapter output and full fallback directly instead of treating an unchanged
+`--unknown` report as evidence that the quote recognizer still works.
+
 ## Review checklist
 
 - Does one user-visible action render exactly once?
