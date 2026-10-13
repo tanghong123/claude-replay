@@ -42,7 +42,7 @@ const previewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/pr
 const componentsText = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
 const classicRailSource = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
 const classicExportSource = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
-const v2ShellSource = readFileSync(new URL("../src/shell.html", import.meta.url), "utf8");
+const v2ShellSource = readFileSync(new URL("../../claude-monitor-v2/src/shell.html", import.meta.url), "utf8");
 const extractedCss = `${demo.slice(demo.indexOf("<style>\n") + 8, demo.indexOf("\n</style>", demo.indexOf("<style>\n")))}\n`;
 const extractedShell = demo.slice(demo.indexOf("<body>\n") + 7, demo.indexOf('<script src="sample-transcript-data.js"></script>'));
 assert.equal(referenceCss, extractedCss, "reference CSS must remain an exact demo extraction");
@@ -525,7 +525,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(groupVisible({ hidden: true }, { showHidden: true }), true);
   assert.equal(groupVisible({}), true);
   const railSource = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
-  const spliceSource = readFileSync(new URL("../src/shell.html", import.meta.url), "utf8");
+  const spliceSource = readFileSync(new URL("../../claude-monitor-v2/src/shell.html", import.meta.url), "utf8");
   for (const [name, src] of [["rail.html", railSource], ["shell.html", spliceSource]]) {
     assert.match(src, /\{\{SHARED\}\}/, `${name} carries the inlined shared modules`);
     assert.doesNotMatch(src, /function (families|clusterKey)\(/, `${name} keeps no clustering of its own`);
@@ -591,7 +591,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(railSrc, /shared\.stateTip\(/, "the rail's tooltip is the shared one");
   assert.match(railSrc, /shared\.costDisplay\(/, "the rail renders pricing completeness through the shared formatter");
   assert.doesNotMatch(railSrc, /finished — no growth, no process/, "the rail keeps no tooltip wording of its own");
-  const spliceSrc = readFileSync(new URL("../src/shell.html", import.meta.url), "utf8");
+  const spliceSrc = readFileSync(new URL("../../claude-monitor-v2/src/shell.html", import.meta.url), "utf8");
   assert.match(spliceSrc, /__shared\.stateTip\(/, "the splice's tooltip is the shared one");
   console.log("seam (f) cases passed");
 }
@@ -762,14 +762,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal((await runRevoke({ target: "s1", post: async () => ({ ok: true }) })).kind, "revoked");
   // Code lines only: the shells' comments still describe the protocol in prose.
   const codeOf = src => src.split("\n").filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
-  for (const [name, path] of [["rail.html", "../../claude-monitor/src/rail.html"], ["shell.html", "../src/shell.html"], ["control-store.js", "../../claude-monitor/src/codex-ui/control-store.js"]]) {
+  for (const [name, path] of [["rail.html", "../../claude-monitor/src/rail.html"], ["shell.html", "../../claude-monitor-v2/src/shell.html"], ["control-store.js", "../../claude-monitor/src/codex-ui/control-store.js"]]) {
     const src = codeOf(readFileSync(new URL(path, import.meta.url), "utf8"));
     assert.match(src, /runSend\(\{/, `${name} sends through the shared flow`);
     assert.match(src, /runRevoke\(\{/, `${name} revokes through the shared flow`);
     assert.doesNotMatch(src, /\.code\s*===?\s*"(passcode-required|bad-passcode|locked|no-consent)"/, `${name} reads no raw server code of its own — the outcomes are the protocol's`);
     assert.doesNotMatch(src, /\/api\/(send|consent)\?/, `${name} builds no /api query of its own`);
   }
-  for (const [name, path] of [["rail.html", "../../claude-monitor/src/rail.html"], ["shell.html", "../src/shell.html"]]) {
+  for (const [name, path] of [["rail.html", "../../claude-monitor/src/rail.html"], ["shell.html", "../../claude-monitor-v2/src/shell.html"]]) {
     const src = codeOf(readFileSync(new URL(path, import.meta.url), "utf8"));
     assert.match(src, /composeCopy\(/, `${name} takes its words from the shared table`);
     assert.doesNotMatch(src, /"(Grant & send|Send to pane|Send prompt|Inject into: |Send to: )"/, `${name} keeps no compose wording of its own`);

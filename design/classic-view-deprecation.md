@@ -148,8 +148,8 @@ The reference does not move (§3). What changes:
   - the harness helpers only they use (`Stores::qoderwork_family`, `Stores::claude_finished`; `classic_view_state` has no callers already).
 - **Non-browser tests** that assert the switch, `ui.json` or the rail: `ui_contract.mjs`, `ui.rs`, `routes.rs`, both binaries' `main.rs` tests, and `serve.rs`'s `/session` chrome test. They change with the code they hold.
 
-`claude-monitor-v2/tests/ui_contract.mjs`, the node contract, lives in the v2 crate. If v2
-retires (D2) it moves to `claude-monitor/tests/` first, in its own commit.
+The node contract lived in the v2 crate (`claude-monitor-v2/tests/ui_contract.mjs`). It moved to
+`claude-monitor/tests/` in stage 1 (#s96), in its own commit, since v2 retires (D2).
 
 ## 8. Decisions for the owner
 

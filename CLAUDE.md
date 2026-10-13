@@ -407,7 +407,7 @@ not an import (#43). `claude-monitor/src/codex-ui/shared` is a SYMLINK to that d
 node (the contract test imports `components.js`, which imports `./shared/…`) and editors resolve the
 relative paths; the served bytes still come from the html crate through `ui::asset()`.
 
-`claude-monitor-v2/tests/ui_contract.mjs` holds the frontend contract that only JS can answer.
+`claude-monitor/tests/ui_contract.mjs` holds the frontend contract that only JS can answer.
 It runs from `cargo test` (via `tests/ui_contract.rs`, which SKIPS when node is missing) and as
 its own mandatory CI step.
 
