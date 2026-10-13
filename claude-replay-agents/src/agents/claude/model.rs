@@ -647,6 +647,16 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "read_truncation_notice",
     "remote_session_change",
     "session_context",
+    // #s93 (client 2.1.296): `{type, tasks: [{id, cron, prompt, createdAt, recurring}]}`, the
+    // session-only cron jobs the client carries across a compaction, written in the run of
+    // attachments after a compact_boundary, with no rendered reminder: client state, not text for
+    // the model. 3 met on this machine (2026-10-13), each job made by a CronCreate card earlier in
+    // the same transcript, whose card the page draws with the schedule and prompt; firings are
+    // `scheduled_task_fire`. Drawn nothing, the `todo_reminder`/`task_reminder` analogue for
+    // scheduled jobs. REVISIT: a carry naming a job id with no CronCreate earlier in its transcript
+    // (a session resumed into a new file, say) is then the only trace of a live job, and a note
+    // naming it ("scheduled: <cron>, carried over") is the RENDER question for the owner.
+    "session_cron_carry",
     "silent_turn_reminder",
     "skill_listing",
     // #s2 (client 2.1.288): `{type, skillName}`, one per `/name` or `/namespace:name` token in a
@@ -6945,6 +6955,32 @@ mod tests {
             seen.is_empty(),
             "hook_success is known, empty or not: {seen:?}"
         );
+    }
+
+    /// #s93: the cron jobs a session carries across a compaction (client 2.1.296) draw nothing and
+    /// are not reported: each was made by a CronCreate card earlier in the same transcript.
+    #[test]
+    fn a_cron_job_carried_over_a_compaction_draws_nothing() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.296","sessionId":"s-s93","uuid":"u1","message":{"role":"user","content":"check the build every hour"}}
+{"type":"assistant","version":"2.1.296","sessionId":"s-s93","uuid":"a1","message":{"content":[{"type":"tool_use","id":"c1","name":"CronCreate","input":{"cron":"17 * * * *","prompt":"check the build","recurring":true}}]}}
+{"type":"user","version":"2.1.296","sessionId":"s-s93","uuid":"u2","toolUseResult":{"id":"0a1b2c3d","humanSchedule":"Every hour at :17","recurring":true,"durable":false},"message":{"content":[{"type":"tool_result","tool_use_id":"c1","content":"Scheduled 0a1b2c3d"}]}}
+{"type":"system","version":"2.1.296","sessionId":"s-s93","subtype":"compact_boundary","content":"Conversation compacted","compactMetadata":{"trigger":"auto","preTokens":1000,"postTokens":100}}
+{"type":"attachment","version":"2.1.296","sessionId":"s-s93","uuid":"k1","attachment":{"type":"session_cron_carry","tasks":[{"id":"0a1b2c3d","cron":"17 * * * *","prompt":"check the build","createdAt":1760000000000,"recurring":true}]}}
+"##;
+        let blocks = parse(jsonl);
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult(t) if t.contains("0a1b2c3d") || t.contains("carried"))),
+            "the carry draws nothing: {blocks:?}"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s93"))
+            .collect();
+        assert!(seen.is_empty(), "the carry is known: {seen:?}");
     }
 
     /// #s17: a Qwenwork Bash result in its measured nine-key shape reports nothing, and its exit
