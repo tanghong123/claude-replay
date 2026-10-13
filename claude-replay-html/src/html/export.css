@@ -1044,6 +1044,17 @@ hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 .cpy:hover { background: var(--hover); }
 .fence pre { margin: 0; padding: 10px 14px; font: 13px/1.65 var(--mono); overflow-x: auto; }
 .fence code { background: none; color: inherit; padding: 0; border-radius: 0; font-size: inherit; }
+.mermaid-fence [hidden] { display: none !important; }
+.mermaid-fence .fence-lang { margin-right: auto; }
+.mermaid-fence .fence-lang, .mermaid-fence .cpy { color: var(--muted); font-size: 12px; }
+.mermaid-source { border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px; margin-right: 8px; background: transparent; color: var(--muted); font: 12px var(--mono); cursor: pointer; }
+.mermaid-source:disabled { cursor: default; opacity: .6; }
+.mermaid-diagram { padding: 22px; overflow-x: auto; text-align: center; color: var(--muted); }
+.mermaid-diagram svg { display: block; margin: auto; max-width: none; height: auto; }
+.mermaid-error { margin: 0; padding: 10px 14px; color: var(--fg); font-size: 12px; }
+@media (max-width:760px),(pointer:coarse) and (max-height:500px) {
+  .mermaid-fence .mermaid-source, .mermaid-fence .cpy { min-height: 44px; min-width: 44px; }
+}
 
 /* syntect token classes (mapped from the shared Claude-Code palette) */
 .kw { color: var(--kw); }

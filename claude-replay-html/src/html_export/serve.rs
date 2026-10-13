@@ -146,7 +146,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // (`file: {path, sig, fsig?, name}`).
     // v23: #s83 — a SendMessage card's body is the message it sent (an `md` part) above its
     // delivery receipt (a `note`), and its head names the summary.
-    const RECORD_SCHEMA: u16 = 23;
+    // v24: Mermaid fences carry an inline diagram host and their escaped source, so
+    // previously visited sessions must regenerate their cached Markdown fragments.
+    const RECORD_SCHEMA: u16 = 25;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
@@ -2634,6 +2636,14 @@ pub fn service_routes(
         return r;
     }
     let (name, query) = (req.name, req.query);
+    if name == "mermaid.js" {
+        let mut response = HttpResponse::ok(
+            "text/javascript; charset=utf-8",
+            super::mermaid::RUNTIME.as_bytes().to_vec(),
+        );
+        response.headers.push("Cache-Control: no-store".into());
+        return response;
+    }
     // `/session?id=<sid>[&chrome=embed][&theme=light|dark]` — the complete session view at
     // a URL, exactly as `--html` serves it, with optional host chrome (#98 §6.3).
     if name == "session" {

@@ -35,6 +35,7 @@ pub mod audit; // the derived rendering-audit corpus (#174 P1)
 mod bundle;
 pub mod mask; // opt-in secret masking for what leaves the machine (#365)
 pub(crate) mod mdrev; // mdrev's embedded viewer in the app shell's preview pane (#270)
+mod mermaid;
 pub mod pairing;
 mod record_store;
 mod serve;
@@ -665,6 +666,18 @@ fn request_user_input_projection(output: &str) -> Option<Value> {
 
 fn fence_html(lang: &str, body: &str) -> String {
     let token = lang.split_whitespace().next().unwrap_or("");
+    if token.eq_ignore_ascii_case("mermaid") {
+        return format!(
+            "<div class=\"fence mermaid-fence\" data-mermaid><div class=\"fence-h\">\
+             <span class=\"fence-lang\">mermaid</span>\
+             <button class=\"mermaid-source\" type=\"button\" aria-pressed=\"false\">source</button>\
+             <button class=\"cpy\" type=\"button\">copy</button></div>\
+             <div class=\"mermaid-diagram\" role=\"img\" aria-label=\"Mermaid diagram\" aria-busy=\"true\"></div>\
+             <p class=\"mermaid-error\" role=\"status\" hidden></p>\
+             <pre hidden><code>{}</code></pre></div>",
+            esc(body.trim_end_matches('\n'))
+        );
+    }
     let code = highlight_lines(body.trim_end_matches('\n'), token).join("\n");
     let label = if token.is_empty() { "code" } else { token };
     format!(
@@ -2156,6 +2169,15 @@ fn build_page(
     // stand alone from file://, so what the monitor serves as ES modules arrives here as a
     // classic script publishing the same names on `window.__shared`.
     let shared_js = shared::inline_all();
+    // Server-backed pages fetch the same runtime lazily from /mermaid.js. A single-file
+    // export needs it only if it contains diagrams; a bundle/live export can load them later.
+    let mermaid_runtime = if !multi.is_some_and(|(_, _, pull)| pull)
+        && (multi.is_some() || live.is_some() || jsonl.contains("data-mermaid"))
+    {
+        mermaid::inline_runtime()
+    } else {
+        String::new()
+    };
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -2271,7 +2293,7 @@ fn build_page(
 <script>
 {shared_js}
 </script>
-<script>
+{mermaid_runtime}<script>
 {JS}
 </script>
 {chrome_stamp}</body>
@@ -5413,6 +5435,16 @@ mod tests {
         assert!(html.contains("<ul><li>one</li>"), "{html}");
         assert!(html.contains("class=\"fence\"") && html.contains("class=\"cpy\""));
         assert!(html.contains("class=\"md-h1\""));
+    }
+
+    #[test]
+    fn mermaid_source_is_escaped_and_kept_separate_from_ordinary_code() {
+        let html = md_html("```mermaid\nflowchart LR\n A[\"<script>alert(1)</script>\"] --> B\n```\n\n```rust\nlet x = 1;\n```");
+        assert_eq!(html.matches("data-mermaid").count(), 1);
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("<pre hidden><code>flowchart LR"));
+        assert_eq!(html.matches("class=\"cpy\"").count(), 2);
     }
 
     #[test]

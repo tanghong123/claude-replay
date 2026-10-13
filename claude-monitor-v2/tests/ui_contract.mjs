@@ -1541,6 +1541,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(recordText(record, stripTags).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").trim(), "Bash\necho hi\nthe needle & more\nneedle in output", "heads, stripped markdown and nested parts; never JSON field names");
   assert.equal(countOcc(recordText(record, stripTags).toLowerCase(), "needle", false), 2);
   assert.equal(countOcc("needles needle", "needle", true), 1, "whole words");
+  assert.equal(countOcc("diagram source", "", false), 0, "clearing search must terminate with zero matches");
+  assert.equal(countOcc("", "", true), 0, "an empty whole-word query also terminates");
+  assert.equal(countRecord("diagram source", [], "", false, 0, null), 0, "a cleared record query has no hits");
   assert.ok(wholeAt("a needle b", 2, 6) && !wholeAt("needles", 0, 6));
   assert.equal(directMask("bash"), CLASS_BIT.o, "every tool call is the one tools class (#367)");
   assert.deepEqual(Object.keys(CLASS_BIT), ["u", "a", "t", "o"], "b, r and e are gone (#367)");
