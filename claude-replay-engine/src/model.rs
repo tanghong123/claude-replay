@@ -9,6 +9,36 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Agent-neutral quotation pairs, recognized at the native message boundary.
+/// Version 1 preserves all remaining text in `context` and any explicit overall request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplyContext {
+    pub version: u8,
+    pub items: Vec<ReplyItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub context: String,
+}
+
+/// One selected passage and its associated user-authored text, in source order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplyItem {
+    pub quote: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<ReplyResponse>,
+}
+
+/// Explicit comments and undelimited following text remain distinct.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReplyResponse {
+    Comment { text: String },
+    FollowingText { text: String },
+}
+
 /// A tool call's persisted terminal state. Agent adapters normalize their native words onto this
 /// small vocabulary; an absent status remains distinct from an explicit unknown terminal word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +252,9 @@ pub struct Hunk {
 pub enum Block {
     /// A human turn (a `user` event whose content is a plain string).
     UserText(String),
+    /// A quoted human reply. `text` retains the complete native input for ordinary readers;
+    /// `context` is additive presentation data, never a replacement for that source.
+    UserReply { text: String, context: ReplyContext },
     /// A message from ANOTHER agent session, delivered into this one (Claude Code's
     /// cross-session messages, #s79). It opens a turn as a prompt does — the agent answers it —
     /// but it is not the human's: it carries who sent it, and every consumer that asks "what did
@@ -693,7 +726,7 @@ pub enum BlockKind {
 pub fn block_kind(b: &Block) -> BlockKind {
     use BlockKind::*;
     match b {
-        Block::UserText(_) => User,
+        Block::UserText(_) | Block::UserReply { .. } => User,
         Block::PeerText { .. } => Peer,
         Block::QueueEvent { .. } => Queue,
         Block::AssistantText(_) | Block::AssistantMessage { .. } => Assistant,
@@ -791,7 +824,10 @@ impl Block {
     pub fn opens_turn(&self) -> bool {
         matches!(
             self,
-            Block::UserText(_) | Block::Command { .. } | Block::PeerText { .. }
+            Block::UserText(_)
+                | Block::UserReply { .. }
+                | Block::Command { .. }
+                | Block::PeerText { .. }
         )
     }
 }

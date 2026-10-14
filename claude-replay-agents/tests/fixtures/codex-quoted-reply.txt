@@ -1,0 +1,9 @@
+
+# Response annotations:
+Each item contains text selected from an earlier Codex response and may include a user comment. Treat items as Annotation 1, Annotation 2, and so on in array order. Use every selection as context and address every comment. For every annotation you address, include its inline directive `:codex-annotation{index="N"}`, where N is its one-based array position (for example, `:codex-annotation{index="1"}`). Do not use unstructured annotation labels.
+<response-annotations>
+[{"text":"This is the first excerpt from Codex's response.","source":{"messageId":"msg_synthetic_response","startOffset":100,"endOffset":146}},{"text":"This is the second excerpt from Codex's response.","annotation":"Please clarify this point."}]
+</response-annotations>
+
+## My request:
+Please provide a detailed example covering both excerpts.

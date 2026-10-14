@@ -3,8 +3,9 @@
 *Proposed reading model, revised 2026-10-10 after review. The first delivery covers
 Agent Monitor's App shell Turns list and opened user messages. Classic, standalone
 exports, and dedicated mobile adaptation follow after that experience is validated.
-The recognition rules and additive data contract below are proposals; this RFC does
-not implement them.*
+The recognition rules and additive data contract below define the implementation
+contract. The first App-shell delivery implements it; Classic, standalone export,
+and dedicated mobile styling remain follow-ups.*
 
 ---
 

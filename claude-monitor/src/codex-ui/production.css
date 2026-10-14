@@ -1573,3 +1573,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .turn.peer .spot-link{--spot-top:10px}
 @media(max-width:620px){.turn.peer .peer-card{max-width:100%}}
 
+
+/* Quoted replies retain literal selection/response whitespace in both themes. */
+#app .quoted-reply{display:grid;gap:16px;min-width:0}
+#app .reply-item{min-width:0}
+#app .reply-item-label{color:var(--faint);font-size:11px;margin-bottom:6px}
+#app .markdown .reply-quote{border-left:2px solid var(--sub);margin:0 0 10px;padding:2px 0 2px 12px;color:var(--sub);font:12px/1.65 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+#app :is(.reply-response,.reply-context,.reply-request){white-space:pre-wrap;overflow-wrap:anywhere}
+#app .outline-quote-marker{flex:none;color:var(--sub);font-size:15px;line-height:1}
+#app .outline-label{min-width:0}
+#app .outline-reply-count{flex:none;color:var(--faint);font:11px var(--mono);margin-left:auto}

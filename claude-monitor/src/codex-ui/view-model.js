@@ -9,11 +9,47 @@ import { displayName, toolHead, stateLabel } from "./shared/tool-head.js";
 import { svg } from "./icons.js";
 
 export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+
+/** Validate the complete additive v1 contract; unsupported data uses ordinary body parts. */
+export function replyContext(record) {
+  const value = record?.reply_context;
+  const object = v => v !== null && typeof v === "object" && !Array.isArray(v);
+  const keys = (v, allowed) => Object.keys(v).every(key => allowed.includes(key));
+  const text = v => typeof v === "string" && v.length > 0;
+  if (!object(value) || !keys(value, ["version", "items", "request", "context"]) ||
+      value.version !== 1 || !Array.isArray(value.items) || !value.items.length ||
+      (Object.hasOwn(value, "request") && !text(value.request)) ||
+      (Object.hasOwn(value, "context") && typeof value.context !== "string")) return null;
+  for (const item of value.items) {
+    if (!object(item) || !keys(item, ["quote", "response"]) || !text(item.quote)) return null;
+    if (Object.hasOwn(item, "response")) {
+      const response = item.response;
+      if (!object(response) || !keys(response, ["kind", "text"]) ||
+          !["comment", "following_text"].includes(response.kind) || !text(response.text)) return null;
+    }
+  }
+  return value;
+}
+
+/** Quotes are literal selections, including code/table spacing and marker-like content. */
+export function replyHtml(context) {
+  return `<section class="quoted-reply" aria-label="Reply to selected text">${context.items.map((item, i) =>
+    `<div class="reply-item">${context.items.length > 1 ? `<div class="reply-item-label">Annotation ${i + 1}</div>` : ""}<blockquote class="reply-quote" aria-label="Selected earlier text">${escapeText(item.quote)}</blockquote>${item.response ? `<div class="reply-response" data-response-kind="${item.response.kind}">${escapeText(item.response.text)}</div>` : ""}</div>`
+  ).join("")}${context.context ? `<div class="reply-context">${escapeText(context.context)}</div>` : ""}${context.request ? `<div class="reply-request">${escapeText(context.request)}</div>` : ""}</section>`;
+}
+
 // A record's searchable text is what a reader can see of it (#111, shared/search.js): heads and
 // body parts, nested records included — not its JSON, whose field names matched every record.
 const APP_CTX = { root: "ctx-report", head: "ctx-head", table: "ctx-table", num: "ctx-num", track: "ctx-track" };
 
-export const plainText = record => recordText(record, stripTags).replace(/\s+/g, " ").trim();
+/** App-shell search indexes the displayed quotation pairs, with the user's scope unchanged. */
+export function recordForSearch(record) {
+  const reply = record?.kind === "user" && replyContext(record);
+  if (!reply) return record;
+  const texts = [...reply.items.flatMap(item => [item.quote, item.response?.text || ""]), reply.context || "", reply.request || ""];
+  return { ...record, body: texts.filter(Boolean).map(x => ({ p: "pre", x })) };
+}
+export const plainText = record => recordText(recordForSearch(record), stripTags).replace(/\s+/g, " ").trim();
 
 /** The user-turn index the reader is AT: the last user turn at or before the unit `atKey`
  *  (the unit at the viewport top), or -1 when none is. DOM-free — the outline's focus (#52)
@@ -228,7 +264,10 @@ export function compactionTick(head = {}) {
 
 export function viewRecord(record) {
   const head = record.head || {};
-  if (record.kind === "user") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record };
+  if (record.kind === "user") {
+    const reply = replyContext(record);
+    return { t: "user", id: record.id, html: reply ? replyHtml(reply) : partsHtml(record.body), reply, markdown: true, source: record };
+  }
   // Another session's message (#s79): a turn like a prompt (so the Turns pane and the sticky strip
   // count it), drawn as its own card and never as the person's bubble.
   if (record.kind === "peer") return { t: "user", id: record.id, html: partsHtml(record.body), markdown: true, source: record, peer: { from: head.from || "another session", mode: head.mode || "" } };
@@ -449,7 +488,7 @@ function buildUnits(records, from, turn) {
     const view = viewRecord(record);
     if (record.kind === "user" || record.kind === "command" || record.kind === "peer") {
       flush(); turn = Number(record.turn || turn + 1);
-      units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: record.label || plainText(record).slice(0, 80) });
+      units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: view.reply ? (view.reply.items[0].response?.text || view.reply.items[0].quote).replace(/\s+/g, " ").trim().slice(0, 80) : record.label || plainText(record).slice(0, 80) });
     } else if (record.kind === "attachment" && !process && units.at(-1)?.type === "user") {
       const unit = units.at(-1);
       const path = view.attachment?.att_path || "";

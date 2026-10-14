@@ -1113,7 +1113,7 @@ impl Emitter<'_> {
         let mut body: Vec<Value> = Vec::new();
 
         match b {
-            Block::UserText(text) => {
+            Block::UserText(text) | Block::UserReply { text, .. } => {
                 self.turn += 1;
                 let id = format!("t{}", self.turn);
                 self.turns
@@ -1130,6 +1130,9 @@ impl Emitter<'_> {
                 // user's typing is a rounding error beside its tool output.
                 o.insert("src".into(), json!(text));
                 body.extend(user_body_parts(text));
+                if let Block::UserReply { context, .. } = b {
+                    o.insert("reply_context".into(), json!(context));
+                }
             }
             // Another session's message (#s79): it opens a turn as a prompt does — the Turns pane
             // and the sticky strip list it, labelled with its sender — but its kind is `peer`, so
@@ -3136,6 +3139,49 @@ mod tests {
         );
         // And the rendered half is still there beside it — the toggle switches between them.
         assert!(rec["body"].as_array().is_some_and(|b| !b.is_empty()));
+    }
+
+    #[test]
+    fn quoted_reply_ships_additive_metadata_and_identical_legacy_body() {
+        use crate::model::{ReplyContext, ReplyItem, ReplyResponse};
+        let text = "<!-- reply 1 -->\n> earlier text\n\nuser comment";
+        let context = ReplyContext {
+            version: 1,
+            items: vec![ReplyItem {
+                quote: "earlier text".into(),
+                response: Some(ReplyResponse::FollowingText {
+                    text: "user comment".into(),
+                }),
+            }],
+            request: None,
+            context: String::new(),
+        };
+        let emit = |block| {
+            let lines = render_blocks(
+                &[block],
+                &[Some(1.0)],
+                &[],
+                &FoldPolicy::default(),
+                "",
+                false,
+                false,
+                None,
+                None,
+                &mut EmitState::default(),
+            );
+            serde_json::from_str::<serde_json::Value>(&lines[0]).unwrap()
+        };
+        let old = emit(Block::UserText(text.into()));
+        let new = emit(Block::UserReply {
+            text: text.into(),
+            context: context.clone(),
+        });
+        assert_eq!(new["src"], text);
+        assert_eq!(new["body"], old["body"]);
+        assert_eq!(new["kind"], "user");
+        assert_eq!(new["turn"], old["turn"]);
+        assert_eq!(new["id"], old["id"]);
+        assert_eq!(new["reply_context"], serde_json::to_value(context).unwrap());
     }
 
     /// The overwhelming majority of turns hold no art at all, and those must emit exactly

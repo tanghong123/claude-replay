@@ -1213,7 +1213,13 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                             !text.trim().is_empty() && !is_host_context(text)
                                         })
                                     {
-                                        if let Some((request, files)) = desktop_prompt(text) {
+                                        if let Some(context) = super::reply::parse(text) {
+                                            msgs.push(Message::UserReply {
+                                                text: text.to_string(),
+                                                context,
+                                            });
+                                        } else if let Some((request, files)) = desktop_prompt(text)
+                                        {
                                             msgs.push(Message::UserText {
                                                 text: request.to_string(),
                                             });
@@ -1955,7 +1961,12 @@ fn push_message(payload: &Value, out: &mut Vec<Block>) {
                 else {
                     continue;
                 };
-                if let Some((request, files)) = desktop_prompt(text) {
+                if let Some(context) = super::reply::parse(text) {
+                    out.push(Block::UserReply {
+                        text: text.to_string(),
+                        context,
+                    });
+                } else if let Some((request, files)) = desktop_prompt(text) {
                     out.push(Block::UserText(request.to_string()));
                     declared_files.extend(files);
                 } else if let Some(image) = desktop_image_marker(text) {

@@ -566,7 +566,7 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 }
             }
         }
-        Block::UserText(t) => {
+        Block::UserText(t) | Block::UserReply { text: t, .. } => {
             // A full-width grey block like Claude Code: a dim `❯` caret on the
             // first line (continuation lines indent two spaces to align under it),
             // near-white text; `fill_bg` extends the background across the row.
@@ -1130,7 +1130,7 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
 /// Must match `render_one`'s first emitted line for foldable blocks.
 fn render_header(b: &Block) -> Line<'static> {
     match b {
-        Block::UserText(t) => {
+        Block::UserText(t) | Block::UserReply { text: t, .. } => {
             let base = Style::default().fg(theme::user_fg()).bg(theme::user_bg());
             Line::from(vec![
                 Span::styled("❯ ", base.fg(theme::user_marker())),
@@ -1202,9 +1202,10 @@ fn render_header(b: &Block) -> Line<'static> {
 /// building the body. Must agree with `render_one`'s output length.
 fn body_len(b: &Block) -> usize {
     match b {
-        Block::ToolResult(t) | Block::UserText(t) | Block::QueueEvent { text: t } => {
-            t.lines().count().saturating_sub(1)
-        }
+        Block::ToolResult(t)
+        | Block::UserText(t)
+        | Block::UserReply { text: t, .. }
+        | Block::QueueEvent { text: t } => t.lines().count().saturating_sub(1),
         Block::Attachment(_) => 0, // one-line marker; not foldable
         Block::SubAgent(sa) => {
             let p = if sa.prompt.trim().is_empty() {

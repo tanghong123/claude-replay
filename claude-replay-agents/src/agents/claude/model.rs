@@ -98,6 +98,17 @@ fn classify_user_string(s: &str, injected: Injected) -> Option<Message> {
     if injected == Injected::CompactSummary {
         return compact_summary(s);
     }
+    if injected == Injected::No && super::reply::candidate(s) {
+        return Some(match super::reply::parse(s) {
+            Some(context) => Message::UserReply {
+                text: s.to_string(),
+                context,
+            },
+            None => Message::UserText {
+                text: s.to_string(),
+            },
+        });
+    }
     let injected = injected.is_injected();
     // A skill instruction body: the fold nests it into the last `Skill` block; the fallback
     // (no skill block to nest into) is a system-note result, cleaned exactly as the old fold
@@ -182,6 +193,17 @@ fn classify_user_string(s: &str, injected: Injected) -> Option<Message> {
 /// plain-string case (no command/notification parsing): a skill body nests, other injected
 /// content is a system note, else it's a human turn.
 fn classify_user_array_text(text: &str, injected: Injected) -> Option<Message> {
+    if injected == Injected::No && super::reply::candidate(text) {
+        return Some(match super::reply::parse(text) {
+            Some(context) => Message::UserReply {
+                text: text.to_string(),
+                context,
+            },
+            None => Message::UserText {
+                text: text.to_string(),
+            },
+        });
+    }
     if injected == Injected::CompactSummary {
         return compact_summary(text);
     }
@@ -340,6 +362,21 @@ fn push_user_string(
     queue: &mut Vec<QueueItem>,
     suppress: &mut Vec<BlockIndex>,
 ) {
+    if super::reply::candidate(s) {
+        if let Some(pos) = queue.iter().position(|q| q.content == s.trim()) {
+            if let Some(mi) = queue.remove(pos).marker_idx {
+                suppress.push(mi);
+            }
+        }
+        out.push(match super::reply::parse(s) {
+            Some(context) => Block::UserReply {
+                text: s.to_string(),
+                context,
+            },
+            None => Block::UserText(s.to_string()),
+        });
+        return;
+    }
     if tag_inner(s, "task-notification").is_some() {
         if let Some(line) = tag_inner(s, "summary").or_else(|| tag_inner(s, "status")) {
             let line = line.trim();
@@ -4087,6 +4124,15 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                         } else if injected || is_skill_body(t) {
                                             out.push(Block::ToolResult(t.to_string()));
                                         } else {
+                                            if super::reply::candidate(t) {
+                                                push_user_string(
+                                                    t,
+                                                    &mut out,
+                                                    &mut queue,
+                                                    &mut suppress,
+                                                );
+                                                continue;
+                                            }
                                             // #52 op-less delivery: a user message matching a
                                             // PENDING queued prompt is that prompt arriving.
                                             let t = fence_pasted(t);

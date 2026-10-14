@@ -290,11 +290,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// in the model's context after a tool call) is a note after the call's card. A v53 stream holds
 /// nothing there.
 ///
+/// v55: exact quoted replies retain the complete native user input and additive quotation
+/// pairs. A v54 stream may hold cleaned prompts without that source or presentation data.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 54;
+pub const FOLD_VERSION: u16 = 55;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

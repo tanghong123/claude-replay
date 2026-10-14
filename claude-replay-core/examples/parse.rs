@@ -56,7 +56,7 @@ fn main() -> std::io::Result<()> {
 fn describe(b: &Block) -> (&'static str, String) {
     let clip = |s: &str| s.chars().take(60).collect::<String>().replace('\n', " ");
     match b {
-        Block::UserText(t) => ("user", clip(t)),
+        Block::UserText(t) | Block::UserReply { text: t, .. } => ("user", clip(t)),
         Block::PeerText { from, text, .. } => ("peer", format!("{from}: {}", clip(text))),
         Block::AssistantText(t) | Block::AssistantMessage { text: t, .. } => ("assistant", clip(t)),
         Block::Thinking { text, tools, .. } => (
