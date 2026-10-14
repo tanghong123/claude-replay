@@ -1,5 +1,6 @@
 //! Exact recognition of the two measured Claude Desktop quotation layouts.
 use claude_replay_engine::seam::{ReplyContext, ReplyItem, ReplyResponse};
+use pulldown_cmark::{Event, Parser, Tag};
 
 /// Preserve comment-marker candidates even when case, spacing, or marker wording changes.
 /// This is only a non-destructive fallback guard; exact recognition remains in `parse`.
@@ -75,8 +76,18 @@ fn opaque_span(source: &str) -> Option<(usize, usize)> {
 
 /// Whether a fragment's marker belongs to quoted text or a literal native payload.
 fn literal_position(text: &str, position: usize) -> bool {
-    let line_prefix = text[..position].rsplit('\n').next().unwrap_or("");
-    if line_prefix.trim_start().starts_with('>') {
+    // Offset ranges cover whole nodes, including open fences and indented/inline code.
+    // Use the existing Markdown parser so fragment boundaries cannot invent reference roles.
+    if Parser::new(text).into_offset_iter().any(|(event, range)| {
+        range.contains(&position)
+            && matches!(
+                event,
+                Event::Start(Tag::CodeBlock(_) | Tag::BlockQuote(_) | Tag::HtmlBlock)
+                    | Event::Code(_)
+                    | Event::Html(_)
+                    | Event::InlineHtml(_)
+            )
+    }) {
         return true;
     }
     let mut offset = 0;

@@ -461,6 +461,67 @@ fn skill_headers_inside_fragmented_literal_payloads_keep_one_queued_user_turn() 
 }
 
 #[test]
+fn fenced_skill_looking_fragments_keep_complete_reply_fallback_and_queue_identity() {
+    for marker in ["<!-- reply 1 -->", "<!-- reply 3 -->", "<?-- reply 1 -->"] {
+        for (open, close) in [("```text", "```"), ("~~~~text", "~~~~"), ("```text", "")] {
+            let first = format!("{marker}\n> Selected\n\n{open}\n");
+            let inner = "Base directory for this skill: /literal\n";
+            let last = format!("{close}\nMy comment");
+            let parts = [first.as_str(), inner, last.as_str()];
+            let text = parts.concat();
+            let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+            let mut offset = 0;
+            let mut advance = |record: String| {
+                acc.advance_at(offset, &record);
+                offset += record.len() as u64 + 1;
+            };
+            advance(line("claude", "start", false));
+            advance(
+                json!({"type":"queue-operation","operation":"enqueue","content":text}).to_string(),
+            );
+            advance(json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}).to_string());
+            assert!(acc
+                .fold()
+                .0
+                .iter()
+                .any(|b| matches!(b, Block::QueueEvent { .. })));
+            let native = json!({"type":"user","message":{"role":"user","content":parts.iter().map(|text| json!({"type":"text","text":text})).collect::<Vec<_>>()}});
+            acc.advance_at(offset, &native.to_string());
+            offset += native.to_string().len() as u64 + 1;
+            acc.advance_at(offset, &line("claude", "after", false));
+            let out = acc.fold().0;
+            assert!(
+                !out.iter().any(|b| matches!(
+                    b,
+                    Block::QueueEvent { .. } | Block::ToolResult(_) | Block::UserReply { .. }
+                )),
+                "{out:?}"
+            );
+            let source = |b: &Block| matches!(b, Block::UserText(body) if body == &text);
+            assert_eq!(out.iter().filter(|b| source(b)).count(), 1, "{out:?}");
+            assert_eq!(
+                out.iter()
+                    .filter(|b| matches!(b, Block::UserText(_)))
+                    .count(),
+                3
+            );
+            assert!(acc.committed_tail(0).iter().any(source));
+        }
+    }
+    for (first, last) in [
+        ("<!-- reply 3 -->\n> Selected\n\n`", "`\nMy comment"),
+        ("<!-- reply 3 -->\n> Selected\n\n    ", "\nMy comment"),
+    ] {
+        let inner = "Base directory for this skill: /literal";
+        let text = format!("{first}{inner}{last}");
+        let native = json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":first},{"type":"text","text":inner},{"type":"text","text":last}]}});
+        let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+        acc.advance_at(0, &native.to_string());
+        assert_eq!(acc.fold().0, vec![Block::UserText(text)]);
+    }
+}
+
+#[test]
 fn queued_reply_candidates_match_delivery_without_dequeue_or_recursive_tag_cleanup() {
     for text in [
         "<!-- reply 1 -->\n> selected\n\n<pasted_content id=\"1\">literal</pasted_content id=\"1\">",

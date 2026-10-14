@@ -305,11 +305,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// v59: genuine later-item Skill references remain notes even when their examples contain
 /// reply markers. A v58 stream can merge that reference material into a human prompt.
 ///
+/// v60: fenced and inline-code Skill examples remain literal within fragmented user input.
+/// A v59 stream can split that code into user turns and a reference note.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 59;
+pub const FOLD_VERSION: u16 = 60;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
