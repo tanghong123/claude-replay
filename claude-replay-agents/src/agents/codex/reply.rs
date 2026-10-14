@@ -122,5 +122,9 @@ pub(crate) fn message_fallback(items: &[serde_json::Value]) -> Option<String> {
         .filter(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("input_text"))
         .filter_map(|item| item.get("text").and_then(serde_json::Value::as_str))
         .collect();
-    (texts.len() > 1 && texts.iter().any(|text| candidate(text))).then(|| texts.concat())
+    if texts.len() < 2 {
+        return None;
+    }
+    let joined = texts.concat();
+    (candidate(&joined) || texts.iter().any(|text| candidate(text))).then_some(joined)
 }

@@ -5056,7 +5056,7 @@ pub(super) fn pasted_parts(s: &str) -> Option<(&str, &str)> {
 /// Applied identically wherever a prompt's text is compared (the prompt, its queued attachment,
 /// the queue operation), so the #52 content match is unchanged. Unpaired markers are left as
 /// they are.
-fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
+pub(super) fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
     // Quoted-reply candidates preserve literal pasted tags in every delivery/queue path.
     // Transforming only the queue key would prevent content-matched delivery.
     if super::reply::candidate(s) {

@@ -79,7 +79,7 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
     stores.claude_session(
         claude_id,
         &(user("claude", &claude, true)
-            + &user("claude", &invalid_claude, false)
+            + &(json!({"type":"user","cwd":"/r","timestamp":"2026-10-10T10:00:00Z","message":{"role":"user","content":invalid_claude}}).to_string() + "\n")
             + &user("claude", claude_only, false)),
     );
     let monitor = Monitor::spawn(Kind::V1, 3195, &base, Some(&stores), true);

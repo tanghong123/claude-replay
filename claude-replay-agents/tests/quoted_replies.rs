@@ -391,6 +391,54 @@ fn fragmented_damaged_replies_match_the_complete_enqueue_and_commit() {
         .any(|b| matches!(b, Block::UserText(source) if source == &text)));
 }
 
+#[test]
+fn fragmented_markers_and_literal_pasted_examples_keep_one_consistent_turn() {
+    for (agent, text) in [("codex", CODEX), ("claude", CLAUDE)] {
+        let mut native: serde_json::Value = serde_json::from_str(&line(agent, text, true)).unwrap();
+        let kind = if agent == "codex" {
+            "input_text"
+        } else {
+            "text"
+        };
+        let parts: Vec<_> = text
+            .chars()
+            .map(|character| json!({"type":kind,"text":character.to_string()}))
+            .collect();
+        let adapter: &dyn TranscriptAdapter = if agent == "codex" {
+            native["payload"]["content"] = json!(parts);
+            &CodexAdapter
+        } else {
+            native["message"]["content"] = json!(parts);
+            &ClaudeAdapter
+        };
+        let mut acc = SessionAccumulator::new(adapter);
+        acc.advance_at(0, &native.to_string());
+        assert_eq!(acc.fold().0, vec![Block::UserText(text.into())]);
+    }
+    let parts = [
+        "<pasted_content id=\"1\">\n",
+        "<!- reply 1 -->\n> selected",
+        "\n</pasted_content id=\"1\">",
+    ];
+    let text = parts.concat();
+    let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+    let mut offset = 0;
+    let mut advance = |record: String| {
+        acc.advance_at(offset, &record);
+        offset += record.len() as u64 + 1;
+    };
+    advance(line("claude", "start", false));
+    advance(json!({"type":"queue-operation","operation":"enqueue","content":text}).to_string());
+    advance(json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}).to_string());
+    advance(json!({"type":"user","message":{"role":"user","content":parts.iter().map(|text| json!({"type":"text","text":text})).collect::<Vec<_>>()}}).to_string());
+    let out = acc.fold().0;
+    assert!(
+        !out.iter().any(|b| matches!(b, Block::QueueEvent { .. })),
+        "{out:?}"
+    );
+    assert!(out.iter().any(|b| matches!(b, Block::UserText(body) if body == "```pasted\n<!- reply 1 -->\n> selected\n```")), "{out:?}");
+}
+
 const CLAUDE: &str = "<!-- reply 2 -->\n> Selected first\n> code | table\n\nFirst comment\n\n<!-- reply -->\n> Selected second\n\nLast comment\n\n\nOverall-looking text";
 
 fn line(agent: &str, text: &str, array: bool) -> String {

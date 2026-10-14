@@ -150,13 +150,24 @@ pub(crate) fn parse(text: &str) -> Option<ReplyContext> {
 }
 
 /// Several native text fragments lack a measured, lossless quotation partition.
-/// Keep one ordinary turn with every input character in source order, and leave
-/// image/tool records on their existing paths. Do not recognize a later fragment.
+/// Keep one ordinary turn in source order, leaving image/tool records on their existing paths.
+/// Reply candidates retain raw text; complete native pasted wrappers retain their normalization.
+/// Do not recognize a later fragment or assemble metadata from fragmented markers.
 pub(crate) fn message_fallback(items: &[serde_json::Value]) -> Option<String> {
     let texts: Vec<&str> = items
         .iter()
         .filter(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("text"))
         .filter_map(|item| item.get("text").and_then(serde_json::Value::as_str))
         .collect();
-    (texts.len() > 1 && texts.iter().any(|text| candidate(text))).then(|| texts.concat())
+    if texts.len() < 2 {
+        return None;
+    }
+    let joined = texts.concat();
+    if candidate(&joined) {
+        Some(joined)
+    } else if texts.iter().any(|text| candidate(text)) {
+        Some(super::model::fence_pasted(&joined).into_owned())
+    } else {
+        None
+    }
 }
