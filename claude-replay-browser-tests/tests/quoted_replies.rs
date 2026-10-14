@@ -305,7 +305,7 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
             }
         }
         use headless_chrome::protocol::cdp::Emulation;
-        tab.call_method(Emulation::ClearDeviceMetricsOverride {})
+        tab.call_method(Emulation::ClearDeviceMetricsOverride(None))
             .unwrap();
         tab.call_method(Emulation::SetTouchEmulationEnabled {
             enabled: false,
