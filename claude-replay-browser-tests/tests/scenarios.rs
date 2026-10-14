@@ -17731,3 +17731,147 @@ fn peer_fixture(name: &str) -> Fixture {
         turns: 14,
     }
 }
+
+// ── scenario: a Markdown link the transcript carries runs no script (#s108) ─────────────────
+
+/// A session whose last answer carries Markdown links: the three kinds a page opens (a web
+/// page, a mail address, a fragment) and the schemes it must not, written the ways a browser
+/// still reads as those schemes (upper case, a tab hidden in a character reference). Every
+/// script target writes `localStorage.s108` with where it ran, so a script that ran with the
+/// page's ORIGIN — in the page, or in the `about:blank` a `target=_blank` click opens, which
+/// inherits it — leaves a mark the page can read.
+fn fixture_markdown_links(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let js = "javascript:localStorage.setItem('s108','js:'+location.href);void(0)";
+    let text = format!(
+        "Links: [web](https://example.com/s108) [mail](mailto:someone@example.com) \
+         [here](#s108) [js]({js}) \
+         [upper](JAVASCRIPT:localStorage.setItem('s108','upper');void(0)) \
+         [tab](java&#x09;script:localStorage.setItem('s108','tab');void(0)) \
+         [vb](vbscript:msgbox) \
+         [data](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==) \
+         [file](file:///etc/hosts) ![pic]({js})"
+    );
+    let mut jsonl = long_session(100, Shape::default());
+    jsonl.push_str(&assistant_at(&text, &harness::at("50:00")));
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture {
+        base,
+        path,
+        turns: 100,
+    }
+}
+
+/// The links paragraph's anchors and the words drawn in its place, as the page holds them.
+const LINKS_PROBE: &str = r#"(() => {
+  const p = [...document.querySelectorAll('p')].find(p => p.textContent.startsWith('Links:'));
+  if (!p) return null;
+  return {
+    anchors: [...p.querySelectorAll('a')].map(a => ({ text: a.textContent, href: a.getAttribute('href'), protocol: a.protocol })),
+    text: p.textContent,
+  };
+})()"#;
+
+fn scenario_a_markdown_link_runs_no_script(
+    browser: &headless_chrome::Browser,
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    if !at_tail(tab, surface) {
+        jump_to_end(tab, surface);
+    }
+    until(
+        tab,
+        &format!("{LINKS_PROBE} !== null"),
+        "the links paragraph to render",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(-300)",
+    );
+    eval(tab, "localStorage.removeItem('s108')");
+    let tabs_before = browser.get_tabs().lock().unwrap().len();
+    // A real click (mouse events at the element's middle, as a reader's) on the word `js`,
+    // whatever element now holds it.
+    tab.evaluate(
+        r#"(() => {
+          const p = [...document.querySelectorAll('p')].find(p => p.textContent.startsWith('Links:'));
+          const el = [...p.querySelectorAll('a, span')].find(e => e.textContent === 'js');
+          el.id = 's108-js';
+        })()"#,
+        false,
+    )
+    .unwrap();
+    tab.find_element("#s108-js").unwrap().click().unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    let tabs: Vec<String> = browser
+        .get_tabs()
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|t| t.get_url())
+        .collect();
+    let mark = eval(tab, "localStorage.getItem('s108')");
+    let seen = probe(tab, LINKS_PROBE);
+    eprintln!(
+        "s108 {surface:?}: click on `js` -> tabs {tabs_before} -> {} {tabs:?}, localStorage.s108 = {mark}; anchors {}",
+        tabs.len(),
+        seen["anchors"]
+    );
+
+    // What a page opens stays a link.
+    let anchors = seen["anchors"].as_array().expect("anchors").clone();
+    let href_of = |text: &str| {
+        anchors
+            .iter()
+            .find(|a| a["text"] == text)
+            .and_then(|a| a["href"].as_str().map(str::to_owned))
+    };
+    assert_eq!(href_of("web").as_deref(), Some("https://example.com/s108"));
+    assert_eq!(
+        href_of("mail").as_deref(),
+        Some("mailto:someone@example.com")
+    );
+    assert_eq!(href_of("here").as_deref(), Some("#s108"));
+    // Nothing else is: every anchor the paragraph holds goes to the web or to mail.
+    for a in &anchors {
+        let protocol = a["protocol"].as_str().unwrap_or("");
+        assert!(
+            ["http:", "https:", "mailto:"].contains(&protocol),
+            "{surface:?}: a Markdown link to {} is live ({a})",
+            a["href"]
+        );
+    }
+    // The words are still there, as text.
+    let text = seen["text"].as_str().unwrap_or("");
+    for word in ["js", "upper", "tab", "vb", "data", "file", "[image] pic"] {
+        assert!(
+            text.contains(word),
+            "{surface:?}: `{word}` is gone from {text:?}"
+        );
+    }
+    // And the click did nothing: no tab, no script with the page's origin.
+    assert_eq!(mark, serde_json::Value::Null, "{surface:?}: the script ran");
+    assert_eq!(
+        tabs.len(),
+        tabs_before,
+        "{surface:?}: the click opened {tabs:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_markdown_link_runs_no_script() {
+    let _serial = serial();
+    let fx = fixture_markdown_links("scenario-md-links-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_markdown_link_runs_no_script(&page._browser, &page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_markdown_link_runs_no_script() {
+    let _serial = serial();
+    let fx = fixture_markdown_links("scenario-md-links-app");
+    let page = open(Surface::AppShell, &fx, 2905);
+    scenario_a_markdown_link_runs_no_script(&page._browser, &page.tab, Surface::AppShell);
+}
