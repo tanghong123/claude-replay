@@ -12,7 +12,7 @@ pub(crate) fn candidate(text: &str) -> bool {
     loop {
         let cursor = &lowercase[offset..];
         let source = &text[offset..];
-        let marker = ["<!--", "<!-", "<--", "!--"]
+        let marker = ["<", "!--"]
             .into_iter()
             .filter_map(|opening| cursor.find(opening).map(|at| (at, opening)))
             .min_by_key(|(at, _)| *at);
@@ -37,7 +37,7 @@ pub(crate) fn candidate(text: &str) -> bool {
             Some((at, source.len() - after.len()))
         });
         if let Some((at, end)) = pasted.into_iter().chain(wrappers).min_by_key(|(at, _)| *at) {
-            if marker.is_none_or(|(marker_at, _)| at < marker_at) {
+            if marker.is_none_or(|(marker_at, _)| at <= marker_at) {
                 offset += end;
                 continue;
             }
@@ -46,13 +46,21 @@ pub(crate) fn candidate(text: &str) -> bool {
             return false;
         };
         let comment = &cursor[at + opening.len()..];
-        if comment.trim_start().starts_with("reply")
-            || comment
-                .split_once('\n')
-                .is_some_and(|(_, rest)| rest.starts_with('>'))
-            || comment
-                .split_once("-->")
-                .is_some_and(|(_, rest)| rest.strip_prefix('\r').unwrap_or(rest).starts_with("\n>"))
+        // Treat punctuation changes in a comment opener as unsupported reply input.
+        // Ordinary tags start with their name, so their prefix contains no comment punctuation.
+        let prefix_end = comment
+            .find(|ch: char| !ch.is_ascii_punctuation() && !ch.is_whitespace())
+            .unwrap_or(comment.len());
+        let (prefix, body) = comment.split_at(prefix_end);
+        let comment_opener = opening.contains('-') || prefix.contains('-');
+        if body.starts_with("reply")
+            || comment_opener
+                && (comment
+                    .split_once('\n')
+                    .is_some_and(|(_, rest)| rest.starts_with('>'))
+                    || comment.split_once("-->").is_some_and(|(_, rest)| {
+                        rest.strip_prefix('\r').unwrap_or(rest).starts_with("\n>")
+                    }))
         {
             return true;
         }
@@ -165,9 +173,13 @@ pub(crate) fn message_fallback(items: &[serde_json::Value]) -> Option<String> {
     let joined = texts.concat();
     if candidate(&joined) {
         Some(joined)
-    } else if texts.iter().any(|text| candidate(text)) {
-        Some(super::model::fence_pasted(&joined).into_owned())
     } else {
-        None
+        match super::model::fence_pasted(&joined) {
+            std::borrow::Cow::Owned(pasted) => Some(pasted),
+            std::borrow::Cow::Borrowed(_) if texts.iter().any(|text| candidate(text)) => {
+                Some(joined)
+            }
+            _ => None,
+        }
     }
 }

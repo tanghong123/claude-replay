@@ -252,6 +252,116 @@ fn malformed_prefixes_preserve_quoted_tags_before_transport_cleanup() {
 }
 
 #[test]
+fn punctuation_changes_in_reply_markers_preserve_source_and_fragmented_queue_identity() {
+    let header = "<!-- reply 1 -->";
+    let mut markers = Vec::new();
+    for (at, character) in header
+        .char_indices()
+        .filter(|(_, c)| c.is_ascii_punctuation())
+    {
+        let mut replacement = header.to_string();
+        replacement.replace_range(at..at + character.len_utf8(), "?");
+        markers.push(replacement);
+        let mut deletion = header.to_string();
+        deletion.remove(at);
+        markers.push(deletion);
+    }
+    for marker in markers {
+        let first = format!("INTRO\n{marker}\n> <local-command-caveat>KEEP SELECTED TEXT</local-command-caveat>\n\n");
+        let text = first.clone() + "My comment";
+        for array in [false, true] {
+            assert_eq!(
+                blocks("claude", &text, array),
+                vec![Block::UserText(text.clone())],
+                "{marker}"
+            );
+        }
+        let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+        let mut offset = 0;
+        let mut advance = |record: String| {
+            acc.advance_at(offset, &record);
+            offset += record.len() as u64 + 1;
+        };
+        advance(line("claude", "start", false));
+        advance(json!({"type":"queue-operation","operation":"enqueue","content":text}).to_string());
+        advance(json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}).to_string());
+        advance(json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":first},{"type":"text","text":"My comment"}]}}).to_string());
+        advance(line("claude", "after", false));
+        let out = acc.fold().0;
+        assert!(
+            !out.iter().any(|b| matches!(b, Block::QueueEvent { .. })),
+            "{marker}: {out:?}"
+        );
+        let source = |b: &Block| matches!(b, Block::UserText(body) if body == &text);
+        assert_eq!(
+            out.iter().filter(|b| source(b)).count(),
+            1,
+            "{marker}: {out:?}"
+        );
+        assert!(
+            acc.committed_tail(0).iter().any(source),
+            "{marker}: delivery must commit"
+        );
+    }
+}
+
+#[test]
+fn pasted_reply_examples_keep_nested_native_tags_literal_in_every_delivery_shape() {
+    for literal in [
+        "<command-name>/status</command-name><command-args>literal</command-args>",
+        "<local-command-stdout>literal stdout</local-command-stdout>",
+        "<local-command-caveat>KEEP SELECTED TEXT</local-command-caveat>",
+        "<task-notification><summary>Agent \"quoted\" finished</summary><status>completed</status></task-notification>",
+    ] {
+        let inner = format!("<!-- reply 1 -->\n> {literal}");
+        let pasted = format!("<pasted_content id=\"1\">\n{inner}\n</pasted_content id=\"1\">");
+        for (text, expected) in [
+            (pasted.clone(), format!("```pasted\n{inner}\n```")),
+            (format!("Inspect:\n{pasted}\nKeep this context."), format!("Inspect:\n```pasted\n{inner}\n```\nKeep this context.")),
+        ] {
+            for shape in ["string", "array", "attachment", "fragmented"] {
+                let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+                let mut offset = 0;
+                let mut advance = |record: String| {
+                    acc.advance_at(offset, &record);
+                    offset += record.len() as u64 + 1;
+                };
+                advance(line("claude", "start", false));
+                advance(json!({"type":"queue-operation","operation":"enqueue","content":text}).to_string());
+                advance(json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}).to_string());
+                let delivery = match shape {
+                    "attachment" => json!({"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","prompt":text}}).to_string(),
+                    "fragmented" => {
+                        let parts: Vec<_> = text.chars().map(|c| json!({"type":"text","text":c.to_string()})).collect();
+                        json!({"type":"user","message":{"role":"user","content":parts}}).to_string()
+                    }
+                    _ => line("claude", &text, shape == "array"),
+                };
+                advance(delivery);
+                advance(line("claude", "after", false));
+                let out = acc.fold().0;
+                assert!(!out.iter().any(|b| matches!(b, Block::QueueEvent { .. } | Block::AgentDone { .. } | Block::Command { .. })), "{shape}: {out:?}");
+                let is_paste = |b: &Block| matches!(b, Block::UserText(body) if body == &expected);
+                assert_eq!(out.iter().filter(|b| is_paste(b)).count(), 1, "{shape}: {out:?}");
+                assert!(acc.committed_tail(0).iter().any(is_paste), "{shape}: delivery must commit");
+            }
+        }
+    }
+}
+
+#[test]
+fn real_commands_ignore_open_and_closing_tags_inside_pasted_examples() {
+    let pasted = "<pasted_content id=\"1\">\n<!-- reply 1 -->\n> <command-name>/fake</command-name>\n</pasted_content id=\"1\">";
+    let args =
+        "<pasted_content id=\"2\">literal </command-args> closing tag</pasted_content id=\"2\">";
+    let source =
+        format!("{pasted}\n<command-name>/real</command-name><command-args>{args}</command-args>");
+    assert!(
+        matches!(&blocks("claude", &source, false)[..], [Block::Command { name, args: actual, .. }] if name == "/real" && actual == args)
+    );
+}
+
+#[test]
 fn queued_reply_candidates_match_delivery_without_dequeue_or_recursive_tag_cleanup() {
     for text in [
         "<!-- reply 1 -->\n> selected\n\n<pasted_content id=\"1\">literal</pasted_content id=\"1\">",

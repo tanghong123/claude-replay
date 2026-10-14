@@ -61,7 +61,7 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
     let invalid_codex = codex
         .replace("Each item contains", "Each item includes")
         .replace('\n', "\r\n");
-    let invalid_claude = "<!-\r\nreply 1 -->\r\n> <local-command-caveat>KEEP SELECTED TEXT</local-command-caveat>\r\n\r\nMy comment".to_string();
+    let invalid_claude = "<?--\r\nreply 1 -->\r\n> <local-command-caveat>KEEP SELECTED TEXT</local-command-caveat>\r\n\r\nMy comment".to_string();
     let codex_only = CODEX
         .split("\n\n## My request:")
         .next()

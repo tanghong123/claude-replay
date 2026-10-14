@@ -293,11 +293,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// v55: exact quoted replies retain the complete native user input and additive quotation
 /// pairs. A v54 stream may hold cleaned prompts without that source or presentation data.
 ///
+/// v56: corrected quotation fallback and opaque pasted payloads retain source and consistent
+/// delivery/queue keys. A v55 stream can hold stripped selections or misclassified commands.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 55;
+pub const FOLD_VERSION: u16 = 56;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

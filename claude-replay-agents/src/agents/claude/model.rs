@@ -5093,25 +5093,44 @@ pub(super) fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
-/// Inner text of the first `<tag>…</tag>` in `s`, if present.
+/// Find a native transport tag outside complete pasted payloads, which are literal content.
+fn native_tag_at(s: &str, open: &str) -> Option<usize> {
+    let mut offset = 0;
+    loop {
+        let rest = &s[offset..];
+        let tag = rest.find(open)?;
+        let pasted = rest.find("<pasted_content").and_then(|at| {
+            pasted_parts(&rest[at..]).map(|(_, after)| (at, rest.len() - after.len()))
+        });
+        if let Some((at, end)) = pasted {
+            if at <= tag {
+                offset += end;
+                continue;
+            }
+        }
+        return Some(offset + tag);
+    }
+}
+
+/// Inner text of the first native `<tag>…</tag>` outside pasted payloads, if present.
 fn tag_inner<'a>(s: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
-    let start = s.find(&open)? + open.len();
+    let start = native_tag_at(s, &open)? + open.len();
     let rest = &s[start..];
-    let end = rest.find(&close)?;
+    let end = native_tag_at(rest, &close)?;
     Some(&rest[..end])
 }
 
 /// Remove every `<local-command-caveat>…</local-command-caveat>` block (pure
-/// noise Claude Code injects around local commands), returning the remainder.
+/// noise Claude Code injects around local commands), preserving literal pasted payloads.
 fn strip_caveat(s: &str) -> String {
     let (open, close) = ("<local-command-caveat>", "</local-command-caveat>");
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
-    while let Some(i) = rest.find(open) {
+    while let Some(i) = native_tag_at(rest, open) {
         out.push_str(&rest[..i]);
-        match rest[i + open.len()..].find(close) {
+        match native_tag_at(&rest[i + open.len()..], close) {
             Some(j) => rest = &rest[i + open.len() + j + close.len()..],
             None => {
                 rest = "";
