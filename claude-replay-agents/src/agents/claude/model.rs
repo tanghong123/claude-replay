@@ -5038,6 +5038,16 @@ fn peer_from_tags(text: &str) -> Option<Peer> {
     })
 }
 
+/// Return a native pasted payload and following text; unpaired markup returns `None`.
+pub(super) fn pasted_parts(s: &str) -> Option<(&str, &str)> {
+    let rest = s.strip_prefix("<pasted_content")?;
+    let (attrs, after) = rest.split_once('>')?;
+    let close = format!("</pasted_content{attrs}>");
+    after
+        .split_once(&close)
+        .or_else(|| after.split_once("</pasted_content>"))
+}
+
 /// Text the person PASTED into a prompt (#s79): Claude Code marks it `<pasted_content id="X">…
 /// </pasted_content id="X">` (the close repeats the id). Rewritten as a Markdown fence labelled
 /// `pasted`, so every page shows it verbatim in a labelled card — pasted text is never read as
@@ -5059,21 +5069,10 @@ fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
     let mut out = String::with_capacity(s.len() + 16);
     let mut rest = s;
     while let Some(at) = rest.find(OPEN) {
-        let Some(gt) = rest[at..].find('>').map(|g| at + g) else {
+        let Some((inner, after)) = pasted_parts(&rest[at..]) else {
             break;
         };
-        let attrs = &rest[at + OPEN.len()..gt];
-        // The close names the same id; a bare `</pasted_content>` closes one without.
-        let close = format!("</pasted_content{attrs}>");
-        let after = &rest[gt + 1..];
-        let (inner_end, close_len) = match after.find(&close) {
-            Some(i) => (i, close.len()),
-            None => match after.find("</pasted_content>") {
-                Some(i) => (i, "</pasted_content>".len()),
-                None => break,
-            },
-        };
-        let inner = after[..inner_end].trim_matches('\n');
+        let inner = inner.trim_matches('\n');
         let run = inner.split(|c| c != '`').map(str::len).max().unwrap_or(0);
         let fence = "`".repeat(run.max(2) + 1);
         out.push_str(&rest[..at]);
@@ -5085,7 +5084,7 @@ fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
         out.push_str(inner);
         out.push('\n');
         out.push_str(&fence);
-        rest = &after[inner_end + close_len..];
+        rest = after;
         if !rest.is_empty() && !rest.starts_with('\n') {
             out.push('\n');
         }
@@ -5127,7 +5126,7 @@ fn strip_caveat(s: &str) -> String {
 /// The harness injects a loaded skill's instruction body as a user message that
 /// opens with this marker. It's reference material, not user prose, so we model it
 /// as a foldable (default-collapsed) result block instead of a `❯` user turn.
-fn is_skill_body(s: &str) -> bool {
+pub(super) fn is_skill_body(s: &str) -> bool {
     s.trim_start().starts_with("Base directory for this skill:")
 }
 

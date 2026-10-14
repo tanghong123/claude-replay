@@ -284,6 +284,113 @@ fn queued_reply_candidates_match_delivery_without_dequeue_or_recursive_tag_clean
     }
 }
 
+#[test]
+fn ordinary_quote_first_pastes_and_command_stdout_keep_native_normalization() {
+    let cases = [
+        ("<pasted_content id=\"1\">\n<!-- reply 1 -->\n> selected\n</pasted_content id=\"1\">", "```pasted\n<!-- reply 1 -->\n> selected\n```"),
+        ("<pasted_content id=\"1\">\n> ordinary quote\n</pasted_content id=\"1\">", "```pasted\n> ordinary quote\n```"),
+        ("- Discuss this passage:\n> ordinary quote\n\nInspect <pasted_content id=\"1\">**literal**</pasted_content id=\"1\">", "- Discuss this passage:\n> ordinary quote\n\nInspect \n```pasted\n**literal**\n```"),
+    ];
+    for (source, expected) in cases {
+        for array in [false, true] {
+            assert_eq!(
+                blocks("claude", source, array),
+                vec![Block::UserText(expected.into())]
+            );
+        }
+    }
+    let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+    let command = line("claude", "<command-name>/status</command-name>", false);
+    acc.advance_at(0, &command);
+    acc.advance_at(
+        command.len() as u64 + 1,
+        &line(
+            "claude",
+            "<local-command-stdout>\n> quoted command output\n</local-command-stdout>",
+            false,
+        ),
+    );
+    let out = acc.fold().0;
+    assert!(
+        matches!(&out[..], [Block::Command { output, .. }] if output.iter().any(|line| line.contains("> quoted command output"))),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn native_envelopes_keep_commands_notes_and_skill_bodies_with_literal_reply_examples() {
+    let args = "Explain <!-- reply 1 --> as literal text.";
+    let command =
+        format!("<command-name>/status</command-name><command-args>{args}</command-args>");
+    assert!(
+        matches!(&blocks("claude", &command, false)[..], [Block::Command { name, args: actual, .. }] if name == "/status" && actual == args)
+    );
+    let skill = "Base directory for this skill: /synthetic/skill\n\nExample: <!-- reply 1 -->";
+    for array in [false, true] {
+        assert_eq!(
+            blocks("claude", skill, array),
+            vec![Block::ToolResult(skill.into())]
+        );
+    }
+    let notification = "<task-notification><status>completed</status><summary>Agent worker finished</summary><result>Example <!-- reply 1 --></result></task-notification>";
+    assert_eq!(
+        blocks("claude", notification, false),
+        vec![Block::ToolResult("Agent worker finished".into())]
+    );
+    assert!(blocks(
+        "claude",
+        "<local-command-caveat>Example <!-- reply 1 --></local-command-caveat>",
+        false
+    )
+    .is_empty());
+}
+
+#[test]
+fn fragmented_damaged_replies_match_the_complete_enqueue_and_commit() {
+    let parts = ["INTRO\n\n", "<!- reply 1 -->\n> selected\n\n<pasted_content id=\"1\">**literal**</pasted_content id=\"1\">"];
+    let text = parts.concat();
+    let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+    let mut offset = 0;
+    let mut advance = |acc: &mut SessionAccumulator, record: String| {
+        acc.advance_at(offset, &record);
+        offset += record.len() as u64 + 1;
+    };
+    advance(&mut acc, line("claude", "start", false));
+    advance(
+        &mut acc,
+        json!({"type":"queue-operation","operation":"enqueue","content":text}).to_string(),
+    );
+    advance(&mut acc, json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}).to_string());
+    assert!(acc
+        .fold()
+        .0
+        .iter()
+        .any(|b| matches!(b, Block::QueueEvent { .. })));
+    let mut delivery: serde_json::Value =
+        serde_json::from_str(&line("claude", &text, true)).unwrap();
+    delivery["message"]["content"] = json!(parts
+        .iter()
+        .map(|text| json!({"type":"text","text":text}))
+        .collect::<Vec<_>>());
+    advance(&mut acc, delivery.to_string());
+    let out = acc.fold().0;
+    assert!(
+        !out.iter().any(|b| matches!(b, Block::QueueEvent { .. })),
+        "{out:?}"
+    );
+    assert_eq!(
+        out.iter()
+            .filter(|b| matches!(b, Block::UserText(source) if source == &text))
+            .count(),
+        1
+    );
+    advance(&mut acc, line("claude", "after", false));
+    assert!(acc
+        .committed_tail(0)
+        .iter()
+        .any(|b| matches!(b, Block::UserText(source) if source == &text)));
+}
+
 const CLAUDE: &str = "<!-- reply 2 -->\n> Selected first\n> code | table\n\nFirst comment\n\n<!-- reply -->\n> Selected second\n\nLast comment\n\n\nOverall-looking text";
 
 fn line(agent: &str, text: &str, array: bool) -> String {

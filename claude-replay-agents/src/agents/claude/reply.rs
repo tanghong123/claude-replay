@@ -4,21 +4,60 @@ use claude_replay_engine::seam::{ReplyContext, ReplyItem, ReplyResponse};
 /// Preserve comment-marker candidates even when case, spacing, or marker wording changes.
 /// This is only a non-destructive fallback guard; exact recognition remains in `parse`.
 pub(crate) fn candidate(text: &str) -> bool {
-    let trimmed = text.trim_start();
-    let marker_prefix = trimmed.starts_with(['<', '!', '-']);
-    let marker_with_selection = marker_prefix
-        && (trimmed
-            .split_once('\n')
-            .is_some_and(|(_, rest)| rest.starts_with('>'))
-            || trimmed.split_once("-->").is_some_and(|(_, rest)| {
-                rest.strip_prefix('\r').unwrap_or(rest).starts_with("\n>")
-            }));
+    if super::model::is_skill_body(text) {
+        return false;
+    }
     let lowercase = text.to_ascii_lowercase();
-    let reply_comment = lowercase
-        .split("<!--")
-        .skip(1)
-        .any(|comment| comment.trim_start().starts_with("reply"));
-    marker_with_selection || reply_comment
+    let mut offset = 0;
+    loop {
+        let cursor = &lowercase[offset..];
+        let source = &text[offset..];
+        let marker = ["<!--", "<!-", "<--", "!--"]
+            .into_iter()
+            .filter_map(|opening| cursor.find(opening).map(|at| (at, opening)))
+            .min_by_key(|(at, _)| *at);
+        // Native pasted/command-output payloads can themselves contain reply examples.
+        // Their contents stay under the existing literal/command normalization.
+        let pasted = source.find("<pasted_content").and_then(|at| {
+            super::model::pasted_parts(&source[at..])
+                .map(|(_, after)| (at, source.len() - after.len()))
+        });
+        let wrappers = [
+            ("<local-command-stdout>", "</local-command-stdout>"),
+            ("<local-command-caveat>", "</local-command-caveat>"),
+            ("<command-message>", "</command-message>"),
+            ("<command-name>", "</command-name>"),
+            ("<command-args>", "</command-args>"),
+            ("<task-notification>", "</task-notification>"),
+        ]
+        .into_iter()
+        .filter_map(|(open, close)| {
+            let at = source.find(open)?;
+            let (_, after) = source[at + open.len()..].split_once(close)?;
+            Some((at, source.len() - after.len()))
+        });
+        if let Some((at, end)) = pasted.into_iter().chain(wrappers).min_by_key(|(at, _)| *at) {
+            if marker.is_none_or(|(marker_at, _)| at < marker_at) {
+                offset += end;
+                continue;
+            }
+        }
+        let Some((at, opening)) = marker else {
+            return false;
+        };
+        let comment = &cursor[at + opening.len()..];
+        if comment.trim_start().starts_with("reply")
+            || comment
+                .split_once('\n')
+                .is_some_and(|(_, rest)| rest.starts_with('>'))
+            || comment
+                .split_once("-->")
+                .is_some_and(|(_, rest)| rest.strip_prefix('\r').unwrap_or(rest).starts_with("\n>"))
+        {
+            return true;
+        }
+        offset += at + opening.len();
+    }
 }
 
 /// Split only unfenced standalone markers. A marker inside selected text or a
