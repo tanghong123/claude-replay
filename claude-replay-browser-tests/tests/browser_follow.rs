@@ -1944,6 +1944,66 @@ fn both_shells_list_a_session_started_in_another_s_scratch_under_its_project() {
     );
 }
 
+/// #s97: for one release the classic rail says it is going, and its control is the App switch:
+/// following it is REMEMBERED, so the bare monitor URL then serves the app shell. The classic
+/// view retires (design/classic-view-deprecation.md); this case goes with it in stage 3.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_classic_rail_says_it_is_going_and_its_notice_switches_to_the_app() {
+    let _serial = serial();
+    let base = base("rail-deprecation");
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        "dddddddd-0000-4000-8000-0000000000a7",
+        &harness::user_at("hello", &harness::at("09:00")),
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3090, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    monitor.open(&tab, "?ui=classic");
+    harness::until(
+        &tab,
+        "!!document.getElementById('deprecation')",
+        "the classic rail with its notice",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 300)",
+    );
+    let notice = harness::probe(
+        &tab,
+        "(function(){ var n = document.getElementById('deprecation'), r = n.getBoundingClientRect(); return { text: n.innerText, shown: r.height > 0 && r.width > 0, button: !!n.querySelector('button') }; })()",
+    );
+    assert!(
+        notice["shown"] == true
+            && notice["button"] == true
+            && notice["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("goes in the next release")
+            && notice["text"].as_str().unwrap_or("").contains("/session"),
+        "the rail says the classic view and /session are going, with a way across: {notice}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('deprecation-app').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!!document.querySelector('#app') && !document.getElementById('deprecation')",
+        "the app shell after following the notice",
+        Duration::from_secs(20),
+        "location.href + ' ' + document.body.innerText.slice(0, 200)",
+    );
+    // Remembered, not a one-request override: the bare URL now serves the app shell.
+    monitor.open(&tab, "");
+    harness::until(
+        &tab,
+        "!!document.querySelector('#app') && !document.getElementById('deprecation')",
+        "the bare URL to serve the app shell, remembered",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+}
+
 /// The classic rail (v1 `agent-monitor`, `?ui=classic`) on the hermetic family store: rows
 /// render, the fork family clusters into ONE row whose ⑂ chip opens the fork, and hide /
 /// restore round-trip through `/api/ignore` — the server's `hidden` flag flips, the rail's

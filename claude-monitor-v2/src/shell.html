@@ -24,6 +24,11 @@
   padding: 1px 6px; cursor: pointer; }
 #v2appshell:hover { color: var(--fg); }
 #v2appshell[disabled] { opacity: .4; pointer-events: none; }
+/* #s97: the classic view retires (design/classic-view-deprecation.md); for one release it says so. */
+#v2deprecation { display: flex; align-items: center; gap: 8px; margin-top: 6px; font: 11px/1.4 var(--sans); color: var(--dim); }
+#v2deprecation span { flex: 1; }
+#v2deprecation button { flex: none; font: inherit; font-weight: 600; color: var(--fg); background: none;
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; cursor: pointer; }
 #v2mark { flex: none; font: 600 13px var(--sans); color: var(--fg); letter-spacing: -.01em; }
 #v2mark i { font-style: normal; color: var(--faint); font: 9.5px var(--mono); }
 #v2scan { margin-left: auto; font: 9.5px var(--mono); color: var(--faint); display: inline-flex; align-items: center; gap: 5px; }
@@ -138,6 +143,7 @@
       <button id="v2appshell" title="Switch to the app-shell interface — remembered until you switch back">App</button>
       <div id="v2scan"><i></i><span id="v2count"></span></div>
     </div>
+    <div id="v2deprecation" role="note"><span>The classic view goes in the next release, and so does the <code>/session</code> page.</span><button id="v2deprecation-app" title="Switch to the app view — remembered">Switch to the app</button></div>
     <div id="v2find"><span>&#9906;</span><input id="v2q" placeholder="Search sessions and transcript  ( / )" autocomplete="off"><span id="v2hits"></span><span class="v2nav" id="v2prev" title="Previous match (⇧⏎)">&#9650;</span><span class="v2nav" id="v2next" title="Next match (⏎)">&#9660;</span></div>
   </div>
   <div id="v2list"></div>
@@ -167,6 +173,8 @@
     var b = this; b.disabled = true;
     fetch("/api/ui?set=app", { cache: "no-store" }).then(function () { location.href = "/"; }).catch(function () { b.disabled = false; });
   };
+  // #s97: the notice's control is the same switch, remembered as the App button is.
+  document.getElementById("v2deprecation-app").onclick = document.getElementById("v2appshell").onclick;
   // #133: the write routes need a token, so the compose affordance exists only when paired —
   // offering it unpaired would offer a dead end. The server substitutes the flag.
   var PAIRED = {{PAIRED}};
