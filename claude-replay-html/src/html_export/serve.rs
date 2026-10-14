@@ -1423,6 +1423,12 @@ impl HttpResponse {
     /// shown `msg` — the HOST's way in (#317: the gate is shared), which is why the page adds no
     /// words of its own about how to pair. Nothing here is a secret; it is what the plain refusal
     /// always said, as a page.
+    ///
+    /// #s110: the owner's Home Screen app still met this page now and then, and closing and
+    /// reopening it got in — every refusal in that monitor's log was "no cookie, cross-site", a
+    /// withheld cookie and never a lost pairing. So the page also offers Try again, a plain link to
+    /// itself: a tap on a same-origin link is same-site in every engine, so it carries the cookie
+    /// whatever the automatic retry met. It is 44px tall, a finger's target.
     pub fn refusal_page(msg: &str) -> Self {
         let msg = msg
             .replace('&', "&amp;")
@@ -1439,9 +1445,14 @@ impl HttpResponse {
              background:#f7f8fa}}main{{max-width:34rem;margin:18vh auto 0;padding:0 20px}}\
              h1{{font-size:20px;margin:0 0 8px}}p{{margin:0 0 10px;color:#4a5263}}\
              code{{font:14px ui-monospace,Menlo,monospace}}\
+             a.again{{display:inline-flex;align-items:center;min-height:44px;margin-top:8px;\
+             padding:0 20px;border-radius:10px;background:#1f7a4d;color:#fff;font-weight:600;\
+             text-decoration:none}}@media(max-height:500px){{main{{margin-top:16px}}}}\
              @media(prefers-color-scheme:dark){{body{{background:#15171c;color:#e6e8ee}}\
              p{{color:#a9b0bf}}}}</style></head><body><main>\
-             <h1>This browser is not paired</h1><p>{msg}.</p></main></body></html>"
+             <h1>This browser is not paired</h1><p>{msg}.</p>\
+             <p>Already paired? Opening this page from another app or site can hide the pairing \
+             for one load.</p><a class=\"again\" href=\"\">Try again</a></main></body></html>"
         );
         Self {
             code: "401 Unauthorized",
@@ -1546,6 +1557,56 @@ fn is_page_load(method: &str, headers: &str) -> bool {
         Some(dest) => dest.eq_ignore_ascii_case("document"),
         None => header_value(headers, "accept").is_some_and(|a| a.contains("text/html")),
     }
+}
+
+/// #341's stderr line for a refused page load: whether a cookie came and what the browser said the
+/// navigation's site was. #s110 adds when, and where the navigation came from — the rest of the
+/// fetch metadata, the client's own name for itself and the referrer's ORIGIN — because the owner's
+/// log read "no cookie, cross-site" again and again, and nothing in it said which of their visits
+/// that was. Never the token: `name` is the path without its query, and a referrer keeps only its
+/// origin, since a same-origin one can be the pairing URL with `?token=` in it.
+fn refusal_line(now: u64, name: &str, cookie: &str, headers: &str) -> String {
+    let h = |name| header_value(headers, name).unwrap_or("-");
+    let referrer = header_value(headers, "referer").map_or("-", referrer_origin);
+    format!(
+        "gate: {} refused a page load of /{name} — {cookie}, sec-fetch-site {}, mode {}, user {}, \
+         referrer {referrer}, user-agent {}",
+        utc_stamp(now),
+        h("sec-fetch-site"),
+        h("sec-fetch-mode"),
+        h("sec-fetch-user"),
+        h("user-agent"),
+    )
+}
+
+/// A referrer cut to its origin: `scheme://host[:port]`, without path, query or fragment.
+fn referrer_origin(referrer: &str) -> &str {
+    let host = referrer.find("://").map_or(0, |i| i + 3);
+    let end = referrer[host..]
+        .find(['/', '?', '#'])
+        .map_or(referrer.len(), |i| host + i);
+    &referrer[..end]
+}
+
+/// Seconds since the Unix epoch as ISO-8601 UTC (`2026-10-14T14:51:35Z`), Howard Hinnant's
+/// civil_from_days — the inverse of the engine's `time::epoch_secs`.
+fn utc_stamp(secs: u64) -> String {
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
@@ -2289,8 +2350,10 @@ fn serve_connection(
                 Some(TokenFrom::LegacyCookie) => "a legacy cmauth cookie that did not match",
                 Some(TokenFrom::Presented) => "a token that did not match",
             };
-            let site = header_value(&headers, "sec-fetch-site").unwrap_or("-");
-            eprintln!("gate: refused a page load of /{name} — {cookie}, sec-fetch-site {site}");
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            eprintln!("{}", refusal_line(now, name, cookie, &headers));
             (HttpResponse::refusal_page(gate.refusal), None, false)
         }
         Access::Denied => (
@@ -3113,6 +3176,16 @@ mod tests {
             page.contains("open the dashboard with `agent-metrics`"),
             "in the host's words: {page}"
         );
+        // #s110: and a one-tap way back, a plain link to the page itself (same-site, so it
+        // carries the cookie), never a script.
+        assert!(
+            page.contains("<a class=\"again\" href=\"\">Try again</a>"),
+            "Try again: {page}"
+        );
+        assert!(
+            page.contains("min-height:44px"),
+            "a finger's target: {page}"
+        );
         assert!(!page.contains("Set-Cookie"), "{page}");
         let fetch = ask("empty");
         assert!(
@@ -3120,6 +3193,45 @@ mod tests {
                 && fetch.ends_with("open the dashboard with `agent-metrics`"),
             "a fetch keeps the plain refusal: {fetch}"
         );
+    }
+
+    /// #s110: a refused page load's line says when, and where the navigation came from — the
+    /// fetch metadata, the user agent and the referrer's origin — and never the token, not even
+    /// when the referrer is the pairing URL itself.
+    #[test]
+    fn a_refusal_line_says_when_and_whence_and_never_the_token() {
+        let headers =
+            "Host: phone.test\r\nSec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: navigate\r\n\
+                       Sec-Fetch-Dest: document\r\n\
+                       Referer: https://box.example.ts.net:2727/?token=s3cr3t#turn-4\r\n\
+                       User-Agent: Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 Mobile/15E148\r\n";
+        let line = refusal_line(1_791_989_495, "", "no cookie", headers);
+        assert_eq!(
+            line,
+            "gate: 2026-10-14T14:51:35Z refused a page load of / — no cookie, sec-fetch-site \
+             cross-site, mode navigate, user -, referrer https://box.example.ts.net:2727, \
+             user-agent Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 Mobile/15E148"
+        );
+        assert!(!line.contains("s3cr3t"));
+        assert_eq!(
+            refusal_line(0, "session", "no cookie", "Host: x\r\n"),
+            "gate: 1970-01-01T00:00:00Z refused a page load of /session — no cookie, \
+             sec-fetch-site -, mode -, user -, referrer -, user-agent -"
+        );
+        for (raw, origin) in [
+            ("http://localhost:8765/go.html", "http://localhost:8765"),
+            ("https://a.example?x=1", "https://a.example"),
+            ("https://a.example#f", "https://a.example"),
+            ("about:blank", "about:blank"),
+        ] {
+            assert_eq!(referrer_origin(raw), origin);
+        }
+        for (secs, stamp) in [
+            (951_782_400, "2000-02-29T00:00:00Z"),
+            (4_102_444_799, "2099-12-31T23:59:59Z"),
+        ] {
+            assert_eq!(utc_stamp(secs), stamp);
+        }
     }
 
     /// #317: the gate is shared — agent-metrics serves its dashboard through this listener — so a

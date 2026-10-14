@@ -10893,7 +10893,8 @@ fn a_phone_tail_first_open_counts_the_whole_session() {
 /// A paired browser that follows a link from another origin (a `data:` page here, which is
 /// cross-site) now lands on the app: a refused PAGE navigation retries once from the page itself,
 /// which is same-site and carries the cookie. An unpaired browser still gets the refusal — after
-/// that one retry, and no loop — now as a page that says what to do.
+/// that one retry, and no loop — now as a page that says what to do. #s110: once the retry is
+/// spent, the page's Try again lets a paired browser in with one tap.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
@@ -10918,6 +10919,33 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
         &tab,
         "location.port === '2724' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
         "a paired browser arriving by a link from another site to land on the session",
+        Duration::from_secs(20),
+        "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
+    );
+    // #s110: with the automatic retry spent (its stamp fresh), the refusal stays on screen, and
+    // its Try again gets the paired browser in with one tap: a same-origin link carries the cookie.
+    harness::eval(
+        &tab,
+        "sessionStorage.setItem('cmauth-retry', String(Date.now()))",
+    );
+    tab.navigate_to(&format!(
+        "data:text/html,<a id=go href=\"{target}\" style=\"font-size:40px\">open the monitor</a>"
+    ))
+    .unwrap();
+    tab.wait_until_navigated().unwrap();
+    tab.find_element("#go").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('a.again') && !document.documentElement.hidden",
+        "the refusal to stay on screen, offering Try again",
+        Duration::from_secs(20),
+        "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
+    );
+    tab.find_element("a.again").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "location.port === '2724' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        "Try again to land the paired browser on the session",
         Duration::from_secs(20),
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
     );
