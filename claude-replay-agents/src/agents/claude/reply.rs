@@ -18,26 +18,7 @@ pub(crate) fn candidate(text: &str) -> bool {
             .min_by_key(|(at, _)| *at);
         // Native pasted/command-output payloads can themselves contain reply examples.
         // Their contents stay under the existing literal/command normalization.
-        let pasted = source.find("<pasted_content").and_then(|at| {
-            super::model::pasted_parts(&source[at..])
-                .map(|(_, after)| (at, source.len() - after.len()))
-        });
-        let wrappers = [
-            ("<local-command-stdout>", "</local-command-stdout>"),
-            ("<local-command-caveat>", "</local-command-caveat>"),
-            ("<command-message>", "</command-message>"),
-            ("<command-name>", "</command-name>"),
-            ("<command-args>", "</command-args>"),
-            ("<task-notification>", "</task-notification>"),
-        ]
-        .into_iter()
-        .filter_map(|(open, close)| {
-            let at = source.find(open)?;
-            let tail = &source[at + open.len()..];
-            let end = super::model::native_tag_at(tail, close)?;
-            Some((at, at + open.len() + end + close.len()))
-        });
-        if let Some((at, end)) = pasted.into_iter().chain(wrappers).min_by_key(|(at, _)| *at) {
+        if let Some((at, end)) = opaque_span(source) {
             if marker.is_none_or(|(marker_at, _)| at <= marker_at) {
                 offset += end;
                 continue;
@@ -67,6 +48,44 @@ pub(crate) fn candidate(text: &str) -> bool {
         }
         offset += at + opening.len();
     }
+}
+
+/// The earliest complete native payload whose contents are literal during reply detection.
+fn opaque_span(source: &str) -> Option<(usize, usize)> {
+    let pasted = source.find("<pasted_content").and_then(|at| {
+        super::model::pasted_parts(&source[at..]).map(|(_, after)| (at, source.len() - after.len()))
+    });
+    let wrappers = [
+        ("<local-command-stdout>", "</local-command-stdout>"),
+        ("<local-command-caveat>", "</local-command-caveat>"),
+        ("<command-message>", "</command-message>"),
+        ("<command-name>", "</command-name>"),
+        ("<command-args>", "</command-args>"),
+        ("<task-notification>", "</task-notification>"),
+    ]
+    .into_iter()
+    .filter_map(|(open, close)| {
+        let at = source.find(open)?;
+        let tail = &source[at + open.len()..];
+        let end = super::model::native_tag_at(tail, close)?;
+        Some((at, at + open.len() + end + close.len()))
+    });
+    pasted.into_iter().chain(wrappers).min_by_key(|(at, _)| *at)
+}
+
+/// Whether a fragment's marker belongs to literal native payload data.
+fn opaque_position(text: &str, position: usize) -> bool {
+    let mut offset = 0;
+    while let Some((at, end)) = opaque_span(&text[offset..]) {
+        if position < offset + at {
+            return false;
+        }
+        if position < offset + end {
+            return true;
+        }
+        offset += end;
+    }
+    false
 }
 
 /// Split only unfenced standalone markers. A marker inside selected text or a
@@ -172,21 +191,25 @@ pub(crate) fn message_fallback(items: &[serde_json::Value]) -> Option<String> {
         return None;
     }
     let joined = texts.concat();
-    // Skill reference bodies retain their existing per-item note classification.
-    if super::model::is_skill_body(&joined)
-        || texts.iter().any(|text| super::model::is_skill_body(text))
-    {
+    // A whole Skill body stays on its existing reference path. Reply candidates own
+    // their complete message, even if a selected literal spans a Skill-looking fragment.
+    if super::model::is_skill_body(&joined) {
         return None;
     }
     if candidate(&joined) {
-        Some(joined)
-    } else {
-        match super::model::fence_pasted(&joined) {
-            std::borrow::Cow::Owned(pasted) => Some(pasted),
-            std::borrow::Cow::Borrowed(_) if texts.iter().any(|text| candidate(text)) => {
-                Some(joined)
-            }
-            _ => None,
+        return Some(joined);
+    }
+    let mut text_offset = 0;
+    for text in &texts {
+        let marker = text_offset + text.len() - text.trim_start().len();
+        if super::model::is_skill_body(text) && !opaque_position(&joined, marker) {
+            return None;
         }
+        text_offset += text.len();
+    }
+    match super::model::fence_pasted(&joined) {
+        std::borrow::Cow::Owned(pasted) => Some(pasted),
+        std::borrow::Cow::Borrowed(_) if texts.iter().any(|text| candidate(text)) => Some(joined),
+        _ => None,
     }
 }

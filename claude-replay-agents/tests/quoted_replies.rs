@@ -383,6 +383,84 @@ fn fragmented_skill_reference_bodies_keep_the_existing_note_classification() {
 }
 
 #[test]
+fn skill_headers_inside_fragmented_literal_payloads_keep_one_queued_user_turn() {
+    let inner = "Base directory for this skill: /synthetic/skill\n\n<!-- reply 1 -->\n> literal";
+    for parts in [
+        vec![
+            "<pasted_content id=\"1\">\n",
+            inner,
+            "\n</pasted_content id=\"1\">",
+        ],
+        vec![
+            "<command-args>",
+            inner,
+            "\n<pasted_content id=\"1\">example</pasted_content id=\"1\"></command-args>",
+        ],
+        vec!["<!-- reply 1 -->\n> ", inner, "\n\nMy comment"],
+    ] {
+        let text = parts.concat();
+        let expected = if text.starts_with("<pasted_content") {
+            format!("```pasted\n{inner}\n```")
+        } else if text.starts_with("<command-args>") {
+            format!("<command-args>{inner}\n```pasted\nexample\n```\n</command-args>")
+        } else {
+            text.clone()
+        };
+        let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+        let mut offset = 0;
+        let mut advance = |record: String| {
+            acc.advance_at(offset, &record);
+            offset += record.len() as u64 + 1;
+        };
+        advance(line("claude", "start", false));
+        advance(json!({"type":"queue-operation","operation":"enqueue","content":text}).to_string());
+        advance(json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}).to_string());
+        assert!(acc
+            .fold()
+            .0
+            .iter()
+            .any(|b| matches!(b, Block::QueueEvent { .. })));
+        let native = json!({"type":"user","message":{"role":"user","content":parts.iter().map(|text| json!({"type":"text","text":text})).collect::<Vec<_>>()}});
+        acc.advance_at(offset, &native.to_string());
+        offset += native.to_string().len() as u64 + 1;
+        acc.advance_at(offset, &line("claude", "after", false));
+        let out = acc.fold().0;
+        assert!(
+            !out.iter().any(|b| matches!(
+                b,
+                Block::QueueEvent { .. } | Block::ToolResult(_) | Block::UserReply { .. }
+            )),
+            "{out:?}"
+        );
+        let source = |b: &Block| matches!(b, Block::UserText(body) if body == &expected);
+        assert_eq!(out.iter().filter(|b| source(b)).count(), 1, "{out:?}");
+        assert_eq!(
+            out.iter()
+                .filter(|b| matches!(b, Block::UserText(_)))
+                .count(),
+            3,
+            "one delivery opens one turn"
+        );
+        assert!(
+            acc.committed_tail(0).iter().any(source),
+            "a consumed queue cannot pin delivery"
+        );
+    }
+    // A real later-item Skill body stays outside the human input, preserving legacy routing.
+    let body = "Base directory for this skill: /synthetic/skill\n<pasted_content id=\"1\">example</pasted_content id=\"1\">";
+    let native = json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":"Intro"},{"type":"text","text":body}]}});
+    let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+    acc.advance_at(0, &native.to_string());
+    assert_eq!(
+        acc.fold().0,
+        vec![
+            Block::UserText("Intro".into()),
+            Block::ToolResult(body.into())
+        ]
+    );
+}
+
+#[test]
 fn queued_reply_candidates_match_delivery_without_dequeue_or_recursive_tag_cleanup() {
     for text in [
         "<!-- reply 1 -->\n> selected\n\n<pasted_content id=\"1\">literal</pasted_content id=\"1\">",
