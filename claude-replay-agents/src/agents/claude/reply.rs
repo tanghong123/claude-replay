@@ -5,10 +5,14 @@ use claude_replay_engine::seam::{ReplyContext, ReplyItem, ReplyResponse};
 /// This is only a non-destructive fallback guard; exact recognition remains in `parse`.
 pub(crate) fn candidate(text: &str) -> bool {
     let trimmed = text.trim_start();
-    let marker_with_selection = trimmed.starts_with("<!--")
-        && trimmed
+    let marker_prefix = trimmed.starts_with(['<', '!', '-']);
+    let marker_with_selection = marker_prefix
+        && (trimmed
             .split_once('\n')
-            .is_some_and(|(_, rest)| rest.starts_with('>'));
+            .is_some_and(|(_, rest)| rest.starts_with('>'))
+            || trimmed.split_once("-->").is_some_and(|(_, rest)| {
+                rest.strip_prefix('\r').unwrap_or(rest).starts_with("\n>")
+            }));
     let lowercase = text.to_ascii_lowercase();
     let reply_comment = lowercase
         .split("<!--")

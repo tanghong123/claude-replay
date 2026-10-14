@@ -229,6 +229,9 @@ fn malformed_prefixes_preserve_quoted_tags_before_transport_cleanup() {
         "<!-- Reply 1 -->\n> <local-command-caveat>KEEP THIS QUOTATION</local-command-caveat>\n\nMy comment",
         "<!--\nreply 1 -->\n> <local-command-caveat>KEEP THIS QUOTATION</local-command-caveat>\n\nMy comment",
         "<!--\tRePlY 1 -->\n> <local-command-caveat>KEEP THIS QUOTATION</local-command-caveat>\n\nMy comment",
+        "<!- reply 1 -->\n> <command-name>/status</command-name>\n\nPlease explain this tag.",
+        "!-- reply 1 -->\n> <command-name>/status</command-name>\n\nPlease explain this tag.",
+        "<!-\r\nreply 1 -->\r\n> <local-command-caveat>KEEP THIS QUOTATION</local-command-caveat>\r\n\r\nMy comment",
         "<!-- changed marker -->\n> <command-name>literal</command-name>\n\nMy comment",
         "INTRO\n<!-- reply 1 -->\n> <pasted_content id=\"1\">literal</pasted_content id=\"1\">\n\nMy comment",
     ] {

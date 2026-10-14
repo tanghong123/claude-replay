@@ -62,7 +62,7 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
         .replace("Each item contains", "Each item includes")
         .replace('\n', "\r\n");
     let invalid_claude = claude
-        .replace("<!-- reply 2 -->", "<!--\nreply 2 -->")
+        .replace("<!-- reply 2 -->", "<!-\nreply 2 -->")
         .replace(
             "> SELECTED FIRST",
             "> <local-command-caveat>KEEP SELECTED TEXT</local-command-caveat>",
