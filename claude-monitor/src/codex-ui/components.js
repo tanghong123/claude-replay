@@ -3,7 +3,7 @@
 import { attachmentCapability, besideAction, groupPointerRuns, isPointerAttachment, referenceAction, revealHere, revealQuery } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 import { fleetGroups } from "./shared/fleet.js";
-import { escapeText, partsHtml } from "./view-model.js";
+import { escapeText, literalText, partsHtml } from "./view-model.js";
 import { rememberCap, resultBodyHtml } from "./shared/parts.js";
 import { interactionHtml } from "./shared/interaction.js";
 import { headStepOf, headStepState, nextHeadStep } from "./shared/tool-head.js";
@@ -264,7 +264,7 @@ export const rawTurnHtml = record => `<pre class="turn-raw">${escapeText(JSON.st
 /** A user turn as the text the reader typed (#109): the wire's `src`, exactly, whitespace
  *  intact — the classic page's `{}`. A record without one falls back to the record view. */
 export const rawTextHtml = record => typeof record?.src === "string"
-  ? `<pre class="turn-raw turn-raw-text">${record.src.startsWith("\n") ? "<span></span>" : ""}${escapeText(record.src).replace(/\r/g, "&#13;")}</pre>`
+  ? `<pre class="turn-raw turn-raw-text">${record.src.startsWith("\n") ? "<span></span>" : ""}${literalText(record.src)}</pre>`
   : rawTurnHtml(record);
 
 /** Whether this turn shows raw: the per-turn override if there is one, else — for a user turn —

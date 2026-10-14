@@ -10,6 +10,9 @@ import { svg } from "./icons.js";
 
 export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 
+// Character references preserve CR through HTML parser newline normalization.
+export const literalText = value => escapeText(value).replace(/\r/g, "&#13;");
+
 /** Validate the complete additive v1 contract; unsupported data uses ordinary body parts. */
 export function replyContext(record) {
   const value = record?.reply_context;
@@ -34,8 +37,8 @@ export function replyContext(record) {
 /** Quotes are literal selections, including code/table spacing and marker-like content. */
 export function replyHtml(context) {
   return `<section class="quoted-reply" aria-label="Reply to selected text">${context.items.map((item, i) =>
-    `<div class="reply-item">${context.items.length > 1 ? `<div class="reply-item-label">Annotation ${i + 1}</div>` : ""}<blockquote class="reply-quote" aria-label="Selected earlier text">${escapeText(item.quote)}</blockquote>${item.response ? `<div class="reply-response" data-response-kind="${item.response.kind}">${escapeText(item.response.text)}</div>` : ""}</div>`
-  ).join("")}${context.context ? `<div class="reply-context">${escapeText(context.context)}</div>` : ""}${context.request ? `<div class="reply-request">${escapeText(context.request)}</div>` : ""}</section>`;
+    `<div class="reply-item">${context.items.length > 1 ? `<div class="reply-item-label">Annotation ${i + 1}</div>` : ""}<blockquote class="reply-quote" aria-label="Selected earlier text">${literalText(item.quote)}</blockquote>${item.response ? `<div class="reply-response" data-response-kind="${item.response.kind}">${literalText(item.response.text)}</div>` : ""}</div>`
+  ).join("")}${context.context ? `<div class="reply-context">${literalText(context.context)}</div>` : ""}${context.request ? `<div class="reply-request">${literalText(context.request)}</div>` : ""}</section>`;
 }
 
 // A record's searchable text is what a reader can see of it (#111, shared/search.js): heads and
@@ -488,7 +491,7 @@ function buildUnits(records, from, turn) {
     const view = viewRecord(record);
     if (record.kind === "user" || record.kind === "command" || record.kind === "peer") {
       flush(); turn = Number(record.turn || turn + 1);
-      units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: view.reply ? (view.reply.items[0].response?.text || view.reply.items[0].quote).replace(/\s+/g, " ").trim().slice(0, 80) : record.label || plainText(record).slice(0, 80) });
+      units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: view.reply ? ((view.reply.items[0].response?.text || "").replace(/\s+/g, " ").trim() || view.reply.items[0].quote.replace(/\s+/g, " ").trim()).slice(0, 80) : record.label || plainText(record).slice(0, 80) });
     } else if (record.kind === "attachment" && !process && units.at(-1)?.type === "user") {
       const unit = units.at(-1);
       const path = view.attachment?.att_path || "";

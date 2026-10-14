@@ -2954,7 +2954,17 @@ pub(crate) fn decode_line_known(
                     msgs.push(m);
                 }
             } else if let Some(arr) = content.as_array() {
+                let fallback = (injected == Injected::No)
+                    .then(|| super::reply::message_fallback(arr))
+                    .flatten();
+                if let Some(text) = &fallback {
+                    msgs.push(Message::UserText { text: text.clone() });
+                }
                 for blk in arr {
+                    if fallback.is_some() && blk.get("type").and_then(Value::as_str) == Some("text")
+                    {
+                        continue;
+                    }
                     match blk.get("type").and_then(|t| t.as_str()) {
                         Some("text") => {
                             if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
@@ -3040,7 +3050,7 @@ pub(crate) fn decode_line_known(
                 // and `prose` pre-classifies whether the enqueue renders a visible marker.
                 if op == QueueOpKind::Enqueue {
                     if let Some(c) = &content {
-                        if is_agent_notification(c) {
+                        if !super::reply::candidate(c) && is_agent_notification(c) {
                             msgs.push(Message::Completion {
                                 tool_use_id: tag_inner(c, "tool-use-id")
                                     .unwrap_or_default()
@@ -4110,7 +4120,24 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                         push_user_string(s, &mut out, &mut queue, &mut suppress);
                     }
                 } else if let Some(arr) = content.as_array() {
+                    let fallback = (!injected)
+                        .then(|| super::reply::message_fallback(arr))
+                        .flatten();
+                    if let Some(text) = &fallback {
+                        if let Some(pos) = queue.iter().position(|item| item.content == text.trim())
+                        {
+                            if let Some(marker) = queue.remove(pos).marker_idx {
+                                suppress.push(marker);
+                            }
+                        }
+                        out.push(Block::UserText(text.clone()));
+                    }
                     for blk in arr {
+                        if fallback.is_some()
+                            && blk.get("type").and_then(Value::as_str) == Some("text")
+                        {
+                            continue;
+                        }
                         match blk.get("type").and_then(|t| t.as_str()) {
                             Some("text") => {
                                 if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
@@ -4204,7 +4231,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 match v.get("operation").and_then(|o| o.as_str()) {
                     Some("enqueue") => {
                         if let Some(c) = content {
-                            if is_agent_notification(c) {
+                            if !super::reply::candidate(c) && is_agent_notification(c) {
                                 // Render the completion as its OWN event at this
                                 // position (the spawn stays "launched" up where it was
                                 // created). Type is copied from the matching spawn in a
@@ -5020,6 +5047,11 @@ fn peer_from_tags(text: &str) -> Option<Peer> {
 /// the queue operation), so the #52 content match is unchanged. Unpaired markers are left as
 /// they are.
 fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
+    // Quoted-reply candidates preserve literal pasted tags in every delivery/queue path.
+    // Transforming only the queue key would prevent content-matched delivery.
+    if super::reply::candidate(s) {
+        return std::borrow::Cow::Borrowed(s);
+    }
     const OPEN: &str = "<pasted_content";
     if !s.contains(OPEN) {
         return std::borrow::Cow::Borrowed(s);

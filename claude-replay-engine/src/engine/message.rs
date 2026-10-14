@@ -111,8 +111,9 @@ pub enum Message {
         /// silently counting it as success.
         is_error: Option<bool>,
     },
-    /// A genuine human turn — already cleaned by L1 (caveats stripped, classified as neither
-    /// a command nor injected/system content). Becomes a `UserText` block.
+    /// A genuine human turn, classified as neither a command nor injected/system content.
+    /// Ordinary transport text is cleaned by L1; rejected quotation candidates retain their
+    /// complete input. Becomes a `UserText` block.
     UserText { text: String },
     /// A human turn with exact-match quotation metadata and complete original text.
     UserReply {

@@ -35,6 +35,8 @@ assert.equal(projection.units[0].attachments.length, 1);
 const quoteOnly = { ...record, reply_context: { version: 1, items: [{ quote: "selected fallback" }] } };
 projection.rebuild([quoteOnly], 0);
 assert.equal(projection.units[0].label, "selected fallback");
+projection.rebuild([{ ...quoteOnly, reply_context: { version: 1, items: [{ quote: "selected fallback", response: { kind: "comment", text: " \n " } }] } }], 0);
+assert.equal(projection.units[0].label, "selected fallback", "a response without user-written words uses its selection");
 for (const context of [
   undefined, null, {}, { version: 2, items: record.reply_context.items },
   { version: 1, items: [] }, { ...record.reply_context, unknown: true },
@@ -51,3 +53,10 @@ for (const context of [
   assert.equal(projection.units[0].label, "# Response annotations");
 }
 
+
+const literal = viewRecord({ ...record, reply_context: { version: 1, items: [{ quote: "line\r\n  code", response: { kind: "comment", text: "comment\rtext" } }], request: "request\rtext", context: "context\rtext" } });
+assert.ok(literal.html.includes("line&#13;\n  code"));
+assert.ok(literal.html.includes("comment&#13;text"));
+assert.ok(literal.html.includes("request&#13;text"));
+assert.ok(literal.html.includes("context&#13;text"));
+assert.ok(rawTextHtml({ src: "\nline\r\n" }).includes("<span></span>\nline&#13;\n"));

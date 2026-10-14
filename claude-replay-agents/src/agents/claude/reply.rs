@@ -1,17 +1,15 @@
 //! Exact recognition of the two measured Claude Desktop quotation layouts.
 use claude_replay_engine::seam::{ReplyContext, ReplyItem, ReplyResponse};
 
-/// Preserve complete candidate messages even when recognition fails.
+/// Preserve comment-marker candidates even when case, spacing, or marker wording changes.
+/// This is only a non-destructive fallback guard; exact recognition remains in `parse`.
 pub(crate) fn candidate(text: &str) -> bool {
-    text.trim_start().starts_with("<!-- reply")
+    text.trim_start().starts_with("<!--") || text.to_ascii_lowercase().contains("<!-- reply")
 }
 
 /// Split only unfenced standalone markers. A marker inside selected text or a
 /// fenced code block is content; an unsupported or ambiguous outside marker fails.
 pub(crate) fn parse(text: &str) -> Option<ReplyContext> {
-    if text.contains('\r') {
-        return None;
-    }
     let (rest, count) = if let Some(rest) = text.strip_prefix("<!-- reply 1 -->\n") {
         (rest, 1)
     } else {
@@ -53,7 +51,10 @@ pub(crate) fn parse(text: &str) -> Option<ReplyContext> {
                         _ => {}
                     }
                 }
-            } else if fence.is_none() && bare.starts_with("<!-- reply") {
+            } else if fence.is_none()
+                && bare.to_ascii_lowercase().starts_with("<!--")
+                && bare.to_ascii_lowercase().contains("reply")
+            {
                 if bare != "<!-- reply -->" || !line.ends_with('\n') || boundary.is_some() {
                     return None;
                 }
@@ -96,4 +97,16 @@ pub(crate) fn parse(text: &str) -> Option<ReplyContext> {
         request: None,
         context: String::new(),
     })
+}
+
+/// Several native text fragments lack a measured, lossless quotation partition.
+/// Keep one ordinary turn with every input character in source order, and leave
+/// image/tool records on their existing paths. Do not recognize a later fragment.
+pub(crate) fn message_fallback(items: &[serde_json::Value]) -> Option<String> {
+    let texts: Vec<&str> = items
+        .iter()
+        .filter(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("text"))
+        .filter_map(|item| item.get("text").and_then(serde_json::Value::as_str))
+        .collect();
+    (texts.len() > 1 && texts.iter().any(|text| candidate(text))).then(|| texts.concat())
 }

@@ -109,6 +109,117 @@ fn an_incomplete_native_record_never_exposes_a_partial_reply() {
 }
 
 const CODEX: &str = include_str!("fixtures/codex-quoted-reply.txt");
+
+#[test]
+fn native_multi_text_replies_keep_one_complete_fallback_turn_and_images() {
+    for (agent, original) in [("codex", CODEX), ("claude", CLAUDE)] {
+        for later in [false, true] {
+            let kind = if agent == "codex" {
+                "input_text"
+            } else {
+                "text"
+            };
+            let extra = "\n\nADDITIONAL NATIVE CONTEXT\n";
+            let texts = if later {
+                [extra, original]
+            } else {
+                [original, extra]
+            };
+            let mut record: serde_json::Value =
+                serde_json::from_str(&line(agent, original, true)).unwrap();
+            let content = if agent == "codex" {
+                &mut record["payload"]["content"]
+            } else {
+                &mut record["message"]["content"]
+            };
+            *content = json!(texts.map(|text| json!({"type":kind,"text":text})));
+            content.as_array_mut().unwrap().push(if agent == "codex" {
+                json!({"type":"input_image","image_url":"data:image/png;base64,AA=="})
+            } else { json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}) });
+            let adapter: &'static dyn TranscriptAdapter = if agent == "codex" {
+                &CodexAdapter
+            } else {
+                &ClaudeAdapter
+            };
+            let mut acc = SessionAccumulator::new(adapter);
+            acc.advance_at(0, &record.to_string());
+            let blocks = acc.fold().0;
+            assert_eq!(
+                blocks.iter().filter(|block| block.opens_turn()).count(),
+                1,
+                "{agent} later={later}"
+            );
+            assert!(matches!(&blocks[0], Block::UserText(text) if text == &texts.concat()));
+            assert_eq!(
+                blocks
+                    .iter()
+                    .filter(|block| matches!(block, Block::Attachment(_)))
+                    .count(),
+                1
+            );
+            assert!(!blocks
+                .iter()
+                .any(|block| matches!(block, Block::UserReply { .. })));
+        }
+    }
+}
+
+#[test]
+fn malformed_prefixes_preserve_quoted_tags_before_transport_cleanup() {
+    for text in [
+        "<!-- Reply 1 -->\n> <local-command-caveat>KEEP THIS QUOTATION</local-command-caveat>\n\nMy comment",
+        "<!-- changed marker -->\n> <command-name>literal</command-name>\n\nMy comment",
+        "INTRO\n<!-- reply 1 -->\n> <pasted_content id=\"1\">literal</pasted_content id=\"1\">\n\nMy comment",
+    ] {
+        fallback("claude", text);
+        assert_eq!(blocks("claude", text, true), vec![Block::UserText(text.into())]);
+    }
+    fallback(
+        "codex",
+        &CODEX.replace("# Response annotations:", "# Files mentioned by the user:"),
+    );
+    fallback(
+        "codex",
+        &CODEX.replace(
+            "# Response annotations:",
+            "# AGENTS.md instructions for /synthetic",
+        ),
+    );
+}
+
+#[test]
+fn queued_reply_candidates_match_delivery_without_dequeue_or_recursive_tag_cleanup() {
+    for text in [
+        "<!-- reply 1 -->\n> selected\n\n<pasted_content id=\"1\">literal</pasted_content id=\"1\">",
+        "<!-- reply 3 -->\n> selected\n\n<pasted_content id=\"1\">literal</pasted_content id=\"1\">",
+        "<!-- reply 1 -->\n> <task-notification><summary>Agent \"quoted\" finished</summary><status>completed</status></task-notification>\n\nliteral",
+    ] {
+        for shape in ["string", "array", "attachment"] {
+            let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+            let mut offset = 0;
+            let mut advance = |acc: &mut SessionAccumulator, native: String| {
+                acc.advance_at(offset, &native);
+                offset += native.len() as u64 + 1;
+            };
+            advance(&mut acc, line("claude", "start", false));
+            advance(&mut acc, json!({"type":"queue-operation","operation":"enqueue","content":text}).to_string());
+            advance(&mut acc, json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}).to_string());
+            assert!(acc.fold().0.iter().any(|block| matches!(block, Block::QueueEvent { .. })), "{shape}: enqueue must visibly wait");
+            let delivery = if shape == "attachment" {
+                json!({"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","prompt":text}}).to_string()
+            } else { line("claude", text, shape == "array") };
+            advance(&mut acc, delivery);
+            let shown = acc.fold().0;
+            assert!(!shown.iter().any(|block| matches!(block, Block::QueueEvent { .. })), "{shape}: already-delivered input must not remain pending");
+            assert!(!shown.iter().any(|block| matches!(block, Block::AgentDone { .. })), "{shape}: selected tags are literal content");
+            let is_source = |block: &Block| matches!(block, Block::UserText(source) | Block::UserReply {text:source, ..} if source == text);
+            assert_eq!(shown.iter().filter(|block| is_source(block)).count(), 1);
+            advance(&mut acc, line("claude", "after", false));
+            assert!(acc.committed_tail(0).iter().any(is_source), "{shape}: the consumed queue must not pin the replied turn's durability frontier");
+        }
+    }
+}
+
 const CLAUDE: &str = "<!-- reply 2 -->\n> Selected first\n> code | table\n\nFirst comment\n\n<!-- reply -->\n> Selected second\n\nLast comment\n\n\nOverall-looking text";
 
 fn line(agent: &str, text: &str, array: bool) -> String {
@@ -220,6 +331,7 @@ fn claude_boundary_controls_fall_back_completely() {
         CLAUDE.replace('\n', "\r\n"),
         format!("{CLAUDE}\n\n<!-- reply -->\n> third\n\ntext"),
         "<!-- reply 1 -->\n> selected".into(),
+        "<!-- reply 1 -->\n> selected\n\ncomment\n\n<!-- Reply -->\n> second\n\ntext".into(),
         "<!-- reply 1 -->\n> \n\n".into(),
         format!(" {CLAUDE}"),
     ] {
@@ -230,6 +342,7 @@ fn claude_boundary_controls_fall_back_completely() {
 fn quote_only_and_literal_marker_content_are_preserved() {
     for text in [
         "<!-- reply 1 -->\n> selected\n\n",
+        "<!-- reply 1 -->\n> selected\rtext\n\ncomment\rtext",
         "<!-- reply 2 -->\n> first\n\n<!-- reply -->\n> second\n\n",
         "<!-- reply 1 -->\n> <!-- reply -->\n\n```text\n<!-- reply -->\n```\n",
         "<!-- reply 1 -->\n> <local-command-caveat>literal</local-command-caveat>\n\n<pasted_content id=\"1\">literal</pasted_content id=\"1\">",

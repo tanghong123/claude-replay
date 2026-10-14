@@ -1200,6 +1200,17 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                     if matches!(role, "user" | "assistant") {
                         let mut pending_image: Option<(String, String)> = None;
                         let mut declared_files: Vec<(String, String)> = Vec::new();
+                        let fallback = (role == "user")
+                            .then(|| {
+                                payload
+                                    .get("content")
+                                    .and_then(Value::as_array)
+                                    .and_then(|items| super::reply::message_fallback(items))
+                            })
+                            .flatten();
+                        if let Some(text) = &fallback {
+                            msgs.push(Message::UserText { text: text.clone() });
+                        }
                         for item in payload
                             .get("content")
                             .and_then(Value::as_array)
@@ -1208,15 +1219,31 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         {
                             match item.get("type").and_then(Value::as_str) {
                                 Some("input_text") if role == "user" => {
+                                    if fallback.is_some() {
+                                        if let Some(image) = item
+                                            .get("text")
+                                            .and_then(Value::as_str)
+                                            .and_then(desktop_image_marker)
+                                        {
+                                            pending_image = Some(image);
+                                        }
+                                        continue;
+                                    }
                                     if let Some(text) =
                                         item.get("text").and_then(Value::as_str).filter(|text| {
-                                            !text.trim().is_empty() && !is_host_context(text)
+                                            !text.trim().is_empty()
+                                                && (!is_host_context(text)
+                                                    || super::reply::candidate(text))
                                         })
                                     {
                                         if let Some(context) = super::reply::parse(text) {
                                             msgs.push(Message::UserReply {
                                                 text: text.to_string(),
                                                 context,
+                                            });
+                                        } else if super::reply::candidate(text) {
+                                            msgs.push(Message::UserText {
+                                                text: text.to_string(),
                                             });
                                         } else if let Some((request, files)) = desktop_prompt(text)
                                         {
@@ -1946,6 +1973,17 @@ fn push_message(payload: &Value, out: &mut Vec<Block>) {
     }
     let mut pending_image: Option<(String, String)> = None;
     let mut declared_files: Vec<(String, String)> = Vec::new();
+    let fallback = (role == "user")
+        .then(|| {
+            payload
+                .get("content")
+                .and_then(Value::as_array)
+                .and_then(|items| super::reply::message_fallback(items))
+        })
+        .flatten();
+    if let Some(text) = &fallback {
+        out.push(Block::UserText(text.clone()));
+    }
     for item in payload
         .get("content")
         .and_then(Value::as_array)
@@ -1954,11 +1992,20 @@ fn push_message(payload: &Value, out: &mut Vec<Block>) {
     {
         match item.get("type").and_then(Value::as_str) {
             Some("input_text") if role == "user" => {
-                let Some(text) = item
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .filter(|text| !text.trim().is_empty() && !is_host_context(text))
-                else {
+                if fallback.is_some() {
+                    if let Some(image) = item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .and_then(desktop_image_marker)
+                    {
+                        pending_image = Some(image);
+                    }
+                    continue;
+                }
+                let Some(text) = item.get("text").and_then(Value::as_str).filter(|text| {
+                    !text.trim().is_empty()
+                        && (!is_host_context(text) || super::reply::candidate(text))
+                }) else {
                     continue;
                 };
                 if let Some(context) = super::reply::parse(text) {
@@ -1966,6 +2013,8 @@ fn push_message(payload: &Value, out: &mut Vec<Block>) {
                         text: text.to_string(),
                         context,
                     });
+                } else if super::reply::candidate(text) {
+                    out.push(Block::UserText(text.to_string()));
                 } else if let Some((request, files)) = desktop_prompt(text) {
                     out.push(Block::UserText(request.to_string()));
                     declared_files.extend(files);

@@ -34,6 +34,11 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
     let stores = Stores::new(&base);
     let codex_id = "aaaaaaaa-0010-4000-8000-000000000001";
     let claude_id = "cccccccc-0010-4000-8000-000000000001";
+    let comment = format!(
+        "Please explain the first selection. {}",
+        "detail ".repeat(30)
+    );
+    let claude = CLAUDE.replace("Please explain the first selection.", &comment);
     let codex = CODEX
         .replace(
             "\"source\":{",
@@ -41,12 +46,13 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
         )
         .replace(
             "This is the first excerpt from Codex's response.",
-            "SELECTED FIRST\\n  code | table",
+            "SELECTED FIRST\\r\\n  code | table",
         );
+    let codex = codex.replace("Please explain the first selection.", &comment);
     let invalid_codex = codex
         .replace("Each item contains", "Each item includes")
         .replace('\n', "\r\n");
-    let invalid_claude = CLAUDE.replace("reply 2", "reply 3").replace('\n', "\r\n");
+    let invalid_claude = claude.replace("reply 2", "reply 3").replace('\n', "\r\n");
     let codex_only = CODEX
         .split("\n\n## My request:")
         .next()
@@ -63,7 +69,7 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
     );
     stores.claude_session(
         claude_id,
-        &(user("claude", CLAUDE, true)
+        &(user("claude", &claude, true)
             + &user("claude", &invalid_claude, false)
             + &user("claude", claude_only, false)),
     );
@@ -72,7 +78,7 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
     monitor.pair(&tab);
     for (agent, id, original) in [
         ("codex", codex_id, codex.as_str()),
-        ("claude", claude_id, CLAUDE),
+        ("claude", claude_id, claude.as_str()),
     ] {
         let monitor_id = if agent == "codex" {
             format!("rollout-{id}")
@@ -120,6 +126,7 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
                     label: first.querySelector('.outline-label').textContent,
                     marker: first.querySelector('.outline-quote-marker').getAttribute('aria-label'),
                     count: count.textContent, countInside: box.right <= row.right && box.width > 0,
+                    countOnLine: Math.abs((box.y+box.height/2) - (() => {const r=first.querySelector(".outline-label").getBoundingClientRect(); return r.y+r.height/2;})()) < 2,
                     whitespace: getComputedStyle(quote).whiteSpace,
                     border: getComputedStyle(quote).borderLeftWidth,
                     text: root.innerText,
@@ -127,11 +134,19 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
             })()"#,
             );
             assert_eq!(state["pairs"], 2);
-            assert_eq!(state["label"], "Please explain the first selection.");
+            assert_eq!(state["label"], comment.chars().take(80).collect::<String>());
             assert_eq!(state["marker"], "Quoted reply");
             assert_eq!(state["count"], "+1");
             assert_eq!(state["countInside"], true);
-            assert_eq!(state["quote"], "SELECTED FIRST\n  code | table");
+            assert_eq!(state["countOnLine"], true);
+            assert_eq!(
+                state["quote"],
+                if agent == "codex" {
+                    "SELECTED FIRST\r\n  code | table"
+                } else {
+                    "SELECTED FIRST\n  code | table"
+                }
+            );
             assert_eq!(state["whitespace"], "pre-wrap");
             assert_eq!(state["border"], "2px");
             assert!(state["images"].as_u64().unwrap() > 0, "{state}");

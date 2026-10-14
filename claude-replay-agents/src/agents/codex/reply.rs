@@ -106,3 +106,21 @@ pub(crate) fn parse(text: &str) -> Option<ReplyContext> {
         context,
     })
 }
+
+/// A preservation guard, never a relaxed recognizer.
+pub(crate) fn candidate(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("<response-annotations")
+        || text.to_ascii_lowercase().contains("# response annotations")
+}
+
+/// Several native text fragments lack a measured, lossless quotation partition.
+/// Keep one ordinary turn with every input character in source order, and leave
+/// image/tool records on their existing paths. Do not recognize a later fragment.
+pub(crate) fn message_fallback(items: &[serde_json::Value]) -> Option<String> {
+    let texts: Vec<&str> = items
+        .iter()
+        .filter(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("input_text"))
+        .filter_map(|item| item.get("text").and_then(serde_json::Value::as_str))
+        .collect();
+    (texts.len() > 1 && texts.iter().any(|text| candidate(text))).then(|| texts.concat())
+}
