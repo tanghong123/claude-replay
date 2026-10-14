@@ -146,8 +146,10 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // (`file: {path, sig, fsig?, name}`).
     // v23: #s83 — a SendMessage card's body is the message it sent (an `md` part) above its
     // delivery receipt (a `note`), and its head names the summary.
-    // v24: quoted user replies add optional reply_context beside the complete legacy body.
-    const RECORD_SCHEMA: u16 = 24;
+    // v24: #s108 — a Markdown link or image whose target is not http, https, mailto or
+    // schemeless is a `<span title>` holding its words, never a live `<a href>`.
+    // v25: quoted user replies add optional reply_context beside the complete legacy body.
+    const RECORD_SCHEMA: u16 = 25;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);

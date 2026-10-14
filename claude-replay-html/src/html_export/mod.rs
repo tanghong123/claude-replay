@@ -313,6 +313,10 @@ fn md_html_inner(src: &str, hard_breaks: bool) -> String {
     let mut fence: Option<(String, String)> = None;
     // Table state: are we inside the head row (→ <th>) or the body (→ <td>)?
     let mut in_head = false;
+    // Whether each open link and image kept its target (#s108), so a refused one closes the
+    // span it opened. An image can sit inside a link, so each kind keeps its own stack.
+    let mut links: Vec<bool> = Vec::new();
+    let mut images: Vec<bool> = Vec::new();
 
     for ev in Parser::new_ext(src, opts) {
         // Inside a fence every event is raw text; collect until it closes.
@@ -370,17 +374,19 @@ fn md_html_inner(src: &str, hard_breaks: bool) -> String {
             Event::End(TagEnd::TableRow) => out.push_str("</tr>"),
             Event::Start(Tag::TableCell) => out.push_str(if in_head { "<th>" } else { "<td>" }),
             Event::End(TagEnd::TableCell) => out.push_str(if in_head { "</th>" } else { "</td>" }),
-            Event::Start(Tag::Link { dest_url, .. }) => out.push_str(&format!(
-                "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">",
-                esc(&dest_url)
-            )),
-            Event::End(TagEnd::Link) => out.push_str("</a>"),
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                let live = live_link_target(&dest_url);
+                links.push(live);
+                out.push_str(&link_open(&dest_url, live, ""));
+            }
+            Event::End(TagEnd::Link) => out.push_str(link_close(links.pop())),
             // Never emit <img>: a remote src would break "no network".
-            Event::Start(Tag::Image { dest_url, .. }) => out.push_str(&format!(
-                "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">[image] ",
-                esc(&dest_url)
-            )),
-            Event::End(TagEnd::Image) => out.push_str("</a>"),
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                let live = live_link_target(&dest_url);
+                images.push(live);
+                out.push_str(&link_open(&dest_url, live, "[image] "));
+            }
+            Event::End(TagEnd::Image) => out.push_str(link_close(images.pop())),
             Event::Start(Tag::CodeBlock(kind)) => {
                 let lang = match kind {
                     CodeBlockKind::Fenced(l) => l.to_string(),
@@ -409,6 +415,54 @@ fn md_html_inner(src: &str, hard_breaks: bool) -> String {
         out.push_str(&fence_html(&lang, &body));
     }
     out
+}
+
+/// A Markdown link's opening tag: a live link that opens in a new tab, or, for a target the
+/// page does not open ([`live_link_target`]), a span holding the same words with the target as
+/// its title, so the reader can still see where it pointed.
+fn link_open(dest: &str, live: bool, lead: &str) -> String {
+    if live {
+        format!(
+            "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{lead}",
+            esc(dest)
+        )
+    } else {
+        format!("<span title=\"{}\">{lead}", esc(dest))
+    }
+}
+
+/// The tag that closes what [`link_open`] opened.
+fn link_close(live: Option<bool>) -> &'static str {
+    if live.unwrap_or(true) {
+        "</a>"
+    } else {
+        "</span>"
+    }
+}
+
+/// Whether a Markdown link or image keeps its target as a live link (#s108). Transcript text is
+/// not the reader's own: an agent quoting a web page carries that page's links in, and every
+/// page draws it, the monitor's included, whose origin holds the pairing cookie and may make
+/// same-origin writes. So a target stays a link only when it names no scheme (a fragment, a
+/// relative path) or one of `http`, `https` and `mailto`. `javascript:`, `vbscript:`, `data:`,
+/// `file:` and every other scheme (`tel:` and `ssh:` too) are drawn as words. A browser drops
+/// ASCII tabs and newlines from a URL and trims leading controls and spaces, so
+/// `java&#x09;script:` is `javascript:` to it: a target holding any control character is refused
+/// outright rather than parsed. Headless Chrome opened an `about:blank` tab for a clicked
+/// `javascript:` link and ran nothing with the page's origin, but that is one browser's
+/// behaviour, and these pages are read in iOS Safari and, exported, in any browser.
+fn live_link_target(dest: &str) -> bool {
+    if dest.chars().any(char::is_control) {
+        return false;
+    }
+    match dest.trim().split_once(':') {
+        // A colon after a `/`, `?` or `#` is inside a relative path, a query or a fragment.
+        Some((scheme, _)) if !scheme.contains(['/', '?', '#']) => matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "http" | "https" | "mailto"
+        ),
+        _ => true,
+    }
 }
 
 fn proposed_plan_body(text: &str) -> Option<&str> {
@@ -3208,6 +3262,51 @@ mod tests {
     fn user_prompt_newlines_are_hard_breaks() {
         assert!(md_html_user("line one\nline two").contains("<br>"));
         assert!(!md_html("line one\nline two").contains("<br>"));
+    }
+
+    /// #s108: a Markdown target stays a live link only for the web, mail, or no scheme at all; a
+    /// script, a data URL or a local file is drawn as its words, however the scheme is spelt.
+    #[test]
+    fn a_markdown_link_to_a_script_or_a_file_is_drawn_as_words() {
+        for (src, href) in [
+            ("[x](https://example.com/a)", "https://example.com/a"),
+            ("[x](HTTP://example.com/a)", "HTTP://example.com/a"),
+            (
+                "[x](mailto:someone@example.com)",
+                "mailto:someone@example.com",
+            ),
+            ("[x](#turn-3)", "#turn-3"),
+            ("[x](docs/a:b.md)", "docs/a:b.md"),
+            ("[x](?q=a:b)", "?q=a:b"),
+        ] {
+            let html = md_html(src);
+            assert!(
+                html.contains(&format!("<a href=\"{href}\"")),
+                "{src}: {html}"
+            );
+            assert!(!html.contains("<span"), "{src}: {html}");
+        }
+        for (src, words) in [
+            ("[x](javascript:alert(1))", ">x</span>"),
+            ("[x](JavaScript:alert(1))", ">x</span>"),
+            ("[x](java&#x09;script:alert(1))", ">x</span>"),
+            ("[x](vbscript:msgbox)", ">x</span>"),
+            ("[x](data:text/html;base64,PHNjcmlwdD4=)", ">x</span>"),
+            ("[x](file:///etc/hosts)", ">x</span>"),
+            ("[x](tel:+15550100)", ">x</span>"),
+            ("![x](javascript:alert(1))", ">[image] x</span>"),
+        ] {
+            let html = md_html(src);
+            assert!(!html.contains("<a "), "{src}: {html}");
+            assert!(html.contains("<span title=\""), "{src}: {html}");
+            assert!(html.contains(words), "{src}: {html}");
+        }
+        // A refused image inside a live link closes its own span and leaves the link whole.
+        assert_eq!(
+            md_html("[![x](javascript:alert(1))](https://example.com/)"),
+            "<p><a href=\"https://example.com/\" target=\"_blank\" rel=\"noopener noreferrer\">\
+             <span title=\"javascript:alert(1)\">[image] x</span></a></p>"
+        );
     }
 
     /// Credits-billed sessions (Qoder): the usage sub-object carries a `credits` key; a
