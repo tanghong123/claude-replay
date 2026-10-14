@@ -150,7 +150,7 @@ const NOTE_INVITE: &str =
 fn mdrev_renders_transcript_markdown_as_a_clean_reader() {
     let _serial = serial();
     let (base, stores, _repo) = fixture("mdrev-reader");
-    let m = Monitor::spawn(Kind::V2, 2821, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2821, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     assert_eq!(
@@ -209,7 +209,7 @@ fn mdrev_renders_a_local_markdown_file_with_its_toolbar() {
     let _serial = serial();
     drop(mdrev_cli()); // the monitor's history and notes run the pinned CLI under node
     let (base, stores, repo) = fixture("mdrev-local");
-    let m = Monitor::spawn(Kind::V2, 2822, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2822, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
@@ -263,7 +263,7 @@ fn mdrev_renders_a_local_markdown_file_with_its_toolbar() {
 fn mdrev_owns_a_key_pressed_while_the_reader_is_engaged_with_it() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-keys");
-    let m = Monitor::spawn(Kind::V2, 2823, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2823, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
@@ -333,7 +333,7 @@ fn without_node_a_local_markdown_file_keeps_its_history_and_takes_no_notes() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-nonode");
     let m = Monitor::spawn_with(
-        Kind::V2,
+        Kind::V1,
         2824,
         &base,
         Some(&stores),
@@ -387,7 +387,7 @@ fn mdrev_contract_passes_mdrev_cli_conform() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-conform");
     let port = 2825;
-    let m = Monitor::spawn(Kind::V2, port, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
@@ -505,7 +505,7 @@ fn own_h1(tab: &headless_chrome::Tab) -> String {
 fn mdrev_opens_held_text_in_a_tab_of_its_own() {
     let _serial = serial();
     let (base, stores, _repo) = fixture("mdrev-tab-held");
-    let m = Monitor::spawn(Kind::V2, 2826, &base, Some(&stores), false);
+    let m = Monitor::spawn(Kind::V1, 2826, &base, Some(&stores), false);
     let (browser, tab) = chrome_tab();
     open_shell_unpaired(&m, &tab);
     open_notes(&tab);
@@ -551,7 +551,7 @@ fn mdrev_opens_a_file_in_a_tab_where_the_reader_was() {
     let _serial = serial();
     drop(mdrev_cli()); // the file's history and notes run the pinned CLI under node
     let (base, stores, repo) = fixture("mdrev-tab-local");
-    let m = Monitor::spawn(Kind::V2, 2827, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2827, &base, Some(&stores), true);
     let (browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
@@ -670,7 +670,7 @@ fn mdrev_opens_a_file_in_a_tab_where_the_reader_was() {
 fn a_tab_of_held_text_survives_a_monitor_restart() {
     let _serial = serial();
     let (base, stores, _repo) = fixture("mdrev-tab-restart");
-    let m = Monitor::spawn(Kind::V2, 2828, &base, Some(&stores), false);
+    let m = Monitor::spawn(Kind::V1, 2828, &base, Some(&stores), false);
     let (browser, tab) = chrome_tab();
     open_shell_unpaired(&m, &tab);
     open_notes(&tab);
@@ -692,7 +692,7 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
     );
 
     drop(m); // the monitor goes, and the text it held with it
-    let m = Monitor::spawn(Kind::V2, 2828, &base, Some(&stores), false);
+    let m = Monitor::spawn(Kind::V1, 2828, &base, Some(&stores), false);
     own.reload(false, None).unwrap();
     own.wait_until_navigated().unwrap();
     until(
@@ -706,7 +706,7 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
 
     eval(&own, "sessionStorage.clear(); 'ok'");
     drop(m);
-    let _m = Monitor::spawn(Kind::V2, 2828, &base, Some(&stores), false);
+    let _m = Monitor::spawn(Kind::V1, 2828, &base, Some(&stores), false);
     own.reload(false, None).unwrap();
     own.wait_until_navigated().unwrap();
     until(
@@ -733,7 +733,7 @@ fn mdrev_follows_the_reader_to_another_document_into_its_tab() {
     let _serial = serial();
     drop(mdrev_cli()); // the file's history and notes run the pinned CLI under node
     let (base, stores, repo) = fixture("mdrev-tab-follow");
-    let m = Monitor::spawn(Kind::V2, 2829, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2829, &base, Some(&stores), true);
     let (browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
@@ -872,7 +872,7 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
 
     let port = 2945;
     let m = Monitor::spawn_with(
-        Kind::V2,
+        Kind::V1,
         port,
         &base,
         Some(&stores),
@@ -978,7 +978,7 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
 fn a_phone_pane_leaves_mdrevs_toolbar_its_own_layout() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-toolbar");
-    let m = Monitor::spawn(Kind::V2, 2943, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2943, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 440, 956);
     open_shell(&m, &tab);
@@ -1020,7 +1020,7 @@ fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
     let _serial = serial();
     let (base, stores, repo, state) = shared_review_world("mdrev-sheet");
     let m = Monitor::spawn_with(
-        Kind::V2,
+        Kind::V1,
         2972,
         &base,
         Some(&stores),
@@ -1215,7 +1215,7 @@ fn mdrev_shows_a_local_code_file_as_highlighted_numbered_source() {
     let _serial = serial();
     drop(mdrev_cli()); // the file's history runs the pinned CLI under node
     let (base, stores, repo) = code_fixture("mdrev-code-local");
-    let m = Monitor::spawn(Kind::V2, 3070, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 3070, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_path(&tab, &repo.join("src/app.ts").display().to_string());
@@ -1324,7 +1324,7 @@ fn mdrev_shows_a_local_code_file_as_highlighted_numbered_source() {
 fn the_pane_hands_mdrev_held_code_and_keeps_its_own_view_of_the_rest() {
     let _serial = serial();
     let (base, stores, repo) = code_fixture("mdrev-code-rest");
-    let m = Monitor::spawn(Kind::V2, 3071, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 3071, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_notes(&tab);
@@ -1400,7 +1400,7 @@ fn the_pane_prints_a_markdown_document_where_mdrev_offers_no_print() {
     jsonl += &read_tool_at("c1", &code, &at("00:05"));
     jsonl += &tool_result_at("c1", &at("00:05"));
     stores.claude_session(SID, &jsonl);
-    let m = Monitor::spawn(Kind::V2, 3077, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 3077, &base, Some(&stores), true);
     let stub_print =
         "window.__printed = 0; window.print = function () { window.__printed++; }; 'ok'";
 
@@ -1755,7 +1755,7 @@ fn the_detached_tab_reads_subscribes_and_notifies_through_draft_8() {
     };
     let port = 2756;
     let m = Monitor::spawn_with(
-        Kind::V2,
+        Kind::V1,
         port,
         &base,
         Some(&stores),
@@ -2047,7 +2047,7 @@ fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
         "# Decisions\n\nWhen a deliverable ends with awaiting your decision, file it.\n",
     )
     .unwrap();
-    let m = Monitor::spawn(Kind::V2, 2731, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2731, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 440, 956);
     // A phone, as mdrev tests for one (its toolbar's phone layout keys on these).
@@ -2202,7 +2202,7 @@ fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
 fn probe_pane_print_pdf() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-print-pdf");
-    let m = Monitor::spawn(Kind::V2, 2739, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2739, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 440, 956);
     tab.call_method(

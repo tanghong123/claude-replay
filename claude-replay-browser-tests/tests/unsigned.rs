@@ -124,7 +124,7 @@ fn both_shells_copy_a_path_offered_without_a_stamp() {
     {
         let (base, stores, _, file) = fixture("unsigned-app");
         spoil_key(&base.join("state-2815"));
-        let m = Monitor::spawn(Kind::V2, 2815, &base, Some(&stores), true);
+        let m = Monitor::spawn(Kind::V1, 2815, &base, Some(&stores), true);
         let (_browser, tab) = chrome_tab();
         m.pair(&tab);
         m.open(&tab, &format!("?ui=app&session={SID}"));

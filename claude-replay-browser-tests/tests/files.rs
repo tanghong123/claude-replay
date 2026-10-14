@@ -129,7 +129,7 @@ fn reveals(tab: &headless_chrome::Tab) -> Vec<String> {
 fn the_app_shell_preview_offers_the_file_manager_for_whatever_it_shows() {
     let _serial = serial();
     let (base, stores, repo) = fixture("files-pane");
-    let m = Monitor::spawn(Kind::V2, 2811, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2811, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab, true);
 
@@ -252,7 +252,7 @@ fn the_app_shell_preview_offers_the_file_manager_for_whatever_it_shows() {
 fn the_app_shell_preview_offers_the_file_manager_when_it_cannot_read_the_file() {
     let _serial = serial();
     let (base, stores, repo) = fixture("files-unpaired");
-    let m = Monitor::spawn(Kind::V2, 2812, &base, Some(&stores), false);
+    let m = Monitor::spawn(Kind::V1, 2812, &base, Some(&stores), false);
     let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab, false);
     let (_, sig) = click_path(&tab, &repo, "notes.txt");
@@ -315,7 +315,7 @@ fn the_app_shell_preview_offers_the_file_manager_when_it_cannot_read_the_file() 
 fn the_app_shell_prompt_card_offers_the_file_manager_beside_its_action() {
     let _serial = serial();
     let (base, stores, _repo) = fixture("files-card");
-    let m = Monitor::spawn(Kind::V2, 2813, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2813, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab, true);
     let card = ".prompt-attachment-pair .prompt-attachment";
@@ -424,7 +424,7 @@ fn the_app_shell_offers_a_path_as_an_image_exactly_when_the_server_serves_one() 
     jsonl += &said("One pixel.", &at("00:04"));
     stores.codex_session(CODEX, &jsonl);
 
-    let m = Monitor::spawn(Kind::V2, 2814, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2814, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     m.pair(&tab);
     // The monitor names a Codex session by its rollout's file stem.
@@ -587,7 +587,7 @@ fn the_app_shell_preview_fits_a_large_image_to_the_pane() {
     let _serial = serial();
     let (base, stores, repo) = fixture("files-fit");
     std::fs::write(repo.join("shot.png"), big_png(1200, 800)).unwrap();
-    let m = Monitor::spawn(Kind::V2, 2816, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2816, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     harness::resize(&tab, 1440.0, 900.0);
     open_shell(&m, &tab, true);
@@ -644,7 +644,7 @@ fn the_app_shell_preview_pinch_zooms_an_image_on_a_phone() {
     let _serial = serial();
     let (base, stores, repo) = fixture("files-pinch");
     std::fs::write(repo.join("shot.png"), big_png(1200, 800)).unwrap();
-    let m = Monitor::spawn(Kind::V2, 2804, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2804, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 390, 844);
     open_shell(&m, &tab, true);
@@ -746,7 +746,7 @@ fn a_phone_downloads_what_the_session_handed_over_wherever_it_lives() {
         ),
     )
     .unwrap();
-    let m = Monitor::spawn(Kind::V2, 2933, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2933, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 440, 956);
     m.pair(&tab);
@@ -865,7 +865,7 @@ fn a_phone_reads_a_mentioned_file_outside_the_session_under_the_allowlist() {
         ),
     )
     .unwrap();
-    let m = Monitor::spawn(Kind::V2, 2937, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2937, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 440, 956);
     m.pair(&tab);
@@ -941,7 +941,7 @@ fn an_image_opens_in_a_tab_of_its_own_from_the_pane_and_the_lightbox() {
     jsonl += &tool_result_at("t1", &at("00:03"));
     let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(IMG, &jsonl);
-    let m = Monitor::spawn(Kind::V2, 2970, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2970, &base, Some(&stores), true);
     let (browser, tab) = chrome_tab();
     m.pair(&tab);
     m.open(&tab, &format!("?ui=app&session={IMG}"));
@@ -1068,7 +1068,7 @@ fn a_phone_opens_a_carried_file_in_mdrev_and_is_offered_no_reveal() {
     let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID27, &jsonl);
     // A phone over the tailnet (#s29: what is offered beside a file depends on where the reader is).
-    let m = Monitor::spawn_remote(Kind::V2, 2938, &base, Some(&stores));
+    let m = Monitor::spawn_remote(Kind::V1, 2938, &base, Some(&stores));
     let (_browser, tab) = harness::remote_phone(440, 956);
     m.open_remote(&tab, &format!("?ui=app&session={SID27}"));
     until(
@@ -1181,7 +1181,7 @@ fn a_file_a_shell_command_changed_opens_from_its_note_on_both_pages() {
     jsonl += &harness::assistant_at("Done.", &at("00:05"));
     let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID28, &jsonl);
-    let m = Monitor::spawn(Kind::V2, 2939, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2939, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     m.pair(&tab);
 
@@ -1230,7 +1230,11 @@ fn a_file_a_shell_command_changed_opens_from_its_note_on_both_pages() {
     );
 
     // The classic page: the same note, the name a `.tool-path` with the file's stamps.
-    m.open(&tab, &format!("?ui=classic&session={SID28}"));
+    // The classic leg is the monitor's classic view (the v2 splice), on a monitor of its own: it
+    // retires in stage 3 of design/classic-view-deprecation.md, and this leg with it.
+    let classic = Monitor::spawn(Kind::V2, 3088, &base, Some(&stores), true);
+    classic.pair(&tab);
+    classic.open(&tab, &format!("?ui=classic&session={SID28}"));
     let frame = "(function(){ var f = document.querySelector('iframe'); return f && f.contentDocument ? f.contentDocument : document; })()";
     until(
         &tab,
@@ -1336,7 +1340,7 @@ fn a_phone_is_never_offered_the_file_manager_on_either_page() {
     j += &harness::assistant_at("Done.", &at("00:22"));
     let j = j.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID29, &j);
-    let m = Monitor::spawn_remote(Kind::V2, 2940, &base, Some(&stores));
+    let m = Monitor::spawn_remote(Kind::V1, 2940, &base, Some(&stores));
     let (_browser, tab) = harness::remote_phone(440, 956);
     let stub = |tab: &headless_chrome::Tab| {
         eval(tab, STUB_REVEAL);
@@ -1392,7 +1396,10 @@ fn a_phone_is_never_offered_the_file_manager_on_either_page() {
     }
 
     // ── The classic page ───────────────────────────────────────────────────────────────────
-    m.open_remote(&tab, &format!("?ui=classic&session={SID29}"));
+    // The classic leg is the monitor's classic view (the v2 splice), on a monitor of its own: it
+    // retires in stage 3 of design/classic-view-deprecation.md, and this leg with it.
+    let classic = Monitor::spawn_remote(Kind::V2, 3089, &base, Some(&stores));
+    classic.open_remote(&tab, &format!("?ui=classic&session={SID29}"));
     let frame = "(function(){ var f = document.querySelector('iframe'); return f && f.contentDocument ? f.contentDocument : document; })()";
     until(
         &tab,
@@ -1499,7 +1506,7 @@ fn a_phone_download_opens_the_share_sheet_and_a_desktop_saves() {
     jsonl += &tool_result_at("s1", &at("00:12"));
     let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID, &jsonl);
-    let m = Monitor::spawn(Kind::V2, 2936, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2936, &base, Some(&stores), true);
     let selector = format!("[data-reference-path={:?}]", film.display().to_string());
     // The sheet and the save, recorded: `navigator.share` keeps what it was handed (and can be told to
     // refuse an expired tap); an anchor's click records the download it would start.

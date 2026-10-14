@@ -340,7 +340,7 @@ fn open_page(surface: Surface, fx: &Fixture, port: u16, extra: &str) -> Opened {
             let stores = Stores {
                 root: fx.base.join("stores"),
             };
-            let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
+            let monitor = Monitor::spawn(Kind::V1, port, &fx.base, Some(&stores), true);
             monitor.pair(&tab);
             monitor.open(
                 &tab,
@@ -375,14 +375,24 @@ fn open_page(surface: Surface, fx: &Fixture, port: u16, extra: &str) -> Opened {
 /// Both surfaces on ONE v2 monitor, so a server restart can be driven: the classic page is the
 /// splice (`?ui=classic&session=`, the same export.js DOM in the document), the app shell is
 /// `?ui=app&session=`. The monitor is owned by the returned page and can be respawned.
-fn open_on_v2(surface: Surface, fx: &Fixture, port: u16) -> Opened {
+/// The surface on a MONITOR process, for a case whose point is the server (a restart): the app
+/// shell on `agent-monitor`, the classic page as the v2 splice. The classic leg is the monitor's
+/// classic view, which retires (design/classic-view-deprecation.md, stage 3 deletes it with v2).
+fn monitor_kind(surface: Surface) -> Kind {
+    match surface {
+        Surface::Classic => Kind::V2,
+        Surface::AppShell => Kind::V1,
+    }
+}
+
+fn open_on_monitor(surface: Surface, fx: &Fixture, port: u16) -> Opened {
     let (browser, tab) = harness::chrome_tab();
     harness::track_idle(&tab);
     watch_for_settle(&tab);
     let stores = Stores {
         root: fx.base.join("stores"),
     };
-    let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
+    let monitor = Monitor::spawn(monitor_kind(surface), port, &fx.base, Some(&stores), true);
     monitor.pair(&tab);
     let (query, ready, diag) = match surface {
         Surface::Classic => (format!("?ui=classic&session={}", sid_of(fx)), "document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3", "document.querySelectorAll('#stream [data-turn]').length"),
@@ -406,14 +416,14 @@ fn open_on_v2(surface: Surface, fx: &Fixture, port: u16) -> Opened {
 
 /// Kill the page's monitor and start a new one on the same port over the same state and
 /// stores — a server restart under a watching page.
-fn restart_monitor(page: &mut Opened, fx: &Fixture, port: u16) {
+fn restart_monitor(page: &mut Opened, surface: Surface, fx: &Fixture, port: u16) {
     let stores = Stores {
         root: fx.base.join("stores"),
     };
     page.monitor = None; // reaped
     std::thread::sleep(Duration::from_millis(800));
     page.monitor = Some(Monitor::spawn(
-        Kind::V2,
+        monitor_kind(surface),
         port,
         &fx.base,
         Some(&stores),
@@ -1837,7 +1847,7 @@ fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, p
         "the whole fixture is there before the restart ({last} of {})",
         fx.turns
     );
-    restart_monitor(page, fx, port);
+    restart_monitor(page, surface, fx, port);
     let t0 = std::time::Instant::now();
     let mut back = false;
     while t0.elapsed() < Duration::from_secs(25) {
@@ -1854,7 +1864,7 @@ fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, p
     settle();
     let held = turn_at_top(&tab, surface);
     assert!(held >= 0 && held < last, "the reader scrolled up ({held})");
-    restart_monitor(page, fx, port);
+    restart_monitor(page, surface, fx, port);
     std::thread::sleep(Duration::from_millis(6000));
     let after = turn_at_top(&tab, surface);
     assert!(
@@ -1868,7 +1878,7 @@ fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, p
 fn classic_page_resumes_after_a_server_restart() {
     let _serial = serial();
     let fx = fixture("scenario-restart-classic", 40);
-    let mut page = open_on_v2(Surface::Classic, &fx, 2859);
+    let mut page = open_on_monitor(Surface::Classic, &fx, 2859);
     scenario_restart_resumes(&mut page, Surface::Classic, &fx, 2859);
 }
 
@@ -1877,7 +1887,7 @@ fn classic_page_resumes_after_a_server_restart() {
 fn app_shell_resumes_after_a_server_restart() {
     let _serial = serial();
     let fx = fixture("scenario-restart-app", 40);
-    let mut page = open_on_v2(Surface::AppShell, &fx, 2860);
+    let mut page = open_on_monitor(Surface::AppShell, &fx, 2860);
     scenario_restart_resumes(&mut page, Surface::AppShell, &fx, 2860);
 }
 
@@ -13572,7 +13582,7 @@ fn both_shells_open_a_file_from_the_session_s_own_scratch() {
         let stores = Stores {
             root: fx.base.join("stores"),
         };
-        let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
+        let monitor = Monitor::spawn(monitor_kind(surface), port, &fx.base, Some(&stores), true);
         monitor.pair(&tab);
         let (ui, ready) = match surface {
             Surface::Classic => ("classic", "document.querySelectorAll('#stream .blk').length >= 3"),
@@ -14816,7 +14826,7 @@ fn app_shell_the_rail_wears_each_agent_s_mark() {
         "019a0000-0000-7000-8000-000000000299",
         &harness::codex_tool_session("019a0000-0000-7000-8000-000000000299", 2),
     );
-    let m = Monitor::spawn(Kind::V2, 3052, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 3052, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     m.open(&tab, "?ui=app");
@@ -14917,7 +14927,7 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
     )
     .unwrap();
     stores.codex_session(codex, &harness::codex_tool_session(codex, 2));
-    let m = Monitor::spawn(Kind::V2, 3054, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 3054, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     m.open(&tab, "?ui=app");
@@ -15727,7 +15737,7 @@ fn both_shells_open_a_file_from_the_session_s_job_workspace() {
         let stores = Stores {
             root: fx.base.join("stores"),
         };
-        let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
+        let monitor = Monitor::spawn(monitor_kind(surface), port, &fx.base, Some(&stores), true);
         monitor.pair(&tab);
         let (ui, ready) = match surface {
             Surface::Classic => ("classic", "document.querySelectorAll('#stream .blk').length >= 3"),
@@ -16102,7 +16112,7 @@ fn app_shell_command_k_is_a_jump_to_ranked_by_recency() {
     )
     .unwrap();
 
-    let m = Monitor::spawn(Kind::V2, 3044, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 3044, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     m.open(&tab, "?ui=app");
