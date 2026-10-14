@@ -3050,7 +3050,7 @@ pub(crate) fn decode_line_known(
                 // and `prose` pre-classifies whether the enqueue renders a visible marker.
                 if op == QueueOpKind::Enqueue {
                     if let Some(c) = &content {
-                        if !super::reply::candidate(c) && is_agent_notification(c) {
+                        if is_agent_notification(c) {
                             msgs.push(Message::Completion {
                                 tool_use_id: tag_inner(c, "tool-use-id")
                                     .unwrap_or_default()
@@ -4231,7 +4231,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 match v.get("operation").and_then(|o| o.as_str()) {
                     Some("enqueue") => {
                         if let Some(c) = content {
-                            if !super::reply::candidate(c) && is_agent_notification(c) {
+                            if is_agent_notification(c) {
                                 // Render the completion as its OWN event at this
                                 // position (the spawn stays "launched" up where it was
                                 // created). Type is copied from the matching spawn in a
@@ -5135,6 +5135,10 @@ fn is_skill_body(s: &str) -> bool {
 /// finished" with a `status` — as opposed to a background-`Bash` or `Monitor` one?
 /// (Their task-id namespaces differ too: agents `a…`, background `b…`.)
 fn is_agent_notification(s: &str) -> bool {
+    // A quoted notification is literal; a real notification can mention reply markers in its result.
+    if super::reply::candidate(s) && !s.trim_start().starts_with("<task-notification>") {
+        return false;
+    }
     tag_inner(s, "status").is_some()
         && tag_inner(s, "summary")
             .map(|sm| sm.trim_start().starts_with("Agent \""))

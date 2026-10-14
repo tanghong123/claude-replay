@@ -111,6 +111,65 @@ fn an_incomplete_native_record_never_exposes_a_partial_reply() {
 const CODEX: &str = include_str!("fixtures/codex-quoted-reply.txt");
 
 #[test]
+fn codex_file_declarations_survive_annotation_candidates_without_reading_selections() {
+    let envelope = "# Files mentioned by the user:\n## note.md: /synthetic/note.md\n## My request:\nExplain the literal string <response-annotations> in this file.";
+    let quoted = CODEX.replace(
+        "\n## My request:\n",
+        "\n# Files mentioned by the user:\n## note.md: /synthetic/note.md\n## My request:\n",
+    );
+    for parts in [vec![envelope], vec![envelope, CODEX], vec![quoted.as_str()]] {
+        let mut native: serde_json::Value =
+            serde_json::from_str(&line("codex", envelope, true)).unwrap();
+        native["payload"]["content"] = json!(parts
+            .iter()
+            .map(|text| json!({"type":"input_text","text":text}))
+            .collect::<Vec<_>>());
+        let mut acc = SessionAccumulator::new(&CodexAdapter);
+        acc.advance_at(0, &native.to_string());
+        let out = acc.fold().0;
+        assert_eq!(out.iter().filter(|b| b.opens_turn()).count(), 1);
+        assert!(
+            matches!(&out[0], Block::UserText(text) | Block::UserReply { text, .. } if text == &parts.concat())
+        );
+        let attachments: Vec<_> = out
+            .iter()
+            .filter_map(|b| {
+                if let Block::Attachment(a) = b {
+                    Some(a)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(attachments.len(), 1, "{out:?}");
+        let a = attachments[0];
+        assert_eq!(a.kind, claude_replay_engine::model::AttachmentKind::Ref);
+        assert_eq!(a.name, "note.md");
+        assert_eq!(a.path.as_deref(), Some("/synthetic/note.md"));
+        assert!(CodexAdapter.hands_over(a));
+    }
+    let selected = CODEX.replace(
+        "This is the first excerpt from Codex's response.",
+        "# Files mentioned by the user:\\n## hidden.md: /synthetic/hidden.md\\n## My request:\\nquoted request",
+    );
+    assert!(!blocks("codex", &selected, false)
+        .iter()
+        .any(|b| matches!(b, Block::Attachment(_))));
+}
+
+#[test]
+fn a_real_agent_notification_keeps_completion_when_its_result_mentions_reply_markers() {
+    let text = "<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent \"worker\" finished</summary>\n<result>Discuss <!-- reply 1 --> as literal text.</result>\n</task-notification>";
+    let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+    acc.advance_at(0, &line("claude", "start", false));
+    acc.advance_at(
+        1,
+        &json!({"type":"queue-operation","operation":"enqueue","content":text}).to_string(),
+    );
+    assert!(acc.fold().0.iter().any(|b| matches!(b, Block::AgentDone { agent_id, description, result: Some(result), .. } if agent_id == "a1" && description == "worker" && result.contains("<!-- reply 1 -->"))));
+}
+
+#[test]
 fn native_multi_text_replies_keep_one_complete_fallback_turn_and_images() {
     for (agent, original) in [("codex", CODEX), ("claude", CLAUDE)] {
         for later in [false, true] {
@@ -168,6 +227,8 @@ fn native_multi_text_replies_keep_one_complete_fallback_turn_and_images() {
 fn malformed_prefixes_preserve_quoted_tags_before_transport_cleanup() {
     for text in [
         "<!-- Reply 1 -->\n> <local-command-caveat>KEEP THIS QUOTATION</local-command-caveat>\n\nMy comment",
+        "<!--\nreply 1 -->\n> <local-command-caveat>KEEP THIS QUOTATION</local-command-caveat>\n\nMy comment",
+        "<!--\tRePlY 1 -->\n> <local-command-caveat>KEEP THIS QUOTATION</local-command-caveat>\n\nMy comment",
         "<!-- changed marker -->\n> <command-name>literal</command-name>\n\nMy comment",
         "INTRO\n<!-- reply 1 -->\n> <pasted_content id=\"1\">literal</pasted_content id=\"1\">\n\nMy comment",
     ] {

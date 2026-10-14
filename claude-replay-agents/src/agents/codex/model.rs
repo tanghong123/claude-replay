@@ -2,8 +2,8 @@ use claude_replay_engine::seam::CoverageField;
 use claude_replay_engine::seam::{
     epoch_secs, parse_marker, parse_path_timed_for, relativize, AgentStatus, AssistantPhase,
     Attachment, AttachmentContent, AttachmentKind, Block, CompactTrigger, LinePreprocessor,
-    LoadedAttachment, Message, Metrics, NoteKind, PreprocessedLine, Shaping, SpanHint, SubAgent,
-    TaskOp, Todo, ToolDuration, ToolExecution, ToolStatus, UsdCost,
+    LoadedAttachment, Message, Metrics, NoteKind, PreprocessedLine, ReplyContext, Shaping,
+    SpanHint, SubAgent, TaskOp, Todo, ToolDuration, ToolExecution, ToolStatus, UsdCost,
 };
 #[cfg(test)]
 use claude_replay_engine::seam::{
@@ -1219,6 +1219,14 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                         {
                             match item.get("type").and_then(Value::as_str) {
                                 Some("input_text") if role == "user" => {
+                                    // File declarations remain metadata even when presentation keeps raw text.
+                                    if let Some((_, files)) = item
+                                        .get("text")
+                                        .and_then(Value::as_str)
+                                        .and_then(desktop_prompt)
+                                    {
+                                        declared_files.extend(files);
+                                    }
                                     if fallback.is_some() {
                                         if let Some(image) = item
                                             .get("text")
@@ -1237,6 +1245,7 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                         })
                                     {
                                         if let Some(context) = super::reply::parse(text) {
+                                            declared_files.extend(reply_desktop_files(&context));
                                             msgs.push(Message::UserReply {
                                                 text: text.to_string(),
                                                 context,
@@ -1245,12 +1254,10 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
                                             msgs.push(Message::UserText {
                                                 text: text.to_string(),
                                             });
-                                        } else if let Some((request, files)) = desktop_prompt(text)
-                                        {
+                                        } else if let Some((request, _)) = desktop_prompt(text) {
                                             msgs.push(Message::UserText {
                                                 text: request.to_string(),
                                             });
-                                            declared_files.extend(files);
                                         } else if let Some(image) = desktop_image_marker(text) {
                                             pending_image = Some(image);
                                         } else if text.trim() != "</image>" {
@@ -1679,6 +1686,17 @@ pub(crate) fn desktop_prompt(text: &str) -> Option<(&str, Vec<(String, String)>)
     Some((request, files))
 }
 
+/// Only the recognized envelope's trailing context can declare files, never its selections.
+fn reply_desktop_files(context: &ReplyContext) -> Vec<(String, String)> {
+    let tail = match &context.request {
+        Some(request) => format!("{}\n## My request:\n{request}", context.context),
+        None => context.context.clone(),
+    };
+    desktop_prompt(&tail)
+        .map(|(_, files)| files)
+        .unwrap_or_default()
+}
+
 /// The Desktop host places this metadata item immediately before the corresponding
 /// `input_image`. It is not a second user turn. Carry its safe display name/path onto the
 /// canonical attachment; the served renderer will still sign the path before exposing actions.
@@ -1992,6 +2010,13 @@ fn push_message(payload: &Value, out: &mut Vec<Block>) {
     {
         match item.get("type").and_then(Value::as_str) {
             Some("input_text") if role == "user" => {
+                if let Some((_, files)) = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .and_then(desktop_prompt)
+                {
+                    declared_files.extend(files);
+                }
                 if fallback.is_some() {
                     if let Some(image) = item
                         .get("text")
@@ -2009,15 +2034,15 @@ fn push_message(payload: &Value, out: &mut Vec<Block>) {
                     continue;
                 };
                 if let Some(context) = super::reply::parse(text) {
+                    declared_files.extend(reply_desktop_files(&context));
                     out.push(Block::UserReply {
                         text: text.to_string(),
                         context,
                     });
                 } else if super::reply::candidate(text) {
                     out.push(Block::UserText(text.to_string()));
-                } else if let Some((request, files)) = desktop_prompt(text) {
+                } else if let Some((request, _)) = desktop_prompt(text) {
                     out.push(Block::UserText(request.to_string()));
-                    declared_files.extend(files);
                 } else if let Some(image) = desktop_image_marker(text) {
                     pending_image = Some(image);
                 } else if text.trim() != "</image>" {

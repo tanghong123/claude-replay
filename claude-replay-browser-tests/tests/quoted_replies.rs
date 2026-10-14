@@ -49,10 +49,25 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
             "SELECTED FIRST\\r\\n  code | table",
         );
     let codex = codex.replace("Please explain the first selection.", &comment);
+    let note = base.join("note.md");
+    std::fs::write(&note, "Synthetic file attachment for quotation replies.\n").unwrap();
+    let codex = codex.replace(
+        "\n## My request:\n",
+        &format!(
+            "\n# Files mentioned by the user:\n## note.md: {}\n## My request:\n",
+            note.display()
+        ),
+    );
     let invalid_codex = codex
         .replace("Each item contains", "Each item includes")
         .replace('\n', "\r\n");
-    let invalid_claude = claude.replace("reply 2", "reply 3").replace('\n', "\r\n");
+    let invalid_claude = claude
+        .replace("<!-- reply 2 -->", "<!--\nreply 2 -->")
+        .replace(
+            "> SELECTED FIRST",
+            "> <local-command-caveat>KEEP SELECTED TEXT</local-command-caveat>",
+        )
+        .replace('\n', "\r\n");
     let codex_only = CODEX
         .split("\n\n## My request:")
         .next()
@@ -150,6 +165,12 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
             assert_eq!(state["whitespace"], "pre-wrap");
             assert_eq!(state["border"], "2px");
             assert!(state["images"].as_u64().unwrap() > 0, "{state}");
+            if agent == "codex" {
+                assert_eq!(
+                    eval(&tab, "(() => { const a=document.querySelector('.turn.user[data-turn=\"1\"] .prompt-file[data-name=\"note.md\"]'); return !!a && a.dataset.attachmentAction === 'preview' && !!a.dataset.fsig && !!a.dataset.sig; })()"),
+                    true
+                );
+            }
             let rendered = state["text"].as_str().unwrap();
             assert_eq!(rendered.matches("SELECTED FIRST").count(), 1);
             assert_eq!(

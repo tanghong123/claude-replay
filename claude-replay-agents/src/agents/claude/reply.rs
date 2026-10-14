@@ -9,7 +9,12 @@ pub(crate) fn candidate(text: &str) -> bool {
         && trimmed
             .split_once('\n')
             .is_some_and(|(_, rest)| rest.starts_with('>'));
-    marker_with_selection || text.to_ascii_lowercase().contains("<!-- reply")
+    let lowercase = text.to_ascii_lowercase();
+    let reply_comment = lowercase
+        .split("<!--")
+        .skip(1)
+        .any(|comment| comment.trim_start().starts_with("reply"));
+    marker_with_selection || reply_comment
 }
 
 /// Split only unfenced standalone markers. A marker inside selected text or a
