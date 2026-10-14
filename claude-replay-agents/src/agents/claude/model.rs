@@ -5094,7 +5094,7 @@ pub(super) fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Find a native transport tag outside complete pasted payloads, which are literal content.
-fn native_tag_at(s: &str, open: &str) -> Option<usize> {
+pub(super) fn native_tag_at(s: &str, open: &str) -> Option<usize> {
     let mut offset = 0;
     loop {
         let rest = &s[offset..];

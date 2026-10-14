@@ -546,15 +546,21 @@ mod tests {
 
     /// Pre-correction quotation caches must rebuild in both non-HTML namespaces.
     #[test]
-    fn fold55_quotation_caches_rebuild_in_tui_and_json() {
-        for presentation in [Presentation::Tui, Presentation::Json] {
-            let root = tmp(&format!("quoted-fold55-{}", presentation.dir_name()));
+    fn pre_correction_quotation_caches_rebuild_in_tui_and_json() {
+        for (presentation, prior_fold) in [Presentation::Tui, Presentation::Json]
+            .into_iter()
+            .flat_map(|presentation| [55, 56].map(|fold| (presentation, fold)))
+        {
+            let root = tmp(&format!(
+                "quoted-fold{prior_fold}-{}",
+                presentation.dir_name()
+            ));
             let src = root.join("source.jsonl");
             std::fs::write(&src, "abcdefghij".repeat(50)).unwrap();
             let dir = entry_dir(&root, presentation, "s1");
             let current = Versions::current(None);
             let mut prior = current.clone();
-            prior.fold = 55;
+            prior.fold = prior_fold;
             let mut writer = MetaWriter::create(&dir, &src, prior.clone()).unwrap();
             writer
                 .append(&MetaRecord {

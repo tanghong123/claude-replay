@@ -353,12 +353,33 @@ fn pasted_reply_examples_keep_nested_native_tags_literal_in_every_delivery_shape
 fn real_commands_ignore_open_and_closing_tags_inside_pasted_examples() {
     let pasted = "<pasted_content id=\"1\">\n<!-- reply 1 -->\n> <command-name>/fake</command-name>\n</pasted_content id=\"1\">";
     let args =
-        "<pasted_content id=\"2\">literal </command-args> closing tag</pasted_content id=\"2\">";
+        "<pasted_content id=\"2\">literal </command-args>\n<?-- reply 1 -->\n> selected\n\nliteral</pasted_content id=\"2\">";
     let source =
         format!("{pasted}\n<command-name>/real</command-name><command-args>{args}</command-args>");
     assert!(
         matches!(&blocks("claude", &source, false)[..], [Block::Command { name, args: actual, .. }] if name == "/real" && actual == args)
     );
+}
+
+#[test]
+fn fragmented_skill_reference_bodies_keep_the_existing_note_classification() {
+    for inner in ["literal example", "<!-- reply 1 -->\n> literal"] {
+        let body = format!("Base directory for this skill: /synthetic/skill\n\n<pasted_content id=\"1\">\n{inner}\n</pasted_content id=\"1\">");
+        for trailing in ["", "Additional instructions."] {
+            let native = json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":body},{"type":"text","text":trailing}]}});
+            let mut acc = SessionAccumulator::new(&ClaudeAdapter);
+            acc.advance_at(0, &native.to_string());
+            let mut expected = vec![Block::ToolResult(body.clone())];
+            if !trailing.is_empty() {
+                expected.push(Block::UserText(trailing.into()));
+            }
+            assert_eq!(
+                acc.fold().0,
+                expected,
+                "reference input must retain its existing routing"
+            );
+        }
+    }
 }
 
 #[test]

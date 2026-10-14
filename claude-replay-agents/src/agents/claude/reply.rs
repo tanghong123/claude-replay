@@ -33,8 +33,9 @@ pub(crate) fn candidate(text: &str) -> bool {
         .into_iter()
         .filter_map(|(open, close)| {
             let at = source.find(open)?;
-            let (_, after) = source[at + open.len()..].split_once(close)?;
-            Some((at, source.len() - after.len()))
+            let tail = &source[at + open.len()..];
+            let end = super::model::native_tag_at(tail, close)?;
+            Some((at, at + open.len() + end + close.len()))
         });
         if let Some((at, end)) = pasted.into_iter().chain(wrappers).min_by_key(|(at, _)| *at) {
             if marker.is_none_or(|(marker_at, _)| at <= marker_at) {
@@ -171,6 +172,12 @@ pub(crate) fn message_fallback(items: &[serde_json::Value]) -> Option<String> {
         return None;
     }
     let joined = texts.concat();
+    // Skill reference bodies retain their existing per-item note classification.
+    if super::model::is_skill_body(&joined)
+        || texts.iter().any(|text| super::model::is_skill_body(text))
+    {
+        return None;
+    }
     if candidate(&joined) {
         Some(joined)
     } else {
