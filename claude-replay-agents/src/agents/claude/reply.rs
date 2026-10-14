@@ -67,9 +67,6 @@ pub(crate) fn parse(text: &str) -> Option<ReplyContext> {
             }
             offset += line.len();
         }
-        if fence.is_some() && index + 1 < count {
-            return None;
-        }
         let following = if index + 1 < count {
             let at = boundary?;
             let span = &cursor[..at];

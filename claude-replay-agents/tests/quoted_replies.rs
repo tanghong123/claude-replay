@@ -295,6 +295,45 @@ fn claude_pairs_keep_final_following_text_and_whitespace_in_both_native_shapes()
     }
 }
 #[test]
+fn claude_final_unclosed_code_fence_keeps_both_quotation_items() {
+    for fence in ["```rust", "~~~rust"] {
+        let following = format!("Please explain this code:\n{fence}\nlet value = 1;");
+        let text = format!(
+            "<!-- reply 2 -->\n> First selection\n\nFirst comment\n\n<!-- reply -->\n> Second selection\n\n{following}"
+        );
+        for array in [false, true] {
+            let out = blocks("claude", &text, array);
+            let [Block::UserReply {
+                text: source,
+                context,
+            }] = &out[..]
+            else {
+                panic!("{out:?}")
+            };
+            assert_eq!(source, &text);
+            assert!(out[0].opens_turn());
+            assert_eq!(context.items.len(), 2);
+            assert_eq!(context.items[0].quote, "First selection");
+            assert_eq!(context.items[1].quote, "Second selection");
+            assert_eq!(
+                context.items[1].response,
+                Some(ReplyResponse::FollowingText {
+                    text: following.clone()
+                })
+            );
+        }
+        // A marker inside the first span's unclosed fence is still literal content.
+        fallback(
+            "claude",
+            &format!("<!-- reply 2 -->\n> First selection\n\n{fence}\n<!-- reply -->\n> Second selection\n\n{following}"),
+        );
+        fallback(
+            "claude",
+            &format!("<!-- reply 2 -->\n> First selection\n\n{following}"),
+        );
+    }
+}
+#[test]
 fn codex_one_change_controls_fall_back_completely() {
     let cases = [
         CODEX.replacen("\n# Response", "# Response", 1),

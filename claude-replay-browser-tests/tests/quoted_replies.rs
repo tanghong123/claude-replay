@@ -6,7 +6,7 @@ use std::time::Duration;
 
 const CODEX: &str =
     include_str!("../../claude-replay-agents/tests/fixtures/codex-quoted-reply.txt");
-const CLAUDE: &str = "<!-- reply 2 -->\n> SELECTED FIRST\n>   code | table\n\nPlease explain the first selection.\n\n<!-- reply -->\n> SELECTED SECOND\n\nFINAL FOLLOWING TEXT\n\n\nREQUEST-LIKE PARAGRAPH";
+const CLAUDE: &str = "<!-- reply 2 -->\n> SELECTED FIRST\n>   code | table\n\nPlease explain the first selection.\n\n<!-- reply -->\n> SELECTED SECOND\n\nFINAL FOLLOWING TEXT\n\n\nREQUEST-LIKE PARAGRAPH\n```rust\nlet value = 1;";
 
 fn user(agent: &str, text: &str, image: bool) -> String {
     let mut content = vec![if agent == "codex" {
@@ -161,6 +161,10 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
             assert!(!rendered.contains("Response annotations:"));
             if agent == "claude" {
                 assert!(rendered.contains("FINAL FOLLOWING TEXT\n\n\nREQUEST-LIKE PARAGRAPH"));
+                assert_eq!(
+                    eval(&tab, "document.querySelectorAll('.turn.user[data-turn=\"1\"] .reply-response')[1].textContent"),
+                    "FINAL FOLLOWING TEXT\n\n\nREQUEST-LIKE PARAGRAPH\n```rust\nlet value = 1;"
+                );
             }
             if std::env::var_os("CR_QUOTED_SCREENSHOTS").is_some() {
                 let png = tab
@@ -268,5 +272,45 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
             Duration::from_secs(5),
             "document.body.innerText",
         );
+        tab.find_element(".turn.user[data-turn=\"1\"] .raw-toggle")
+            .unwrap()
+            .click()
+            .unwrap();
+        for (orientation, width, height) in [("portrait", 390, 844), ("landscape", 844, 390)] {
+            harness::phone(&tab, width, height);
+            harness::until(
+                &tab,
+                &format!("innerWidth === {width} && document.querySelectorAll('.turn.user[data-turn=\"1\"] .reply-item').length === 2"),
+                "phone quotation layout",
+                Duration::from_secs(5),
+                "document.body.innerText",
+            );
+            assert_eq!(eval(&tab, "[...document.querySelectorAll('.turn.user[data-turn=\"1\"] .reply-quote')].every(q => { const r=q.getBoundingClientRect(); return r.width > 0 && r.left >= 0 && r.right <= innerWidth; })"), true);
+            for theme in ["light", "dark"] {
+                eval(
+                    &tab,
+                    &format!(
+                        "document.documentElement.dataset.theme={}; true",
+                        json!(theme)
+                    ),
+                );
+                if std::env::var_os("CR_QUOTED_SCREENSHOTS").is_some() {
+                    let png = tab.capture_screenshot(
+                        headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+                        None, None, true,
+                    ).unwrap();
+                    std::fs::write(base.join(format!("{agent}-{orientation}-{theme}.png")), png)
+                        .unwrap();
+                }
+            }
+        }
+        use headless_chrome::protocol::cdp::Emulation;
+        tab.call_method(Emulation::ClearDeviceMetricsOverride {})
+            .unwrap();
+        tab.call_method(Emulation::SetTouchEmulationEnabled {
+            enabled: false,
+            max_touch_points: None,
+        })
+        .unwrap();
     }
 }
