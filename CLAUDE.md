@@ -26,6 +26,10 @@ Both are unrecoverable after the fact, and both were learned from real damage he
   text in single quotes is fine; a heredoc into a variable is the trap.
 
 ## The monitor's two shells
+For every UI change, follow the UI impact assessment in [AGENTS.md](AGENTS.md).
+Record affected pages, expected behavior, verification evidence, and coverage
+gaps in the MR/PR description, checking for omitted consumers before delivery.
+
 `agent-monitor` and `agent-monitor-v2` each serve **two** frontends and both are supported: the
 **app shell** (`claude-monitor/src/ui.rs` + `src/codex-ui/*`, the default) and the **classic**
 page (v1's rail, v2's splice shell). A button in each switches and REMEMBERS the choice at
