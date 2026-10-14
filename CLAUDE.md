@@ -213,8 +213,12 @@ host's refusal words; fetches keep the plain 401, and each refused page load is 
 the app shell's and v1's classic heads with a manifest and the label "Agent Monitor"; iOS asks the root
 for `apple-touch-icon.png` on its own, which covers v2's classic page. Those files are the ONLY paths
 the gate answers unpaired (`ui::PUBLIC_ASSETS` → `AuthGate::with_public`, GET only), because a phone
-fetches the icon itself and may not carry the pairing cookie. The manifest says `display: browser` on
-purpose: an iOS standalone Home Screen app keeps cookies of its own and would open unpaired.
+fetches the icon itself and may not carry the pairing cookie. The manifest says `display: browser`,
+which on iOS 26 decides nothing (#s111, measured on the 26.4 Simulator, a `browser` and a `standalone`
+manifest each on two hosts): Add to Home Screen offers "Open as Web App", on by default, for either;
+the app gets a COPY of Safari's cookies for its host at that moment (none on `localhost`) and keeps
+its own from then on. So a phone paired in Safari before the page is saved opens the app paired, and
+one saved first, or whose cookie later goes, pairs inside the app, where `/pair` is in its scope.
 **Sessions sort into three buckets** (#202, `design/agent-states.md` §10): active (busy),
 blocked (a wait, or an idle reason that cut the work short — this is what "needs attention"
 means and counts) and idle (`done`, `exited`); `sessionBucket` in `shared/state-labels.js` is
