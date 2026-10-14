@@ -4,7 +4,12 @@ use claude_replay_engine::seam::{ReplyContext, ReplyItem, ReplyResponse};
 /// Preserve comment-marker candidates even when case, spacing, or marker wording changes.
 /// This is only a non-destructive fallback guard; exact recognition remains in `parse`.
 pub(crate) fn candidate(text: &str) -> bool {
-    text.trim_start().starts_with("<!--") || text.to_ascii_lowercase().contains("<!-- reply")
+    let trimmed = text.trim_start();
+    let marker_with_selection = trimmed.starts_with("<!--")
+        && trimmed
+            .split_once('\n')
+            .is_some_and(|(_, rest)| rest.starts_with('>'));
+    marker_with_selection || text.to_ascii_lowercase().contains("<!-- reply")
 }
 
 /// Split only unfenced standalone markers. A marker inside selected text or a

@@ -417,3 +417,15 @@ fn incremental_and_durable_blocks_retain_reply_metadata() {
         assert_eq!(restored.iter().filter(|b| b.opens_turn()).count(), 2);
     }
 }
+
+#[test]
+fn an_ordinary_html_comment_keeps_the_existing_pasted_card_normalization() {
+    let text =
+        "<!-- note -->\n\nInspect <pasted_content id=\"1\">**literal**</pasted_content id=\"1\">";
+    for array in [false, true] {
+        let shown = blocks("claude", text, array);
+        assert!(
+            matches!(&shown[..], [Block::UserText(value)] if value.contains("```pasted\n**literal**\n```") && !value.contains("<pasted_content"))
+        );
+    }
+}
