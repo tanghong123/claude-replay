@@ -447,7 +447,7 @@ fn skill_headers_inside_fragmented_literal_payloads_keep_one_queued_user_turn() 
         );
     }
     // A real later-item Skill body stays outside the human input, preserving legacy routing.
-    let body = "Base directory for this skill: /synthetic/skill\n<pasted_content id=\"1\">example</pasted_content id=\"1\">";
+    let body = "Base directory for this skill: /synthetic/skill\n\nExample: <!-- reply 1 -->\n<pasted_content id=\"1\">example</pasted_content id=\"1\">";
     let native = json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":"Intro"},{"type":"text","text":body}]}});
     let mut acc = SessionAccumulator::new(&ClaudeAdapter);
     acc.advance_at(0, &native.to_string());

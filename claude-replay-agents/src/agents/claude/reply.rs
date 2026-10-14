@@ -73,8 +73,12 @@ fn opaque_span(source: &str) -> Option<(usize, usize)> {
     pasted.into_iter().chain(wrappers).min_by_key(|(at, _)| *at)
 }
 
-/// Whether a fragment's marker belongs to literal native payload data.
-fn opaque_position(text: &str, position: usize) -> bool {
+/// Whether a fragment's marker belongs to quoted text or a literal native payload.
+fn literal_position(text: &str, position: usize) -> bool {
+    let line_prefix = text[..position].rsplit('\n').next().unwrap_or("");
+    if line_prefix.trim_start().starts_with('>') {
+        return true;
+    }
     let mut offset = 0;
     while let Some((at, end)) = opaque_span(&text[offset..]) {
         if position < offset + at {
@@ -196,16 +200,16 @@ pub(crate) fn message_fallback(items: &[serde_json::Value]) -> Option<String> {
     if super::model::is_skill_body(&joined) {
         return None;
     }
-    if candidate(&joined) {
-        return Some(joined);
-    }
     let mut text_offset = 0;
     for text in &texts {
         let marker = text_offset + text.len() - text.trim_start().len();
-        if super::model::is_skill_body(text) && !opaque_position(&joined, marker) {
+        if super::model::is_skill_body(text) && !literal_position(&joined, marker) {
             return None;
         }
         text_offset += text.len();
+    }
+    if candidate(&joined) {
+        return Some(joined);
     }
     match super::model::fence_pasted(&joined) {
         std::borrow::Cow::Owned(pasted) => Some(pasted),

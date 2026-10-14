@@ -302,11 +302,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// v58: Skill-looking fragments inside literal payloads retain one complete user turn and
 /// its queue key. A v57 stream can split the payload into user turns and a reference note.
 ///
+/// v59: genuine later-item Skill references remain notes even when their examples contain
+/// reply markers. A v58 stream can merge that reference material into a human prompt.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 58;
+pub const FOLD_VERSION: u16 = 59;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
