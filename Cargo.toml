@@ -20,6 +20,8 @@ members = [
     "claude-replay-engine",
     "claude-replay-agents",
     "claude-monitor",
+    # Native control is optional; its tests run explicitly with the native feature.
+    "claude-monitor-codex",
     "claude-monitor-fleet",
     "claude-monitor-v2",
     # The pinned mdrev (#274): one released embedding kit, vendored and built into the monitors.

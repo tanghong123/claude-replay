@@ -1,0 +1,20 @@
+[package]
+name = "claude-monitor-codex"
+description = "Explicit Codex native runtime control for Agent Monitor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
+shlex = "2"
+rusqlite = { version = "0.40", features = ["bundled"] }
+tungstenite = "0.29"
+libc = "0.2"
+claude-replay-html = { path = "../claude-replay-html" }
+
+thiserror = "2"

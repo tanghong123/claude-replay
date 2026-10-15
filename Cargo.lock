@@ -276,6 +276,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "claude-monitor-codex"
+version = "1.378.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "claude-replay-html",
+ "libc",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "shlex",
+ "thiserror",
+ "tungstenite",
+]
+
+[[package]]
 name = "claude-monitor-fleet"
 version = "1.378.0"
 dependencies = [
