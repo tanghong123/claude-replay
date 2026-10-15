@@ -34,11 +34,11 @@ export function replyContext(record) {
   return value;
 }
 
-/** Quotes are literal selections, including code/table spacing and marker-like content. */
+/** Reuse the page's Markdown quotation and paragraph styles; selections stay literal. */
 export function replyHtml(context) {
-  return `<section class="quoted-reply" aria-label="Reply to selected text">${context.items.map((item, i) =>
-    `<div class="reply-item">${context.items.length > 1 ? `<div class="reply-item-label">Annotation ${i + 1}</div>` : ""}<blockquote class="reply-quote" aria-label="Selected earlier text">${literalText(item.quote)}</blockquote>${item.response ? `<div class="reply-response" data-response-kind="${item.response.kind}">${literalText(item.response.text)}</div>` : ""}</div>`
-  ).join("")}${context.context ? `<div class="reply-context">${literalText(context.context)}</div>` : ""}${context.request ? `<div class="reply-request">${literalText(context.request)}</div>` : ""}</section>`;
+  return `<section class="quoted-reply" aria-label="Reply to selected text">${context.items.map(item =>
+    `<div class="reply-item"><blockquote class="reply-quote" aria-label="Selected earlier text">${literalText(item.quote)}</blockquote>${item.response ? `<p class="reply-response" data-response-kind="${item.response.kind}">${literalText(item.response.text)}</p>` : ""}</div>`
+  ).join("")}${context.context ? `<p class="reply-context">${literalText(context.context)}</p>` : ""}${context.request ? `<p class="reply-request">${literalText(context.request)}</p>` : ""}</section>`;
 }
 
 // A record's searchable text is what a reader can see of it (#111, shared/search.js): heads and

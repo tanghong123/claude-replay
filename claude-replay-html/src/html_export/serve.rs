@@ -148,9 +148,11 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // delivery receipt (a `note`), and its head names the summary.
     // v24: #s108 — a Markdown link or image whose target is not http, https, mailto or
     // schemeless is a `<span title>` holding its words, never a live `<a href>`.
-    // v25: quoted user replies add optional reply_context beside the complete legacy body.
-    // v26: quotation previews use the canonical Rust label on every reader.
-    const RECORD_SCHEMA: u16 = 26;
+    // v25: #s115 — a Bash output the client cut opens its body with a note offering the file that
+    // holds the whole of it (`file: {path, sig, fsig?, name}`).
+    // v27: integrate saved-output offers with additive quotation metadata and canonical labels.
+    // The unpublished quotation branch used schemas 25-26; none may resume this output.
+    const RECORD_SCHEMA: u16 = 27;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);

@@ -451,6 +451,7 @@ fn tool_use(
         asked: None,
         delivered: Vec::new(),
         sent: None,
+        saved_output: None,
     }
 }
 

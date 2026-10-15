@@ -1225,6 +1225,7 @@ fn body_len(b: &Block) -> usize {
         // #s83: the message, then the receipt's lines.
         Block::ToolUse {
             sent: Some(text),
+            saved_output: None,
             output,
             ..
         } => {
@@ -1529,6 +1530,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: Some("skua-HD: both are done.\nThe review is posted.".into()),
+            saved_output: None,
         };
         let lines = render_one(&b, 120, Hl::Styled);
         let t = texts(&lines);
@@ -1567,6 +1569,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let lines = render_one(&b, 200, Hl::Styled);
         let t = texts(&lines);
@@ -1662,6 +1665,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -1713,6 +1717,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let e = texts(&render_one(&block, 100, Hl::Styled));
         let all = e.join("\n");
@@ -1752,6 +1757,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
 
         // Collapsed → 10-line preview + "… +15 lines".
@@ -1845,6 +1851,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let run = Block::Thinking {
             text: "hm".into(),
@@ -1890,6 +1897,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let failed = texts(&render_one(
             &edit(
@@ -1944,6 +1952,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let t = texts(&lines);
@@ -1998,6 +2007,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines
@@ -2050,6 +2060,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         }
     }
 
@@ -2081,6 +2092,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let rt = texts(&render_collapsed(&read)).join("\n");
         assert!(
@@ -2517,6 +2529,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             },
             Block::ToolUse {
                 name: "Read".into(),
@@ -2531,6 +2544,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             },
         ];
         let turn = Block::Thinking {
@@ -2575,6 +2589,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
         let add = lines

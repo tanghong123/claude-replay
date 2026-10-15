@@ -18,6 +18,7 @@ const record = {
 };
 const view = viewRecord(record);
 assert.equal(view.reply.items.length, 3);
+assert.ok(!view.html.includes("Annotation 1"), "the body uses ordinary quotation markup without another heading");
 assert.ok(view.html.includes("selected &lt;script&gt;\n  code | table"));
 assert.equal((view.html.match(/last comment/g) || []).length, 1);
 assert.equal((view.html.match(/Overall request/g) || []).length, 1);

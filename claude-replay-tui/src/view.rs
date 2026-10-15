@@ -2841,6 +2841,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         }
     }
 
@@ -3062,6 +3063,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let a = vec![
             Block::UserText("go".into()),
@@ -3174,6 +3176,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             },
             Block::AssistantText("done with a fairly long line that wraps at ten".into()),
         ];
@@ -3230,6 +3233,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             },
             Block::AssistantText("done".into()),
             Block::ToolUse {
@@ -3245,6 +3249,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             },
         ];
         let mut v = View::new(blocks, "t", false, FoldPolicy::default());
@@ -3378,6 +3383,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         // A Bash header whose "target" is a command, not a path.
         let bash = Block::ToolUse {
@@ -3393,6 +3399,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         // (block, a column that lands inside its `(path)` span). Header layout is
         // `⏺ <DisplayName>(` — Write=7, Update=8, Read=6 cols before the path.
@@ -3451,6 +3458,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         }];
         let mut v = View::new(blocks, "t", false, FoldPolicy::none());
         v.set_cwd(Some(dead));
@@ -3503,6 +3511,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             }]
         };
 
@@ -3566,6 +3575,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         // A trailing assistant block gives a distinct neighbour tag to compare with.
         let mut v = View::new(
@@ -3637,6 +3647,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let w = 60u16;
         let mut v = View::new(vec![block], "t", false, FoldPolicy::none());
@@ -3814,6 +3825,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let mut v = View::new(vec![bash], "t", false, FoldPolicy::none());
         let buf = draw(&mut v, w, 12);
@@ -3880,6 +3892,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let w = 60u16;
         let mut v = View::new(vec![block], "t", false, FoldPolicy::none());
@@ -4007,6 +4020,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let blocks = vec![Block::UserText("root".into()), sa, bash];
         let mut v = View::new(blocks, "t", false, FoldPolicy::default());
@@ -4508,6 +4522,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             },
             Block::ToolResult("a\nb\nc".into()),
             Block::ToolUse {
@@ -4523,6 +4538,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             },
             Block::ToolUse {
                 name: "Write".into(),
@@ -4537,6 +4553,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             },
         ]
     }
@@ -4596,6 +4613,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         // 0: assistant (not foldable), 1: Bash, 2: Read — both fold by default.
         let blocks = vec![Block::AssistantText("hi".into()), mk("Bash"), mk("Read")];
@@ -4651,6 +4669,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let result = Block::ToolResult("some output line".into());
         let blocks = vec![Block::AssistantText("hi".into()), edit, result];
@@ -4902,6 +4921,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             });
         }
         let n = blocks.len();
@@ -5199,6 +5219,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         bs[11] = Block::ToolUse {
             name: "Read".into(),
@@ -5213,6 +5234,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         // A thinking span that ABSORBED a bash call (kind Act): the needle lives in the
         // absorbed tool, so only `b:`/`o:` reach it. `t:` owns the thinking prose, not
@@ -5233,6 +5255,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             }],
         };
         bs[5] = Block::ToolUse {
@@ -5248,6 +5271,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let mut v = View::new(bs, "t", false, FoldPolicy::none());
         draw(&mut v, 60, 14);
@@ -5478,6 +5502,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let act = Block::Thinking {
             text: "needle in the thought".into(),
@@ -5550,6 +5575,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             }],
         };
         let mut v = View::new(vec![act], "t", false, FoldPolicy::none());

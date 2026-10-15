@@ -5,7 +5,8 @@ Agent Monitor's App shell Turns list and opened user messages. Classic, standalo
 exports, and dedicated mobile adaptation follow after that experience is validated.
 The recognition rules and additive data contract below define the implementation
 contract. The first App-shell delivery implements it; Classic, standalone export,
-and dedicated mobile styling remain follow-ups.*
+and dedicated mobile styling remain follow-ups. Opened replies reuse the existing Markdown
+quotation and paragraph styles; Turns retain their quotation marker and additional-item count.*
 
 ---
 

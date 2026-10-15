@@ -290,32 +290,23 @@ pub const COMPACT_AFTER: usize = 256;
 /// in the model's context after a tool call) is a note after the call's card. A v53 stream holds
 /// nothing there.
 ///
-/// v55: exact quoted replies retain the complete native user input and additive quotation
-/// pairs. A v54 stream may hold cleaned prompts without that source or presentation data.
+/// v55: #s114 — a Bash output the client cut and saved whole to a file (Claude Code's
+/// `persistedOutputPath`, Qwenwork's `persistedOutput`) opens with a notice of how much of it is
+/// shown and where the whole is. A v54 stream holds the first 30,000 bytes as if they were all.
 ///
-/// v56: corrected quotation fallback and opaque pasted payloads retain source and consistent
-/// delivery/queue keys. A v55 stream can hold stripped selections or misclassified commands.
+/// v56: #s115 — such a block names the saved file (`ToolUse::saved_output`), which a page offers.
+/// A v55 stream has the notice and no path to offer.
 ///
-/// v57: fragmented Skill reference bodies and commands containing pasted closing-tag examples
-/// retain native classification. A v56 stream can hold them as ordinary human turns.
-///
-/// v58: Skill-looking fragments inside literal payloads retain one complete user turn and
-/// its queue key. A v57 stream can split the payload into user turns and a reference note.
-///
-/// v59: genuine later-item Skill references remain notes even when their examples contain
-/// reply markers. A v58 stream can merge that reference material into a human prompt.
-///
-/// v60: fenced and inline-code Skill examples remain literal within fragmented user input.
-/// A v59 stream can split that code into user turns and a reference note.
-///
-/// v61: reply boundaries use the actual Markdown fence grammar; invalid fences no longer
-/// hide extra native markers in a v60 quotation response.
+/// v62: exact native quotation replies retain their complete input and neutral reply metadata.
+/// Native pasted/reference text stays literal, queue delivery retains matching identity, and
+/// Claude reply boundaries follow the existing Markdown grammar. This integrates released v56
+/// with the unpublished quotation branch's v55-v61 caches, which must all rebuild.
 ///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 61;
+pub const FOLD_VERSION: u16 = 62;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

@@ -133,6 +133,7 @@ fn block_fields(b: &Block, o: &mut Map<String, Value>) {
             read_lines,
             execution,
             sent,
+            saved_output,
             ..
         } => {
             o.insert("name".into(), json!(name));
@@ -140,6 +141,11 @@ fn block_fields(b: &Block, o: &mut Map<String, Value>) {
             // #s83: the words a SendMessage call sent; `output` stays its delivery receipt.
             if let Some(text) = sent {
                 o.insert("sent".into(), json!(text));
+            }
+            // #s115: where the client saved the whole of a cut Bash output; `output` keeps the
+            // first part, opening with the notice that says so (#s114).
+            if let Some(path) = saved_output {
+                o.insert("saved_output".into(), json!(path));
             }
             if let Some(out) = output {
                 o.insert("output".into(), json!(out));
@@ -325,6 +331,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let mut o = Map::new();
         block_fields(&b, &mut o);
@@ -357,11 +364,39 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: Some("both are done".into()),
+            saved_output: None,
         };
         let mut o = Map::new();
         block_fields(&b, &mut o);
         let v = Value::Object(o);
         assert_eq!(v["sent"], "both are done");
         assert_eq!(v["output"], r#"{"success":true,"message":"sent"}"#);
+        assert!(
+            v.get("saved_output").is_none(),
+            "only a cut output carries `saved_output`"
+        );
+    }
+
+    /// #s115: a cut Bash output names the file holding the whole of it as `saved_output`.
+    #[test]
+    fn a_cut_outputs_saved_file_rides_along() {
+        let b = Block::ToolUse {
+            name: "Bash".into(),
+            target: "cargo test".into(),
+            diffs: Vec::new(),
+            output: Some("[Output too large: …]\n\nline 1".into()),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+            sent: None,
+            saved_output: Some("/w/tool-results/b1.txt".into()),
+        };
+        let mut o = Map::new();
+        block_fields(&b, &mut o);
+        assert_eq!(Value::Object(o)["saved_output"], "/w/tool-results/b1.txt");
     }
 }

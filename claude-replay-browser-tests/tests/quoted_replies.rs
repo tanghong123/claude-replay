@@ -67,6 +67,29 @@ fn wait_target(tab: &headless_chrome::Tab, selector: &str) {
     );
 }
 
+/// Compare quotation styling with an ordinary Markdown quotation rendered by the same page.
+fn quote_style(tab: &headless_chrome::Tab, selector: &str) -> serde_json::Value {
+    let style = harness::probe(
+        tab,
+        &format!(
+            r#"(() => {{
+        const node=document.querySelector({selector});
+        if (!node) return null;
+        const style=getComputedStyle(node);
+        return Object.fromEntries(['borderLeftWidth','borderLeftStyle','borderLeftColor',
+            'paddingLeft','paddingRight','marginTop','marginBottom','color',
+            'fontFamily','fontSize','fontWeight','lineHeight'].map(key=>[key,style[key]]));
+    }})()"#,
+            selector = json!(selector)
+        ),
+    );
+    assert!(
+        style.is_object(),
+        "the reference quotation must exist: {selector}"
+    );
+    style
+}
+
 fn target_point(
     tab: &headless_chrome::Tab,
     selector: &str,
@@ -152,19 +175,22 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
         .unwrap()
         .replace(",\"annotation\":\"Please clarify this point.\"", "");
     let claude_only = "<!-- reply 1 -->\n> QUOTE ONLY\n\n";
+    let ordinary = "Ordinary Markdown reference.\n\n> EXISTING QUOTE STYLE\n\nFollowing paragraph.";
     let head = json!({"type":"session_meta","payload":{"id":codex_id,"cwd":"/r","timestamp":"2026-10-10T10:00:00Z"}}).to_string() + "\n";
     stores.codex_session(
         codex_id,
         &(head
             + &user("codex", &codex, true)
             + &user("codex", &invalid_codex, false)
-            + &user("codex", &codex_only, false)),
+            + &user("codex", &codex_only, false)
+            + &user("codex", ordinary, false)),
     );
     stores.claude_session(
         claude_id,
         &(user("claude", &claude, true)
             + &(json!({"type":"user","cwd":"/r","timestamp":"2026-10-10T10:00:00Z","message":{"role":"user","content":invalid_claude}}).to_string() + "\n")
-            + &user("claude", claude_only, false)),
+            + &user("claude", claude_only, false)
+            + &user("claude", ordinary, false)),
     );
     let monitor = Monitor::spawn(Kind::V1, 3195, &base, Some(&stores), true);
     for (agent, id, original) in [
@@ -183,8 +209,8 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
         tab.wait_until_navigated().unwrap();
         harness::until(
             &tab,
-            "document.querySelectorAll('#navigatorTurns .outline-turn-row').length === 3",
-            "three user turns",
+            "document.querySelectorAll('#navigatorTurns .outline-turn-row').length === 4",
+            "four user turns",
             Duration::from_secs(20),
             "document.body.innerText",
         );
@@ -196,6 +222,13 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
                     json!(theme)
                 ),
             );
+            tab.find_elements("#navigatorTurns .outline-turn-row")
+                .unwrap()[3]
+                .click()
+                .unwrap();
+            let reference_selector = ".turn.user[data-turn=\"4\"] .markdown blockquote";
+            wait_target(&tab, reference_selector);
+            let ordinary_style = quote_style(&tab, reference_selector);
             tab.find_element("#navigatorTurns .outline-turn-row")
                 .unwrap()
                 .click()
@@ -244,7 +277,20 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
                 }
             );
             assert_eq!(state["whitespace"], "pre-wrap");
-            assert_eq!(state["border"], "2px");
+            wait_target(&tab, ".turn.user[data-turn=\"1\"] .reply-quote");
+            assert_eq!(
+                quote_style(&tab, ".turn.user[data-turn=\"1\"] .reply-quote"),
+                ordinary_style,
+                "native replies reuse the existing Markdown quotation style in {theme}"
+            );
+            assert_eq!(
+                eval(
+                    &tab,
+                    "document.querySelectorAll('.reply-item-label').length"
+                ),
+                0,
+                "the message body does not add another annotation heading"
+            );
             assert!(state["images"].as_u64().unwrap() > 0, "{state}");
             if agent == "codex" {
                 assert_eq!(
@@ -407,7 +453,7 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
             phone_tab.wait_until_navigated().unwrap();
             harness::until(
                 &phone_tab,
-                "document.querySelectorAll('#navigatorTurns .outline-turn-row').length===3",
+                "document.querySelectorAll('#navigatorTurns .outline-turn-row').length===4",
                 "phone turns loaded",
                 Duration::from_secs(15),
                 "document.body.innerText",

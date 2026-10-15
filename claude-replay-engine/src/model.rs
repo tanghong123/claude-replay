@@ -353,6 +353,12 @@ pub enum Block {
         /// the message itself was nowhere on the card. `None` for every other tool.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sent: Option<String>,
+        /// Where the client saved the WHOLE output of a Bash call whose transcript keeps only its
+        /// first part (#s114, #s115: Claude Code's `persistedOutputPath`, Qwenwork's
+        /// `persistedOutput.path`), as recorded: absolute. `output` opens with a notice saying so;
+        /// this is the path a page offers as a file. `None` for every other call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        saved_output: Option<String>,
     },
     /// A tool result with no matching tool_use (rare).
     ToolResult(String),
@@ -1009,6 +1015,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let blocks = vec![
             Block::Thinking {
@@ -1051,6 +1058,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let hunk = Hunk {
             old_start: 1081,
@@ -1127,6 +1135,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let hunk = Hunk {
             old_start: 1,
@@ -1169,6 +1178,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let img = || {
             Block::Attachment(Attachment {
@@ -1279,6 +1289,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         assert_eq!(fold_key(&mk("Read")), "read");
         assert_eq!(fold_key(&mk("Grep")), "read");
@@ -1317,6 +1328,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let bare = Block::Thinking {
             text: "x".into(),

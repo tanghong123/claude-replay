@@ -395,7 +395,9 @@ The checked-in regression coverage is:
   escaping, preview choice, attachment association, and visible-content search.
 - `claude-replay-browser-tests/tests/quoted_replies.rs`: real Chrome against Agent Monitor,
   both native adapters and themes, quote/response order, one-turn navigation, keyboard and
-  touch raw toggles, leading LF/CRLF preservation, search marks, and attached images.
+  touch raw toggles, leading LF/CRLF preservation, search marks, and attached images. A normal
+  Markdown user turn supplies the live style reference for quotations in each theme; native
+  replies reuse its border, typography and spacing without another annotation heading.
 
 Run the adapter and browser cases explicitly during iteration:
 
