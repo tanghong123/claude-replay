@@ -8,7 +8,8 @@
 //! No case ever reveals anything: the page's `fetch` is wrapped so a `/__reveal` request is recorded
 //! and answered, never sent — `open -R` must not run on the machine the suite runs on.
 //!
-//! Ports 2811–2814, 2933 for #374's handed-over files on a phone, 2937 for #s7's mentioned files
+//! Ports 2811–2814, 2933 for #374's handed-over files on a phone, 3091–3093 for #s115's saved
+//! output of a cut Bash command, 2937 for #s7's mentioned files
 //! under the allowlist ceiling, and 2970 for #s11's images in a tab of their own. The classic page draws no preview pane; its file view already pairs the two
 //! (export.js `openArtifact` and its "Reveal in file manager" action), which is the reference here.
 
@@ -1251,6 +1252,155 @@ fn a_file_a_shell_command_changed_opens_from_its_note_on_both_pages() {
         classic.as_str(),
         Some(r#"{"text":"CLAUDE.md","fsig":true,"sig":true}"#),
         "the classic page offers the file on its note"
+    );
+}
+
+/// #s115, the owner: a Bash output too large for the transcript (#s114: the client keeps its first
+/// 30,000 bytes and saves the whole) opens with a note offering the saved file — its name the
+/// link, above the notice — which opens the WHOLE output in the preview pane: on the desktop, on
+/// a remote phone under an allowlist naming the store (the owner's lists `~/.claude/projects`),
+/// and on the classic page as a `.tool-path` with its stamps.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_cut_bash_output_opens_its_saved_whole_from_its_note() {
+    const SID115: &str = "5e5510a1-0000-4000-8000-000000000115";
+    let _serial = serial();
+    let base = base("files-saved-output");
+    let stores = Stores::new(&base);
+    let transcript = stores.claude_session(SID115, "");
+    let saved_dir = transcript.with_extension("").join("tool-results");
+    std::fs::create_dir_all(&saved_dir).unwrap();
+    let saved = saved_dir.join("b1.txt");
+    std::fs::write(&saved, "line 1\nline 2\nline 3\nPROBE_S115_TAIL\n").unwrap();
+    let path = saved.display().to_string();
+    let call = serde_json::json!({"type": "assistant", "timestamp": at("00:03"), "message": {"role": "assistant",
+        "content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "cargo test --all"}}]}});
+    let result = serde_json::json!({"type": "user", "timestamp": at("00:04"), "toolUseResult": {"stdout": "line 1\nline 2",
+        "stderr": "", "interrupted": false, "isImage": false, "noOutputExpected": false,
+        "persistedOutputPath": path, "persistedOutputSize": 387_096},
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "b1",
+            "content": format!("<persisted-output>\nOutput too large (378 KB). Full output saved to: {path}\n\nPreview (first 2KB):\nline 1\n...\n</persisted-output>")}]}});
+    let mut jsonl = user_at("run the whole suite", &at("00:01"));
+    jsonl += &harness::assistant_at("Running it.", &at("00:02"));
+    jsonl += &format!("{call}\n{result}\n");
+    jsonl += &harness::assistant_at("Done.", &at("00:05"));
+    stores.claude_session(SID115, &jsonl);
+    let note =
+        format!("document.querySelector('.renderer-note-file[data-reference-path={path:?}]')");
+    let open_runs = "(function(){ var r = document.querySelector('.renderer.closed'); if (r) r.querySelector(':scope > .renderer-head').click(); return 'ok'; })()";
+    let whole = "(function(){ var b = document.querySelector('#previewBody'); return !!b && b.innerText.indexOf('PROBE_S115_TAIL') >= 0; })()";
+
+    // The app shell on the desktop: the note leads with the file as a link, above the notice, and
+    // opens the whole output in the pane.
+    let m = Monitor::spawn(Kind::V1, 3091, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={SID115}"));
+    until(
+        &tab,
+        "!!document.querySelector('.renderer[data-renderer-kind=\"activity\"]')",
+        "the run holding the command",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+    for _ in 0..3 {
+        eval(&tab, open_runs);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    until(
+        &tab,
+        &format!("!!{note}"),
+        "the saved output as a link on its note",
+        Duration::from_secs(20),
+        PANE,
+    );
+    let link = eval(&tab, &format!("(function(){{ var l = {note}; var n = [...document.querySelectorAll('.transcript *')].find(function (e) {{ return e.children.length === 0 && e.textContent.indexOf('[Output too large: the first 13 of 387,096 bytes are shown below.') === 0; }}) || [...document.querySelectorAll('.transcript pre, .transcript code')].find(function (e) {{ return e.textContent.indexOf('[Output too large') === 0; }}); return JSON.stringify({{ text: l.textContent, rest: l.parentElement.textContent, fsig: !!l.dataset.referenceFsig, above: !!n && l.getBoundingClientRect().bottom <= n.getBoundingClientRect().top + 1 }}); }})()"));
+    let link: serde_json::Value =
+        serde_json::from_str(link.as_str().unwrap_or("{}")).unwrap_or_default();
+    assert_eq!(link["text"], "b1.txt", "the name is the link: {link}");
+    assert_eq!(link["rest"], "b1.txt — the whole output", "{link}");
+    assert_eq!(link["fsig"], true, "offered for reading: {link}");
+    assert_eq!(
+        link["above"], true,
+        "above the notice that opens the output: {link}"
+    );
+    eval(
+        &tab,
+        &format!("(function(){{ {note}.click(); return 'ok'; }})()"),
+    );
+    until(
+        &tab,
+        whole,
+        "the whole output in the preview pane",
+        Duration::from_secs(30),
+        PANE,
+    );
+
+    // A remote phone, under an allowlist naming the store as the owner's names ~/.claude/projects.
+    let state = base.join("state-3092");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(
+        state.join("render-policy.json"),
+        format!(
+            "{{\"mode\":\"allowlist\",\"dirs\":[{:?}]}}",
+            transcript.parent().unwrap().display().to_string()
+        ),
+    )
+    .unwrap();
+    let phone_monitor = Monitor::spawn_remote(Kind::V1, 3092, &base, Some(&stores));
+    let (_phone_browser, phone) = harness::remote_phone(390, 844);
+    phone_monitor.open_remote(&phone, &format!("?ui=app&session={SID115}"));
+    until(
+        &phone,
+        "!!document.querySelector('.renderer[data-renderer-kind=\"activity\"]')",
+        "the run, on the phone",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+    for _ in 0..3 {
+        eval(&phone, open_runs);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    until(
+        &phone,
+        &format!("!!{note} && !!{note}.dataset.referenceFsig"),
+        "the saved output offered for reading on the phone",
+        Duration::from_secs(20),
+        PANE,
+    );
+    eval(
+        &phone,
+        &format!("(function(){{ {note}.click(); return 'ok'; }})()"),
+    );
+    until(
+        &phone,
+        whole,
+        "the whole output on the phone",
+        Duration::from_secs(30),
+        PANE,
+    );
+
+    // The classic page: the same note, the name a `.tool-path` with the file's stamps. It retires
+    // with the classic view (stage 3 of design/classic-view-deprecation.md), and this leg with it.
+    let classic = Monitor::spawn(Kind::V2, 3093, &base, Some(&stores), true);
+    classic.pair(&tab);
+    classic.open(&tab, &format!("?ui=classic&session={SID115}"));
+    let frame = "(function(){ var f = document.querySelector('iframe'); return f && f.contentDocument ? f.contentDocument : document; })()";
+    until(
+        &tab,
+        &format!("!!{frame}.querySelector('#stream .fold')"),
+        "the classic page",
+        Duration::from_secs(30),
+        PANE,
+    );
+    let classic = eval(
+        &tab,
+        &format!("(function(){{ var d = {frame}; d.querySelectorAll('#stream .fold').forEach(function (f) {{ if (f.dataset.open === '0') f.querySelector('.fold-h').click(); }}); d.querySelectorAll('#stream .fold').forEach(function (f) {{ if (f.dataset.open === '0') f.querySelector('.fold-h').click(); }}); var a = [...d.querySelectorAll('.note a.tool-path')].find(function (a) {{ return a.dataset.path === {path:?}; }}); return a ? JSON.stringify({{ text: a.textContent, fsig: !!a.dataset.fsig, sig: !!a.dataset.sig }}) : 'none'; }})()"),
+    );
+    assert_eq!(
+        classic.as_str(),
+        Some(r#"{"text":"b1.txt","fsig":true,"sig":true}"#),
+        "the classic page offers the saved output on its note"
     );
 }
 

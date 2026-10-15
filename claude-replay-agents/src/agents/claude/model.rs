@@ -1816,17 +1816,8 @@ fn parse_hunk_diff(diff: &str) -> Option<Vec<Hunk>> {
 /// much of how much it shows and where the whole is, as the client's own notice leads its preview:
 /// at the end it would sit 30 KB down, under the TUI's "N lines remaining". Nothing when the saved
 /// output is no larger than `stdout` (2 of 144 measured).
-fn persisted_notice(tur: &Value, shown: usize) -> Option<String> {
-    let (path, size) = match tur.get("persistedOutput") {
-        Some(p) => (
-            p.get("path")?.as_str()?,
-            p.get("originalSizeBytes")?.as_u64()?,
-        ),
-        None => (
-            tur.get("persistedOutputPath")?.as_str()?,
-            tur.get("persistedOutputSize")?.as_u64()?,
-        ),
-    };
+fn persisted_notice(tur: &Value) -> Option<String> {
+    let (path, size, shown) = persisted_cut(tur)?;
     let grouped = |n: u64| {
         let digits = n.to_string();
         let mut out = String::new();
@@ -1838,13 +1829,33 @@ fn persisted_notice(tur: &Value, shown: usize) -> Option<String> {
         }
         out
     };
-    (size > shown as u64).then(|| {
-        format!(
-            "[Output too large: the first {} of {} bytes are shown below. Full output saved to: {path}]",
-            grouped(shown as u64),
-            grouped(size)
-        )
-    })
+    Some(format!(
+        "[Output too large: the first {} of {} bytes are shown below. Full output saved to: {path}]",
+        grouped(shown),
+        grouped(size)
+    ))
+}
+
+/// The file a Bash result's whole output was saved to, its size, and the bytes `stdout` kept —
+/// when the saved output is larger than what `stdout` kept, which is when the card is cut
+/// (#s114). Both the notice and the offered file (#s115) ask this one question.
+fn persisted_cut(tur: &Value) -> Option<(&str, u64, u64)> {
+    let (path, size) = match tur.get("persistedOutput") {
+        Some(p) => (
+            p.get("path")?.as_str()?,
+            p.get("originalSizeBytes")?.as_u64()?,
+        ),
+        None => (
+            tur.get("persistedOutputPath")?.as_str()?,
+            tur.get("persistedOutputSize")?.as_u64()?,
+        ),
+    };
+    let shown = tur
+        .get("stdout")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .len() as u64;
+    (size > shown).then_some((path, size, shown))
 }
 
 /// The output text to show under a tool call. Edit/Write show their diff/code,
@@ -1864,7 +1875,7 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
                     (false, false) => format!("{out}\n{err}"),
                 };
                 if !combined.trim().is_empty() {
-                    return Some(match persisted_notice(tur, out.len()) {
+                    return Some(match persisted_notice(tur) {
                         Some(notice) => format!("{notice}\n\n{combined}"),
                         None => combined,
                     });
@@ -2436,6 +2447,7 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
             execution,
             published,
             asked,
+            saved_output,
             ..
         } => {
             // #280: the reader's answers, from the result's structured half — and #281, why
@@ -2457,6 +2469,11 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
             // payload with "Structured output provided successfully".
             if name != "StructuredOutput" {
                 *output = tool_output(name, Some(tur), txt);
+            }
+            // #s115: the file holding the whole of a cut Bash output, which a page offers as the
+            // #s28 notes offer a file a command changed. Its notice is already in `output`.
+            if name == "Bash" {
+                *saved_output = persisted_cut(tur).map(|(path, _, _)| path.to_string());
             }
             // An Edit's own patch first; a Bash command that edited files carries its diff
             // under a different key and never has a `structuredPatch` (#263).
@@ -3314,6 +3331,7 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
             asked: asked_from_input(name, input).map(Box::new),
             delivered: delivered_from_input(name, input),
             sent: sent_from_input(name, input),
+            saved_output: None,
         }
     }
 }
@@ -3931,6 +3949,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 asked: None,
                                 delivered: Vec::new(),
                                 sent: None,
+                                saved_output: None,
                             });
                         }
                         Some("advisor_tool_result") => {
@@ -4022,6 +4041,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     asked: None,
                                     delivered: Vec::new(),
                                     sent: None,
+                                    saved_output: None,
                                 });
                             }
                             let idx = out.len() - 1;
@@ -7235,7 +7255,7 @@ mod tests {
     /// saves the whole to a file, opens with a notice of how much is shown and where the whole is —
     /// as Claude Code writes it (`persistedOutputPath`, `persistedOutputSize`) and as Qwenwork 1.1.59
     /// does (`persistedOutput`, whose result reports nothing new). A saved output no larger than
-    /// `stdout` adds nothing.
+    /// `stdout` adds nothing. #s115: the block carries the saved file's path, for a page to offer.
     #[test]
     fn a_bash_output_the_client_saved_to_a_file_says_it_was_cut() {
         let call = |id: &str, version: &str| {
@@ -7275,20 +7295,38 @@ mod tests {
             ),
         ]
         .join("\n");
-        let outputs: Vec<Option<String>> = parse(&jsonl)
+        let calls: Vec<(Option<String>, Option<String>)> = parse(&jsonl)
             .into_iter()
             .flat_map(|b| match b {
-                Block::ToolUse { output, .. } => vec![output],
+                Block::ToolUse {
+                    output,
+                    saved_output,
+                    ..
+                } => vec![(output, saved_output)],
                 Block::Thinking { tools, .. } => tools
                     .into_iter()
                     .filter_map(|t| match t {
-                        Block::ToolUse { output, .. } => Some(output),
+                        Block::ToolUse {
+                            output,
+                            saved_output,
+                            ..
+                        } => Some((output, saved_output)),
                         _ => None,
                     })
                     .collect(),
                 _ => Vec::new(),
             })
             .collect();
+        // #s115: the file holding the whole of a cut output rides along, for a page to offer.
+        assert_eq!(
+            calls.iter().map(|(_, s)| s.as_deref()).collect::<Vec<_>>(),
+            [
+                Some("/w/.claude/projects/-w/s-s114/tool-results/b1.txt"),
+                None,
+                Some("/w/.qwenworkcn/tmp/-w/tool-outputs/s-s114/q1.output"),
+            ]
+        );
+        let outputs: Vec<Option<String>> = calls.into_iter().map(|(o, _)| o).collect();
         assert_eq!(
             outputs,
             [
@@ -7306,10 +7344,8 @@ mod tests {
             ]
         );
         assert_eq!(
-            persisted_notice(
-                &serde_json::json!({"persistedOutputPath": "/p", "persistedOutputSize": 1_234_567}),
-                30_000
-            )
+            persisted_notice(&serde_json::json!({"stdout": "x".repeat(30_000),
+                "persistedOutputPath": "/p", "persistedOutputSize": 1_234_567}))
             .as_deref(),
             Some("[Output too large: the first 30,000 of 1,234,567 bytes are shown below. Full output saved to: /p]")
         );
