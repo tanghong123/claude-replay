@@ -1473,6 +1473,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   /* The height is what is short here (330px in Safari with its tab bar showing), so a sheet rising
      from the dock may cover the top bar rather than show two rows of four. */
   #app .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]),#app .header-search-cluster>.navigator-options,#app .header-search-cluster>.search-suggest{max-height:calc(100dvh - var(--phone-bottom,var(--phone-dock-h)) - 16px - env(safe-area-inset-top,0px))}
+  /* #s121: risen over the top bar, a pane's sheet meets the drawer handle (z 22) at the bar's left
+     end, where its heading is; it sits above the handle while open, as Aa's sheet (z 48) does. */
+  .phone-pane-menu:not([hidden]){z-index:23}
 }
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
   #app .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]){left:auto;right:calc(12px + env(safe-area-inset-right,0px))}

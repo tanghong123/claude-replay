@@ -12637,6 +12637,45 @@ fn a_narrow_phone_held_sideways_reads_at_a_measure() {
     the_drawer_opens_and_its_list_scrolls(&tab, "852x393");
 }
 
+/// #s121: held sideways a pane's sheet may rise over the top bar (#s41: there the height is what is
+/// short), and on a phone too narrow for the column the drawer handle sits at that bar's left end —
+/// exactly where the sheet's heading lands. The handle stayed drawn above the open sheet, across the
+/// heading's first letters (the iOS Simulator, an iPhone 17 Pro held sideways: "☰Turns"). The sheet
+/// now sits above the handle while it is open, as Aa's always has; the case first checks that the
+/// heading really lies under the handle, so it cannot pass on a sheet that stopped short.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn a_narrow_phone_held_sideways_keeps_a_pane_sheets_heading_clear_of_the_handle() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(
+        2740,
+        "sideways-sheet-head",
+        874,
+        402,
+        false,
+        30,
+        Some(harness::SIDEWAYS_INSETS),
+    );
+    phone_tap(&tab, "#phonePane-turns");
+    harness::until(
+        &tab,
+        "!document.getElementById('phonePaneMenu').hidden && document.querySelectorAll('#phonePaneMenu .outline-turn-row').length === 30",
+        "the Turns sheet open with thirty turns",
+        Duration::from_secs(5),
+        "document.querySelectorAll('#phonePaneMenu .outline-turn-row').length",
+    );
+    let facts = harness::eval(&tab, "(function(){ var h = document.querySelector('#phonePaneMenu .phone-pane-head strong').getBoundingClientRect(), d = document.getElementById('drawerHandle').getBoundingClientRect(); var hit = document.elementFromPoint(Math.max(h.left, d.left) + 4, h.top + h.height / 2); return JSON.stringify({ under: h.left < d.right && h.right > d.left && h.top < d.bottom && h.bottom > d.top, heading: !!hit && !!hit.closest('.phone-pane-head'), hit: hit ? (hit.id || hit.className.baseVal || hit.className || hit.tagName) : null }); })()");
+    let facts: serde_json::Value = serde_json::from_str(facts.as_str().unwrap_or("{}")).unwrap();
+    assert_eq!(
+        facts["under"], true,
+        "the premise: the sheet rises to where the handle is: {facts}"
+    );
+    assert_eq!(
+        facts["heading"], true,
+        "the sheet's heading answers where the handle sits, not the handle: {facts}"
+    );
+}
+
 /// #s49, the owner: "On landscape mode, opening of the right pane, I think it is better to do two
 /// columns. If the left side bar is already open, then right pane overlaps with the session view,
 /// otherwise, put both session view and right side pane side by side. User can further expand the
