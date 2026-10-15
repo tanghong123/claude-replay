@@ -308,11 +308,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// v60: fenced and inline-code Skill examples remain literal within fragmented user input.
 /// A v59 stream can split that code into user turns and a reference note.
 ///
+/// v61: reply boundaries use the actual Markdown fence grammar; invalid fences no longer
+/// hide extra native markers in a v60 quotation response.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 60;
+pub const FOLD_VERSION: u16 = 61;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

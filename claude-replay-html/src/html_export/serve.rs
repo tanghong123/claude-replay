@@ -149,7 +149,8 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // v24: #s108 — a Markdown link or image whose target is not http, https, mailto or
     // schemeless is a `<span title>` holding its words, never a live `<a href>`.
     // v25: quoted user replies add optional reply_context beside the complete legacy body.
-    const RECORD_SCHEMA: u16 = 25;
+    // v26: quotation previews use the canonical Rust label on every reader.
+    const RECORD_SCHEMA: u16 = 26;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);

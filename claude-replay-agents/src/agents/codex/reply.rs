@@ -128,3 +128,25 @@ pub(crate) fn message_fallback(items: &[serde_json::Value]) -> Option<String> {
     let joined = texts.concat();
     (candidate(&joined) || texts.iter().any(|text| candidate(text))).then_some(joined)
 }
+
+/// Only an opening native package is a drift candidate; later mentions stay literal.
+pub(crate) fn rejected(parts: &[&str]) -> bool {
+    let joined;
+    let text = match parts {
+        [] => return false,
+        [text] => *text,
+        _ => {
+            joined = parts.concat();
+            &joined
+        }
+    };
+    let source = text.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    ["# Response annotations", "<response-annotations"]
+        .iter()
+        .any(|prefix| {
+            source
+                .get(..prefix.len())
+                .is_some_and(|s| s.eq_ignore_ascii_case(prefix))
+        })
+        && (parts.len() != 1 || parse(text).is_none())
+}

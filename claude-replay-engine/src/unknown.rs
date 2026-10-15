@@ -49,6 +49,9 @@ pub enum Where {
     /// record type was invisible. Only collected while [`watch_keys`] is on — it walks every
     /// record's keys, and only the `--unknown` sweep reads the report.
     RecordKey,
+    /// A known native text-envelope prefix with an unsupported complete layout.
+    /// The name identifies the envelope family, never the user's text.
+    TextEnvelope,
 }
 
 impl Where {
@@ -61,6 +64,7 @@ impl Where {
             Self::ContentType => "content.type",
             Self::ToolResultKey => "toolUseResult.key",
             Self::RecordKey => "record.key",
+            Self::TextEnvelope => "text.envelope",
         }
     }
 }

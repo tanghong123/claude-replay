@@ -549,7 +549,7 @@ mod tests {
     fn pre_correction_quotation_caches_rebuild_in_tui_and_json() {
         for (presentation, prior_fold) in [Presentation::Tui, Presentation::Json]
             .into_iter()
-            .flat_map(|presentation| [55, 56, 57, 58, 59].map(|fold| (presentation, fold)))
+            .flat_map(|presentation| [55, 56, 57, 58, 59, 60].map(|fold| (presentation, fold)))
         {
             let root = tmp(&format!(
                 "quoted-fold{prior_fold}-{}",

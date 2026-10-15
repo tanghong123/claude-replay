@@ -957,3 +957,27 @@ fn an_ordinary_html_comment_keeps_the_existing_pasted_card_normalization() {
         );
     }
 }
+
+#[test]
+fn claude_reply_boundaries_follow_the_existing_markdown_fence_grammar() {
+    for (middle, recognized) in [
+        ("```lang`info\n", false),
+        ("```lang\n", true),
+        ("~~~lang`info\n", true),
+        ("", false),
+    ] {
+        let text = format!("<!-- reply 1 -->\n> first\n\ncomment\n{middle}<!-- reply -->\n> second\n\nsecond comment");
+        for array in [false, true] {
+            let out = blocks("claude", &text, array);
+            assert_eq!(out.iter().filter(|b| b.opens_turn()).count(), 1);
+            assert!(
+                matches!(&out[0], Block::UserText(raw) | Block::UserReply {text:raw,..} if raw == &text)
+            );
+            assert_eq!(
+                matches!(&out[0], Block::UserReply { .. }),
+                recognized,
+                "{middle:?}: {out:?}"
+            );
+        }
+    }
+}

@@ -3,7 +3,7 @@ import { Projection, plainText, replyContext, viewRecord } from "../src/codex-ui
 import { rawTextHtml } from "../src/codex-ui/components.js";
 
 const record = {
-  kind: "user", id: "t1", turn: 1, label: "# Response annotations",
+  kind: "user", id: "t1", turn: 1, label: "First user's comment",
   src: "COMPLETE ORIGINAL ENVELOPE",
   body: [{ p: "pre", x: "COMPLETE ORDINARY BODY" }],
   reply_context: {
@@ -32,7 +32,7 @@ projection.rebuild([record, { kind: "attachment", id: "image", head: { att_kind:
 assert.equal(projection.units.length, 1);
 assert.equal(projection.units[0].label, "First user's comment");
 assert.equal(projection.units[0].attachments.length, 1);
-const quoteOnly = { ...record, reply_context: { version: 1, items: [{ quote: "selected fallback" }] } };
+const quoteOnly = { ...record, label: "selected fallback", reply_context: { version: 1, items: [{ quote: "selected fallback" }] } };
 projection.rebuild([quoteOnly], 0);
 assert.equal(projection.units[0].label, "selected fallback");
 projection.rebuild([{ ...quoteOnly, reply_context: { version: 1, items: [{ quote: "selected fallback", response: { kind: "comment", text: " \n " } }] } }], 0);
@@ -45,7 +45,7 @@ for (const context of [
   { version: 1, items: [{ quote: "a", response: { kind: "comment", text: "" } }] },
   { ...record.reply_context, request: null }, { ...record.reply_context, context: 3 },
 ]) {
-  const old = { ...record, reply_context: context };
+  const old = { ...record, label: "# Response annotations", reply_context: context };
   assert.equal(replyContext(old), null);
   assert.equal(viewRecord(old).html, "<pre>COMPLETE ORDINARY BODY</pre>");
   assert.ok(plainText(old).includes("COMPLETE ORDINARY BODY"));
@@ -60,3 +60,11 @@ assert.ok(literal.html.includes("comment&#13;text"));
 assert.ok(literal.html.includes("request&#13;text"));
 assert.ok(literal.html.includes("context&#13;text"));
 assert.ok(rawTextHtml({ src: "\nline\r\n" }).includes("<span></span>\nline&#13;\n"));
+
+// A canonical server label is authoritative, including Unicode and truncation policy.
+const unicodeLabel = "🙂".repeat(39) + "a🙂";
+projection.rebuild([{ ...record, label: unicodeLabel, reply_context: {version:1,items:[{quote:"selected",response:{kind:"comment",text:unicodeLabel}}]} }], 0);
+assert.equal(projection.units[0].label, unicodeLabel);
+assert.ok(!/[\uD800-\uDBFF]$/.test(projection.units[0].label));
+projection.rebuild([{...record,label:"Canonical preview from Rust"}],0);
+assert.equal(projection.units[0].label,"Canonical preview from Rust");

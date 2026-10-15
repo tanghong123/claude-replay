@@ -16,7 +16,10 @@
 use crate::diff::{diff_row_groups, DiffKind};
 use crate::fold::FoldPolicy;
 use crate::highlight;
-use crate::model::{AssistantPhase, AttachmentContent, Block, LoadedAttachment, ToolStatus};
+use crate::model::{
+    AssistantPhase, AttachmentContent, Block, LoadedAttachment, ReplyContext, ReplyResponse,
+    ToolStatus,
+};
 use crate::present::{
     compaction_summary, display_name, edit_summary, not_applied, run_changes, spawn_chip,
     thinking_summary, tool_execution_failed, tool_execution_summary, write_content, NotApplied,
@@ -747,7 +750,23 @@ fn is_fold(b: &Block) -> bool {
 /// A prompt's words for the Turns pane and the sticky strip: a pasted block (#s79, the fence the
 /// adapter writes for the client's `<pasted_content>`) is one `[pasted]` there, never its fence or
 /// its lines — what the person TYPED names the turn.
-fn prompt_label(text: &str, max: usize) -> String {
+fn prompt_label(text: &str, reply: Option<&ReplyContext>, max: usize) -> String {
+    if let Some(item) = reply.and_then(|context| context.items.first()) {
+        let response = match &item.response {
+            Some(ReplyResponse::Comment { text } | ReplyResponse::FollowingText { text }) => {
+                text.as_str()
+            }
+            None => "",
+        };
+        return label_of(
+            if response.trim().is_empty() {
+                &item.quote
+            } else {
+                response
+            },
+            max,
+        );
+    }
     if !text.contains("pasted") {
         return label_of(text, max);
     }
@@ -1168,13 +1187,17 @@ impl Emitter<'_> {
 
         match b {
             Block::UserText(text) | Block::UserReply { text, .. } => {
+                let reply = match b {
+                    Block::UserReply { context, .. } => Some(context),
+                    _ => None,
+                };
                 self.turn += 1;
                 let id = format!("t{}", self.turn);
                 self.turns
-                    .push(SideEntry::turn(id.clone(), prompt_label(text, 46)));
+                    .push(SideEntry::turn(id.clone(), prompt_label(text, reply, 46)));
                 o.insert("id".into(), json!(id));
                 o.insert("turn".into(), json!(self.turn));
-                o.insert("label".into(), json!(prompt_label(text, 80)));
+                o.insert("label".into(), json!(prompt_label(text, reply, 80)));
                 // The turn's SOURCE, verbatim, beside its rendered parts: the page offers a
                 // "show as raw" toggle (globally or for one turn), and markdown rendering is
                 // lossy — collapsed padding and stripped indentation cannot be recovered from
@@ -3236,6 +3259,67 @@ mod tests {
         assert_eq!(new["turn"], old["turn"]);
         assert_eq!(new["id"], old["id"]);
         assert_eq!(new["reply_context"], serde_json::to_value(context).unwrap());
+        assert_eq!(new["label"], "user comment");
+    }
+
+    #[test]
+    fn reply_labels_are_canonical_and_unicode_safe() {
+        use crate::model::{ReplyContext, ReplyItem, ReplyResponse};
+        let short = format!("{}a🙂", "🙂".repeat(39));
+        let long = "🙂".repeat(81);
+        for (response, expected) in [
+            (
+                Some(ReplyResponse::Comment {
+                    text: short.clone(),
+                }),
+                short,
+            ),
+            (
+                Some(ReplyResponse::FollowingText {
+                    text: " first\n comment ".into(),
+                }),
+                "first comment".into(),
+            ),
+            (
+                Some(ReplyResponse::Comment {
+                    text: " \n ".into(),
+                }),
+                "selected fallback".into(),
+            ),
+            (None, "selected fallback".into()),
+            (
+                Some(ReplyResponse::Comment { text: long }),
+                format!("{}…", "🙂".repeat(80)),
+            ),
+        ] {
+            let context = ReplyContext {
+                version: 1,
+                items: vec![ReplyItem {
+                    quote: "selected fallback".into(),
+                    response,
+                }],
+                request: Some("unrelated request".into()),
+                context: String::new(),
+            };
+            let block = Block::UserReply {
+                text: "complete native envelope".into(),
+                context,
+            };
+            let lines = render_blocks(
+                &[block],
+                &[Some(1.0)],
+                &[],
+                &FoldPolicy::default(),
+                "",
+                false,
+                false,
+                None,
+                None,
+                &mut EmitState::default(),
+            );
+            let record: Value = serde_json::from_str(&lines[0]).unwrap();
+            assert_eq!(record["label"], expected);
+        }
     }
 
     /// The overwhelming majority of turns hold no art at all, and those must emit exactly

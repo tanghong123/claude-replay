@@ -491,7 +491,7 @@ function buildUnits(records, from, turn) {
     const view = viewRecord(record);
     if (record.kind === "user" || record.kind === "command" || record.kind === "peer") {
       flush(); turn = Number(record.turn || turn + 1);
-      units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: view.reply ? ((view.reply.items[0].response?.text || "").replace(/\s+/g, " ").trim() || view.reply.items[0].quote.replace(/\s+/g, " ").trim()).slice(0, 80) : record.label || plainText(record).slice(0, 80) });
+      units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: record.label || plainText(record).slice(0, 80) });
     } else if (record.kind === "attachment" && !process && units.at(-1)?.type === "user") {
       const unit = units.at(-1);
       const path = view.attachment?.att_path || "";

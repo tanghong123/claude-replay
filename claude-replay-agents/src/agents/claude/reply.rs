@@ -125,29 +125,19 @@ pub(crate) fn parse(text: &str) -> Option<ReplyContext> {
             return None;
         }
         cursor = cursor.strip_prefix('\n')?;
-        let mut fence: Option<(u8, usize)> = None;
+        // Use the same Markdown grammar as existing rendering. In particular, a
+        // backtick in a backtick fence's info string does not open a code block.
+        let fences: Vec<_> = Parser::new(cursor)
+            .into_offset_iter()
+            .filter_map(|(event, range)| {
+                matches!(event, Event::Start(Tag::CodeBlock(_))).then_some(range)
+            })
+            .collect();
         let mut boundary = None;
         let mut offset = 0;
         for line in cursor.split_inclusive('\n') {
             let bare = line.strip_suffix('\n').unwrap_or(line);
-            let trimmed = bare.trim_start_matches(' ');
-            let indent = bare.len() - trimmed.len();
-            let first = trimmed.as_bytes().first().copied();
-            if indent <= 3 && matches!(first, Some(b'`' | b'~')) {
-                let ch = first?;
-                let width = trimmed.bytes().take_while(|&c| c == ch).count();
-                if width >= 3 {
-                    match fence {
-                        None => fence = Some((ch, width)),
-                        Some((open, n))
-                            if ch == open && width >= n && trimmed[width..].trim().is_empty() =>
-                        {
-                            fence = None
-                        }
-                        _ => {}
-                    }
-                }
-            } else if fence.is_none()
+            if !fences.iter().any(|range| range.contains(&offset))
                 && bare.to_ascii_lowercase().starts_with("<!--")
                 && bare.to_ascii_lowercase().contains("reply")
             {
@@ -227,4 +217,32 @@ pub(crate) fn message_fallback(items: &[serde_json::Value]) -> Option<String> {
         std::borrow::Cow::Borrowed(_) if texts.iter().any(|text| candidate(text)) => Some(joined),
         _ => None,
     }
+}
+
+/// A recognizable opening rejected by the measured single-text envelope contract.
+/// Literal mentions later in ordinary prose or code do not indicate client drift.
+pub(crate) fn rejected(parts: &[&str]) -> bool {
+    let joined;
+    let text = match parts {
+        [] => return false,
+        [text] => *text,
+        _ => {
+            joined = parts.concat();
+            &joined
+        }
+    };
+    let source = text.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    let Some(rest) = source
+        .strip_prefix('<')
+        .or_else(|| source.strip_prefix("!--"))
+    else {
+        return false;
+    };
+    let body = rest.trim_start_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace());
+    let punctuation = &rest[..rest.len() - body.len()];
+    (punctuation.contains('-') || source.starts_with("!--"))
+        && body
+            .get(..5)
+            .is_some_and(|s| s.eq_ignore_ascii_case("reply"))
+        && (parts.len() != 1 || parse(text).is_none())
 }

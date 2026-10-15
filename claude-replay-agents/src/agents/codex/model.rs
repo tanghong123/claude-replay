@@ -1,9 +1,10 @@
 use claude_replay_engine::seam::CoverageField;
 use claude_replay_engine::seam::{
-    epoch_secs, parse_marker, parse_path_timed_for, relativize, AgentStatus, AssistantPhase,
-    Attachment, AttachmentContent, AttachmentKind, Block, CompactTrigger, LinePreprocessor,
-    LoadedAttachment, Message, Metrics, NoteKind, PreprocessedLine, ReplyContext, Shaping,
-    SpanHint, SubAgent, TaskOp, Todo, ToolDuration, ToolExecution, ToolStatus, UsdCost,
+    epoch_secs, note_unknown, parse_marker, parse_path_timed_for, relativize, AgentStatus,
+    AssistantPhase, Attachment, AttachmentContent, AttachmentKind, Block, CompactTrigger,
+    LinePreprocessor, LoadedAttachment, Message, Metrics, NoteKind, PreprocessedLine, ReplyContext,
+    Shaping, SpanHint, SubAgent, TaskOp, Todo, ToolDuration, ToolExecution, ToolStatus, UnknownAt,
+    UsdCost,
 };
 #[cfg(test)]
 use claude_replay_engine::seam::{
@@ -33,6 +34,11 @@ const EDIT_NOTE: &str = "__codex_edit_note";
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CodexLinePreprocessor {
     child: Option<ChildRollout>,
+    /// Native header provenance for content-free format-drift observations after resume.
+    #[serde(default)]
+    source_version: Option<String>,
+    #[serde(default)]
+    source_session: Option<String>,
     /// Codex 0.147+ records the model-facing `functions.exec` wrapper as a
     /// `custom_tool_call`, then records the operation the TUI actually shows as an
     /// `event_msg/item_completed` (`CommandExecution`, `FileChange`, …). The session's
@@ -72,6 +78,20 @@ struct ChildRollout {
     skipping_parent_snapshot: bool,
 }
 
+impl CodexLinePreprocessor {
+    fn remember_session(&mut self, value: &Value) {
+        update_preprocessor_session(value, &mut self.cwd, &mut self.semantic_exec);
+        self.source_version = value
+            .pointer("/payload/cli_version")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        self.source_session = value
+            .pointer("/payload/id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
+}
+
 impl LinePreprocessor for CodexLinePreprocessor {
     /// Cursor state (#14): the whole self. The child-rollout boundary machine is learned from
     /// the transcript's FIRST lines, which a resumed fold never re-reads — without this, a
@@ -109,7 +129,7 @@ impl LinePreprocessor for CodexLinePreprocessor {
                         skipping_parent_snapshot: false,
                     });
                 }
-                update_preprocessor_session(&value, &mut self.cwd, &mut self.semantic_exec);
+                self.remember_session(&value);
                 return PreprocessedLine::Include;
             }
             // A second session_meta in a child rollout starts a physical copy of the parent's
@@ -118,7 +138,7 @@ impl LinePreprocessor for CodexLinePreprocessor {
                 child.skipping_parent_snapshot = true;
                 return PreprocessedLine::Ignore;
             }
-            update_preprocessor_session(&value, &mut self.cwd, &mut self.semantic_exec);
+            self.remember_session(&value);
         }
 
         if let Some(child) = self.child.as_mut() {
@@ -137,6 +157,20 @@ impl LinePreprocessor for CodexLinePreprocessor {
                 }
                 return PreprocessedLine::Ignore;
             }
+        }
+
+        if value.get("type").and_then(Value::as_str) == Some("response_item")
+            && value.pointer("/payload/type").and_then(Value::as_str) == Some("message")
+            && value.pointer("/payload/role").and_then(Value::as_str) == Some("user")
+        {
+            note_reply_drift(
+                &value,
+                self.source_version.as_deref(),
+                self.source_session.as_deref(),
+            );
+            let mut messages = Vec::new();
+            decode_value(value, &mut self.cwd, &mut messages);
+            return PreprocessedLine::Messages(messages);
         }
 
         if value.get("type").and_then(Value::as_str) == Some("event_msg")
@@ -1161,6 +1195,33 @@ fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Message> {
     msgs
 }
 
+/// Observe rejected native packages without retaining their conversation content.
+fn note_reply_drift(value: &Value, version: Option<&str>, session: Option<&str>) {
+    if value.get("type").and_then(Value::as_str) != Some("response_item")
+        || value.pointer("/payload/type").and_then(Value::as_str) != Some("message")
+        || value.pointer("/payload/role").and_then(Value::as_str) != Some("user")
+    {
+        return;
+    }
+    let parts: Vec<&str> = value
+        .pointer("/payload/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("input_text"))
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect();
+    if super::reply::rejected(&parts) {
+        note_unknown(
+            "codex",
+            UnknownAt::TextEnvelope,
+            "response_annotations",
+            version.or_else(|| value.get("version").and_then(Value::as_str)),
+            session.or_else(|| value.get("sessionId").and_then(Value::as_str)),
+        );
+    }
+}
+
 /// **Layer 1 — Codex decode, per line** (the streaming unit). One raw `response_item` line →
 /// 0+ canonical messages appended to `msgs`; `cwd` is threaded across lines (set from
 /// `session_meta`). `tokenize` is this over every line; the streaming driver (M9) calls it
@@ -1169,6 +1230,12 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
     let Ok(value) = serde_json::from_str::<Value>(line) else {
         return;
     };
+    note_reply_drift(&value, None, None);
+    decode_value(value, cwd, msgs);
+}
+
+/// Shared native-value decoder; the preprocessor supplies header provenance separately.
+fn decode_value(value: Value, cwd: &mut String, msgs: &mut Vec<Message>) {
     let ts = value
         .get("timestamp")
         .and_then(Value::as_str)
@@ -1877,11 +1944,14 @@ fn parse_lines<S: AsRef<str>>(
     // The previous canonical event's ts: a thinking's duration is `its ts − this`
     // (mirrors the engine's `prev_ts` after `decode_line` filters LineStart events).
     let mut prev_ts = None;
+    let mut source_version = None::<String>;
+    let mut source_session = None::<String>;
 
     for line in lines {
         let Ok(value) = serde_json::from_str::<Value>(line.as_ref()) else {
             continue;
         };
+        note_reply_drift(&value, source_version.as_deref(), source_session.as_deref());
         let timestamp = value
             .get("timestamp")
             .and_then(Value::as_str)
@@ -1895,6 +1965,14 @@ fn parse_lines<S: AsRef<str>>(
         }
         match value.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
+                source_version = value
+                    .pointer("/payload/cli_version")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                source_session = value
+                    .pointer("/payload/id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
                 // Running-current (#173) — see `decode_line`; the golden reference mirrors it.
                 if let Some(c) = value.pointer("/payload/cwd").and_then(Value::as_str) {
                     if !c.is_empty() {

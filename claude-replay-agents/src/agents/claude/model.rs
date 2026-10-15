@@ -1091,6 +1091,36 @@ fn has_tool_use_result(v: &Value) -> bool {
     v.get("toolUseResult").is_some()
 }
 
+/// Observe native text-envelope drift once per human record, preserving its content.
+fn note_reply_drift(v: &Value) {
+    if injection_of(v) != Injected::No {
+        return;
+    }
+    let Some(content) = v.pointer("/message/content") else {
+        return;
+    };
+    let parts: Vec<&str> = if let Some(text) = content.as_str() {
+        vec![text]
+    } else {
+        content
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect()
+    };
+    if super::reply::rejected(&parts) {
+        note_unknown(
+            "claude",
+            UnknownAt::TextEnvelope,
+            "quoted_reply",
+            v.get("version").and_then(Value::as_str),
+            v.get("sessionId").and_then(Value::as_str),
+        );
+    }
+}
+
 /// Report a record shape outside the known vocabulary (#264). One place, so the three
 /// categories cannot drift in how they describe themselves.
 fn note_unknown_shape(v: &Value, at: UnknownAt, name: Option<&str>, known: &[&str]) {
@@ -2949,6 +2979,7 @@ pub(crate) fn decode_line_known(
                 });
                 return;
             }
+            note_reply_drift(&v);
             if let Some(s) = content.as_str() {
                 if let Some(m) = classify_user_string(s, injected) {
                     msgs.push(m);
@@ -4109,6 +4140,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     });
                     continue;
                 }
+                note_reply_drift(&v);
                 if let Some(s) = content.as_str() {
                     if injection == Injected::CompactSummary {
                         push_compact_summary(s, &mut out);

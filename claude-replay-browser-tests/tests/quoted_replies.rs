@@ -26,6 +26,64 @@ fn user(agent: &str, text: &str, image: bool) -> String {
     }
 }
 
+/// The target must exist, be readable and hit-testable, and stop moving across samples.
+fn target_ready(selector: &str) -> String {
+    format!(
+        r#"(() => {{
+        const selector={selector}, node=document.querySelector(selector);
+        const samples=window.__quotationSamples ||= new Map();
+        if (!node || !node.isConnected || !(node.textContent.trim() || (node.matches('button') && node.getAttribute('aria-label')))) {{samples.delete(selector);return false;}}
+        const scroller=node.closest('.transcript');
+        for (let parent=node;parent;parent=parent.parentElement) {{
+            const style=getComputedStyle(parent);
+            if (style.display==='none' || style.visibility==='hidden' || Number(style.opacity)===0) return false;
+        }}
+        const rect=node.getBoundingClientRect(), clip=scroller ? scroller.getBoundingClientRect() : {{left:0,right:innerWidth,top:0,bottom:innerHeight}};
+        const inside=rect.width>0 && rect.height>0 && rect.left>=Math.max(0,clip.left) && rect.right<=Math.min(innerWidth,clip.right)
+            && rect.top>=Math.max(0,clip.top) && rect.bottom<=Math.min(innerHeight,clip.bottom);
+        const hit=inside && document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2);
+        if (!hit || !node.contains(hit)) {{samples.delete(selector);return false;}}
+        const geometry=[rect.x,rect.y,rect.width,rect.height,scroller?.scrollTop || 0];
+        const previous=samples.get(selector);
+        const stable=previous?.node===node && previous.geometry.every((value,i)=>Math.abs(value-geometry[i])<0.5);
+        const count=stable ? previous.count+1 : 0;
+        samples.set(selector,{{node,geometry,count}});
+        return count>=2;
+    }})()"#,
+        selector = json!(selector)
+    )
+}
+
+fn wait_target(tab: &headless_chrome::Tab, selector: &str) {
+    harness::until(
+        tab,
+        &target_ready(selector),
+        "a settled, visible quotation target",
+        Duration::from_secs(10),
+        "document.body.innerText",
+    );
+}
+
+#[test]
+#[ignore] // actual Chrome
+fn quotation_visibility_requires_existing_readable_unobscured_content() {
+    let _serial = serial();
+    let (_browser, tab) = harness::chrome_tab();
+    tab.navigate_to("data:text/html,<main class='transcript' style='height:200px;overflow:hidden'><blockquote class='reply-quote'>Readable selection</blockquote></main>").unwrap();
+    tab.wait_until_navigated().unwrap();
+    wait_target(&tab, ".reply-quote");
+    for mutation in [
+        "document.querySelector('.reply-quote').textContent=''",
+        "document.querySelector('.reply-quote').textContent='Readable selection';document.querySelector('.reply-quote').style.visibility='hidden'",
+        "document.querySelector('.reply-quote').style.visibility='visible';document.body.insertAdjacentHTML('beforeend', '<div id=cover style=\"position:fixed;inset:0;background:white;z-index:999\"></div>')",
+        "document.getElementById('cover').remove();document.querySelector('.reply-quote').style.transform='translateY(5000px)'",
+        "document.querySelector('.reply-quote').remove()",
+    ] {
+        eval(&tab,&format!("{mutation};true"));
+        assert_eq!(eval(&tab,&target_ready(".reply-quote")),false,"{mutation}");
+    }
+}
+
 #[test]
 #[ignore] // actual Chrome and freshly built monitor binaries
 fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() {
@@ -143,7 +201,10 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
             })()"#,
             );
             assert_eq!(state["pairs"], 2);
-            assert_eq!(state["label"], comment.chars().take(80).collect::<String>());
+            assert_eq!(
+                state["label"],
+                format!("{}…", comment.chars().take(80).collect::<String>())
+            );
             assert_eq!(state["marker"], "Quoted reply");
             assert_eq!(state["count"], "+1");
             assert_eq!(state["countInside"], true);
@@ -273,59 +334,108 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
                 "QUOTE ONLY"
             }
         );
-        // Touch activates the same raw control without hover at the App shell's desktop width.
-        tab.find_elements("#navigatorTurns .outline-turn-row")
-            .unwrap()[0]
-            .click()
-            .unwrap();
-        let xy = harness::probe(&tab, "(() => { const b=document.querySelector('.turn.user[data-turn=\"1\"] .raw-toggle').getBoundingClientRect(); return [b.x+b.width/2,b.y+b.height/2]; })()");
-        harness::finger_tap(&tab, xy[0].as_f64().unwrap(), xy[1].as_f64().unwrap());
-        harness::until(
-            &tab,
-            "document.querySelector('.turn.user[data-turn=\"1\"] .turn-raw-text') !== null",
-            "touch raw toggle",
-            Duration::from_secs(5),
-            "document.body.innerText",
-        );
-        tab.find_element(".turn.user[data-turn=\"1\"] .raw-toggle")
-            .unwrap()
-            .click()
-            .unwrap();
+        // A fresh phone context is configured before pairing or the first app load.
+        // Resizing the desktop context cannot exercise state.js's phone defaults.
         for (orientation, width, height) in [("portrait", 390, 844), ("landscape", 844, 390)] {
-            harness::phone(&tab, width, height);
+            let (_phone_browser, phone_tab) = harness::chrome_tab();
+            harness::phone(&phone_tab, width, height);
+            monitor.pair(&phone_tab);
+            phone_tab.navigate_to(&url).unwrap();
+            phone_tab.wait_until_navigated().unwrap();
             harness::until(
-                &tab,
-                &format!("innerWidth === {width} && document.querySelectorAll('.turn.user[data-turn=\"1\"] .reply-item').length === 2"),
-                "phone quotation layout",
+                &phone_tab,
+                "document.querySelectorAll('#navigatorTurns .outline-turn-row').length===3",
+                "phone turns loaded",
+                Duration::from_secs(15),
+                "document.body.innerText",
+            );
+            assert_eq!(
+                eval(
+                    &phone_tab,
+                    "document.querySelector('.workspace').classList.contains('navigator-off')"
+                ),
+                true,
+                "fresh phone outline default"
+            );
+            wait_target(&phone_tab, "#phonePane-turns");
+            phone_tab
+                .find_element("#phonePane-turns")
+                .unwrap()
+                .click()
+                .unwrap();
+            wait_target(&phone_tab, "#phonePaneMenu .outline-turn-row");
+            phone_tab
+                .find_element("#phonePaneMenu .outline-turn-row")
+                .unwrap()
+                .click()
+                .unwrap();
+            wait_target(&phone_tab, ".turn.user[data-turn=\"1\"] .reply-quote");
+            if let Ok(expand) = phone_tab.find_element(".turn.user[data-turn=\"1\"] .prompt-expand")
+            {
+                expand.click().unwrap();
+            }
+            for item in [1, 2] {
+                let selector = format!(
+                    ".turn.user[data-turn=\"1\"] .reply-item:nth-child({item}) .reply-quote"
+                );
+                harness::wheel_scroll(&phone_tab,harness::APP_SCROLLER,&format!("const q=document.querySelector({}); if(q) s.scrollTop+=q.getBoundingClientRect().top-s.getBoundingClientRect().top-60;",json!(selector)));
+                wait_target(&phone_tab, &selector);
+                assert_eq!(eval(&phone_tab,"document.querySelectorAll('.turn.user[data-turn=\"1\"] .reply-quote').length"),2);
+                assert!(eval(
+                    &phone_tab,
+                    &format!("document.querySelector({}).textContent", json!(selector))
+                )
+                .as_str()
+                .unwrap()
+                .contains(if item == 1 {
+                    "SELECTED FIRST"
+                } else {
+                    "SELECTED SECOND"
+                }));
+                for theme in ["light", "dark"] {
+                    eval(
+                        &phone_tab,
+                        &format!(
+                            "document.documentElement.dataset.theme={};true",
+                            json!(theme)
+                        ),
+                    );
+                    wait_target(&phone_tab, &selector);
+                    if std::env::var_os("CR_QUOTED_SCREENSHOTS").is_some() {
+                        let png=phone_tab.capture_screenshot(headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,None,None,true).unwrap();
+                        let suffix = if item == 1 { "" } else { "-second" };
+                        std::fs::write(
+                            base.join(format!("{agent}-{orientation}-{theme}{suffix}.png")),
+                            png,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            // Navigate back to the reply before measuring its raw-source control.
+            phone_tab
+                .find_element("#phonePane-turns")
+                .unwrap()
+                .click()
+                .unwrap();
+            wait_target(&phone_tab, "#phonePaneMenu .outline-turn-row");
+            phone_tab
+                .find_element("#phonePaneMenu .outline-turn-row")
+                .unwrap()
+                .click()
+                .unwrap();
+            let raw = ".turn.user[data-turn=\"1\"] .raw-toggle";
+            wait_target(&phone_tab, raw);
+            let xy=harness::probe(&phone_tab,&format!("(() => {{const r=document.querySelector({}).getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2];}})()",json!(raw)));
+            harness::finger_tap(&phone_tab, xy[0].as_f64().unwrap(), xy[1].as_f64().unwrap());
+            harness::until(
+                &phone_tab,
+                "document.querySelector('.turn.user[data-turn=\"1\"] .turn-raw-text')!==null",
+                "phone raw source",
                 Duration::from_secs(5),
                 "document.body.innerText",
             );
-            assert_eq!(eval(&tab, "[...document.querySelectorAll('.turn.user[data-turn=\"1\"] .reply-quote')].every(q => { const r=q.getBoundingClientRect(); return r.width > 0 && r.left >= 0 && r.right <= innerWidth; })"), true);
-            for theme in ["light", "dark"] {
-                eval(
-                    &tab,
-                    &format!(
-                        "document.documentElement.dataset.theme={}; true",
-                        json!(theme)
-                    ),
-                );
-                if std::env::var_os("CR_QUOTED_SCREENSHOTS").is_some() {
-                    let png = tab.capture_screenshot(
-                        headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
-                        None, None, true,
-                    ).unwrap();
-                    std::fs::write(base.join(format!("{agent}-{orientation}-{theme}.png")), png)
-                        .unwrap();
-                }
-            }
+            assert_eq!(eval(&phone_tab,"document.querySelector('.turn.user[data-turn=\"1\"] .turn-raw-text').textContent"),original);
         }
-        use headless_chrome::protocol::cdp::Emulation;
-        tab.call_method(Emulation::ClearDeviceMetricsOverride(None))
-            .unwrap();
-        tab.call_method(Emulation::SetTouchEmulationEnabled {
-            enabled: false,
-            max_touch_points: None,
-        })
-        .unwrap();
     }
 }
