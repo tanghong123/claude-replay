@@ -1361,6 +1361,39 @@ pub struct StaleEpoch;
 /// dash, and a browser in a zh locale decodes charset-less text as GBK, showing mojibake.
 pub const TEXT_PLAIN: &str = "text/plain; charset=utf-8";
 
+/// An additive streaming reply. Existing handlers continue returning HttpResponse.
+pub enum HttpReply {
+    Buffered(HttpResponse),
+    Events(EventStream),
+}
+
+/// A bounded event receiver; the listener applies authentication and masking before writing.
+pub struct EventStream {
+    initial: serde_json::Value,
+    receiver: std::sync::Mutex<std::sync::mpsc::Receiver<serde_json::Value>>,
+    mask: bool,
+}
+
+impl HttpReply {
+    /// Create a connection-delimited SSE reply, renewed after two minutes.
+    pub fn events(
+        initial: serde_json::Value,
+        receiver: std::sync::mpsc::Receiver<serde_json::Value>,
+    ) -> Self {
+        Self::Events(EventStream {
+            initial,
+            receiver: std::sync::Mutex::new(receiver),
+            mask: false,
+        })
+    }
+}
+
+impl From<HttpResponse> for HttpReply {
+    fn from(response: HttpResponse) -> Self {
+        Self::Buffered(response)
+    }
+}
+
 /// One HTTP reply — what a [`spawn_listener`] handler returns. Plain data so a host's own
 /// routes and [`service_routes`] compose without either knowing the socket.
 pub struct HttpResponse {
@@ -1696,6 +1729,8 @@ pub struct AuthGate {
     /// gate is made with a token; it only ever refuses more, and an unpaired gate ignores it.
     /// The browser suite sets it, so a case's unpaired browser is refused on every platform.
     token_only: bool,
+    /// Optional body budgets belong to installed host routes, not default reader paths.
+    body_limits: Vec<(&'static str, usize)>,
 }
 
 /// The refusal a gate gives when its host sets none — the monitor's own.
@@ -1725,6 +1760,7 @@ impl AuthGate {
             public: &[],
             trusted_hosts: None,
             token_only: false,
+            body_limits: Vec::new(),
         }
     }
 
@@ -1740,7 +1776,24 @@ impl AuthGate {
             public: &[],
             trusted_hosts: None,
             token_only: std::env::var_os("AGENT_MONITOR_TOKEN_ONLY").is_some_and(|v| v != "0"),
+            body_limits: Vec::new(),
         }
+    }
+
+    /// Give one installed route a bounded request body budget (at most 16 MiB).
+    /// This does not change any other host or path, and does not weaken authentication.
+    pub fn with_body_limit(mut self, route: &'static str, bytes: usize) -> Result<Self> {
+        anyhow::ensure!(
+            !route.is_empty() && !route.contains(['?', '#', '\0']) && !route.starts_with('/'),
+            "Body limit requires an exact relative route name"
+        );
+        anyhow::ensure!(
+            bytes > 0 && bytes <= 16 * 1024 * 1024,
+            "Route body limit must be between 1 byte and 16 MiB"
+        );
+        self.body_limits.retain(|(existing, _)| *existing != route);
+        self.body_limits.push((route, bytes));
+        Ok(self)
     }
 
     /// Tell a refused request `text` instead of the monitor's own words (#317): the gate is shared,
@@ -1799,6 +1852,7 @@ impl AuthGate {
             public: &[],
             trusted_hosts: None,
             token_only: false,
+            body_limits: Vec::new(),
         }
     }
 
@@ -1976,6 +2030,22 @@ pub fn spawn_listener(port: u16, handler: RouteHandler) -> Result<u16> {
 /// [`spawn_listener`] with an explicit access gate (#196 D3b). `spawn_listener` is this
 /// with the same-user gate — the safe default every server wants on a shared machine.
 pub fn spawn_listener_gated(port: u16, handler: RouteHandler, gate: AuthGate) -> Result<u16> {
+    spawn_streaming_listener_gated(
+        port,
+        std::sync::Arc::new(move |request| handler(request).into()),
+        gate,
+    )
+}
+
+/// A streaming handler is separate from the original RouteHandler source contract.
+pub type StreamingRouteHandler = std::sync::Arc<dyn Fn(&Request) -> HttpReply + Send + Sync>;
+
+/// Bind the same authenticated loopback listener with additive SSE support.
+pub fn spawn_streaming_listener_gated(
+    port: u16,
+    handler: StreamingRouteHandler,
+    gate: AuthGate,
+) -> Result<u16> {
     use std::net::TcpListener;
     let listener = TcpListener::bind(("127.0.0.1", port)).context("bind loopback HTTP server")?;
     let port = listener.local_addr()?.port();
@@ -2239,9 +2309,9 @@ fn artifact_refused(code: &'static str, why: &'static str) -> HttpResponse {
     }
 }
 
-fn serve_connection(
+fn serve_connection<R: Into<HttpReply>>(
     mut stream: std::net::TcpStream,
-    handler: &(dyn Fn(&Request) -> HttpResponse + Send + Sync),
+    handler: &(dyn Fn(&Request) -> R + Send + Sync),
     gate: &AuthGate,
 ) -> std::io::Result<()> {
     use std::io::{BufRead, BufReader, Read, Write};
@@ -2272,6 +2342,8 @@ fn serve_connection(
     // was sent.
     let limit = if name == "api/mdrev/hold" {
         super::mdrev::HOLD_BODY_LIMIT
+    } else if let Some((_, limit)) = gate.body_limits.iter().find(|(route, _)| *route == name) {
+        *limit
     } else {
         MAX_BODY_BYTES
     };
@@ -2356,18 +2428,25 @@ fn serve_connection(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
             eprintln!("{}", refusal_line(now, name, cookie, &headers));
-            (HttpResponse::refusal_page(gate.refusal), None, false)
+            let mut refusal = HttpResponse::refusal_page(gate.refusal);
+            if gate.token.is_some() && gate.pair_codes.is_some() {
+                refusal.body = String::from_utf8(refusal.body)
+                    .expect("refusal page is UTF-8")
+                    .replace("</main>", "<a href=\"/pair\">Pair this device</a></main>")
+                    .into_bytes();
+            }
+            (refusal.into(), None, false)
         }
         Access::Denied => (
             // A 401 is a well-formed reply: the fleet's `status_code` probe reads a gated
             // remote monitor as "serving" (and its own tunnel passes same-user anyway).
-            HttpResponse::unauthorized(gate.refusal),
+            HttpResponse::unauthorized(gate.refusal).into(),
             None,
             false,
         ),
-        Access::Ok if oversized => (too_large(), None, false),
+        Access::Ok if oversized => (too_large().into(), None, false),
         Access::Ok => (
-            handler(&req),
+            handler(&req).into(),
             if migrate { presented.clone() } else { None },
             false,
         ),
@@ -2379,11 +2458,15 @@ fn serve_connection(
             // redirect the design forbids — a fresh GET, not a cursor'd stream.
             let root_nav = name.is_empty() || name == "index.html" || name == "index";
             if root_nav && !from_cookie {
-                (HttpResponse::ok(TEXT_PLAIN, Vec::new()), Some(tok), true)
+                (
+                    HttpResponse::ok(TEXT_PLAIN, Vec::new()).into(),
+                    Some(tok),
+                    true,
+                )
             } else if oversized {
-                (too_large(), Some(tok), false)
+                (too_large().into(), Some(tok), false)
             } else {
-                (handler(&req), Some(tok), false)
+                (handler(&req).into(), Some(tok), false)
             }
         }
     };
@@ -2392,7 +2475,7 @@ fn serve_connection(
     let r = if redirect_root {
         r
     } else {
-        gzip_for(mask_for(r, &headers), &method, &headers)
+        prepare_reply(r, &headers, &method)
     };
     let head = if redirect_root {
         format!(
@@ -2400,9 +2483,13 @@ fn serve_connection(
              Content-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
         )
     } else {
-        response_head(&r, &cookie)
+        reply_head(&r, &cookie)
     };
-    write_response(&mut stream, &head, &r)
+    if matches!(r, HttpReply::Events(_)) {
+        // A suspended or slow phone must not retain a writer thread indefinitely.
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
+    }
+    write_reply(&mut stream, &head, &r)
 }
 
 /// `/pair` (the page) and `/api/pair` (redeem a code for the gate's cookie), #11. Returns the
@@ -2598,14 +2685,14 @@ fn response_head(r: &HttpResponse, cookie: &str) -> String {
     } else {
         "Cache-Control: no-store\r\n"
     };
+    let length = match &r.stream {
+        Some((_, len)) => format!("Content-Length: {len}\r\n"),
+        None => format!("Content-Length: {}\r\n", r.body.len()),
+    };
     format!(
-        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{cookie}{extra}\
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\n{length}{cookie}{extra}\
          {cache}Connection: close\r\n\r\n",
-        r.code,
-        r.content_type,
-        r.stream
-            .as_ref()
-            .map_or(r.body.len() as u64, |(_, len)| *len)
+        r.code, r.content_type
     )
 }
 
@@ -2625,6 +2712,85 @@ fn write_response(
             std::io::copy(&mut std::io::Read::take(file, *len), stream).map(|_| ())
         }
     }
+}
+
+fn mask_reply_under(reply: HttpReply, headers: &str, policy: super::mask::MaskPolicy) -> HttpReply {
+    match reply {
+        HttpReply::Buffered(response) => mask_under(response, headers, policy).into(),
+        HttpReply::Events(mut events) => {
+            events.mask = policy.masks(host_is_local(header_value(headers, "host")));
+            HttpReply::Events(events)
+        }
+    }
+}
+
+fn prepare_reply(reply: HttpReply, headers: &str, method: &str) -> HttpReply {
+    match reply {
+        HttpReply::Buffered(response) => {
+            gzip_for(mask_for(response, headers), method, headers).into()
+        }
+        events => mask_reply_under(events, headers, super::mask::policy()),
+    }
+}
+
+fn reply_head(reply: &HttpReply, cookie: &str) -> String {
+    match reply {
+        HttpReply::Buffered(response) => response_head(response, cookie),
+        HttpReply::Events(_) => format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\n{cookie}X-Accel-Buffering: no\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"),
+    }
+}
+
+fn write_reply(
+    stream: &mut impl std::io::Write,
+    head: &str,
+    reply: &HttpReply,
+) -> std::io::Result<()> {
+    let HttpReply::Events(EventStream {
+        initial,
+        receiver,
+        mask,
+    }) = reply
+    else {
+        let HttpReply::Buffered(response) = reply else {
+            unreachable!()
+        };
+        return write_response(stream, head, response);
+    };
+    stream.write_all(head.as_bytes())?;
+    let receiver = receiver
+        .lock()
+        .map_err(|error| std::io::Error::other(format!("SSE receiver lock failed: {error}")))?;
+    write_event(stream, initial, *mask)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while std::time::Instant::now() < deadline {
+        match receiver.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(event) => write_event(stream, &event, *mask)?,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                stream.write_all(b": heartbeat\n\n")?;
+                stream.flush()?;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(())
+}
+
+fn write_event(
+    stream: &mut impl std::io::Write,
+    value: &serde_json::Value,
+    mask: bool,
+) -> std::io::Result<()> {
+    let mut bytes = serde_json::to_vec(value).map_err(std::io::Error::other)?;
+    if mask {
+        super::mask::mask_body("application/json", &mut bytes);
+    }
+    if let (Some(epoch), Some(sequence)) = (value["epoch"].as_u64(), value["sequence"].as_u64()) {
+        writeln!(stream, "id: {epoch}:{sequence}")?;
+    }
+    stream.write_all(b"data: ")?;
+    stream.write_all(&bytes)?;
+    stream.write_all(b"\n\n")?;
+    stream.flush()
 }
 
 /// Where a request's token came from.
@@ -2939,6 +3105,8 @@ pub fn service_routes(
 
 #[cfg(test)]
 mod tests {
+    const TEST_ROUTE_BODY_LIMIT: usize = 12 * 1024 * 1024;
+
     use super::*;
     use std::net::Ipv4Addr;
 
@@ -3033,6 +3201,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_exact_codex_send_accepts_large_image_bodies_without_truncation() {
+        use std::io::{Read, Write};
+        let port = spawn_listener_gated(
+            0,
+            std::sync::Arc::new(|r: &Request| {
+                HttpResponse::ok("text/plain", r.body.len().to_string().into_bytes())
+            }),
+            AuthGate::same_user()
+                .with_body_limit("api/large-upload", TEST_ROUTE_BODY_LIMIT)
+                .unwrap(),
+        )
+        .unwrap();
+        let send = |path: &str, length: usize, write_body: bool| {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+            if write_body {
+                stream.write_all(&vec![b'x'; length]).unwrap();
+            }
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .unwrap_or_else(|error| {
+                    panic!("Read image transport response for {path} ({length} bytes): {error}")
+                });
+            response
+        };
+        let response = send("/api/large-upload", TEST_ROUTE_BODY_LIMIT, true);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.ends_with(&TEST_ROUTE_BODY_LIMIT.to_string()));
+        assert!(
+            send("/api/large-upload", TEST_ROUTE_BODY_LIMIT + 1, false).starts_with("HTTP/1.1 413")
+        );
+        for path in [
+            "/api/other-action",
+            "/api/send",
+            "/api/large-upload/",
+            "/api/large-upload-extra",
+        ] {
+            assert!(
+                send(path, MAX_BODY_BYTES + 1, false).starts_with("HTTP/1.1 413"),
+                "{path}"
+            );
+        }
+    }
+
     /// #270: a reply is `no-store` unless its route says otherwise — and a route that does gets
     /// exactly its own header, never a second one the browser would combine with it.
     #[test]
@@ -3046,6 +3260,104 @@ mod tests {
         let head = response_head(&cached, "");
         assert_eq!(head.matches("Cache-Control").count(), 1, "{head}");
         assert!(head.contains("immutable") && !head.contains("no-store"));
+    }
+
+    #[test]
+    fn event_stream_frames_flush_and_close_without_a_fake_content_length() {
+        use std::io::Write;
+        struct Wire {
+            bytes: Vec<u8>,
+            flushes: usize,
+        }
+        impl Write for Wire {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushes += 1;
+                Ok(())
+            }
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(serde_json::json!({"epoch":2,"sequence":8,"text":"line\nnext"}))
+            .unwrap();
+        drop(sender);
+        let response = HttpReply::events(serde_json::json!({"epoch":2,"sequence":7}), receiver);
+        let head = reply_head(&response, "");
+        assert!(head.contains("Content-Type: text/event-stream; charset=utf-8"));
+        assert!(head.contains("Cache-Control: no-store"));
+        assert!(!head.contains("Content-Length:"));
+        let mut wire = Wire {
+            bytes: Vec::new(),
+            flushes: 0,
+        };
+        write_reply(&mut wire, &head, &response).unwrap();
+        assert_eq!(
+            wire.flushes, 2,
+            "each event is available without waiting for another event"
+        );
+        let bytes = String::from_utf8(wire.bytes).unwrap();
+        let frames: Vec<_> = bytes
+            .split("\r\n\r\n")
+            .nth(1)
+            .unwrap()
+            .split("\n\n")
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(frames.len(), 2);
+        assert!(frames[0].starts_with("id: 2:7\ndata: "));
+        assert!(frames[1].starts_with("id: 2:8\ndata: "));
+        let value: serde_json::Value =
+            serde_json::from_str(frames[1].split_once("data: ").unwrap().1).unwrap();
+        assert_eq!(
+            value["text"], "line\nnext",
+            "message newlines cannot inject SSE frames"
+        );
+    }
+
+    #[test]
+    fn remote_event_stream_uses_the_existing_secret_mask_policy() {
+        // Assemble synthetic keys at runtime so source scans cannot mistake them for credentials.
+        let secret = format!("sk-{}", "a".repeat(48));
+        let (_, receiver) = std::sync::mpsc::channel();
+        let response = mask_reply_under(
+            HttpReply::events(serde_json::json!({"text":secret}), receiver),
+            "Host: phone.example.ts.net\r\n",
+            super::super::mask::MaskPolicy::Remote,
+        );
+        let mut bytes = Vec::new();
+        write_reply(&mut bytes, "", &response).unwrap();
+        let masked = String::from_utf8(bytes).unwrap();
+        assert!(
+            !masked.contains(&secret),
+            "SSE must not bypass the existing remote masking policy"
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(masked.trim().strip_prefix("data: ").unwrap()).unwrap();
+        assert_ne!(value["text"], secret);
+    }
+
+    #[test]
+    fn disconnected_event_browser_stops_writing() {
+        struct Closed;
+        impl std::io::Write for Closed {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let response = HttpReply::events(serde_json::json!({"epoch":1}), receiver);
+        assert_eq!(
+            write_reply(&mut Closed, "HEAD", &response)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
     }
 
     /// #196 D3b: the `/proc/net/tcp` matcher finds the connecting user by the client
@@ -3500,6 +3812,25 @@ mod tests {
             get("/", "").starts_with("HTTP/1.1 401"),
             "unpaired, / is refused"
         );
+        let refused_page = send("GET /codex-workspace HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Dest: document\r\nConnection: close\r\n\r\n".to_owned());
+        assert!(refused_page.starts_with("HTTP/1.1 401"), "{refused_page}");
+        assert!(refused_page.contains("<a href=\"/pair\">Pair this device</a>"));
+        assert!(
+            !refused_page.contains("the monitor"),
+            "Private handler never sees an anonymous page load"
+        );
+        for path in [
+            "/monitor-ui/native-entry.js",
+            "/codex-workspace/monitor.css",
+            "/codex-workspace/pair",
+        ] {
+            let refused = get(path, "");
+            assert!(refused.starts_with("HTTP/1.1 401"), "{path}: {refused}");
+            assert!(
+                !refused.contains("Pair this device"),
+                "Asset refusal does not become a pairing page"
+            );
+        }
         let page = get("/pair", "");
         assert!(
             page.starts_with("HTTP/1.1 200") && page.contains("Pair this device"),
@@ -3825,6 +4156,7 @@ mod tests {
             std::sync::Arc::new(|_req: &Request| HttpResponse::ok("text/plain", b"ok".to_vec()));
         let gate = AuthGate {
             token_only: true,
+            body_limits: Vec::new(),
             ..AuthGate::with_token("secret-366")
         };
         let port = spawn_listener_gated(0, handler, gate).unwrap();
@@ -5354,7 +5686,7 @@ mod tests {
         assert_eq!(r.content_type, "application/octet-stream");
         assert!(r.body.is_empty(), "streamed, never read into memory");
         assert_eq!(
-            r.stream.as_ref().map(|(p, len)| (p.clone(), *len)),
+            r.stream.as_ref().map(|(path, len)| (path.clone(), *len)),
             Some((big.canonicalize().unwrap(), MAX_ARTIFACT_BYTES + 1))
         );
         assert!(
