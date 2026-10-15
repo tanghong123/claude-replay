@@ -174,12 +174,12 @@ USAGE:
 
 Serves http://127.0.0.1:{DEFAULT_PORT} — loopback only, read-only.
 
-TWO INTERFACES, both supported:
-  the app shell (default) and the classic rail-and-iframe page. Each carries a
-  button that switches to the other and REMEMBERS the choice (stored in
-  <state_dir>/ui.json, shared with agent-monitor-v2). `?ui=classic` / `?ui=app`
-  on the URL override for one request without changing what is stored, which is
-  how you compare them. The classic page stays until the app shell is validated.
+TWO INTERFACES, one of them DEPRECATED:
+  the app shell (default) and the classic rail-and-iframe page, which goes in
+  the next release, with the /session page. Each carries a button that switches
+  to the other and REMEMBERS the choice (stored in <state_dir>/ui.json, shared
+  with agent-monitor-v2). `?ui=classic` / `?ui=app` on the URL override for one
+  request without changing what is stored.
 
 CACHE ROOT:
   $AGENT_MONITOR_CACHE, else $CLAUDE_MONITOR_CACHE (legacy, still honored). With

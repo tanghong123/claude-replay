@@ -146,7 +146,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // (`file: {path, sig, fsig?, name}`).
     // v23: #s83 — a SendMessage card's body is the message it sent (an `md` part) above its
     // delivery receipt (a `note`), and its head names the summary.
-    // v24: Mermaid fences carry an inline diagram host and their escaped source, so
+    // v24: #s108 — a Markdown link or image whose target is not http, https, mailto or
+    // schemeless is a `<span title>` holding its words, never a live `<a href>`.
+    // v25: Mermaid fences carry an inline diagram host and their escaped source, so
     // previously visited sessions must regenerate their cached Markdown fragments.
     const RECORD_SCHEMA: u16 = 25;
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1423,6 +1425,12 @@ impl HttpResponse {
     /// shown `msg` — the HOST's way in (#317: the gate is shared), which is why the page adds no
     /// words of its own about how to pair. Nothing here is a secret; it is what the plain refusal
     /// always said, as a page.
+    ///
+    /// #s110: the owner's Home Screen app still met this page now and then, and closing and
+    /// reopening it got in — every refusal in that monitor's log was "no cookie, cross-site", a
+    /// withheld cookie and never a lost pairing. So the page also offers Try again, a plain link to
+    /// itself: a tap on a same-origin link is same-site in every engine, so it carries the cookie
+    /// whatever the automatic retry met. It is 44px tall, a finger's target.
     pub fn refusal_page(msg: &str) -> Self {
         let msg = msg
             .replace('&', "&amp;")
@@ -1439,9 +1447,14 @@ impl HttpResponse {
              background:#f7f8fa}}main{{max-width:34rem;margin:18vh auto 0;padding:0 20px}}\
              h1{{font-size:20px;margin:0 0 8px}}p{{margin:0 0 10px;color:#4a5263}}\
              code{{font:14px ui-monospace,Menlo,monospace}}\
+             a.again{{display:inline-flex;align-items:center;min-height:44px;margin-top:8px;\
+             padding:0 20px;border-radius:10px;background:#1f7a4d;color:#fff;font-weight:600;\
+             text-decoration:none}}@media(max-height:500px){{main{{margin-top:16px}}}}\
              @media(prefers-color-scheme:dark){{body{{background:#15171c;color:#e6e8ee}}\
              p{{color:#a9b0bf}}}}</style></head><body><main>\
-             <h1>This browser is not paired</h1><p>{msg}.</p></main></body></html>"
+             <h1>This browser is not paired</h1><p>{msg}.</p>\
+             <p>Already paired? Opening this page from another app or site can hide the pairing \
+             for one load.</p><a class=\"again\" href=\"\">Try again</a></main></body></html>"
         );
         Self {
             code: "401 Unauthorized",
@@ -1546,6 +1559,56 @@ fn is_page_load(method: &str, headers: &str) -> bool {
         Some(dest) => dest.eq_ignore_ascii_case("document"),
         None => header_value(headers, "accept").is_some_and(|a| a.contains("text/html")),
     }
+}
+
+/// #341's stderr line for a refused page load: whether a cookie came and what the browser said the
+/// navigation's site was. #s110 adds when, and where the navigation came from — the rest of the
+/// fetch metadata, the client's own name for itself and the referrer's ORIGIN — because the owner's
+/// log read "no cookie, cross-site" again and again, and nothing in it said which of their visits
+/// that was. Never the token: `name` is the path without its query, and a referrer keeps only its
+/// origin, since a same-origin one can be the pairing URL with `?token=` in it.
+fn refusal_line(now: u64, name: &str, cookie: &str, headers: &str) -> String {
+    let h = |name| header_value(headers, name).unwrap_or("-");
+    let referrer = header_value(headers, "referer").map_or("-", referrer_origin);
+    format!(
+        "gate: {} refused a page load of /{name} — {cookie}, sec-fetch-site {}, mode {}, user {}, \
+         referrer {referrer}, user-agent {}",
+        utc_stamp(now),
+        h("sec-fetch-site"),
+        h("sec-fetch-mode"),
+        h("sec-fetch-user"),
+        h("user-agent"),
+    )
+}
+
+/// A referrer cut to its origin: `scheme://host[:port]`, without path, query or fragment.
+fn referrer_origin(referrer: &str) -> &str {
+    let host = referrer.find("://").map_or(0, |i| i + 3);
+    let end = referrer[host..]
+        .find(['/', '?', '#'])
+        .map_or(referrer.len(), |i| host + i);
+    &referrer[..end]
+}
+
+/// Seconds since the Unix epoch as ISO-8601 UTC (`2026-10-14T14:51:35Z`), Howard Hinnant's
+/// civil_from_days — the inverse of the engine's `time::epoch_secs`.
+fn utc_stamp(secs: u64) -> String {
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
@@ -2289,8 +2352,10 @@ fn serve_connection(
                 Some(TokenFrom::LegacyCookie) => "a legacy cmauth cookie that did not match",
                 Some(TokenFrom::Presented) => "a token that did not match",
             };
-            let site = header_value(&headers, "sec-fetch-site").unwrap_or("-");
-            eprintln!("gate: refused a page load of /{name} — {cookie}, sec-fetch-site {site}");
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            eprintln!("{}", refusal_line(now, name, cookie, &headers));
             (HttpResponse::refusal_page(gate.refusal), None, false)
         }
         Access::Denied => (
@@ -2327,7 +2392,11 @@ fn serve_connection(
     let r = if redirect_root {
         r
     } else {
-        gzip_for(mask_for(r, &headers), &method, &headers)
+        gzip_for(
+            mask_for(identity_for(r, &headers), &headers),
+            &method,
+            &headers,
+        )
     };
     let head = if redirect_root {
         format!(
@@ -2389,6 +2458,39 @@ const GZIP_MIN_BYTES: usize = 16 * 1024;
 /// 28% in 256 ms, level 6 27% in 501 ms. Where the bytes cross a network, transfer dominates —
 /// at 5 MB/s level 3 saves ~0.6 s over level 1 for 0.13 s more CPU — so level 3.
 const GZIP_LEVEL: u32 = 3;
+
+/// A route can keep immutable assets precompressed. Decode only when gzip is not accepted,
+/// before masking and normal network compression, so those adapters still see identity bytes.
+fn identity_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
+    use std::io::Read;
+    let gzip = r.headers.iter().any(|header| {
+        header.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("content-encoding")
+                && value.trim().eq_ignore_ascii_case("gzip")
+        })
+    });
+    if !gzip || accepts_gzip(headers) || r.stream.is_some() {
+        return r;
+    }
+    let mut body = Vec::new();
+    if let Err(error) = flate2::read::GzDecoder::new(r.body.as_slice()).read_to_end(&mut body) {
+        eprintln!(
+            "could not decode gzip response ({} bytes, {}): {error}",
+            r.body.len(),
+            r.content_type
+        );
+        let mut failed = HttpResponse::ok(TEXT_PLAIN, b"could not decode the response".to_vec());
+        failed.code = "500 Internal Server Error";
+        return failed;
+    }
+    r.body = body;
+    r.headers.retain(|header| {
+        !header
+            .split_once(':')
+            .is_some_and(|(name, _)| name.eq_ignore_ascii_case("content-encoding"))
+    });
+    r
+}
 
 /// Gzip a reply for a client ACROSS A NETWORK (#313). Opening a session sends every record it
 /// has — 3 MB for an 8 MB transcript, 24 MB for 70 MB, 32 MB for 107 MB — and a phone reaching
@@ -2488,19 +2590,26 @@ fn looks_like_text(path: &Path) -> bool {
     }
 }
 
-/// Whether `Accept-Encoding` lists gzip at a non-zero quality.
+/// Whether `Accept-Encoding` accepts gzip. An explicit coding overrides the wildcard.
 fn accepts_gzip(headers: &str) -> bool {
-    header_value(headers, "accept-encoding").is_some_and(|v| {
-        v.split(',').any(|coding| {
+    header_value(headers, "accept-encoding").is_some_and(|value| {
+        let mut wildcard = false;
+        for coding in value.split(',') {
             let mut parts = coding.split(';').map(str::trim);
             let name = parts.next().unwrap_or("");
-            (name.eq_ignore_ascii_case("gzip") || name == "*")
-                && parts.all(|p| {
-                    p.strip_prefix("q=")
-                        .and_then(|q| q.trim().parse::<f32>().ok())
-                        .is_none_or(|q| q > 0.0)
-                })
-        })
+            let accepted = parts.all(|part| {
+                part.strip_prefix("q=")
+                    .and_then(|quality| quality.trim().parse::<f32>().ok())
+                    .is_none_or(|quality| quality > 0.0)
+            });
+            if name.eq_ignore_ascii_case("gzip") {
+                return accepted;
+            }
+            if name == "*" {
+                wildcard = accepted;
+            }
+        }
+        wildcard
     })
 }
 
@@ -2636,12 +2745,7 @@ pub fn service_routes(
         return r;
     }
     let (name, query) = (req.name, req.query);
-    if name == "mermaid.js" {
-        let mut response = HttpResponse::ok(
-            "text/javascript; charset=utf-8",
-            super::mermaid::RUNTIME.as_bytes().to_vec(),
-        );
-        response.headers.push("Cache-Control: no-store".into());
+    if let Some(response) = super::mermaid::route(name) {
         return response;
     }
     // `/session?id=<sid>[&chrome=embed][&theme=light|dark]` — the complete session view at
@@ -3121,6 +3225,16 @@ mod tests {
             page.contains("open the dashboard with `agent-metrics`"),
             "in the host's words: {page}"
         );
+        // #s110: and a one-tap way back, a plain link to the page itself (same-site, so it
+        // carries the cookie), never a script.
+        assert!(
+            page.contains("<a class=\"again\" href=\"\">Try again</a>"),
+            "Try again: {page}"
+        );
+        assert!(
+            page.contains("min-height:44px"),
+            "a finger's target: {page}"
+        );
         assert!(!page.contains("Set-Cookie"), "{page}");
         let fetch = ask("empty");
         assert!(
@@ -3128,6 +3242,45 @@ mod tests {
                 && fetch.ends_with("open the dashboard with `agent-metrics`"),
             "a fetch keeps the plain refusal: {fetch}"
         );
+    }
+
+    /// #s110: a refused page load's line says when, and where the navigation came from — the
+    /// fetch metadata, the user agent and the referrer's origin — and never the token, not even
+    /// when the referrer is the pairing URL itself.
+    #[test]
+    fn a_refusal_line_says_when_and_whence_and_never_the_token() {
+        let headers =
+            "Host: phone.test\r\nSec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: navigate\r\n\
+                       Sec-Fetch-Dest: document\r\n\
+                       Referer: https://box.example.ts.net:2727/?token=s3cr3t#turn-4\r\n\
+                       User-Agent: Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 Mobile/15E148\r\n";
+        let line = refusal_line(1_791_989_495, "", "no cookie", headers);
+        assert_eq!(
+            line,
+            "gate: 2026-10-14T14:51:35Z refused a page load of / — no cookie, sec-fetch-site \
+             cross-site, mode navigate, user -, referrer https://box.example.ts.net:2727, \
+             user-agent Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 Mobile/15E148"
+        );
+        assert!(!line.contains("s3cr3t"));
+        assert_eq!(
+            refusal_line(0, "session", "no cookie", "Host: x\r\n"),
+            "gate: 1970-01-01T00:00:00Z refused a page load of /session — no cookie, \
+             sec-fetch-site -, mode -, user -, referrer -, user-agent -"
+        );
+        for (raw, origin) in [
+            ("http://localhost:8765/go.html", "http://localhost:8765"),
+            ("https://a.example?x=1", "https://a.example"),
+            ("https://a.example#f", "https://a.example"),
+            ("about:blank", "about:blank"),
+        ] {
+            assert_eq!(referrer_origin(raw), origin);
+        }
+        for (secs, stamp) in [
+            (951_782_400, "2000-02-29T00:00:00Z"),
+            (4_102_444_799, "2099-12-31T23:59:59Z"),
+        ] {
+            assert_eq!(utc_stamp(secs), stamp);
+        }
     }
 
     /// #317: the gate is shared — agent-metrics serves its dashboard through this listener — so a
@@ -3309,6 +3462,78 @@ mod tests {
         let (head, plain) = get(&format!("127.0.0.1:{port}"));
         assert!(!head.contains("Content-Encoding"), "{head}");
         assert_eq!(plain, body.as_bytes());
+    }
+
+    #[test]
+    fn mermaid_runtime_http_preserves_cache_and_negotiates_encoding() {
+        use std::io::{Read, Write};
+        let handler: RouteHandler = std::sync::Arc::new(|req: &Request| {
+            super::super::mermaid::route(req.name)
+                .unwrap_or_else(|| HttpResponse::not_found("no such runtime"))
+        });
+        let port =
+            spawn_listener_gated(0, handler, AuthGate::for_test(Some("sample-token"))).unwrap();
+        let path = super::super::mermaid::RUNTIME_PATH;
+        let source = include_bytes!("../../../vendor/mermaid/mermaid.min.js");
+        let compressed = include_bytes!("../../../vendor/mermaid/mermaid.min.js.gz");
+        for (host, encoding, gzip) in [
+            ("127.0.0.1", "gzip", true),
+            ("phone.example", "gzip, deflate, br", true),
+            ("phone.example", "gzip;q=0, br", false),
+            ("phone.example", "*;q=1, gzip;q=0", false),
+            ("phone.example", "*;q=0.5", true),
+            ("phone.example", "identity", false),
+            ("127.0.0.1", "", false),
+        ] {
+            let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            write!(socket, "GET {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer sample-token\r\nAccept-Encoding: {encoding}\r\nConnection: close\r\n\r\n").unwrap();
+            let mut raw = Vec::new();
+            socket.read_to_end(&mut raw).unwrap();
+            let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+            let head = String::from_utf8_lossy(&raw[..split]);
+            let body = &raw[split + 4..];
+            assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+            assert!(
+                head.contains("Cache-Control: public, max-age=31536000, immutable"),
+                "{head}"
+            );
+            assert!(!head.contains("no-store"), "{head}");
+            assert!(head.contains("Vary: Accept-Encoding"), "{head}");
+            assert!(
+                head.contains(&format!("Content-Length: {}", body.len())),
+                "{head}"
+            );
+            assert_eq!(head.contains("Content-Encoding: gzip"), gzip, "{head}");
+            if gzip {
+                assert_eq!(
+                    body,
+                    compressed.as_slice(),
+                    "serve the stored bytes without recompression"
+                );
+                let mut decoded = Vec::new();
+                flate2::read::GzDecoder::new(body)
+                    .read_to_end(&mut decoded)
+                    .unwrap();
+                assert_eq!(decoded, source.as_slice());
+            } else {
+                assert_eq!(body, source.as_slice(), "byte-identical identity fallback");
+            }
+        }
+        assert!(super::super::mermaid::route("mermaid.js").is_none());
+        assert!(super::super::mermaid::route("mermaid/0.0.0.js").is_none());
+    }
+
+    #[test]
+    fn invalid_precompressed_response_reports_a_server_error() {
+        let mut response = HttpResponse::ok(TEXT_PLAIN, b"invalid gzip".to_vec());
+        response.headers.push("Content-Encoding: gzip".into());
+        let response = identity_for(response, "Accept-Encoding: identity\r\n");
+        assert_eq!(response.code, "500 Internal Server Error");
+        assert_eq!(response.body, b"could not decode the response");
+        assert!(!response
+            .headers
+            .iter()
+            .any(|h| h.starts_with("Content-Encoding:")));
     }
 
     /// #320: a path the host made public is read without passing the gate — a phone fetches the

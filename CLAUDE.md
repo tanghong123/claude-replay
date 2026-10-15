@@ -26,10 +26,6 @@ Both are unrecoverable after the fact, and both were learned from real damage he
   text in single quotes is fine; a heredoc into a variable is the trap.
 
 ## The monitor's two shells
-For every UI change, follow the UI impact assessment in [AGENTS.md](AGENTS.md).
-Record affected pages, expected behavior, verification evidence, and coverage
-gaps in the MR/PR description, checking for omitted consumers before delivery.
-
 `agent-monitor` and `agent-monitor-v2` each serve **two** frontends and both are supported: the
 **app shell** (`claude-monitor/src/ui.rs` + `src/codex-ui/*`, the default) and the **classic**
 page (v1's rail, v2's splice shell). A button in each switches and REMEMBERS the choice at
@@ -217,8 +213,12 @@ host's refusal words; fetches keep the plain 401, and each refused page load is 
 the app shell's and v1's classic heads with a manifest and the label "Agent Monitor"; iOS asks the root
 for `apple-touch-icon.png` on its own, which covers v2's classic page. Those files are the ONLY paths
 the gate answers unpaired (`ui::PUBLIC_ASSETS` → `AuthGate::with_public`, GET only), because a phone
-fetches the icon itself and may not carry the pairing cookie. The manifest says `display: browser` on
-purpose: an iOS standalone Home Screen app keeps cookies of its own and would open unpaired.
+fetches the icon itself and may not carry the pairing cookie. The manifest says `display: browser`,
+which on iOS 26 decides nothing (#s111, measured on the 26.4 Simulator, a `browser` and a `standalone`
+manifest each on two hosts): Add to Home Screen offers "Open as Web App", on by default, for either;
+the app gets a COPY of Safari's cookies for its host at that moment (none on `localhost`) and keeps
+its own from then on. So a phone paired in Safari before the page is saved opens the app paired, and
+one saved first, or whose cookie later goes, pairs inside the app, where `/pair` is in its scope.
 **Sessions sort into three buckets** (#202, `design/agent-states.md` §10): active (busy),
 blocked (a wait, or an idle reason that cut the work short — this is what "needs attention"
 means and counts) and idle (`done`, `exited`); `sessionBucket` in `shared/state-labels.js` is
@@ -411,7 +411,7 @@ not an import (#43). `claude-monitor/src/codex-ui/shared` is a SYMLINK to that d
 node (the contract test imports `components.js`, which imports `./shared/…`) and editors resolve the
 relative paths; the served bytes still come from the html crate through `ui::asset()`.
 
-`claude-monitor-v2/tests/ui_contract.mjs` holds the frontend contract that only JS can answer.
+`claude-monitor/tests/ui_contract.mjs` holds the frontend contract that only JS can answer.
 It runs from `cargo test` (via `tests/ui_contract.rs`, which SKIPS when node is missing) and as
 its own mandatory CI step.
 

@@ -36,6 +36,11 @@ mod bundle;
 pub mod mask; // opt-in secret masking for what leaves the machine (#365)
 pub(crate) mod mdrev; // mdrev's embedded viewer in the app shell's preview pane (#270)
 mod mermaid;
+
+/// Versioned URL of the browser runtime pinned into this build.
+pub fn mermaid_runtime_path() -> &'static str {
+    mermaid::RUNTIME_PATH
+}
 pub mod pairing;
 mod record_store;
 mod serve;
@@ -314,6 +319,10 @@ fn md_html_inner(src: &str, hard_breaks: bool) -> String {
     let mut fence: Option<(String, String)> = None;
     // Table state: are we inside the head row (→ <th>) or the body (→ <td>)?
     let mut in_head = false;
+    // Whether each open link and image kept its target (#s108), so a refused one closes the
+    // span it opened. An image can sit inside a link, so each kind keeps its own stack.
+    let mut links: Vec<bool> = Vec::new();
+    let mut images: Vec<bool> = Vec::new();
 
     for ev in Parser::new_ext(src, opts) {
         // Inside a fence every event is raw text; collect until it closes.
@@ -371,17 +380,19 @@ fn md_html_inner(src: &str, hard_breaks: bool) -> String {
             Event::End(TagEnd::TableRow) => out.push_str("</tr>"),
             Event::Start(Tag::TableCell) => out.push_str(if in_head { "<th>" } else { "<td>" }),
             Event::End(TagEnd::TableCell) => out.push_str(if in_head { "</th>" } else { "</td>" }),
-            Event::Start(Tag::Link { dest_url, .. }) => out.push_str(&format!(
-                "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">",
-                esc(&dest_url)
-            )),
-            Event::End(TagEnd::Link) => out.push_str("</a>"),
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                let live = live_link_target(&dest_url);
+                links.push(live);
+                out.push_str(&link_open(&dest_url, live, ""));
+            }
+            Event::End(TagEnd::Link) => out.push_str(link_close(links.pop())),
             // Never emit <img>: a remote src would break "no network".
-            Event::Start(Tag::Image { dest_url, .. }) => out.push_str(&format!(
-                "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">[image] ",
-                esc(&dest_url)
-            )),
-            Event::End(TagEnd::Image) => out.push_str("</a>"),
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                let live = live_link_target(&dest_url);
+                images.push(live);
+                out.push_str(&link_open(&dest_url, live, "[image] "));
+            }
+            Event::End(TagEnd::Image) => out.push_str(link_close(images.pop())),
             Event::Start(Tag::CodeBlock(kind)) => {
                 let lang = match kind {
                     CodeBlockKind::Fenced(l) => l.to_string(),
@@ -410,6 +421,54 @@ fn md_html_inner(src: &str, hard_breaks: bool) -> String {
         out.push_str(&fence_html(&lang, &body));
     }
     out
+}
+
+/// A Markdown link's opening tag: a live link that opens in a new tab, or, for a target the
+/// page does not open ([`live_link_target`]), a span holding the same words with the target as
+/// its title, so the reader can still see where it pointed.
+fn link_open(dest: &str, live: bool, lead: &str) -> String {
+    if live {
+        format!(
+            "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{lead}",
+            esc(dest)
+        )
+    } else {
+        format!("<span title=\"{}\">{lead}", esc(dest))
+    }
+}
+
+/// The tag that closes what [`link_open`] opened.
+fn link_close(live: Option<bool>) -> &'static str {
+    if live.unwrap_or(true) {
+        "</a>"
+    } else {
+        "</span>"
+    }
+}
+
+/// Whether a Markdown link or image keeps its target as a live link (#s108). Transcript text is
+/// not the reader's own: an agent quoting a web page carries that page's links in, and every
+/// page draws it, the monitor's included, whose origin holds the pairing cookie and may make
+/// same-origin writes. So a target stays a link only when it names no scheme (a fragment, a
+/// relative path) or one of `http`, `https` and `mailto`. `javascript:`, `vbscript:`, `data:`,
+/// `file:` and every other scheme (`tel:` and `ssh:` too) are drawn as words. A browser drops
+/// ASCII tabs and newlines from a URL and trims leading controls and spaces, so
+/// `java&#x09;script:` is `javascript:` to it: a target holding any control character is refused
+/// outright rather than parsed. Headless Chrome opened an `about:blank` tab for a clicked
+/// `javascript:` link and ran nothing with the page's origin, but that is one browser's
+/// behaviour, and these pages are read in iOS Safari and, exported, in any browser.
+fn live_link_target(dest: &str) -> bool {
+    if dest.chars().any(char::is_control) {
+        return false;
+    }
+    match dest.trim().split_once(':') {
+        // A colon after a `/`, `?` or `#` is inside a relative path, a query or a fragment.
+        Some((scheme, _)) if !scheme.contains(['/', '?', '#']) => matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "http" | "https" | "mailto"
+        ),
+        _ => true,
+    }
 }
 
 fn proposed_plan_body(text: &str) -> Option<&str> {
@@ -2002,7 +2061,7 @@ fn build_jsonl_inner(
 /// The page shell: embedded CSS, the inline snapshot, the renderer, and (in live
 /// mode) the companion path + poll interval the renderer appends from.
 fn build_html(title: &str, jsonl: &str, turns: &[SideEntry], live: Option<&str>) -> String {
-    build_page(title, jsonl, turns, live, None, None)
+    build_page(title, jsonl, turns, live, None, None, false)
 }
 
 /// The shared shell for a multi-file bundle (`--dump-all-html` / served `--html`): no
@@ -2010,7 +2069,28 @@ fn build_html(title: &str, jsonl: &str, turns: &[SideEntry], live: Option<&str>)
 /// to `root_id`, and fills the sidebar as turns arrive). `live` makes the page poll its
 /// stream (served `--html -f`); a static offline bundle sets it false.
 pub(super) fn build_shell(title: &str, root_id: &str, live: bool, pull: bool) -> String {
-    build_page(title, "", &[], None, Some((root_id, live, pull)), None)
+    build_page(
+        title,
+        "",
+        &[],
+        None,
+        Some((root_id, live, pull)),
+        None,
+        false,
+    )
+}
+
+/// An offline directory shell knows whether any root or child stream needs Mermaid.
+pub(super) fn build_bundle_shell(title: &str, root_id: &str, has_mermaid: bool) -> String {
+    build_page(
+        title,
+        "",
+        &[],
+        None,
+        Some((root_id, false, false)),
+        None,
+        has_mermaid,
+    )
 }
 
 /// Host-selectable chrome for a SERVED page (`/session?id=…`, #98 §6.3) — URL parameters,
@@ -2067,6 +2147,7 @@ pub(super) fn build_shell_chrome(title: &str, root_id: &str, chrome: &PageChrome
         None,
         Some((root_id, true, true)),
         Some(chrome),
+        false,
     )
 }
 
@@ -2080,6 +2161,7 @@ fn build_page(
     live: Option<&str>,
     multi: Option<(&str, bool, bool)>,
     chrome: Option<&PageChrome>,
+    bundle_has_mermaid: bool,
 ) -> String {
     let sidebar: String = turns
         .iter()
@@ -2169,19 +2251,21 @@ fn build_page(
     // stand alone from file://, so what the monitor serves as ES modules arrives here as a
     // classic script publishing the same names on `window.__shared`.
     let shared_js = shared::inline_all();
-    // Server-backed pages fetch the same runtime lazily from /mermaid.js. A single-file
-    // export needs it only if it contains diagrams; a bundle/live export can load them later.
+    // Server-backed pages fetch the declared versioned runtime lazily. A single-file
+    // export needs it only if it contains diagrams. The bundle writer checks every stream.
     let mermaid_runtime = if !multi.is_some_and(|(_, _, pull)| pull)
-        && (multi.is_some() || live.is_some() || jsonl.contains("data-mermaid"))
+        && (bundle_has_mermaid || live.is_some() || mermaid::contains_diagram(jsonl))
     {
         mermaid::inline_runtime()
     } else {
         String::new()
     };
+    let mermaid_path = mermaid::RUNTIME_PATH;
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
+<meta name="mermaid-runtime" content="{mermaid_path}">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%236d4fa1'/><path d='M12 9l12 7-12 7z' fill='%23fff'/></svg>">
@@ -3186,6 +3270,51 @@ mod tests {
         assert!(!md_html("line one\nline two").contains("<br>"));
     }
 
+    /// #s108: a Markdown target stays a live link only for the web, mail, or no scheme at all; a
+    /// script, a data URL or a local file is drawn as its words, however the scheme is spelt.
+    #[test]
+    fn a_markdown_link_to_a_script_or_a_file_is_drawn_as_words() {
+        for (src, href) in [
+            ("[x](https://example.com/a)", "https://example.com/a"),
+            ("[x](HTTP://example.com/a)", "HTTP://example.com/a"),
+            (
+                "[x](mailto:someone@example.com)",
+                "mailto:someone@example.com",
+            ),
+            ("[x](#turn-3)", "#turn-3"),
+            ("[x](docs/a:b.md)", "docs/a:b.md"),
+            ("[x](?q=a:b)", "?q=a:b"),
+        ] {
+            let html = md_html(src);
+            assert!(
+                html.contains(&format!("<a href=\"{href}\"")),
+                "{src}: {html}"
+            );
+            assert!(!html.contains("<span"), "{src}: {html}");
+        }
+        for (src, words) in [
+            ("[x](javascript:alert(1))", ">x</span>"),
+            ("[x](JavaScript:alert(1))", ">x</span>"),
+            ("[x](java&#x09;script:alert(1))", ">x</span>"),
+            ("[x](vbscript:msgbox)", ">x</span>"),
+            ("[x](data:text/html;base64,PHNjcmlwdD4=)", ">x</span>"),
+            ("[x](file:///etc/hosts)", ">x</span>"),
+            ("[x](tel:+15550100)", ">x</span>"),
+            ("![x](javascript:alert(1))", ">[image] x</span>"),
+        ] {
+            let html = md_html(src);
+            assert!(!html.contains("<a "), "{src}: {html}");
+            assert!(html.contains("<span title=\""), "{src}: {html}");
+            assert!(html.contains(words), "{src}: {html}");
+        }
+        // A refused image inside a live link closes its own span and leaves the link whole.
+        assert_eq!(
+            md_html("[![x](javascript:alert(1))](https://example.com/)"),
+            "<p><a href=\"https://example.com/\" target=\"_blank\" rel=\"noopener noreferrer\">\
+             <span title=\"javascript:alert(1)\">[image] x</span></a></p>"
+        );
+    }
+
     /// Credits-billed sessions (Qoder): the usage sub-object carries a `credits` key; a
     /// token-billed session's wire record is unchanged (key absent, like `compacted`).
     #[test]
@@ -3843,6 +3972,66 @@ mod tests {
             "child transcript rendered: {recs:?}"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn mermaid_bundle_runtime_tracks_all_sessions() {
+        use clap::Parser as _;
+        let base = std::env::temp_dir().join(format!("cr-mermaid-bundles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let diagram = "```mermaid\nflowchart LR\n A[Sample] --> B[Result]\n```";
+        for (name, root_has_diagram, child_has_diagram) in [
+            ("none", false, false),
+            ("root", true, false),
+            ("child", false, true),
+        ] {
+            let dir = base.join(name);
+            let children = dir.join("sess/subagents");
+            std::fs::create_dir_all(&children).unwrap();
+            let source = dir.join("sess.jsonl");
+            let message = |text: &str| {
+                serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}}).to_string() + "\n"
+            };
+            let root = message(if root_has_diagram { diagram } else { "A synthetic root without a diagram." })
+                + "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"spawn\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"gp\",\"description\":\"Sample child\",\"prompt\":\"Sample work\"}}]}}\n"
+                + "{\"type\":\"user\",\"toolUseResult\":{\"agentId\":\"a1\",\"status\":\"async_launched\"},\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"spawn\",\"content\":\"async_launched\"}]}}\n";
+            std::fs::write(&source, root).unwrap();
+            std::fs::write(
+                children.join("agent-a1.jsonl"),
+                message(if child_has_diagram {
+                    diagram
+                } else {
+                    "A synthetic child without a diagram."
+                }),
+            )
+            .unwrap();
+            let output = dir.join("bundle");
+            let args = crate::Args::parse_from([
+                "agent-replay",
+                source.to_str().unwrap(),
+                "--dump-all-html",
+                output.to_str().unwrap(),
+            ]);
+            dump_all_html(&args, &source).unwrap();
+            let html = std::fs::read_to_string(output.join("index.html")).unwrap();
+            assert!(
+                output.join("a1.jsonl").exists(),
+                "the child must be included: {name}"
+            );
+            assert_eq!(
+                html.contains("id=\"mermaid-runtime\""),
+                root_has_diagram || child_has_diagram,
+                "runtime presence for {name}"
+            );
+            if !root_has_diagram && !child_has_diagram {
+                assert!(
+                    html.len() < 1_000_000,
+                    "a no-diagram shell grew to {} bytes",
+                    html.len()
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]

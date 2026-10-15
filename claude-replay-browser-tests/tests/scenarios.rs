@@ -340,7 +340,7 @@ fn open_page(surface: Surface, fx: &Fixture, port: u16, extra: &str) -> Opened {
             let stores = Stores {
                 root: fx.base.join("stores"),
             };
-            let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
+            let monitor = Monitor::spawn(Kind::V1, port, &fx.base, Some(&stores), true);
             monitor.pair(&tab);
             monitor.open(
                 &tab,
@@ -375,14 +375,24 @@ fn open_page(surface: Surface, fx: &Fixture, port: u16, extra: &str) -> Opened {
 /// Both surfaces on ONE v2 monitor, so a server restart can be driven: the classic page is the
 /// splice (`?ui=classic&session=`, the same export.js DOM in the document), the app shell is
 /// `?ui=app&session=`. The monitor is owned by the returned page and can be respawned.
-fn open_on_v2(surface: Surface, fx: &Fixture, port: u16) -> Opened {
+/// The surface on a MONITOR process, for a case whose point is the server (a restart): the app
+/// shell on `agent-monitor`, the classic page as the v2 splice. The classic leg is the monitor's
+/// classic view, which retires (design/classic-view-deprecation.md, stage 3 deletes it with v2).
+fn monitor_kind(surface: Surface) -> Kind {
+    match surface {
+        Surface::Classic => Kind::V2,
+        Surface::AppShell => Kind::V1,
+    }
+}
+
+fn open_on_monitor(surface: Surface, fx: &Fixture, port: u16) -> Opened {
     let (browser, tab) = harness::chrome_tab();
     harness::track_idle(&tab);
     watch_for_settle(&tab);
     let stores = Stores {
         root: fx.base.join("stores"),
     };
-    let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
+    let monitor = Monitor::spawn(monitor_kind(surface), port, &fx.base, Some(&stores), true);
     monitor.pair(&tab);
     let (query, ready, diag) = match surface {
         Surface::Classic => (format!("?ui=classic&session={}", sid_of(fx)), "document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3", "document.querySelectorAll('#stream [data-turn]').length"),
@@ -406,14 +416,14 @@ fn open_on_v2(surface: Surface, fx: &Fixture, port: u16) -> Opened {
 
 /// Kill the page's monitor and start a new one on the same port over the same state and
 /// stores — a server restart under a watching page.
-fn restart_monitor(page: &mut Opened, fx: &Fixture, port: u16) {
+fn restart_monitor(page: &mut Opened, surface: Surface, fx: &Fixture, port: u16) {
     let stores = Stores {
         root: fx.base.join("stores"),
     };
     page.monitor = None; // reaped
     std::thread::sleep(Duration::from_millis(800));
     page.monitor = Some(Monitor::spawn(
-        Kind::V2,
+        monitor_kind(surface),
         port,
         &fx.base,
         Some(&stores),
@@ -1837,7 +1847,7 @@ fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, p
         "the whole fixture is there before the restart ({last} of {})",
         fx.turns
     );
-    restart_monitor(page, fx, port);
+    restart_monitor(page, surface, fx, port);
     let t0 = std::time::Instant::now();
     let mut back = false;
     while t0.elapsed() < Duration::from_secs(25) {
@@ -1854,7 +1864,7 @@ fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, p
     settle();
     let held = turn_at_top(&tab, surface);
     assert!(held >= 0 && held < last, "the reader scrolled up ({held})");
-    restart_monitor(page, fx, port);
+    restart_monitor(page, surface, fx, port);
     std::thread::sleep(Duration::from_millis(6000));
     let after = turn_at_top(&tab, surface);
     assert!(
@@ -1868,7 +1878,7 @@ fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, p
 fn classic_page_resumes_after_a_server_restart() {
     let _serial = serial();
     let fx = fixture("scenario-restart-classic", 40);
-    let mut page = open_on_v2(Surface::Classic, &fx, 2859);
+    let mut page = open_on_monitor(Surface::Classic, &fx, 2859);
     scenario_restart_resumes(&mut page, Surface::Classic, &fx, 2859);
 }
 
@@ -1877,7 +1887,7 @@ fn classic_page_resumes_after_a_server_restart() {
 fn app_shell_resumes_after_a_server_restart() {
     let _serial = serial();
     let fx = fixture("scenario-restart-app", 40);
-    let mut page = open_on_v2(Surface::AppShell, &fx, 2860);
+    let mut page = open_on_monitor(Surface::AppShell, &fx, 2860);
     scenario_restart_resumes(&mut page, Surface::AppShell, &fx, 2860);
 }
 
@@ -13572,7 +13582,7 @@ fn both_shells_open_a_file_from_the_session_s_own_scratch() {
         let stores = Stores {
             root: fx.base.join("stores"),
         };
-        let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
+        let monitor = Monitor::spawn(monitor_kind(surface), port, &fx.base, Some(&stores), true);
         monitor.pair(&tab);
         let (ui, ready) = match surface {
             Surface::Classic => ("classic", "document.querySelectorAll('#stream .blk').length >= 3"),
@@ -14816,7 +14826,7 @@ fn app_shell_the_rail_wears_each_agent_s_mark() {
         "019a0000-0000-7000-8000-000000000299",
         &harness::codex_tool_session("019a0000-0000-7000-8000-000000000299", 2),
     );
-    let m = Monitor::spawn(Kind::V2, 3052, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 3052, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     m.open(&tab, "?ui=app");
@@ -14917,7 +14927,7 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
     )
     .unwrap();
     stores.codex_session(codex, &harness::codex_tool_session(codex, 2));
-    let m = Monitor::spawn(Kind::V2, 3054, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 3054, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     m.open(&tab, "?ui=app");
@@ -15727,7 +15737,7 @@ fn both_shells_open_a_file_from_the_session_s_job_workspace() {
         let stores = Stores {
             root: fx.base.join("stores"),
         };
-        let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
+        let monitor = Monitor::spawn(monitor_kind(surface), port, &fx.base, Some(&stores), true);
         monitor.pair(&tab);
         let (ui, ready) = match surface {
             Surface::Classic => ("classic", "document.querySelectorAll('#stream .blk').length >= 3"),
@@ -16102,7 +16112,7 @@ fn app_shell_command_k_is_a_jump_to_ranked_by_recency() {
     )
     .unwrap();
 
-    let m = Monitor::spawn(Kind::V2, 3044, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 3044, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     m.open(&tab, "?ui=app");
@@ -16428,6 +16438,101 @@ fn scenario_a_hook_that_added_context_is_named_and_turns_keep_their_numbers() {
                 "the Turns count: {seen}"
             );
         }
+    }
+}
+
+/// #s92: a session whose second turn reads a file, after which a hook put that directory's
+/// instructions in the model's context (`hook_additional_context`, client 2.1.296: its content an
+/// array of strings, its `toolUseID` the call's id with a `-context` suffix). Written by hand.
+fn hook_after_tool_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    let mut t = String::new();
+    for (i, q) in ["first prompt", "second prompt", "third prompt"]
+        .iter()
+        .enumerate()
+    {
+        let at = 290 - i as u64 * 20;
+        t += &user_at(q, &now_minus(at));
+        if i == 1 {
+            t += &harness::pending_call_at(
+                "read_s92",
+                "Read",
+                "{\"file_path\":\"/r/docs/guide-s92.md\"}",
+                &now_minus(at - 1),
+            );
+            t += &tool_result_text("read_s92", "the guide", &now_minus(at - 2));
+            t += &format!(
+                "{{\"type\":\"attachment\",\"timestamp\":\"{}\",\"attachment\":{{\"type\":\"hook_additional_context\",\
+\"content\":[\"PROBE-S92 Contents of /r/docs/AGENTS.md:\\nkeep the guide short\"],\"hookName\":\"tool.call\",\
+\"toolUseID\":\"read_s92-context\",\"hookEvent\":\"PostToolUse\"}}}}\n",
+                now_minus(at - 3)
+            );
+        }
+        t += &assistant_at(&answer, &now_minus(at - 5));
+    }
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 3,
+    }
+}
+
+/// #s92: what a hook put in the model's context after a tool call is named after that call's card,
+/// and the turns keep their numbers. The sibling of #371's case, on both pages.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_hook_that_added_context_after_a_tool_is_named_after_it() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = hook_after_tool_fixture(match surface {
+            Surface::Classic => "hook-after-tool-classic",
+            Surface::AppShell => "hook-after-tool-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3087 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        let seen: serde_json::Value = eval(
+            &page.tab,
+            "(function(){ var t = document.body.innerText; \
+               var note = t.indexOf('tool.call added context: PROBE-S92 Contents of /r/docs/AGENTS.md:'); \
+               var read = t.indexOf('guide-s92.md'); \
+               var turns = Array.from(document.querySelectorAll('.uturn[data-turn], .turn.user[data-turn]')) \
+                 .map(function(e){ return Number(e.dataset.turn); }); \
+               return JSON.stringify({ note: note, read: read, more: t.indexOf('(+1 more line)') >= 0, turns: turns }); })()",
+        )
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+        let (note, read) = (
+            seen["note"].as_i64().unwrap_or(-1),
+            seen["read"].as_i64().unwrap_or(-1),
+        );
+        assert!(
+            note >= 0,
+            "{surface:?}: the page names the hook and the first line it added: {seen}"
+        );
+        assert!(
+            read >= 0 && read < note,
+            "{surface:?}: …after the card of the call it followed: {seen}"
+        );
+        assert_eq!(
+            seen["more"],
+            serde_json::json!(true),
+            "{surface:?}: …and says there is more: {seen}"
+        );
+        assert_eq!(
+            seen["turns"],
+            serde_json::json!([1, 2, 3]),
+            "{surface:?}: the turns keep their numbers: {seen}"
+        );
     }
 }
 
@@ -17625,4 +17730,148 @@ fn peer_fixture(name: &str) -> Fixture {
         path,
         turns: 14,
     }
+}
+
+// ── scenario: a Markdown link the transcript carries runs no script (#s108) ─────────────────
+
+/// A session whose last answer carries Markdown links: the three kinds a page opens (a web
+/// page, a mail address, a fragment) and the schemes it must not, written the ways a browser
+/// still reads as those schemes (upper case, a tab hidden in a character reference). Every
+/// script target writes `localStorage.s108` with where it ran, so a script that ran with the
+/// page's ORIGIN — in the page, or in the `about:blank` a `target=_blank` click opens, which
+/// inherits it — leaves a mark the page can read.
+fn fixture_markdown_links(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let js = "javascript:localStorage.setItem('s108','js:'+location.href);void(0)";
+    let text = format!(
+        "Links: [web](https://example.com/s108) [mail](mailto:someone@example.com) \
+         [here](#s108) [js]({js}) \
+         [upper](JAVASCRIPT:localStorage.setItem('s108','upper');void(0)) \
+         [tab](java&#x09;script:localStorage.setItem('s108','tab');void(0)) \
+         [vb](vbscript:msgbox) \
+         [data](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==) \
+         [file](file:///etc/hosts) ![pic]({js})"
+    );
+    let mut jsonl = long_session(100, Shape::default());
+    jsonl.push_str(&assistant_at(&text, &harness::at("50:00")));
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture {
+        base,
+        path,
+        turns: 100,
+    }
+}
+
+/// The links paragraph's anchors and the words drawn in its place, as the page holds them.
+const LINKS_PROBE: &str = r#"(() => {
+  const p = [...document.querySelectorAll('p')].find(p => p.textContent.startsWith('Links:'));
+  if (!p) return null;
+  return {
+    anchors: [...p.querySelectorAll('a')].map(a => ({ text: a.textContent, href: a.getAttribute('href'), protocol: a.protocol })),
+    text: p.textContent,
+  };
+})()"#;
+
+fn scenario_a_markdown_link_runs_no_script(
+    browser: &headless_chrome::Browser,
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    if !at_tail(tab, surface) {
+        jump_to_end(tab, surface);
+    }
+    until(
+        tab,
+        &format!("{LINKS_PROBE} !== null"),
+        "the links paragraph to render",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(-300)",
+    );
+    eval(tab, "localStorage.removeItem('s108')");
+    let tabs_before = browser.get_tabs().lock().unwrap().len();
+    // A real click (mouse events at the element's middle, as a reader's) on the word `js`,
+    // whatever element now holds it.
+    tab.evaluate(
+        r#"(() => {
+          const p = [...document.querySelectorAll('p')].find(p => p.textContent.startsWith('Links:'));
+          const el = [...p.querySelectorAll('a, span')].find(e => e.textContent === 'js');
+          el.id = 's108-js';
+        })()"#,
+        false,
+    )
+    .unwrap();
+    tab.find_element("#s108-js").unwrap().click().unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    let tabs: Vec<String> = browser
+        .get_tabs()
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|t| t.get_url())
+        .collect();
+    let mark = eval(tab, "localStorage.getItem('s108')");
+    let seen = probe(tab, LINKS_PROBE);
+    eprintln!(
+        "s108 {surface:?}: click on `js` -> tabs {tabs_before} -> {} {tabs:?}, localStorage.s108 = {mark}; anchors {}",
+        tabs.len(),
+        seen["anchors"]
+    );
+
+    // What a page opens stays a link.
+    let anchors = seen["anchors"].as_array().expect("anchors").clone();
+    let href_of = |text: &str| {
+        anchors
+            .iter()
+            .find(|a| a["text"] == text)
+            .and_then(|a| a["href"].as_str().map(str::to_owned))
+    };
+    assert_eq!(href_of("web").as_deref(), Some("https://example.com/s108"));
+    assert_eq!(
+        href_of("mail").as_deref(),
+        Some("mailto:someone@example.com")
+    );
+    assert_eq!(href_of("here").as_deref(), Some("#s108"));
+    // Nothing else is: every anchor the paragraph holds goes to the web or to mail.
+    for a in &anchors {
+        let protocol = a["protocol"].as_str().unwrap_or("");
+        assert!(
+            ["http:", "https:", "mailto:"].contains(&protocol),
+            "{surface:?}: a Markdown link to {} is live ({a})",
+            a["href"]
+        );
+    }
+    // The words are still there, as text.
+    let text = seen["text"].as_str().unwrap_or("");
+    for word in ["js", "upper", "tab", "vb", "data", "file", "[image] pic"] {
+        assert!(
+            text.contains(word),
+            "{surface:?}: `{word}` is gone from {text:?}"
+        );
+    }
+    // And the click did nothing: no tab, no script with the page's origin.
+    assert_eq!(mark, serde_json::Value::Null, "{surface:?}: the script ran");
+    assert_eq!(
+        tabs.len(),
+        tabs_before,
+        "{surface:?}: the click opened {tabs:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_markdown_link_runs_no_script() {
+    let _serial = serial();
+    let fx = fixture_markdown_links("scenario-md-links-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_markdown_link_runs_no_script(&page._browser, &page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_markdown_link_runs_no_script() {
+    let _serial = serial();
+    let fx = fixture_markdown_links("scenario-md-links-app");
+    let page = open(Surface::AppShell, &fx, 2905);
+    scenario_a_markdown_link_runs_no_script(&page._browser, &page.tab, Surface::AppShell);
 }

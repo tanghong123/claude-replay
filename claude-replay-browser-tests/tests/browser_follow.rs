@@ -1014,7 +1014,7 @@ fn the_app_shell_hides_and_restores_a_session() {
         &harness::long_session(12, harness::Shape::default()),
     );
     let store_rows = 1;
-    let monitor = Monitor::spawn(Kind::V2, 2832, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2832, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to("http://127.0.0.1:2832/?ui=app").unwrap();
@@ -1157,7 +1157,7 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
         "aExplore-1",
         &harness::long_session(6, harness::Shape::default()),
     );
-    let monitor = Monitor::spawn(Kind::V2, 2833, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2833, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1269,7 +1269,7 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
     stores.claude_session(&sid, &harness::long_session(80, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2834, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2834, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1361,7 +1361,7 @@ fn the_app_shell_keys_step_turns_and_heads() {
             },
         ),
     );
-    let monitor = Monitor::spawn(Kind::V2, 2835, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2835, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1444,7 +1444,7 @@ fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
     stores.claude_session(&sid, &harness::long_session(80, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2836, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2836, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1941,6 +1941,66 @@ fn both_shells_list_a_session_started_in_another_s_scratch_under_its_project() {
             .iter()
             .any(|h| h.as_str().unwrap_or("").starts_with("wt-")),
         "classic rail: no group is named after the worktree: {rail}"
+    );
+}
+
+/// #s97: for one release the classic rail says it is going, and its control is the App switch:
+/// following it is REMEMBERED, so the bare monitor URL then serves the app shell. The classic
+/// view retires (design/classic-view-deprecation.md); this case goes with it in stage 3.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_classic_rail_says_it_is_going_and_its_notice_switches_to_the_app() {
+    let _serial = serial();
+    let base = base("rail-deprecation");
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        "dddddddd-0000-4000-8000-0000000000a7",
+        &harness::user_at("hello", &harness::at("09:00")),
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3090, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    monitor.open(&tab, "?ui=classic");
+    harness::until(
+        &tab,
+        "!!document.getElementById('deprecation')",
+        "the classic rail with its notice",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 300)",
+    );
+    let notice = harness::probe(
+        &tab,
+        "(function(){ var n = document.getElementById('deprecation'), r = n.getBoundingClientRect(); return { text: n.innerText, shown: r.height > 0 && r.width > 0, button: !!n.querySelector('button') }; })()",
+    );
+    assert!(
+        notice["shown"] == true
+            && notice["button"] == true
+            && notice["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("goes in the next release")
+            && notice["text"].as_str().unwrap_or("").contains("/session"),
+        "the rail says the classic view and /session are going, with a way across: {notice}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('deprecation-app').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!!document.querySelector('#app') && !document.getElementById('deprecation')",
+        "the app shell after following the notice",
+        Duration::from_secs(20),
+        "location.href + ' ' + document.body.innerText.slice(0, 200)",
+    );
+    // Remembered, not a one-request override: the bare URL now serves the app shell.
+    monitor.open(&tab, "");
+    harness::until(
+        &tab,
+        "!!document.querySelector('#app') && !document.getElementById('deprecation')",
+        "the bare URL to serve the app shell, remembered",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
     );
 }
 
@@ -2459,7 +2519,7 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000054".to_string();
     stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2843, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2843, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let url = format!("http://127.0.0.1:2843/?ui=app&session={sid}");
@@ -2699,7 +2759,7 @@ fn the_app_shell_holds_a_scroll_a_transaction_arrives_on_top_of() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000213".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2919, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2919, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
@@ -2815,7 +2875,7 @@ fn the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing() {
         .map(|(a, b, c)| (a.as_str(), b.as_str(), *c))
         .collect();
     stores.claude_tasks(&sid, &borrowed);
-    let monitor = Monitor::spawn(Kind::V2, 2920, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2920, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     // Tall enough that every card is wholly visible, which is the owner's situation: the column
     // still overflows, but only by its own bottom padding.
@@ -2998,7 +3058,7 @@ fn the_app_shell_filters_a_pane_to_what_is_live_from_the_outline_menu() {
             ("7", "", "completed"),
         ],
     );
-    let monitor = Monitor::spawn(Kind::V2, 2921, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2921, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
@@ -3178,7 +3238,7 @@ fn the_app_shell_says_what_it_is_doing_while_a_session_loads() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000221".to_string();
     stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2922, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2922, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
@@ -3236,7 +3296,7 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000055".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2844, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2844, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let url = format!("http://127.0.0.1:2844/?ui=app&session={sid}");
@@ -3447,7 +3507,7 @@ fn the_app_shell_orders_tasks_by_group_then_id() {
             ("3", "three, pending", "pending"),
         ],
     );
-    let monitor = Monitor::spawn(Kind::V2, 2845, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2845, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2845/?ui=app&session={sid}"))
@@ -3512,7 +3572,7 @@ fn the_app_shell_turns_pane_scrolls_itself() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000058".to_string();
     stores.claude_session(&sid, &harness::long_session(160, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2848, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2848, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2848/?ui=app&session={sid}"))
@@ -3595,7 +3655,7 @@ fn the_app_shell_tasks_pane_scrolls_itself() {
         .map(|(a, b, c)| (a.as_str(), b.as_str(), *c))
         .collect();
     stores.claude_tasks(&sid, &borrowed);
-    let monitor = Monitor::spawn(Kind::V2, 2849, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2849, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2849/?ui=app&session={sid}"))
@@ -3668,7 +3728,7 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
         .map(|(a, b, c)| (a.as_str(), b.as_str(), *c))
         .collect();
     stores.claude_tasks(&sid, &borrowed);
-    let monitor = Monitor::spawn(Kind::V2, 2846, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2846, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2846/?ui=app&session={sid}"))
@@ -3862,7 +3922,7 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
         .map(|(a, b, c)| (a.as_str(), b.as_str(), *c))
         .collect();
     stores2.claude_tasks(&sid2, &borrowed2);
-    let monitor2 = Monitor::spawn(Kind::V2, 2847, &base2, Some(&stores2), true);
+    let monitor2 = Monitor::spawn(Kind::V1, 2847, &base2, Some(&stores2), true);
     let tab2 = browser.new_tab().unwrap();
     monitor2.pair(&tab2);
     tab2.navigate_to(&format!("http://127.0.0.1:2847/?ui=app&session={sid2}"))
@@ -3927,7 +3987,7 @@ fn the_app_shell_opens_a_task_details_popover() {
     );
     // Give the running task a two-paragraph description and a dependency, as taskq writes them.
     std::fs::write(dir.join("2.json"), r#"{"id":"2","subject":"two, running","description":"First paragraph of the task.\n\nSecond paragraph, with detail.","activeForm":"Doing two","status":"in_progress","blocks":["3"],"blockedBy":["1"]}"#).unwrap();
-    let monitor = Monitor::spawn(Kind::V2, 2867, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2867, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2867/?ui=app&session={sid}"))
@@ -4044,7 +4104,7 @@ fn the_app_shell_agents_pane_switches_to_the_sub_agent() {
         "aExplore-61",
         &harness::long_session(6, harness::Shape::default()),
     );
-    let monitor = Monitor::spawn(Kind::V2, 2850, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2850, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let url = format!("http://127.0.0.1:2850/?ui=app&session={parent}");
@@ -4125,7 +4185,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
         .map(|(a, b, c)| (a.as_str(), b.as_str(), *c))
         .collect();
     stores.claude_tasks(&sid, &borrowed);
-    let monitor = Monitor::spawn(Kind::V2, 2869, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2869, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     tab.set_bounds(headless_chrome::types::Bounds::Normal {
         left: Some(0),
@@ -4357,7 +4417,7 @@ fn the_app_shell_options_popover_fits_and_scrolls() {
     }
     transcript += &harness::assistant_at("done with all of those", &harness::now_minus(20));
     stores.claude_session(&sid, &transcript);
-    let monitor = Monitor::spawn(Kind::V2, 2876, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2876, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
@@ -4503,7 +4563,7 @@ fn the_app_shell_can_bring_a_collapsed_outline_back() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000137".to_string();
     stores.claude_session(&sid, &harness::long_session(12, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2877, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2877, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
@@ -4581,7 +4641,7 @@ fn the_app_shell_outline_is_an_accordion() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000088".to_string();
     stores.claude_session(&sid, &harness::long_session(40, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2907, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2907, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
@@ -4660,7 +4720,7 @@ fn the_app_shell_info_subsections_fold_and_the_choice_persists() {
         &second,
         &harness::long_session(4, harness::Shape::default()),
     );
-    let monitor = Monitor::spawn(Kind::V2, 2908, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2908, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={first}"));
@@ -4772,7 +4832,7 @@ fn the_app_shell_info_and_turns_panes_show_the_compaction() {
         );
     }
     stores.claude_session(&sid, &transcript);
-    let monitor = Monitor::spawn(Kind::V2, 2868, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2868, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2868/?ui=app&session={sid}"))
@@ -4878,7 +4938,7 @@ fn the_app_shell_theme_toggle_is_visible_and_works() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000075".to_string();
     stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2870, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2870, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2870/?ui=app&session={sid}"))
@@ -4934,7 +4994,7 @@ fn the_app_shell_open_counts_nothing_as_new() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000084".to_string();
     let path = stores.claude_session(&sid, &harness::long_session(40, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2871, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2871, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let url = format!("http://127.0.0.1:2871/?ui=app&session={sid}");
@@ -5041,7 +5101,7 @@ fn the_app_shell_finds_the_parent_from_a_child_opened_first() {
         "aExplore-82",
         &harness::long_session(6, harness::Shape::default()),
     );
-    let monitor = Monitor::spawn(Kind::V2, 2872, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2872, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to("http://127.0.0.1:2872/?ui=app&session=aExplore-82")
@@ -5086,7 +5146,7 @@ fn the_app_shell_expands_every_group_again() {
             &harness::long_session(4, harness::Shape::default()),
         );
     }
-    let monitor = Monitor::spawn(Kind::V2, 2874, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2874, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let url = "http://127.0.0.1:2874/?ui=app";
@@ -5157,7 +5217,7 @@ fn the_app_shell_resizes_the_session_list() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000096".to_string();
     stores.claude_session(&sid, &harness::long_session(10, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2876, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2876, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let url = format!("http://127.0.0.1:2876/?ui=app&session={sid}");
@@ -5387,7 +5447,7 @@ fn the_app_shell_lists_the_published_artifacts() {
         );
     }
     stores.claude_session(&sid, &transcript);
-    let monitor = Monitor::spawn(Kind::V2, 2875, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2875, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2875/?ui=app&session={sid}"))
@@ -5509,7 +5569,7 @@ fn the_app_shell_outline_panes_are_drawers() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000139".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2914, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2914, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     tab.set_bounds(headless_chrome::types::Bounds::Normal {
         left: Some(0),
@@ -5665,7 +5725,7 @@ fn the_app_shell_outline_toggle_completes_the_slide() {
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000140".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2915, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2915, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     tab.set_bounds(headless_chrome::types::Bounds::Normal {
         left: Some(0),
@@ -5802,7 +5862,7 @@ fn shell_with_a_session(
     );
     transcript += &harness::assistant_at("noted", &harness::now_minus(50));
     stores.claude_session(&sid, &transcript);
-    let monitor = Monitor::spawn(Kind::V2, port, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
@@ -5912,7 +5972,7 @@ fn the_app_shell_size_control_reads_as_a_relative_step() {
     transcript += &harness::write_tool_at("cw1", "/step.py", 12, &harness::now_minus(58));
     transcript += &harness::assistant_at("written", &harness::now_minus(50));
     stores.claude_session(&sid, &transcript);
-    let _monitor = Monitor::spawn(Kind::V2, 2879, &base, Some(&stores), true);
+    let _monitor = Monitor::spawn(Kind::V1, 2879, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     _monitor.pair(&tab);
     _monitor.open(&tab, &format!("?ui=app&session={sid}"));
@@ -6334,7 +6394,7 @@ fn the_app_shell_a_panes_own_list_takes_the_wheel() {
     let sid = "cccccccc-0000-4000-8000-000000000157".to_string();
     // Enough turns that the Turns list overflows its own max-height and is genuinely scrollable.
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2896, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2896, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
@@ -6424,7 +6484,7 @@ fn the_app_shell_drawers_answer_where_the_gesture_began_and_the_pressure_below()
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000206".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2918, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2918, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     // Tall enough that every card is wholly visible: no pressure from below.
     tab.set_bounds(headless_chrome::types::Bounds::Normal {
@@ -6536,7 +6596,7 @@ fn the_app_shell_renders_nothing_for_a_record_with_nothing_to_show() {
     transcript += &harness::tool_result_text("t-empty", "", &harness::now_minus(70));
     transcript += &harness::assistant_at("done", &harness::now_minus(60));
     stores.claude_session(&sid, &transcript);
-    let monitor = Monitor::spawn(Kind::V2, 2897, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2897, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
@@ -6597,7 +6657,7 @@ fn the_app_shell_ranks_progress_above_thinking_and_activity() {
     transcript += &harness::tool_result_at("t-rank", &harness::now_minus(80));
     transcript += &harness::assistant_at("done", &harness::now_minus(70));
     stores.claude_session(&sid, &transcript);
-    let monitor = Monitor::spawn(Kind::V2, 2898, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2898, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
@@ -6804,7 +6864,7 @@ fn the_app_shell_panes_open_on_what_is_live() {
             ("4", "four, pending", "pending"),
         ],
     );
-    let monitor = Monitor::spawn(Kind::V2, 2885, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2885, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let open = |tab: &headless_chrome::Tab| {
@@ -7196,7 +7256,7 @@ fn the_app_shell_counts_the_blocked_sessions() {
     let _serial = serial();
     let base = base("appshell-buckets");
     let world = bucket_world(&base);
-    let monitor = Monitor::spawn(Kind::V2, 2916, &base, Some(&world.stores), false);
+    let monitor = Monitor::spawn(Kind::V1, 2916, &base, Some(&world.stores), false);
     let (_browser, tab) = harness::chrome_tab();
     tab.navigate_to("http://127.0.0.1:2916/?ui=app").unwrap();
     tab.wait_until_navigated().unwrap();
@@ -7319,7 +7379,7 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     let _serial = serial();
     let base = base("appshell-filter");
     let world = bucket_world(&base);
-    let monitor = Monitor::spawn(Kind::V2, 2917, &base, Some(&world.stores), false);
+    let monitor = Monitor::spawn(Kind::V1, 2917, &base, Some(&world.stores), false);
     let (_browser, tab) = harness::chrome_tab();
     tab.navigate_to("http://127.0.0.1:2917/?ui=app").unwrap();
     tab.wait_until_navigated().unwrap();
@@ -7548,7 +7608,7 @@ fn a_fresh_monitor_serves_a_session_before_any_page_lists_them() {
     let stores = harness::Stores::new(&base);
     let sid = "aaaa1111-0000-4000-8000-000000000309";
     stores.claude_session(sid, &harness::long_session(3, harness::Shape::default()));
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2819, &base, Some(&stores), false);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2819, &base, Some(&stores), false);
     let get = |path: &str| -> (u16, String) {
         use std::io::{Read, Write};
         let mut s = std::net::TcpStream::connect(("127.0.0.1", 2819)).unwrap();
@@ -7735,7 +7795,7 @@ fn phone_world_at(
         PHONE_OTHER,
         &harness::long_session(4, harness::Shape::default()),
     );
-    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = phone_tab(&m, w, h);
     (m, browser, tab, path)
 }
@@ -8363,7 +8423,7 @@ fn a_phone_pinches_an_image_to_zoom() {
     );
     let sid = "cccc3333-0000-4000-8000-000000000313";
     stores.claude_session(sid, &t);
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2806, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2806, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     harness::phone(&tab, 390, 844);
     m.pair(&tab);
@@ -8442,7 +8502,7 @@ fn the_app_shell_never_dims_a_hit_inside_an_activity_span() {
         + &harness::tool_result_lines("t-369", 3, &harness::now_minus(78))
         + &harness::assistant_at("done reading", &harness::now_minus(70));
     stores.claude_session(PHONE_SID, &transcript);
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2738, &base, Some(&stores), false);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2738, &base, Some(&stores), false);
     let (_browser, tab) = harness::chrome_tab();
     tab.navigate_to(&m.url(&format!("?ui=app&session={PHONE_SID}")))
         .unwrap();
@@ -8507,7 +8567,7 @@ fn a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not() {
     let state = base.join("state-2737");
     std::fs::create_dir_all(&state).unwrap();
     std::fs::write(state.join("mask-policy.json"), r#"{"mode":"remote"}"#).unwrap();
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2737, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2737, &base, Some(&stores), true);
     let prompt = "(function(){ var t = [].slice.call(document.querySelectorAll('.transcript .turn.user')).map(function (e) { return e.innerText; }).filter(function (x) { return /deploy key/.test(x); }); return t.length ? t[t.length - 1] : ''; })()";
     let read = |tab: &headless_chrome::Tab, what: &str| -> String {
         harness::until(
@@ -8575,7 +8635,7 @@ fn a_phone_over_the_tailnet_reads_the_session_gzipped() {
         PHONE_SID,
         &harness::long_session(40, harness::Shape::default()),
     );
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2805, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2805, &base, Some(&stores), true);
     // `phone.test` is not a loopback name, so Chrome would hand it to the machine's proxy (which
     // cannot resolve it, and answers with an empty error): no proxy, and the name mapped here.
     let (_browser, tab) = harness::chrome_with_tab(&[
@@ -8835,7 +8895,7 @@ fn a_paired_phone_over_the_tailnet_reads_a_file() {
     .replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(PHONE_SID, &transcript);
     let m = harness::Monitor::spawn_with(
-        harness::Kind::V2,
+        harness::Kind::V1,
         2714,
         &base,
         Some(&stores),
@@ -8974,8 +9034,8 @@ fn a_phone_draws_every_line_of_a_wide_code_block_at_one_size() {
     let stores = harness::Stores::new(&base);
     let mut t = harness::long_session(4, harness::Shape::default());
     t += &harness::write_tool_at("wr1", "/tmp/Cargo.toml", 21, &harness::now_minus(60));
-    stores.claude_session(PHONE_SID, &t);
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2718, &base, Some(&stores), true);
+    let path = stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2718, &base, Some(&stores), true);
     let (_b, tab) = phone_tab(&m, 390, 844);
     let adjust = "(function(){ var s = getComputedStyle(document.documentElement); return (s.webkitTextSizeAdjust || '') + '|' + (s.textSizeAdjust || ''); })()";
     let seen = harness::eval(&tab, adjust);
@@ -8998,11 +9058,23 @@ fn a_phone_draws_every_line_of_a_wide_code_block_at_one_size() {
         Some("[\"12px\"]"),
         "every line of the block at one size"
     );
-    // The classic page is served its own stylesheet; it opts out too.
-    tab.navigate_to(&format!(
-        "http://127.0.0.1:2718/?ui=classic&session={PHONE_SID}"
-    ))
-    .unwrap();
+    // The classic page (export.js, what `--html` and the offline exports serve) has its own
+    // stylesheet; it opts out too. Opened on its own server since #s96: the monitor's classic view,
+    // which framed it, retires (design/classic-view-deprecation.md).
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    for (key, value) in stores.envs() {
+        std::env::set_var(key, value);
+    }
+    let server = start_server(
+        &Args {
+            no_cache: true,
+            ..Default::default()
+        },
+        std::slice::from_ref(&path),
+    )
+    .expect("server starts");
+    tab.navigate_to(&server.url_for_root(0).expect("hosted"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
         &tab,
@@ -9054,7 +9126,7 @@ fn phone_tasks_world(
         .map(|(id, subject, status)| (id.as_str(), subject.as_str(), *status))
         .collect();
     stores.claude_tasks(PHONE_SID, &borrowed);
-    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = phone_tab(&m, 390, 844);
     (m, browser, tab)
 }
@@ -9363,7 +9435,7 @@ fn tail_first_world(
         TAIL_SID,
         &harness::long_session(60, harness::Shape::default()),
     );
-    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     harness::hold_the_head(&tab);
@@ -9844,7 +9916,7 @@ fn a_phone_question_card_keeps_its_option_labels_whole() {
     t += &long_question_at("ask1", &harness::now_minus(80));
     t += &harness::assistant_at("answer 4: refusing them", &harness::now_minus(70));
     stores.claude_session(PHONE_SID, &t);
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2711, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2711, &base, Some(&stores), true);
     let (_b, tab) = phone_tab(&m, 390, 844);
     harness::until(
         &tab,
@@ -9949,7 +10021,7 @@ fn phone_files_world(
         format!("{{\"mode\":\"{policy}\"}}"),
     )
     .unwrap();
-    let m = harness::Monitor::spawn_remote(harness::Kind::V2, port, &base, Some(&stores));
+    let m = harness::Monitor::spawn_remote(harness::Kind::V1, port, &base, Some(&stores));
     let (b, tab) = remote_phone_tab(&m, 390, 844);
     (m, b, tab, paths)
 }
@@ -10346,7 +10418,7 @@ fn a_phone_counts_its_panes_past_ninety_nine() {
         .map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str()))
         .collect();
     stores.claude_tasks(PHONE_SID, &refs);
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2721, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2721, &base, Some(&stores), true);
     let (_b, tab) = phone_tab(&m, 390, 844);
     let counts = "JSON.stringify([].slice.call(document.querySelectorAll('.phone-pane-count')).map(function (c) { var r = c.getBoundingClientRect(), b = c.parentElement.getBoundingClientRect(); return { n: c.hidden ? '' : c.textContent, inside: r.left >= b.left - 1 && r.right <= b.right + 1 && r.top >= b.top - 1 }; }))";
     harness::until(
@@ -10398,7 +10470,7 @@ fn tail_first_phone(
     if !tasks.is_empty() {
         stores.claude_tasks(TAIL_SID, tasks);
     }
-    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     harness::phone(&tab, 390, 844);
     m.pair(&tab);
@@ -10639,7 +10711,7 @@ fn a_phone_fling_over_under_estimated_answers_does_not_jitter() {
         t += &harness::assistant_at(&answer, &harness::rfc3339_secs_ago(ago - 30));
     }
     stores.claude_session(SID, &t);
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2962, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2962, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     harness::phone(&tab, 440, 956);
     m.pair(&tab);
@@ -10821,7 +10893,8 @@ fn a_phone_tail_first_open_counts_the_whole_session() {
 /// A paired browser that follows a link from another origin (a `data:` page here, which is
 /// cross-site) now lands on the app: a refused PAGE navigation retries once from the page itself,
 /// which is same-site and carries the cookie. An unpaired browser still gets the refusal — after
-/// that one retry, and no loop — now as a page that says what to do.
+/// that one retry, and no loop — now as a page that says what to do. #s110: once the retry is
+/// spent, the page's Try again lets a paired browser in with one tap.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
@@ -10832,7 +10905,7 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
         PHONE_SID,
         &harness::long_session(4, harness::Shape::default()),
     );
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2724, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2724, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     m.pair(&tab);
     let target = m.url(&format!("?ui=app&session={PHONE_SID}"));
@@ -10846,6 +10919,33 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
         &tab,
         "location.port === '2724' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
         "a paired browser arriving by a link from another site to land on the session",
+        Duration::from_secs(20),
+        "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
+    );
+    // #s110: with the automatic retry spent (its stamp fresh), the refusal stays on screen, and
+    // its Try again gets the paired browser in with one tap: a same-origin link carries the cookie.
+    harness::eval(
+        &tab,
+        "sessionStorage.setItem('cmauth-retry', String(Date.now()))",
+    );
+    tab.navigate_to(&format!(
+        "data:text/html,<a id=go href=\"{target}\" style=\"font-size:40px\">open the monitor</a>"
+    ))
+    .unwrap();
+    tab.wait_until_navigated().unwrap();
+    tab.find_element("#go").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('a.again') && !document.documentElement.hidden",
+        "the refusal to stay on screen, offering Try again",
+        Duration::from_secs(20),
+        "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
+    );
+    tab.find_element("a.again").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "location.port === '2724' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        "Try again to land the paired browser on the session",
         Duration::from_secs(20),
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
     );
@@ -10941,8 +11041,8 @@ fn a_browser_paired_with_two_servers_on_one_host_stays_paired_with_both() {
         PHONE_SID,
         &harness::long_session(4, harness::Shape::default()),
     );
-    let first = harness::Monitor::spawn(harness::Kind::V2, 2725, &first_base, Some(&stores), true);
-    let second = harness::Monitor::spawn(harness::Kind::V2, 2726, &second_base, None, true);
+    let first = harness::Monitor::spawn(harness::Kind::V1, 2725, &first_base, Some(&stores), true);
+    let second = harness::Monitor::spawn(harness::Kind::V1, 2726, &second_base, None, true);
     assert_ne!(
         first.token(),
         second.token(),
@@ -11394,7 +11494,7 @@ fn the_app_shell_lists_and_opens_a_qwenwork_session() {
         "aaaa1111-0000-4000-8000-000000000358",
         &harness::long_session(6, harness::Shape::default()),
     );
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2735, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2735, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     harness::resize(&tab, 1280.0, 900.0);
     m.pair(&tab);
@@ -11516,7 +11616,7 @@ fn a_code_block_foot_is_one_row_of_glyphs_on_a_phone_and_a_desktop() {
     t += &harness::write_tool_at("w1", "/r/big.py", 200, &harness::at("00:02"));
     t += &harness::assistant_at("written", &harness::at("00:03"));
     stores.claude_session(SID, &t);
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2941, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2941, &base, Some(&stores), true);
     let measure = r#"(async function(){
         document.querySelectorAll('.renderer.closed > button.renderer-head').forEach(function (h) { h.click(); });
         await new Promise(function (r) { requestAnimationFrame(function () { requestAnimationFrame(r); }); });
@@ -11652,7 +11752,7 @@ fn a_phone_reader_who_opens_a_file_and_closes_the_pane_stays_on_its_turn() {
     }
     let t = t.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID, &t);
-    let m = harness::Monitor::spawn(harness::Kind::V2, 2979, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2979, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     harness::phone(&tab, 440, 956);
     m.pair(&tab);
@@ -11778,7 +11878,7 @@ fn landscape_world(
     .concat()
     .replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(PHONE_SID, &t);
-    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     if phone {
         harness::phone(&tab, w, h);
@@ -11948,7 +12048,7 @@ fn drawer_world(
         })
         .collect();
     stores.claude_session(PHONE_SID, &t);
-    let m = harness::Monitor::spawn(harness::Kind::V2, port, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     harness::phone(&tab, w, h);
     if let Some(insets) = insets {
@@ -13139,15 +13239,16 @@ fn workers_world(
         .concat();
         stores.claude_session(sid, &t);
     }
-    // v2 keeps its index under its own cache root, `$XDG_CACHE_HOME/agent-monitor-v2`.
-    let cache = base.join("agent-monitor-v2");
+    // The monitor keeps its index under the cache root the harness gives it (`cache-<port>`). This
+    // seeded v2's `$XDG_CACHE_HOME/agent-monitor-v2` until #s96 moved the app shell cases to v1.
+    let cache = base.join(format!("cache-{port}"));
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(
         cache.join("started-by.json"),
         format!("{{\"{w1}\": \"{coord}\", \"{w2}\": \"{coord}\"}}"),
     )
     .unwrap();
-    let m = Monitor::spawn(Kind::V2, port, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     match phone {
         Some((w, h)) => harness::phone(&tab, w, h),

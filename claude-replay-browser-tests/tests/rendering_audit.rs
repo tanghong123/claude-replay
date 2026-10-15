@@ -43,7 +43,7 @@
 //! case names the bug; over-reach and it names that too. A green audit that has never gone red
 //! is worth nothing, and that is the whole history of this task.
 //!
-//! Run: `cargo build --release -p claude-monitor -p claude-monitor-v2 && cargo test -p
+//! Run: `cargo build --release -p claude-monitor && cargo test -p
 //! claude-replay-browser-tests --test rendering_audit -- --ignored`.
 
 mod harness;
@@ -51,6 +51,8 @@ mod harness;
 use claude_replay_html::html_export::audit::{
     audit_corpus, audit_jsonl, audit_kinds, audit_records,
 };
+use claude_replay_html::start_server;
+use claude_replay_present::Args;
 use harness::{
     base, eval, jump_to_end, long_session, probe, serial, Kind, Monitor, Shape, Stores, Surface,
 };
@@ -105,25 +107,51 @@ fn fixture_audit(name: &str) -> Fixture {
 struct Opened {
     tab: std::sync::Arc<headless_chrome::Tab>,
     _browser: headless_chrome::Browser,
-    _monitor: Monitor,
+    _server: Option<claude_replay_html::LiveServer>,
+    _monitor: Option<Monitor>,
 }
 
-/// Both surfaces on ONE v2 monitor over the SAME store and session — the classic page as the
-/// splice (`?ui=classic`), the app shell as the default. P3 compares the two effect sets, so
-/// they must come from one server and one transcript, not two fixtures that agree by luck.
+/// Both surfaces over the SAME transcript file, so P3 compares two renderings of one session, not
+/// two fixtures that agree by luck: the classic page (export.js, the reference) on the html server,
+/// as the scenarios open it, and the app shell on a monitor. The classic page was the v2 monitor's
+/// splice until #s96; the monitor's classic view retires (design/classic-view-deprecation.md), and
+/// the page it framed is the one measured here, now served on its own.
 fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
     let (browser, tab) = harness::chrome_tab();
     let stores = Stores {
         root: fx.base.join("stores"),
     };
-    let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
-    monitor.pair(&tab);
     let sid = fx.path.file_stem().unwrap().to_string_lossy().to_string();
-    let (query, ready, diag) = match surface {
-        Surface::Classic => (format!("?ui=classic&session={sid}"), "document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3", "document.querySelectorAll('#stream [data-turn]').length"),
-        Surface::AppShell => (format!("?ui=app&session={sid}{}", if std::env::var("AUDIT_TRACE").is_ok() { "&trace=viewport" } else { "" }), "document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3", "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : 'no window'"),
+    let (server, monitor, ready, diag) = match surface {
+        Surface::Classic => {
+            // The html server runs IN this process, so it reads this process's env.
+            std::env::set_var("CLAUDE_REPLAY_CACHE", &fx.base);
+            for (key, value) in stores.envs() {
+                std::env::set_var(key, value);
+            }
+            let args = Args {
+                no_cache: true,
+                ..Default::default()
+            };
+            let server =
+                start_server(&args, std::slice::from_ref(&fx.path)).expect("server starts");
+            let url = server.url_for_root(0).expect("hosted");
+            tab.navigate_to(&url).unwrap();
+            tab.wait_until_navigated().unwrap();
+            (Some(server), None, "document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3", "document.querySelectorAll('#stream [data-turn]').length")
+        }
+        Surface::AppShell => {
+            let monitor = Monitor::spawn(Kind::V1, port, &fx.base, Some(&stores), true);
+            monitor.pair(&tab);
+            let trace = if std::env::var("AUDIT_TRACE").is_ok() {
+                "&trace=viewport"
+            } else {
+                ""
+            };
+            monitor.open(&tab, &format!("?ui=app&session={sid}{trace}"));
+            (None, Some(monitor), "document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3", "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : 'no window'")
+        }
     };
-    monitor.open(&tab, &query);
     harness::until(
         &tab,
         ready,
@@ -134,6 +162,7 @@ fn open(surface: Surface, fx: &Fixture, port: u16) -> Opened {
     Opened {
         tab,
         _browser: browser,
+        _server: server,
         _monitor: monitor,
     }
 }

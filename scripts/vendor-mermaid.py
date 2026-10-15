@@ -3,6 +3,7 @@
 
 import argparse
 import base64
+import gzip
 import hashlib
 import io
 import json
@@ -40,6 +41,10 @@ def main() -> None:
                 raise ValueError(f"Mermaid {args.version}: missing {member}")
             files[name] = source.read()
 
+    # Deterministic derived assets: keep upstream files untouched for provenance checks.
+    files["mermaid.min.js.gz"] = gzip.compress(files["mermaid.min.js"], compresslevel=9, mtime=0)
+    files["runtime-path.txt"] = f"/mermaid/{args.version}.js".encode()
+
     root = Path(__file__).resolve().parent.parent / "vendor" / "mermaid"
     root.mkdir(parents=True, exist_ok=True)
     for name, data in files.items():
@@ -53,7 +58,9 @@ def main() -> None:
         f"Source: {metadata['dist']['tarball']}\n\n"
         f"Archive integrity: `{metadata['dist']['integrity']}`.\n\n"
         "`mermaid.min.js` and `LICENSE` are unmodified public npm release files. "
-        "The HTML crate embeds the browser runtime and serves it at `/mermaid.js`. "
+        "The HTML crate embeds one gzip copy, with deterministic `mtime=0`, and serves it at "
+        f"`/mermaid/{args.version}.js` with immutable caching. "
+        "`mermaid.min.js.gz` and `runtime-path.txt` are generated from that pinned release. "
         "The transcript loads it only when a Mermaid fence is mounted; offline exports "
         "carry the same runtime. No mdrev viewer, CDN, Node runtime, or build-time "
         "download is required to render a diagram.\n\n"

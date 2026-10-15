@@ -624,6 +624,11 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "edited_text_file",
     "environment",
     "file",
+    // #s92 (client 2.1.296): `{type, content: [string], hookName, toolUseID, hookEvent}`, what a
+    // hook put in the model's context after a tool call (`toolUseID` is that call's id with a
+    // `-context` suffix). Drawn as a note like `hook_success` (`hook_note`); listed so one whose
+    // content is empty, drawn as nothing, is not reported as new.
+    "hook_additional_context",
     "hook_cancelled",
     "hook_non_blocking_error",
     // #371 (client 2.1.288): a hook that ran and succeeded. Drawn as a note when it injected
@@ -647,6 +652,16 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "read_truncation_notice",
     "remote_session_change",
     "session_context",
+    // #s93 (client 2.1.296): `{type, tasks: [{id, cron, prompt, createdAt, recurring}]}`, the
+    // session-only cron jobs the client carries across a compaction, written in the run of
+    // attachments after a compact_boundary, with no rendered reminder: client state, not text for
+    // the model. 3 met on this machine (2026-10-13), each job made by a CronCreate card earlier in
+    // the same transcript, whose card the page draws with the schedule and prompt; firings are
+    // `scheduled_task_fire`. Drawn nothing, the `todo_reminder`/`task_reminder` analogue for
+    // scheduled jobs. REVISIT: a carry naming a job id with no CronCreate earlier in its transcript
+    // (a session resumed into a new file, say) is then the only trace of a live job, and a note
+    // naming it ("scheduled: <cron>, carried over") is the RENDER question for the owner.
+    "session_cron_carry",
     "silent_turn_reminder",
     "skill_listing",
     // #s2 (client 2.1.288): `{type, skillName}`, one per `/name` or `/namespace:name` token in a
@@ -1421,7 +1436,11 @@ const QWENWORK_BASH_SHAPE: &[&str] = &[
 /// terminateReason, outputPath, transcriptPath}`, plus `apiError` on the one that failed. `kind` is
 /// "agent-result" in all; `state` and `terminateReason` always pair (completed with GOAL, error with
 /// ERROR; QoderWork, the same family, also pairs error with MAX_TURNS). The adapter reads `state`,
-/// `content` and `agentId` (#95); the other five are known in this shape alone (rows below).
+/// `content` and `agentId` (#95); the other five are known in this shape alone (rows below). A
+/// sub-agent that hits its turn cap adds `terminationDetails` (#s91, client 1.1.59, measured
+/// 2026-10-13 over the store: 3 of 7, each `{maxTurns: 150}`): `state` error, `terminateReason`
+/// MAX_TURNS, no `apiError` and no `is_error`, the text and `content` "Reached the maximum turn
+/// limit (N)…" with the same N.
 const QWENWORK_AGENT_RESULT_SHAPE: &[&str] = &[
     "agentId",
     "agentType",
@@ -1431,6 +1450,7 @@ const QWENWORK_AGENT_RESULT_SHAPE: &[&str] = &[
     "outputPath",
     "state",
     "terminateReason",
+    "terminationDetails",
     "transcriptPath",
 ];
 
@@ -1541,8 +1561,9 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // to mean something else on another tool, so each is known only in this shape. `kind` is a type
     // tag (the block is a SubAgent by its tool name). `terminateReason` pairs with `state`, which
     // the card reads (completed for GOAL; error, drawn failed, for ERROR and MAX_TURNS), and a
-    // failure's text names the reason; REVISIT if a MAX_TURNS or a TIMEOUT should read differently
-    // from an ERROR on the card. `outputPath` is a temp file holding the same text as `content`,
+    // failure's text names the reason. #s91 answered MAX_TURNS: the client itself marks it error,
+    // and the card shows the turn-limit text in the client's words, so Failed plus that text is
+    // honest. REVISIT for a terminateReason other than GOAL, ERROR or MAX_TURNS (a TIMEOUT, say). `outputPath` is a temp file holding the same text as `content`,
     // shown inline (`output_file` is for an ASYNC spawn; this one is synchronous). `transcriptPath`
     // is the child transcript beside the session, which the wrapper resolves from `agentId`;
     // REVISIT if it ever names a file elsewhere. `apiError` is the failure message, repeated in the
@@ -1552,6 +1573,10 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     ("outputPath", QWENWORK_AGENT_RESULT_SHAPE),
     ("transcriptPath", QWENWORK_AGENT_RESULT_SHAPE),
     ("apiError", QWENWORK_AGENT_RESULT_SHAPE),
+    // #s91: a MAX_TURNS end's `terminationDetails` is `{maxTurns}`, the cap the result text already
+    // states. Known in this shape only, since the word could mean something else on a future tool.
+    // REVISIT if it carries a key other than `maxTurns`.
+    ("terminationDetails", QWENWORK_AGENT_RESULT_SHAPE),
     // #s64 (Qwenwork 1.1.59): an Edit or Write result. `diff` is READ on an edit tool, as a
     // hunk-only unified diff (parse_hunk_diff), and known here only in this shape since the word is
     // generic; `file_path` names the file the call's target already names; `additions`,
@@ -4494,6 +4519,35 @@ fn hook_note(a: &Value) -> Option<String> {
             }
             Some(out)
         }
+        // #s92 (client 2.1.296): a hook that put text in the model's context after a tool call, the
+        // same gap #371 closed for `hook_success`: the next reply may act on it and nothing else on
+        // the page says so. Its `content` is an ARRAY of strings, joined; its first non-empty line,
+        // and how many more follow; nothing for an empty one. A note in record order, after the
+        // card of the call it followed (`toolUseID` names that call, with a `-context` suffix).
+        "hook_additional_context" => {
+            let joined = a
+                .get("content")
+                .and_then(Value::as_array)
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            let mut lines = joined.lines().skip_while(|l| l.trim().is_empty());
+            let first = lines.next()?.trim();
+            let more = lines.count();
+            let mut out = format!("{} added context: {first}", name(s("hookName")));
+            if more > 0 {
+                out.push_str(&format!(
+                    " (+{more} more line{})",
+                    if more == 1 { "" } else { "s" }
+                ));
+            }
+            Some(out)
+        }
         "hook_cancelled" if a.get("timedOut").and_then(Value::as_bool).unwrap_or(false) => {
             let mut out = format!("{} timed out", name(s("hookName")));
             match (
@@ -6459,6 +6513,20 @@ mod tests {
             Vec::<&str>::new(),
             "{failed}"
         );
+        // #s91: a sub-agent that hit its turn cap, as client 1.1.59 writes it.
+        let capped = serde_json::json!({"kind": "agent-result", "agentId": "a3", "agentType": "Explore", "content": "Reached the maximum turn limit (150).", "state": "error", "terminateReason": "MAX_TURNS", "terminationDetails": {"maxTurns": 150}, "outputPath": "/tmp/x/out.txt", "transcriptPath": "/s/subagents/agent-a3.jsonl"});
+        assert_eq!(
+            unknown_tool_result_keys(&capped),
+            Vec::<&str>::new(),
+            "{capped}"
+        );
+        assert_eq!(
+            unknown_tool_result_keys(
+                &serde_json::json!({"terminationDetails": {"maxTurns": 1}, "stdout": "ok"})
+            ),
+            vec!["terminationDetails"],
+            "outside the shape, terminationDetails is reported"
+        );
         // Outside the shape the generic words are reported again.
         let stray =
             serde_json::json!({"kind": "agent-result", "outputPath": "/tmp/o", "somethingNew": 1});
@@ -6921,6 +6989,76 @@ mod tests {
             seen.is_empty(),
             "hook_success is known, empty or not: {seen:?}"
         );
+    }
+
+    /// #s92: what a hook put in the model's context after a tool call (client 2.1.296) is a note,
+    /// after the card of the call it followed: its first line and how many more. Its content is an
+    /// array of strings; an empty one draws nothing. Neither is reported as new.
+    #[test]
+    fn a_hook_that_added_context_after_a_tool_call_is_a_note() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.296","sessionId":"s-s92","uuid":"u1","message":{"role":"user","content":"read the guide"}}
+{"type":"assistant","version":"2.1.296","sessionId":"s-s92","uuid":"a1","message":{"content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/w/docs/guide.md"}}]}}
+{"type":"user","version":"2.1.296","sessionId":"s-s92","uuid":"u2","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":"1\tthe guide"}]}}
+{"type":"attachment","version":"2.1.296","sessionId":"s-s92","uuid":"h1","attachment":{"type":"hook_additional_context","content":["Contents of /w/docs/AGENTS.md:\nkeep the guide short"],"hookName":"tool.call","toolUseID":"r1-context","hookEvent":"PostToolUse"}}
+{"type":"attachment","version":"2.1.296","sessionId":"s-s92","uuid":"h2","attachment":{"type":"hook_additional_context","content":[],"hookName":"tool.call","toolUseID":"r1-context","hookEvent":"PostToolUse"}}
+"##;
+        let blocks = parse(jsonl);
+        let notes: Vec<&String> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolResult(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            ["tool.call added context: Contents of /w/docs/AGENTS.md: (+1 more line)"],
+            "{blocks:?}"
+        );
+        let tool_at = blocks.iter().position(|b| {
+            matches!(b, Block::ToolUse { .. })
+                || matches!(b, Block::Thinking { tools, .. } if !tools.is_empty())
+        });
+        let note_at = blocks
+            .iter()
+            .position(|b| matches!(b, Block::ToolResult(_)));
+        assert!(
+            tool_at.is_some() && note_at > tool_at,
+            "the note comes after the call it followed: {blocks:?}"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s92"))
+            .collect();
+        assert!(seen.is_empty(), "known, empty or not: {seen:?}");
+    }
+
+    /// #s93: the cron jobs a session carries across a compaction (client 2.1.296) draw nothing and
+    /// are not reported: each was made by a CronCreate card earlier in the same transcript.
+    #[test]
+    fn a_cron_job_carried_over_a_compaction_draws_nothing() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.296","sessionId":"s-s93","uuid":"u1","message":{"role":"user","content":"check the build every hour"}}
+{"type":"assistant","version":"2.1.296","sessionId":"s-s93","uuid":"a1","message":{"content":[{"type":"tool_use","id":"c1","name":"CronCreate","input":{"cron":"17 * * * *","prompt":"check the build","recurring":true}}]}}
+{"type":"user","version":"2.1.296","sessionId":"s-s93","uuid":"u2","toolUseResult":{"id":"0a1b2c3d","humanSchedule":"Every hour at :17","recurring":true,"durable":false},"message":{"content":[{"type":"tool_result","tool_use_id":"c1","content":"Scheduled 0a1b2c3d"}]}}
+{"type":"system","version":"2.1.296","sessionId":"s-s93","subtype":"compact_boundary","content":"Conversation compacted","compactMetadata":{"trigger":"auto","preTokens":1000,"postTokens":100}}
+{"type":"attachment","version":"2.1.296","sessionId":"s-s93","uuid":"k1","attachment":{"type":"session_cron_carry","tasks":[{"id":"0a1b2c3d","cron":"17 * * * *","prompt":"check the build","createdAt":1760000000000,"recurring":true}]}}
+"##;
+        let blocks = parse(jsonl);
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult(t) if t.contains("0a1b2c3d") || t.contains("carried"))),
+            "the carry draws nothing: {blocks:?}"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s93"))
+            .collect();
+        assert!(seen.is_empty(), "the carry is known: {seen:?}");
     }
 
     /// #s17: a Qwenwork Bash result in its measured nine-key shape reports nothing, and its exit

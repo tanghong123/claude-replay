@@ -87,7 +87,7 @@ fn open_on(surface: Surface, fx: &Fixture, port: u16, phone: Option<(u32, u32)>)
             let stores = Stores {
                 root: fx.base.join("stores"),
             };
-            let monitor = Monitor::spawn(Kind::V2, port, &fx.base, Some(&stores), true);
+            let monitor = Monitor::spawn(Kind::V1, port, &fx.base, Some(&stores), true);
             monitor.pair(&tab);
             monitor.open(&tab, &format!("?ui=app&session={SID}"));
             harness::until(

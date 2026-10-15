@@ -286,11 +286,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// summary as the target. A v52 stream holds the call with an empty target and the delivery
 /// receipt alone.
 ///
+/// v54: #s92 — a Claude Code `hook_additional_context` attachment (client 2.1.296: what a hook put
+/// in the model's context after a tool call) is a note after the call's card. A v53 stream holds
+/// nothing there.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 53;
+pub const FOLD_VERSION: u16 = 54;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

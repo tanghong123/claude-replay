@@ -30,7 +30,7 @@ fn wait_diagrams(tab: &headless_chrome::Tab, count: usize) {
         &format!("document.querySelectorAll('[data-mermaid-state=ready] svg').length === {count}"),
         "Mermaid diagrams to render inside their messages",
         Duration::from_secs(30),
-        "[...document.querySelectorAll('[data-mermaid]')].map(e => ({state:e.dataset.mermaidState, error:e.querySelector('.mermaid-error').textContent}))",
+        "JSON.stringify({url:location.href,body:document.body.className,app:document.getElementById('app')?.className, cards:[...document.querySelectorAll('[data-mermaid]')].map(e => ({state:e.dataset.mermaidState, error:e.querySelector('.mermaid-error')?.textContent}))})",
     );
 }
 
@@ -125,7 +125,7 @@ fn assert_diagrams(tab: &headless_chrome::Tab) {
 
     let light_id = eval(tab, "document.querySelector('[data-mermaid] svg').id");
     eval(tab, "document.documentElement.dataset.theme = 'dark'; true");
-    until(tab, &format!("document.querySelector('[data-mermaid-state=ready] svg')?.id !== {} && document.querySelectorAll('[data-mermaid-state=ready] svg').length === 3", light_id), "diagrams to redraw in the dark theme", Duration::from_secs(30), "[...document.querySelectorAll('[data-mermaid]')].map(e=>e.dataset.mermaidState)");
+    until(tab, &format!("document.querySelector('[data-mermaid-state=ready] svg') && document.querySelector('[data-mermaid-state=ready] svg').id !== {} && document.querySelectorAll('[data-mermaid-state=ready] svg').length === 3", light_id), "diagrams to redraw in the dark theme", Duration::from_secs(30), "[...document.querySelectorAll('[data-mermaid]')].map(e=>e.dataset.mermaidState)");
     assert_eq!(eval(tab, "[...document.querySelectorAll('[data-mermaid] svg')].every(e=>e.getBoundingClientRect().height > 10)"), true);
     assert_eq!(eval(tab, "getComputedStyle(document.querySelector('[data-mermaid-state=ready] svg .node rect')).fill === 'rgb(35, 42, 56)'"), true);
     assert_eq!(
@@ -177,7 +177,7 @@ fn classic_transcript_renders_mermaid_inline_and_preserves_source() {
         .unwrap();
     tab.wait_until_navigated().unwrap();
     assert_diagrams(&tab);
-    assert_eq!(eval(&tab, "performance.getEntriesByType('resource').filter(e=>e.name.endsWith('/mermaid.js')).length"), 1);
+    assert_eq!(eval(&tab, "performance.getEntriesByType('resource').filter(e=>e.name.includes('/mermaid/')).length"), 1);
 }
 
 #[test]
@@ -523,8 +523,8 @@ fn mermaid_loads_lazily_and_a_failed_load_keeps_source_and_can_retry() {
         Duration::from_secs(15),
         "document.body.textContent.slice(-200)",
     );
-    assert_eq!(eval(&tab, "performance.getEntriesByType('resource').filter(e=>e.name.endsWith('/mermaid.js')).length"), 0);
-    eval(&tab, "(() => { const append = document.head.append.bind(document.head); document.head.append = node => { if (node.src?.endsWith('/mermaid.js')) { queueMicrotask(() => node.onerror()); return; } return append(node); }; window.__restoreMermaidLoad = () => { document.head.append = append; }; return true; })()");
+    assert_eq!(eval(&tab, "performance.getEntriesByType('resource').filter(e=>e.name.includes('/mermaid/')).length"), 0);
+    eval(&tab, "(() => { const append = document.head.append.bind(document.head); document.head.append = node => { if (node.src?.includes('/mermaid/')) { queueMicrotask(() => node.onerror()); return; } return append(node); }; window.__restoreMermaidLoad = () => { document.head.append = append; }; return true; })()");
     use std::io::Write;
     std::fs::OpenOptions::new()
         .append(true)
@@ -577,31 +577,44 @@ fn mermaid_is_visible_in_the_main_page_on_desktop_and_phone() {
     let _serial = serial();
     let base = base("mermaid-main-page");
     let stores = harness::Stores::new(&base);
-    let diagram = "flowchart TD\n  INPUT[\"Invented sample input\"] --> FORMAT[\"Check sample format\"]\n  FORMAT --> NORMALIZE[\"Normalize synthetic item\"]\n  NORMALIZE --> VALIDATE[\"Validate example fields\"]\n  VALIDATE --> OUTPUT[\"Mock result\"]\n  VALIDATE --> ARCHIVE[\"Demo archive\"]";
-    stores.claude_session(SID, &(user_at("Show the synthetic data-processing example.", &harness::at("15:00")) + &assistant_markdown(&format!("All labels in this diagram are invented. The arrows indicate transformations of sample data.\n\n```mermaid\n{diagram}\n```"), &harness::at("15:01"))));
+    let diagram = "flowchart TD\n INPUT[Invented sample input] --> FORMAT[Check sample format]\n FORMAT --> NORMALIZE[Normalize synthetic item]\n NORMALIZE --> VALIDATE[Validate example fields]\n VALIDATE --> OUTPUT[Mock result]\n VALIDATE --> ARCHIVE[Demo archive]";
+    stores.claude_session(SID, &(user_at("Show the synthetic data-processing example.", &harness::at("15:00")) + &assistant_markdown(&format!("All labels are invented. Arrows indicate sample transformations.\n\n```mermaid\n{diagram}\n```"), &harness::at("15:01"))));
     let monitor = harness::Monitor::spawn(harness::Kind::V1, 3043, &base, Some(&stores), true);
-    let (_browser, tab) = harness::chrome_tab();
-    harness::resize(&tab, 1600.0, 1050.0);
-    monitor.pair(&tab);
-    monitor.open(&tab, &format!("?session={SID}&ui=app&mountall=1"));
-    wait_diagrams(&tab, 1);
-    eval(&tab, "document.documentElement.dataset.theme = ''; document.getElementById('sidebarCollapse').click(); document.querySelector('.transcript').scrollTop = 0; true");
-    until(&tab, "(() => { const svg = document.querySelector('[data-mermaid-state=ready] svg'); const box = svg?.getBoundingClientRect(); return box && box.height > 250 && box.bottom < innerHeight; })()", "the entire diagram to be visible in the main transcript", Duration::from_secs(10), "document.querySelector('[data-mermaid] svg')?.getBoundingClientRect().toJSON()");
-    if let Some(path) = std::env::var_os("CR_MERMAID_SCREENSHOT") {
-        let png = tab
-            .capture_screenshot(
-                headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
-                None,
-                None,
-                true,
-            )
-            .unwrap();
-        std::fs::write(path, png).unwrap();
+    for phone in [false, true] {
+        let (_browser, tab) = harness::chrome_tab();
+        if phone {
+            harness::phone(&tab, 390, 844);
+        } else {
+            harness::resize(&tab, 1600.0, 1050.0);
+        }
+        // Pairing is the first navigation, so phone emulation precedes it too.
+        monitor.pair(&tab);
+        monitor.open(&tab, &format!("?session={SID}&ui=app&mountall=1"));
+        wait_diagrams(&tab, 1);
+        eval(&tab, "document.documentElement.dataset.theme = 'light'; document.getElementById('sidebarCollapse').click(); document.querySelector('.transcript').scrollTop = 0; true");
+        if phone {
+            until(&tab, "(() => { const svg = document.querySelector('[data-mermaid-state=ready] svg'); const host = svg?.closest('.mermaid-diagram'); if (!svg || !host) return false; const box = svg.getBoundingClientRect(), view = host.getBoundingClientRect(); return Math.abs(box.width - svg.viewBox.baseVal.width) < 1 && view.width >= 240 && view.right <= innerWidth + 1 && Math.min(box.right, view.right, innerWidth) - Math.max(box.left, view.left, 0) >= 200 && Math.min(box.bottom, innerHeight) - Math.max(box.top, 0) >= 80; })()", "a usable native-size phone diagram", Duration::from_secs(15), "document.querySelector('[data-mermaid] svg')?.getBoundingClientRect().toJSON()");
+            assert_eq!(eval(&tab, "[...document.querySelectorAll('[data-mermaid] .mermaid-source, [data-mermaid] .cpy')].every(e => e.getBoundingClientRect().height >= 44 && e.getBoundingClientRect().width >= 44)"), true);
+        } else {
+            until(&tab, "(() => { const svg = document.querySelector('[data-mermaid-state=ready] svg'); const box = svg?.getBoundingClientRect(); return box && box.height > 250 && box.bottom < innerHeight; })()", "the desktop diagram to be visible in the main transcript", Duration::from_secs(15), "document.querySelector('[data-mermaid] svg')?.getBoundingClientRect().toJSON()");
+        }
+        let variable = if phone {
+            "CR_MERMAID_PHONE_SCREENSHOT"
+        } else {
+            "CR_MERMAID_SCREENSHOT"
+        };
+        if let Some(path) = std::env::var_os(variable) {
+            let png = tab
+                .capture_screenshot(
+                    headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+                    None,
+                    None,
+                    true,
+                )
+                .unwrap();
+            std::fs::write(path, png).unwrap();
+        }
     }
-    harness::phone(&tab, 390, 844);
-    wait_diagrams(&tab, 1);
-    until(&tab, "(() => { const svg = document.querySelector('[data-mermaid-state=ready] svg'); const parent = svg?.closest('.mermaid-diagram'); return svg && Math.abs(svg.getBoundingClientRect().width - svg.viewBox.baseVal.width) < 1 && parent.getBoundingClientRect().right <= innerWidth + 1 && svg.getBoundingClientRect().height > 10; })()", "the phone diagram to retain readable native pixels inside a bounded scrolling container", Duration::from_secs(10), "document.querySelector('[data-mermaid] svg')?.getBoundingClientRect().toJSON()");
-    assert_eq!(eval(&tab, "[...document.querySelectorAll('[data-mermaid] .mermaid-source, [data-mermaid] .cpy')].every(e => e.getBoundingClientRect().height >= 44 && e.getBoundingClientRect().width >= 44)"), true);
 }
 
 #[test]
@@ -613,36 +626,134 @@ fn dense_mermaid_groups_use_the_monitor_palette_and_scroll_without_shrinking_lab
     let diagram = "flowchart LR\n subgraph NS[Synthetic services]\n  subgraph PROCESSOR[Processing worker]\n   A[Demo inbox] --> B[Demo worker] --> C[Mock artifact]\n  end\n  subgraph SCHEDULER[Example scheduler]\n   D[Sample timer] --> E[Example dispatcher] --> F[Demo evaluator]\n  end\n  E --> A\n  E --> G[Result checker]\n end\n H[Demo browser] --> I[Example gateway] --> J[Sample store]\n I --> C";
     stores.claude_session(
         SID,
-        &(user_at(
-            "Show a grouped architecture diagram.",
-            &harness::at("15:00"),
-        ) + &assistant_markdown(
-            &format!("```mermaid\n{diagram}\n```"),
-            &harness::at("15:01"),
-        )),
+        &(user_at("Show a grouped synthetic diagram.", &harness::at("15:00"))
+            + &assistant_markdown(
+                &format!("```mermaid\n{diagram}\n```"),
+                &harness::at("15:01"),
+            )),
     );
-    let monitor = harness::Monitor::spawn(harness::Kind::V2, 3044, &base, Some(&stores), true);
-    for shell in ["app", "classic"] {
+    let monitor = harness::Monitor::spawn(harness::Kind::V1, 3044, &base, Some(&stores), true);
+    // Classic remains a desktop/export reference; it has no supported phone layout.
+    for (shell, phone) in [
+        ("app", None),
+        ("classic", None),
+        ("app", Some((390, 844))),
+        ("app", Some((844, 390))),
+    ] {
         let (_browser, tab) = harness::chrome_tab();
+        if let Some((width, height)) = phone {
+            harness::phone(&tab, width, height);
+        } else {
+            harness::resize(&tab, 1600.0, 1050.0);
+        }
+        eprintln!("Dense Mermaid context: shell={shell}, phone={phone:?}");
         monitor.pair(&tab);
-        monitor.open(&tab, &format!("?session={SID}&ui={shell}&mountall=1"));
+        // The classic rail opens its transcript at /session; its index is not the reader.
+        let path = if shell == "classic" {
+            format!("session?id={SID}&mountall=1&theme=light")
+        } else {
+            format!("?session={SID}&ui=app&mountall=1")
+        };
+        monitor.open(&tab, &path);
         wait_diagrams(&tab, 1);
-        assert_eq!(eval(&tab, "getComputedStyle(document.querySelector('[data-mermaid] .cluster rect')).fill === 'rgb(241, 244, 249)'"), true);
-        harness::phone(&tab, 390, 844);
-        assert_eq!(eval(&tab, "(() => { const svg = document.querySelector('[data-mermaid] svg'); const viewport = svg.closest('.mermaid-diagram'); return Math.abs(svg.getBoundingClientRect().width - svg.viewBox.baseVal.width) < 1 && svg.getBoundingClientRect().width > viewport.clientWidth && viewport.getBoundingClientRect().right <= innerWidth + 1 && [...svg.querySelectorAll('.node text')].every(text => getComputedStyle(text).fontSize === '14px'); })()"), true);
-        let light_id = eval(&tab, "document.querySelector('[data-mermaid] svg').id");
+        assert_eq!(eval(&tab, "getComputedStyle(document.querySelector('[data-mermaid-state=ready] .cluster rect')).fill === 'rgb(241, 244, 249)'"), true);
+        if phone.is_some() {
+            until(&tab, "(() => { const svg = document.querySelector('[data-mermaid-state=ready] svg'); const view = svg?.closest('.mermaid-diagram'); if (!svg || !view) return false; const box = svg.getBoundingClientRect(), viewport = view.getBoundingClientRect(), labels = [...svg.querySelectorAll('.node text')]; return Math.abs(box.width - svg.viewBox.baseVal.width) < 1 && box.width > view.clientWidth && viewport.width >= 240 && viewport.left >= 0 && viewport.right <= innerWidth + 1 && Math.min(box.right, viewport.right, innerWidth) - Math.max(box.left, viewport.left, 0) >= 200 && Math.min(box.bottom, innerHeight) - Math.max(box.top, 0) >= 64 && labels.length > 0 && labels.every(text => getComputedStyle(text).fontSize === '14px'); })()", "a visible readable diagram inside a usable phone viewport", Duration::from_secs(15), "document.querySelector('[data-mermaid] svg')?.getBoundingClientRect().toJSON()");
+        }
+        let light_id = eval(
+            &tab,
+            "document.querySelector('[data-mermaid-state=ready] svg').id",
+        );
         eval(
             &tab,
             "document.documentElement.dataset.theme = 'dark'; true",
         );
-        until(
-            &tab,
-            &format!("document.querySelector('[data-mermaid-state=ready] svg')?.id !== {light_id}"),
-            "the grouped diagram to redraw in the dark palette",
-            Duration::from_secs(30),
-            "document.querySelector('[data-mermaid]')?.dataset.mermaidState",
-        );
-        assert_eq!(eval(&tab, "getComputedStyle(document.querySelector('[data-mermaid] .cluster rect')).fill === 'rgb(32, 39, 51)'"), true);
-        assert_eq!(eval(&tab, "getComputedStyle(document.querySelector('[data-mermaid] .node rect')).fill === 'rgb(35, 42, 56)'"), true);
+        until(&tab, &format!("(() => {{ const svg = document.querySelector('[data-mermaid-state=ready] svg'); return !!svg && svg.id !== {light_id}; }})()"), "the grouped diagram to finish redrawing in dark mode", Duration::from_secs(30), "document.querySelector('[data-mermaid]')?.dataset.mermaidState");
+        assert_eq!(eval(&tab, "getComputedStyle(document.querySelector('[data-mermaid-state=ready] .cluster rect')).fill === 'rgb(32, 39, 51)'"), true);
+        assert_eq!(eval(&tab, "getComputedStyle(document.querySelector('[data-mermaid-state=ready] .node rect')).fill === 'rgb(35, 42, 56)'"), true);
+        if phone == Some((390, 844)) {
+            if let Some(path) = std::env::var_os("CR_MERMAID_DENSE_SCREENSHOT") {
+                let png = tab
+                    .capture_screenshot(
+                        headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+                        None,
+                        None,
+                        true,
+                    )
+                    .unwrap();
+                std::fs::write(path, png).unwrap();
+            }
+        }
     }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn offline_directory_bundle_renders_a_child_only_diagram_without_runtime_requests() {
+    let _serial = serial();
+    let base = base("mermaid-child-bundle");
+    let stores = harness::Stores::new(&base);
+    let parent = user_at("Read a synthetic child result.", &harness::at("15:00"))
+        + "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"spawn\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"gp\",\"description\":\"Sample child\",\"prompt\":\"Sample work\"}}]}}\n"
+        + "{\"type\":\"user\",\"toolUseResult\":{\"agentId\":\"a1\",\"status\":\"async_launched\"},\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"spawn\",\"content\":\"async_launched\"}]}}\n";
+    let source = stores.claude_session(SID, &parent);
+    let children = source.with_extension("").join("subagents");
+    std::fs::create_dir_all(&children).unwrap();
+    std::fs::write(
+        children.join("agent-a1.jsonl"),
+        assistant_markdown(
+            "```mermaid\nflowchart LR\n A[Synthetic child] --> B[Offline result]\n```",
+            &harness::at("15:01"),
+        ),
+    )
+    .unwrap();
+    let output = base.join("bundle");
+    claude_replay_html::dump_all_html(
+        &Args {
+            dump_all_html: Some(Some(output.to_string_lossy().into_owned())),
+            no_cache: true,
+            ..Default::default()
+        },
+        &source,
+    )
+    .unwrap();
+    let handler: claude_replay_html::RouteHandler = std::sync::Arc::new(move |req| {
+        let file = if req.name.is_empty() {
+            "index.html"
+        } else {
+            req.name
+        };
+        if file != "index.html" && file != "a1.jsonl" && file != format!("{SID}.jsonl") {
+            return claude_replay_html::HttpResponse::not_found("no such fixture");
+        }
+        let bytes = std::fs::read(output.join(file)).unwrap();
+        claude_replay_html::HttpResponse::ok(
+            if file == "index.html" {
+                "text/html; charset=utf-8"
+            } else {
+                "application/x-ndjson"
+            },
+            bytes,
+        )
+    });
+    let port = claude_replay_html::spawn_listener(0, handler).unwrap();
+    let (_browser, tab) = harness::chrome_tab();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/index.html?mountall=1"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    until(
+        &tab,
+        "document.querySelector('a[href*=\"session=a1\"]') !== null",
+        "the root export to offer its child",
+        Duration::from_secs(15),
+        "document.body.textContent",
+    );
+    eval(
+        &tab,
+        "document.querySelector('a[href*=\"session=a1\"]').click(); true",
+    );
+    tab.wait_until_navigated().unwrap();
+    wait_diagrams(&tab, 1);
+    assert_eq!(eval(&tab, "document.querySelector('[data-mermaid-state=ready] svg').textContent.includes('Synthetic child')"), true);
+    assert_eq!(eval(&tab, "performance.getEntriesByType('resource').filter(e => e.name.includes('/mermaid/')).length"), 0);
 }

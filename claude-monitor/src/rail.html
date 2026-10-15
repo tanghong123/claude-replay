@@ -49,6 +49,10 @@
   #ver{display:block;font:400 9.5px var(--mono);color:var(--faint)}
   .pill{flex:none;white-space:nowrap;font:10.5px var(--sans);color:var(--muted);background:transparent;border:1px solid var(--border);border-radius:99px;padding:2px 9px;cursor:pointer}
   .pill:hover{background:var(--hover)}
+  /* #s97: the classic view retires (design/classic-view-deprecation.md). For one release it says so,
+     with the way across beside the words. */
+  #deprecation{height:auto;min-height:30px;padding:4px 0;gap:8px;font:11.5px/1.4 var(--sans);color:var(--muted)}
+  #deprecation span{flex:1}
   .picon{font:16px/1 var(--sans);padding:2px 9px}
   /* #131: ⊕/⊖ read as font-size controls. Doubled group chevrons instead — the same
      ▼-that-rotates the rows already use, so the icon names the thing it acts on. */
@@ -191,6 +195,7 @@
       <span id="scan" title="live — the monitor re-scans every couple of seconds"><i></i></span>
       <button class="toggle" id="hiderail" title="Collapse the session list">«</button>
     </div>
+    <div class="railrow" id="deprecation" role="note"><span>The classic view goes in the next release, and so does the <code>/session</code> page.</span><button class="pill" id="deprecation-app" title="Switch to the app view — remembered">Switch to the app</button></div>
     <div class="railrow"><div id="searchbox"><span>⌕</span><input id="search" placeholder="Filter sessions  ( / )" autocomplete="off"></div></div>
   </div>
   <div id="filters">
@@ -238,6 +243,8 @@
     var b=this;b.disabled=true;
     fetch("/api/ui?set=app",{cache:"no-store"}).then(function(){location.href="/"}).catch(function(){b.disabled=false});
   };
+  // #s97: the notice's control is the same switch, so following it is remembered as the App pill is.
+  document.getElementById("deprecation-app").onclick=document.getElementById("appshell").onclick;
   // #133 3b: whether this monitor is paired — the write route (/api/send) only works with a
   // token, so the compose affordance appears only when paired (server substitutes the flag).
   var PAIRED={{PAIRED}};

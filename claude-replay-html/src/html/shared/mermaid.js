@@ -31,7 +31,12 @@ function loadMermaid() {
       } catch (error) { script.remove(); reject(error); }
     } else {
       script.onload = ready;
-      script.src = "/mermaid.js";
+      const path = document.querySelector('meta[name="mermaid-runtime"]')?.content;
+      if (!path) {
+        reject(new Error("The page does not declare its Mermaid runtime"));
+        return;
+      }
+      script.src = path;
       document.head.append(script);
     }
   }).catch(error => { loading = null; throw error; });
