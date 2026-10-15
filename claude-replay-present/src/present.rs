@@ -317,6 +317,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let fresh = call("Write", vec![("", "a\nb\nc\n")], None);
         let edit = call("Edit", vec![("one\ntwo", "one\nTWO\nthree")], None);

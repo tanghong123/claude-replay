@@ -290,11 +290,18 @@ pub const COMPACT_AFTER: usize = 256;
 /// in the model's context after a tool call) is a note after the call's card. A v53 stream holds
 /// nothing there.
 ///
+/// v55: #s114 — a Bash output the client cut and saved whole to a file (Claude Code's
+/// `persistedOutputPath`, Qwenwork's `persistedOutput`) opens with a notice of how much of it is
+/// shown and where the whole is. A v54 stream holds the first 30,000 bytes as if they were all.
+///
+/// v56: #s115 — such a block names the saved file (`ToolUse::saved_output`), which a page offers.
+/// A v55 stream has the notice and no path to offer.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 54;
+pub const FOLD_VERSION: u16 = 56;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

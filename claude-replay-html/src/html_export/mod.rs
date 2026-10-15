@@ -1508,6 +1508,7 @@ impl Emitter<'_> {
                 asked,
                 delivered,
                 sent,
+                saved_output,
                 ..
             } => {
                 o.insert("id".into(), json!(self.block_id()));
@@ -1808,6 +1809,21 @@ impl Emitter<'_> {
                                     obj.insert("asked".into(), asked_section(a, &rows));
                                 }
                                 head.insert("interaction".into(), interaction);
+                            }
+                            // #s115: a Bash output the client cut (#s114) offers the file holding
+                            // the whole of it, above the part it shows, as the #s28 notes offer a
+                            // file a command changed: its stamps under the render policy, its name
+                            // leading the note as the link both pages draw. The notice opening the
+                            // output still names the path, for a page that offers nothing.
+                            if let Some(path) = saved_output.as_deref().filter(|_| self.reveal) {
+                                let name = path.rsplit('/').next().unwrap_or(path);
+                                let mut offer = offered_path(path, false);
+                                offer.insert("name".into(), json!(name));
+                                body.push(json!({
+                                    "p": "note",
+                                    "x": format!("{name} — the whole output"),
+                                    "file": Value::Object(offer),
+                                }));
                             }
                             body.push(pre_part(out));
                         } else if let Some(a) = asked {
@@ -3426,6 +3442,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             },
             Block::UserText("second question".into()),
             Block::AssistantText("done".into()),
@@ -3524,6 +3541,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let blocks = vec![
             Block::UserText("first".into()),
@@ -3628,6 +3646,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         }
     }
 
@@ -4254,6 +4273,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         }
     }
 
@@ -4348,6 +4368,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         }
     }
 
@@ -5000,6 +5021,7 @@ mod tests {
             asked: Some(Box::new(asked.clone())),
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let prose = format!(
             "The user answered: \"Exit code?\"=\"exit 2\" notes: check the installer, \
@@ -5094,6 +5116,7 @@ mod tests {
                 asked: a.map(Box::new),
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             };
             stream(&[block], &FoldPolicy::none())[0]["head"]["interaction"].clone()
         };
@@ -5166,6 +5189,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         assert_eq!(out[0]["head"]["interaction"]["kind"], "request_user_input");
@@ -5199,6 +5223,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let out = stream_from(std::slice::from_ref(&bash), &FoldPolicy::none(), None);
         let note = out[0]["body"]
@@ -5238,6 +5263,78 @@ mod tests {
         );
     }
 
+    /// #s115: on a served page a Bash output the client cut opens with a note offering the file
+    /// that holds the whole of it — its path, its reveal stamp and its name, which leads the note
+    /// as the link — above the output, whose notice still names the path; a portable export offers
+    /// nothing, and an output that was not cut has no note.
+    #[test]
+    fn a_cut_bash_outputs_saved_file_is_offered_above_it() {
+        let bash = |saved: Option<&str>| Block::ToolUse {
+            name: "Bash".into(),
+            target: "cargo test".into(),
+            diffs: vec![],
+            output: Some(
+                "[Output too large: the first 13 of 387,096 bytes are shown below. Full output \
+                 saved to: /w/tool-results/b1.txt]\n\nline 1\nline 2"
+                    .into(),
+            ),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+            sent: None,
+            saved_output: saved.map(String::from),
+        };
+        let out = stream_from(
+            &[bash(Some("/w/tool-results/b1.txt")), bash(None)],
+            &FoldPolicy::none(),
+            None,
+        );
+        let body = out[0]["body"].as_array().unwrap();
+        assert_eq!(body[0]["p"], json!("note"), "the note leads: {body:?}");
+        assert_eq!(body[0]["x"], json!("b1.txt — the whole output"));
+        assert_eq!(body[0]["file"]["path"], json!("/w/tool-results/b1.txt"));
+        assert_eq!(body[0]["file"]["name"], json!("b1.txt"));
+        assert!(
+            body[0]["file"]["sig"].is_string(),
+            "the reveal stamp: {body:?}"
+        );
+        assert_eq!(body[1]["p"], json!("pre"));
+        assert!(
+            out[1]["body"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|p| p["p"] != "note"),
+            "an output that was not cut has no note: {}",
+            out[1]
+        );
+        // A portable export (`--dump-html`, `reveal: false`).
+        let (jsonl, _) = build_jsonl(
+            &[bash(Some("/w/tool-results/b1.txt"))],
+            &[],
+            &[],
+            &FoldPolicy::none(),
+            "/w",
+            false,
+            false,
+            None,
+            json!({ "t": "meta" }),
+        );
+        let rec: Value = serde_json::from_str(jsonl.lines().nth(1).unwrap()).unwrap();
+        assert!(
+            rec["body"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|p| p["p"] != "note"),
+            "a portable export offers no path: {rec}"
+        );
+    }
+
     /// #s23: on the pages a run carries what it changed — `+N` and `−N`, green and red, both
     /// counts — and the edits inside it start closed (the pages' default folds edits; the TUI's
     /// does not). A fresh-file Write says its size as `+N`.
@@ -5256,6 +5353,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let run = Block::Thinking {
             text: String::new(),
@@ -5333,6 +5431,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             },
             _ => unreachable!(),
         };
@@ -5417,6 +5516,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         let diff = out[0]["body"]
@@ -5537,6 +5637,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
         let num = out[0]["body"]
@@ -5598,6 +5699,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             };
             stream(&[block], &FoldPolicy::none())[0]["head"]["chips"].clone()
         };
@@ -5729,6 +5831,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             },
             bash("ls -la", "out"),
         ];
@@ -5852,6 +5955,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         }];
         let out = stream(&blocks, &FoldPolicy::none());
         assert_eq!(
@@ -5879,6 +5983,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         }];
         assert_eq!(
             stream(&odd, &FoldPolicy::none())[0]["head"]["path"],
@@ -5905,6 +6010,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: Some("skua-HD: both are done.\n\n- `s244` closed\n- the review is posted".into()),
+            saved_output: None,
         };
         let out = stream(
             &[msg(
@@ -5961,6 +6067,7 @@ mod tests {
             asked: None,
             delivered: delivered.iter().map(|d| d.to_string()).collect(),
             sent: None,
+            saved_output: None,
         };
         let out = stream(
             &[send(&[
@@ -6019,6 +6126,7 @@ mod tests {
             asked: None,
             delivered: vec!["/films/tour.mp4".into(), "/films/tour-zh.mp4".into()],
             sent: None,
+            saved_output: None,
         };
         let stamps = |b: Block| -> Vec<(String, String)> {
             let out = stream(&[b], &FoldPolicy::none());
@@ -6068,6 +6176,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         let out = stream(&[read], &FoldPolicy::none());
         let fsig = out[0]["head"]["fsig"].as_str().unwrap_or("");
@@ -6095,6 +6204,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                saved_output: None,
             },
             bash("ls -la", "out"),
         ];
@@ -6126,6 +6236,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            saved_output: None,
         };
         // reveal = false (the `--dump-html` shape): the header still names the file
         // but carries no absolute `path` for the browser to link/reveal.

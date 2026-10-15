@@ -148,9 +148,11 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // delivery receipt (a `note`), and its head names the summary.
     // v24: #s108 — a Markdown link or image whose target is not http, https, mailto or
     // schemeless is a `<span title>` holding its words, never a live `<a href>`.
-    // v25: Mermaid fences carry an inline diagram host and their escaped source, so
+    // v25: #s115 — a Bash output the client cut opens its body with a note offering the file that
+    // holds the whole of it (`file: {path, sig, fsig?, name}`).
+    // v26: Mermaid fences carry an inline diagram host and their escaped source, so
     // previously visited sessions must regenerate their cached Markdown fragments.
-    const RECORD_SCHEMA: u16 = 25;
+    const RECORD_SCHEMA: u16 = 26;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
