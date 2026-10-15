@@ -58,10 +58,31 @@ fn wait_target(tab: &headless_chrome::Tab, selector: &str) {
     harness::until(
         tab,
         &target_ready(selector),
-        "a settled, visible quotation target",
+        &format!("a settled, visible quotation target: {selector}"),
         Duration::from_secs(10),
-        "document.body.innerText",
+        &format!(
+            r#"(() => {{const n=document.querySelector({selector});const r=n?.getBoundingClientRect();const p=n?.closest('.transcript');const b=p?.getBoundingClientRect();return JSON.stringify({{selector:{selector},rect:r&&[r.x,r.y,r.width,r.height],clip:b&&[b.x,b.y,b.width,b.height],hit:r&&document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.outerHTML,style:n&&[getComputedStyle(n).opacity,getComputedStyle(n).visibility],sample:window.__quotationSamples?.get({selector})?.geometry}});}})()"#,
+            selector = json!(selector)
+        ),
     );
+}
+
+fn target_point(
+    tab: &headless_chrome::Tab,
+    selector: &str,
+) -> headless_chrome::browser::tab::point::Point {
+    wait_target(tab, selector);
+    let xy=harness::probe(tab,&format!("(() => {{const r=document.querySelector({}).getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2];}})()",json!(selector)));
+    headless_chrome::browser::tab::point::Point {
+        x: xy[0].as_f64().unwrap(),
+        y: xy[1].as_f64().unwrap(),
+    }
+}
+
+fn tap_target(tab: &headless_chrome::Tab, selector: &str) {
+    // Match the harness's existing phone action: a native CDP click at a verified point.
+    tab.click_point(target_point(tab, selector))
+        .expect("tap a settled target");
 }
 
 #[test]
@@ -106,7 +127,12 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
             "This is the first excerpt from Codex's response.",
             "SELECTED FIRST\\r\\n  code | table",
         );
-    let codex = codex.replace("Please explain the first selection.", &comment);
+    let codex = codex
+        .replace("Please explain the first selection.", &comment)
+        .replace(
+            "This is the second excerpt from Codex's response.",
+            "SELECTED SECOND",
+        );
     let note = base.join("note.md");
     std::fs::write(&note, "Synthetic file attachment for quotation replies.\n").unwrap();
     let codex = codex.replace(
@@ -141,12 +167,12 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
             + &user("claude", claude_only, false)),
     );
     let monitor = Monitor::spawn(Kind::V1, 3195, &base, Some(&stores), true);
-    let (_browser, tab) = harness::chrome_tab();
-    monitor.pair(&tab);
     for (agent, id, original) in [
         ("codex", codex_id, codex.as_str()),
         ("claude", claude_id, claude.as_str()),
     ] {
+        let (_browser, tab) = harness::chrome_tab();
+        monitor.pair(&tab);
         let monitor_id = if agent == "codex" {
             format!("rollout-{id}")
         } else {
@@ -334,6 +360,43 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
                 "QUOTE ONLY"
             }
         );
+        // A touch-capable desktop still offers per-turn controls; phones use Reading.
+        use headless_chrome::protocol::cdp::Emulation;
+        assert_eq!(eval(&tab, "innerWidth>760 && innerHeight>500"), true);
+        tab.call_method(Emulation::SetTouchEmulationEnabled {
+            enabled: true,
+            max_touch_points: Some(5),
+        })
+        .unwrap();
+        tab.find_elements("#navigatorTurns .outline-turn-row")
+            .unwrap()[0]
+            .click()
+            .unwrap();
+        let point = target_point(&tab, ".turn.user[data-turn=\"1\"] .raw-toggle");
+        harness::finger_tap(&tab, point.x, point.y);
+        harness::until(
+            &tab,
+            "document.querySelector('.turn.user[data-turn=\"1\"] .turn-raw-text')!==null",
+            "touch raw source",
+            Duration::from_secs(5),
+            "document.body.innerText",
+        );
+        assert_eq!(
+            eval(
+                &tab,
+                "document.querySelector('.turn.user[data-turn=\"1\"] .turn-raw-text').textContent"
+            ),
+            original
+        );
+        tab.find_element(".turn.user[data-turn=\"1\"] .raw-toggle")
+            .unwrap()
+            .click()
+            .unwrap();
+        tab.call_method(Emulation::SetTouchEmulationEnabled {
+            enabled: false,
+            max_touch_points: None,
+        })
+        .unwrap();
         // A fresh phone context is configured before pairing or the first app load.
         // Resizing the desktop context cannot exercise state.js's phone defaults.
         for (orientation, width, height) in [("portrait", 390, 844), ("landscape", 844, 390)] {
@@ -424,10 +487,16 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
                 .unwrap()
                 .click()
                 .unwrap();
-            let raw = ".turn.user[data-turn=\"1\"] .raw-toggle";
-            wait_target(&phone_tab, raw);
-            let xy=harness::probe(&phone_tab,&format!("(() => {{const r=document.querySelector({}).getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2];}})()",json!(raw)));
-            harness::finger_tap(&phone_tab, xy[0].as_f64().unwrap(), xy[1].as_f64().unwrap());
+            tap_target(&phone_tab, "#readingBtn");
+            harness::until(
+                &phone_tab,
+                "document.getElementById('readingOptions').classList.contains('open')",
+                "phone Reading menu",
+                Duration::from_secs(5),
+                "document.body.innerText",
+            );
+            tap_target(&phone_tab, "#readingOptions [data-reading-toggle=rawUser]");
+            tap_target(&phone_tab, "#readingBtn");
             harness::until(
                 &phone_tab,
                 "document.querySelector('.turn.user[data-turn=\"1\"] .turn-raw-text')!==null",
