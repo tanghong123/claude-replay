@@ -1075,7 +1075,8 @@ fn note_unknown_shape(v: &Value, at: UnknownAt, name: Option<&str>, known: &[&st
 /// they are an `AskUserQuestion`'s reply, which the card used to take from the result's prose
 /// and could not read back when the reader typed their own answer or wrote notes. #281 moved
 /// `afkTimeoutMs`: a question the client stopped waiting on, which the card said was still
-/// waiting.)
+/// waiting. #s114 moved `persistedOutputPath` and `persistedOutputSize`: a Bash output the client
+/// cut, which the card drew as if whole.)
 const TOOL_RESULT_READ: &[&str] = &[
     "afkTimeoutMs",
     "agentId",
@@ -1095,6 +1096,11 @@ const TOOL_RESULT_READ: &[&str] = &[
     "harnessNoteCount",
     "harnessTailCount",
     "outputFile",
+    // #s114: moved OFF the ignored list, deliberately. A Bash output too large for the transcript:
+    // `stdout` keeps its first 30,000 bytes and the client saves the whole, `persistedOutputSize`
+    // bytes, to this file. The card says so above what it shows (`persisted_notice`).
+    "persistedOutputPath",
+    "persistedOutputSize",
     "state",
     "stderr",
     "stdout",
@@ -1233,8 +1239,6 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "originalFile",
     "path",
     "paths",
-    "persistedOutputPath",
-    "persistedOutputSize",
     "persistent",
     "pin",
     "plan",
@@ -1425,8 +1429,11 @@ const READ_NOTIFICATIONS_SHAPE: &[&str] = &["notifications", "read_at", "remaini
 /// outside this array takes the result out of the shape and reports `kind` and `signal` with it.
 /// `returnCodeInterpretation`, though flat-known, is outside it too: its first Qwenwork appearance
 /// reports `kind` and `signal` again, to be judged then, as is every other key the client's source
-/// shows (`errorMessage`, `persistedOutput`, a cancelled or backgrounded result's keys): each is
-/// judged when a transcript carries it.
+/// shows (`errorMessage`, a cancelled or backgrounded result's keys): each is judged when a
+/// transcript carries it. An output too large for the transcript adds `persistedOutput` (#s114,
+/// 1.1.59, 1 measured 2026-10-15) after `noOutputExpected`: `{path, originalSizeBytes,
+/// savedSizeBytes, truncated, preview}`, the file the client saved the whole output to, while
+/// `stdout` keeps its first 30,000 bytes; read by `persisted_notice`.
 const QWENWORK_BASH_SHAPE: &[&str] = &[
     "exitCode",
     "interrupted",
@@ -1434,6 +1441,7 @@ const QWENWORK_BASH_SHAPE: &[&str] = &[
     "isImage",
     "kind",
     "noOutputExpected",
+    "persistedOutput",
     "signal",
     "stderr",
     "stdout",
@@ -1575,6 +1583,12 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // with no capture-limit notice in the text (the client appends one when it cuts output): that is
     // the one fact here the page would not show.
     ("totalBytes", QWENWORK_BASH_SHAPE),
+    // #s114 (Qwenwork 1.1.59): an output too large for the transcript, saved whole to a file.
+    // READ on Bash (`persisted_notice`), and known in this shape only, since the word is generic.
+    // Its `savedSizeBytes` equalled `originalSizeBytes` and `truncated` was false in the one met;
+    // REVISIT for a saved file that is itself cut, which the notice does not say. `preview` is
+    // the first 2,000 characters of `stdout`.
+    ("persistedOutput", QWENWORK_BASH_SHAPE),
     // #s65 (Qwenwork 1.1.59): a sub-agent result's five keys nothing renders, each generic enough
     // to mean something else on another tool, so each is known only in this shape. `kind` is a type
     // tag (the block is a SubAgent by its tool name). `terminateReason` pairs with `state`, which
@@ -1794,6 +1808,45 @@ fn parse_hunk_diff(diff: &str) -> Option<Vec<Hunk>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// #s114: what a Bash card says after its output when the client saved that output to a file and
+/// the transcript kept only its first part. Claude Code (2.1.288+) records `persistedOutputPath`
+/// and `persistedOutputSize`, Qwenwork (1.1.59) `persistedOutput: {path, originalSizeBytes, …}`;
+/// both keep the first 30,000 bytes in `stdout`, which the card draws, and say so only in the
+/// result text the model saw (a 2,000-character preview and the path). So the card OPENS with how
+/// much of how much it shows and where the whole is, as the client's own notice leads its preview:
+/// at the end it would sit 30 KB down, under the TUI's "N lines remaining". Nothing when the saved
+/// output is no larger than `stdout` (2 of 144 measured).
+fn persisted_notice(tur: &Value, shown: usize) -> Option<String> {
+    let (path, size) = match tur.get("persistedOutput") {
+        Some(p) => (
+            p.get("path")?.as_str()?,
+            p.get("originalSizeBytes")?.as_u64()?,
+        ),
+        None => (
+            tur.get("persistedOutputPath")?.as_str()?,
+            tur.get("persistedOutputSize")?.as_u64()?,
+        ),
+    };
+    let grouped = |n: u64| {
+        let digits = n.to_string();
+        let mut out = String::new();
+        for (i, c) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(c);
+        }
+        out
+    };
+    (size > shown as u64).then(|| {
+        format!(
+            "[Output too large: the first {} of {} bytes are shown below. Full output saved to: {path}]",
+            grouped(shown as u64),
+            grouped(size)
+        )
+    })
+}
+
 /// The output text to show under a tool call. Edit/Write show their diff/code,
 /// not the boilerplate result, so they get `None`. Bash uses stdout/stderr; Read
 /// uses the file content; other tools use the raw result (unless boilerplate).
@@ -1811,7 +1864,10 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
                     (false, false) => format!("{out}\n{err}"),
                 };
                 if !combined.trim().is_empty() {
-                    return Some(combined);
+                    return Some(match persisted_notice(tur, out.len()) {
+                        Some(notice) => format!("{notice}\n\n{combined}"),
+                        None => combined,
+                    });
                 }
             }
             (!res_txt.trim().is_empty()).then(|| res_txt.to_string())
@@ -7172,6 +7228,98 @@ mod tests {
         assert!(
             seen.is_empty(),
             "the nine keys, a failure's tenth and a stream's counters are known: {seen:?}"
+        );
+    }
+
+    /// #s114: a Bash output too large for the transcript, which keeps its first part in `stdout` and
+    /// saves the whole to a file, opens with a notice of how much is shown and where the whole is —
+    /// as Claude Code writes it (`persistedOutputPath`, `persistedOutputSize`) and as Qwenwork 1.1.59
+    /// does (`persistedOutput`, whose result reports nothing new). A saved output no larger than
+    /// `stdout` adds nothing.
+    #[test]
+    fn a_bash_output_the_client_saved_to_a_file_says_it_was_cut() {
+        let call = |id: &str, version: &str| {
+            serde_json::json!({"type": "assistant", "version": version, "sessionId": "s-s114",
+                "message": {"content": [{"type": "tool_use", "id": id, "name": "Bash",
+                "input": {"command": "cargo test"}}]}})
+            .to_string()
+        };
+        let result = |id: &str, version: &str, tur: Value| {
+            serde_json::json!({"type": "user", "version": version, "sessionId": "s-s114",
+                "toolUseResult": tur, "message": {"content": [{"type": "tool_result",
+                "tool_use_id": id, "content": "Output too large (378 KB). Full output saved to: /w/out\n\nPreview (first 2KB):\nline 1\n..."}]}})
+            .to_string()
+        };
+        let claude = |size: u64| {
+            serde_json::json!({"stdout": "line 1\nline 2", "stderr": "", "interrupted": false,
+                "isImage": false, "noOutputExpected": false,
+                "persistedOutputPath": "/w/.claude/projects/-w/s-s114/tool-results/b1.txt",
+                "persistedOutputSize": size})
+        };
+        let jsonl = [
+            call("c1", "2.1.296"),
+            result("c1", "2.1.296", claude(387_096)),
+            call("c2", "2.1.296"),
+            result("c2", "2.1.296", claude(13)),
+            call("q1", "1.1.59"),
+            result(
+                "q1",
+                "1.1.59",
+                serde_json::json!({"kind": "completed",
+                    "telemetryExecutionId": "00000000-0000-4000-8000-000000000114",
+                    "stdout": "line 1\nline 2", "stderr": "", "exitCode": 0, "signal": null,
+                    "interrupted": false, "isImage": false, "noOutputExpected": false,
+                    "persistedOutput": {"path": "/w/.qwenworkcn/tmp/-w/tool-outputs/s-s114/q1.output",
+                        "originalSizeBytes": 49_118, "savedSizeBytes": 49_118, "truncated": false,
+                        "preview": "line 1\nline 2"}}),
+            ),
+        ]
+        .join("\n");
+        let outputs: Vec<Option<String>> = parse(&jsonl)
+            .into_iter()
+            .flat_map(|b| match b {
+                Block::ToolUse { output, .. } => vec![output],
+                Block::Thinking { tools, .. } => tools
+                    .into_iter()
+                    .filter_map(|t| match t {
+                        Block::ToolUse { output, .. } => Some(output),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(
+            outputs,
+            [
+                Some(
+                    "[Output too large: the first 13 of 387,096 bytes are shown below. Full output \
+                     saved to: /w/.claude/projects/-w/s-s114/tool-results/b1.txt]\n\nline 1\nline 2"
+                        .to_string()
+                ),
+                Some("line 1\nline 2".to_string()),
+                Some(
+                    "[Output too large: the first 13 of 49,118 bytes are shown below. Full output \
+                     saved to: /w/.qwenworkcn/tmp/-w/tool-outputs/s-s114/q1.output]\n\nline 1\nline 2"
+                        .to_string()
+                ),
+            ]
+        );
+        assert_eq!(
+            persisted_notice(
+                &serde_json::json!({"persistedOutputPath": "/p", "persistedOutputSize": 1_234_567}),
+                30_000
+            )
+            .as_deref(),
+            Some("[Output too large: the first 30,000 of 1,234,567 bytes are shown below. Full output saved to: /p]")
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s114"))
+            .collect();
+        assert!(
+            seen.is_empty(),
+            "both clients' persisted keys are known: {seen:?}"
         );
     }
 
