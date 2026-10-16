@@ -152,9 +152,10 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // holds the whole of it (`file: {path, sig, fsig?, name}`).
     // v26: Mermaid fences carry an inline diagram host and their escaped source, so
     // previously visited sessions must regenerate their cached Markdown fragments.
-    // v27: integrate Mermaid and saved-output offers with additive quotation metadata and
-    // canonical labels. The unpublished quotation branch used schemas 25-26; neither resumes.
-    const RECORD_SCHEMA: u16 = 27;
+    // v27: saved-output offers with additive quotation metadata and canonical labels.
+    // v28: integrate Mermaid with quotation records. The earlier quotation build already
+    // wrote v27 caches without diagram hosts; these must rebuild along with v25-v26 caches.
+    const RECORD_SCHEMA: u16 = 28;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
@@ -4776,6 +4777,77 @@ mod tests {
     /// Where `test_cache` puts `sid`'s record log.
     fn test_records(base: &Path, sid: &str) -> std::path::PathBuf {
         cache::admit::entry_dir(&base.join("cache"), Presentation::Html, sid).join("records.jsonl")
+    }
+
+    #[test]
+    fn quotation_schema_27_cache_is_rebuilt_for_mermaid() {
+        use crate::cache::{admit::Origin, Admission};
+        use std::hash::{Hash, Hasher};
+
+        let base = std::env::temp_dir().join(format!("cr-schema-upgrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let source = base.join("session.jsonl");
+        let mut input = String::new();
+        for (role, text) in [
+            ("user", "Draw a diagram"),
+            ("assistant", "```mermaid\ngraph TD; A-->B\n```"),
+            ("user", "Next turn"),
+        ] {
+            input.push_str(
+                &serde_json::json!({
+                    "type": role,
+                    "message": {"role": role, "content": [{"type": "text", "text": text}]},
+                })
+                .to_string(),
+            );
+            input.push('\n');
+        }
+        std::fs::write(&source, &input).unwrap();
+        let fold = FoldPolicy::default();
+        // The submitted quotation build used this fingerprint before it gained Mermaid.
+        // Keep its inputs fixed: a future renderer must not resume these committed records.
+        let mut old = std::collections::hash_map::DefaultHasher::new();
+        27_u16.hash(&mut old);
+        fold.folded_kinds().hash(&mut old);
+        super::super::sig::key_fingerprint().hash(&mut old);
+        super::super::sig::policy_fingerprint().hash(&mut old);
+        let open = |flavor| {
+            let cache: SessionCache<RecordStore, ()> = SessionCache::new(PerSession::new(
+                base.join("cache"),
+                Presentation::Html,
+                Versions::current(Some(flavor)),
+            ));
+            cache.register("sid", Transcript::open(Agent::CLAUDE, source.clone()));
+            let origin = match cache.admit("sid", |dir| {
+                RecordStore::open_append(
+                    &dir.join("records.jsonl"),
+                    fold.clone(),
+                    "/r".into(),
+                    Transcript::open(Agent::CLAUDE, source.clone()),
+                )
+            }) {
+                Admission::Owned { session, origin } => {
+                    let _ = session.advance();
+                    origin
+                }
+                Admission::Denied(_) => panic!("the isolated cache must be available"),
+            };
+            cache.release_all();
+            origin
+        };
+        let old = old.finish();
+        open(old);
+        assert!(matches!(open(old), Origin::Resumed { committed, .. } if committed > 0));
+        assert_eq!(
+            open(render_flavor(&fold)),
+            Origin::Cold(cache::ColdReason::VersionChanged)
+        );
+        assert!(std::fs::read_to_string(test_records(&base, "sid"))
+            .unwrap()
+            .contains("data-mermaid"));
+        assert_eq!(std::fs::read_to_string(source).unwrap(), input);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     /// `start_server` end-to-end over real HTTP: several roots on ONE port, each answering
