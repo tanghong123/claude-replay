@@ -47,6 +47,24 @@ still fail there.
 - Never commit real Claude session transcripts (`*.jsonl`), captured fixtures, or
   scratch notes — they may contain private content and are `.gitignore`d.
 
+## How a pull request lands
+
+Open a pull request against `main`. The owner's agent reviews it, and when the change is low risk it
+merges it for the owner, without waiting for the owner, once:
+
+- CI is green on your latest commit;
+- a second, independent review agrees;
+- every comment on the pull request is answered;
+- your branch is up to date with `main` (the agent merges `main` in when only that is missing).
+
+The agent's findings come to you as comments on the pull request: answer them there, or push a fix.
+Merges are fast-forward only, so your commits land as you wrote them.
+
+Some changes still wait for the owner, after the same review: releases and versions, CI and workflow
+configuration, authentication, pairing and secret handling, vendored releases and new dependencies,
+the public command-line flags and file formats, removing a feature, and larger design changes. If
+yours is one, say so in the description and expect a slower merge.
+
 ## Reporting bugs
 
 Open an issue with the smallest transcript snippet that reproduces it (redact

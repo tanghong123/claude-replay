@@ -890,13 +890,42 @@ a machine without them, a release ends with GitHub and the public tap.
 
 @~/.claude/claude-replay/internal.md
 
-## Merging external PRs
-CI must run and pass BEFORE the merge — a fork PR from a first-time contributor
-needs its workflow runs approved in the GitHub UI, and until they run, the email
-guard has never seen the commits. Never `gh pr merge --admin` past pending
-checks: the pre-push hook cannot see a server-side merge, so CI's guard job is
-the ONLY identity check on that path (#16 leaked a work email exactly this way;
-the accepted commits are sha-allowlisted in ci.yml).
+## Teammates' pull requests land without the owner
+Most of this repository is the owner's; teammates contribute now and then by pull request (or by a
+merge request on the owner's mirror, which the internal notes cover). **The owner is not in the
+merge path** (owner, 2026-10-16): the owner's agent reviews a teammate's change and, when it is low
+risk, approves and lands it under the owner's account without asking, once all three hold:
+
+1. **Reviewed twice.** The agent's own review: the gates below, the browser cases the change
+   touches, the whole local browser suite for a change to page code, and an iOS Simulator walk for a
+   phone UI change. Then an independent review of the exact head commit by a fresh subagent or
+   another agent, never the session that lands it. Every thread on the change is answered.
+2. **Green.** CI passed on that exact head: `fmt · clippy · test`, `secrets · blocked emails`,
+   `version guard` and `browser (real Chrome)`.
+3. **Current.** main is merged in (or the branch rebased onto it), and the result is still green.
+
+Then approve, land it fast-forward only under the landing lock, post a note on the change naming the
+reviewed commit and the checks, and close its review task with what landed. Requested changes go to
+the author as findings on the change, never to the owner; the owner hears of a disagreement only
+when a second round still has one. A change that cannot land fast-forward gets main merged into its
+branch first, then lands fast-forward: never a server-side merge commit.
+
+**Still the owner's.** Review it, then bring it to the owner in one line instead of landing:
+- releases, version numbers and the Homebrew formulas;
+- CI, workflow and gate configuration (`.github/`, `scripts/gate/`, `.gitleaks.toml`);
+- authentication, pairing, the file gate and its capability stamps, secret masking, and anything
+  that opens a port or a network path;
+- vendored releases (`vendor/`) and new dependencies;
+- the public contract: CLI flags, the `--json` streams, the on-disk formats other tools read;
+- removing a feature, or a design change beyond one component;
+- a UI change not yet walked on the iOS Simulator.
+
+**A first-time contributor's** fork PR needs its workflow runs approved in the GitHub UI: approve
+them only after reading the diff for changes to workflows or anything that reaches secrets, which is
+part of the review. CI must run and pass BEFORE the merge. Never `gh pr merge --admin` past pending
+checks: the pre-push hook cannot see a server-side merge, so CI's guard job is the ONLY identity
+check on that path (#16 leaked a work email exactly this way; the accepted commits are
+sha-allowlisted in ci.yml).
 
 ## Gate every change on
 `cargo fmt --check`, `cargo clippy --all-targets` (no new warnings), `cargo test`
