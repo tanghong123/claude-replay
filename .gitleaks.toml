@@ -1,0 +1,13 @@
+# CI's secret scan (gitleaks-action, the `secrets · blocked emails` job) reads this file.
+# Keep the default rules; exempt only files whose bytes another check already pins.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Pinned public releases, held to their published checksums by a test"
+paths = [
+  # Mermaid's browser runtime, unmodified from npm (vendor/mermaid/README.md). Its minified code
+  # reads as a generic API key to gitleaks (`keyCount:b`, line 636 of 12.1.0), a false positive;
+  # `public_release_files_match_the_pinned_checksums` fails on any edit to it.
+  '''^vendor/mermaid/mermaid\.min\.js$''',
+]

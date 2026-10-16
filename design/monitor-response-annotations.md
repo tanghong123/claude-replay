@@ -1,11 +1,11 @@
 # Annotation replies as quotations
 
-*Proposed reading model, revised 2026-10-10 after review. The first delivery covers
-Agent Monitor's App shell Turns list and opened user messages. Classic, standalone
-exports, and dedicated mobile adaptation follow after that experience is validated.
-The recognition rules and additive data contract below define the implementation
-contract. The first App-shell delivery implements it; Classic, standalone export,
-and dedicated mobile styling remain follow-ups. Opened replies reuse the existing Markdown
+*Reading model, implementation status updated 2026-10-16 after review. The first delivery
+covers Agent Monitor's App shell Turns list and opened user messages, including phone
+portrait/landscape layouts in both themes. The recognition rules and additive data
+contract below define the implementation contract. Standalone export is the remaining
+presentation follow-up; the [Classic retirement plan](classic-view-deprecation.md)
+supersedes adapting that view. Opened replies reuse the existing Markdown
 quotation and paragraph styles; Turns retain their quotation marker and additional-item count.*
 
 ---
@@ -153,9 +153,9 @@ appear to be a new request authored by the user.
 
 Full content is available by opening the turn. The first delivery must work with
 keyboard, mouse, and touch in the App shell, in both themes; hover is supplementary.
-Dedicated phone layout work, Classic's new presentation, and export's new
-presentation are follow-ups, not conditions for the first App shell experiment.
-Until adapted, those consumers retain the complete ordinary user-message display.
+The existing phone layouts are covered by the first delivery. Standalone export's new
+presentation remains a follow-up. Classic retains its complete ordinary user-message
+display until retirement; export and TUI continue to display the complete ordinary text.
 
 ---
 
@@ -325,7 +325,8 @@ parser or App shell already supports this field.
    ordinary user messages with the additive records. This compatibility check is
    part of the first delivery even though new styling on those surfaces is not.
 3. Once App shell's reading experience and boundary cases are acceptable, adapt
-   Classic, standalone export, and dedicated mobile layouts using the same data.
+   standalone export using the same data. Classic's retirement supersedes its new
+   quotation presentation. The existing phone layouts are already covered by this delivery.
 
 The validation guide owns versioned source examples and the adapter test method;
 this RFC owns recognition rules, the shared-data contract, the reading model, and

@@ -38,6 +38,12 @@ pub mod audit; // the derived rendering-audit corpus (#174 P1)
 mod bundle;
 pub mod mask; // opt-in secret masking for what leaves the machine (#365)
 pub(crate) mod mdrev; // mdrev's embedded viewer in the app shell's preview pane (#270)
+mod mermaid;
+
+/// Versioned URL of the browser runtime pinned into this build.
+pub fn mermaid_runtime_path() -> &'static str {
+    mermaid::RUNTIME_PATH
+}
 pub mod pairing;
 mod record_store;
 mod serve;
@@ -722,6 +728,18 @@ fn request_user_input_projection(output: &str) -> Option<Value> {
 
 fn fence_html(lang: &str, body: &str) -> String {
     let token = lang.split_whitespace().next().unwrap_or("");
+    if token.eq_ignore_ascii_case("mermaid") {
+        return format!(
+            "<div class=\"fence mermaid-fence\" data-mermaid><div class=\"fence-h\">\
+             <span class=\"fence-lang\">mermaid</span>\
+             <button class=\"mermaid-source\" type=\"button\" aria-pressed=\"false\">source</button>\
+             <button class=\"cpy\" type=\"button\">copy</button></div>\
+             <div class=\"mermaid-diagram\" role=\"img\" aria-label=\"Mermaid diagram\" aria-busy=\"true\"></div>\
+             <p class=\"mermaid-error\" role=\"status\" hidden></p>\
+             <pre hidden><code>{}</code></pre></div>",
+            esc(body.trim_end_matches('\n'))
+        );
+    }
     let code = highlight_lines(body.trim_end_matches('\n'), token).join("\n");
     let label = if token.is_empty() { "code" } else { token };
     format!(
@@ -2085,7 +2103,7 @@ fn build_jsonl_inner(
 /// The page shell: embedded CSS, the inline snapshot, the renderer, and (in live
 /// mode) the companion path + poll interval the renderer appends from.
 fn build_html(title: &str, jsonl: &str, turns: &[SideEntry], live: Option<&str>) -> String {
-    build_page(title, jsonl, turns, live, None, None)
+    build_page(title, jsonl, turns, live, None, None, false)
 }
 
 /// The shared shell for a multi-file bundle (`--dump-all-html` / served `--html`): no
@@ -2093,7 +2111,28 @@ fn build_html(title: &str, jsonl: &str, turns: &[SideEntry], live: Option<&str>)
 /// to `root_id`, and fills the sidebar as turns arrive). `live` makes the page poll its
 /// stream (served `--html -f`); a static offline bundle sets it false.
 pub(super) fn build_shell(title: &str, root_id: &str, live: bool, pull: bool) -> String {
-    build_page(title, "", &[], None, Some((root_id, live, pull)), None)
+    build_page(
+        title,
+        "",
+        &[],
+        None,
+        Some((root_id, live, pull)),
+        None,
+        false,
+    )
+}
+
+/// An offline directory shell knows whether any root or child stream needs Mermaid.
+pub(super) fn build_bundle_shell(title: &str, root_id: &str, has_mermaid: bool) -> String {
+    build_page(
+        title,
+        "",
+        &[],
+        None,
+        Some((root_id, false, false)),
+        None,
+        has_mermaid,
+    )
 }
 
 /// Host-selectable chrome for a SERVED page (`/session?id=…`, #98 §6.3) — URL parameters,
@@ -2150,6 +2189,7 @@ pub(super) fn build_shell_chrome(title: &str, root_id: &str, chrome: &PageChrome
         None,
         Some((root_id, true, true)),
         Some(chrome),
+        false,
     )
 }
 
@@ -2163,6 +2203,7 @@ fn build_page(
     live: Option<&str>,
     multi: Option<(&str, bool, bool)>,
     chrome: Option<&PageChrome>,
+    bundle_has_mermaid: bool,
 ) -> String {
     let sidebar: String = turns
         .iter()
@@ -2252,10 +2293,21 @@ fn build_page(
     // stand alone from file://, so what the monitor serves as ES modules arrives here as a
     // classic script publishing the same names on `window.__shared`.
     let shared_js = shared::inline_all();
+    // Server-backed pages fetch the declared versioned runtime lazily. A single-file
+    // export needs it only if it contains diagrams. The bundle writer checks every stream.
+    let mermaid_runtime = if !multi.is_some_and(|(_, _, pull)| pull)
+        && (bundle_has_mermaid || live.is_some() || mermaid::contains_diagram(jsonl))
+    {
+        mermaid::inline_runtime()
+    } else {
+        String::new()
+    };
+    let mermaid_path = mermaid::RUNTIME_PATH;
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
+<meta name="mermaid-runtime" content="{mermaid_path}">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%236d4fa1'/><path d='M12 9l12 7-12 7z' fill='%23fff'/></svg>">
@@ -2367,7 +2419,7 @@ fn build_page(
 <script>
 {shared_js}
 </script>
-<script>
+{mermaid_runtime}<script>
 {JS}
 </script>
 {chrome_stamp}</body>
@@ -4072,6 +4124,66 @@ mod tests {
     }
 
     #[test]
+    fn mermaid_bundle_runtime_tracks_all_sessions() {
+        use clap::Parser as _;
+        let base = std::env::temp_dir().join(format!("cr-mermaid-bundles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let diagram = "```mermaid\nflowchart LR\n A[Sample] --> B[Result]\n```";
+        for (name, root_has_diagram, child_has_diagram) in [
+            ("none", false, false),
+            ("root", true, false),
+            ("child", false, true),
+        ] {
+            let dir = base.join(name);
+            let children = dir.join("sess/subagents");
+            std::fs::create_dir_all(&children).unwrap();
+            let source = dir.join("sess.jsonl");
+            let message = |text: &str| {
+                serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}}).to_string() + "\n"
+            };
+            let root = message(if root_has_diagram { diagram } else { "A synthetic root without a diagram." })
+                + "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"spawn\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"gp\",\"description\":\"Sample child\",\"prompt\":\"Sample work\"}}]}}\n"
+                + "{\"type\":\"user\",\"toolUseResult\":{\"agentId\":\"a1\",\"status\":\"async_launched\"},\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"spawn\",\"content\":\"async_launched\"}]}}\n";
+            std::fs::write(&source, root).unwrap();
+            std::fs::write(
+                children.join("agent-a1.jsonl"),
+                message(if child_has_diagram {
+                    diagram
+                } else {
+                    "A synthetic child without a diagram."
+                }),
+            )
+            .unwrap();
+            let output = dir.join("bundle");
+            let args = crate::Args::parse_from([
+                "agent-replay",
+                source.to_str().unwrap(),
+                "--dump-all-html",
+                output.to_str().unwrap(),
+            ]);
+            dump_all_html(&args, &source).unwrap();
+            let html = std::fs::read_to_string(output.join("index.html")).unwrap();
+            assert!(
+                output.join("a1.jsonl").exists(),
+                "the child must be included: {name}"
+            );
+            assert_eq!(
+                html.contains("id=\"mermaid-runtime\""),
+                root_has_diagram || child_has_diagram,
+                "runtime presence for {name}"
+            );
+            if !root_has_diagram && !child_has_diagram {
+                assert!(
+                    html.len() < 1_000_000,
+                    "a no-diagram shell grew to {} bytes",
+                    html.len()
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn dump_all_html_keeps_reused_codex_agent_paths_distinct() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static N: AtomicUsize = AtomicUsize::new(0);
@@ -5744,6 +5856,16 @@ mod tests {
         assert!(html.contains("<ul><li>one</li>"), "{html}");
         assert!(html.contains("class=\"fence\"") && html.contains("class=\"cpy\""));
         assert!(html.contains("class=\"md-h1\""));
+    }
+
+    #[test]
+    fn mermaid_source_is_escaped_and_kept_separate_from_ordinary_code() {
+        let html = md_html("```mermaid\nflowchart LR\n A[\"<script>alert(1)</script>\"] --> B\n```\n\n```rust\nlet x = 1;\n```");
+        assert_eq!(html.matches("data-mermaid").count(), 1);
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("<pre hidden><code>flowchart LR"));
+        assert_eq!(html.matches("class=\"cpy\"").count(), 2);
     }
 
     #[test]

@@ -100,6 +100,7 @@ pub fn app_page(version: &str, paired: bool) -> String {
 pub fn page(version: &str, paired: bool, default_ui: bool) -> String {
     let head = PAGE_HEAD
         .replace("{{VERSION}}", version)
+        .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path())
         .replace("{{PAIRED}}", if paired { "true" } else { "false" })
         .replace("{{DEFAULT_UI}}", if default_ui { "true" } else { "false" })
         // The mdrev release the preview pane mounts Markdown with (#270), pinned into this binary
@@ -528,6 +529,10 @@ mod tests {
             (
                 "shared/image-view.js",
                 claude_replay_html::shared_source("image-view").unwrap(),
+            ),
+            (
+                "shared/mermaid.js",
+                claude_replay_html::shared_source("mermaid").unwrap(),
             ),
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),

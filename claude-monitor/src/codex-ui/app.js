@@ -19,6 +19,7 @@ import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, quer
 import { parseJumpQuery } from "./jump-query.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
+import { revealMermaidSource } from "./shared/mermaid.js";
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
 // renders the navigator before the module's later statements have run.
@@ -1691,6 +1692,7 @@ function landOnCurrentMark() {
     mark = viewport.window.querySelector("mark.search-mark.current");
     if (!mark) return;
   }
+  revealMermaidSource(mark);
   // #354: sideways first. A hit far along an unwrapped line of an output (a phone's default: `pre`
   // that scrolls on its own) sits past its block's right edge, and nothing below moves sideways —
   // the owner's export showed every step landing at the right offset of a 175,539 px agent process
@@ -1727,7 +1729,7 @@ function markSearch() {
     const index = Number(root.dataset.blockIndex);
     if (!Number.isInteger(index) || !matched.has(index) || root.parentElement?.closest("[data-block-index]")) continue;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const texts = [];
-    while (walker.nextNode()) if (walker.currentNode.parentElement && !["SCRIPT", "STYLE", "MARK"].includes(walker.currentNode.parentElement.tagName) && walker.currentNode.nodeValue.toLowerCase().includes(needle) && (!wanted || kindInScope(walker.currentNode.parentElement.closest("[data-record-kind]"), wanted))) texts.push(walker.currentNode);
+    while (walker.nextNode()) if (walker.currentNode.parentElement && !walker.currentNode.parentElement.closest(".mermaid-diagram") && !["SCRIPT", "STYLE", "MARK"].includes(walker.currentNode.parentElement.tagName) && walker.currentNode.nodeValue.toLowerCase().includes(needle) && (!wanted || kindInScope(walker.currentNode.parentElement.closest("[data-record-kind]"), wanted))) texts.push(walker.currentNode);
     let first = index === current;
     for (const text of texts) {
       const value = text.nodeValue, lower = value.toLowerCase(), frag = document.createDocumentFragment();

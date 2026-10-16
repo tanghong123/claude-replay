@@ -63,9 +63,20 @@ pub(crate) fn parse(text: &str) -> Option<ReplyContext> {
             {
                 return None;
             }
-            let mut buffer = ryu_js::Buffer::new();
-            let start = buffer.format(start).to_string();
-            let end = buffer.format(end);
+            // Validated whole numbers use plain shortest digits below 10^21. Keep
+            // JSON.stringify's positive exponent above that boundary and its zero
+            // spelling; fixed precision or integer casts would change rounded large values.
+            let number = |value: f64| {
+                if value == 0.0 {
+                    "0".to_string()
+                } else if value < 1e21 {
+                    value.to_string()
+                } else {
+                    format!("{value:e}").replace('e', "e+")
+                }
+            };
+            let start = number(start);
+            let end = number(end);
             canonical.push_str(&format!(
                 ",\"source\":{{\"messageId\":{},\"startOffset\":{},\"endOffset\":{}}}",
                 string(&source.message_id),

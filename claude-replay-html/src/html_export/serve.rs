@@ -150,8 +150,10 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // schemeless is a `<span title>` holding its words, never a live `<a href>`.
     // v25: #s115 — a Bash output the client cut opens its body with a note offering the file that
     // holds the whole of it (`file: {path, sig, fsig?, name}`).
-    // v27: integrate saved-output offers with additive quotation metadata and canonical labels.
-    // The unpublished quotation branch used schemas 25-26; none may resume this output.
+    // v26: Mermaid fences carry an inline diagram host and their escaped source, so
+    // previously visited sessions must regenerate their cached Markdown fragments.
+    // v27: integrate Mermaid and saved-output offers with additive quotation metadata and
+    // canonical labels. The unpublished quotation branch used schemas 25-26; neither resumes.
     const RECORD_SCHEMA: u16 = 27;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
@@ -2394,7 +2396,11 @@ fn serve_connection(
     let r = if redirect_root {
         r
     } else {
-        gzip_for(mask_for(r, &headers), &method, &headers)
+        gzip_for(
+            mask_for(identity_for(r, &headers), &headers),
+            &method,
+            &headers,
+        )
     };
     let head = if redirect_root {
         format!(
@@ -2456,6 +2462,39 @@ const GZIP_MIN_BYTES: usize = 16 * 1024;
 /// 28% in 256 ms, level 6 27% in 501 ms. Where the bytes cross a network, transfer dominates —
 /// at 5 MB/s level 3 saves ~0.6 s over level 1 for 0.13 s more CPU — so level 3.
 const GZIP_LEVEL: u32 = 3;
+
+/// A route can keep immutable assets precompressed. Decode only when gzip is not accepted,
+/// before masking and normal network compression, so those adapters still see identity bytes.
+fn identity_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
+    use std::io::Read;
+    let gzip = r.headers.iter().any(|header| {
+        header.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("content-encoding")
+                && value.trim().eq_ignore_ascii_case("gzip")
+        })
+    });
+    if !gzip || accepts_gzip(headers) || r.stream.is_some() {
+        return r;
+    }
+    let mut body = Vec::new();
+    if let Err(error) = flate2::read::GzDecoder::new(r.body.as_slice()).read_to_end(&mut body) {
+        eprintln!(
+            "could not decode gzip response ({} bytes, {}): {error}",
+            r.body.len(),
+            r.content_type
+        );
+        let mut failed = HttpResponse::ok(TEXT_PLAIN, b"could not decode the response".to_vec());
+        failed.code = "500 Internal Server Error";
+        return failed;
+    }
+    r.body = body;
+    r.headers.retain(|header| {
+        !header
+            .split_once(':')
+            .is_some_and(|(name, _)| name.eq_ignore_ascii_case("content-encoding"))
+    });
+    r
+}
 
 /// Gzip a reply for a client ACROSS A NETWORK (#313). Opening a session sends every record it
 /// has — 3 MB for an 8 MB transcript, 24 MB for 70 MB, 32 MB for 107 MB — and a phone reaching
@@ -2555,19 +2594,26 @@ fn looks_like_text(path: &Path) -> bool {
     }
 }
 
-/// Whether `Accept-Encoding` lists gzip at a non-zero quality.
+/// Whether `Accept-Encoding` accepts gzip. An explicit coding overrides the wildcard.
 fn accepts_gzip(headers: &str) -> bool {
-    header_value(headers, "accept-encoding").is_some_and(|v| {
-        v.split(',').any(|coding| {
+    header_value(headers, "accept-encoding").is_some_and(|value| {
+        let mut wildcard = false;
+        for coding in value.split(',') {
             let mut parts = coding.split(';').map(str::trim);
             let name = parts.next().unwrap_or("");
-            (name.eq_ignore_ascii_case("gzip") || name == "*")
-                && parts.all(|p| {
-                    p.strip_prefix("q=")
-                        .and_then(|q| q.trim().parse::<f32>().ok())
-                        .is_none_or(|q| q > 0.0)
-                })
-        })
+            let accepted = parts.all(|part| {
+                part.strip_prefix("q=")
+                    .and_then(|quality| quality.trim().parse::<f32>().ok())
+                    .is_none_or(|quality| quality > 0.0)
+            });
+            if name.eq_ignore_ascii_case("gzip") {
+                return accepted;
+            }
+            if name == "*" {
+                wildcard = accepted;
+            }
+        }
+        wildcard
     })
 }
 
@@ -2703,6 +2749,9 @@ pub fn service_routes(
         return r;
     }
     let (name, query) = (req.name, req.query);
+    if let Some(response) = super::mermaid::route(name) {
+        return response;
+    }
     // `/session?id=<sid>[&chrome=embed][&theme=light|dark]` — the complete session view at
     // a URL, exactly as `--html` serves it, with optional host chrome (#98 §6.3).
     if name == "session" {
@@ -3417,6 +3466,78 @@ mod tests {
         let (head, plain) = get(&format!("127.0.0.1:{port}"));
         assert!(!head.contains("Content-Encoding"), "{head}");
         assert_eq!(plain, body.as_bytes());
+    }
+
+    #[test]
+    fn mermaid_runtime_http_preserves_cache_and_negotiates_encoding() {
+        use std::io::{Read, Write};
+        let handler: RouteHandler = std::sync::Arc::new(|req: &Request| {
+            super::super::mermaid::route(req.name)
+                .unwrap_or_else(|| HttpResponse::not_found("no such runtime"))
+        });
+        let port =
+            spawn_listener_gated(0, handler, AuthGate::for_test(Some("sample-token"))).unwrap();
+        let path = super::super::mermaid::RUNTIME_PATH;
+        let source = include_bytes!("../../../vendor/mermaid/mermaid.min.js");
+        let compressed = include_bytes!("../../../vendor/mermaid/mermaid.min.js.gz");
+        for (host, encoding, gzip) in [
+            ("127.0.0.1", "gzip", true),
+            ("phone.example", "gzip, deflate, br", true),
+            ("phone.example", "gzip;q=0, br", false),
+            ("phone.example", "*;q=1, gzip;q=0", false),
+            ("phone.example", "*;q=0.5", true),
+            ("phone.example", "identity", false),
+            ("127.0.0.1", "", false),
+        ] {
+            let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            write!(socket, "GET {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer sample-token\r\nAccept-Encoding: {encoding}\r\nConnection: close\r\n\r\n").unwrap();
+            let mut raw = Vec::new();
+            socket.read_to_end(&mut raw).unwrap();
+            let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+            let head = String::from_utf8_lossy(&raw[..split]);
+            let body = &raw[split + 4..];
+            assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+            assert!(
+                head.contains("Cache-Control: public, max-age=31536000, immutable"),
+                "{head}"
+            );
+            assert!(!head.contains("no-store"), "{head}");
+            assert!(head.contains("Vary: Accept-Encoding"), "{head}");
+            assert!(
+                head.contains(&format!("Content-Length: {}", body.len())),
+                "{head}"
+            );
+            assert_eq!(head.contains("Content-Encoding: gzip"), gzip, "{head}");
+            if gzip {
+                assert_eq!(
+                    body,
+                    compressed.as_slice(),
+                    "serve the stored bytes without recompression"
+                );
+                let mut decoded = Vec::new();
+                flate2::read::GzDecoder::new(body)
+                    .read_to_end(&mut decoded)
+                    .unwrap();
+                assert_eq!(decoded, source.as_slice());
+            } else {
+                assert_eq!(body, source.as_slice(), "byte-identical identity fallback");
+            }
+        }
+        assert!(super::super::mermaid::route("mermaid.js").is_none());
+        assert!(super::super::mermaid::route("mermaid/0.0.0.js").is_none());
+    }
+
+    #[test]
+    fn invalid_precompressed_response_reports_a_server_error() {
+        let mut response = HttpResponse::ok(TEXT_PLAIN, b"invalid gzip".to_vec());
+        response.headers.push("Content-Encoding: gzip".into());
+        let response = identity_for(response, "Accept-Encoding: identity\r\n");
+        assert_eq!(response.code, "500 Internal Server Error");
+        assert_eq!(response.body, b"could not decode the response");
+        assert!(!response
+            .headers
+            .iter()
+            .any(|h| h.starts_with("Content-Encoding:")));
     }
 
     /// #320: a path the host made public is read without passing the gate — a phone fetches the

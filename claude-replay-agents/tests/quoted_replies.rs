@@ -913,17 +913,44 @@ fn codex_tail_and_multiline_selection_are_never_reconstructed_or_lost() {
 }
 #[test]
 fn canonical_javascript_offsets_and_future_client_versions() {
-    let canonical = CODEX
-        .replace("\"startOffset\":100", "\"startOffset\":1e+21")
-        .replace("\"endOffset\":146", "\"endOffset\":2e+21");
-    assert!(matches!(
-        blocks("codex", &canonical, false)[0],
-        Block::UserReply { .. }
-    ));
-    let noncanonical = CODEX
-        .replace("\"startOffset\":100", "\"startOffset\":9007199254740993")
-        .replace("\"endOffset\":146", "\"endOffset\":9007199254741000");
-    fallback("codex", &noncanonical);
+    // Literal JSON.stringify results: ordinary indices, rounded whole numbers,
+    // the plain/exponent boundary, and finite values beyond integer cast ranges.
+    for (start, end) in [
+        ("0", "1"),
+        ("9007199254740992", "9007199254741000"),
+        ("1000000000000000100", "1000000000000000300"),
+        ("100000000000000000000", "1e+21"),
+        ("1e+21", "2e+21"),
+        ("1e+23", "2e+23"),
+        ("1e+308", "1.7976931348623157e+308"),
+    ] {
+        let canonical = CODEX
+            .replace("\"startOffset\":100", &format!("\"startOffset\":{start}"))
+            .replace("\"endOffset\":146", &format!("\"endOffset\":{end}"));
+        for array in [false, true] {
+            assert!(
+                matches!(
+                    blocks("codex", &canonical, array)[0],
+                    Block::UserReply { .. }
+                ),
+                "{start}..{end}, array={array}"
+            );
+        }
+    }
+    for start in ["-0", "100.0", "1e2", "9007199254740993"] {
+        let noncanonical = CODEX
+            .replace("\"startOffset\":100", &format!("\"startOffset\":{start}"))
+            .replace("\"endOffset\":146", "\"endOffset\":9007199254741000");
+        fallback("codex", &noncanonical);
+    }
+    // The existing JSON reader rounds these large integers to a different f64.
+    // Preserve the complete input when its reconstructed spelling cannot match.
+    for start in ["999999999999999900000", "1.2345678901234567e+30"] {
+        let rounded = CODEX
+            .replace("\"startOffset\":100", &format!("\"startOffset\":{start}"))
+            .replace("\"endOffset\":146", "\"endOffset\":1e+31");
+        fallback("codex", &rounded);
+    }
 }
 #[test]
 fn incremental_and_durable_blocks_retain_reply_metadata() {

@@ -4,8 +4,8 @@
 //! through `super`'s block/stream helpers, and write the files.
 
 use super::{
-    build_html, build_shell, child_info, display_title, render_agent_stream, render_snapshot,
-    session_id, AgentInfo, AssetSink, ChildRef,
+    build_bundle_shell, build_html, child_info, display_title, render_agent_stream,
+    render_snapshot, session_id, AgentInfo, AssetSink, ChildRef,
 };
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args};
@@ -179,11 +179,13 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     }]);
     let mut seen = std::collections::HashSet::new();
     let mut count = 0usize;
+    let mut has_mermaid = false;
     while let Some(info) = queue.pop_front() {
         if !seen.insert(info.id.clone()) || !info.source.exists() {
             continue;
         }
         let (jsonl, children) = agent_stream(agent, &fold, &cwd, false, &info, Some(&mut sink))?;
+        has_mermaid |= super::mermaid::contains_diagram(&jsonl);
         let jsonl = masked(args, jsonl);
         std::fs::write(
             out_dir.join(format!("{}.jsonl", info.id)),
@@ -199,7 +201,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     }
     std::fs::write(
         out_dir.join("index.html"),
-        build_shell(&title, &root_id, false, false),
+        build_bundle_shell(&title, &root_id, has_mermaid),
     )
     .with_context(|| "write index.html")?;
 
