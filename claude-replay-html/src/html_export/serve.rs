@@ -1369,7 +1369,8 @@ pub enum HttpReply {
     Events(EventStream),
 }
 
-/// A bounded event receiver; the listener applies authentication and masking before writing.
+/// An event receiver; the listener applies authentication and masking before writing.
+/// Queue capacity is the producer's responsibility, not a property of `Receiver`.
 pub struct EventStream {
     initial: serde_json::Value,
     receiver: std::sync::Mutex<std::sync::mpsc::Receiver<serde_json::Value>>,
@@ -1378,6 +1379,11 @@ pub struct EventStream {
 
 impl HttpReply {
     /// Create a connection-delimited SSE reply, renewed after two minutes.
+    ///
+    /// Producers must use a bounded `sync_channel` and define how they handle a full queue
+    /// (backpressure or disconnecting a slow subscriber). The connection deadline limits
+    /// lifetime, not queued memory. Reconnecting clients need the caller's snapshot or replay
+    /// protocol to recover missed events; this transport does not retain an event history.
     pub fn events(
         initial: serde_json::Value,
         receiver: std::sync::mpsc::Receiver<serde_json::Value>,
@@ -1467,6 +1473,15 @@ impl HttpResponse {
     /// itself: a tap on a same-origin link is same-site in every engine, so it carries the cookie
     /// whatever the automatic retry met. It is 44px tall, a finger's target.
     pub fn refusal_page(msg: &str) -> Self {
+        Self::refusal_page_with_pairing(msg, false)
+    }
+
+    fn refusal_page_with_pairing(msg: &str, offer_pairing: bool) -> Self {
+        let pairing_action = if offer_pairing {
+            "<a class=\"pair\" href=\"/pair\">Pair this device</a>"
+        } else {
+            ""
+        };
         let msg = msg
             .replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -1482,14 +1497,18 @@ impl HttpResponse {
              background:#f7f8fa}}main{{max-width:34rem;margin:18vh auto 0;padding:0 20px}}\
              h1{{font-size:20px;margin:0 0 8px}}p{{margin:0 0 10px;color:#4a5263}}\
              code{{font:14px ui-monospace,Menlo,monospace}}\
-             a.again{{display:inline-flex;align-items:center;min-height:44px;margin-top:8px;\
+             .actions{{display:flex;flex-wrap:wrap;gap:12px;margin-top:18px}}\
+             .actions a{{display:inline-flex;align-items:center;min-height:44px;\
              padding:0 20px;border-radius:10px;background:#1f7a4d;color:#fff;font-weight:600;\
-             text-decoration:none}}@media(max-height:500px){{main{{margin-top:16px}}}}\
+             text-decoration:none}}a.pair{{background:#e4eaf4;color:#193858}}\
+             a:focus-visible{{outline:3px solid #3274c7;outline-offset:3px}}\
+             @media(max-height:500px){{main{{margin-top:16px}}}}\
              @media(prefers-color-scheme:dark){{body{{background:#15171c;color:#e6e8ee}}\
-             p{{color:#a9b0bf}}}}</style></head><body><main>\
+             p{{color:#a9b0bf}}a.pair{{background:#293c53;color:#e7f0ff}}}}</style></head><body><main>\
              <h1>This browser is not paired</h1><p>{msg}.</p>\
              <p>Already paired? Opening this page from another app or site can hide the pairing \
-             for one load.</p><a class=\"again\" href=\"\">Try again</a></main></body></html>"
+             for one load.</p><div class=\"actions\"><a class=\"again\" href=\"\">Try again</a>\
+             {pairing_action}</div></main></body></html>"
         );
         Self {
             code: "401 Unauthorized",
@@ -2337,39 +2356,6 @@ fn serve_connection<R: Into<HttpReply>>(
     let (path_part, query) = target.split_once('?').unwrap_or((target, ""));
     let name = path_part.trim_start_matches('/');
 
-    // The request body, bounded — a write route (#133) reads its prompt/target from here, and
-    // mdrev's `hold` (#270) a whole document. A body over its route's bound is REFUSED (413), never
-    // cut to size: this used to read the first 64 KB of a larger body and hand the route that,
-    // which for a held document is a corrupted document and for any route is a lie about what
-    // was sent.
-    let limit = if name == "api/mdrev/hold" {
-        super::mdrev::HOLD_BODY_LIMIT
-    } else if let Some((_, limit)) = gate.body_limits.iter().find(|(route, _)| *route == name) {
-        *limit
-    } else {
-        MAX_BODY_BYTES
-    };
-    let declared = header_value(&headers, "content-length")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0);
-    let oversized = declared > limit;
-    let mut body = vec![0u8; if oversized { 0 } else { declared }];
-    if !oversized && declared > 0 {
-        reader.read_exact(&mut body)?;
-    }
-
-    // #11: phone pairing is the way IN, so it is answered before the gate — and only by a paired
-    // gate that offers it. The code arrives in a POST body, never a URL.
-    if let (Some(tok), Some(codes)) = (gate.token.as_deref(), gate.pair_codes.as_deref()) {
-        if name == "pair" || name == "api/pair" {
-            let (r, cookie) = pairing_route(&method, name, &body, tok, codes, gate.pair_command);
-            let head = response_head(&r, &cookie);
-            return stream
-                .write_all(head.as_bytes())
-                .and_then(|_| stream.write_all(&r.body));
-        }
-    }
-
     // #196 §4.2: same-user OR a valid token (query / Authorization: Bearer / cmauth cookie) —
     // except a GET of a path the host made public (#320), which needs neither.
     let own_cookie = gate.token.as_deref().map(cookie_name);
@@ -2402,6 +2388,44 @@ fn serve_connection<R: Into<HttpReply>>(
         },
     };
 
+    // The request body, bounded — a write route (#133) reads its prompt/target from here, and
+    // mdrev's `hold` (#270) a whole document. A body over its route's bound is REFUSED (413), never
+    // cut to size: this used to read the first 64 KB of a larger body and hand the route that,
+    // which for a held document is a corrupted document and for any route is a lie about what
+    // was sent.
+    let limit = if name == "api/mdrev/hold" {
+        super::mdrev::HOLD_BODY_LIMIT
+    } else if let Some((_, limit)) = gate.body_limits.iter().find(|(route, _)| *route == name) {
+        *limit
+    } else {
+        MAX_BODY_BYTES
+    };
+    let declared = header_value(&headers, "content-length")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let oversized = declared > limit;
+    // Raised route budgets are for admitted clients only. Keep the small allowance so an
+    // unpaired browser can still submit its pairing code, but never allocate or wait for a
+    // large upload from a denied peer (including mdrev's existing document allowance).
+    let denied_large_body = declared > MAX_BODY_BYTES && matches!(access, Access::Denied);
+    let read_body = !oversized && !denied_large_body;
+    let mut body = vec![0u8; if read_body { declared } else { 0 }];
+    if read_body && declared > 0 {
+        reader.read_exact(&mut body)?;
+    }
+
+    // #11: a small pairing POST is the way IN, so answer it before enforcing the gate
+    // verdict. Large denied requests still reach the refusal without reading their body.
+    if let (Some(tok), Some(codes)) = (gate.token.as_deref(), gate.pair_codes.as_deref()) {
+        if !denied_large_body && (name == "pair" || name == "api/pair") {
+            let (r, cookie) = pairing_route(&method, name, &body, tok, codes, gate.pair_command);
+            let head = response_head(&r, &cookie);
+            return stream
+                .write_all(head.as_bytes())
+                .and_then(|_| stream.write_all(&r.body));
+        }
+    }
+
     // The write-route verdicts (#133): a valid TOKEN was presented (not merely same-user),
     // and the Host/Origin are ours. `deny_write` on the Request enforces both + POST.
     let local_port = local.map(|l| l.port()).unwrap_or(0);
@@ -2430,13 +2454,10 @@ fn serve_connection<R: Into<HttpReply>>(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
             eprintln!("{}", refusal_line(now, name, cookie, &headers));
-            let mut refusal = HttpResponse::refusal_page(gate.refusal);
-            if gate.token.is_some() && gate.pair_codes.is_some() {
-                refusal.body = String::from_utf8(refusal.body)
-                    .expect("refusal page is UTF-8")
-                    .replace("</main>", "<a href=\"/pair\">Pair this device</a></main>")
-                    .into_bytes();
-            }
+            let refusal = HttpResponse::refusal_page_with_pairing(
+                gate.refusal,
+                gate.token.is_some() && gate.pair_codes.is_some(),
+            );
             (refusal.into(), None, false)
         }
         Access::Denied => (
@@ -3250,21 +3271,63 @@ mod tests {
     }
 
     #[test]
-    fn only_exact_codex_send_accepts_large_image_bodies_without_truncation() {
+    fn unpaired_large_requests_are_refused_before_their_bodies_arrive() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let port = spawn_listener_gated(
+            0,
+            std::sync::Arc::new(move |_: &Request| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                HttpResponse::ok(TEXT_PLAIN, b"unexpected handler call".to_vec())
+            }),
+            AuthGate::for_test(Some("large-body-token"))
+                .with_body_limit("api/large-upload", TEST_ROUTE_BODY_LIMIT)
+                .unwrap(),
+        )
+        .unwrap();
+        for (path, length) in [
+            ("/api/large-upload", MAX_BODY_BYTES + 1),
+            ("/api/large-upload", TEST_ROUTE_BODY_LIMIT),
+            ("/api/mdrev/hold", super::super::mdrev::HOLD_BODY_LIMIT),
+        ] {
+            for authorization in ["", "Authorization: Bearer wrong-token\r\n"] {
+                let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                write!(stream, "POST {path} HTTP/1.1\r\nHost: phone.example\r\n{authorization}Content-Length: {length}\r\nConnection: close\r\n\r\n").unwrap();
+                // Do not send the declared body or close the write side: the gate must answer
+                // without waiting for upload bytes or the server's socket timeout.
+                let mut response = String::new();
+                stream
+                    .read_to_string(&mut response)
+                    .unwrap_or_else(|error| {
+                        panic!("gate waited for an unpaired {path} body ({length} bytes): {error}")
+                    });
+                assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+            }
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn only_an_admitted_exact_route_accepts_large_bodies_without_truncation() {
         use std::io::{Read, Write};
         let port = spawn_listener_gated(
             0,
             std::sync::Arc::new(|r: &Request| {
                 HttpResponse::ok("text/plain", r.body.len().to_string().into_bytes())
             }),
-            AuthGate::same_user()
+            AuthGate::for_test(Some("large-body-token"))
                 .with_body_limit("api/large-upload", TEST_ROUTE_BODY_LIMIT)
                 .unwrap(),
         )
         .unwrap();
         let send = |path: &str, length: usize, write_body: bool| {
             let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+            stream.write_all(format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer large-body-token\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
             if write_body {
                 stream.write_all(&vec![b'x'; length]).unwrap();
             }
@@ -3549,6 +3612,14 @@ mod tests {
             "a finger's target: {page}"
         );
         assert!(!page.contains("Set-Cookie"), "{page}");
+        assert!(
+            !page.contains("href=\"/pair\""),
+            "hosts without pairing keep their own entrypoint"
+        );
+        let public_page = HttpResponse::refusal_page("use <host> & pair");
+        let public_page = String::from_utf8(public_page.body).unwrap();
+        assert!(public_page.contains("use &lt;host&gt; &amp; pair"));
+        assert!(!public_page.contains("href=\"/pair\""));
         let fetch = ask("empty");
         assert!(
             fetch.contains("Content-Type: text/plain; charset=utf-8")
@@ -3934,7 +4005,7 @@ mod tests {
         );
         let refused_page = send("GET /codex-workspace HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Dest: document\r\nConnection: close\r\n\r\n".to_owned());
         assert!(refused_page.starts_with("HTTP/1.1 401"), "{refused_page}");
-        assert!(refused_page.contains("<a href=\"/pair\">Pair this device</a>"));
+        assert!(refused_page.contains("<a class=\"pair\" href=\"/pair\">Pair this device</a>"));
         assert!(
             !refused_page.contains("the monitor"),
             "Private handler never sees an anonymous page load"

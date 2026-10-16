@@ -7734,6 +7734,134 @@ fn a_phone_pairs_by_a_one_time_code() {
     drop(m);
 }
 
+/// An unpaired browser gets two distinct, readable touch targets in either system theme.
+/// Exercise the actual refusal route and follow its pairing link, not a copied HTML fixture.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn refusal_pairing_actions_are_readable_and_tappable() {
+    use headless_chrome::protocol::cdp::{Emulation, Page};
+    let _serial = serial();
+    let base = harness::base("refusal-pairing-actions");
+    let stores = harness::Stores::new(&base);
+    let port = 2987;
+    let _monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    for (layout, width, height, mobile) in [
+        ("portrait", 390, 844, true),
+        ("landscape", 844, 390, true),
+        ("desktop", 1280, 800, false),
+    ] {
+        tab.call_method(Emulation::SetDeviceMetricsOverride {
+            width,
+            height,
+            device_scale_factor: 1.0,
+            mobile,
+            scale: None,
+            screen_width: Some(width),
+            screen_height: Some(height),
+            position_x: None,
+            position_y: None,
+            dont_set_visible_size: None,
+            screen_orientation: None,
+            viewport: None,
+            display_feature: None,
+            device_posture: None,
+        })
+        .unwrap();
+        for theme in ["light", "dark"] {
+            tab.call_method(Emulation::SetEmulatedMedia {
+                media: None,
+                features: Some(vec![Emulation::MediaFeature {
+                    name: "prefers-color-scheme".into(),
+                    value: theme.into(),
+                }]),
+            })
+            .unwrap();
+            tab.navigate_to(&format!("http://127.0.0.1:{port}/"))
+                .unwrap();
+            harness::until(
+                &tab,
+                "!document.documentElement.hidden && !!document.querySelector('a[href=\"/pair\"]')",
+                "the refusal page to finish its bounded retry",
+                Duration::from_secs(20),
+                "document.body.innerText",
+            );
+            let state = eval(
+                &tab,
+                r#"(() => {
+                const links = [document.querySelector('a.again'), document.querySelector('a[href="/pair"]')];
+                const luminance = color => {
+                    const c = color.match(/[\d.]+/g).slice(0, 3).map(v => {
+                        v = Number(v) / 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4;
+                    });
+                    return .2126*c[0] + .7152*c[1] + .0722*c[2];
+                };
+                const actions = links.map(el => {
+                    const r = el.getBoundingClientRect(), style = getComputedStyle(el);
+                    let bg = el; while (bg.parentElement && getComputedStyle(bg).backgroundColor === 'rgba(0, 0, 0, 0)') bg = bg.parentElement;
+                    const a = luminance(style.color), b = luminance(getComputedStyle(bg).backgroundColor);
+                    return {height:r.height, width:r.width, left:r.left, right:r.right, top:r.top, bottom:r.bottom,
+                        contrast:(Math.max(a,b)+.05)/(Math.min(a,b)+.05),
+                        hittable:el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};
+                });
+                return {actions, width:innerWidth, height:innerHeight, overflow:document.documentElement.scrollWidth > innerWidth};
+            })()"#,
+                false,
+            );
+            assert_eq!(state["overflow"], false, "{layout} {theme}: {state}");
+            let actions = state["actions"].as_array().unwrap();
+            for action in actions {
+                assert!(
+                    action["height"].as_f64().unwrap() >= 44.0
+                        && action["width"].as_f64().unwrap() >= 44.0,
+                    "44 px target, {layout} {theme}: {state}"
+                );
+                assert!(
+                    action["contrast"].as_f64().unwrap() >= 4.5,
+                    "readable text, {layout} {theme}: {state}"
+                );
+                assert!(
+                    action["left"].as_f64().unwrap() >= 0.0
+                        && action["right"].as_f64().unwrap() <= width as f64
+                        && action["top"].as_f64().unwrap() >= 0.0
+                        && action["bottom"].as_f64().unwrap() <= height as f64,
+                    "visible target, {layout} {theme}: {state}"
+                );
+                assert_eq!(action["hittable"], true, "{layout} {theme}: {state}");
+            }
+            let horizontal =
+                actions[1]["left"].as_f64().unwrap() - actions[0]["right"].as_f64().unwrap();
+            let vertical =
+                actions[1]["top"].as_f64().unwrap() - actions[0]["bottom"].as_f64().unwrap();
+            assert!(
+                horizontal >= 12.0 || vertical >= 12.0,
+                "separate actions, {layout} {theme}: {state}"
+            );
+            if let Some(dir) = std::env::var_os("CR_PAIRING_SCREENSHOT_DIR") {
+                let png = tab
+                    .capture_screenshot(Page::CaptureScreenshotFormatOption::Png, None, None, true)
+                    .unwrap();
+                std::fs::write(
+                    std::path::Path::new(&dir).join(format!("pairing-{layout}-{theme}.png")),
+                    png,
+                )
+                .unwrap();
+            }
+            tab.find_element("a[href=\"/pair\"]")
+                .unwrap()
+                .click()
+                .unwrap();
+            harness::until(
+                &tab,
+                "location.pathname === '/pair' && !!document.querySelector('input')",
+                "the pairing form to open",
+                Duration::from_secs(10),
+                "location.href",
+            );
+        }
+    }
+}
+
 /// The phone's world (#310, #313): a session with a hit to search for, two open tasks and a finished
 /// one, a running sub-agent, and a second session to switch to — served by v2's app shell to a
 /// phone (390×844 unless the case says otherwise). The phone is emulated BEFORE the first page
