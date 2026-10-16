@@ -2393,10 +2393,11 @@ fn serve_connection<R: Into<HttpReply>>(
     // cut to size: this used to read the first 64 KB of a larger body and hand the route that,
     // which for a held document is a corrupted document and for any route is a lie about what
     // was sent.
-    let limit = if name == "api/mdrev/hold" {
-        super::mdrev::HOLD_BODY_LIMIT
-    } else if let Some((_, limit)) = gate.body_limits.iter().find(|(route, _)| *route == name) {
+    let limit = if let Some((_, limit)) = gate.body_limits.iter().find(|(route, _)| *route == name)
+    {
         *limit
+    } else if name == "api/mdrev/hold" {
+        super::mdrev::HOLD_BODY_LIMIT
     } else {
         MAX_BODY_BYTES
     };
@@ -3310,6 +3311,53 @@ mod tests {
             }
         }
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn an_explicit_mdrev_body_budget_overrides_its_default() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let handler: RouteHandler = std::sync::Arc::new(move |r: &Request| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            assert!(r.body.iter().all(|byte| *byte == b'x'));
+            HttpResponse::ok(TEXT_PLAIN, r.body.len().to_string().into_bytes())
+        });
+        let gate = || AuthGate::for_test(Some("document-token"));
+        let limited = spawn_listener_gated(
+            0,
+            handler.clone(),
+            gate()
+                .with_body_limit("api/mdrev/hold", MAX_BODY_BYTES)
+                .unwrap(),
+        )
+        .unwrap();
+        let default = spawn_listener_gated(0, handler, gate()).unwrap();
+        let post = |port, length, send_body| {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            write!(stream, "POST /api/mdrev/hold HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer document-token\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").unwrap();
+            if send_body {
+                stream.write_all(&vec![b'x'; length]).unwrap();
+            }
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .expect("an over-budget document must be refused before its body arrives");
+            response
+        };
+        let over = post(limited, MAX_BODY_BYTES + 1, false);
+        assert!(over.starts_with("HTTP/1.1 413"), "{over}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        for (port, length) in [(limited, MAX_BODY_BYTES), (default, MAX_BODY_BYTES + 1)] {
+            let response = post(port, length, true);
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            assert!(response.ends_with(&length.to_string()), "{response}");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]
