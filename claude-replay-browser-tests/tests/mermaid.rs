@@ -264,8 +264,16 @@ fn assert_source_toggle_preserves_the_readers_position(tab: &headless_chrome::Ta
         tab,
         "document.querySelector('.mermaid-source').click(); true",
     );
-    std::thread::sleep(Duration::from_millis(600));
-    let after = harness::probe(tab, "(() => { const {scroller,button,card} = window.__mermaidToggleProbe; return {top:scroller.scrollTop, header:button.getBoundingClientRect().top, sourceShown:!card.querySelector('pre').hidden, following:window.__viewportTrace.at(-1)?.following, grew:scroller.scrollHeight > scroller.clientHeight + 500}; })()");
+    // #s131: wait for the release itself, not a fixed 600 ms — under load the reshape's
+    // transaction can land after a fixed sleep, which read as a page that kept following.
+    until(
+        tab,
+        "(() => { const {card} = window.__mermaidToggleProbe; return !card.querySelector('pre').hidden && window.__viewportTrace?.at(-1)?.following === false; })()",
+        "the source toggle to show the source and release the tail",
+        Duration::from_secs(10),
+        "window.__viewportTrace?.slice(-3)",
+    );
+    let after =harness::probe(tab, "(() => { const {scroller,button,card} = window.__mermaidToggleProbe; return {top:scroller.scrollTop, header:button.getBoundingClientRect().top, sourceShown:!card.querySelector('pre').hidden, following:window.__viewportTrace.at(-1)?.following, grew:scroller.scrollHeight > scroller.clientHeight + 500}; })()");
     assert_eq!(after["sourceShown"], true);
     assert_eq!(
         after["grew"], true,
