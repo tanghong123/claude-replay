@@ -16815,6 +16815,95 @@ fn scenario_qwenwork_tool_heads_carry_their_exit_code() {
     }
 }
 
+/// A session whose last turn reasoned under `display: "omitted"` (#s135): a thinking block with no
+/// text and a signature, then a Bash call and its result, then the answer.
+fn not_returned_thinking_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(30, Shape::default());
+    jsonl += &user_at("check the build", &harness::at("40:00"));
+    for line in [
+        serde_json::json!({"type": "assistant", "timestamp": harness::at("40:04"),
+            "thinkingDisplay": "omitted", "message": {"id": "m-s135", "role": "assistant",
+            "content": [{"type": "thinking", "thinking": "", "signature": "c2lnbmVk"}]}}),
+        serde_json::json!({"type": "assistant", "timestamp": harness::at("40:05"),
+            "message": {"id": "m-s135", "role": "assistant", "content": [{"type": "tool_use",
+            "id": "s135-b1", "name": "Bash", "input": {"command": "cargo build"}}]}}),
+        serde_json::json!({"type": "user", "timestamp": harness::at("40:06"),
+            "message": {"role": "user", "content": [{"type": "tool_result",
+            "tool_use_id": "s135-b1", "content": "done"}]}}),
+    ] {
+        jsonl += &format!("{line}\n");
+    }
+    jsonl += &assistant_at(&"The build passed. ".repeat(20), &harness::at("40:07"));
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture {
+        base,
+        path,
+        turns: 31,
+    }
+}
+
+/// #s135 — a reasoning block the API returned no text for (the `display: "omitted"` headless
+/// sessions ask for) is drawn as "[thinking not returned]" in its turn's work span on both pages,
+/// and opens no turn of its own. The page dropped it, so the turn showed no reasoning at all.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_a_thinking_block_not_returned_is_a_placeholder_in_the_work_span() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = not_returned_thinking_fixture(match surface {
+            Surface::Classic => "not-returned-classic",
+            Surface::AppShell => "not-returned-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3095 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        let tab = &page.tab;
+        settle();
+        jump_to_end(tab, surface);
+        settle();
+        open_everything(tab, surface);
+        settle();
+        if surface == Surface::AppShell {
+            eval(
+                tab,
+                "document.querySelectorAll('[data-process-more][aria-expanded=\"false\"]').forEach(b => b.click())",
+            );
+            settle();
+        }
+        let span = match surface {
+            Surface::Classic => ".fold[data-kind=\"think\"], .fold[data-kind=\"act\"]",
+            Surface::AppShell => {
+                ".renderer-turn[data-kind=\"thinking\"], .renderer-turn[data-kind=\"activity\"]"
+            }
+        };
+        let seen = probe(
+            tab,
+            &format!(
+                "(function(){{ var turnOf = function(e){{ if (!e) return -1; var t = e.closest('[data-turn]'); \
+                 if (!t) t = [...document.querySelectorAll('[data-turn]')].filter(function(m){{ return m.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING; }}).pop(); \
+                 return t ? Number(t.dataset.turn) : -1; }}; \
+                 var spans = [...document.querySelectorAll('{span}')].filter(function(e){{ return e.textContent.indexOf('[thinking not returned]') >= 0; }}); \
+                 var prompt = [...document.querySelectorAll('[data-turn]')].filter(function(e){{ return e.textContent.indexOf('check the build') >= 0; }}).pop(); \
+                 return {{ spans: spans.length, turn: turnOf(spans[spans.length - 1]), prompt: turnOf(prompt) }}; }})()"
+            ),
+        );
+        assert!(
+            seen["spans"].as_i64().unwrap_or(0) >= 1,
+            "{surface:?}: the placeholder is drawn in a work span: {seen}"
+        );
+        assert_eq!(
+            seen["turn"], seen["prompt"],
+            "{surface:?}: inside the turn that reasoned: {seen}"
+        );
+        assert_eq!(
+            last_mounted_turn(tab, surface),
+            seen["prompt"].as_i64().unwrap_or(-2),
+            "{surface:?}: and it opens no turn after its own: {seen}"
+        );
+    }
+}
+
 /// An Edit that failed and an Edit the reader rejected (#s22), then one that was applied.
 fn not_applied_edits_fixture(name: &str) -> Fixture {
     let base = base(name);

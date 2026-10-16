@@ -306,11 +306,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// grep's exit 1) is Completed beside its exit code, and its output opens with the client's phrase.
 /// A v62 stream holds it with no status, drawn failed, and no reason.
 ///
+/// v64: #s135 — a Claude `thinking` block with no text but a signature (the API's `display:
+/// "omitted"`, which headless sessions ask for) is a "[thinking not returned]" Thinking block in
+/// the work span. A v63 stream dropped it, so the turn showed no reasoning between its calls.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 63;
+pub const FOLD_VERSION: u16 = 64;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

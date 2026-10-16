@@ -906,6 +906,11 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // arrives with an EMPTY `thinking` field, which the fold drops (a `redacted_thinking`
             // block keeps a placeholder), so a session on "omitted" would lose every reasoning
             // marker: a RENDER question for the owner, queued with the count and client version.
+            // MET (#s135, 2026-10-16): "omitted" on 282 thinking blocks in 9 headless (`sdk-cli`)
+            // sessions, clients 2.1.296 to 2.1.300, every one empty and signed. Answered by the
+            // `redacted_thinking` precedent: an empty signed block is drawn as a placeholder
+            // (`thinking_not_returned`), keyed on the block rather than on this key, so older
+            // clients' empty blocks are drawn too. The key itself stays unread.
             "thinkingDisplay",
             // #s134 (client 2.1.300): a string on every assistant record, the `id` of the
             // `api-request` that produced it (the records one answer is split into share it). Met
@@ -2092,6 +2097,21 @@ pub(crate) fn turn_ended(raw_line: &str) -> Option<bool> {
     None
 }
 
+/// What a reasoning block the API returned no text for is drawn as (#s135).
+const THINKING_NOT_RETURNED: &str = "[thinking not returned]";
+
+/// A `thinking` block with no text but a signature: the model reasoned and the API sent nothing
+/// to show (#s135). Under `display: "omitted"`, the default on every Claude 5 model, every block
+/// is one, and headless sessions ask for it (2.1.296 on, `thinkingDisplay`); older headless
+/// clients and a few interactive answers wrote them too. Like a `redacted_thinking` block it
+/// still marks reasoning time, so it joins the work span as a placeholder. Measured 2026-10-16
+/// on this machine: 504 such blocks in 46 sessions, and no empty block without a signature.
+fn thinking_not_returned(blk: &Value) -> bool {
+    blk.get("signature")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
+}
+
 /// A line of the client's API-call log (#s134): `api-request`, `api-request-blob` or
 /// `api-request-shape`, each with its type first (all of them on every transcript measured). A
 /// blob holds a whole message as sent, its JSON nested unescaped, so a tool call's input could
@@ -2910,6 +2930,11 @@ pub(crate) fn decode_line_known(
                         if !t.trim().is_empty() {
                             msgs.push(Message::Thinking {
                                 text: t.to_string(),
+                                ts: ev_ts,
+                            });
+                        } else if thinking_not_returned(blk) {
+                            msgs.push(Message::Thinking {
+                                text: THINKING_NOT_RETURNED.to_string(),
                                 ts: ev_ts,
                             });
                         }
@@ -4080,7 +4105,14 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 .or_else(|| blk.get("text"))
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("");
-                            if !t.trim().is_empty() {
+                            let text = if !t.trim().is_empty() {
+                                Some(t)
+                            } else if thinking_not_returned(blk) {
+                                Some(THINKING_NOT_RETURNED)
+                            } else {
+                                None
+                            };
+                            if let Some(text) = text {
                                 let duration_secs = match (ev_ts, prev_ts) {
                                     (Some(end), Some(start)) if end >= start => {
                                         Some((end - start) as u64)
@@ -4088,7 +4120,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     _ => None,
                                 };
                                 out.push(Block::Thinking {
-                                    text: t.to_string(),
+                                    text: text.to_string(),
                                     duration_secs,
                                     tools: Vec::new(),
                                 });
@@ -8246,6 +8278,49 @@ mod tests {
         // 03:00:12 − 03:00:03 (last tool_result) = 9s, floored.
         assert_eq!(*duration_secs, Some(9));
         assert_eq!(tools.len(), 1, "did not absorb the preceding Bash");
+    }
+
+    /// #s135: a thinking block the API returned no text for (empty `thinking`, a signature: the
+    /// `display: "omitted"` headless sessions ask for) is drawn as a placeholder in the work span,
+    /// as a redacted block is, through BOTH the fused `parse_main` and `replay(tokenize)`. An
+    /// empty block with no signature still draws nothing.
+    #[test]
+    fn an_empty_signed_thinking_block_is_drawn_as_not_returned() {
+        let prompt =
+            r#"{"type":"user","timestamp":"2026-10-16T03:00:00.000Z","message":{"content":"go"}}"#;
+        let signed = r#"{"type":"assistant","timestamp":"2026-10-16T03:00:04.000Z","thinkingDisplay":"omitted","message":{"id":"m1","content":[{"type":"thinking","thinking":"","signature":"c2lnbmVk"}]}}"#;
+        let unsigned = r#"{"type":"assistant","timestamp":"2026-10-16T03:00:04.000Z","message":{"id":"m1","content":[{"type":"thinking","thinking":""}]}}"#;
+        let call = r#"{"type":"assistant","timestamp":"2026-10-16T03:00:05.000Z","message":{"id":"m1","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}"#;
+        let result = r#"{"type":"user","timestamp":"2026-10-16T03:00:06.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}"#;
+        let both = |lines: &[&str]| {
+            let jsonl = lines.join("\n");
+            let via_main = parse_main(jsonl.lines(), &mut Vec::new());
+            let via_engine = replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CLAUDE_SHAPING);
+            assert_eq!(
+                format!("{via_main:?}"),
+                format!("{via_engine:?}"),
+                "the two paths agree for:\n{jsonl}"
+            );
+            via_engine
+        };
+        let blocks = both(&[prompt, signed, call, result]);
+        assert_eq!(kinds(&blocks), vec!["user", "thinking"], "{blocks:?}");
+        let Block::Thinking {
+            text,
+            duration_secs,
+            tools,
+        } = &blocks[1]
+        else {
+            panic!("not a thinking run: {blocks:?}");
+        };
+        assert_eq!(text, THINKING_NOT_RETURNED);
+        assert_eq!(*duration_secs, Some(4), "03:00:04 − 03:00:00");
+        assert_eq!(kinds(tools), vec!["bash"], "the call joins its run");
+        assert_eq!(
+            format!("{:?}", both(&[prompt, unsigned, call, result])),
+            format!("{:?}", both(&[prompt, call, result])),
+            "an empty block with no signature draws nothing"
+        );
     }
 
     /// #s23: an Edit next to thinking JOINS its run (the owner, as the Claude app draws a run:
