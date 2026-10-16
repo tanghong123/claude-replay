@@ -3,6 +3,7 @@ import { renderUnit } from "./components.js";
 // the follow rule — is the shared module's (#107, html/shared/virtual-window.js): one set of
 // scroll rules for both pages. What reads layout and what writes the DOM stays here.
 import { VirtualWindow, elementFrame, mountEverythingRequested } from "./shared/virtual-window.js";
+import { renderMermaid } from "./shared/mermaid.js";
 
 export function revealNavigationContext(units, index, state, recordIndex, reveal = "record") {
   const unit = units[index];
@@ -80,6 +81,9 @@ export class Viewport extends VirtualWindow {
       frame: elementFrame(scroller),
       mount: { top, window: mounted, bottom, content: inner },
       overscan: OVERSCAN,
+      // The viewport trace's stored switch (#192): the host reads it, so the shared engine,
+      // which the offline export inlines too, touches no store (#s124).
+      traceStored: (() => { try { return localStorage.getItem("viewportTrace"); } catch (e) { return null; } })(),
       // Rule 7's hysteresis (#127): acquiring the pin needs the true end, KEEPING it only the
       // old slack. Held at the true end too, a nudge of three pixels dropped the tail — which
       // is what this shell did, where the classic page has held at 80 since #103.
@@ -252,6 +256,7 @@ export class Viewport extends VirtualWindow {
     for (const [key, height] of this.state.heights) this.state.heights.set(key, Math.max(ESTIMATE, height * ratio));
   }
   renderItem(index) { return this.stampNeighbours(renderUnit(this.units[index], this.state), index); }
+  afterMount(fresh) { fresh.forEach(root => renderMermaid(root, () => this.readerReshaped())); }
 
   /** What the cascade may read of a unit's NEIGHBOURS comes from the model, not from what happens
    *  to be mounted (#201). A rule keyed on a mounted sibling — the demo's

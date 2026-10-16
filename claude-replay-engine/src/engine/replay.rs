@@ -272,7 +272,7 @@ impl<'a> Replayer<'a> {
                         self.out.push(Block::ToolResult(text.clone()));
                     }
                 }
-                Message::UserText { text } => {
+                Message::UserText { text } | Message::UserReply { text, .. } => {
                     // Content-matched delivery (#52): a user message whose text equals a PENDING
                     // queued prompt IS that prompt arriving — pop it and suppress its marker,
                     // whether or not a dequeue op was recorded. (A jdi restart re-delivers queued
@@ -285,7 +285,13 @@ impl<'a> Replayer<'a> {
                             self.suppress.push(mi);
                         }
                     }
-                    self.out.push(Block::UserText(text.clone()));
+                    self.out.push(match m {
+                        Message::UserReply { context, .. } => Block::UserReply {
+                            text: text.clone(),
+                            context: context.clone(),
+                        },
+                        _ => Block::UserText(text.clone()),
+                    });
                 }
                 Message::PeerText {
                     from,
@@ -659,7 +665,7 @@ impl<'a> Replayer<'a> {
         let Some(prompt) = self
             .out
             .iter()
-            .rposition(|b| matches!(b, Block::UserText(_)))
+            .rposition(|b| matches!(b, Block::UserText(_) | Block::UserReply { .. }))
         else {
             return;
         };

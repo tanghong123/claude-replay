@@ -16,7 +16,10 @@
 use crate::diff::{diff_row_groups, DiffKind};
 use crate::fold::FoldPolicy;
 use crate::highlight;
-use crate::model::{AssistantPhase, AttachmentContent, Block, LoadedAttachment, ToolStatus};
+use crate::model::{
+    AssistantPhase, AttachmentContent, Block, LoadedAttachment, ReplyContext, ReplyResponse,
+    ToolStatus,
+};
 use crate::present::{
     compaction_summary, display_name, edit_summary, not_applied, run_changes, spawn_chip,
     thinking_summary, tool_execution_failed, tool_execution_summary, write_content, NotApplied,
@@ -35,6 +38,12 @@ pub mod audit; // the derived rendering-audit corpus (#174 P1)
 mod bundle;
 pub mod mask; // opt-in secret masking for what leaves the machine (#365)
 pub(crate) mod mdrev; // mdrev's embedded viewer in the app shell's preview pane (#270)
+mod mermaid;
+
+/// Versioned URL of the browser runtime pinned into this build.
+pub fn mermaid_runtime_path() -> &'static str {
+    mermaid::RUNTIME_PATH
+}
 pub mod pairing;
 mod record_store;
 mod serve;
@@ -51,6 +60,28 @@ pub use serve::{
 
 const CSS: &str = include_str!("../html/export.css");
 const JS: &str = include_str!("../html/export.js");
+
+/// Where a page keeps its theme, reading preferences, folds and view (#s124). Every page reaches
+/// the browser's stores only through `crPageStore`, emitted ahead of `export.js`; an export for a
+/// frame sandboxed without its origin (where every store throws, and a host's lint flags the very
+/// names) takes the in-memory one, and its text then names no browser store at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PageStore {
+    /// The browser's own stores, each access guarded: the default, and every served page's.
+    #[default]
+    Browser,
+    /// Memory for the page's life (`--no-storage`).
+    Memory,
+}
+
+impl PageStore {
+    fn script(self) -> &'static str {
+        match self {
+            PageStore::Browser => include_str!("../html/page-store.js"),
+            PageStore::Memory => include_str!("../html/page-store-memory.js"),
+        }
+    }
+}
 
 /// Rows of a diff shown before the `⋯ N more lines` expander.
 const DIFF_PREVIEW: usize = 12;
@@ -725,6 +756,18 @@ fn request_user_input_projection(output: &str) -> Option<Value> {
 
 fn fence_html(lang: &str, body: &str) -> String {
     let token = lang.split_whitespace().next().unwrap_or("");
+    if token.eq_ignore_ascii_case("mermaid") {
+        return format!(
+            "<div class=\"fence mermaid-fence\" data-mermaid><div class=\"fence-h\">\
+             <span class=\"fence-lang\">mermaid</span>\
+             <button class=\"mermaid-source\" type=\"button\" aria-pressed=\"false\">source</button>\
+             <button class=\"cpy\" type=\"button\">copy</button></div>\
+             <div class=\"mermaid-diagram\" role=\"img\" aria-label=\"Mermaid diagram\" aria-busy=\"true\"></div>\
+             <p class=\"mermaid-error\" role=\"status\" hidden></p>\
+             <pre hidden><code>{}</code></pre></div>",
+            esc(body.trim_end_matches('\n'))
+        );
+    }
     let code = highlight_lines(body.trim_end_matches('\n'), token).join("\n");
     let label = if token.is_empty() { "code" } else { token };
     format!(
@@ -753,7 +796,23 @@ fn is_fold(b: &Block) -> bool {
 /// A prompt's words for the Turns pane and the sticky strip: a pasted block (#s79, the fence the
 /// adapter writes for the client's `<pasted_content>`) is one `[pasted]` there, never its fence or
 /// its lines — what the person TYPED names the turn.
-fn prompt_label(text: &str, max: usize) -> String {
+fn prompt_label(text: &str, reply: Option<&ReplyContext>, max: usize) -> String {
+    if let Some(item) = reply.and_then(|context| context.items.first()) {
+        let response = match &item.response {
+            Some(ReplyResponse::Comment { text } | ReplyResponse::FollowingText { text }) => {
+                text.as_str()
+            }
+            None => "",
+        };
+        return label_of(
+            if response.trim().is_empty() {
+                &item.quote
+            } else {
+                response
+            },
+            max,
+        );
+    }
     if !text.contains("pasted") {
         return label_of(text, max);
     }
@@ -1173,14 +1232,18 @@ impl Emitter<'_> {
         let mut body: Vec<Value> = Vec::new();
 
         match b {
-            Block::UserText(text) => {
+            Block::UserText(text) | Block::UserReply { text, .. } => {
+                let reply = match b {
+                    Block::UserReply { context, .. } => Some(context),
+                    _ => None,
+                };
                 self.turn += 1;
                 let id = format!("t{}", self.turn);
                 self.turns
-                    .push(SideEntry::turn(id.clone(), prompt_label(text, 46)));
+                    .push(SideEntry::turn(id.clone(), prompt_label(text, reply, 46)));
                 o.insert("id".into(), json!(id));
                 o.insert("turn".into(), json!(self.turn));
-                o.insert("label".into(), json!(prompt_label(text, 80)));
+                o.insert("label".into(), json!(prompt_label(text, reply, 80)));
                 // The turn's SOURCE, verbatim, beside its rendered parts: the page offers a
                 // "show as raw" toggle (globally or for one turn), and markdown rendering is
                 // lossy — collapsed padding and stripped indentation cannot be recovered from
@@ -1190,6 +1253,9 @@ impl Emitter<'_> {
                 // user's typing is a rounding error beside its tool output.
                 o.insert("src".into(), json!(text));
                 body.extend(user_body_parts(text));
+                if let Block::UserReply { context, .. } = b {
+                    o.insert("reply_context".into(), json!(context));
+                }
             }
             // Another session's message (#s79): it opens a turn as a prompt does — the Turns pane
             // and the sticky strip list it, labelled with its sender — but its kind is `peer`, so
@@ -2064,8 +2130,15 @@ fn build_jsonl_inner(
 
 /// The page shell: embedded CSS, the inline snapshot, the renderer, and (in live
 /// mode) the companion path + poll interval the renderer appends from.
-fn build_html(title: &str, jsonl: &str, turns: &[SideEntry], live: Option<&str>) -> String {
-    build_page(title, jsonl, turns, live, None, None)
+/// `store` is where the page keeps its state (#s124): the browser's stores, or memory.
+pub(super) fn build_html(
+    title: &str,
+    jsonl: &str,
+    turns: &[SideEntry],
+    live: Option<&str>,
+    store: PageStore,
+) -> String {
+    build_page(title, jsonl, turns, live, None, None, false, store)
 }
 
 /// The shared shell for a multi-file bundle (`--dump-all-html` / served `--html`): no
@@ -2073,7 +2146,35 @@ fn build_html(title: &str, jsonl: &str, turns: &[SideEntry], live: Option<&str>)
 /// to `root_id`, and fills the sidebar as turns arrive). `live` makes the page poll its
 /// stream (served `--html -f`); a static offline bundle sets it false.
 pub(super) fn build_shell(title: &str, root_id: &str, live: bool, pull: bool) -> String {
-    build_page(title, "", &[], None, Some((root_id, live, pull)), None)
+    build_page(
+        title,
+        "",
+        &[],
+        None,
+        Some((root_id, live, pull)),
+        None,
+        false,
+        PageStore::Browser,
+    )
+}
+
+/// An offline directory shell knows whether any root or child stream needs Mermaid.
+pub(super) fn build_bundle_shell(
+    title: &str,
+    root_id: &str,
+    has_mermaid: bool,
+    store: PageStore,
+) -> String {
+    build_page(
+        title,
+        "",
+        &[],
+        None,
+        Some((root_id, false, false)),
+        None,
+        has_mermaid,
+        store,
+    )
 }
 
 /// Host-selectable chrome for a SERVED page (`/session?id=…`, #98 §6.3) — URL parameters,
@@ -2130,12 +2231,15 @@ pub(super) fn build_shell_chrome(title: &str, root_id: &str, chrome: &PageChrome
         None,
         Some((root_id, true, true)),
         Some(chrome),
+        false,
+        PageStore::Browser,
     )
 }
 
 /// The page template. `multi` = Some((root_id, live)) makes it a multi-file shell (fetch
 /// `?session=<id>`.jsonl, polling when `live`); None inlines `jsonl` + the server-rendered
 /// `turns` sidebar.
+#[allow(clippy::too_many_arguments)]
 fn build_page(
     title: &str,
     jsonl: &str,
@@ -2143,7 +2247,10 @@ fn build_page(
     live: Option<&str>,
     multi: Option<(&str, bool, bool)>,
     chrome: Option<&PageChrome>,
+    bundle_has_mermaid: bool,
+    store: PageStore,
 ) -> String {
+    let page_store = store.script();
     let sidebar: String = turns
         .iter()
         .map(|e| {
@@ -2232,10 +2339,21 @@ fn build_page(
     // stand alone from file://, so what the monitor serves as ES modules arrives here as a
     // classic script publishing the same names on `window.__shared`.
     let shared_js = shared::inline_all();
+    // Server-backed pages fetch the declared versioned runtime lazily. A single-file
+    // export needs it only if it contains diagrams. The bundle writer checks every stream.
+    let mermaid_runtime = if !multi.is_some_and(|(_, _, pull)| pull)
+        && (bundle_has_mermaid || live.is_some() || mermaid::contains_diagram(jsonl))
+    {
+        mermaid::inline_runtime()
+    } else {
+        String::new()
+    };
+    let mermaid_path = mermaid::RUNTIME_PATH;
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
+<meta name="mermaid-runtime" content="{mermaid_path}">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%236d4fa1'/><path d='M12 9l12 7-12 7z' fill='%23fff'/></svg>">
@@ -2347,8 +2465,8 @@ fn build_page(
 <script>
 {shared_js}
 </script>
-<script>
-{JS}
+{mermaid_runtime}<script>
+{page_store}{JS}
 </script>
 {chrome_stamp}</body>
 </html>
@@ -3214,6 +3332,110 @@ mod tests {
         assert!(rec["body"].as_array().is_some_and(|b| !b.is_empty()));
     }
 
+    #[test]
+    fn quoted_reply_ships_additive_metadata_and_identical_legacy_body() {
+        use crate::model::{ReplyContext, ReplyItem, ReplyResponse};
+        let text = "<!-- reply 1 -->\n> earlier text\n\nuser comment";
+        let context = ReplyContext {
+            version: 1,
+            items: vec![ReplyItem {
+                quote: "earlier text".into(),
+                response: Some(ReplyResponse::FollowingText {
+                    text: "user comment".into(),
+                }),
+            }],
+            request: None,
+            context: String::new(),
+        };
+        let emit = |block| {
+            let lines = render_blocks(
+                &[block],
+                &[Some(1.0)],
+                &[],
+                &FoldPolicy::default(),
+                "",
+                false,
+                false,
+                None,
+                None,
+                &mut EmitState::default(),
+            );
+            serde_json::from_str::<serde_json::Value>(&lines[0]).unwrap()
+        };
+        let old = emit(Block::UserText(text.into()));
+        let new = emit(Block::UserReply {
+            text: text.into(),
+            context: context.clone(),
+        });
+        assert_eq!(new["src"], text);
+        assert_eq!(new["body"], old["body"]);
+        assert_eq!(new["kind"], "user");
+        assert_eq!(new["turn"], old["turn"]);
+        assert_eq!(new["id"], old["id"]);
+        assert_eq!(new["reply_context"], serde_json::to_value(context).unwrap());
+        assert_eq!(new["label"], "user comment");
+    }
+
+    #[test]
+    fn reply_labels_are_canonical_and_unicode_safe() {
+        use crate::model::{ReplyContext, ReplyItem, ReplyResponse};
+        let short = format!("{}a🙂", "🙂".repeat(39));
+        let long = "🙂".repeat(81);
+        for (response, expected) in [
+            (
+                Some(ReplyResponse::Comment {
+                    text: short.clone(),
+                }),
+                short,
+            ),
+            (
+                Some(ReplyResponse::FollowingText {
+                    text: " first\n comment ".into(),
+                }),
+                "first comment".into(),
+            ),
+            (
+                Some(ReplyResponse::Comment {
+                    text: " \n ".into(),
+                }),
+                "selected fallback".into(),
+            ),
+            (None, "selected fallback".into()),
+            (
+                Some(ReplyResponse::Comment { text: long }),
+                format!("{}…", "🙂".repeat(80)),
+            ),
+        ] {
+            let context = ReplyContext {
+                version: 1,
+                items: vec![ReplyItem {
+                    quote: "selected fallback".into(),
+                    response,
+                }],
+                request: Some("unrelated request".into()),
+                context: String::new(),
+            };
+            let block = Block::UserReply {
+                text: "complete native envelope".into(),
+                context,
+            };
+            let lines = render_blocks(
+                &[block],
+                &[Some(1.0)],
+                &[],
+                &FoldPolicy::default(),
+                "",
+                false,
+                false,
+                None,
+                None,
+                &mut EmitState::default(),
+            );
+            let record: Value = serde_json::from_str(&lines[0]).unwrap();
+            assert_eq!(record["label"], expected);
+        }
+    }
+
     /// The overwhelming majority of turns hold no art at all, and those must emit exactly
     /// what they always did: ONE markdown part, byte-identical.
     #[test]
@@ -3739,6 +3961,50 @@ mod tests {
         assert_eq!(query_get("session=a1", "from"), None);
     }
 
+    /// #s124: an export for a frame sandboxed without its origin names none of the browser's
+    /// stores — not even guarded, since a host's lint matches the text — and keeps its state in
+    /// memory; the default page still reaches them through the one page store. A diagram's page
+    /// is checked too, because it inlines the vendored Mermaid runtime.
+    #[test]
+    fn a_no_storage_page_names_no_browser_store() {
+        const NAMES: [&str; 4] = [
+            "localStorage",
+            "sessionStorage",
+            "indexedDB",
+            "document.cookie",
+        ];
+        let named =
+            |text: &str| -> Vec<&str> { NAMES.into_iter().filter(|n| text.contains(n)).collect() };
+        let diagram = serde_json::json!({"h": md_html("```mermaid\nflowchart LR\n A --> B\n```")})
+            .to_string();
+        for jsonl in ["{}", diagram.as_str()] {
+            let memory = build_html("t", jsonl, &[], None, PageStore::Memory);
+            assert!(
+                memory.contains("var crPageStore"),
+                "the memory store is emitted"
+            );
+            assert_eq!(named(&memory), Vec::<&str>::new(), "a --no-storage page");
+            let browser = build_html("t", jsonl, &[], None, PageStore::Browser);
+            assert_eq!(named(&browser), vec!["localStorage", "sessionStorage"]);
+        }
+        assert!(build_html("t", &diagram, &[], None, PageStore::Memory)
+            .contains("id=\"mermaid-runtime\""));
+        // Only the page store may name them: the renderer, its stylesheet, every shared module
+        // the pages inline, and the bundle shell all reach a store through `crPageStore`.
+        for (source, text) in [
+            ("export.js", JS),
+            ("export.css", CSS),
+            ("shared modules", &super::shared::inline_all()),
+            ("page-store-memory.js", PageStore::Memory.script()),
+        ] {
+            assert_eq!(named(text), Vec::<&str>::new(), "{source}");
+        }
+        assert_eq!(
+            named(&build_bundle_shell("t", "root", false, PageStore::Memory)),
+            Vec::<&str>::new()
+        );
+    }
+
     /// The multi-file shell carries `data-multi`/`data-root` and no inline snapshot;
     /// `live` adds `data-poll` (what `--html` serves); a dump's page omits it.
     #[test]
@@ -3945,6 +4211,66 @@ mod tests {
             "child transcript rendered: {recs:?}"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn mermaid_bundle_runtime_tracks_all_sessions() {
+        use clap::Parser as _;
+        let base = std::env::temp_dir().join(format!("cr-mermaid-bundles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let diagram = "```mermaid\nflowchart LR\n A[Sample] --> B[Result]\n```";
+        for (name, root_has_diagram, child_has_diagram) in [
+            ("none", false, false),
+            ("root", true, false),
+            ("child", false, true),
+        ] {
+            let dir = base.join(name);
+            let children = dir.join("sess/subagents");
+            std::fs::create_dir_all(&children).unwrap();
+            let source = dir.join("sess.jsonl");
+            let message = |text: &str| {
+                serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}}).to_string() + "\n"
+            };
+            let root = message(if root_has_diagram { diagram } else { "A synthetic root without a diagram." })
+                + "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"spawn\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"gp\",\"description\":\"Sample child\",\"prompt\":\"Sample work\"}}]}}\n"
+                + "{\"type\":\"user\",\"toolUseResult\":{\"agentId\":\"a1\",\"status\":\"async_launched\"},\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"spawn\",\"content\":\"async_launched\"}]}}\n";
+            std::fs::write(&source, root).unwrap();
+            std::fs::write(
+                children.join("agent-a1.jsonl"),
+                message(if child_has_diagram {
+                    diagram
+                } else {
+                    "A synthetic child without a diagram."
+                }),
+            )
+            .unwrap();
+            let output = dir.join("bundle");
+            let args = crate::Args::parse_from([
+                "agent-replay",
+                source.to_str().unwrap(),
+                "--dump-all-html",
+                output.to_str().unwrap(),
+            ]);
+            dump_all_html(&args, &source).unwrap();
+            let html = std::fs::read_to_string(output.join("index.html")).unwrap();
+            assert!(
+                output.join("a1.jsonl").exists(),
+                "the child must be included: {name}"
+            );
+            assert_eq!(
+                html.contains("id=\"mermaid-runtime\""),
+                root_has_diagram || child_has_diagram,
+                "runtime presence for {name}"
+            );
+            if !root_has_diagram && !child_has_diagram {
+                assert!(
+                    html.len() < 1_000_000,
+                    "a no-diagram shell grew to {} bytes",
+                    html.len()
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
@@ -4841,7 +5167,7 @@ mod tests {
 
         // The page wrapper must also neutralize a literal `</script>` in the
         // payload so it can't close the data island early.
-        let page = build_html("t", "{\"x\":\"</script>\"}", &[], None);
+        let page = build_html("t", "{\"x\":\"</script>\"}", &[], None, PageStore::Browser);
         assert!(
             !page.contains("\"</script>\"}"),
             "payload </script> broken up"
@@ -5623,6 +5949,16 @@ mod tests {
     }
 
     #[test]
+    fn mermaid_source_is_escaped_and_kept_separate_from_ordinary_code() {
+        let html = md_html("```mermaid\nflowchart LR\n A[\"<script>alert(1)</script>\"] --> B\n```\n\n```rust\nlet x = 1;\n```");
+        assert_eq!(html.matches("data-mermaid").count(), 1);
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("<pre hidden><code>flowchart LR"));
+        assert_eq!(html.matches("class=\"cpy\"").count(), 2);
+    }
+
+    #[test]
     fn activity_summary_reuses_the_tui_string() {
         let think = Block::Thinking {
             text: "reasoned".into(),
@@ -6198,11 +6534,17 @@ mod tests {
 
     #[test]
     fn live_mode_wires_the_companion_poll() {
-        let page = build_html("t", "{\"t\":\"meta\"}", &[], Some("run.jsonl"));
+        let page = build_html(
+            "t",
+            "{\"t\":\"meta\"}",
+            &[],
+            Some("run.jsonl"),
+            PageStore::Browser,
+        );
         assert!(page.contains("<body data-src=\"run.jsonl\" data-poll="));
         assert!(page.contains(&format!("data-poll=\"{POLL_MS}\"")));
         // A one-off export's <body> carries no companion attributes.
-        let oneoff = build_html("t", "{}", &[], None);
+        let oneoff = build_html("t", "{}", &[], None, PageStore::Browser);
         assert!(oneoff.contains("<body>"), "plain body tag, no data-src");
     }
 

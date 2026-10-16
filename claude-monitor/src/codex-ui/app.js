@@ -17,8 +17,9 @@ import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, querySpans, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, prefixOf, CLASS_ORDER, wholeAt, toolMatches, recordHasTool, toolLetters as sessionToolLetters, resolveTools as resolveToolSpec } from "./shared/search.js";
 import { parseJumpQuery } from "./jump-query.js";
-import { agentRecordTargets, currentTurnIndex, escapeText, plainText, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
+import { agentRecordTargets, currentTurnIndex, escapeText, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
+import { revealMermaidSource } from "./shared/mermaid.js";
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
 // renders the navigator before the module's later statements have run.
@@ -1254,7 +1255,7 @@ function renderNavigator() {
   recordState.records.forEach((record, i) => { if (record.kind === "compaction") epochs.push({ at: i, tick: compactionTick(record.head || {}) }); });
   const rows = [...turns.map(unit => ({ at: unit.from, unit })), ...epochs].sort((a, b) => a.at - b.at);
   byId("navigatorTurns").innerHTML = (earlier > 0 ? `<div class="activity-empty outline-turns-loading" role="status">Turns 1–${earlier} are still loading</div>` : "") + rows.map(r => r.unit
-    ? `<button class="outline-turn-row" data-turn-record="${r.unit.from}" title="${escapeText(r.unit.label)}"><span class="outline-number">${String(r.unit.turn).padStart(2, "0")} ·</span><span class="outline-label">${escapeText(r.unit.label)}</span></button>`
+    ? `<button class="outline-turn-row${r.unit.view?.reply ? " outline-quoted" : ""}" data-turn-record="${r.unit.from}" title="${escapeText(r.unit.label)}"><span class="outline-number">${String(r.unit.turn).padStart(2, "0")} ·</span>${r.unit.view?.reply ? `<span class="outline-quote-marker" role="img" aria-label="Quoted reply" title="Reply to selected text">│</span>` : ""}<span class="outline-label">${escapeText(r.unit.label)}</span>${r.unit.view?.reply?.items.length > 1 ? `<span class="outline-reply-count" aria-label="${r.unit.view.reply.items.length - 1} more annotations">+${r.unit.view.reply.items.length - 1}</span>` : ""}</button>`
     : `<button class="outline-epoch" type="button" data-turn-record="${r.at}" title="${escapeText(r.tick.title)}${r.tick.sizes ? ` · ${escapeText(r.tick.sizes)}` : ""} — jump to the compaction" aria-label="${escapeText(r.tick.title)}${r.tick.sizes ? `, ${escapeText(r.tick.sizes)}` : ""}"><span class="outline-epoch-line" aria-hidden="true"></span><span class="outline-epoch-glyph" aria-hidden="true">${r.tick.glyph}</span>${r.tick.sizes ? `<span class="outline-epoch-sizes">${escapeText(r.tick.sizes)}</span>` : ""}<span class="outline-epoch-line" aria-hidden="true"></span></button>`
   ).join("") || '<div class="activity-empty">No turns</div>';
   const tasks = recordState.meta?.tasks || [];
@@ -1488,7 +1489,7 @@ outlineFooter.addEventListener("click", navigatorClick);
 const searchTextCache = new WeakMap();
 function searchTextOf(record) {
   let entry = searchTextCache.get(record);
-  if (!entry) { entry = recordTextParts(record, stripTags, s => s.toLowerCase()); searchTextCache.set(record, entry); }
+  if (!entry) { entry = recordTextParts(recordForSearch(record), stripTags, s => s.toLowerCase()); searchTextCache.set(record, entry); }
   return entry;
 }
 /** This shell's names for the shared task card (html/shared/task-card.js). */
@@ -1691,6 +1692,7 @@ function landOnCurrentMark() {
     mark = viewport.window.querySelector("mark.search-mark.current");
     if (!mark) return;
   }
+  revealMermaidSource(mark);
   // #354: sideways first. A hit far along an unwrapped line of an output (a phone's default: `pre`
   // that scrolls on its own) sits past its block's right edge, and nothing below moves sideways —
   // the owner's export showed every step landing at the right offset of a 175,539 px agent process
@@ -1727,7 +1729,7 @@ function markSearch() {
     const index = Number(root.dataset.blockIndex);
     if (!Number.isInteger(index) || !matched.has(index) || root.parentElement?.closest("[data-block-index]")) continue;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const texts = [];
-    while (walker.nextNode()) if (walker.currentNode.parentElement && !["SCRIPT", "STYLE", "MARK"].includes(walker.currentNode.parentElement.tagName) && walker.currentNode.nodeValue.toLowerCase().includes(needle) && (!wanted || kindInScope(walker.currentNode.parentElement.closest("[data-record-kind]"), wanted))) texts.push(walker.currentNode);
+    while (walker.nextNode()) if (walker.currentNode.parentElement && !walker.currentNode.parentElement.closest(".mermaid-diagram") && !["SCRIPT", "STYLE", "MARK"].includes(walker.currentNode.parentElement.tagName) && walker.currentNode.nodeValue.toLowerCase().includes(needle) && (!wanted || kindInScope(walker.currentNode.parentElement.closest("[data-record-kind]"), wanted))) texts.push(walker.currentNode);
     let first = index === current;
     for (const text of texts) {
       const value = text.nodeValue, lower = value.toLowerCase(), frag = document.createDocumentFragment();

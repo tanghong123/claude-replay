@@ -287,7 +287,7 @@ the Claude side; native Codex was the source-side visibility oracle.
 
 ## Quoted user replies
 
-**Status: proposed validation case; no parser or renderer change is claimed here.** Use the
+**Status: the first App-shell delivery implements this contract.** Use the
 [annotation-reply RFC's acceptance contract](../design/monitor-response-annotations.md#when-special-presentation-is-allowed)
 and [additive presentation contract](../design/monitor-response-annotations.md#parse-once-add-presentation-without-breaking-existing-readers)
 as the expected behavior. This case study supplies synthetic source examples and a validation
@@ -382,6 +382,35 @@ shared output are specified in the RFC's acceptance contract:
 ```
 
 ### Validation recipe
+
+The checked-in regression coverage is:
+
+- `claude-replay-agents/tests/quoted_replies.rs`: native string/array inputs, exact
+  positive and negative controls, original text, quote-only input, literal markers,
+  multiline selections, request/context partitioning, partial JSONL writes, and actual
+  durable-cache resume versus a cold parse.
+- `claude-replay-html/src/html_export/mod.rs`: additive wire metadata, unchanged supported
+  body parts, byte-preserved source, and unchanged turn identity.
+- `claude-monitor/tests/quoted_replies.mjs`: metadata validation, ordinary fallback,
+  escaping, preview choice, attachment association, and visible-content search.
+- `claude-replay-browser-tests/tests/quoted_replies.rs`: real Chrome against Agent Monitor,
+  both native adapters and themes, quote/response order, one-turn navigation, keyboard and
+  touch raw toggles, leading LF/CRLF preservation, search marks, and attached images. A normal
+  Markdown user turn supplies the live style reference for quotations in each theme; native
+  replies reuse its border, typography and spacing without another annotation heading.
+
+Run the adapter and browser cases explicitly during iteration:
+
+```sh
+cargo test -p claude-replay-agents --test quoted_replies
+node claude-monitor/tests/quoted_replies.mjs
+cargo build --release -p claude-monitor -p claude-monitor-v2
+cargo test -p claude-replay-browser-tests --test quoted_replies -- --ignored
+```
+
+These focused checks supplement the repository gates below. Real native samples remain
+private and outside Git; synthetic fixtures never claim that an exact envelope authenticates
+the client gesture. Classic, standalone export, and TUI retain their ordinary body readers.
 
 Start with a synthetic Codex native record and a synthetic Claude native record for the same
 quoted-reply case. Feed both through their Rust adapters, then compare the shared `Message`/`Block`

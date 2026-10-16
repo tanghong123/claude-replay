@@ -1,8 +1,9 @@
 # agent-monitor
 
 Every coding-agent session on this machine on one web page. Sessions from Claude Code,
-Codex, Qoder, QoderWork and Qwenwork sit in one tree, so you see first **who is waiting for
-you and why it stopped**, then find the line you want in the record.
+Codex, Qoder, QoderWork and Qwenwork sit in one tree, so you see at a glance **who is
+running, who is waiting for you and why it stopped**; open one to see what that agent is
+doing, and from a paired phone follow them all and reply to the one that is waiting.
 
 It only reads: it opens the transcripts each agent already writes to disk, installs no
 hooks, changes no commands, and serves on the loopback address. Close it and everything runs
@@ -34,28 +35,41 @@ and the blocked ones.
   agent writes to disk itself, so a session whose window is closed still opens and reads.
 - **A dense record you can neither read back nor search.** Each agent's interface is built
   for generating onward, not for going back. agent-monitor opens a session to read, with an
-  outline by turn, task and sub-agent, and two layers of search to take you to the line.
+  outline by turn, task and sub-agent, and a search that takes you to the line.
 
 ## What it does
 
 - **Who is waiting for you.** Each session is *active*, *blocked* or *idle*, and a blocked
   one carries its reason (awaiting your permission, for example). The filter offers recently
   active, blocked, idle, and hidden sessions.
+- **Passive observation.** No hook, no plugin and no special way to start an agent: it reads
+  the session files each agent already writes and recognizes running agents from the process
+  list, so a session started in a terminal, in the background or in a desktop app appears as
+  it is.
 - **Read a session.** The outline beside the record lists its turns, tasks and sub-agents.
   Choose a turn to jump to it, open a task's card, or descend into a sub-agent's own record.
-- **Search in two layers.** Find the session in the list, then search inside it. A prefix
-  narrows by class: `u:` your turns, `a:` the agent's replies, `t:` thinking, `o:` tools.
-  `w` matches whole words only.
+- **Built for long sessions.** A session reads as one continuous transcript, never paged: the
+  page renders only what is near the viewport, and a large session opens on its latest
+  512 KB while the earlier turns load behind it. Every turn is numbered, and the title bar
+  shows which one you are reading. A turn's tool calls and thinking fold into one
+  agent-process block, each step expandable on its own or all at once. A streaming parser and
+  a validated cache let sessions of hundreds of megabytes open in seconds; the cache is the
+  monitor's, on the disk of the machine it runs on, so reopening a session, even after a
+  restart, parses only what was written since.
+- **Fast, precise search.** It searches as you type, across the whole session rather than the
+  part on screen: in a 600-turn session of about 8 MB of text, each keystroke updates the
+  match count for the whole session in typically about 10 ms (about 20 ms for whole words,
+  measured on an Apple M4 Pro); a session with over about 10 MB of text searches on Enter. A
+  prefix at the start of the box is a filter grammar: `u` your turns, `a` the agent's
+  replies, `t` thinking, `o` tools, and the letters combine (`ua:`); `o(…)` narrows the tools
+  (`o(B)` is Bash, `o(Bash,Read)` two tools); `w` matches whole words only; a colon ends the
+  prefix, as in `w: tag`.
 - **File preview.** A text file a session mentions opens in a preview pane, highlighted by
   language with numbered lines. An HTML page renders as a page.
 - **Phone access.** A phone on your tailnet can read a *paired* monitor (see below). On a
   phone the page is a reader: the session list is a drawer, and the tools float at the foot.
 - **Write mode.** On a paired monitor, and only after you turn it on and grant it, you can
   reply to a session that is waiting for you from the page.
-- **Several machines.** [`agent-monitor-fleet`](#agent-monitor-fleet--several-machines-monitors-on-one-page)
-  opens one SSH tunnel per machine and switches between their monitors on one page.
-- **Built for huge transcripts.** A streaming parser and a validated on-disk cache let
-  sessions of hundreds of megabytes open in seconds.
 
 ## Pairing, phone and write mode
 

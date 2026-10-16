@@ -133,6 +133,13 @@ pub struct Args {
     #[cfg_attr(feature = "cli", arg(long))]
     pub mask_secrets: bool,
 
+    /// With `--dump-html` or `--dump-all-html`: keep the page's theme, reading preferences, folds
+    /// and view in memory for the page's life, so its text names none of the browser's stores
+    /// (#s124). For a page shown in a frame sandboxed without its origin, where every store is
+    /// refused and a host's lint flags any reference to one. Without it, a page remembers them.
+    #[cfg_attr(feature = "cli", arg(long))]
+    pub no_storage: bool,
+
     /// Open the transcript as an HTML page in your browser instead of the TUI.
     /// Serves over a loopback HTTP server (so a tool-path click can reveal the
     /// file in Finder) and prints the URL; Ctrl-C stops it. The page **follows

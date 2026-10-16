@@ -111,9 +111,15 @@ pub enum Message {
         /// silently counting it as success.
         is_error: Option<bool>,
     },
-    /// A genuine human turn — already cleaned by L1 (caveats stripped, classified as neither
-    /// a command nor injected/system content). Becomes a `UserText` block.
+    /// A genuine human turn, classified as neither a command nor injected/system content.
+    /// Ordinary transport text is cleaned by L1; rejected quotation candidates retain their
+    /// complete input. Becomes a `UserText` block.
     UserText { text: String },
+    /// A human turn with exact-match quotation metadata and complete original text.
+    UserReply {
+        text: String,
+        context: crate::model::ReplyContext,
+    },
     /// A message from another agent session (#s79): opens a turn like a prompt and becomes a
     /// `PeerText` block, never a `UserText` — the person did not type it. `text` is the message
     /// alone; `from` and `mode` name the sending session as the client recorded them.
@@ -251,6 +257,7 @@ impl Message {
         matches!(
             self,
             Message::UserText { .. }
+                | Message::UserReply { .. }
                 | Message::PeerText { .. }
                 | Message::Command { .. }
                 | Message::CommandStdout { .. }

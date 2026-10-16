@@ -2755,7 +2755,10 @@ fn text_occurrences(hay: &str, needle: &str, whole: bool) -> usize {
 fn block_occurrences(b: &Block, needle: &str, whole: bool) -> usize {
     let count = |hay: &str, needle: &str| text_occurrences(hay, needle, whole);
     match b {
-        Block::UserText(t) | Block::AssistantText(t) | Block::ToolResult(t) => count(t, needle),
+        Block::UserText(t)
+        | Block::UserReply { text: t, .. }
+        | Block::AssistantText(t)
+        | Block::ToolResult(t) => count(t, needle),
         Block::AssistantMessage { text, .. } => count(text, needle),
         Block::QueueEvent { text } => count(text, needle),
         Block::PeerText { from, text, .. } => count(from, needle) + count(text, needle),
@@ -4495,6 +4498,7 @@ mod tests {
             dump_html: None,
             dump_all_html: None,
             mask_secrets: false,
+            no_storage: false,
             html: false,
             width: None,
             paths: false,

@@ -229,6 +229,8 @@ function wholeAt(t, start, len) {
 
 /** Occurrences of the lowercase needle `lc` in `t` (whole words only when `whole`). */
 function countOcc(t, lc, whole) {
+  // Clearing a query is zero matches; indexOf("") would never advance this scan.
+  if (!lc) return 0;
   let n = 0, i = 0;
   while ((i = t.indexOf(lc, i)) !== -1) {
     if (!whole || wholeAt(t, i, lc.length)) n++;

@@ -15,9 +15,11 @@
   var THEME_KEY = "claude-replay-export-theme";
   // §8.3/§8.8 code-density + width prefs — global and persisted.
   var RAW_KEY = "claude-replay-export-rawuser";
-  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
-  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
-  function lsDel(k) { try { localStorage.removeItem(k); } catch (e) { /* private mode */ } }
+  // Storage is the page store's (#s124, page-store.js, emitted ahead of this script): the
+  // browser's, or memory for an export built with --no-storage. Every access is guarded there.
+  function lsGet(k) { return crPageStore.get(k); }
+  function lsSet(k, v) { crPageStore.set(k, v); }
+  function lsDel(k) { crPageStore.del(k); }
   // #45: the shared modules (html/shared/*.js), inlined ahead of this script — the key table
   // and the reading preferences are theirs. Prefs live under ONE key with the app shell
   // (`am-prod-reading`); this page keeps its own defaults (12.5 px, wrapped) and folds its
@@ -101,8 +103,7 @@
     var b = $("btn-theme");
     if (b) b.textContent = name === "light" ? "◐ Dark" : "◑ Light";
   }
-  var stored = null;
-  try { stored = localStorage.getItem(THEME_KEY); } catch (e) { /* private mode */ }
+  var stored = lsGet(THEME_KEY);
   applyTheme(stored === "dark" || stored === "light" ? stored : "light");
 
   // ── rendering ────────────────────────────────────────────────────────
@@ -2122,6 +2123,7 @@
     afterMount(fresh) {
       fresh.forEach(postMat);   // writes only — no layout reads
       clampBatch(fresh);        // one batched read pass, then all the writes
+      fresh.forEach(root => shared.renderMermaid(root, () => this.readerReshaped()));
     }
     get following() { return following; }
     set following(value) {
@@ -2159,6 +2161,8 @@
     remember() {}
   })({
     frame: shared.documentFrame(),
+    // The viewport trace's stored switch (#192), read here so the shared engine touches no store.
+    traceStored: lsGet("viewportTrace"),
     // `content` is the whole document, not `#stream`: what displaces a reader on THIS page
     // grows outside the run — the session header's meta chips wrapping to a second line, the
     // sticky turn bar appearing, the task panel opening. `#stream` holds only the pads and the
@@ -2250,8 +2254,8 @@
 
   // ── the same view you left, across a reload (#170) ──────────────────────────────
   // The monitor reloads this page on every session switch, so "where I was" cannot live
-  // in memory. It parks in sessionStorage under the session id: per tab, gone when the
-  // tab closes, and never shared between two sessions.
+  // in memory. It parks in the tab's session store under the session id: per tab, gone when
+  // the tab closes, and never shared between two sessions (in memory alone, with --no-storage).
   //
   // Three facts, because a view that LOOKS the same needs all three: where the viewport
   // was, what was folded, and how much had been read (so the badge counts what arrived
@@ -2266,7 +2270,7 @@
       // what does not survive a reload, so it is not worth storing.
       var a = following ? null : vw.captureDomAnchor();
       var key = a && a.key && a.key.charAt(0) !== "@" ? a.key : null;
-      sessionStorage.setItem(VS_KEY, JSON.stringify({
+      crPageStore.tabSet(VS_KEY, JSON.stringify({
         v: 1, following: following, anchor: key, dy: a ? Math.round(a.top) : 0,
         y: Math.round(window.scrollY), // coarse fallback, for when the anchor is gone
         // #173 `codeOne` is deliberately NOT here: a pane's size/wrap override is ephemeral,
@@ -2277,7 +2281,7 @@
   }
   function loadView() {
     try {
-      var st = JSON.parse(sessionStorage.getItem(VS_KEY));
+      var st = JSON.parse(crPageStore.tabGet(VS_KEY));
       return st && st.v === 1 ? st : null;
     } catch (e) { return null; }
   }
@@ -3167,7 +3171,7 @@
   var themeBtn = $("btn-theme");
   if (themeBtn) themeBtn.addEventListener("click", function () {
     var next = root.getAttribute("data-theme") === "light" ? "dark" : "light";
-    try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* ignore */ }
+    lsSet(THEME_KEY, next);
     applyTheme(next);
   });
   // Global "show user turns as raw". Turning it on clears per-turn overrides, so the
@@ -3289,6 +3293,10 @@
     var walker = document.createTreeWalker(blk, NodeFilter.SHOW_TEXT, null);
     var nodes = [], n;
     while ((n = walker.nextNode())) {
+      // Diagram SVG is generated presentation: its CSS and repeated labels are not
+      // Markdown search hits. Mark the preserved source instead of rewriting SVG text.
+      if (n.parentElement && (n.parentElement.closest(".mermaid-diagram")
+          || /^(STYLE|SCRIPT)$/.test(n.parentElement.tagName))) continue;
       var owner = n.parentElement && n.parentElement.closest(".blk");
       // A tool facet marks only inside the call it names (#292) — the same part-precision the
       // count has, so what is highlighted and what is counted cannot disagree.
@@ -3446,6 +3454,7 @@
   // Expand the whole enclosing chain first, recording small cap expansions exactly
   // like a click would (#67) so they survive rematerialization.
   function revealMark(m) {
+    shared.revealMermaidSource(m);
     for (var p = m.parentElement; p; p = p.parentElement) {
       if (p.classList.contains("more") && !p.classList.contains("shown")) {
         var btn = document.querySelector('.morebtn[data-more="' + p.id + '"]');

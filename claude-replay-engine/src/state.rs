@@ -484,7 +484,10 @@ fn pulse_within(adapter: &dyn TranscriptAdapter, path: &Path, window: u64) -> Op
     let mut saw_conversation = false;
     for m in &msgs {
         match m {
-            Message::UserText { .. } | Message::PeerText { .. } | Message::Command { .. } => {
+            Message::UserText { .. }
+            | Message::UserReply { .. }
+            | Message::PeerText { .. }
+            | Message::Command { .. } => {
                 last_user = true;
                 saw_conversation = true;
             }

@@ -566,7 +566,7 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 }
             }
         }
-        Block::UserText(t) => {
+        Block::UserText(t) | Block::UserReply { text: t, .. } => {
             // A full-width grey block like Claude Code: a dim `❯` caret on the
             // first line (continuation lines indent two spaces to align under it),
             // near-white text; `fill_bg` extends the background across the row.
@@ -1130,7 +1130,7 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
 /// Must match `render_one`'s first emitted line for foldable blocks.
 fn render_header(b: &Block) -> Line<'static> {
     match b {
-        Block::UserText(t) => {
+        Block::UserText(t) | Block::UserReply { text: t, .. } => {
             let base = Style::default().fg(theme::user_fg()).bg(theme::user_bg());
             Line::from(vec![
                 Span::styled("❯ ", base.fg(theme::user_marker())),
@@ -1202,9 +1202,10 @@ fn render_header(b: &Block) -> Line<'static> {
 /// building the body. Must agree with `render_one`'s output length.
 fn body_len(b: &Block) -> usize {
     match b {
-        Block::ToolResult(t) | Block::UserText(t) | Block::QueueEvent { text: t } => {
-            t.lines().count().saturating_sub(1)
-        }
+        Block::ToolResult(t)
+        | Block::UserText(t)
+        | Block::UserReply { text: t, .. }
+        | Block::QueueEvent { text: t } => t.lines().count().saturating_sub(1),
         Block::Attachment(_) => 0, // one-line marker; not foldable
         Block::SubAgent(sa) => {
             let p = if sa.prompt.trim().is_empty() {
@@ -2122,6 +2123,31 @@ mod tests {
         let expanded = texts(&render_one(&block, 100, Hl::Styled)).join("\n");
         assert!(expanded.contains("Bash(cargo test)"));
         assert!(expanded.contains("exit 7 · 42ms"), "{expanded}");
+    }
+
+    /// #s126: an exit the client calls no failure (recorded Completed beside its exit 1) keeps its
+    /// `exit 1` dim on the head; the same exit recorded Failed is styled as a failure.
+    #[test]
+    fn an_exit_recorded_completed_is_not_styled_as_a_failure() {
+        use crate::model::{ToolExecution, ToolStatus};
+        let styled = |status| {
+            let execution = ToolExecution {
+                status: Some(status),
+                exit_code: Some(1),
+                duration: None,
+            };
+            let line = with_execution(tool_header("Bash", "rg x", None), Some(&execution), None);
+            let last = line.spans.last().expect("a summary span").clone();
+            (last.content.to_string(), last.style)
+        };
+        assert_eq!(
+            styled(ToolStatus::Completed),
+            ("exit 1".to_string(), theme::dim())
+        );
+        assert_eq!(
+            styled(ToolStatus::Failed),
+            ("exit 1".to_string(), theme::diff_del())
+        );
     }
 
     /// Expanded: a Bash block shows the command header + output capped at 15 lines

@@ -289,7 +289,7 @@ link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.38, #s75), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.45, #s123), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor both binaries go through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
@@ -890,13 +890,42 @@ a machine without them, a release ends with GitHub and the public tap.
 
 @~/.claude/claude-replay/internal.md
 
-## Merging external PRs
-CI must run and pass BEFORE the merge — a fork PR from a first-time contributor
-needs its workflow runs approved in the GitHub UI, and until they run, the email
-guard has never seen the commits. Never `gh pr merge --admin` past pending
-checks: the pre-push hook cannot see a server-side merge, so CI's guard job is
-the ONLY identity check on that path (#16 leaked a work email exactly this way;
-the accepted commits are sha-allowlisted in ci.yml).
+## Teammates' pull requests land without the owner
+Most of this repository is the owner's; teammates contribute now and then by pull request (or by a
+merge request on the owner's mirror, which the internal notes cover). **The owner is not in the
+merge path** (owner, 2026-10-16): the owner's agent reviews a teammate's change and, when it is low
+risk, approves and lands it under the owner's account without asking, once all three hold:
+
+1. **Reviewed twice.** The agent's own review: the gates below, the browser cases the change
+   touches, the whole local browser suite for a change to page code, and an iOS Simulator walk for a
+   phone UI change. Then an independent review of the exact head commit by a fresh subagent or
+   another agent, never the session that lands it. Every thread on the change is answered.
+2. **Green.** CI passed on that exact head: `fmt · clippy · test`, `secrets · blocked emails`,
+   `version guard` and `browser (real Chrome)`.
+3. **Current.** main is merged in (or the branch rebased onto it), and the result is still green.
+
+Then approve, land it fast-forward only under the landing lock, post a note on the change naming the
+reviewed commit and the checks, and close its review task with what landed. Requested changes go to
+the author as findings on the change, never to the owner; the owner hears of a disagreement only
+when a second round still has one. A change that cannot land fast-forward gets main merged into its
+branch first, then lands fast-forward: never a server-side merge commit.
+
+**Still the owner's.** Review it, then bring it to the owner in one line instead of landing:
+- releases, version numbers and the Homebrew formulas;
+- CI, workflow and gate configuration (`.github/`, `scripts/gate/`, `.gitleaks.toml`);
+- authentication, pairing, the file gate and its capability stamps, secret masking, and anything
+  that opens a port or a network path;
+- vendored releases (`vendor/`) and new dependencies;
+- the public contract: CLI flags, the `--json` streams, the on-disk formats other tools read;
+- removing a feature, or a design change beyond one component;
+- a UI change not yet walked on the iOS Simulator.
+
+**A first-time contributor's** fork PR needs its workflow runs approved in the GitHub UI: approve
+them only after reading the diff for changes to workflows or anything that reaches secrets, which is
+part of the review. CI must run and pass BEFORE the merge. Never `gh pr merge --admin` past pending
+checks: the pre-push hook cannot see a server-side merge, so CI's guard job is the ONLY identity
+check on that path (#16 leaked a work email exactly this way; the accepted commits are
+sha-allowlisted in ci.yml).
 
 ## Gate every change on
 `cargo fmt --check`, `cargo clippy --all-targets` (no new warnings), `cargo test`
@@ -1004,7 +1033,10 @@ session picker · `clipboard.rs`. Only `app`/`view` are public.
 render core · `bundle.rs` the `--dump-html`/`--dump-all-html` offline writers · `serve.rs` the
 `--html` live server, which always tails; it serves over a loopback HTTP server since a
 `file://` page can't `fetch`) → one self-contained `.html` (fixed shell + `html/export.{css,js}` embedded; Rust
-emits a JSON block stream, the JS renders it).
+emits a JSON block stream, the JS renders it). Every page reaches the browser's stores only through `crPageStore`
+(`html/page-store.js`, emitted ahead of `export.js`); `--no-storage` swaps in `page-store-memory.js`
+for a frame sandboxed without its origin, where every store throws and a host's lint flags the names,
+and `a_no_storage_page_names_no_browser_store` holds every other page source to naming none (#s124).
 
 The stream is **append-only almost always, and the exception matters** (#165). A live delta
 carries `changed_from` — the index from which records were REWRITTEN — and the one thing that

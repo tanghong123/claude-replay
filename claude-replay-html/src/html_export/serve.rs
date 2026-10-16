@@ -150,7 +150,12 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // schemeless is a `<span title>` holding its words, never a live `<a href>`.
     // v25: #s115 — a Bash output the client cut opens its body with a note offering the file that
     // holds the whole of it (`file: {path, sig, fsig?, name}`).
-    const RECORD_SCHEMA: u16 = 25;
+    // v26: Mermaid fences carry an inline diagram host and their escaped source, so
+    // previously visited sessions must regenerate their cached Markdown fragments.
+    // v27: saved-output offers with additive quotation metadata and canonical labels.
+    // v28: integrate Mermaid with quotation records. The earlier quotation build already
+    // wrote v27 caches without diagram hosts; these must rebuild along with v25-v26 caches.
+    const RECORD_SCHEMA: u16 = 28;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
@@ -1367,7 +1372,8 @@ pub enum HttpReply {
     Events(EventStream),
 }
 
-/// A bounded event receiver; the listener applies authentication and masking before writing.
+/// An event receiver; the listener applies authentication and masking before writing.
+/// Queue capacity is the producer's responsibility, not a property of `Receiver`.
 pub struct EventStream {
     initial: serde_json::Value,
     receiver: std::sync::Mutex<std::sync::mpsc::Receiver<serde_json::Value>>,
@@ -1376,6 +1382,11 @@ pub struct EventStream {
 
 impl HttpReply {
     /// Create a connection-delimited SSE reply, renewed after two minutes.
+    ///
+    /// Producers must use a bounded `sync_channel` and define how they handle a full queue
+    /// (backpressure or disconnecting a slow subscriber). The connection deadline limits
+    /// lifetime, not queued memory. Reconnecting clients need the caller's snapshot or replay
+    /// protocol to recover missed events; this transport does not retain an event history.
     pub fn events(
         initial: serde_json::Value,
         receiver: std::sync::mpsc::Receiver<serde_json::Value>,
@@ -1465,6 +1476,15 @@ impl HttpResponse {
     /// itself: a tap on a same-origin link is same-site in every engine, so it carries the cookie
     /// whatever the automatic retry met. It is 44px tall, a finger's target.
     pub fn refusal_page(msg: &str) -> Self {
+        Self::refusal_page_with_pairing(msg, false)
+    }
+
+    fn refusal_page_with_pairing(msg: &str, offer_pairing: bool) -> Self {
+        let pairing_action = if offer_pairing {
+            "<a class=\"pair\" href=\"/pair\">Pair this device</a>"
+        } else {
+            ""
+        };
         let msg = msg
             .replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -1480,14 +1500,18 @@ impl HttpResponse {
              background:#f7f8fa}}main{{max-width:34rem;margin:18vh auto 0;padding:0 20px}}\
              h1{{font-size:20px;margin:0 0 8px}}p{{margin:0 0 10px;color:#4a5263}}\
              code{{font:14px ui-monospace,Menlo,monospace}}\
-             a.again{{display:inline-flex;align-items:center;min-height:44px;margin-top:8px;\
+             .actions{{display:flex;flex-wrap:wrap;gap:12px;margin-top:18px}}\
+             .actions a{{display:inline-flex;align-items:center;min-height:44px;\
              padding:0 20px;border-radius:10px;background:#1f7a4d;color:#fff;font-weight:600;\
-             text-decoration:none}}@media(max-height:500px){{main{{margin-top:16px}}}}\
+             text-decoration:none}}a.pair{{background:#e4eaf4;color:#193858}}\
+             a:focus-visible{{outline:3px solid #3274c7;outline-offset:3px}}\
+             @media(max-height:500px){{main{{margin-top:16px}}}}\
              @media(prefers-color-scheme:dark){{body{{background:#15171c;color:#e6e8ee}}\
-             p{{color:#a9b0bf}}}}</style></head><body><main>\
+             p{{color:#a9b0bf}}a.pair{{background:#293c53;color:#e7f0ff}}}}</style></head><body><main>\
              <h1>This browser is not paired</h1><p>{msg}.</p>\
              <p>Already paired? Opening this page from another app or site can hide the pairing \
-             for one load.</p><a class=\"again\" href=\"\">Try again</a></main></body></html>"
+             for one load.</p><div class=\"actions\"><a class=\"again\" href=\"\">Try again</a>\
+             {pairing_action}</div></main></body></html>"
         );
         Self {
             code: "401 Unauthorized",
@@ -2335,39 +2359,6 @@ fn serve_connection<R: Into<HttpReply>>(
     let (path_part, query) = target.split_once('?').unwrap_or((target, ""));
     let name = path_part.trim_start_matches('/');
 
-    // The request body, bounded — a write route (#133) reads its prompt/target from here, and
-    // mdrev's `hold` (#270) a whole document. A body over its route's bound is REFUSED (413), never
-    // cut to size: this used to read the first 64 KB of a larger body and hand the route that,
-    // which for a held document is a corrupted document and for any route is a lie about what
-    // was sent.
-    let limit = if name == "api/mdrev/hold" {
-        super::mdrev::HOLD_BODY_LIMIT
-    } else if let Some((_, limit)) = gate.body_limits.iter().find(|(route, _)| *route == name) {
-        *limit
-    } else {
-        MAX_BODY_BYTES
-    };
-    let declared = header_value(&headers, "content-length")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0);
-    let oversized = declared > limit;
-    let mut body = vec![0u8; if oversized { 0 } else { declared }];
-    if !oversized && declared > 0 {
-        reader.read_exact(&mut body)?;
-    }
-
-    // #11: phone pairing is the way IN, so it is answered before the gate — and only by a paired
-    // gate that offers it. The code arrives in a POST body, never a URL.
-    if let (Some(tok), Some(codes)) = (gate.token.as_deref(), gate.pair_codes.as_deref()) {
-        if name == "pair" || name == "api/pair" {
-            let (r, cookie) = pairing_route(&method, name, &body, tok, codes, gate.pair_command);
-            let head = response_head(&r, &cookie);
-            return stream
-                .write_all(head.as_bytes())
-                .and_then(|_| stream.write_all(&r.body));
-        }
-    }
-
     // #196 §4.2: same-user OR a valid token (query / Authorization: Bearer / cmauth cookie) —
     // except a GET of a path the host made public (#320), which needs neither.
     let own_cookie = gate.token.as_deref().map(cookie_name);
@@ -2400,6 +2391,45 @@ fn serve_connection<R: Into<HttpReply>>(
         },
     };
 
+    // The request body, bounded — a write route (#133) reads its prompt/target from here, and
+    // mdrev's `hold` (#270) a whole document. A body over its route's bound is REFUSED (413), never
+    // cut to size: this used to read the first 64 KB of a larger body and hand the route that,
+    // which for a held document is a corrupted document and for any route is a lie about what
+    // was sent.
+    let limit = if let Some((_, limit)) = gate.body_limits.iter().find(|(route, _)| *route == name)
+    {
+        *limit
+    } else if name == "api/mdrev/hold" {
+        super::mdrev::HOLD_BODY_LIMIT
+    } else {
+        MAX_BODY_BYTES
+    };
+    let declared = header_value(&headers, "content-length")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let oversized = declared > limit;
+    // Raised route budgets are for admitted clients only. Keep the small allowance so an
+    // unpaired browser can still submit its pairing code, but never allocate or wait for a
+    // large upload from a denied peer (including mdrev's existing document allowance).
+    let denied_large_body = declared > MAX_BODY_BYTES && matches!(access, Access::Denied);
+    let read_body = !oversized && !denied_large_body;
+    let mut body = vec![0u8; if read_body { declared } else { 0 }];
+    if read_body && declared > 0 {
+        reader.read_exact(&mut body)?;
+    }
+
+    // #11: a small pairing POST is the way IN, so answer it before enforcing the gate
+    // verdict. Large denied requests still reach the refusal without reading their body.
+    if let (Some(tok), Some(codes)) = (gate.token.as_deref(), gate.pair_codes.as_deref()) {
+        if !denied_large_body && (name == "pair" || name == "api/pair") {
+            let (r, cookie) = pairing_route(&method, name, &body, tok, codes, gate.pair_command);
+            let head = response_head(&r, &cookie);
+            return stream
+                .write_all(head.as_bytes())
+                .and_then(|_| stream.write_all(&r.body));
+        }
+    }
+
     // The write-route verdicts (#133): a valid TOKEN was presented (not merely same-user),
     // and the Host/Origin are ours. `deny_write` on the Request enforces both + POST.
     let local_port = local.map(|l| l.port()).unwrap_or(0);
@@ -2428,13 +2458,10 @@ fn serve_connection<R: Into<HttpReply>>(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
             eprintln!("{}", refusal_line(now, name, cookie, &headers));
-            let mut refusal = HttpResponse::refusal_page(gate.refusal);
-            if gate.token.is_some() && gate.pair_codes.is_some() {
-                refusal.body = String::from_utf8(refusal.body)
-                    .expect("refusal page is UTF-8")
-                    .replace("</main>", "<a href=\"/pair\">Pair this device</a></main>")
-                    .into_bytes();
-            }
+            let refusal = HttpResponse::refusal_page_with_pairing(
+                gate.refusal,
+                gate.token.is_some() && gate.pair_codes.is_some(),
+            );
             (refusal.into(), None, false)
         }
         Access::Denied => (
@@ -2542,6 +2569,39 @@ const GZIP_MIN_BYTES: usize = 16 * 1024;
 /// at 5 MB/s level 3 saves ~0.6 s over level 1 for 0.13 s more CPU — so level 3.
 const GZIP_LEVEL: u32 = 3;
 
+/// A route can keep immutable assets precompressed. Decode only when gzip is not accepted,
+/// before masking and normal network compression, so those adapters still see identity bytes.
+fn identity_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
+    use std::io::Read;
+    let gzip = r.headers.iter().any(|header| {
+        header.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("content-encoding")
+                && value.trim().eq_ignore_ascii_case("gzip")
+        })
+    });
+    if !gzip || accepts_gzip(headers) || r.stream.is_some() {
+        return r;
+    }
+    let mut body = Vec::new();
+    if let Err(error) = flate2::read::GzDecoder::new(r.body.as_slice()).read_to_end(&mut body) {
+        eprintln!(
+            "could not decode gzip response ({} bytes, {}): {error}",
+            r.body.len(),
+            r.content_type
+        );
+        let mut failed = HttpResponse::ok(TEXT_PLAIN, b"could not decode the response".to_vec());
+        failed.code = "500 Internal Server Error";
+        return failed;
+    }
+    r.body = body;
+    r.headers.retain(|header| {
+        !header
+            .split_once(':')
+            .is_some_and(|(name, _)| name.eq_ignore_ascii_case("content-encoding"))
+    });
+    r
+}
+
 /// Gzip a reply for a client ACROSS A NETWORK (#313). Opening a session sends every record it
 /// has — 3 MB for an 8 MB transcript, 24 MB for 70 MB, 32 MB for 107 MB — and a phone reaching
 /// the monitor through `tailscale serve` paid for each byte; gzip makes them 25-43%, and the
@@ -2640,19 +2700,26 @@ fn looks_like_text(path: &Path) -> bool {
     }
 }
 
-/// Whether `Accept-Encoding` lists gzip at a non-zero quality.
+/// Whether `Accept-Encoding` accepts gzip. An explicit coding overrides the wildcard.
 fn accepts_gzip(headers: &str) -> bool {
-    header_value(headers, "accept-encoding").is_some_and(|v| {
-        v.split(',').any(|coding| {
+    header_value(headers, "accept-encoding").is_some_and(|value| {
+        let mut wildcard = false;
+        for coding in value.split(',') {
             let mut parts = coding.split(';').map(str::trim);
             let name = parts.next().unwrap_or("");
-            (name.eq_ignore_ascii_case("gzip") || name == "*")
-                && parts.all(|p| {
-                    p.strip_prefix("q=")
-                        .and_then(|q| q.trim().parse::<f32>().ok())
-                        .is_none_or(|q| q > 0.0)
-                })
-        })
+            let accepted = parts.all(|part| {
+                part.strip_prefix("q=")
+                    .and_then(|quality| quality.trim().parse::<f32>().ok())
+                    .is_none_or(|quality| quality > 0.0)
+            });
+            if name.eq_ignore_ascii_case("gzip") {
+                return accepted;
+            }
+            if name == "*" {
+                wildcard = accepted;
+            }
+        }
+        wildcard
     })
 }
 
@@ -2726,9 +2793,12 @@ fn mask_reply_under(reply: HttpReply, headers: &str, policy: super::mask::MaskPo
 
 fn prepare_reply(reply: HttpReply, headers: &str, method: &str) -> HttpReply {
     match reply {
-        HttpReply::Buffered(response) => {
-            gzip_for(mask_for(response, headers), method, headers).into()
-        }
+        HttpReply::Buffered(response) => gzip_for(
+            mask_for(identity_for(response, headers), headers),
+            method,
+            headers,
+        )
+        .into(),
         events => mask_reply_under(events, headers, super::mask::policy()),
     }
 }
@@ -2867,6 +2937,9 @@ pub fn service_routes(
         return r;
     }
     let (name, query) = (req.name, req.query);
+    if let Some(response) = super::mermaid::route(name) {
+        return response;
+    }
     // `/session?id=<sid>[&chrome=embed][&theme=light|dark]` — the complete session view at
     // a URL, exactly as `--html` serves it, with optional host chrome (#98 §6.3).
     if name == "session" {
@@ -3202,21 +3275,110 @@ mod tests {
     }
 
     #[test]
-    fn only_exact_codex_send_accepts_large_image_bodies_without_truncation() {
+    fn unpaired_large_requests_are_refused_before_their_bodies_arrive() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let port = spawn_listener_gated(
+            0,
+            std::sync::Arc::new(move |_: &Request| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                HttpResponse::ok(TEXT_PLAIN, b"unexpected handler call".to_vec())
+            }),
+            AuthGate::for_test(Some("large-body-token"))
+                .with_body_limit("api/large-upload", TEST_ROUTE_BODY_LIMIT)
+                .unwrap(),
+        )
+        .unwrap();
+        for (path, length) in [
+            ("/api/large-upload", MAX_BODY_BYTES + 1),
+            ("/api/large-upload", TEST_ROUTE_BODY_LIMIT),
+            ("/api/mdrev/hold", super::super::mdrev::HOLD_BODY_LIMIT),
+        ] {
+            for authorization in ["", "Authorization: Bearer wrong-token\r\n"] {
+                let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                write!(stream, "POST {path} HTTP/1.1\r\nHost: phone.example\r\n{authorization}Content-Length: {length}\r\nConnection: close\r\n\r\n").unwrap();
+                // Do not send the declared body or close the write side: the gate must answer
+                // without waiting for upload bytes or the server's socket timeout.
+                let mut response = String::new();
+                stream
+                    .read_to_string(&mut response)
+                    .unwrap_or_else(|error| {
+                        panic!("gate waited for an unpaired {path} body ({length} bytes): {error}")
+                    });
+                assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+            }
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn an_explicit_mdrev_body_budget_overrides_its_default() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let handler: RouteHandler = std::sync::Arc::new(move |r: &Request| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            assert!(r.body.iter().all(|byte| *byte == b'x'));
+            HttpResponse::ok(TEXT_PLAIN, r.body.len().to_string().into_bytes())
+        });
+        let gate = || AuthGate::for_test(Some("document-token"));
+        let limited = spawn_listener_gated(
+            0,
+            handler.clone(),
+            gate()
+                .with_body_limit("api/mdrev/hold", MAX_BODY_BYTES)
+                .unwrap(),
+        )
+        .unwrap();
+        let default = spawn_listener_gated(0, handler, gate()).unwrap();
+        let post = |port, length, send_body| {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            write!(stream, "POST /api/mdrev/hold HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer document-token\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").unwrap();
+            if send_body {
+                stream.write_all(&vec![b'x'; length]).unwrap();
+            }
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .expect("an over-budget document must be refused before its body arrives");
+            response
+        };
+        let over = post(limited, MAX_BODY_BYTES + 1, false);
+        assert!(over.starts_with("HTTP/1.1 413"), "{over}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        for (port, length) in [(limited, MAX_BODY_BYTES), (default, MAX_BODY_BYTES + 1)] {
+            let response = post(port, length, true);
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            assert!(response.ends_with(&length.to_string()), "{response}");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn only_an_admitted_exact_route_accepts_large_bodies_without_truncation() {
         use std::io::{Read, Write};
         let port = spawn_listener_gated(
             0,
             std::sync::Arc::new(|r: &Request| {
                 HttpResponse::ok("text/plain", r.body.len().to_string().into_bytes())
             }),
-            AuthGate::same_user()
+            AuthGate::for_test(Some("large-body-token"))
                 .with_body_limit("api/large-upload", TEST_ROUTE_BODY_LIMIT)
                 .unwrap(),
         )
         .unwrap();
         let send = |path: &str, length: usize, write_body: bool| {
             let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+            stream.write_all(format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer large-body-token\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
             if write_body {
                 stream.write_all(&vec![b'x'; length]).unwrap();
             }
@@ -3501,6 +3663,14 @@ mod tests {
             "a finger's target: {page}"
         );
         assert!(!page.contains("Set-Cookie"), "{page}");
+        assert!(
+            !page.contains("href=\"/pair\""),
+            "hosts without pairing keep their own entrypoint"
+        );
+        let public_page = HttpResponse::refusal_page("use <host> & pair");
+        let public_page = String::from_utf8(public_page.body).unwrap();
+        assert!(public_page.contains("use &lt;host&gt; &amp; pair"));
+        assert!(!public_page.contains("href=\"/pair\""));
         let fetch = ask("empty");
         assert!(
             fetch.contains("Content-Type: text/plain; charset=utf-8")
@@ -3729,6 +3899,78 @@ mod tests {
         assert_eq!(plain, body.as_bytes());
     }
 
+    #[test]
+    fn mermaid_runtime_http_preserves_cache_and_negotiates_encoding() {
+        use std::io::{Read, Write};
+        let handler: RouteHandler = std::sync::Arc::new(|req: &Request| {
+            super::super::mermaid::route(req.name)
+                .unwrap_or_else(|| HttpResponse::not_found("no such runtime"))
+        });
+        let port =
+            spawn_listener_gated(0, handler, AuthGate::for_test(Some("sample-token"))).unwrap();
+        let path = super::super::mermaid::RUNTIME_PATH;
+        let source = include_bytes!("../../../vendor/mermaid/mermaid.min.js");
+        let compressed = include_bytes!("../../../vendor/mermaid/mermaid.min.js.gz");
+        for (host, encoding, gzip) in [
+            ("127.0.0.1", "gzip", true),
+            ("phone.example", "gzip, deflate, br", true),
+            ("phone.example", "gzip;q=0, br", false),
+            ("phone.example", "*;q=1, gzip;q=0", false),
+            ("phone.example", "*;q=0.5", true),
+            ("phone.example", "identity", false),
+            ("127.0.0.1", "", false),
+        ] {
+            let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            write!(socket, "GET {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer sample-token\r\nAccept-Encoding: {encoding}\r\nConnection: close\r\n\r\n").unwrap();
+            let mut raw = Vec::new();
+            socket.read_to_end(&mut raw).unwrap();
+            let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+            let head = String::from_utf8_lossy(&raw[..split]);
+            let body = &raw[split + 4..];
+            assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+            assert!(
+                head.contains("Cache-Control: public, max-age=31536000, immutable"),
+                "{head}"
+            );
+            assert!(!head.contains("no-store"), "{head}");
+            assert!(head.contains("Vary: Accept-Encoding"), "{head}");
+            assert!(
+                head.contains(&format!("Content-Length: {}", body.len())),
+                "{head}"
+            );
+            assert_eq!(head.contains("Content-Encoding: gzip"), gzip, "{head}");
+            if gzip {
+                assert_eq!(
+                    body,
+                    compressed.as_slice(),
+                    "serve the stored bytes without recompression"
+                );
+                let mut decoded = Vec::new();
+                flate2::read::GzDecoder::new(body)
+                    .read_to_end(&mut decoded)
+                    .unwrap();
+                assert_eq!(decoded, source.as_slice());
+            } else {
+                assert_eq!(body, source.as_slice(), "byte-identical identity fallback");
+            }
+        }
+        assert!(super::super::mermaid::route("mermaid.js").is_none());
+        assert!(super::super::mermaid::route("mermaid/0.0.0.js").is_none());
+    }
+
+    #[test]
+    fn invalid_precompressed_response_reports_a_server_error() {
+        let mut response = HttpResponse::ok(TEXT_PLAIN, b"invalid gzip".to_vec());
+        response.headers.push("Content-Encoding: gzip".into());
+        let response = identity_for(response, "Accept-Encoding: identity\r\n");
+        assert_eq!(response.code, "500 Internal Server Error");
+        assert_eq!(response.body, b"could not decode the response");
+        assert!(!response
+            .headers
+            .iter()
+            .any(|h| h.starts_with("Content-Encoding:")));
+    }
+
     /// #320: a path the host made public is read without passing the gate — a phone fetches the
     /// page's icon to put it on its Home Screen, and may not carry the pairing cookie when it
     /// does — while everything else, and anything but a GET of that path, is refused as before.
@@ -3814,7 +4056,7 @@ mod tests {
         );
         let refused_page = send("GET /codex-workspace HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Dest: document\r\nConnection: close\r\n\r\n".to_owned());
         assert!(refused_page.starts_with("HTTP/1.1 401"), "{refused_page}");
-        assert!(refused_page.contains("<a href=\"/pair\">Pair this device</a>"));
+        assert!(refused_page.contains("<a class=\"pair\" href=\"/pair\">Pair this device</a>"));
         assert!(
             !refused_page.contains("the monitor"),
             "Private handler never sees an anonymous page load"
@@ -4985,6 +5227,77 @@ mod tests {
     /// Where `test_cache` puts `sid`'s record log.
     fn test_records(base: &Path, sid: &str) -> std::path::PathBuf {
         cache::admit::entry_dir(&base.join("cache"), Presentation::Html, sid).join("records.jsonl")
+    }
+
+    #[test]
+    fn quotation_schema_27_cache_is_rebuilt_for_mermaid() {
+        use crate::cache::{admit::Origin, Admission};
+        use std::hash::{Hash, Hasher};
+
+        let base = std::env::temp_dir().join(format!("cr-schema-upgrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let source = base.join("session.jsonl");
+        let mut input = String::new();
+        for (role, text) in [
+            ("user", "Draw a diagram"),
+            ("assistant", "```mermaid\ngraph TD; A-->B\n```"),
+            ("user", "Next turn"),
+        ] {
+            input.push_str(
+                &serde_json::json!({
+                    "type": role,
+                    "message": {"role": role, "content": [{"type": "text", "text": text}]},
+                })
+                .to_string(),
+            );
+            input.push('\n');
+        }
+        std::fs::write(&source, &input).unwrap();
+        let fold = FoldPolicy::default();
+        // The submitted quotation build used this fingerprint before it gained Mermaid.
+        // Keep its inputs fixed: a future renderer must not resume these committed records.
+        let mut old = std::collections::hash_map::DefaultHasher::new();
+        27_u16.hash(&mut old);
+        fold.folded_kinds().hash(&mut old);
+        super::super::sig::key_fingerprint().hash(&mut old);
+        super::super::sig::policy_fingerprint().hash(&mut old);
+        let open = |flavor| {
+            let cache: SessionCache<RecordStore, ()> = SessionCache::new(PerSession::new(
+                base.join("cache"),
+                Presentation::Html,
+                Versions::current(Some(flavor)),
+            ));
+            cache.register("sid", Transcript::open(Agent::CLAUDE, source.clone()));
+            let origin = match cache.admit("sid", |dir| {
+                RecordStore::open_append(
+                    &dir.join("records.jsonl"),
+                    fold.clone(),
+                    "/r".into(),
+                    Transcript::open(Agent::CLAUDE, source.clone()),
+                )
+            }) {
+                Admission::Owned { session, origin } => {
+                    let _ = session.advance();
+                    origin
+                }
+                Admission::Denied(_) => panic!("the isolated cache must be available"),
+            };
+            cache.release_all();
+            origin
+        };
+        let old = old.finish();
+        open(old);
+        assert!(matches!(open(old), Origin::Resumed { committed, .. } if committed > 0));
+        assert_eq!(
+            open(render_flavor(&fold)),
+            Origin::Cold(cache::ColdReason::VersionChanged)
+        );
+        assert!(std::fs::read_to_string(test_records(&base, "sid"))
+            .unwrap()
+            .contains("data-mermaid"));
+        assert_eq!(std::fs::read_to_string(source).unwrap(), input);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     /// `start_server` end-to-end over real HTTP: several roots on ONE port, each answering

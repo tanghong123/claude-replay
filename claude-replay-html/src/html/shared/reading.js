@@ -37,7 +37,7 @@ function parseReading(raw, defaults = DEFAULT_READING) {
 
 /**
  * The preferences a page starts from, through `get(key)`/`set(key, value)` (a page passes its
- * try/catch-wrapped localStorage accessors). Reads `am-prod-reading`; when it is absent and
+ * guarded storage accessors). Reads `am-prod-reading`; when it is absent and
  * `legacy` names the page's pre-#45 keys ({ size, wrap, wide } → key names, the classic page's
  * "claude-replay-export-ms" / "-wrap" / "-wide"), their values are folded in ONCE, written under
  * the one key, and the legacy keys removed — so a reader keeps what they had chosen.

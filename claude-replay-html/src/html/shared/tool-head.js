@@ -55,10 +55,11 @@ function toolHead(head) {
     if (chip && chip.c === "fail") failed = true;
     for (const piece of String((chip && chip.x) || "").split(" · ")) {
       let m;
-      if ((m = EXIT.exec(piece))) {
-        exit = Number(m[1]);
-        if (exit !== 0) failed = true;
-      } else if (DURATION.test(piece)) duration = piece;
+      // The exit code is a fact, not the verdict (#s126): the server classes a failure chip
+      // "fail" (present.rs tool_execution_failed), and a non-zero exit the client called no
+      // failure (Qwenwork's grep exit 1, "No matches found") reaches the page unclassed.
+      if ((m = EXIT.exec(piece))) exit = Number(m[1]);
+      else if (DURATION.test(piece)) duration = piece;
       else if ((m = LINES.exec(piece))) lines = Number(m[1]);
       else if (FAILED_WORDS.has(piece) || REFUSED_WORDS.has(piece)) {
         status = piece;
@@ -71,7 +72,7 @@ function toolHead(head) {
 }
 
 /** The one-pill label: a failure keeps the server's own word (failed, killed, declined,
- *  cancelled — "failed" when only a non-zero exit says so) and names its exit code; anything
+ *  cancelled — "failed" when only the chip's class says so) and names its exit code; anything
  *  else shows the chips' text. */
 function stateLabel(th) {
   if (th.state !== "failed") return th.text;
