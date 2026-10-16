@@ -57,6 +57,9 @@ pub fn write_blocks<'a, W: std::io::Write + ?Sized>(
         );
         o.insert("kind".into(), json!(block_kind(b).html()));
         block_fields(b, &mut o);
+        if let Block::UserReply { context, .. } = b {
+            o.insert("reply_context".into(), json!(context));
+        }
         out.write_all(Value::Object(o).to_string().as_bytes())?;
         out.write_all(b"\n")?;
     }
@@ -68,7 +71,10 @@ pub fn write_blocks<'a, W: std::io::Write + ?Sized>(
 /// or turn of their own).
 fn block_fields(b: &Block, o: &mut Map<String, Value>) {
     match b {
-        Block::UserText(t) | Block::AssistantText(t) | Block::ToolResult(t) => {
+        Block::UserText(t)
+        | Block::UserReply { text: t, .. }
+        | Block::AssistantText(t)
+        | Block::ToolResult(t) => {
             o.insert("text".into(), json!(t));
         }
         Block::QueueEvent { text } => {

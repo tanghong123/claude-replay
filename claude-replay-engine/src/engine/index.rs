@@ -106,10 +106,12 @@ impl SessionIndex {
     pub fn push(&mut self, at: BlockIndex, b: &Block, turn_time: Option<EpochSeconds>) {
         *self.counts.entry(crate::model::fold_key(b)).or_default() += 1;
         match b {
-            Block::UserText(_) | Block::Command { .. } => self.turns.push(TurnEntry {
-                at,
-                time: turn_time,
-            }),
+            Block::UserText(_) | Block::UserReply { .. } | Block::Command { .. } => {
+                self.turns.push(TurnEntry {
+                    at,
+                    time: turn_time,
+                })
+            }
             Block::ToolUse { name, target, .. } => self.tools.push(ToolEntry {
                 name: name.clone(),
                 target: target.clone(),

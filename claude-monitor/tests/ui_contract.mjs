@@ -1,5 +1,6 @@
 import { parseJumpQuery } from "../../claude-monitor/src/codex-ui/jump-query.js";
 import assert from "node:assert/strict";
+import "./quoted_replies.mjs";
 import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -1548,7 +1549,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(directMask("bash"), CLASS_BIT.o, "every tool call is the one tools class (#367)");
   assert.deepEqual(Object.keys(CLASS_BIT), ["u", "a", "t", "o"], "b, r and e are gone (#367)");
   const vm = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
-  assert.match(vm, /export const plainText = record => recordText\(record, stripTags\)/, "the app shell searches the record's text");
+  assert.match(vm, /export const plainText = record => recordText\(recordForSearch\(record\), stripTags\)/, "the app shell searches the record's text");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /if \(!Number\.isInteger\(index\) \|\| !matched\.has\(index\) \|\| root\.parentElement\?\.closest\("\[data-block-index\]"\)\) continue;/, "every matched top-level record in the window is marked");
   assert.match(app, /mark\.className = "search-mark" \+ \(first \? " current" : ""\);/, "…the current record's first mark stronger");
@@ -1763,6 +1764,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual([declined.state, declined.status, declined.duration, stateLabel(declined)], ["failed", "declined", "42ms", "declined · 42ms"]);
   const long = toolHead({ chips: [{ x: "exit 0 · 1m 5s" }] });
   assert.deepEqual([long.state, long.exit, long.duration, stateLabel(long)], ["completed", 0, "1m 5s", "exit 0 · 1m 5s"]);
+  // #s126: the exit code is a fact and the chip's class the verdict. A non-zero exit the client
+  // called no failure (Qwenwork's grep exit 1, "No matches found") reaches the page unclassed and
+  // must not be drawn failed; the same exit classed "fail" still is.
+  const interpreted = toolHead({ name: "Bash", chips: [{ x: "exit 1" }] });
+  assert.deepEqual([interpreted.state, interpreted.exit, interpreted.failed, stateLabel(interpreted)], ["completed", 1, false, "exit 1"], "an unclassed non-zero exit is not a failure");
+  const interpretedView = viewRecord({ kind: "bash", id: "b2", head: { name: "Bash", target: "rg x", chips: [{ x: "exit 1" }] }, body: [{ p: "pre", x: "[exit 1: No matches found]" }] });
+  assert.deepEqual([interpretedView.state, interpretedView.error, interpretedView.exit, interpretedView.pill], ["completed", false, 1, "exit 1"]);
+  assert.deepEqual([toolHead({ chips: [{ c: "fail", x: "exit 1" }] }).state], ["failed"], "the server's class still makes it a failure");
   const read = toolHead({ name: "Read", chips: [{ x: "12 lines" }] });
   assert.deepEqual([read.state, read.lines, stateLabel(read)], ["completed", 12, "12 lines"]);
   // "launched" is the LAUNCH EVENT of an async spawn, not liveness: present.rs spawn_chip writes

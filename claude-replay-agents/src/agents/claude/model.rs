@@ -98,6 +98,17 @@ fn classify_user_string(s: &str, injected: Injected) -> Option<Message> {
     if injected == Injected::CompactSummary {
         return compact_summary(s);
     }
+    if injected == Injected::No && super::reply::candidate(s) {
+        return Some(match super::reply::parse(s) {
+            Some(context) => Message::UserReply {
+                text: s.to_string(),
+                context,
+            },
+            None => Message::UserText {
+                text: s.to_string(),
+            },
+        });
+    }
     let injected = injected.is_injected();
     // A skill instruction body: the fold nests it into the last `Skill` block; the fallback
     // (no skill block to nest into) is a system-note result, cleaned exactly as the old fold
@@ -182,6 +193,17 @@ fn classify_user_string(s: &str, injected: Injected) -> Option<Message> {
 /// plain-string case (no command/notification parsing): a skill body nests, other injected
 /// content is a system note, else it's a human turn.
 fn classify_user_array_text(text: &str, injected: Injected) -> Option<Message> {
+    if injected == Injected::No && super::reply::candidate(text) {
+        return Some(match super::reply::parse(text) {
+            Some(context) => Message::UserReply {
+                text: text.to_string(),
+                context,
+            },
+            None => Message::UserText {
+                text: text.to_string(),
+            },
+        });
+    }
     if injected == Injected::CompactSummary {
         return compact_summary(text);
     }
@@ -340,6 +362,21 @@ fn push_user_string(
     queue: &mut Vec<QueueItem>,
     suppress: &mut Vec<BlockIndex>,
 ) {
+    if super::reply::candidate(s) {
+        if let Some(pos) = queue.iter().position(|q| q.content == s.trim()) {
+            if let Some(mi) = queue.remove(pos).marker_idx {
+                suppress.push(mi);
+            }
+        }
+        out.push(match super::reply::parse(s) {
+            Some(context) => Block::UserReply {
+                text: s.to_string(),
+                context,
+            },
+            None => Block::UserText(s.to_string()),
+        });
+        return;
+    }
     if tag_inner(s, "task-notification").is_some() {
         if let Some(line) = tag_inner(s, "summary").or_else(|| tag_inner(s, "status")) {
             let line = line.trim();
@@ -1054,6 +1091,36 @@ fn has_tool_use_result(v: &Value) -> bool {
     v.get("toolUseResult").is_some()
 }
 
+/// Observe native text-envelope drift once per human record, preserving its content.
+fn note_reply_drift(v: &Value) {
+    if injection_of(v) != Injected::No {
+        return;
+    }
+    let Some(content) = v.pointer("/message/content") else {
+        return;
+    };
+    let parts: Vec<&str> = if let Some(text) = content.as_str() {
+        vec![text]
+    } else {
+        content
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect()
+    };
+    if super::reply::rejected(&parts) {
+        note_unknown(
+            "claude",
+            UnknownAt::TextEnvelope,
+            "quoted_reply",
+            v.get("version").and_then(Value::as_str),
+            v.get("sessionId").and_then(Value::as_str),
+        );
+    }
+}
+
 /// Report a record shape outside the known vocabulary (#264). One place, so the three
 /// categories cannot drift in how they describe themselves.
 fn note_unknown_shape(v: &Value, at: UnknownAt, name: Option<&str>, known: &[&str]) {
@@ -1101,6 +1168,11 @@ const TOOL_RESULT_READ: &[&str] = &[
     // bytes, to this file. The card says so above what it shows (`persisted_notice`).
     "persistedOutputPath",
     "persistedOutputSize",
+    // #s126: moved OFF the ignored list, deliberately. Beside a non-zero `exitCode` (Qwenwork
+    // 1.1.59) it is the client saying the exit was not a failure ("No matches found" for a grep's
+    // exit 1): the call is Completed and its card opens with the phrase (`interpreted_exit`).
+    // Claude Code writes it with no `exitCode`, and those cards are unchanged.
+    "returnCodeInterpretation",
     "state",
     "stderr",
     "stdout",
@@ -1258,7 +1330,6 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "results",
     "resumedAgentId",
     "retrieval_status",
-    "returnCodeInterpretation",
     "runId",
     "scheduledFor",
     "scope",
@@ -1427,10 +1498,15 @@ const READ_NOTIFICATIONS_SHAPE: &[&str] = &["notifications", "read_at", "remaini
 /// terminal shows beside a running command. They are not counts of the saved `stdout` (7 newlines
 /// against `totalLines` 6 in one), and the page draws that stdout. Both are here because a key
 /// outside this array takes the result out of the shape and reports `kind` and `signal` with it.
-/// `returnCodeInterpretation`, though flat-known, is outside it too: its first Qwenwork appearance
-/// reports `kind` and `signal` again, to be judged then, as is every other key the client's source
-/// shows (`errorMessage`, a cancelled or backgrounded result's keys): each is judged when a
-/// transcript carries it. An output too large for the transcript adds `persistedOutput` (#s114,
+/// A non-zero exit the client does not call a failure ends with `returnCodeInterpretation` (#s126,
+/// 1.1.59, 1 of 1 measured 2026-10-16: exit 1, "No matches found", no `isError` and no `is_error`)
+/// after `noOutputExpected`. The client writes a non-zero exit as EITHER `isError: true` OR this
+/// phrase, from a fixed table keyed on the command, for exit 1 only: grep, rg, egrep, fgrep,
+/// `git grep` and findstr "No matches found", diff and `git diff` "Files differ", find and test
+/// phrases of their own (robocopy's 1 to 7 and msiexec's 3010 and 1641 have Windows ones). It also
+/// appends the phrase to the text the model saw. Read by `interpreted_exit`. Every other key the
+/// client's source shows (`errorMessage`, a cancelled or backgrounded result's keys) is judged when
+/// a transcript carries it. An output too large for the transcript adds `persistedOutput` (#s114,
 /// 1.1.59, 1 measured 2026-10-15) after `noOutputExpected`: `{path, originalSizeBytes,
 /// savedSizeBytes, truncated, preview}`, the file the client saved the whole output to, while
 /// `stdout` keeps its first 30,000 bytes; read by `persisted_notice`.
@@ -1442,6 +1518,7 @@ const QWENWORK_BASH_SHAPE: &[&str] = &[
     "kind",
     "noOutputExpected",
     "persistedOutput",
+    "returnCodeInterpretation",
     "signal",
     "stderr",
     "stdout",
@@ -1836,6 +1913,25 @@ fn persisted_notice(tur: &Value) -> Option<String> {
     ))
 }
 
+/// #s126: a non-zero exit the client says is not a failure — its exit code and the client's phrase
+/// for it (`returnCodeInterpretation`, "No matches found" for a grep's exit 1). Qwenwork 1.1.59
+/// writes the phrase beside `exitCode`; Claude Code writes it with no `exitCode`, and its cards show
+/// no exit, so they are left alone. The call is Completed (the head still reads `exit 1`, without
+/// failure presentation), and the card OPENS with the phrase, since the head alone would show an
+/// exit 1 with no reason and the card draws `stdout`, never the text that carries the phrase.
+fn interpreted_exit(tur: &Value) -> Option<(i64, &str)> {
+    let code = tur
+        .get("exitCode")
+        .and_then(Value::as_i64)
+        .filter(|&c| c != 0)?;
+    let phrase = tur
+        .get("returnCodeInterpretation")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|p| !p.is_empty())?;
+    Some((code, phrase))
+}
+
 /// The file a Bash result's whole output was saved to, its size, and the bytes `stdout` kept —
 /// when the saved output is larger than what `stdout` kept, which is when the card is cut
 /// (#s114). Both the notice and the offered file (#s115) ask this one question.
@@ -1875,9 +1971,18 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
                     (false, false) => format!("{out}\n{err}"),
                 };
                 if !combined.trim().is_empty() {
-                    return Some(match persisted_notice(tur) {
-                        Some(notice) => format!("{notice}\n\n{combined}"),
-                        None => combined,
+                    // The notices lead, as the client's own notice leads its preview: why a
+                    // non-zero exit is not a failure (#s126), then how much of a cut output is
+                    // shown (#s114). The text fallback below already ends with the phrase.
+                    let notices: Vec<String> = interpreted_exit(tur)
+                        .map(|(code, phrase)| format!("[exit {code}: {phrase}]"))
+                        .into_iter()
+                        .chain(persisted_notice(tur))
+                        .collect();
+                    return Some(if notices.is_empty() {
+                        combined
+                    } else {
+                        format!("{}\n\n{combined}", notices.join("\n"))
                     });
                 }
             }
@@ -2545,6 +2650,12 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
                 if killed && e.status.is_none() {
                     e.status = Some(ToolStatus::Cancelled);
                 }
+                // #s126: a non-zero exit the client says is not a failure ("No matches found")
+                // is Completed, which the presenters let win over the exit code. Never over a
+                // status already set: the client writes this phrase OR `is_error`, not both.
+                if e.status.is_none() && interpreted_exit(tur).is_some() {
+                    e.status = Some(ToolStatus::Completed);
+                }
             }
             // An `Artifact` publish: the URL arrives only now, in the result's prose. With it
             // the block becomes a link to a real thing and the output is dropped — the rest of
@@ -3003,12 +3114,23 @@ pub(crate) fn decode_line_known(
                 });
                 return;
             }
+            note_reply_drift(&v);
             if let Some(s) = content.as_str() {
                 if let Some(m) = classify_user_string(s, injected) {
                     msgs.push(m);
                 }
             } else if let Some(arr) = content.as_array() {
+                let fallback = (injected == Injected::No)
+                    .then(|| super::reply::message_fallback(arr))
+                    .flatten();
+                if let Some(text) = &fallback {
+                    msgs.push(Message::UserText { text: text.clone() });
+                }
                 for blk in arr {
+                    if fallback.is_some() && blk.get("type").and_then(Value::as_str) == Some("text")
+                    {
+                        continue;
+                    }
                     match blk.get("type").and_then(|t| t.as_str()) {
                         Some("text") => {
                             if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
@@ -4156,6 +4278,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     });
                     continue;
                 }
+                note_reply_drift(&v);
                 if let Some(s) = content.as_str() {
                     if injection == Injected::CompactSummary {
                         push_compact_summary(s, &mut out);
@@ -4167,7 +4290,24 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                         push_user_string(s, &mut out, &mut queue, &mut suppress);
                     }
                 } else if let Some(arr) = content.as_array() {
+                    let fallback = (!injected)
+                        .then(|| super::reply::message_fallback(arr))
+                        .flatten();
+                    if let Some(text) = &fallback {
+                        if let Some(pos) = queue.iter().position(|item| item.content == text.trim())
+                        {
+                            if let Some(marker) = queue.remove(pos).marker_idx {
+                                suppress.push(marker);
+                            }
+                        }
+                        out.push(Block::UserText(text.clone()));
+                    }
                     for blk in arr {
+                        if fallback.is_some()
+                            && blk.get("type").and_then(Value::as_str) == Some("text")
+                        {
+                            continue;
+                        }
                         match blk.get("type").and_then(|t| t.as_str()) {
                             Some("text") => {
                                 if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
@@ -4181,6 +4321,15 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                         } else if injected || is_skill_body(t) {
                                             out.push(Block::ToolResult(t.to_string()));
                                         } else {
+                                            if super::reply::candidate(t) {
+                                                push_user_string(
+                                                    t,
+                                                    &mut out,
+                                                    &mut queue,
+                                                    &mut suppress,
+                                                );
+                                                continue;
+                                            }
                                             // #52 op-less delivery: a user message matching a
                                             // PENDING queued prompt is that prompt arriving.
                                             let t = fence_pasted(t);
@@ -5059,6 +5208,16 @@ fn peer_from_tags(text: &str) -> Option<Peer> {
     })
 }
 
+/// Return a native pasted payload and following text; unpaired markup returns `None`.
+pub(super) fn pasted_parts(s: &str) -> Option<(&str, &str)> {
+    let rest = s.strip_prefix("<pasted_content")?;
+    let (attrs, after) = rest.split_once('>')?;
+    let close = format!("</pasted_content{attrs}>");
+    after
+        .split_once(&close)
+        .or_else(|| after.split_once("</pasted_content>"))
+}
+
 /// Text the person PASTED into a prompt (#s79): Claude Code marks it `<pasted_content id="X">…
 /// </pasted_content id="X">` (the close repeats the id). Rewritten as a Markdown fence labelled
 /// `pasted`, so every page shows it verbatim in a labelled card — pasted text is never read as
@@ -5067,7 +5226,12 @@ fn peer_from_tags(text: &str) -> Option<Peer> {
 /// Applied identically wherever a prompt's text is compared (the prompt, its queued attachment,
 /// the queue operation), so the #52 content match is unchanged. Unpaired markers are left as
 /// they are.
-fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
+pub(super) fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
+    // Quoted-reply candidates preserve literal pasted tags in every delivery/queue path.
+    // Transforming only the queue key would prevent content-matched delivery.
+    if super::reply::candidate(s) {
+        return std::borrow::Cow::Borrowed(s);
+    }
     const OPEN: &str = "<pasted_content";
     if !s.contains(OPEN) {
         return std::borrow::Cow::Borrowed(s);
@@ -5075,21 +5239,10 @@ fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
     let mut out = String::with_capacity(s.len() + 16);
     let mut rest = s;
     while let Some(at) = rest.find(OPEN) {
-        let Some(gt) = rest[at..].find('>').map(|g| at + g) else {
+        let Some((inner, after)) = pasted_parts(&rest[at..]) else {
             break;
         };
-        let attrs = &rest[at + OPEN.len()..gt];
-        // The close names the same id; a bare `</pasted_content>` closes one without.
-        let close = format!("</pasted_content{attrs}>");
-        let after = &rest[gt + 1..];
-        let (inner_end, close_len) = match after.find(&close) {
-            Some(i) => (i, close.len()),
-            None => match after.find("</pasted_content>") {
-                Some(i) => (i, "</pasted_content>".len()),
-                None => break,
-            },
-        };
-        let inner = after[..inner_end].trim_matches('\n');
+        let inner = inner.trim_matches('\n');
         let run = inner.split(|c| c != '`').map(str::len).max().unwrap_or(0);
         let fence = "`".repeat(run.max(2) + 1);
         out.push_str(&rest[..at]);
@@ -5101,7 +5254,7 @@ fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
         out.push_str(inner);
         out.push('\n');
         out.push_str(&fence);
-        rest = &after[inner_end + close_len..];
+        rest = after;
         if !rest.is_empty() && !rest.starts_with('\n') {
             out.push('\n');
         }
@@ -5110,25 +5263,44 @@ fn fence_pasted(s: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
-/// Inner text of the first `<tag>…</tag>` in `s`, if present.
+/// Find a native transport tag outside complete pasted payloads, which are literal content.
+pub(super) fn native_tag_at(s: &str, open: &str) -> Option<usize> {
+    let mut offset = 0;
+    loop {
+        let rest = &s[offset..];
+        let tag = rest.find(open)?;
+        let pasted = rest.find("<pasted_content").and_then(|at| {
+            pasted_parts(&rest[at..]).map(|(_, after)| (at, rest.len() - after.len()))
+        });
+        if let Some((at, end)) = pasted {
+            if at <= tag {
+                offset += end;
+                continue;
+            }
+        }
+        return Some(offset + tag);
+    }
+}
+
+/// Inner text of the first native `<tag>…</tag>` outside pasted payloads, if present.
 fn tag_inner<'a>(s: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
-    let start = s.find(&open)? + open.len();
+    let start = native_tag_at(s, &open)? + open.len();
     let rest = &s[start..];
-    let end = rest.find(&close)?;
+    let end = native_tag_at(rest, &close)?;
     Some(&rest[..end])
 }
 
 /// Remove every `<local-command-caveat>…</local-command-caveat>` block (pure
-/// noise Claude Code injects around local commands), returning the remainder.
+/// noise Claude Code injects around local commands), preserving literal pasted payloads.
 fn strip_caveat(s: &str) -> String {
     let (open, close) = ("<local-command-caveat>", "</local-command-caveat>");
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
-    while let Some(i) = rest.find(open) {
+    while let Some(i) = native_tag_at(rest, open) {
         out.push_str(&rest[..i]);
-        match rest[i + open.len()..].find(close) {
+        match native_tag_at(&rest[i + open.len()..], close) {
             Some(j) => rest = &rest[i + open.len() + j + close.len()..],
             None => {
                 rest = "";
@@ -5143,7 +5315,7 @@ fn strip_caveat(s: &str) -> String {
 /// The harness injects a loaded skill's instruction body as a user message that
 /// opens with this marker. It's reference material, not user prose, so we model it
 /// as a foldable (default-collapsed) result block instead of a `❯` user turn.
-fn is_skill_body(s: &str) -> bool {
+pub(super) fn is_skill_body(s: &str) -> bool {
     s.trim_start().starts_with("Base directory for this skill:")
 }
 
@@ -5151,6 +5323,10 @@ fn is_skill_body(s: &str) -> bool {
 /// finished" with a `status` — as opposed to a background-`Bash` or `Monitor` one?
 /// (Their task-id namespaces differ too: agents `a…`, background `b…`.)
 fn is_agent_notification(s: &str) -> bool {
+    // A quoted notification is literal; a real notification can mention reply markers in its result.
+    if super::reply::candidate(s) && !s.trim_start().starts_with("<task-notification>") {
+        return false;
+    }
     tag_inner(s, "status").is_some()
         && tag_inner(s, "summary")
             .map(|sm| sm.trim_start().starts_with("Agent \""))
@@ -7162,7 +7338,9 @@ mod tests {
     /// and reads Failed with its exit code; the ten keys report nothing either. #s113: a command
     /// that streamed its output ends with the client's live-output counters, `totalLines` and
     /// `totalBytes`, as 1.1.59 writes them; they report nothing, and neither do `kind` and `signal`
-    /// beside them.
+    /// beside them. #s126: an exit 1 the client calls no failure (`returnCodeInterpretation`, no
+    /// `is_error`) reads Completed with its exit code, its card opens with the client's phrase,
+    /// and nothing is reported.
     #[test]
     fn qwenwork_bash_exit_codes_reach_the_tool_and_its_shape_is_known() {
         let call = |id: &str, cmd: &str| {
@@ -7202,6 +7380,21 @@ mod tests {
                 streamed["toolUseResult"]["totalBytes"] = 479.into();
                 streamed.to_string()
             },
+            call("q4", "rg -n TODO src"),
+            {
+                // #s126, as 1.1.59 writes it: exit 1, no `isError`, no `is_error`, and the
+                // client's phrase last, which it also appends to the text the model saw.
+                let mut interpreted: Value =
+                    serde_json::from_str(&result("q4", serde_json::json!(0), Value::Null)).unwrap();
+                interpreted["version"] = "1.1.59".into();
+                interpreted["toolUseResult"]["exitCode"] = 1.into();
+                interpreted["toolUseResult"]["stdout"] = "src/a.rs\nsrc/b.rs".into();
+                interpreted["toolUseResult"]["returnCodeInterpretation"] =
+                    "No matches found".into();
+                interpreted["message"]["content"][0]["content"] =
+                    "src/a.rs\nsrc/b.rs\nNo matches found".into();
+                interpreted.to_string()
+            },
         ]
         .join("\n");
         // Consecutive activity calls coalesce into one span: harvest the top level and the spans.
@@ -7219,7 +7412,7 @@ mod tests {
                 _ => Vec::new(),
             })
             .collect();
-        assert_eq!(executions.len(), 4, "{executions:?}");
+        assert_eq!(executions.len(), 5, "{executions:?}");
         let ex = |i: usize| executions[i].unwrap_or_else(|| panic!("no execution: {executions:?}"));
         assert_eq!(
             (ex(0).exit_code, ex(0).status),
@@ -7240,6 +7433,26 @@ mod tests {
             (ex(3).exit_code, ex(3).status),
             (Some(0), None),
             "a streamed success, like any other"
+        );
+        assert_eq!(
+            (ex(4).exit_code, ex(4).status),
+            (Some(1), Some(ToolStatus::Completed)),
+            "an exit the client calls no failure: its exit code, and Completed"
+        );
+        let output = parse(&jsonl)
+            .iter()
+            .flat_map(|b| match b {
+                Block::Thinking { tools, .. } => tools.clone(),
+                other => vec![other.clone()],
+            })
+            .find_map(|b| match b {
+                Block::ToolUse { target, output, .. } if target == "rg -n TODO src" => output,
+                _ => None,
+            });
+        assert_eq!(
+            output.as_deref(),
+            Some("[exit 1: No matches found]\n\nsrc/a.rs\nsrc/b.rs"),
+            "the card opens with why the exit is not a failure"
         );
         let seen: Vec<_> = unknown_shapes()
             .into_iter()

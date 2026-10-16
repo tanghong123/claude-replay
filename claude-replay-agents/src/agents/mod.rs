@@ -14,12 +14,14 @@ pub mod claude {
     pub mod limits;
     pub(crate) mod metrics;
     pub(crate) mod model;
+    pub(crate) mod reply;
 }
 pub mod codex {
     pub mod account;
     pub mod discover;
     pub(crate) mod metrics;
     pub(crate) mod model;
+    pub(crate) mod reply;
 }
 pub mod qoderwork {
     pub mod discover;

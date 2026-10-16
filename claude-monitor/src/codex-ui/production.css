@@ -1587,3 +1587,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .turn.peer .spot-link{--spot-top:10px}
 @media(max-width:620px){.turn.peer .peer-card{max-width:100%}}
 
+
+/* Border, typography and spacing are the existing .markdown blockquote/p rules.
+   Native selections and responses keep literal whitespace within those elements. */
+#app .quoted-reply{white-space:pre-wrap}
+#app .outline-quote-marker{flex:none;color:var(--sub);font-size:15px;line-height:1}
+#app .outline-quoted .outline-label{min-width:0}
+#app .outline-reply-count{flex:none;color:var(--faint);font:11px var(--mono);margin-left:auto}
+
+#app .outline-turn-row.outline-quoted{grid-template-columns:24px 7px minmax(0,1fr) auto}

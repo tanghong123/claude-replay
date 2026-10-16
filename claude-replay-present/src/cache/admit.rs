@@ -544,6 +544,76 @@ mod tests {
         }
     }
 
+    /// Pre-correction quotation caches must rebuild in both non-HTML namespaces.
+    #[test]
+    fn pre_correction_quotation_caches_rebuild_in_tui_and_json() {
+        for (presentation, prior_fold) in [Presentation::Tui, Presentation::Json]
+            .into_iter()
+            .flat_map(|presentation| [55, 56, 57, 58, 59, 60, 61].map(|fold| (presentation, fold)))
+        {
+            let root = tmp(&format!(
+                "quoted-fold{prior_fold}-{}",
+                presentation.dir_name()
+            ));
+            let src = root.join("source.jsonl");
+            std::fs::write(&src, "abcdefghij".repeat(50)).unwrap();
+            let dir = entry_dir(&root, presentation, "s1");
+            let current = Versions::current(None);
+            let mut prior = current.clone();
+            prior.fold = prior_fold;
+            let mut writer = MetaWriter::create(&dir, &src, prior.clone()).unwrap();
+            writer
+                .append(&MetaRecord {
+                    turns: Some(1),
+                    resume: Some(Resume {
+                        id: 1,
+                        replay_from: 10,
+                        prev_ts: None,
+                        pending_ts: None,
+                        pre: serde_json::Value::Null,
+                        metrics_state: serde_json::Value::Null,
+                    }),
+                    ..Default::default()
+                })
+                .unwrap();
+            writer.flush().unwrap();
+            drop(writer);
+            assert_eq!(
+                recover(&dir, &src, &prior, 1).unwrap().unwrap().committed,
+                1,
+                "the prior entry must be valid, so version rejection is discriminating"
+            );
+            match claim::<Note>(
+                &root,
+                presentation,
+                "s1",
+                &src,
+                current.clone(),
+                |_| Backing::Committed(1),
+                |_| true,
+            ) {
+                Claim::Ours {
+                    origin, resumed, ..
+                } => {
+                    assert_eq!(origin, Origin::Cold(ColdReason::VersionChanged));
+                    assert!(resumed.is_none(), "pre-correction blocks must not resume");
+                }
+                _ => panic!("a valid unheld prior entry must be owned for rebuilding"),
+            }
+            let mut writer = writer_for(&dir, &src, current.clone(), Rewind::Fresh).unwrap();
+            writer.flush().unwrap();
+            let (header, _) = MetaReader::open(&dir).unwrap().unwrap();
+            assert_eq!(
+                header.versions, current,
+                "a fresh rebuild writes current versions"
+            );
+            assert!(
+                recover(&dir, &src, &prior, 1).is_err(),
+                "the rebuilt entry cannot use the old fold"
+            );
+        }
+    }
+
     /// A live holder denies, and NOTHING is opened — the two-outcome invariant.
     #[test]
     fn a_live_holder_denies_and_opens_nothing() {

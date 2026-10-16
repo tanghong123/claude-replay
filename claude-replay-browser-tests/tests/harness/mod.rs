@@ -995,6 +995,9 @@ impl Stores {
             ("QWENWORK_DB", self.root.join("qwenwork.db")),
             ("QODER_PROJECTS_DIR", self.root.join("qoder")),
             ("CODEX_HOME", self.root.join("codex")),
+            ("CODEX_SESSIONS_DIR", self.root.join("codex/sessions")),
+            ("QODERWORK_DB", self.root.join("qoderwork.db")),
+            ("QODER_TASKS_ROOT", self.root.join("qoder-tasks")),
             ("CLAUDE_JDI_TASKS_ROOT", self.root.join("claude-tasks")),
             // #283: Claude Code's per-user scratch (`/tmp/claude-<uid>` on a real machine).
             ("CLAUDE_SCRATCH_ROOT", self.root.join("claude-scratch")),
@@ -1294,6 +1297,34 @@ pub fn mdrev_cli() -> std::process::Command {
     cmd
 }
 
+/// Configure only the monitor child, without changing the harness process environment.
+pub fn configure_monitor_environment(
+    cmd: &mut std::process::Command,
+    base: &Path,
+    port: u16,
+    stores: Option<&Stores>,
+) {
+    // The primary names take precedence over the legacy aliases in the binaries.
+    // Bind both so inherited overrides cannot escape this fixture.
+    let state = base.join(format!("state-{port}"));
+    let cache = base.join(format!("cache-{port}"));
+    cmd.env("HOME", base.join("home"))
+        .env("XDG_CONFIG_HOME", base.join("config"))
+        .env("XDG_DATA_HOME", base.join("data"))
+        .env("XDG_STATE_HOME", base.join("xdg-state"))
+        .env("XDG_CACHE_HOME", base)
+        .env("AGENT_MONITOR_CACHE", &cache)
+        .env("CLAUDE_MONITOR_CACHE", &cache)
+        .env("AGENT_MONITOR_STATE", &state)
+        .env("CLAUDE_MONITOR_STATE", &state);
+    let empty = Stores {
+        root: base.join("stores"),
+    };
+    for (key, value) in stores.unwrap_or(&empty).envs() {
+        cmd.env(key, value);
+    }
+}
+
 pub struct Monitor {
     pub kind: Kind,
     pub port: u16,
@@ -1339,11 +1370,9 @@ impl Monitor {
         std::fs::create_dir_all(&state).unwrap();
         let mut cmd = std::process::Command::new(&bin);
         cmd.args(["--port", &port.to_string()])
-            .env("XDG_CACHE_HOME", base)
-            .env("CLAUDE_MONITOR_CACHE", base.join(format!("cache-{port}")))
-            .env("CLAUDE_MONITOR_STATE", &state)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
+        configure_monitor_environment(&mut cmd, base, port, stores);
         if paired {
             // The token alone admits (#366): on Linux the gate otherwise admits a same-user
             // loopback peer — every browser a case launches — so a case's UNPAIRED browser would
@@ -1353,13 +1382,18 @@ impl Monitor {
         if kind == Kind::V1 {
             cmd.arg("--no-open");
         }
-        if let Some(stores) = stores {
-            for (k, v) in stores.envs() {
-                cmd.env(k, v);
-            }
-        }
         for (k, v) in env {
             cmd.env(k, v);
+        }
+        for (primary, legacy) in [
+            ("AGENT_MONITOR_STATE", "CLAUDE_MONITOR_STATE"),
+            ("AGENT_MONITOR_CACHE", "CLAUDE_MONITOR_CACHE"),
+        ] {
+            if !env.iter().any(|(key, _)| *key == primary) {
+                if let Some((_, value)) = env.iter().rev().find(|(key, _)| *key == legacy) {
+                    cmd.env(primary, value);
+                }
+            }
         }
         let child = Reap(
             cmd.spawn()

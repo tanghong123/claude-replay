@@ -317,6 +317,7 @@ dependencies = [
  "anyhow",
  "claude-replay-core",
  "claude-replay-engine",
+ "pulldown-cmark",
  "rusqlite",
  "serde",
  "serde_json",
