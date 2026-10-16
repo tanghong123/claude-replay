@@ -302,11 +302,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// Claude reply boundaries follow the existing Markdown grammar. This integrates released v56
 /// with the unpublished quotation branch's v55-v61 caches, which must all rebuild.
 ///
+/// v63: #s126 — a Qwenwork Bash exit the client calls no failure (`returnCodeInterpretation`, a
+/// grep's exit 1) is Completed beside its exit code, and its output opens with the client's phrase.
+/// A v62 stream holds it with no status, drawn failed, and no reason.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 62;
+pub const FOLD_VERSION: u16 = 63;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

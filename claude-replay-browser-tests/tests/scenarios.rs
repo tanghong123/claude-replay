@@ -17283,6 +17283,118 @@ fn scenario_qwenwork_file_edit_draws_its_diff_with_real_line_numbers() {
     }
 }
 
+/// A Qwenwork session (#s126, client 1.1.59) with two Bash calls that each exit 1: one failed, as
+/// the client writes a failure (`isError` and the tool_result's `is_error`), and one the client
+/// calls no failure (`returnCodeInterpretation`, no `is_error`), its phrase appended to the text.
+fn qwenwork_bash_exit_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at(
+        "question 13: run the tests and count the TODOs",
+        &now_minus(200),
+    );
+    let (call, result) = (now_minus(198), now_minus(197));
+    t += &format!(
+        r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"qb1","name":"Bash","input":{{"command":"cargo test --lib"}}}}]}},"timestamp":"{call}"}}
+{{"type":"user","toolUseResult":{{"kind":"completed","telemetryExecutionId":"00000000-0000-4000-8000-000000000126","stdout":"test a ... FAILED\nfailures: 1","stderr":"","exitCode":1,"signal":null,"interrupted":false,"isImage":false,"noOutputExpected":false,"isError":true}},"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"qb1","is_error":true,"content":"test a ... FAILED\nfailures: 1"}}]}},"timestamp":"{result}"}}
+"#
+    );
+    let (call, result) = (now_minus(196), now_minus(195));
+    t += &format!(
+        r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"qb2","name":"Bash","input":{{"command":"grep -c TODO src/a.rs src/b.rs"}}}}]}},"timestamp":"{call}"}}
+{{"type":"user","toolUseResult":{{"kind":"completed","telemetryExecutionId":"00000000-0000-4000-8000-000000000127","stdout":"src/a.rs:0\nsrc/b.rs:0","stderr":"","exitCode":1,"signal":null,"interrupted":false,"isImage":false,"noOutputExpected":false,"returnCodeInterpretation":"No matches found"}},"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"qb2","content":"src/a.rs:0\nsrc/b.rs:0\nNo matches found"}}]}},"timestamp":"{result}"}}
+"#
+    );
+    t += &assistant_at("One test fails and there are no TODOs.", &now_minus(193));
+    let path = stores.qwenwork_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #s126 — a Qwenwork Bash exit the client calls no failure (a grep's exit 1, "No matches found")
+/// is drawn with its exit code and WITHOUT failure presentation, and its card says why; a real
+/// failure's exit 1 is still drawn failed. The server classed every non-zero exit "fail", and the
+/// app shell's head module made any non-zero exit a failure whatever the class, so a fix on the
+/// server alone passes the classic page and still fails the app shell.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn scenario_qwenwork_bash_exit_the_client_calls_no_failure_is_not_drawn_failed() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = qwenwork_bash_exit_fixture(match surface {
+            Surface::Classic => "qwenwork-bash-exit-classic",
+            Surface::AppShell => "qwenwork-bash-exit-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3094 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        // Per command: whether its head is drawn failed, and what its head says.
+        let read = match surface {
+            Surface::Classic => {
+                "(function(){ var out = {}; \
+                   document.querySelectorAll('#stream .fold-h').forEach(function(h){ \
+                     var t = h.querySelector('.tool-target'); if (!t) return; \
+                     var chips = [...h.querySelectorAll('.chip')]; \
+                     out[t.textContent.trim()] = { \
+                       failed: chips.some(function(c){ return c.classList.contains('fail'); }), \
+                       head: chips.map(function(c){ return c.textContent.trim(); }).join(' | ') }; }); \
+                   out.text = document.body.innerText; return JSON.stringify(out); })()"
+            }
+            Surface::AppShell => {
+                "(function(){ var out = {}; \
+                   document.querySelectorAll('.renderer').forEach(function(r){ \
+                     var t = r.querySelector(':scope > .renderer-head .renderer-target'); if (!t) return; \
+                     var s = r.querySelector(':scope > .renderer-head .renderer-state'); \
+                     out[t.textContent.trim()] = { failed: r.dataset.state === 'failed', \
+                       head: s ? s.textContent.trim() : '' }; }); \
+                   out.text = document.body.innerText; return JSON.stringify(out); })()"
+            }
+        };
+        let seen: serde_json::Value = eval(&page.tab, read)
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let failure = &seen["cargo test --lib"];
+        let interpreted = &seen["grep -c TODO src/a.rs src/b.rs"];
+        assert_eq!(
+            failure["failed"],
+            serde_json::json!(true),
+            "{surface:?}: a real failure is still drawn failed: {failure}"
+        );
+        assert!(
+            failure["head"].as_str().unwrap_or("").contains("exit 1"),
+            "{surface:?}: …with its exit code: {failure}"
+        );
+        assert_eq!(
+            interpreted["failed"],
+            serde_json::json!(false),
+            "{surface:?}: an exit the client calls no failure is not drawn failed: {interpreted}"
+        );
+        assert!(
+            interpreted["head"]
+                .as_str()
+                .unwrap_or("")
+                .contains("exit 1"),
+            "{surface:?}: …and still shows its exit code: {interpreted}"
+        );
+        assert!(
+            seen["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("[exit 1: No matches found]"),
+            "{surface:?}: the card says why the exit is not a failure"
+        );
+    }
+}
+
 /// A `TodoWrite` call and its result, as Qwenwork records them: refused, the result is an error
 /// carrying the client's validation keys (#s66), and the list never stood.
 fn todo_write_at(id: &str, todos: &[(&str, &str)], refused: bool, ts: &str) -> String {

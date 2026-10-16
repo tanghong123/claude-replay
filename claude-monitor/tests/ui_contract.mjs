@@ -1764,6 +1764,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual([declined.state, declined.status, declined.duration, stateLabel(declined)], ["failed", "declined", "42ms", "declined · 42ms"]);
   const long = toolHead({ chips: [{ x: "exit 0 · 1m 5s" }] });
   assert.deepEqual([long.state, long.exit, long.duration, stateLabel(long)], ["completed", 0, "1m 5s", "exit 0 · 1m 5s"]);
+  // #s126: the exit code is a fact and the chip's class the verdict. A non-zero exit the client
+  // called no failure (Qwenwork's grep exit 1, "No matches found") reaches the page unclassed and
+  // must not be drawn failed; the same exit classed "fail" still is.
+  const interpreted = toolHead({ name: "Bash", chips: [{ x: "exit 1" }] });
+  assert.deepEqual([interpreted.state, interpreted.exit, interpreted.failed, stateLabel(interpreted)], ["completed", 1, false, "exit 1"], "an unclassed non-zero exit is not a failure");
+  const interpretedView = viewRecord({ kind: "bash", id: "b2", head: { name: "Bash", target: "rg x", chips: [{ x: "exit 1" }] }, body: [{ p: "pre", x: "[exit 1: No matches found]" }] });
+  assert.deepEqual([interpretedView.state, interpretedView.error, interpretedView.exit, interpretedView.pill], ["completed", false, 1, "exit 1"]);
+  assert.deepEqual([toolHead({ chips: [{ c: "fail", x: "exit 1" }] }).state], ["failed"], "the server's class still makes it a failure");
   const read = toolHead({ name: "Read", chips: [{ x: "12 lines" }] });
   assert.deepEqual([read.state, read.lines, stateLabel(read)], ["completed", 12, "12 lines"]);
   // "launched" is the LAUNCH EVENT of an async spawn, not liveness: present.rs spawn_chip writes

@@ -2125,6 +2125,31 @@ mod tests {
         assert!(expanded.contains("exit 7 · 42ms"), "{expanded}");
     }
 
+    /// #s126: an exit the client calls no failure (recorded Completed beside its exit 1) keeps its
+    /// `exit 1` dim on the head; the same exit recorded Failed is styled as a failure.
+    #[test]
+    fn an_exit_recorded_completed_is_not_styled_as_a_failure() {
+        use crate::model::{ToolExecution, ToolStatus};
+        let styled = |status| {
+            let execution = ToolExecution {
+                status: Some(status),
+                exit_code: Some(1),
+                duration: None,
+            };
+            let line = with_execution(tool_header("Bash", "rg x", None), Some(&execution), None);
+            let last = line.spans.last().expect("a summary span").clone();
+            (last.content.to_string(), last.style)
+        };
+        assert_eq!(
+            styled(ToolStatus::Completed),
+            ("exit 1".to_string(), theme::dim())
+        );
+        assert_eq!(
+            styled(ToolStatus::Failed),
+            ("exit 1".to_string(), theme::diff_del())
+        );
+    }
+
     /// Expanded: a Bash block shows the command header + output capped at 15 lines
     /// with a remainder note, all on the shell background.
     #[test]

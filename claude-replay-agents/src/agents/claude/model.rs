@@ -1168,6 +1168,11 @@ const TOOL_RESULT_READ: &[&str] = &[
     // bytes, to this file. The card says so above what it shows (`persisted_notice`).
     "persistedOutputPath",
     "persistedOutputSize",
+    // #s126: moved OFF the ignored list, deliberately. Beside a non-zero `exitCode` (Qwenwork
+    // 1.1.59) it is the client saying the exit was not a failure ("No matches found" for a grep's
+    // exit 1): the call is Completed and its card opens with the phrase (`interpreted_exit`).
+    // Claude Code writes it with no `exitCode`, and those cards are unchanged.
+    "returnCodeInterpretation",
     "state",
     "stderr",
     "stdout",
@@ -1325,7 +1330,6 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "results",
     "resumedAgentId",
     "retrieval_status",
-    "returnCodeInterpretation",
     "runId",
     "scheduledFor",
     "scope",
@@ -1494,10 +1498,15 @@ const READ_NOTIFICATIONS_SHAPE: &[&str] = &["notifications", "read_at", "remaini
 /// terminal shows beside a running command. They are not counts of the saved `stdout` (7 newlines
 /// against `totalLines` 6 in one), and the page draws that stdout. Both are here because a key
 /// outside this array takes the result out of the shape and reports `kind` and `signal` with it.
-/// `returnCodeInterpretation`, though flat-known, is outside it too: its first Qwenwork appearance
-/// reports `kind` and `signal` again, to be judged then, as is every other key the client's source
-/// shows (`errorMessage`, a cancelled or backgrounded result's keys): each is judged when a
-/// transcript carries it. An output too large for the transcript adds `persistedOutput` (#s114,
+/// A non-zero exit the client does not call a failure ends with `returnCodeInterpretation` (#s126,
+/// 1.1.59, 1 of 1 measured 2026-10-16: exit 1, "No matches found", no `isError` and no `is_error`)
+/// after `noOutputExpected`. The client writes a non-zero exit as EITHER `isError: true` OR this
+/// phrase, from a fixed table keyed on the command, for exit 1 only: grep, rg, egrep, fgrep,
+/// `git grep` and findstr "No matches found", diff and `git diff` "Files differ", find and test
+/// phrases of their own (robocopy's 1 to 7 and msiexec's 3010 and 1641 have Windows ones). It also
+/// appends the phrase to the text the model saw. Read by `interpreted_exit`. Every other key the
+/// client's source shows (`errorMessage`, a cancelled or backgrounded result's keys) is judged when
+/// a transcript carries it. An output too large for the transcript adds `persistedOutput` (#s114,
 /// 1.1.59, 1 measured 2026-10-15) after `noOutputExpected`: `{path, originalSizeBytes,
 /// savedSizeBytes, truncated, preview}`, the file the client saved the whole output to, while
 /// `stdout` keeps its first 30,000 bytes; read by `persisted_notice`.
@@ -1509,6 +1518,7 @@ const QWENWORK_BASH_SHAPE: &[&str] = &[
     "kind",
     "noOutputExpected",
     "persistedOutput",
+    "returnCodeInterpretation",
     "signal",
     "stderr",
     "stdout",
@@ -1903,6 +1913,25 @@ fn persisted_notice(tur: &Value) -> Option<String> {
     ))
 }
 
+/// #s126: a non-zero exit the client says is not a failure — its exit code and the client's phrase
+/// for it (`returnCodeInterpretation`, "No matches found" for a grep's exit 1). Qwenwork 1.1.59
+/// writes the phrase beside `exitCode`; Claude Code writes it with no `exitCode`, and its cards show
+/// no exit, so they are left alone. The call is Completed (the head still reads `exit 1`, without
+/// failure presentation), and the card OPENS with the phrase, since the head alone would show an
+/// exit 1 with no reason and the card draws `stdout`, never the text that carries the phrase.
+fn interpreted_exit(tur: &Value) -> Option<(i64, &str)> {
+    let code = tur
+        .get("exitCode")
+        .and_then(Value::as_i64)
+        .filter(|&c| c != 0)?;
+    let phrase = tur
+        .get("returnCodeInterpretation")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|p| !p.is_empty())?;
+    Some((code, phrase))
+}
+
 /// The file a Bash result's whole output was saved to, its size, and the bytes `stdout` kept —
 /// when the saved output is larger than what `stdout` kept, which is when the card is cut
 /// (#s114). Both the notice and the offered file (#s115) ask this one question.
@@ -1942,9 +1971,18 @@ fn tool_output(name: &str, tur: Option<&Value>, res_txt: &str) -> Option<String>
                     (false, false) => format!("{out}\n{err}"),
                 };
                 if !combined.trim().is_empty() {
-                    return Some(match persisted_notice(tur) {
-                        Some(notice) => format!("{notice}\n\n{combined}"),
-                        None => combined,
+                    // The notices lead, as the client's own notice leads its preview: why a
+                    // non-zero exit is not a failure (#s126), then how much of a cut output is
+                    // shown (#s114). The text fallback below already ends with the phrase.
+                    let notices: Vec<String> = interpreted_exit(tur)
+                        .map(|(code, phrase)| format!("[exit {code}: {phrase}]"))
+                        .into_iter()
+                        .chain(persisted_notice(tur))
+                        .collect();
+                    return Some(if notices.is_empty() {
+                        combined
+                    } else {
+                        format!("{}\n\n{combined}", notices.join("\n"))
                     });
                 }
             }
@@ -2611,6 +2649,12 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
                 }
                 if killed && e.status.is_none() {
                     e.status = Some(ToolStatus::Cancelled);
+                }
+                // #s126: a non-zero exit the client says is not a failure ("No matches found")
+                // is Completed, which the presenters let win over the exit code. Never over a
+                // status already set: the client writes this phrase OR `is_error`, not both.
+                if e.status.is_none() && interpreted_exit(tur).is_some() {
+                    e.status = Some(ToolStatus::Completed);
                 }
             }
             // An `Artifact` publish: the URL arrives only now, in the result's prose. With it
@@ -7294,7 +7338,9 @@ mod tests {
     /// and reads Failed with its exit code; the ten keys report nothing either. #s113: a command
     /// that streamed its output ends with the client's live-output counters, `totalLines` and
     /// `totalBytes`, as 1.1.59 writes them; they report nothing, and neither do `kind` and `signal`
-    /// beside them.
+    /// beside them. #s126: an exit 1 the client calls no failure (`returnCodeInterpretation`, no
+    /// `is_error`) reads Completed with its exit code, its card opens with the client's phrase,
+    /// and nothing is reported.
     #[test]
     fn qwenwork_bash_exit_codes_reach_the_tool_and_its_shape_is_known() {
         let call = |id: &str, cmd: &str| {
@@ -7334,6 +7380,21 @@ mod tests {
                 streamed["toolUseResult"]["totalBytes"] = 479.into();
                 streamed.to_string()
             },
+            call("q4", "rg -n TODO src"),
+            {
+                // #s126, as 1.1.59 writes it: exit 1, no `isError`, no `is_error`, and the
+                // client's phrase last, which it also appends to the text the model saw.
+                let mut interpreted: Value =
+                    serde_json::from_str(&result("q4", serde_json::json!(0), Value::Null)).unwrap();
+                interpreted["version"] = "1.1.59".into();
+                interpreted["toolUseResult"]["exitCode"] = 1.into();
+                interpreted["toolUseResult"]["stdout"] = "src/a.rs\nsrc/b.rs".into();
+                interpreted["toolUseResult"]["returnCodeInterpretation"] =
+                    "No matches found".into();
+                interpreted["message"]["content"][0]["content"] =
+                    "src/a.rs\nsrc/b.rs\nNo matches found".into();
+                interpreted.to_string()
+            },
         ]
         .join("\n");
         // Consecutive activity calls coalesce into one span: harvest the top level and the spans.
@@ -7351,7 +7412,7 @@ mod tests {
                 _ => Vec::new(),
             })
             .collect();
-        assert_eq!(executions.len(), 4, "{executions:?}");
+        assert_eq!(executions.len(), 5, "{executions:?}");
         let ex = |i: usize| executions[i].unwrap_or_else(|| panic!("no execution: {executions:?}"));
         assert_eq!(
             (ex(0).exit_code, ex(0).status),
@@ -7372,6 +7433,26 @@ mod tests {
             (ex(3).exit_code, ex(3).status),
             (Some(0), None),
             "a streamed success, like any other"
+        );
+        assert_eq!(
+            (ex(4).exit_code, ex(4).status),
+            (Some(1), Some(ToolStatus::Completed)),
+            "an exit the client calls no failure: its exit code, and Completed"
+        );
+        let output = parse(&jsonl)
+            .iter()
+            .flat_map(|b| match b {
+                Block::Thinking { tools, .. } => tools.clone(),
+                other => vec![other.clone()],
+            })
+            .find_map(|b| match b {
+                Block::ToolUse { target, output, .. } if target == "rg -n TODO src" => output,
+                _ => None,
+            });
+        assert_eq!(
+            output.as_deref(),
+            Some("[exit 1: No matches found]\n\nsrc/a.rs\nsrc/b.rs"),
+            "the card opens with why the exit is not a failure"
         );
         let seen: Vec<_> = unknown_shapes()
             .into_iter()

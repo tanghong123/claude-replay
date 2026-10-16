@@ -188,12 +188,18 @@ pub fn tool_execution_summary(execution: &ToolExecution) -> String {
 }
 
 /// Whether the structural outcome should use failure presentation.
+///
+/// A recorded Completed wins over a non-zero exit (#s126): Qwenwork marks an exit it does not call
+/// a failure (a grep's exit 1, "No matches found") and the adapter records it Completed, so the
+/// head reads `exit 1` without failure presentation. Codex records an exit code beside its own
+/// status, and on 2026-10-16 every Codex command on aries-black agreed with the exit (943
+/// completed, all exit 0; 70 failed, all non-zero), so no Codex head changes.
 pub fn tool_execution_failed(execution: &ToolExecution) -> bool {
-    execution.exit_code.is_some_and(|code| code != 0)
-        || matches!(
-            execution.status,
-            Some(ToolStatus::Failed | ToolStatus::Declined | ToolStatus::Cancelled)
-        )
+    match execution.status {
+        Some(ToolStatus::Failed | ToolStatus::Declined | ToolStatus::Cancelled) => true,
+        Some(ToolStatus::Completed) => false,
+        _ => execution.exit_code.is_some_and(|code| code != 0),
+    }
 }
 
 fn format_tool_duration(duration: ToolDuration) -> String {
@@ -431,6 +437,31 @@ mod tests {
         };
         assert_eq!(tool_execution_summary(&execution), "exit 7 · 1.23s");
         assert!(tool_execution_failed(&execution));
+    }
+
+    /// #s126: an exit the client calls no failure is recorded Completed beside its exit code, and
+    /// keeps the code on its head without failure presentation; a Failed exit 1 is still a failure,
+    /// and so is a bare non-zero exit with no status.
+    #[test]
+    fn tool_execution_failed_yields_to_an_explicit_completed() {
+        let ran = |status, exit_code| ToolExecution {
+            status,
+            exit_code,
+            duration: None,
+        };
+        let interpreted = ran(Some(ToolStatus::Completed), Some(1));
+        assert!(!tool_execution_failed(&interpreted));
+        assert_eq!(tool_execution_summary(&interpreted), "exit 1");
+        assert!(tool_execution_failed(&ran(
+            Some(ToolStatus::Failed),
+            Some(1)
+        )));
+        assert!(tool_execution_failed(&ran(None, Some(1))));
+        assert!(!tool_execution_failed(&ran(None, Some(0))));
+        assert!(tool_execution_failed(&ran(
+            Some(ToolStatus::Cancelled),
+            None
+        )));
     }
 
     /// `tool_count` for a spawn is **node-scoped**: it tallies the child's own tools (here 2
