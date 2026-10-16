@@ -5,6 +5,8 @@
 .mdrev-host .doc {--read-body:1rem;--read-line:1.5;--read-measure:44rem;--read-rhythm:1.25em;--read-serif:ui-serif, "New York", "Iowan Old Style", "Palatino Linotype", Georgia, serif;--read-sans:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;--read-face:var(--read-serif);--read-head:var(--read-serif);font-family:var(--read-face);font-size:var(--read-body);line-height:var(--read-line);color:var(--ink);font-kerning:normal;text-rendering:optimizelegibility;hanging-punctuation:first last;text-autospace:normal}
 .mdrev-host .doc.face-sans {--read-face:var(--read-sans);--read-head:var(--read-sans)}
 .mdrev-host .doc.density-compact {--read-line:1.42;--read-rhythm:1.02em}
+.mdrev-host .doc.size-xxxs {--read-body:.75rem}
+.mdrev-host .doc.size-xxs {--read-body:.8125rem}
 .mdrev-host .doc.size-xs {--read-body:.875rem}
 .mdrev-host .doc.size-s {--read-body:.9375rem}
 .mdrev-host .doc.size-m {--read-body:1rem}
@@ -95,7 +97,7 @@
 .mdrev-host button {font:inherit;cursor:pointer}
 .mdrev-host button:disabled {cursor:default;opacity:.45}
 .mdrev-host button:focus-visible {outline:2px solid var(--accent);outline-offset:1px}
-.mdrev-host .app {--mdv-read-min:600px;--mdv-outline-w:232px;--mdv-rail-min:170px;grid-template-rows:auto auto minmax(0,1fr);grid-template-columns:auto minmax(0,1fr);height:100%;display:grid}
+.mdrev-host .app {--mdv-read-min:600px;--mdv-outline-w:232px;--mdv-rail-min:170px;-webkit-text-size-adjust:100%;-moz-text-size-adjust:100%;text-size-adjust:100%;grid-template-rows:auto auto minmax(0,1fr);grid-template-columns:auto minmax(0,1fr);height:100%;display:grid}
 .mdrev-host .app:fullscreen {background:var(--bg)}
 .mdrev-host .app>.file-rail {grid-area:1/1/-1/2}
 .mdrev-host .app>.topbar {grid-area:1/2}
@@ -345,6 +347,8 @@
 .mdrev-host .mdv-pill {width:100%;color:var(--ink-soft);background:var(--bg-soft);border:1px dashed var(--rule);text-align:center;border-radius:8px;margin:12px 0;padding:5px 12px;font-size:12px;display:block}
 .mdrev-host .mdv-pill:hover {color:var(--ink);border-color:var(--ink-faint);background:var(--bg-inset)}
 .mdrev-host .source-view {border:1px solid var(--rule-soft);max-width:60rem;font-family:var(--read-mono);background:0 0;border-radius:8px;margin:16px auto;padding:16px 20px;font-size:13px;line-height:1.55;overflow-x:auto}
+.mdrev-host .source-view.size-xxxs {font-size:9.75px}
+.mdrev-host .source-view.size-xxs {font-size:10.5625px}
 .mdrev-host .source-view.size-xs {font-size:11.375px}
 .mdrev-host .source-view.size-s {font-size:12.1875px}
 .mdrev-host .source-view.size-l {font-size:13.8125px}
@@ -414,6 +418,7 @@
 .mdrev-host .rail-mark:focus-visible {outline:2px solid var(--accent);outline-offset:1px;width:12px;left:2px}
 .mdrev-host .rail-note {cursor:pointer;box-sizing:border-box;border:1px solid var(--accent);z-index:1;background:#f7f6f3;border-radius:50%;width:6px;height:6px;padding:0;position:absolute;left:5px;transform:translateY(-50%)}
 .mdrev-host .rail-note.closed {border-color:var(--ink-faint)}
+.mdrev-host .rail-note.in-range {background:var(--accent);border-color:var(--accent)}
 .mdrev-host .rail-note:hover {border-color:var(--accent);transform:translateY(-50%)scale(1.5)}
 .mdrev-host .rail-note:focus-visible {outline:2px solid var(--accent);outline-offset:2px}
 @keyframes mdv-ann-arrived-frames {0%,to{transform:scale(1)}30%{transform:scale(1.45)}}
@@ -523,6 +528,16 @@
 .mdrev-host .phone-shift-btn:disabled {opacity:.28;cursor:default}
 .mdrev-host .phone-shift-btn:not(:disabled):active {background:var(--bg-soft)}
 .mdrev-host .phone-shift-btn:focus-visible {outline:2px solid var(--accent);outline-offset:-3px}
+.mdrev-host .note-step {z-index:30;background:var(--bg);border:1px solid var(--rule);box-shadow:var(--shadow);border-radius:21px;align-items:center;display:flex;position:fixed;bottom:16px;left:50%;transform:translate(-50%)}
+.mdrev-host .note-step-btn {width:40px;height:40px;color:var(--ink);cursor:pointer;-webkit-tap-highlight-color:transparent;background:0 0;border:0;border-radius:20px;place-items:center;padding:0;display:grid}
+.mdrev-host .note-step-btn:not(:disabled):active, .mdrev-host .note-step-btn:hover {background:var(--bg-soft)}
+.mdrev-host .note-step-btn:focus-visible {outline:2px solid var(--accent);outline-offset:-3px}
+.mdrev-host .note-step-at {font-variant-numeric:tabular-nums;color:var(--ink-soft);white-space:nowrap;order:1;align-items:center;gap:5px;padding:0 4px;font-size:12.5px;display:flex}
+.mdrev-host .note-step-at svg {width:14px;height:14px}
+.mdrev-host .note-step.on-phone {border-radius:23px;left:auto;right:12px;transform:none}
+.mdrev-host .note-step.on-phone .note-step-btn {border-radius:22px;width:44px;height:44px}
+.mdrev-host .note-step.on-phone.beside-rail {right:34px}
+.mdrev-host .note-step.on-phone.above-shift {bottom:72px}
 @container doc (width<=820px) {
 .mdrev-host .app:not(.no-annotate) .doc {padding-right:48px}
 }
@@ -542,6 +557,8 @@
 .mdrev-host .ann-count {background:var(--accent);min-width:15px;height:15px;color:var(--on-accent);text-align:center;box-shadow:0 0 0 1.5px var(--bg);border-radius:999px;padding:0 3px;font-size:10px;font-weight:700;line-height:15px;position:absolute;top:-6px;right:-7px}
 .mdrev-host .ann-marker.ann-resolved .ann-count, .mdrev-host .ann-marker.ann-wontfix .ann-count {background:var(--ink-faint)}
 .mdrev-host .ann-marker.ann-resolved:hover, .mdrev-host .ann-marker.ann-wontfix:hover {background:var(--bg-soft);color:var(--ink-soft)}
+.mdrev-host .ann-marker.ann-in-range {box-shadow:inset 0 0 0 2px var(--accent), 0 1px 3px hsl(from var(--ink) h s l / 14%)}
+.mdrev-host .ann-marker.ann-in-range.is-open {box-shadow:inset 0 0 0 2px var(--on-accent)}
 .mdrev-host .ann-err {color:var(--del-fg);font-size:12.5px}
 .mdrev-host .ann-card.ann-shared {border-left-color:var(--shared)}
 .mdrev-host .ann-card.ann-shared.ann-unpushed {border-left-style:dashed}
@@ -562,10 +579,10 @@
 .mdrev-host .ann-entry.ann-unpushed {border-top-style:dashed}
 .mdrev-host .ann-share {color:var(--ink-soft);cursor:pointer;align-items:center;gap:6px;margin:-2px 0 6px;font-size:11.5px;display:flex}
 .mdrev-host .ann-draft.ann-shared .ann-share {color:var(--shared);font-weight:600}
-.mdrev-host .ann-reply-box.ann-two-part {flex-wrap:wrap}
-.mdrev-host .ann-reply-box.ann-two-part textarea {flex:100%}
 .mdrev-host .ann-reply-box .ann-agent-part {border-style:dashed}
 .mdrev-host .ann-for-agent {border:1px dashed var(--rule);border-radius:6px;flex-direction:column;gap:4px;margin:8px 0 2px;padding:6px 8px;display:flex}
+.mdrev-host .ann-unsent {background:var(--shared-soft);border-radius:6px;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0 2px;padding:6px 8px;font-size:11.5px;display:flex}
+.mdrev-host .ann-unsent span {flex:12em}
 .mdrev-host .ann-for-agent-label {color:var(--ink-faint);font-size:10.5px}
 .mdrev-host .ann-for-agent-note {all:unset;cursor:pointer;color:var(--ink-soft);white-space:pre-wrap;overflow-wrap:anywhere;align-items:baseline;gap:6px;font-size:12.5px;display:flex}
 .mdrev-host .ann-for-agent-note:hover .ann-for-agent-body {text-decoration:underline}
@@ -576,6 +593,11 @@
 .mdrev-host .ann-review {z-index:30;max-width:min(420px, calc(var(--mdv-app-w,100vw) - 32px));font-size:12.5px;position:fixed;bottom:16px;left:16px}
 .mdrev-host .ann-review-pill, .mdrev-host .ann-review-panel {background:var(--bg);border:1px solid var(--rule);border-left:3px solid var(--shared);box-shadow:var(--shadow,0 2px 10px #1f232814);border-radius:8px;padding:6px 10px}
 .mdrev-host .ann-review-pill {flex-wrap:wrap;align-items:center;gap:8px;display:flex}
+@keyframes mdv-push-wash-frames {0%,to{background-color:var(--bg)}50%{background-color:color-mix(in srgb, var(--shared) 18%, var(--bg))}}
+.mdrev-host .ann-review-pill.is-waiting-more {animation:1.2s ease-in-out 3 mdv-push-wash-frames}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .ann-review-pill.is-waiting-more {animation:none}
+}
 .mdrev-host .ann-review-panel {max-height:calc(var(--mdv-app-h,100vh) * .6);padding:10px 12px;overflow:auto}
 .mdrev-host .ann-review-panel>.ann-composer-row, .mdrev-host .ann-review-panel>form>.ann-composer-row {background:var(--bg);margin-bottom:-10px;padding:6px 0 10px;position:sticky;bottom:-10px}
 @media (height<=520px) {
@@ -646,8 +668,8 @@
 .mdrev-host .ann-close-open .ann-close-mark:before {content:"↺";color:var(--ink-faint)}
 .mdrev-host .ann-reply {border-left:2px solid var(--rule-soft);color:var(--ink-soft);overflow-wrap:anywhere;margin-top:5px;padding-left:8px;font-size:11.5px}
 .mdrev-host .ann-reply-who {color:var(--ink);margin-right:5px;font-weight:600}
-.mdrev-host .ann-reply-box {align-items:flex-end;gap:5px;margin-top:6px;display:flex}
-.mdrev-host .ann-reply-box textarea {min-height:0;font:inherit;background:var(--bg-soft);color:var(--ink);border:1px solid var(--rule);resize:vertical;border-radius:6px;flex:1;margin:0;padding:3px 7px;font-size:11.5px}
+.mdrev-host .ann-reply-box {flex-wrap:wrap;align-items:flex-end;gap:5px;margin-top:6px;display:flex}
+.mdrev-host .ann-reply-box textarea {min-height:0;font:inherit;background:var(--bg-soft);color:var(--ink);border:1px solid var(--rule);resize:vertical;border-radius:6px;flex:100%;margin:0;padding:3px 7px;font-size:11.5px}
 .mdrev-host .ann-reply-box button {white-space:nowrap}
 .mdrev-host .ann-unresolve-row {justify-content:flex-end;margin-top:6px;display:flex}
 .mdrev-host .ann-unresolve {color:var(--ink-soft);border:1px solid var(--rule);white-space:nowrap;background:0 0;border-radius:5px;padding:1px 8px;font-size:11.5px}
@@ -813,7 +835,7 @@
 .mdrev-host, .mdrev-host .app, .mdrev-host .doc {color:var(--ink)!important;background:#fff!important}
 .mdrev-host, .mdrev-host, .mdrev-host .app, .mdrev-host .main {height:auto!important;min-height:0!important;display:block!important;overflow:visible!important}
 .mdrev-host .scrollpane {height:auto!important;overflow:visible!important}
-.mdrev-host .topbar, .mdrev-host .rail, .mdrev-host .file-rail, .mdrev-host .outline, .mdrev-host .mdv-canvas-bar, .mdrev-host .toast, .mdrev-host .ann-orphans, .mdrev-host .blame-pop, .mdrev-host .ann-invite-group, .mdrev-host .ann-margin, .mdrev-host .gutter-margin, .mdrev-host .find, .mdrev-host .phone-shift, .mdrev-host .print-notice, .mdrev-host .print-wait {display:none!important}
+.mdrev-host .topbar, .mdrev-host .rail, .mdrev-host .file-rail, .mdrev-host .outline, .mdrev-host .mdv-canvas-bar, .mdrev-host .toast, .mdrev-host .ann-orphans, .mdrev-host .blame-pop, .mdrev-host .ann-invite-group, .mdrev-host .ann-margin, .mdrev-host .gutter-margin, .mdrev-host .find, .mdrev-host .phone-shift, .mdrev-host .note-step, .mdrev-host .print-notice, .mdrev-host .print-wait {display:none!important}
 .mdrev-host .mdv-canvas.is-picked {border-color:var(--rule);outline:none}
 .mdrev-host .doc .mdv-block-ins:not(tr):not(code), .mdrev-host .doc .mdv-block-del:not(tr):not(code), .mdrev-host .doc .mdv-block-mod:not(tr):not(code), .mdrev-host .doc .mdv-block-shape:not(tr):not(code) {border-left:3px solid #0000;margin-left:-10px!important;padding-left:7px!important}
 .mdrev-host .doc .mdv-block-ins:not(tr):not(code) {border-left-color:var(--ins-fg)}
@@ -856,6 +878,17 @@
 @media print {
 .mdrev-host .build-toast {display:none!important}
 }
+.mdrev-host #root .find {top:calc(14px + env(safe-area-inset-top,0px));right:calc(18px + env(safe-area-inset-right,0px))}
+.mdrev-host #root .ann-review {left:calc(16px + env(safe-area-inset-left,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px))}
+.mdrev-host #root .ann-composer {bottom:calc(16px + env(safe-area-inset-bottom,0px))}
+.mdrev-host #root .toast {bottom:calc(18px + env(safe-area-inset-bottom,0px))}
+.mdrev-host #root .ann-orphans {right:calc(18px + env(safe-area-inset-right,0px));bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+.mdrev-host #root .note-step {bottom:calc(16px + env(safe-area-inset-bottom,0px))}
+.mdrev-host #root .note-step.on-phone {right:calc(12px + env(safe-area-inset-right,0px))}
+.mdrev-host #root .note-step.on-phone.beside-rail {right:calc(34px + env(safe-area-inset-right,0px))}
+.mdrev-host #root .note-step.on-phone.above-shift {bottom:calc(72px + env(safe-area-inset-bottom,0px))}
+.mdrev-host #root .build-toast {right:calc(16px + env(safe-area-inset-right,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px))}
+.mdrev-host #root .file-rail-drawer, .mdrev-host #root .mdv-canvas-full {inset:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
 .mdrev-host .display-print-btn {font:inherit;color:var(--accent);border:1px solid var(--rule);cursor:pointer;text-overflow:ellipsis;white-space:nowrap;background:0 0;border-radius:6px;max-width:12rem;padding:3px 10px;font-size:12.5px;overflow:hidden}
 @font-face {font-display:block;font-family:mdvKaTeX_AMS;font-style:normal;font-weight:400;src:url(./assets/KaTeX_AMS-Regular-BQhdFMY1.woff2)format("woff2"),url(./assets/KaTeX_AMS-Regular-DMm9YOAa.woff)format("woff"),url(./assets/KaTeX_AMS-Regular-DRggAlZN.ttf)format("truetype")}
 @font-face {font-display:block;font-family:mdvKaTeX_Caligraphic;font-style:normal;font-weight:700;src:url(./assets/KaTeX_Caligraphic-Bold-Dq_IR9rO.woff2)format("woff2"),url(./assets/KaTeX_Caligraphic-Bold-BEiXGLvX.woff)format("woff"),url(./assets/KaTeX_Caligraphic-Bold-ATXxdsX0.ttf)format("truetype")}

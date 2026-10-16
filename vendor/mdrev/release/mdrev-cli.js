@@ -855,8 +855,8 @@ var GitBlobSource = class {
     const missing = shas.filter((sha) => sha !== WORKTREE2 && sha !== EMPTY && !this.bodies.has(sha));
     for (let i = 0; i < missing.length; i += 200) {
       const chunk = missing.slice(i, i + 200);
-      const text8 = await this.git("log", "--no-walk=unsorted", "--format=%x01%H%x00%B", ...chunk).catch(() => "");
-      for (const rec of text8.split("")) {
+      const text9 = await this.git("log", "--no-walk=unsorted", "--format=%x01%H%x00%B", ...chunk).catch(() => "");
+      for (const rec of text9.split("")) {
         const cut = rec.indexOf("\0");
         if (cut < 0)
           continue;
@@ -980,8 +980,8 @@ ${staged}`;
         continue;
       const top = until === null || until === "INDEX" ? "HEAD" : until;
       const range = since === null ? top : `${since}^1..${top}`;
-      const text8 = await this.git("log", format, range, "--", w.name).catch(() => "");
-      for (const line of text8.split("\n")) {
+      const text9 = await this.git("log", format, range, "--", w.name).catch(() => "");
+      for (const line of text9.split("\n")) {
         if (!line)
           continue;
         const info = parseCommitLine(line);
@@ -1336,8 +1336,8 @@ ${staged}`;
     return set;
   }
   /** Write the working-tree copy of a file. */
-  async writeBlob(path2, text8) {
-    await writeFile(join(this.repoRoot, path2), text8, "utf8");
+  async writeBlob(path2, text9) {
+    await writeFile(join(this.repoRoot, path2), text9, "utf8");
   }
   /**
    * Repo-relative path of a file.
@@ -1498,8 +1498,8 @@ var FileSource = class {
   async documents() {
     return [];
   }
-  async writeBlob(path2, text8) {
-    await writeFile(join(this.repoRoot, path2), text8, "utf8");
+  async writeBlob(path2, text9) {
+    await writeFile(join(this.repoRoot, path2), text9, "utf8");
   }
   /** No history, so no range: every note is in scope. */
   async revsBetween() {
@@ -5734,7 +5734,7 @@ function resolveAllAttention(events, context) {
   let index2 = -1;
   let open;
   let group;
-  let text8;
+  let text9;
   let openingSequence;
   let closingSequence;
   let use;
@@ -5772,7 +5772,7 @@ function resolveAllAttention(events, context) {
             },
             end
           };
-          text8 = {
+          text9 = {
             type: use > 1 ? "strongText" : "emphasisText",
             start: {
               ...events[open][1].end
@@ -5800,9 +5800,9 @@ function resolveAllAttention(events, context) {
           if (events[open][1].end.offset - events[open][1].start.offset) {
             nextEvents = push(nextEvents, [["enter", events[open][1], context], ["exit", events[open][1], context]]);
           }
-          nextEvents = push(nextEvents, [["enter", group, context], ["enter", openingSequence, context], ["exit", openingSequence, context], ["enter", text8, context]]);
+          nextEvents = push(nextEvents, [["enter", group, context], ["enter", openingSequence, context], ["exit", openingSequence, context], ["enter", text9, context]]);
           nextEvents = push(nextEvents, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open + 1, index2), context));
-          nextEvents = push(nextEvents, [["exit", text8, context], ["enter", closingSequence, context], ["exit", closingSequence, context], ["exit", group, context]]);
+          nextEvents = push(nextEvents, [["exit", text9, context], ["enter", closingSequence, context], ["exit", closingSequence, context], ["exit", group, context]]);
           if (events[index2][1].end.offset - events[index2][1].start.offset) {
             offset = 2;
             nextEvents = push(nextEvents, [["enter", events[index2][1], context], ["exit", events[index2][1], context]]);
@@ -7250,7 +7250,7 @@ function resolveHeadingAtx(events, context) {
   let contentEnd = events.length - 2;
   let contentStart = 3;
   let content3;
-  let text8;
+  let text9;
   if (events[contentStart][1].type === "whitespace") {
     contentStart += 2;
   }
@@ -7266,13 +7266,13 @@ function resolveHeadingAtx(events, context) {
       start: events[contentStart][1].start,
       end: events[contentEnd][1].end
     };
-    text8 = {
+    text9 = {
       type: "chunkText",
       start: events[contentStart][1].start,
       end: events[contentEnd][1].end,
       contentType: "text"
     };
-    splice(events, contentStart, contentEnd - contentStart + 1, [["enter", content3, context], ["enter", text8, context], ["exit", text8, context], ["exit", content3, context]]);
+    splice(events, contentStart, contentEnd - contentStart + 1, [["enter", content3, context], ["enter", text9, context], ["exit", text9, context], ["exit", content3, context]]);
   }
   return events;
 }
@@ -8162,7 +8162,7 @@ function resolveToLabelEnd(events, context) {
       ...events[close2][1].end
     }
   };
-  const text8 = {
+  const text9 = {
     type: "labelText",
     start: {
       ...events[open + offset + 2][1].end
@@ -8173,9 +8173,9 @@ function resolveToLabelEnd(events, context) {
   };
   media = [["enter", group, context], ["enter", label4, context]];
   media = push(media, events.slice(open + 1, open + offset + 3));
-  media = push(media, [["enter", text8, context]]);
+  media = push(media, [["enter", text9, context]]);
   media = push(media, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open + offset + 4, close2 - 3), context));
-  media = push(media, [["exit", text8, context], events[close2 - 2], events[close2 - 1], ["exit", label4, context]]);
+  media = push(media, [["exit", text9, context], events[close2 - 2], events[close2 - 1], ["exit", label4, context]]);
   media = push(media, events.slice(close2 + 1));
   media = push(media, [["exit", group, context]]);
   splice(events, open, events.length, media);
@@ -8555,7 +8555,7 @@ var setextUnderline = {
 function resolveToSetextUnderline(events, context) {
   let index2 = events.length;
   let content3;
-  let text8;
+  let text9;
   let definition3;
   while (index2--) {
     if (events[index2][0] === "enter") {
@@ -8564,7 +8564,7 @@ function resolveToSetextUnderline(events, context) {
         break;
       }
       if (events[index2][1].type === "paragraph") {
-        text8 = index2;
+        text9 = index2;
       }
     } else {
       if (events[index2][1].type === "content") {
@@ -8584,9 +8584,9 @@ function resolveToSetextUnderline(events, context) {
       ...events[events.length - 1][1].end
     }
   };
-  events[text8][1].type = "setextHeadingText";
+  events[text9][1].type = "setextHeadingText";
   if (definition3) {
-    events.splice(text8, 0, ["enter", heading3, context]);
+    events.splice(text9, 0, ["enter", heading3, context]);
     events.splice(definition3 + 1, 0, ["exit", events[content3][1], context]);
     events[content3][1].end = {
       ...events[definition3][1].end
@@ -8690,10 +8690,10 @@ function initializeFactory(field) {
   function initializeText(effects) {
     const self2 = this;
     const constructs2 = this.parser.constructs[field];
-    const text8 = effects.attempt(constructs2, start, notText);
+    const text9 = effects.attempt(constructs2, start, notText);
     return start;
     function start(code4) {
-      return atBreak(code4) ? text8(code4) : notText(code4);
+      return atBreak(code4) ? text9(code4) : notText(code4);
     }
     function notText(code4) {
       if (code4 === null) {
@@ -8707,7 +8707,7 @@ function initializeFactory(field) {
     function data(code4) {
       if (atBreak(code4)) {
         effects.exit("data");
-        return text8(code4);
+        return text9(code4);
       }
       effects.consume(code4);
       return data;
@@ -9376,7 +9376,7 @@ function compiler(options) {
       definitionDestinationString: buffer,
       definitionLabelString: buffer,
       definitionTitleString: buffer,
-      emphasis: opener2(emphasis3),
+      emphasis: opener2(emphasis4),
       hardBreakEscape: opener2(hardBreak3),
       hardBreakTrailing: opener2(hardBreak3),
       htmlFlow: opener2(html7, buffer),
@@ -9396,7 +9396,7 @@ function compiler(options) {
       resourceDestinationString: buffer,
       resourceTitleString: buffer,
       setextHeading: opener2(heading3),
-      strong: opener2(strong3),
+      strong: opener2(strong4),
       thematicBreak: opener2(thematicBreak4)
     },
     exit: {
@@ -9729,7 +9729,7 @@ function compiler(options) {
     const siblings2 = node2.children;
     let tail = siblings2[siblings2.length - 1];
     if (!tail || tail.type !== "text") {
-      tail = text8();
+      tail = text9();
       tail.position = {
         start: point2(token.start),
         // @ts-expect-error: we’ll add `end` later.
@@ -9904,7 +9904,7 @@ function compiler(options) {
       url: ""
     };
   }
-  function emphasis3() {
+  function emphasis4() {
     return {
       type: "emphasis",
       children: []
@@ -9968,13 +9968,13 @@ function compiler(options) {
       children: []
     };
   }
-  function strong3() {
+  function strong4() {
     return {
       type: "strong",
       children: []
     };
   }
-  function text8() {
+  function text9() {
     return {
       type: "text",
       value: ""
@@ -11482,12 +11482,12 @@ function linkReference(node2, _, state, info) {
   let subexit = state.enter("label");
   const tracker = state.createTracker(info);
   let value2 = tracker.move("[");
-  const text8 = state.containerPhrasing(node2, {
+  const text9 = state.containerPhrasing(node2, {
     before: value2,
     after: "]",
     ...tracker.current()
   });
-  value2 += tracker.move(text8 + "][");
+  value2 += tracker.move(text9 + "][");
   subexit();
   const stack = state.stack;
   state.stack = [];
@@ -11500,7 +11500,7 @@ function linkReference(node2, _, state, info) {
   subexit();
   state.stack = stack;
   exit4();
-  if (type === "full" || !text8 || text8 !== reference) {
+  if (type === "full" || !text9 || text9 !== reference) {
     value2 += tracker.move(reference + "]");
   } else if (type === "shortcut") {
     value2 = value2.slice(0, -1);
@@ -12693,17 +12693,17 @@ function gfmStrikethrough(options) {
               start: Object.assign({}, events[open][1].start),
               end: Object.assign({}, events[index2][1].end)
             };
-            const text8 = {
+            const text9 = {
               type: "strikethroughText",
               start: Object.assign({}, events[open][1].end),
               end: Object.assign({}, events[index2][1].start)
             };
-            const nextEvents = [["enter", strikethrough2, context], ["enter", events[open][1], context], ["exit", events[open][1], context], ["enter", text8, context]];
+            const nextEvents = [["enter", strikethrough2, context], ["enter", events[open][1], context], ["exit", events[open][1], context], ["enter", text9, context]];
             const insideSpan2 = context.parser.constructs.insideSpan.null;
             if (insideSpan2) {
               splice(nextEvents, nextEvents.length, 0, resolveAll(insideSpan2, events.slice(open + 1, index2), context));
             }
-            splice(nextEvents, nextEvents.length, 0, [["exit", text8, context], ["enter", events[index2][1], context], ["exit", events[index2][1], context], ["exit", strikethrough2, context]]);
+            splice(nextEvents, nextEvents.length, 0, [["exit", text9, context], ["enter", events[index2][1], context], ["exit", events[index2][1], context], ["exit", strikethrough2, context]]);
             splice(events, open - 1, index2 - open + 3, nextEvents);
             index2 = open + nextEvents.length - 2;
             break;
@@ -13342,6 +13342,1399 @@ function remarkGfm(options) {
   fromMarkdownExtensions.push(gfmFromMarkdown());
   toMarkdownExtensions.push(gfmToMarkdown(settings));
 }
+
+// node_modules/micromark-util-symbol/lib/codes.js
+var codes = (
+  /** @type {const} */
+  {
+    carriageReturn: -5,
+    lineFeed: -4,
+    carriageReturnLineFeed: -3,
+    horizontalTab: -2,
+    virtualSpace: -1,
+    eof: null,
+    nul: 0,
+    soh: 1,
+    stx: 2,
+    etx: 3,
+    eot: 4,
+    enq: 5,
+    ack: 6,
+    bel: 7,
+    bs: 8,
+    ht: 9,
+    // `\t`
+    lf: 10,
+    // `\n`
+    vt: 11,
+    // `\v`
+    ff: 12,
+    // `\f`
+    cr: 13,
+    // `\r`
+    so: 14,
+    si: 15,
+    dle: 16,
+    dc1: 17,
+    dc2: 18,
+    dc3: 19,
+    dc4: 20,
+    nak: 21,
+    syn: 22,
+    etb: 23,
+    can: 24,
+    em: 25,
+    sub: 26,
+    esc: 27,
+    fs: 28,
+    gs: 29,
+    rs: 30,
+    us: 31,
+    space: 32,
+    exclamationMark: 33,
+    // `!`
+    quotationMark: 34,
+    // `"`
+    numberSign: 35,
+    // `#`
+    dollarSign: 36,
+    // `$`
+    percentSign: 37,
+    // `%`
+    ampersand: 38,
+    // `&`
+    apostrophe: 39,
+    // `'`
+    leftParenthesis: 40,
+    // `(`
+    rightParenthesis: 41,
+    // `)`
+    asterisk: 42,
+    // `*`
+    plusSign: 43,
+    // `+`
+    comma: 44,
+    // `,`
+    dash: 45,
+    // `-`
+    dot: 46,
+    // `.`
+    slash: 47,
+    // `/`
+    digit0: 48,
+    // `0`
+    digit1: 49,
+    // `1`
+    digit2: 50,
+    // `2`
+    digit3: 51,
+    // `3`
+    digit4: 52,
+    // `4`
+    digit5: 53,
+    // `5`
+    digit6: 54,
+    // `6`
+    digit7: 55,
+    // `7`
+    digit8: 56,
+    // `8`
+    digit9: 57,
+    // `9`
+    colon: 58,
+    // `:`
+    semicolon: 59,
+    // `;`
+    lessThan: 60,
+    // `<`
+    equalsTo: 61,
+    // `=`
+    greaterThan: 62,
+    // `>`
+    questionMark: 63,
+    // `?`
+    atSign: 64,
+    // `@`
+    uppercaseA: 65,
+    // `A`
+    uppercaseB: 66,
+    // `B`
+    uppercaseC: 67,
+    // `C`
+    uppercaseD: 68,
+    // `D`
+    uppercaseE: 69,
+    // `E`
+    uppercaseF: 70,
+    // `F`
+    uppercaseG: 71,
+    // `G`
+    uppercaseH: 72,
+    // `H`
+    uppercaseI: 73,
+    // `I`
+    uppercaseJ: 74,
+    // `J`
+    uppercaseK: 75,
+    // `K`
+    uppercaseL: 76,
+    // `L`
+    uppercaseM: 77,
+    // `M`
+    uppercaseN: 78,
+    // `N`
+    uppercaseO: 79,
+    // `O`
+    uppercaseP: 80,
+    // `P`
+    uppercaseQ: 81,
+    // `Q`
+    uppercaseR: 82,
+    // `R`
+    uppercaseS: 83,
+    // `S`
+    uppercaseT: 84,
+    // `T`
+    uppercaseU: 85,
+    // `U`
+    uppercaseV: 86,
+    // `V`
+    uppercaseW: 87,
+    // `W`
+    uppercaseX: 88,
+    // `X`
+    uppercaseY: 89,
+    // `Y`
+    uppercaseZ: 90,
+    // `Z`
+    leftSquareBracket: 91,
+    // `[`
+    backslash: 92,
+    // `\`
+    rightSquareBracket: 93,
+    // `]`
+    caret: 94,
+    // `^`
+    underscore: 95,
+    // `_`
+    graveAccent: 96,
+    // `` ` ``
+    lowercaseA: 97,
+    // `a`
+    lowercaseB: 98,
+    // `b`
+    lowercaseC: 99,
+    // `c`
+    lowercaseD: 100,
+    // `d`
+    lowercaseE: 101,
+    // `e`
+    lowercaseF: 102,
+    // `f`
+    lowercaseG: 103,
+    // `g`
+    lowercaseH: 104,
+    // `h`
+    lowercaseI: 105,
+    // `i`
+    lowercaseJ: 106,
+    // `j`
+    lowercaseK: 107,
+    // `k`
+    lowercaseL: 108,
+    // `l`
+    lowercaseM: 109,
+    // `m`
+    lowercaseN: 110,
+    // `n`
+    lowercaseO: 111,
+    // `o`
+    lowercaseP: 112,
+    // `p`
+    lowercaseQ: 113,
+    // `q`
+    lowercaseR: 114,
+    // `r`
+    lowercaseS: 115,
+    // `s`
+    lowercaseT: 116,
+    // `t`
+    lowercaseU: 117,
+    // `u`
+    lowercaseV: 118,
+    // `v`
+    lowercaseW: 119,
+    // `w`
+    lowercaseX: 120,
+    // `x`
+    lowercaseY: 121,
+    // `y`
+    lowercaseZ: 122,
+    // `z`
+    leftCurlyBrace: 123,
+    // `{`
+    verticalBar: 124,
+    // `|`
+    rightCurlyBrace: 125,
+    // `}`
+    tilde: 126,
+    // `~`
+    del: 127,
+    // Unicode Specials block.
+    byteOrderMarker: 65279,
+    // Unicode Specials block.
+    replacementCharacter: 65533
+    // `�`
+  }
+);
+
+// node_modules/micromark-util-symbol/lib/constants.js
+var constants = (
+  /** @type {const} */
+  {
+    attentionSideAfter: 2,
+    // Symbol to mark an attention sequence as after content: `a*`
+    attentionSideBefore: 1,
+    // Symbol to mark an attention sequence as before content: `*a`
+    atxHeadingOpeningFenceSizeMax: 6,
+    // 6 number signs is fine, 7 isn’t.
+    autolinkDomainSizeMax: 63,
+    // 63 characters is fine, 64 is too many.
+    autolinkSchemeSizeMax: 32,
+    // 32 characters is fine, 33 is too many.
+    cdataOpeningString: "CDATA[",
+    // And preceded by `<![`.
+    characterGroupPunctuation: 2,
+    // Symbol used to indicate a character is punctuation
+    characterGroupWhitespace: 1,
+    // Symbol used to indicate a character is whitespace
+    characterReferenceDecimalSizeMax: 7,
+    // `&#9999999;`.
+    characterReferenceHexadecimalSizeMax: 6,
+    // `&#xff9999;`.
+    characterReferenceNamedSizeMax: 31,
+    // `&CounterClockwiseContourIntegral;`.
+    codeFencedSequenceSizeMin: 3,
+    // At least 3 ticks or tildes are needed.
+    contentTypeContent: "content",
+    contentTypeDocument: "document",
+    contentTypeFlow: "flow",
+    contentTypeString: "string",
+    contentTypeText: "text",
+    hardBreakPrefixSizeMin: 2,
+    // At least 2 trailing spaces are needed.
+    htmlBasic: 6,
+    // Symbol for `<div`
+    htmlCdata: 5,
+    // Symbol for `<![CDATA[]]>`
+    htmlComment: 2,
+    // Symbol for `<!---->`
+    htmlComplete: 7,
+    // Symbol for `<x>`
+    htmlDeclaration: 4,
+    // Symbol for `<!doctype>`
+    htmlInstruction: 3,
+    // Symbol for `<?php?>`
+    htmlRawSizeMax: 8,
+    // Length of `textarea`.
+    htmlRaw: 1,
+    // Symbol for `<script>`
+    linkResourceDestinationBalanceMax: 32,
+    // See: <https://spec.commonmark.org/0.30/#link-destination>, <https://github.com/remarkjs/react-markdown/issues/658#issuecomment-984345577>
+    linkReferenceSizeMax: 999,
+    // See: <https://spec.commonmark.org/0.30/#link-label>
+    listItemValueSizeMax: 10,
+    // See: <https://spec.commonmark.org/0.30/#ordered-list-marker>
+    numericBaseDecimal: 10,
+    numericBaseHexadecimal: 16,
+    tabSize: 4,
+    // Tabs have a hard-coded size of 4, per CommonMark.
+    thematicBreakMarkerCountMin: 3,
+    // At least 3 asterisks, dashes, or underscores are needed.
+    v8MaxSafeChunkSize: 1e4
+    // V8 (and potentially others) have problems injecting giant arrays into other arrays, hence we operate in chunks.
+  }
+);
+
+// node_modules/micromark-util-symbol/lib/types.js
+var types = (
+  /** @type {const} */
+  {
+    // Generic type for data, such as in a title, a destination, etc.
+    data: "data",
+    // Generic type for syntactic whitespace (tabs, virtual spaces, spaces).
+    // Such as, between a fenced code fence and an info string.
+    whitespace: "whitespace",
+    // Generic type for line endings (line feed, carriage return, carriage return +
+    // line feed).
+    lineEnding: "lineEnding",
+    // A line ending, but ending a blank line.
+    lineEndingBlank: "lineEndingBlank",
+    // Generic type for whitespace (tabs, virtual spaces, spaces) at the start of a
+    // line.
+    linePrefix: "linePrefix",
+    // Generic type for whitespace (tabs, virtual spaces, spaces) at the end of a
+    // line.
+    lineSuffix: "lineSuffix",
+    // Whole ATX heading:
+    //
+    // ```markdown
+    // #
+    // ## Alpha
+    // ### Bravo ###
+    // ```
+    //
+    // Includes `atxHeadingSequence`, `whitespace`, `atxHeadingText`.
+    atxHeading: "atxHeading",
+    // Sequence of number signs in an ATX heading (`###`).
+    atxHeadingSequence: "atxHeadingSequence",
+    // Content in an ATX heading (`alpha`).
+    // Includes text.
+    atxHeadingText: "atxHeadingText",
+    // Whole autolink (`<https://example.com>` or `<admin@example.com>`)
+    // Includes `autolinkMarker` and `autolinkProtocol` or `autolinkEmail`.
+    autolink: "autolink",
+    // Email autolink w/o markers (`admin@example.com`)
+    autolinkEmail: "autolinkEmail",
+    // Marker around an `autolinkProtocol` or `autolinkEmail` (`<` or `>`).
+    autolinkMarker: "autolinkMarker",
+    // Protocol autolink w/o markers (`https://example.com`)
+    autolinkProtocol: "autolinkProtocol",
+    // A whole character escape (`\-`).
+    // Includes `escapeMarker` and `characterEscapeValue`.
+    characterEscape: "characterEscape",
+    // The escaped character (`-`).
+    characterEscapeValue: "characterEscapeValue",
+    // A whole character reference (`&amp;`, `&#8800;`, or `&#x1D306;`).
+    // Includes `characterReferenceMarker`, an optional
+    // `characterReferenceMarkerNumeric`, in which case an optional
+    // `characterReferenceMarkerHexadecimal`, and a `characterReferenceValue`.
+    characterReference: "characterReference",
+    // The start or end marker (`&` or `;`).
+    characterReferenceMarker: "characterReferenceMarker",
+    // Mark reference as numeric (`#`).
+    characterReferenceMarkerNumeric: "characterReferenceMarkerNumeric",
+    // Mark reference as numeric (`x` or `X`).
+    characterReferenceMarkerHexadecimal: "characterReferenceMarkerHexadecimal",
+    // Value of character reference w/o markers (`amp`, `8800`, or `1D306`).
+    characterReferenceValue: "characterReferenceValue",
+    // Whole fenced code:
+    //
+    // ````markdown
+    // ```js
+    // alert(1)
+    // ```
+    // ````
+    codeFenced: "codeFenced",
+    // A fenced code fence, including whitespace, sequence, info, and meta
+    // (` ```js `).
+    codeFencedFence: "codeFencedFence",
+    // Sequence of grave accent or tilde characters (` ``` `) in a fence.
+    codeFencedFenceSequence: "codeFencedFenceSequence",
+    // Info word (`js`) in a fence.
+    // Includes string.
+    codeFencedFenceInfo: "codeFencedFenceInfo",
+    // Meta words (`highlight="1"`) in a fence.
+    // Includes string.
+    codeFencedFenceMeta: "codeFencedFenceMeta",
+    // A line of code.
+    codeFlowValue: "codeFlowValue",
+    // Whole indented code:
+    //
+    // ```markdown
+    //     alert(1)
+    // ```
+    //
+    // Includes `lineEnding`, `linePrefix`, and `codeFlowValue`.
+    codeIndented: "codeIndented",
+    // A text code (``` `alpha` ```).
+    // Includes `codeTextSequence`, `codeTextData`, `lineEnding`, and can include
+    // `codeTextPadding`.
+    codeText: "codeText",
+    codeTextData: "codeTextData",
+    // A space or line ending right after or before a tick.
+    codeTextPadding: "codeTextPadding",
+    // A text code fence (` `` `).
+    codeTextSequence: "codeTextSequence",
+    // Whole content:
+    //
+    // ```markdown
+    // [a]: b
+    // c
+    // =
+    // d
+    // ```
+    //
+    // Includes `paragraph` and `definition`.
+    content: "content",
+    // Whole definition:
+    //
+    // ```markdown
+    // [micromark]: https://github.com/micromark/micromark
+    // ```
+    //
+    // Includes `definitionLabel`, `definitionMarker`, `whitespace`,
+    // `definitionDestination`, and optionally `lineEnding` and `definitionTitle`.
+    definition: "definition",
+    // Destination of a definition (`https://github.com/micromark/micromark` or
+    // `<https://github.com/micromark/micromark>`).
+    // Includes `definitionDestinationLiteral` or `definitionDestinationRaw`.
+    definitionDestination: "definitionDestination",
+    // Enclosed destination of a definition
+    // (`<https://github.com/micromark/micromark>`).
+    // Includes `definitionDestinationLiteralMarker` and optionally
+    // `definitionDestinationString`.
+    definitionDestinationLiteral: "definitionDestinationLiteral",
+    // Markers of an enclosed definition destination (`<` or `>`).
+    definitionDestinationLiteralMarker: "definitionDestinationLiteralMarker",
+    // Unenclosed destination of a definition
+    // (`https://github.com/micromark/micromark`).
+    // Includes `definitionDestinationString`.
+    definitionDestinationRaw: "definitionDestinationRaw",
+    // Text in an destination (`https://github.com/micromark/micromark`).
+    // Includes string.
+    definitionDestinationString: "definitionDestinationString",
+    // Label of a definition (`[micromark]`).
+    // Includes `definitionLabelMarker` and `definitionLabelString`.
+    definitionLabel: "definitionLabel",
+    // Markers of a definition label (`[` or `]`).
+    definitionLabelMarker: "definitionLabelMarker",
+    // Value of a definition label (`micromark`).
+    // Includes string.
+    definitionLabelString: "definitionLabelString",
+    // Marker between a label and a destination (`:`).
+    definitionMarker: "definitionMarker",
+    // Title of a definition (`"x"`, `'y'`, or `(z)`).
+    // Includes `definitionTitleMarker` and optionally `definitionTitleString`.
+    definitionTitle: "definitionTitle",
+    // Marker around a title of a definition (`"`, `'`, `(`, or `)`).
+    definitionTitleMarker: "definitionTitleMarker",
+    // Data without markers in a title (`z`).
+    // Includes string.
+    definitionTitleString: "definitionTitleString",
+    // Emphasis (`*alpha*`).
+    // Includes `emphasisSequence` and `emphasisText`.
+    emphasis: "emphasis",
+    // Sequence of emphasis markers (`*` or `_`).
+    emphasisSequence: "emphasisSequence",
+    // Emphasis text (`alpha`).
+    // Includes text.
+    emphasisText: "emphasisText",
+    // The character escape marker (`\`).
+    escapeMarker: "escapeMarker",
+    // A hard break created with a backslash (`\\n`).
+    // Note: does not include the line ending.
+    hardBreakEscape: "hardBreakEscape",
+    // A hard break created with trailing spaces (`  \n`).
+    // Does not include the line ending.
+    hardBreakTrailing: "hardBreakTrailing",
+    // Flow HTML:
+    //
+    // ```markdown
+    // <div
+    // ```
+    //
+    // Inlcudes `lineEnding`, `htmlFlowData`.
+    htmlFlow: "htmlFlow",
+    htmlFlowData: "htmlFlowData",
+    // HTML in text (the tag in `a <i> b`).
+    // Includes `lineEnding`, `htmlTextData`.
+    htmlText: "htmlText",
+    htmlTextData: "htmlTextData",
+    // Whole image (`![alpha](bravo)`, `![alpha][bravo]`, `![alpha][]`, or
+    // `![alpha]`).
+    // Includes `label` and an optional `resource` or `reference`.
+    image: "image",
+    // Whole link label (`[*alpha*]`).
+    // Includes `labelLink` or `labelImage`, `labelText`, and `labelEnd`.
+    label: "label",
+    // Text in an label (`*alpha*`).
+    // Includes text.
+    labelText: "labelText",
+    // Start a link label (`[`).
+    // Includes a `labelMarker`.
+    labelLink: "labelLink",
+    // Start an image label (`![`).
+    // Includes `labelImageMarker` and `labelMarker`.
+    labelImage: "labelImage",
+    // Marker of a label (`[` or `]`).
+    labelMarker: "labelMarker",
+    // Marker to start an image (`!`).
+    labelImageMarker: "labelImageMarker",
+    // End a label (`]`).
+    // Includes `labelMarker`.
+    labelEnd: "labelEnd",
+    // Whole link (`[alpha](bravo)`, `[alpha][bravo]`, `[alpha][]`, or `[alpha]`).
+    // Includes `label` and an optional `resource` or `reference`.
+    link: "link",
+    // Whole paragraph:
+    //
+    // ```markdown
+    // alpha
+    // bravo.
+    // ```
+    //
+    // Includes text.
+    paragraph: "paragraph",
+    // A reference (`[alpha]` or `[]`).
+    // Includes `referenceMarker` and an optional `referenceString`.
+    reference: "reference",
+    // A reference marker (`[` or `]`).
+    referenceMarker: "referenceMarker",
+    // Reference text (`alpha`).
+    // Includes string.
+    referenceString: "referenceString",
+    // A resource (`(https://example.com "alpha")`).
+    // Includes `resourceMarker`, an optional `resourceDestination` with an optional
+    // `whitespace` and `resourceTitle`.
+    resource: "resource",
+    // A resource destination (`https://example.com`).
+    // Includes `resourceDestinationLiteral` or `resourceDestinationRaw`.
+    resourceDestination: "resourceDestination",
+    // A literal resource destination (`<https://example.com>`).
+    // Includes `resourceDestinationLiteralMarker` and optionally
+    // `resourceDestinationString`.
+    resourceDestinationLiteral: "resourceDestinationLiteral",
+    // A resource destination marker (`<` or `>`).
+    resourceDestinationLiteralMarker: "resourceDestinationLiteralMarker",
+    // A raw resource destination (`https://example.com`).
+    // Includes `resourceDestinationString`.
+    resourceDestinationRaw: "resourceDestinationRaw",
+    // Resource destination text (`https://example.com`).
+    // Includes string.
+    resourceDestinationString: "resourceDestinationString",
+    // A resource marker (`(` or `)`).
+    resourceMarker: "resourceMarker",
+    // A resource title (`"alpha"`, `'alpha'`, or `(alpha)`).
+    // Includes `resourceTitleMarker` and optionally `resourceTitleString`.
+    resourceTitle: "resourceTitle",
+    // A resource title marker (`"`, `'`, `(`, or `)`).
+    resourceTitleMarker: "resourceTitleMarker",
+    // Resource destination title (`alpha`).
+    // Includes string.
+    resourceTitleString: "resourceTitleString",
+    // Whole setext heading:
+    //
+    // ```markdown
+    // alpha
+    // bravo
+    // =====
+    // ```
+    //
+    // Includes `setextHeadingText`, `lineEnding`, `linePrefix`, and
+    // `setextHeadingLine`.
+    setextHeading: "setextHeading",
+    // Content in a setext heading (`alpha\nbravo`).
+    // Includes text.
+    setextHeadingText: "setextHeadingText",
+    // Underline in a setext heading, including whitespace suffix (`==`).
+    // Includes `setextHeadingLineSequence`.
+    setextHeadingLine: "setextHeadingLine",
+    // Sequence of equals or dash characters in underline in a setext heading (`-`).
+    setextHeadingLineSequence: "setextHeadingLineSequence",
+    // Strong (`**alpha**`).
+    // Includes `strongSequence` and `strongText`.
+    strong: "strong",
+    // Sequence of strong markers (`**` or `__`).
+    strongSequence: "strongSequence",
+    // Strong text (`alpha`).
+    // Includes text.
+    strongText: "strongText",
+    // Whole thematic break:
+    //
+    // ```markdown
+    // * * *
+    // ```
+    //
+    // Includes `thematicBreakSequence` and `whitespace`.
+    thematicBreak: "thematicBreak",
+    // A sequence of one or more thematic break markers (`***`).
+    thematicBreakSequence: "thematicBreakSequence",
+    // Whole block quote:
+    //
+    // ```markdown
+    // > a
+    // >
+    // > b
+    // ```
+    //
+    // Includes `blockQuotePrefix` and flow.
+    blockQuote: "blockQuote",
+    // The `>` or `> ` of a block quote.
+    blockQuotePrefix: "blockQuotePrefix",
+    // The `>` of a block quote prefix.
+    blockQuoteMarker: "blockQuoteMarker",
+    // The optional ` ` of a block quote prefix.
+    blockQuotePrefixWhitespace: "blockQuotePrefixWhitespace",
+    // Whole ordered list:
+    //
+    // ```markdown
+    // 1. a
+    //    b
+    // ```
+    //
+    // Includes `listItemPrefix`, flow, and optionally  `listItemIndent` on further
+    // lines.
+    listOrdered: "listOrdered",
+    // Whole unordered list:
+    //
+    // ```markdown
+    // - a
+    //   b
+    // ```
+    //
+    // Includes `listItemPrefix`, flow, and optionally  `listItemIndent` on further
+    // lines.
+    listUnordered: "listUnordered",
+    // The indent of further list item lines.
+    listItemIndent: "listItemIndent",
+    // A marker, as in, `*`, `+`, `-`, `.`, or `)`.
+    listItemMarker: "listItemMarker",
+    // The thing that starts a list item, such as `1. `.
+    // Includes `listItemValue` if ordered, `listItemMarker`, and
+    // `listItemPrefixWhitespace` (unless followed by a line ending).
+    listItemPrefix: "listItemPrefix",
+    // The whitespace after a marker.
+    listItemPrefixWhitespace: "listItemPrefixWhitespace",
+    // The numerical value of an ordered item.
+    listItemValue: "listItemValue",
+    // Internal types used for subtokenizers, compiled away
+    chunkDocument: "chunkDocument",
+    chunkContent: "chunkContent",
+    chunkFlow: "chunkFlow",
+    chunkText: "chunkText",
+    chunkString: "chunkString"
+  }
+);
+
+// node_modules/get-east-asian-width/lookup-data.js
+var ambiguousMinimalCodePoint = 161;
+var ambiguousMaximumCodePoint = 1114109;
+var ambiguousRanges = [161, 161, 164, 164, 167, 168, 170, 170, 173, 174, 176, 180, 182, 186, 188, 191, 198, 198, 208, 208, 215, 216, 222, 225, 230, 230, 232, 234, 236, 237, 240, 240, 242, 243, 247, 250, 252, 252, 254, 254, 257, 257, 273, 273, 275, 275, 283, 283, 294, 295, 299, 299, 305, 307, 312, 312, 319, 322, 324, 324, 328, 331, 333, 333, 338, 339, 358, 359, 363, 363, 462, 462, 464, 464, 466, 466, 468, 468, 470, 470, 472, 472, 474, 474, 476, 476, 593, 593, 609, 609, 708, 708, 711, 711, 713, 715, 717, 717, 720, 720, 728, 731, 733, 733, 735, 735, 768, 879, 913, 929, 931, 937, 945, 961, 963, 969, 1025, 1025, 1040, 1103, 1105, 1105, 8208, 8208, 8211, 8214, 8216, 8217, 8220, 8221, 8224, 8226, 8228, 8231, 8240, 8240, 8242, 8243, 8245, 8245, 8251, 8251, 8254, 8254, 8308, 8308, 8319, 8319, 8321, 8324, 8364, 8364, 8451, 8451, 8453, 8453, 8457, 8457, 8467, 8467, 8470, 8470, 8481, 8482, 8486, 8486, 8491, 8491, 8531, 8532, 8539, 8542, 8544, 8555, 8560, 8569, 8585, 8585, 8592, 8601, 8632, 8633, 8658, 8658, 8660, 8660, 8679, 8679, 8704, 8704, 8706, 8707, 8711, 8712, 8715, 8715, 8719, 8719, 8721, 8721, 8725, 8725, 8730, 8730, 8733, 8736, 8739, 8739, 8741, 8741, 8743, 8748, 8750, 8750, 8756, 8759, 8764, 8765, 8776, 8776, 8780, 8780, 8786, 8786, 8800, 8801, 8804, 8807, 8810, 8811, 8814, 8815, 8834, 8835, 8838, 8839, 8853, 8853, 8857, 8857, 8869, 8869, 8895, 8895, 8978, 8978, 9312, 9449, 9451, 9547, 9552, 9587, 9600, 9615, 9618, 9621, 9632, 9633, 9635, 9641, 9650, 9651, 9654, 9655, 9660, 9661, 9664, 9665, 9670, 9672, 9675, 9675, 9678, 9681, 9698, 9701, 9711, 9711, 9733, 9734, 9737, 9737, 9742, 9743, 9756, 9756, 9758, 9758, 9792, 9792, 9794, 9794, 9824, 9825, 9827, 9829, 9831, 9834, 9836, 9837, 9839, 9839, 9886, 9887, 9919, 9919, 9926, 9933, 9935, 9939, 9941, 9953, 9955, 9955, 9960, 9961, 9963, 9969, 9972, 9972, 9974, 9977, 9979, 9980, 9982, 9983, 10045, 10045, 10102, 10111, 11094, 11097, 12872, 12879, 57344, 63743, 65024, 65039, 65533, 65533, 127232, 127242, 127248, 127277, 127280, 127337, 127344, 127373, 127375, 127376, 127387, 127404, 917760, 917999, 983040, 1048573, 1048576, 1114109];
+var fullwidthMinimalCodePoint = 12288;
+var fullwidthMaximumCodePoint = 65510;
+var fullwidthRanges = [12288, 12288, 65281, 65376, 65504, 65510];
+var halfwidthMinimalCodePoint = 8361;
+var halfwidthMaximumCodePoint = 65518;
+var halfwidthRanges = [8361, 8361, 65377, 65470, 65474, 65479, 65482, 65487, 65490, 65495, 65498, 65500, 65512, 65518];
+var narrowMinimalCodePoint = 32;
+var narrowMaximumCodePoint = 10630;
+var narrowRanges = [32, 126, 162, 163, 165, 166, 172, 172, 175, 175, 10214, 10221, 10629, 10630];
+var wideMinimalCodePoint = 4352;
+var wideMaximumCodePoint = 262141;
+var wideRanges = [4352, 4447, 8986, 8987, 9001, 9002, 9193, 9196, 9200, 9200, 9203, 9203, 9725, 9726, 9748, 9749, 9776, 9783, 9800, 9811, 9855, 9855, 9866, 9871, 9875, 9875, 9889, 9889, 9898, 9899, 9917, 9918, 9924, 9925, 9934, 9934, 9940, 9940, 9962, 9962, 9970, 9971, 9973, 9973, 9978, 9978, 9981, 9981, 9989, 9989, 9994, 9995, 10024, 10024, 10060, 10060, 10062, 10062, 10067, 10069, 10071, 10071, 10133, 10135, 10160, 10160, 10175, 10175, 11035, 11036, 11088, 11088, 11093, 11093, 11904, 11929, 11931, 12019, 12032, 12245, 12272, 12287, 12289, 12350, 12353, 12438, 12441, 12543, 12549, 12591, 12593, 12686, 12688, 12773, 12783, 12830, 12832, 12871, 12880, 42124, 42128, 42182, 43360, 43388, 44032, 55203, 63744, 64255, 65040, 65049, 65072, 65106, 65108, 65126, 65128, 65131, 94176, 94180, 94192, 94198, 94208, 101594, 101631, 101664, 101760, 101874, 101888, 102801, 102816, 102866, 110576, 110579, 110581, 110587, 110589, 110590, 110592, 110888, 110898, 110898, 110928, 110930, 110933, 110933, 110948, 110952, 110960, 111355, 119552, 119638, 119648, 119670, 126980, 126980, 127183, 127183, 127374, 127374, 127377, 127386, 127406, 127406, 127488, 127490, 127504, 127547, 127552, 127560, 127568, 127569, 127584, 127589, 127744, 127776, 127789, 127797, 127799, 127868, 127870, 127891, 127904, 127946, 127951, 127955, 127968, 127984, 127988, 127988, 127992, 128062, 128064, 128064, 128066, 128252, 128255, 128317, 128331, 128334, 128336, 128359, 128378, 128378, 128405, 128406, 128420, 128420, 128507, 128591, 128640, 128709, 128716, 128716, 128720, 128722, 128725, 128729, 128732, 128735, 128747, 128748, 128756, 128764, 128986, 128986, 128992, 129003, 129008, 129008, 129292, 129338, 129340, 129349, 129351, 129535, 129648, 129660, 129664, 129734, 129736, 129736, 129740, 129757, 129759, 129771, 129775, 129786, 131072, 196605, 196608, 262141];
+
+// node_modules/get-east-asian-width/utilities.js
+var isInRange = (ranges, codePoint) => {
+  let low = 0;
+  let high = Math.floor(ranges.length / 2) - 1;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const i = mid * 2;
+    if (codePoint < ranges[i]) {
+      high = mid - 1;
+    } else if (codePoint > ranges[i + 1]) {
+      low = mid + 1;
+    } else {
+      return true;
+    }
+  }
+  return false;
+};
+
+// node_modules/get-east-asian-width/lookup.js
+var commonCjkCodePoint = 19968;
+var [wideFastPathStart, wideFastPathEnd] = /* @__PURE__ */ findWideFastPathRange(wideRanges);
+function findWideFastPathRange(ranges) {
+  let fastPathStart = ranges[0];
+  let fastPathEnd = ranges[1];
+  for (let index2 = 0; index2 < ranges.length; index2 += 2) {
+    const start = ranges[index2];
+    const end = ranges[index2 + 1];
+    if (commonCjkCodePoint >= start && commonCjkCodePoint <= end) {
+      return [start, end];
+    }
+    if (end - start > fastPathEnd - fastPathStart) {
+      fastPathStart = start;
+      fastPathEnd = end;
+    }
+  }
+  return [fastPathStart, fastPathEnd];
+}
+var isAmbiguous = (codePoint) => {
+  if (codePoint < ambiguousMinimalCodePoint || codePoint > ambiguousMaximumCodePoint) {
+    return false;
+  }
+  return isInRange(ambiguousRanges, codePoint);
+};
+var isFullwidth = (codePoint) => {
+  if (codePoint < fullwidthMinimalCodePoint || codePoint > fullwidthMaximumCodePoint) {
+    return false;
+  }
+  return isInRange(fullwidthRanges, codePoint);
+};
+var isHalfwidth = (codePoint) => {
+  if (codePoint < halfwidthMinimalCodePoint || codePoint > halfwidthMaximumCodePoint) {
+    return false;
+  }
+  return isInRange(halfwidthRanges, codePoint);
+};
+var isNarrow = (codePoint) => {
+  if (codePoint < narrowMinimalCodePoint || codePoint > narrowMaximumCodePoint) {
+    return false;
+  }
+  return isInRange(narrowRanges, codePoint);
+};
+var isWide = (codePoint) => {
+  if (codePoint >= wideFastPathStart && codePoint <= wideFastPathEnd) {
+    return true;
+  }
+  if (codePoint < wideMinimalCodePoint || codePoint > wideMaximumCodePoint) {
+    return false;
+  }
+  return isInRange(wideRanges, codePoint);
+};
+function getCategory(codePoint) {
+  if (isAmbiguous(codePoint)) {
+    return "ambiguous";
+  }
+  if (isFullwidth(codePoint)) {
+    return "fullwidth";
+  }
+  if (isHalfwidth(codePoint)) {
+    return "halfwidth";
+  }
+  if (isNarrow(codePoint)) {
+    return "narrow";
+  }
+  if (isWide(codePoint)) {
+    return "wide";
+  }
+  return "neutral";
+}
+
+// node_modules/get-east-asian-width/index.js
+function validate(codePoint) {
+  if (!Number.isSafeInteger(codePoint)) {
+    throw new TypeError(`Expected a code point, got \`${typeof codePoint}\`.`);
+  }
+}
+function eastAsianWidthType(codePoint) {
+  validate(codePoint);
+  return getCategory(codePoint);
+}
+
+// node_modules/micromark-extension-cjk-friendly-util/dist/characterWithNonBmp.js
+function isEmoji(uc) {
+  return new RegExp("^\\p{Emoji_Presentation}", "u").test(String.fromCodePoint(uc));
+}
+function cjkOrIvs(uc) {
+  if (!uc || uc < 4352) return false;
+  switch (eastAsianWidthType(uc)) {
+    case "fullwidth":
+    case "halfwidth":
+      return true;
+    case "wide":
+      return !isEmoji(uc);
+    case "narrow":
+      return false;
+    case "ambiguous":
+      return 917760 <= uc && uc <= 917999 ? null : false;
+    case "neutral":
+      return new RegExp("^\\p{sc=Hangul}", "u").test(String.fromCodePoint(uc));
+  }
+}
+function isCjkAmbiguousPunctuation(main, vs) {
+  if (vs !== 65025 || !main || main < 8216) return false;
+  return main === 8216 || main === 8217 || main === 8220 || main === 8221;
+}
+function nonEmojiGeneralUseVS(code4) {
+  return code4 !== null && code4 >= 65024 && code4 <= 65038;
+}
+var unicodePunctuation2 = regexCheck2(new RegExp("\\p{P}|\\p{S}", "u"));
+var unicodeWhitespace2 = regexCheck2(/\s/);
+function regexCheck2(regex) {
+  return check;
+  function check(code4) {
+    return code4 !== null && code4 > -1 && regex.test(String.fromCodePoint(code4));
+  }
+}
+
+// node_modules/micromark-extension-cjk-friendly-util/dist/categoryUtil.js
+function isUnicodeWhitespace(category) {
+  return Boolean(category & constants.characterGroupWhitespace);
+}
+function isNonCjkPunctuation(category) {
+  return (category & constantsEx.cjkPunctuation) === constants.characterGroupPunctuation;
+}
+function isCjk(category) {
+  return Boolean(category & constantsEx.cjk);
+}
+function isCjkOrIvs(category) {
+  return Boolean(category & constantsEx.cjkOrIvs);
+}
+function isNonEmojiGeneralUseVS(category) {
+  return category === constantsEx.nonEmojiGeneralUseVS;
+}
+function isSpaceOrPunctuation(category) {
+  return Boolean(category & constantsEx.spaceOrPunctuation);
+}
+
+// node_modules/micromark-extension-cjk-friendly-util/dist/classifyCharacter.js
+var constantsEx;
+(function(_constantsEx) {
+  _constantsEx.spaceOrPunctuation = 3;
+  _constantsEx.cjk = 4096;
+  _constantsEx.cjkPunctuation = 4098;
+  _constantsEx.ivs = 8192;
+  _constantsEx.cjkOrIvs = 12288;
+  _constantsEx.nonEmojiGeneralUseVS = 16384;
+  _constantsEx.variationSelector = 24576;
+  _constantsEx.ivsToCjkRightShift = 1;
+})(constantsEx || (constantsEx = {}));
+function classifyCharacter2(code4) {
+  if (code4 === codes.eof || markdownLineEndingOrSpace(code4) || unicodeWhitespace2(code4)) return constants.characterGroupWhitespace;
+  let value2 = 0;
+  if (code4 >= 4352) {
+    if (nonEmojiGeneralUseVS(code4)) return constantsEx.nonEmojiGeneralUseVS;
+    switch (cjkOrIvs(code4)) {
+      case null:
+        return constantsEx.ivs;
+      case true:
+        value2 |= constantsEx.cjk;
+        break;
+    }
+  }
+  if (unicodePunctuation2(code4)) value2 |= constants.characterGroupPunctuation;
+  return value2;
+}
+function classifyPrecedingCharacter(before, get2Previous, previous5) {
+  if (!isNonEmojiGeneralUseVS(before)) return before;
+  const twoPrevious = get2Previous();
+  const twoBefore = classifyCharacter2(twoPrevious);
+  return !twoPrevious || isUnicodeWhitespace(twoBefore) ? before : isCjkAmbiguousPunctuation(twoPrevious, previous5) ? constantsEx.cjkPunctuation : stripIvs(twoBefore);
+}
+function stripIvs(twoBefore) {
+  return twoBefore & ~constantsEx.ivs;
+}
+
+// node_modules/micromark-extension-cjk-friendly-util/dist/codeUtil.js
+function isCodeHighSurrogate(code4) {
+  return Boolean(code4 && code4 >= 55296 && code4 <= 56319);
+}
+function isCodeLowSurrogate(code4) {
+  return Boolean(code4 && code4 >= 56320 && code4 <= 57343);
+}
+function tryGetGenuinePreviousCode(code4, nowPoint, sliceSerialize) {
+  if (nowPoint._bufferIndex < 2) return code4;
+  const previousCandidate = sliceSerialize({
+    start: {
+      ...nowPoint,
+      _bufferIndex: nowPoint._bufferIndex - 2
+    },
+    end: nowPoint
+  }).codePointAt(0);
+  return previousCandidate && previousCandidate >= 65536 ? previousCandidate : code4;
+}
+function tryGetCodeTwoBefore(previousCode, nowPoint, sliceSerialize) {
+  const previousWidth = previousCode >= 65536 ? 2 : 1;
+  if (nowPoint._bufferIndex < 1 + previousWidth) return null;
+  const idealStart = nowPoint._bufferIndex - previousWidth - 2;
+  const twoPreviousBuffer = sliceSerialize({
+    start: {
+      ...nowPoint,
+      _bufferIndex: idealStart >= 0 ? idealStart : 0
+    },
+    end: {
+      ...nowPoint,
+      _bufferIndex: nowPoint._bufferIndex - previousWidth
+    }
+  });
+  const twoPreviousLast = twoPreviousBuffer.charCodeAt(twoPreviousBuffer.length - 1);
+  if (Number.isNaN(twoPreviousLast)) return null;
+  if (twoPreviousBuffer.length < 2 || twoPreviousLast < 56320 || 57343 < twoPreviousLast) return twoPreviousLast;
+  const twoPreviousCandidate = twoPreviousBuffer.codePointAt(0);
+  if (twoPreviousCandidate && twoPreviousCandidate >= 65536) return twoPreviousCandidate;
+  return twoPreviousLast;
+}
+var TwoPreviousCode = class {
+  cachedValue = void 0;
+  /**
+  * @see {@link tryGetCodeTwoBefore}
+  *
+  * @param previousCode a previous code point. Should be greater than 65,535 if it represents a [Supplementary Character](https://www.unicode.org/glossary/#supplementary_character).
+  * @param nowPoint `this.now()` (`this` = `TokenizeContext`)
+  * @param sliceSerialize `this.sliceSerialize` (`this` = `TokenizeContext`)
+  */
+  constructor(previousCode, nowPoint, sliceSerialize) {
+    this.previousCode = previousCode;
+    this.nowPoint = nowPoint;
+    this.sliceSerialize = sliceSerialize;
+  }
+  /**
+  * Returns the return value of {@link tryGetCodeTwoBefore}.
+  *
+  * If the value has not been computed yet, it will be computed and cached.
+  *
+  * @see {@link tryGetCodeTwoBefore}
+  *
+  * @returns a value greater than 65,535 if the code point two positions before represents a [Supplementary Character](https://www.unicode.org/glossary/#supplementary_character), a value less than 65,536 for a [BMP Character](https://www.unicode.org/glossary/#bmp_character), or `null` if not found
+  */
+  value() {
+    if (this.cachedValue === void 0) this.cachedValue = tryGetCodeTwoBefore(this.previousCode, this.nowPoint, this.sliceSerialize);
+    return this.cachedValue;
+  }
+};
+function tryGetGenuineNextCode(code4, nowPoint, sliceSerialize) {
+  const nextCandidate = sliceSerialize({
+    start: nowPoint,
+    end: {
+      ...nowPoint,
+      _bufferIndex: nowPoint._bufferIndex + 2
+    }
+  }).codePointAt(0);
+  return nextCandidate && nextCandidate >= 65536 ? nextCandidate : code4;
+}
+
+// node_modules/micromark-extension-cjk-friendly/dist/ext/attention.js
+var attention2 = {
+  name: "attention",
+  resolveAll: resolveAllAttention2,
+  tokenize: tokenizeAttention2
+};
+function resolveAllAttention2(events, context) {
+  let index2 = -1;
+  let open;
+  let group;
+  let text9;
+  let openingSequence;
+  let closingSequence;
+  let use;
+  let nextEvents;
+  let offset;
+  while (++index2 < events.length) if (events[index2][0] === "enter" && events[index2][1].type === "attentionSequence" && events[index2][1]._close) {
+    open = index2;
+    while (open--) if (events[open][0] === "exit" && events[open][1].type === "attentionSequence" && events[open][1]._open && context.sliceSerialize(events[open][1]).charCodeAt(0) === context.sliceSerialize(events[index2][1]).charCodeAt(0)) {
+      if ((events[open][1]._close || events[index2][1]._open) && (events[index2][1].end.offset - events[index2][1].start.offset) % 3 && !((events[open][1].end.offset - events[open][1].start.offset + events[index2][1].end.offset - events[index2][1].start.offset) % 3)) continue;
+      use = events[open][1].end.offset - events[open][1].start.offset > 1 && events[index2][1].end.offset - events[index2][1].start.offset > 1 ? 2 : 1;
+      const start = { ...events[open][1].end };
+      const end = { ...events[index2][1].start };
+      movePoint2(start, -use);
+      movePoint2(end, use);
+      openingSequence = {
+        type: use > 1 ? types.strongSequence : types.emphasisSequence,
+        start,
+        end: { ...events[open][1].end }
+      };
+      closingSequence = {
+        type: use > 1 ? types.strongSequence : types.emphasisSequence,
+        start: { ...events[index2][1].start },
+        end
+      };
+      text9 = {
+        type: use > 1 ? types.strongText : types.emphasisText,
+        start: { ...events[open][1].end },
+        end: { ...events[index2][1].start }
+      };
+      group = {
+        type: use > 1 ? types.strong : types.emphasis,
+        start: { ...openingSequence.start },
+        end: { ...closingSequence.end }
+      };
+      events[open][1].end = { ...openingSequence.start };
+      events[index2][1].start = { ...closingSequence.end };
+      nextEvents = [];
+      if (events[open][1].end.offset - events[open][1].start.offset) nextEvents = push(nextEvents, [[
+        "enter",
+        events[open][1],
+        context
+      ], [
+        "exit",
+        events[open][1],
+        context
+      ]]);
+      nextEvents = push(nextEvents, [
+        [
+          "enter",
+          group,
+          context
+        ],
+        [
+          "enter",
+          openingSequence,
+          context
+        ],
+        [
+          "exit",
+          openingSequence,
+          context
+        ],
+        [
+          "enter",
+          text9,
+          context
+        ]
+      ]);
+      ok(context.parser.constructs.insideSpan.null, "expected `insideSpan` to be populated");
+      nextEvents = push(nextEvents, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open + 1, index2), context));
+      nextEvents = push(nextEvents, [
+        [
+          "exit",
+          text9,
+          context
+        ],
+        [
+          "enter",
+          closingSequence,
+          context
+        ],
+        [
+          "exit",
+          closingSequence,
+          context
+        ],
+        [
+          "exit",
+          group,
+          context
+        ]
+      ]);
+      if (events[index2][1].end.offset - events[index2][1].start.offset) {
+        offset = 2;
+        nextEvents = push(nextEvents, [[
+          "enter",
+          events[index2][1],
+          context
+        ], [
+          "exit",
+          events[index2][1],
+          context
+        ]]);
+      } else offset = 0;
+      splice(events, open - 1, index2 - open + 3, nextEvents);
+      index2 = open + nextEvents.length - offset - 2;
+      break;
+    }
+  }
+  index2 = -1;
+  while (++index2 < events.length) if (events[index2][1].type === "attentionSequence") events[index2][1].type = "data";
+  return events;
+}
+function tokenizeAttention2(effects, ok$1) {
+  const attentionMarkers2 = this.parser.constructs.attentionMarkers.null;
+  const { now, sliceSerialize, previous: tentativePrevious } = this;
+  const previous5 = isCodeLowSurrogate(tentativePrevious) ? tryGetGenuinePreviousCode(tentativePrevious, now(), sliceSerialize) : tentativePrevious;
+  const before = classifyCharacter2(previous5);
+  const twoPrevious = new TwoPreviousCode(previous5, now(), sliceSerialize);
+  const beforePrimary = classifyPrecedingCharacter(before, twoPrevious.value.bind(twoPrevious), previous5);
+  let marker;
+  return start;
+  function start(code4) {
+    ok(code4 === codes.asterisk || code4 === codes.underscore, "expected asterisk or underscore");
+    marker = code4;
+    effects.enter("attentionSequence");
+    return inside(code4);
+  }
+  function inside(code4) {
+    if (code4 === marker) {
+      effects.consume(code4);
+      return inside;
+    }
+    const token = effects.exit("attentionSequence");
+    const next2 = isCodeHighSurrogate(code4) ? tryGetGenuineNextCode(code4, now(), sliceSerialize) : code4;
+    const after = classifyCharacter2(next2);
+    ok(attentionMarkers2, "expected `attentionMarkers` to be populated");
+    const beforeNonCjkPunctuation = isNonCjkPunctuation(beforePrimary);
+    const beforeCoreAttentionMarker = previous5 === codes.asterisk || previous5 === codes.underscore;
+    const beforeSpaceOrNonCjkPunctuation = beforeNonCjkPunctuation || isUnicodeWhitespace(beforePrimary) || beforeCoreAttentionMarker;
+    const afterNonCjkPunctuation = isNonCjkPunctuation(after);
+    const afterCoreAttentionMarker = code4 === codes.asterisk || code4 === codes.underscore;
+    const afterSpaceOrNonCjkPunctuation = afterNonCjkPunctuation || isUnicodeWhitespace(after) || afterCoreAttentionMarker;
+    const beforeCjkOrIvs = isCjkOrIvs(beforePrimary);
+    const open = !afterSpaceOrNonCjkPunctuation || afterNonCjkPunctuation && (beforeSpaceOrNonCjkPunctuation || beforeCjkOrIvs) || attentionMarkers2.includes(code4) && code4 !== codes.asterisk && code4 !== codes.underscore;
+    const close2 = !beforeSpaceOrNonCjkPunctuation || beforeNonCjkPunctuation && (afterSpaceOrNonCjkPunctuation || isCjk(after)) || attentionMarkers2.includes(previous5) && previous5 !== codes.asterisk && previous5 !== codes.underscore;
+    token._open = Boolean(marker === codes.asterisk ? open : open && (isSpaceOrPunctuation(beforePrimary) || !close2));
+    token._close = Boolean(marker === codes.asterisk ? close2 : close2 && (isSpaceOrPunctuation(after) || !open));
+    return ok$1(code4);
+  }
+}
+function movePoint2(point5, offset) {
+  point5.column += offset;
+  point5.offset += offset;
+  point5._bufferIndex += offset;
+}
+
+// node_modules/micromark-extension-cjk-friendly/dist/index.js
+function cjkFriendlyExtension() {
+  return {
+    text: {
+      [codes.asterisk]: attention2,
+      [codes.underscore]: attention2
+    },
+    insideSpan: { null: [attention2] }
+  };
+}
+
+// node_modules/remark-cjk-friendly/dist/parseOnly.js
+function remarkCjkFriendly() {
+  const data = this.data();
+  (data.micromarkExtensions || (data.micromarkExtensions = [])).push(cjkFriendlyExtension());
+}
+
+// node_modules/mdast-util-to-markdown-cjk-friendly/dist/index.mjs
+var encodedOutsideBoundary = ";".codePointAt(0) ?? codes.eof;
+var encodedInsideBoundary = "&".codePointAt(0) ?? codes.eof;
+function cjkFriendlyToMarkdown() {
+  return { handlers: {
+    emphasis: emphasis2,
+    strong: strong2,
+    text: text5
+  } };
+}
+emphasis2.peek = emphasisPeek2;
+strong2.peek = strongPeek2;
+function emphasis2(node2, parent, state, info) {
+  return serializeAttention(node2, parent, state, info, emphasisPeek2(node2, parent, state), 1);
+}
+function strong2(node2, parent, state, info) {
+  return serializeAttention(node2, parent, state, info, strongPeek2(node2, parent, state), 2);
+}
+function emphasisPeek2(_, _parent, state) {
+  return state.options.emphasis || "*";
+}
+function strongPeek2(_, _parent, state) {
+  return state.options.strong || "*";
+}
+function serializeAttention(node2, parent, state, info, marker, size) {
+  const sequence = marker.repeat(size);
+  const exit4 = state.enter(size === 1 ? "emphasis" : "strong");
+  const tracker = state.createTracker(info);
+  const before = tracker.move(sequence);
+  let between = tracker.move(state.containerPhrasing(node2, {
+    after: marker,
+    before,
+    ...tracker.current()
+  }));
+  const beforeBoundary = resolveBeforeBoundary(node2, parent, state, info.before);
+  const afterBoundary = resolveAfterBoundary(node2, parent, state, info.after);
+  const open = encodeInfoCjk(beforeBoundary, firstCodePoint(between), marker, "open");
+  if (open.inside && between) between = encodeFirstCodePoint(between);
+  const close2 = encodeInfoCjk({
+    current: lastCodePoint(between),
+    previous: codePointBeforeLast(between)
+  }, afterBoundary, marker, "close");
+  if (close2.inside && between) between = encodeLastCodePoint(between);
+  const after = tracker.move(sequence);
+  exit4();
+  const encodeAfterSupplementary = close2.outside && shouldEncodeAfterSupplementaryText(parent, state);
+  state.attentionEncodeSurroundingInfo = {
+    after: close2.outside && !encodeAfterSupplementary,
+    before: open.outside
+  };
+  getCjkFriendlyState(state).cjkFriendlyEncodeAfterSupplementaryText = encodeAfterSupplementary;
+  return before + between + after;
+}
+function text5(node2, _parent, state, info) {
+  const cjkFriendlyState = getCjkFriendlyState(state);
+  if (!cjkFriendlyState.cjkFriendlyEncodeAfterSupplementaryText) return state.safe(node2.value, info);
+  cjkFriendlyState.cjkFriendlyEncodeAfterSupplementaryText = false;
+  const [first = ""] = [...node2.value];
+  const rest = node2.value.slice(first.length);
+  return `${encodeCharacterReference2(first.codePointAt(0) ?? codes.eof)}${state.safe(rest, {
+    ...info,
+    before: ";"
+  })}`;
+}
+function encodeInfoCjk(before, after, marker, target) {
+  const beforeKind = classifyBoundaryBefore(before);
+  const afterKind = classifyCharacter2(after);
+  if (!isCjkOrIvs(beforeKind) && !isCjkOrIvs(afterKind)) return target === "open" ? encodeInfoFallback(beforeKind, afterKind, marker) : encodeInfoFallback(afterKind, beforeKind, marker);
+  const raw2 = {
+    inside: false,
+    outside: false
+  };
+  const preserveOutside = {
+    inside: true,
+    outside: false
+  };
+  const preserveInside = {
+    inside: false,
+    outside: true
+  };
+  const encodeBoth = {
+    inside: true,
+    outside: true
+  };
+  for (const candidate of [
+    raw2,
+    preserveOutside,
+    preserveInside,
+    encodeBoth
+  ]) {
+    const candidateBefore = target === "open" ? candidate.outside ? encodedBoundaryBeforeContext : before : candidate.inside ? encodedBoundaryBeforeContext : before;
+    const candidateAfter = target === "open" ? candidate.inside ? encodedBoundaryAfter : after : candidate.outside ? encodedBoundaryAfter : after;
+    if (target === "open" ? canOpen(marker, candidateBefore, candidateAfter) : canClose(marker, candidateBefore, candidateAfter)) return candidate;
+  }
+  return encodeBoth;
+}
+function encodeInfoFallback(outsideKind, insideKind, marker) {
+  if (isLetterLike(outsideKind)) return isLetterLike(insideKind) ? marker === "_" ? {
+    inside: true,
+    outside: true
+  } : {
+    inside: false,
+    outside: false
+  } : isUnicodeWhitespace(insideKind) ? {
+    inside: true,
+    outside: true
+  } : {
+    inside: false,
+    outside: true
+  };
+  if (isUnicodeWhitespace(outsideKind)) return isLetterLike(insideKind) ? {
+    inside: false,
+    outside: false
+  } : isUnicodeWhitespace(insideKind) ? {
+    inside: true,
+    outside: true
+  } : {
+    inside: false,
+    outside: false
+  };
+  return isUnicodeWhitespace(insideKind) ? {
+    inside: true,
+    outside: false
+  } : {
+    inside: false,
+    outside: false
+  };
+}
+function canOpen(marker, before, afterCode) {
+  const beforeKind = classifyBoundaryBefore(before);
+  const { close: close2, open } = getAttentionSides(beforeKind, classifyCharacter2(afterCode));
+  return marker === "_" ? open && (isSpaceOrPunctuation(beforeKind) || !close2) : open;
+}
+function canClose(marker, before, afterCode) {
+  const afterKind = classifyCharacter2(afterCode);
+  const { close: close2, open } = getAttentionSides(classifyBoundaryBefore(before), afterKind);
+  return marker === "_" ? close2 && (isSpaceOrPunctuation(afterKind) || !open) : close2;
+}
+function getAttentionSides(beforeKind, afterKind) {
+  const beforeNonCjkPunctuation = isNonCjkPunctuation(beforeKind);
+  const beforeSpaceOrNonCjkPunctuation = beforeNonCjkPunctuation || isUnicodeWhitespace(beforeKind);
+  const afterNonCjkPunctuation = isNonCjkPunctuation(afterKind);
+  const afterSpaceOrNonCjkPunctuation = afterNonCjkPunctuation || isUnicodeWhitespace(afterKind);
+  return {
+    open: !afterSpaceOrNonCjkPunctuation || afterNonCjkPunctuation && (beforeSpaceOrNonCjkPunctuation || isCjkOrIvs(beforeKind)),
+    close: !beforeSpaceOrNonCjkPunctuation || beforeNonCjkPunctuation && (afterSpaceOrNonCjkPunctuation || isCjk(afterKind))
+  };
+}
+function isLetterLike(kind) {
+  return !isUnicodeWhitespace(kind) && !isNonCjkPunctuation(kind);
+}
+function classifyBoundaryBefore(before) {
+  const kind = classifyCharacter2(before.current);
+  return before.current === null || !isNonEmojiGeneralUseVS(kind) ? kind : classifyPrecedingCharacter(kind, () => before.previous, before.current);
+}
+function resolveBeforeBoundary(node2, parent, state, fallback) {
+  let current = lastCodePoint(fallback);
+  let previous5 = codePointBeforeLast(fallback);
+  if (needsPreviousBoundaryRecovery(current) || needsPreviousContext(current, previous5)) {
+    const siblingText = getAdjacentSiblingText(node2, parent, state, -1);
+    if (siblingText) {
+      current = lastCodePoint(siblingText);
+      previous5 = codePointBeforeLast(siblingText);
+    }
+  }
+  return {
+    current,
+    previous: previous5
+  };
+}
+function resolveAfterBoundary(node2, parent, state, fallback) {
+  const current = firstCodePoint(fallback);
+  if (!needsNextBoundaryRecovery(current)) return current;
+  const siblingText = getAdjacentSiblingText(node2, parent, state, 1);
+  return siblingText ? firstCodePoint(siblingText) : current;
+}
+function needsPreviousBoundaryRecovery(codePoint) {
+  return codePoint !== null && 56320 <= codePoint && codePoint <= 57343;
+}
+function needsNextBoundaryRecovery(codePoint) {
+  return codePoint !== null && 55296 <= codePoint && codePoint <= 56319;
+}
+function needsPreviousContext(current, previous5) {
+  return isNonEmojiGeneralUseVS(classifyCharacter2(current)) && (previous5 === null || previous5 === codes.eof);
+}
+function getAdjacentSiblingText(node2, parent, state, offset) {
+  if (!parent) return;
+  const stackIndex = state.indexStack.at(-1);
+  const siblings2 = parent.children;
+  const index2 = typeof stackIndex === "number" ? stackIndex : siblings2.indexOf(node2);
+  if (index2 < 0) return;
+  const sibling = siblings2[index2 + offset];
+  return getNodeTextContent(sibling) || void 0;
+}
+function shouldEncodeAfterSupplementaryText(parent, state) {
+  if (!parent) return false;
+  const stackIndex = state.indexStack.at(-1);
+  if (typeof stackIndex !== "number") return false;
+  const sibling = parent.children[stackIndex + 1];
+  return sibling?.type === "text" && (firstCodePoint(sibling.value) ?? 0) > 65535;
+}
+function getCjkFriendlyState(state) {
+  return state;
+}
+function getNodeTextContent(node2) {
+  if (!node2 || typeof node2 !== "object") return "";
+  if ("value" in node2 && typeof node2.value === "string") return node2.value;
+  if ("alt" in node2 && typeof node2.alt === "string") return node2.alt;
+  if ("children" in node2 && Array.isArray(node2.children)) return node2.children.map(getNodeTextContent).join("");
+  return "";
+}
+function encodeCharacterReference2(codePoint) {
+  return `&#x${(codePoint ?? 0).toString(16).toUpperCase()};`;
+}
+function encodeFirstCodePoint(value2) {
+  const [first = ""] = [...value2];
+  return encodeCharacterReference2(first.codePointAt(0) ?? codes.eof) + value2.slice(first.length);
+}
+function encodeLastCodePoint(value2) {
+  const characters2 = [...value2];
+  const last = characters2.pop();
+  return `${characters2.join("")}${encodeCharacterReference2(last?.codePointAt(0) ?? codes.eof)}`;
+}
+function codePointBeforeLast(value2) {
+  const characters2 = [...value2];
+  characters2.pop();
+  return characters2.at(-1)?.codePointAt(0) ?? codes.eof;
+}
+function firstCodePoint(value2) {
+  return value2.codePointAt(0) ?? codes.eof;
+}
+function lastCodePoint(value2) {
+  return [...value2].at(-1)?.codePointAt(0) ?? codes.eof;
+}
+var encodedBoundaryBeforeContext = {
+  current: encodedOutsideBoundary,
+  previous: codes.eof
+};
+var encodedBoundaryAfter = encodedInsideBoundary;
+
+// node_modules/remark-cjk-friendly/dist/serializeOnly.js
+function remarkCjkFriendly2() {
+  const data = this.data();
+  (data.toMarkdownExtensions || (data.toMarkdownExtensions = [])).push(cjkFriendlyToMarkdown());
+}
+
+// node_modules/remark-cjk-friendly/dist/bidi.js
+function remarkCjkFriendly3() {
+  remarkCjkFriendly.call(this);
+  remarkCjkFriendly2.call(this);
+}
+
+// node_modules/remark-cjk-friendly/dist/index.js
+var src_default = remarkCjkFriendly3;
 
 // node_modules/fault/index.js
 var import_format = __toESM(require_format(), 1);
@@ -15845,22 +17238,22 @@ function githubAlert(node2, src) {
   const first = node2.children[0];
   if (!first || first.type !== "paragraph")
     return;
-  const text8 = first.children[0];
-  if (!text8 || text8.type !== "text")
+  const text9 = first.children[0];
+  if (!text9 || text9.type !== "text")
     return;
-  const m = /^\[!([A-Za-z]+)\][ \t]*(\r?\n)?/.exec(text8.value);
+  const m = /^\[!([A-Za-z]+)\][ \t]*(\r?\n)?/.exec(text9.value);
   if (!m)
     return;
   const kind = ALERT_KINDS[m[1].toLowerCase()];
   if (!kind)
     return;
-  text8.value = text8.value.slice(m[0].length);
-  const pos = text8.position;
+  text9.value = text9.value.slice(m[0].length);
+  const pos = text9.position;
   if (pos?.start.offset !== void 0 && pos.end.offset !== void 0) {
-    const tail = src.slice(pos.end.offset - text8.value.length, pos.end.offset);
-    pos.start.offset = tail === text8.value ? pos.end.offset - text8.value.length : pos.start.offset + m[0].length;
+    const tail = src.slice(pos.end.offset - text9.value.length, pos.end.offset);
+    pos.start.offset = tail === text9.value ? pos.end.offset - text9.value.length : pos.start.offset + m[0].length;
   }
-  if (text8.value === "")
+  if (text9.value === "")
     first.children.shift();
   if (first.children.length === 0)
     node2.children.shift();
@@ -16400,7 +17793,7 @@ function mdvExtensions(src) {
 // packages/engine/dist/parse.js
 var processor;
 function parseMd(src) {
-  processor ??= unified().use(remarkParse).use(remarkGfm, { singleTilde: false }).use(remarkFrontmatter, ["yaml", "toml"]).use(remarkMath, { singleDollarTextMath: false }).use(remarkDirective).freeze();
+  processor ??= unified().use(remarkParse).use(remarkGfm, { singleTilde: false }).use(src_default).use(remarkFrontmatter, ["yaml", "toml"]).use(remarkMath, { singleDollarTextMath: false }).use(remarkDirective).freeze();
   const tree = processor.parse(src);
   mdvExtensions(src)(tree);
   return tree;
@@ -16944,31 +18337,31 @@ var TRANSPARENT = /* @__PURE__ */ new Set(["strong", "emphasis", "delete", "link
 var ATOMIC_TYPES = /* @__PURE__ */ new Set(["inlineCode", "image", "imageReference", "html", "footnoteReference", "inlineMath"]);
 function project(container) {
   const pieces = [];
-  let text8 = "";
+  let text9 = "";
   const walk = (parent) => {
     parent.children.forEach((child, childIndex) => {
       const node2 = child;
       if (node2.type === "text") {
-        pieces.push({ kind: "text", parent, childIndex, node: node2, start: text8.length, end: text8.length + node2.value.length });
-        text8 += node2.value;
+        pieces.push({ kind: "text", parent, childIndex, node: node2, start: text9.length, end: text9.length + node2.value.length });
+        text9 += node2.value;
       } else if (node2.type === "break") {
-        pieces.push({ kind: "atomic", parent, childIndex, node: node2, start: text8.length, end: text8.length + 1 });
-        text8 += "\n";
+        pieces.push({ kind: "atomic", parent, childIndex, node: node2, start: text9.length, end: text9.length + 1 });
+        text9 += "\n";
       } else if (ATOMIC_TYPES.has(node2.type)) {
-        pieces.push({ kind: "atomic", parent, childIndex, node: node2, start: text8.length, end: text8.length + 1 });
-        text8 += ATOMIC;
+        pieces.push({ kind: "atomic", parent, childIndex, node: node2, start: text9.length, end: text9.length + 1 });
+        text9 += ATOMIC;
       } else if (TRANSPARENT.has(node2.type) && "children" in node2) {
         walk(node2);
       } else if ("children" in node2) {
         walk(node2);
       } else if ("value" in node2 && typeof node2.value === "string") {
-        pieces.push({ kind: "atomic", parent, childIndex, node: node2, start: text8.length, end: text8.length + 1 });
-        text8 += ATOMIC;
+        pieces.push({ kind: "atomic", parent, childIndex, node: node2, start: text9.length, end: text9.length + 1 });
+        text9 += ATOMIC;
       }
     });
   };
   walk(container);
-  return { text: text8, pieces };
+  return { text: text9, pieces };
 }
 function atomKey(node2) {
   switch (node2.type) {
@@ -16992,24 +18385,24 @@ function atomKey(node2) {
   }
 }
 function contentText(container) {
-  let text8 = "";
+  let text9 = "";
   const walk = (parent) => {
     for (const child of parent.children) {
       const node2 = child;
       if (node2.type === "text")
-        text8 += node2.value;
+        text9 += node2.value;
       else if (node2.type === "break")
-        text8 += "\n";
+        text9 += "\n";
       else if (ATOMIC_TYPES.has(node2.type))
-        text8 += atomKey(node2);
+        text9 += atomKey(node2);
       else if ("children" in node2)
         walk(node2);
       else if ("value" in node2 && typeof node2.value === "string")
-        text8 += String(node2.value);
+        text9 += String(node2.value);
     }
   };
   walk(container);
-  return text8;
+  return text9;
 }
 var CJK_RE = /[⺀-鿿가-힯豈-﫿぀-ヿ]/;
 var hasCJK = (s2) => CJK_RE.test(s2);
@@ -17018,21 +18411,21 @@ function getSegmenter() {
   return segmenter ??= new Intl.Segmenter(void 0, { granularity: "word" });
 }
 var WORD_RE = /(\s+|[A-Za-z0-9_]+|￼|.)/gsu;
-function tokenize2(text8) {
+function tokenize2(text9) {
   const out = [];
-  if (!hasCJK(text8)) {
-    for (const m of text8.matchAll(WORD_RE)) {
+  if (!hasCJK(text9)) {
+    for (const m of text9.matchAll(WORD_RE)) {
       const t = m[0];
       out.push({ text: t, start: m.index, key: /^\s+$/.test(t) ? " " : t });
     }
     return out;
   }
   let i = 0;
-  while (i < text8.length) {
-    const next2 = text8.indexOf(ATOMIC, i);
-    const end = next2 === -1 ? text8.length : next2;
+  while (i < text9.length) {
+    const next2 = text9.indexOf(ATOMIC, i);
+    const end = next2 === -1 ? text9.length : next2;
     if (end > i) {
-      const chunk = text8.slice(i, end);
+      const chunk = text9.slice(i, end);
       for (const seg of getSegmenter().segment(chunk)) {
         const t = seg.segment;
         out.push({ text: t, start: i + seg.index, key: /^\s+$/.test(t) ? " " : t });
@@ -17569,11 +18962,11 @@ function rebuildNode(e) {
     const after = e.dels.filter((d) => d.local > 0).map((d) => del(d.children));
     return [...before, wrapped2, ...after];
   }
-  const text8 = piece.node.value;
+  const text9 = piece.node.value;
   const at = positionOf(piece.node);
-  const exact = at !== null && at.end - at.start === text8.length;
+  const exact = at !== null && at.end - at.start === text9.length;
   const placed2 = (s2, e2, value2) => at === null ? { type: "text", value: value2 } : { type: "text", value: value2, position: span(exact ? at.start + s2 : at.start, exact ? at.start + e2 : at.end) };
-  const cuts = /* @__PURE__ */ new Set([0, text8.length]);
+  const cuts = /* @__PURE__ */ new Set([0, text9.length]);
   for (const w of e.wraps) {
     cuts.add(w.s);
     cuts.add(w.e);
@@ -17590,7 +18983,7 @@ function rebuildNode(e) {
       out.push(del(e.dels[delIdx].children));
       delIdx++;
     }
-    const seg = text8.slice(s2, eEnd);
+    const seg = text9.slice(s2, eEnd);
     if (seg.length === 0)
       continue;
     const inIns = e.wraps.some((w) => s2 >= w.s && eEnd <= w.e);
@@ -17651,13 +19044,13 @@ function rowText(row) {
   return row.children.map((c) => contentText(c)).join("|");
 }
 function makeInfo(node2) {
-  const text8 = blockText(node2);
-  const bg = bigrams(text8);
+  const text9 = blockText(node2);
+  const bg = bigrams(text9);
   let bgSize = 0;
   for (const n of bg.values())
     bgSize += n;
   const type = node2.type === "yaml" ? "frontmatter" : node2.type;
-  return { node: node2, type, text: text8, bg, bgSize };
+  return { node: node2, type, text: text9, bg, bgSize };
 }
 function similarity(a, b) {
   if (a.type !== b.type)
@@ -17871,16 +19264,16 @@ function codeLineDiff(aValue, bValue) {
       const n = Math.min(dels.length, inss.length);
       for (let j = 0; j < n; j++)
         rows.push(...pairRows(dels[j], inss[j]));
-      for (const text8 of dels.slice(n))
-        rows.push({ k: "del", text: text8 });
-      for (const text8 of inss.slice(n))
-        rows.push({ k: "ins", text: text8 });
+      for (const text9 of dels.slice(n))
+        rows.push({ k: "del", text: text9 });
+      for (const text9 of inss.slice(n))
+        rows.push({ k: "ins", text: text9 });
       i++;
       continue;
     }
     const k = part.added ? "ins" : part.removed ? "del" : "ctx";
-    for (const text8 of linesOf2(part.value))
-      rows.push({ k, text: text8 });
+    for (const text9 of linesOf2(part.value))
+      rows.push({ k, text: text9 });
   }
   return rows;
 }
@@ -17918,9 +19311,9 @@ function shapeNote(a, b) {
     return `fence ${a.lang ?? "plain"} \u2192 ${b.lang ?? "plain"}`;
   return null;
 }
-function noteShape(node2, text8) {
-  if (text8)
-    (node2.data ??= {}).mdvNote = text8;
+function noteShape(node2, text9) {
+  if (text9)
+    (node2.data ??= {}).mdvNote = text9;
 }
 function structurallyEqual(a, b) {
   if (a.type !== b.type)
@@ -18062,12 +19455,12 @@ function mergeTable(a, b) {
   b.children = merged;
 }
 function rowInfo(row) {
-  const text8 = rowText(row);
-  const bg = bigrams(text8);
+  const text9 = rowText(row);
+  const bg = bigrams(text9);
   let bgSize = 0;
   for (const n of bg.values())
     bgSize += n;
-  return { node: row, type: "tableRow", text: text8, bg, bgSize };
+  return { node: row, type: "tableRow", text: text9, bg, bgSize };
 }
 function asDeleted(node2) {
   const shown = node2.type === "html" || node2.type === "yaml" ? asCode(node2, node2.type === "html" ? "html" : "yaml") : node2;
@@ -18185,7 +19578,7 @@ function strikethrough(state, node2) {
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/emphasis.js
-function emphasis2(state, node2) {
+function emphasis3(state, node2) {
   const result = {
     type: "element",
     tagName: "em",
@@ -18317,13 +19710,13 @@ function image2(state, node2) {
 
 // node_modules/mdast-util-to-hast/lib/handlers/inline-code.js
 function inlineCode2(state, node2) {
-  const text8 = { type: "text", value: node2.value.replace(/\r?\n|\r/g, " ") };
-  state.patch(node2, text8);
+  const text9 = { type: "text", value: node2.value.replace(/\r?\n|\r/g, " ") };
+  state.patch(node2, text9);
   const result = {
     type: "element",
     tagName: "code",
     properties: {},
-    children: [text8]
+    children: [text9]
   };
   state.patch(node2, result);
   return state.applyData(node2, result);
@@ -18474,7 +19867,7 @@ function root2(state, node2) {
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/strong.js
-function strong2(state, node2) {
+function strong3(state, node2) {
   const result = {
     type: "element",
     tagName: "strong",
@@ -18634,7 +20027,7 @@ function trimLine(value2, start, end) {
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/text.js
-function text5(state, node2) {
+function text6(state, node2) {
   const result = { type: "text", value: trimLines(String(node2.value)) };
   state.patch(node2, result);
   return state.applyData(node2, result);
@@ -18658,7 +20051,7 @@ var handlers = {
   break: hardBreak2,
   code: code3,
   delete: strikethrough,
-  emphasis: emphasis2,
+  emphasis: emphasis3,
   footnoteReference: footnoteReference2,
   heading: heading2,
   html: html2,
@@ -18672,11 +20065,11 @@ var handlers = {
   paragraph: paragraph2,
   // @ts-expect-error: root is different, but hard to type.
   root: root2,
-  strong: strong2,
+  strong: strong3,
   table,
   tableCell,
   tableRow,
-  text: text5,
+  text: text6,
   thematicBreak: thematicBreak3,
   toml: ignore,
   yaml: ignore,
@@ -20687,7 +22080,7 @@ function tbody2(node2, index2, parent) {
 }
 
 // node_modules/hast-util-to-html/lib/handle/element.js
-var constants = {
+var constants2 = {
   // See: <https://html.spec.whatwg.org/#attribute-name-state>.
   name: [
     ["	\n\f\r &/=>".split(""), "	\n\f\r \"&'/=>`".split("")],
@@ -20780,7 +22173,7 @@ function serializeAttribute(state, key2, value2) {
     info.attribute,
     Object.assign({}, state.settings.characterReferences, {
       // Always encode without parse errors in non-HTML.
-      subset: constants.name[x][y]
+      subset: constants2.name[x][y]
     })
   );
   if (value2 === true) return name;
@@ -20793,7 +22186,7 @@ function serializeAttribute(state, key2, value2) {
       value2,
       Object.assign({}, state.settings.characterReferences, {
         attribute: true,
-        subset: constants.unquoted[x][y]
+        subset: constants2.unquoted[x][y]
       })
     );
   }
@@ -20805,7 +22198,7 @@ function serializeAttribute(state, key2, value2) {
       value2,
       Object.assign({}, state.settings.characterReferences, {
         // Always encode without parse errors in non-HTML.
-        subset: (quote === "'" ? constants.single : constants.double)[x][y],
+        subset: (quote === "'" ? constants2.single : constants2.double)[x][y],
         attribute: true
       })
     ) + quote;
@@ -20815,7 +22208,7 @@ function serializeAttribute(state, key2, value2) {
 
 // node_modules/hast-util-to-html/lib/handle/text.js
 var textEntitySubset = ["<", "&"];
-function text6(node2, _, parent, state) {
+function text7(node2, _, parent, state) {
   return parent && parent.type === "element" && (parent.tagName === "script" || parent.tagName === "style") ? node2.value : stringifyEntities(
     node2.value,
     Object.assign({}, state.settings.characterReferences, {
@@ -20826,7 +22219,7 @@ function text6(node2, _, parent, state) {
 
 // node_modules/hast-util-to-html/lib/handle/raw.js
 function raw(node2, index2, parent, state) {
-  return state.settings.allowDangerousHtml ? node2.value : text6(node2, index2, parent, state);
+  return state.settings.allowDangerousHtml ? node2.value : text7(node2, index2, parent, state);
 }
 
 // node_modules/hast-util-to-html/lib/handle/root.js
@@ -20838,7 +22231,7 @@ function root3(node2, _1, _2, state) {
 var handle2 = zwitch("type", {
   invalid,
   unknown,
-  handlers: { comment, doctype, element, raw, root: root3, text: text6 }
+  handlers: { comment, doctype, element, raw, root: root3, text: text7 }
 });
 function invalid(node2) {
   throw new Error("Expected node, not `" + node2 + "`");
@@ -20912,14 +22305,14 @@ function walkWordDiff(before, after) {
   const steps = [];
   let b = 0;
   let a = 0;
-  const emit = (kind, text8) => {
-    if (text8.length === 0)
+  const emit = (kind, text9) => {
+    if (text9.length === 0)
       return;
-    steps.push({ kind, text: text8, before: b, after: a });
+    steps.push({ kind, text: text9, before: b, after: a });
     if (kind !== "ins")
-      b += text8.length;
+      b += text9.length;
     if (kind !== "del")
-      a += text8.length;
+      a += text9.length;
   };
   let removed = "";
   let added = "";
@@ -25971,22 +27364,22 @@ var defaultTreeAdapter = {
       node2.parentNode = null;
     }
   },
-  insertText(parentNode, text8) {
+  insertText(parentNode, text9) {
     if (parentNode.childNodes.length > 0) {
       const prevNode = parentNode.childNodes[parentNode.childNodes.length - 1];
       if (defaultTreeAdapter.isTextNode(prevNode)) {
-        prevNode.value += text8;
+        prevNode.value += text9;
         return;
       }
     }
-    defaultTreeAdapter.appendChild(parentNode, defaultTreeAdapter.createTextNode(text8));
+    defaultTreeAdapter.appendChild(parentNode, defaultTreeAdapter.createTextNode(text9));
   },
-  insertTextBefore(parentNode, text8, referenceNode) {
+  insertTextBefore(parentNode, text9, referenceNode) {
     const prevNode = parentNode.childNodes[parentNode.childNodes.indexOf(referenceNode) - 1];
     if (prevNode && defaultTreeAdapter.isTextNode(prevNode)) {
-      prevNode.value += text8;
+      prevNode.value += text9;
     } else {
-      defaultTreeAdapter.insertBefore(parentNode, defaultTreeAdapter.createTextNode(text8), referenceNode);
+      defaultTreeAdapter.insertBefore(parentNode, defaultTreeAdapter.createTextNode(text9), referenceNode);
     }
   },
   adoptAttributes(recipient, attrs) {
@@ -30126,7 +31519,7 @@ function transform(state, node2) {
         return root4(state, unsafe);
       }
       case "text": {
-        return text7(state, unsafe);
+        return text8(state, unsafe);
       }
       default:
     }
@@ -30193,7 +31586,7 @@ function root4(state, unsafe) {
   patch3(node2, unsafe);
   return node2;
 }
-function text7(_, unsafe) {
+function text8(_, unsafe) {
   const value2 = typeof unsafe.value === "string" ? unsafe.value : "";
   const node2 = { type: "text", value: value2 };
   patch3(node2, unsafe);
@@ -30840,11 +32233,11 @@ var VIEW_TITLE = {
   before: "the diagram as it was",
   after: "the diagram as it is now"
 };
-function escapeAttr(text8) {
-  return text8.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function escapeAttr(text9) {
+  return text9.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
-function escapeText2(text8) {
-  return text8.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+function escapeText2(text9) {
+  return text9.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 var rangeOf = (n) => {
   const a = n.position?.start?.offset;
@@ -31011,8 +32404,8 @@ function stripTags(html7) {
   }
   return out;
 }
-function decodeEntities(text8) {
-  return text8.replace(/&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/g, (whole, ref) => {
+function decodeEntities(text9) {
+  return text9.replace(/&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/g, (whole, ref) => {
     if (ref[0] === "#") {
       const code4 = ref[1] === "x" || ref[1] === "X" ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10);
       return Number.isFinite(code4) && code4 > 0 && code4 <= 1114111 ? String.fromCodePoint(code4) : whole;
@@ -31382,15 +32775,15 @@ function rotate(stateDir, file) {
 }
 function appendEvent(stateDir, line) {
   try {
-    let text8 = JSON.stringify(line);
-    if (text8.length > LINE_MAX) {
+    let text9 = JSON.stringify(line);
+    if (text9.length > LINE_MAX) {
       const { at, from, v, pid, via, was, kind } = line;
-      text8 = JSON.stringify({ at, from, v, pid, via, was, kind, cut: true });
+      text9 = JSON.stringify({ at, from, v, pid, via, was, kind, cut: true });
     }
     mkdirSync(stateDir, { recursive: true, mode: 448 });
     const file = join4(stateDir, EVENTS_FILE);
     rotate(stateDir, file);
-    appendFileSync(file, `${text8}
+    appendFileSync(file, `${text9}
 `, { encoding: "utf8", mode: 384 });
   } catch {
   }
@@ -31398,19 +32791,19 @@ function appendEvent(stateDir, line) {
 
 // packages/core/dist/server-identity.js
 import { spawn as spawn3 } from "node:child_process";
-function parseCredentialUsername(text8) {
-  for (const line of text8.split("\n")) {
+function parseCredentialUsername(text9) {
+  for (const line of text9.split("\n")) {
     const m = /^username=(.*)$/.exec(line.trim());
     if (m && m[1].trim())
       return m[1].trim();
   }
   return null;
 }
-function parseSshGreeting(text8) {
-  const gh = /\bHi ([A-Za-z0-9][A-Za-z0-9-]*)! You've successfully authenticated/.exec(text8);
+function parseSshGreeting(text9) {
+  const gh = /\bHi ([A-Za-z0-9][A-Za-z0-9-]*)! You've successfully authenticated/.exec(text9);
   if (gh)
     return gh[1];
-  const gl = /\bWelcome to [^,\n]+, @([A-Za-z0-9_.-]+)!/.exec(text8);
+  const gl = /\bWelcome to [^,\n]+, @([A-Za-z0-9_.-]+)!/.exec(text9);
   return gl ? gl[1] : null;
 }
 function remoteHost(remote) {
@@ -31885,9 +33278,9 @@ async function withLock(dir, fn, waitMs = 75e3) {
     }
   }
 }
-function writeAtomic(file, text8) {
+function writeAtomic(file, text9) {
   const tmp = `${file}.${process.pid}.${randomBytes(3).toString("hex")}.tmp`;
-  writeFileSync(tmp, text8, "utf8");
+  writeFileSync(tmp, text9, "utf8");
   renameSync2(tmp, file);
 }
 var canonical = (r) => `${JSON.stringify(r, null, 2)}
@@ -31905,12 +33298,12 @@ function drawable(a) {
   const str = (k) => x[k] === void 0 || typeof x[k] === "string";
   return typeof x.exact === "string" && num("start") && num("end") && str("prefix") && str("suffix");
 }
-function parseRecord(id, text8) {
+function parseRecord(id, text9) {
   if (!RECORD_ID.test(id))
     return { id, unreadable: true, why: "not a shared record id" };
   let r;
   try {
-    r = JSON.parse(text8);
+    r = JSON.parse(text9);
   } catch {
     return { id, unreadable: true, why: "not JSON" };
   }
@@ -33844,8 +35237,8 @@ async function sendCode(source, store, me, want) {
     throw new StoreError(`no tool for ${channel} on this machine to send the code \u2014 install your organisation's plugin`, "other");
   const code4 = String(randomBytes(4).readUInt32BE(0) % 1e6).padStart(6, "0");
   const project2 = basename2(source.repoRoot);
-  const text8 = `${me.name} <${me.email}> asked mdrev to send review notifications for ${project2} to this address. The code is ${code4}; it lasts ten minutes. If you did not ask, ignore this.`;
-  const failed = await sendWith(channel, tool, { name: me.name, email: me.email }, [{ to: want.email, why: "confirm", subject: `mdrev: your code is ${code4}`, text: text8 }], 3e4);
+  const text9 = `${me.name} <${me.email}> asked mdrev to send review notifications for ${project2} to this address. The code is ${code4}; it lasts ten minutes. If you did not ask, ignore this.`;
+  const failed = await sendWith(channel, tool, { name: me.name, email: me.email }, [{ to: want.email, why: "confirm", subject: `mdrev: your code is ${code4}`, text: text9 }], 3e4);
   if (failed.length > 0)
     throw new StoreError(`the code could not be sent to ${want.email} through ${channel}: ${failed[0].error}`, "other");
   writeAtomic(file, JSON.stringify({ email: want.email, ...want.path ? { path: want.path } : {}, hash: codeHash(code4), at: (/* @__PURE__ */ new Date()).toISOString(), via: channel }, null, 2));
@@ -34254,15 +35647,15 @@ async function upgradeAnchors(source, path2, annotations) {
   const textOf2 = async (a) => {
     const key2 = a.blob ?? "";
     if (!texts.has(key2)) {
-      let text8 = null;
+      let text9 = null;
       try {
-        text8 = (a.blob ? await source.readSnapshot(a.blob) : void 0) ?? null;
-        if (text8 === null && !a.blob)
-          text8 = await source.readBlob(WORKTREE2, path2);
+        text9 = (a.blob ? await source.readSnapshot(a.blob) : void 0) ?? null;
+        if (text9 === null && !a.blob)
+          text9 = await source.readBlob(WORKTREE2, path2);
       } catch {
-        text8 = null;
+        text9 = null;
       }
-      texts.set(key2, text8);
+      texts.set(key2, text9);
     }
     return texts.get(key2) ?? null;
   };
@@ -34328,13 +35721,13 @@ async function collectNotes(source, q = {}) {
     for (const annotation of annotations) {
       if (!inScope(annotation, q))
         continue;
-      const text8 = spaceOf(annotation.anchor) === "source" ? src : rendered;
-      const m = await mapFromBase(source, annotation, text8, bases) ?? resolveAnchor(text8, annotation.anchor);
+      const text9 = spaceOf(annotation.anchor) === "source" ? src : rendered;
+      const m = await mapFromBase(source, annotation, text9, bases) ?? resolveAnchor(text9, annotation.anchor);
       out.push({
         path: path2,
         annotation,
         state: m.state,
-        ...m.start !== void 0 ? { currentText: text8.slice(m.start, m.end) } : {},
+        ...m.start !== void 0 ? { currentText: text9.slice(m.start, m.end) } : {},
         ...await closingSubjectOf(source, annotation, subjects)
       });
     }
@@ -34384,8 +35777,8 @@ async function closingSubjectOf(source, annotation, subjects) {
   const hit = subjects.get(sha);
   return hit ? { closingSubject: hit } : {};
 }
-function anchoredIn(text8, anchor) {
-  return text8.slice(anchor.start, anchor.end) === anchor.exact;
+function anchoredIn(text9, anchor) {
+  return text9.slice(anchor.start, anchor.end) === anchor.exact;
 }
 async function closeNote(source, id, status, note, by, who = CLI) {
   if (isSharedId(id)) {
@@ -34498,7 +35891,7 @@ var STATE_LABEL = {
   changed: "TEXT CHANGED since the note",
   orphaned: "TEXT GONE"
 };
-var hang = (text8, col) => text8.replace(/\r?\n/g, `
+var hang = (text9, col) => text9.replace(/\r?\n/g, `
 ${" ".repeat(col)}`);
 function formatNotes(views) {
   if (views.length === 0)
@@ -34818,8 +36211,8 @@ var Review = class {
     const source = await this.registry.get(args.root);
     if (!/^[0-9a-f]{40}$/.test(args.blob))
       throw new GitError("a snapshot is named by its blob");
-    const text8 = await source.readSnapshot(args.blob);
-    return text8 === void 0 ? void 0 : { blob: args.blob, text: text8 };
+    const text9 = await source.readSnapshot(args.blob);
+    return text9 === void 0 ? void 0 : { blob: args.blob, text: text9 };
   }
   /** Notes on one document, exactly as stored. */
   async annotations(args) {
@@ -35003,13 +36396,13 @@ async function canonicalAnchor(source, blob, anchor) {
     const src = await source.readSnapshot(blob);
     if (src === void 0)
       return null;
-    const text8 = plainTextOf(renderPlain(src).html);
-    if (text8.slice(anchor.start, anchor.end) === anchor.exact)
+    const text9 = plainTextOf(renderPlain(src).html);
+    if (text9.slice(anchor.start, anchor.end) === anchor.exact)
       return null;
-    const m = resolveAnchor(text8, anchor);
+    const m = resolveAnchor(text9, anchor);
     if (m.start === void 0 || m.end === void 0 || m.state === "orphaned")
       return null;
-    return { ...buildAnchor(text8, m.start, m.end, anchor.trail), exact: anchor.exact };
+    return { ...buildAnchor(text9, m.start, m.end, anchor.trail), exact: anchor.exact };
   } catch {
     return null;
   }

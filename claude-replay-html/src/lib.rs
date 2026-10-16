@@ -13,10 +13,11 @@ pub use html_export::shared::{inline_all as shared_inline_all, shared_source, SH
 pub use html_export::pairing;
 pub use html_export::{
     display_title, dump_all_html, dump_html, existing_server, get_request, handoff_url,
-    install_mdrev, mdrev_version, mint_token, query_get, serve, service_routes, spawn_listener,
-    spawn_listener_gated, spawn_streaming_listener_gated, start_server, AuthGate, EventStream,
-    HostCheck, HttpReply, HttpResponse, LiveServer, MdrevKit, PageChrome, Request, RootLock,
-    RouteHandler, ServiceConfig, SessionService, StaleEpoch, StreamingRouteHandler,
+    install_mdrev, mdrev_version, mermaid_runtime_path, mint_token, query_get, serve,
+    service_routes, spawn_listener, spawn_listener_gated, spawn_streaming_listener_gated,
+    start_server, AuthGate, EventStream, HostCheck, HttpReply, HttpResponse, LiveServer, MdrevKit,
+    PageChrome, Request, RootLock, RouteHandler, ServiceConfig, SessionService, StaleEpoch,
+    StreamingRouteHandler,
 };
 
 pub use html_export::render_markdown;

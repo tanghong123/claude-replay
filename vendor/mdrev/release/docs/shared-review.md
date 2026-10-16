@@ -686,7 +686,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.38",
+  "mdrev": "1.1.45",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -740,7 +740,12 @@ unpushed records, edit on your unresolved local notes, hide and unhide on
 your pushed records, click-to-copy on every note's and comment's id, and a
 **Push** button with the count of unpushed records, which opens the list D2
 describes — each record opening to its whole text, under the pairing it goes
-as — before it sends anything. While a document is open, the viewer
+as — before it sends anything. A thread holding a record of yours not pushed
+yet says so on its card, with a Push beside it that opens the same list; a
+shared note's card opens when it is saved, so the first thing seen after
+Share is that nothing has gone; and the Push button's bar washes in the shared
+colour each time its count rises (#s85: a reviewer shared notes, took them
+for sent, and found Push hours later in the corner). While a document is open, the viewer
 fetches about once a minute, less often after failures. A machine that has
 not paired offers nothing shared: it shows a pairing an agent asked for, to
 confirm, with what the store's server said of the email; a line saying the

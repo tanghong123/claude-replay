@@ -1,10 +1,11 @@
 # vendor/
 
 Third-party code this repository builds in, kept here because it cannot be a Cargo dependency.
-Today that is one thing: [`mdrev/`](mdrev/), the pinned release of mdrev whose embedded viewer shows
-Markdown in the monitors' preview pane (#270, #274). This page covers where it comes from, why it
-is vendored rather than fetched, and how it is expected to change. [`mdrev/README.md`](mdrev/README.md)
-has the current pin's provenance table and the details of the update script.
+[`mdrev/`](mdrev/) is the pinned release whose embedded viewer shows Markdown in the monitors'
+preview pane (#270, #274). [`mermaid/`](mermaid/) is the public Mermaid browser runtime that the
+HTML crate uses to render diagrams directly inside transcript messages, independently of mdrev.
+Both are unmodified public releases, checksummed and embedded at build time. Their READMEs record
+the exact pins and update procedures. The remaining sections describe the mdrev embedding kit.
 
 ## Where mdrev comes from
 

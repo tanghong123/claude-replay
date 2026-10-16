@@ -2122,6 +2122,7 @@
     afterMount(fresh) {
       fresh.forEach(postMat);   // writes only — no layout reads
       clampBatch(fresh);        // one batched read pass, then all the writes
+      fresh.forEach(root => shared.renderMermaid(root, () => this.readerReshaped()));
     }
     get following() { return following; }
     set following(value) {
@@ -3289,6 +3290,10 @@
     var walker = document.createTreeWalker(blk, NodeFilter.SHOW_TEXT, null);
     var nodes = [], n;
     while ((n = walker.nextNode())) {
+      // Diagram SVG is generated presentation: its CSS and repeated labels are not
+      // Markdown search hits. Mark the preserved source instead of rewriting SVG text.
+      if (n.parentElement && (n.parentElement.closest(".mermaid-diagram")
+          || /^(STYLE|SCRIPT)$/.test(n.parentElement.tagName))) continue;
       var owner = n.parentElement && n.parentElement.closest(".blk");
       // A tool facet marks only inside the call it names (#292) — the same part-precision the
       // count has, so what is highlighted and what is counted cannot disagree.
@@ -3446,6 +3451,7 @@
   // Expand the whole enclosing chain first, recording small cap expansions exactly
   // like a click would (#67) so they survive rematerialization.
   function revealMark(m) {
+    shared.revealMermaidSource(m);
     for (var p = m.parentElement; p; p = p.parentElement) {
       if (p.classList.contains("more") && !p.classList.contains("shown")) {
         var btn = document.querySelector('.morebtn[data-more="' + p.id + '"]');
