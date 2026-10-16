@@ -268,6 +268,9 @@ struct Row {
     /// (measured: mtime today, last content three weeks old), so mtime is when the FILE
     /// moved, not when the SESSION did.
     tree_mtime: Option<SystemTime>,
+    /// The transcript's length at the last scan, the other half of the trigger: an append in
+    /// the same coarse clock tick as the last scan leaves the mtime unchanged (#s136).
+    transcript_len: Option<u64>,
     /// The last CONTENT timestamp in the transcript's tail — what "activity" actually
     /// means. Re-derived only when the mtime trigger fires; drives the display, the
     /// active-bucket ordering, and the growth diff.
@@ -629,8 +632,8 @@ impl Index {
         st.snapshot.clone()
     }
 
-    /// One scan cycle: incremental by mtime (§8) — a session whose tree did not move costs
-    /// two `stat`s and nothing else.
+    /// One scan cycle: incremental by mtime and length (§8) — a session whose tree did not
+    /// move costs three `stat`s and nothing else.
     fn scan(&self, st: &mut State, register: &dyn Fn(&Path)) {
         // Liveness refresh on its own slower clock (§5.1).
         if st.procs_at.is_none_or(|t| t.elapsed() > PROC_REFRESH) {
@@ -649,6 +652,7 @@ impl Index {
                 seen.push(sid.clone());
                 register(&path);
                 let now_mtime = latest_tree_activity(&path);
+                let now_len = std::fs::metadata(&path).map(|m| m.len()).ok();
                 let row = st.rows.entry(sid).or_insert_with(|| Row {
                     path: path.clone(),
                     agent: a.agent(),
@@ -656,6 +660,7 @@ impl Index {
                     repo: discover::repo_root(&path).map(|p| p.display().to_string()),
                     title: String::new(),
                     tree_mtime: None,
+                    transcript_len: None,
                     last_event: None,
                     first_event: None,
                     start_probed: false,
@@ -676,8 +681,10 @@ impl Index {
                 // without appending, and trusting mtime made three-week-old sessions read
                 // "13m" and flip growing on housekeeping. The first sighting sets the
                 // baseline without claiming growth — a monitor started over an idle
-                // machine must not paint everything green.
-                if row.tree_mtime != now_mtime {
+                // machine must not paint everything green. The transcript's length is part
+                // of the trigger (#s136): Linux stamps mtimes from a coarse clock, so an
+                // append in the same tick as the last scan leaves the mtime where it was.
+                if row.tree_mtime != now_mtime || row.transcript_len != now_len {
                     let prev_event = row.last_event;
                     row.last_event = last_event_ts(&row.path).or(row.last_event);
                     if !row.start_probed {
@@ -695,16 +702,17 @@ impl Index {
                         // No content clock at all (a transcript format with no timestamps):
                         // fall back to the mtime diff rather than never showing growth.
                         (None, None) => {
-                            if let (Some(prev), Some(now_m)) = (row.tree_mtime, now_mtime) {
-                                if now_m > prev {
-                                    row.grew_at = Some(Instant::now());
-                                }
+                            let moved = row.tree_mtime.zip(now_mtime).is_some_and(|(p, n)| n > p)
+                                || row.transcript_len.zip(now_len).is_some_and(|(p, n)| n > p);
+                            if moved {
+                                row.grew_at = Some(Instant::now());
                             }
                         }
                         _ => {} // the clock just appeared — a baseline, not growth
                     }
                 }
                 row.tree_mtime = now_mtime;
+                row.transcript_len = now_len;
                 // #142: which session this one was forked from. Read ONCE — a fork's origin
                 // is fixed when it is created, so no later write changes the answer.
                 if !row.fork_probed {
@@ -3244,17 +3252,35 @@ mod tests {
 
         // Real growth: a new line with a LATER content timestamp.
         std::thread::sleep(Duration::from_millis(2100));
+        let held = SystemTime::now() + Duration::from_secs(4);
         {
             use std::io::Write;
             let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
             f.write_all(line("more", &ts1).as_bytes()).unwrap();
-            f.set_modified(SystemTime::now() + Duration::from_secs(4))
-                .unwrap();
+            f.set_modified(held).unwrap();
         }
         let r = find(&idx.sessions_json(|_| {}));
         assert_eq!(
             r["state"], "growing",
             "a later content clock IS growth: {r}"
+        );
+
+        // #s136: an append that leaves the mtime where it was is still read. Linux stamps
+        // mtimes from a coarse clock, so an append in the tick of the last scan looks like
+        // no change at all when the mtime is the only trigger.
+        std::thread::sleep(Duration::from_millis(2100));
+        let ts2 = iso_utc(SystemTime::now() - Duration::from_secs(6600));
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+            f.write_all(line("and more", &ts2).as_bytes()).unwrap();
+            f.set_modified(held).unwrap();
+        }
+        let r = find(&idx.sessions_json(|_| {}));
+        assert_eq!(
+            r["activityTs"].as_u64().unwrap(),
+            crate::index::metrics::parse_ts(&ts2).unwrap() as u64,
+            "an append within the mtime's tick still moves the activity clock: {r}"
         );
 
         // A visit: a meta stream at the monitor root turns the row visited, with counters
@@ -4099,6 +4125,7 @@ mod tests {
             repo: None,
             title: "t".into(),
             tree_mtime: None,
+            transcript_len: None,
             last_event: None,
             first_event: None,
             start_probed: true,
