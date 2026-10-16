@@ -1,6 +1,6 @@
 /* claude-replay HTML export — self-contained stylesheet.
    Light values are the default; the dark set swaps on :root[data-theme="dark"]
-   (the theme toggle stamps that attribute and persists it in localStorage).
+   (the theme toggle stamps that attribute and remembers it in the page's store).
    Tokens and values come from design/html-dump/html-export-spec.md §5. */
 
 :root {

@@ -61,6 +61,28 @@ pub use serve::{
 const CSS: &str = include_str!("../html/export.css");
 const JS: &str = include_str!("../html/export.js");
 
+/// Where a page keeps its theme, reading preferences, folds and view (#s124). Every page reaches
+/// the browser's stores only through `crPageStore`, emitted ahead of `export.js`; an export for a
+/// frame sandboxed without its origin (where every store throws, and a host's lint flags the very
+/// names) takes the in-memory one, and its text then names no browser store at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PageStore {
+    /// The browser's own stores, each access guarded: the default, and every served page's.
+    #[default]
+    Browser,
+    /// Memory for the page's life (`--no-storage`).
+    Memory,
+}
+
+impl PageStore {
+    fn script(self) -> &'static str {
+        match self {
+            PageStore::Browser => include_str!("../html/page-store.js"),
+            PageStore::Memory => include_str!("../html/page-store-memory.js"),
+        }
+    }
+}
+
 /// Rows of a diff shown before the `⋯ N more lines` expander.
 const DIFF_PREVIEW: usize = 12;
 /// Lines of tool output shown before the expander.
@@ -2108,8 +2130,15 @@ fn build_jsonl_inner(
 
 /// The page shell: embedded CSS, the inline snapshot, the renderer, and (in live
 /// mode) the companion path + poll interval the renderer appends from.
-fn build_html(title: &str, jsonl: &str, turns: &[SideEntry], live: Option<&str>) -> String {
-    build_page(title, jsonl, turns, live, None, None, false)
+/// `store` is where the page keeps its state (#s124): the browser's stores, or memory.
+pub(super) fn build_html(
+    title: &str,
+    jsonl: &str,
+    turns: &[SideEntry],
+    live: Option<&str>,
+    store: PageStore,
+) -> String {
+    build_page(title, jsonl, turns, live, None, None, false, store)
 }
 
 /// The shared shell for a multi-file bundle (`--dump-all-html` / served `--html`): no
@@ -2125,11 +2154,17 @@ pub(super) fn build_shell(title: &str, root_id: &str, live: bool, pull: bool) ->
         Some((root_id, live, pull)),
         None,
         false,
+        PageStore::Browser,
     )
 }
 
 /// An offline directory shell knows whether any root or child stream needs Mermaid.
-pub(super) fn build_bundle_shell(title: &str, root_id: &str, has_mermaid: bool) -> String {
+pub(super) fn build_bundle_shell(
+    title: &str,
+    root_id: &str,
+    has_mermaid: bool,
+    store: PageStore,
+) -> String {
     build_page(
         title,
         "",
@@ -2138,6 +2173,7 @@ pub(super) fn build_bundle_shell(title: &str, root_id: &str, has_mermaid: bool) 
         Some((root_id, false, false)),
         None,
         has_mermaid,
+        store,
     )
 }
 
@@ -2196,12 +2232,14 @@ pub(super) fn build_shell_chrome(title: &str, root_id: &str, chrome: &PageChrome
         Some((root_id, true, true)),
         Some(chrome),
         false,
+        PageStore::Browser,
     )
 }
 
 /// The page template. `multi` = Some((root_id, live)) makes it a multi-file shell (fetch
 /// `?session=<id>`.jsonl, polling when `live`); None inlines `jsonl` + the server-rendered
 /// `turns` sidebar.
+#[allow(clippy::too_many_arguments)]
 fn build_page(
     title: &str,
     jsonl: &str,
@@ -2210,7 +2248,9 @@ fn build_page(
     multi: Option<(&str, bool, bool)>,
     chrome: Option<&PageChrome>,
     bundle_has_mermaid: bool,
+    store: PageStore,
 ) -> String {
+    let page_store = store.script();
     let sidebar: String = turns
         .iter()
         .map(|e| {
@@ -2426,7 +2466,7 @@ fn build_page(
 {shared_js}
 </script>
 {mermaid_runtime}<script>
-{JS}
+{page_store}{JS}
 </script>
 {chrome_stamp}</body>
 </html>
@@ -3921,6 +3961,50 @@ mod tests {
         assert_eq!(query_get("session=a1", "from"), None);
     }
 
+    /// #s124: an export for a frame sandboxed without its origin names none of the browser's
+    /// stores — not even guarded, since a host's lint matches the text — and keeps its state in
+    /// memory; the default page still reaches them through the one page store. A diagram's page
+    /// is checked too, because it inlines the vendored Mermaid runtime.
+    #[test]
+    fn a_no_storage_page_names_no_browser_store() {
+        const NAMES: [&str; 4] = [
+            "localStorage",
+            "sessionStorage",
+            "indexedDB",
+            "document.cookie",
+        ];
+        let named =
+            |text: &str| -> Vec<&str> { NAMES.into_iter().filter(|n| text.contains(n)).collect() };
+        let diagram = serde_json::json!({"h": md_html("```mermaid\nflowchart LR\n A --> B\n```")})
+            .to_string();
+        for jsonl in ["{}", diagram.as_str()] {
+            let memory = build_html("t", jsonl, &[], None, PageStore::Memory);
+            assert!(
+                memory.contains("var crPageStore"),
+                "the memory store is emitted"
+            );
+            assert_eq!(named(&memory), Vec::<&str>::new(), "a --no-storage page");
+            let browser = build_html("t", jsonl, &[], None, PageStore::Browser);
+            assert_eq!(named(&browser), vec!["localStorage", "sessionStorage"]);
+        }
+        assert!(build_html("t", &diagram, &[], None, PageStore::Memory)
+            .contains("id=\"mermaid-runtime\""));
+        // Only the page store may name them: the renderer, its stylesheet, every shared module
+        // the pages inline, and the bundle shell all reach a store through `crPageStore`.
+        for (source, text) in [
+            ("export.js", JS),
+            ("export.css", CSS),
+            ("shared modules", &super::shared::inline_all()),
+            ("page-store-memory.js", PageStore::Memory.script()),
+        ] {
+            assert_eq!(named(text), Vec::<&str>::new(), "{source}");
+        }
+        assert_eq!(
+            named(&build_bundle_shell("t", "root", false, PageStore::Memory)),
+            Vec::<&str>::new()
+        );
+    }
+
     /// The multi-file shell carries `data-multi`/`data-root` and no inline snapshot;
     /// `live` adds `data-poll` (what `--html` serves); a dump's page omits it.
     #[test]
@@ -5083,7 +5167,7 @@ mod tests {
 
         // The page wrapper must also neutralize a literal `</script>` in the
         // payload so it can't close the data island early.
-        let page = build_html("t", "{\"x\":\"</script>\"}", &[], None);
+        let page = build_html("t", "{\"x\":\"</script>\"}", &[], None, PageStore::Browser);
         assert!(
             !page.contains("\"</script>\"}"),
             "payload </script> broken up"
@@ -6450,11 +6534,17 @@ mod tests {
 
     #[test]
     fn live_mode_wires_the_companion_poll() {
-        let page = build_html("t", "{\"t\":\"meta\"}", &[], Some("run.jsonl"));
+        let page = build_html(
+            "t",
+            "{\"t\":\"meta\"}",
+            &[],
+            Some("run.jsonl"),
+            PageStore::Browser,
+        );
         assert!(page.contains("<body data-src=\"run.jsonl\" data-poll="));
         assert!(page.contains(&format!("data-poll=\"{POLL_MS}\"")));
         // A one-off export's <body> carries no companion attributes.
-        let oneoff = build_html("t", "{}", &[], None);
+        let oneoff = build_html("t", "{}", &[], None, PageStore::Browser);
         assert!(oneoff.contains("<body>"), "plain body tag, no data-src");
     }
 

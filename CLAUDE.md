@@ -1004,7 +1004,10 @@ session picker · `clipboard.rs`. Only `app`/`view` are public.
 render core · `bundle.rs` the `--dump-html`/`--dump-all-html` offline writers · `serve.rs` the
 `--html` live server, which always tails; it serves over a loopback HTTP server since a
 `file://` page can't `fetch`) → one self-contained `.html` (fixed shell + `html/export.{css,js}` embedded; Rust
-emits a JSON block stream, the JS renders it).
+emits a JSON block stream, the JS renders it). Every page reaches the browser's stores only through `crPageStore`
+(`html/page-store.js`, emitted ahead of `export.js`); `--no-storage` swaps in `page-store-memory.js`
+for a frame sandboxed without its origin, where every store throws and a host's lint flags the names,
+and `a_no_storage_page_names_no_browser_store` holds every other page source to naming none (#s124).
 
 The stream is **append-only almost always, and the exception matters** (#165). A live delta
 carries `changed_from` — the index from which records were REWRITTEN — and the one thing that

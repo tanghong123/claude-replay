@@ -81,6 +81,9 @@ export class Viewport extends VirtualWindow {
       frame: elementFrame(scroller),
       mount: { top, window: mounted, bottom, content: inner },
       overscan: OVERSCAN,
+      // The viewport trace's stored switch (#192): the host reads it, so the shared engine,
+      // which the offline export inlines too, touches no store (#s124).
+      traceStored: (() => { try { return localStorage.getItem("viewportTrace"); } catch (e) { return null; } })(),
       // Rule 7's hysteresis (#127): acquiring the pin needs the true end, KEEPING it only the
       // old slack. Held at the true end too, a nudge of three pixels dropped the tail — which
       // is what this shell did, where the classic page has held at 80 since #103.

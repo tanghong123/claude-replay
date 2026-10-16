@@ -5,7 +5,7 @@
 
 use super::{
     build_bundle_shell, build_html, child_info, display_title, render_agent_stream,
-    render_snapshot, session_id, AgentInfo, AssetSink, ChildRef,
+    render_snapshot, session_id, AgentInfo, AssetSink, ChildRef, PageStore,
 };
 use crate::fold::FoldPolicy;
 use crate::{discover, Agent, Args};
@@ -60,6 +60,15 @@ fn masked(args: &Args, jsonl: String) -> String {
     String::from_utf8(bytes).unwrap_or_default()
 }
 
+/// The store a dumped page keeps its state in: memory under `--no-storage` (#s124).
+fn page_store(args: &Args) -> PageStore {
+    if args.no_storage {
+        PageStore::Memory
+    } else {
+        PageStore::Browser
+    }
+}
+
 /// Entry point for `--dump-html`. Writes a shareable file → no reveal-in-Finder
 /// path links (their absolute `file://` paths don't resolve on another machine).
 pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
@@ -74,7 +83,10 @@ pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
     // `--dump-html -` streams the page to stdout (pipes / tests); never live.
     let stem = match args.dump_html.as_ref().and_then(|o| o.as_deref()) {
         Some("-") => {
-            print!("{}", build_html(&title, &jsonl, &turns, None));
+            print!(
+                "{}",
+                build_html(&title, &jsonl, &turns, None, page_store(args))
+            );
             return Ok(());
         }
         Some(s) => s.to_string(),
@@ -86,8 +98,11 @@ pub fn dump_html(args: &Args, path: &Path) -> Result<()> {
     // the durable cache with it; the companion-file variant was a second, uncached way to do
     // the same thing.
     let html_path = format!("{stem}.html");
-    std::fs::write(&html_path, build_html(&title, &jsonl, &turns, None))
-        .with_context(|| format!("write {html_path}"))?;
+    std::fs::write(
+        &html_path,
+        build_html(&title, &jsonl, &turns, None, page_store(args)),
+    )
+    .with_context(|| format!("write {html_path}"))?;
     eprintln!("wrote {html_path}");
     println!("{stem}");
     Ok(())
@@ -201,7 +216,7 @@ pub fn dump_all_html(args: &Args, path: &Path) -> Result<()> {
     }
     std::fs::write(
         out_dir.join("index.html"),
-        build_bundle_shell(&title, &root_id, has_mermaid),
+        build_bundle_shell(&title, &root_id, has_mermaid, page_store(args)),
     )
     .with_context(|| "write index.html")?;
 

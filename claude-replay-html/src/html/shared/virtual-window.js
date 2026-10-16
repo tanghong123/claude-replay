@@ -190,7 +190,8 @@ class HeightGuess {
 }
 
 /** Is the viewport trace on (#192)? Decided from the page's own URL and storage — `?trace=viewport`
- *  for one load, `localStorage.viewportTrace = "1"` to keep it across reloads — and pure, so the
+ *  for one load, a stored `viewportTrace` of "1" to keep it across reloads (the host reads it and
+ *  passes it as `options.traceStored`, #s124, so this module touches no store) — and pure, so the
  *  contract can ask it without a browser. Off, the engine records nothing: `trace()` returns on one
  *  boolean before an entry exists, though every seam still evaluates the fields it passes (an object
  *  literal and a few rounded reads) — negligible, not zero. */
@@ -412,8 +413,7 @@ class VirtualWindow {
     // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
     // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
     // on the console under one prefix. On by the page's URL or storage; `options.trace` overrides.
-    let stored = null;
-    try { stored = typeof localStorage === "undefined" ? null : localStorage.getItem("viewportTrace"); } catch (e) { stored = null; }
+    const stored = options.traceStored == null ? null : String(options.traceStored);
     this.tracing = options.trace != null ? !!options.trace : traceWanted(typeof location === "undefined" ? "" : location.search, stored);
     this.traceSeq = 0;
     if (this.tracing && typeof window !== "undefined") window.__viewportTrace = window.__viewportTrace || [];
