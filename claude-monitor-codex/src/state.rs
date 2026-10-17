@@ -625,6 +625,17 @@ impl State {
         let thread_id = params["threadId"]
             .as_str()
             .or_else(|| params["thread"]["id"].as_str());
+        if thread_id.is_none() {
+            // This stage consumes no global native payloads. Keep the allowlist empty;
+            // add a specific sanitized projection only when a browser consumer needs it.
+            // Request-resolution is the exception: it must name a request already owned here.
+            if method != "serverRequest/resolved"
+                || message.get("id").is_some()
+                || !self.pending.contains_key(&id_key(&params["requestId"]))
+            {
+                return;
+            }
+        }
         if matches!(method, "thread/archived" | "thread/unarchived") {
             // A cold archived read has no loaded cache yet. Even an unscoped native
             // archive notification must invalidate its in-flight inventory proof.
@@ -996,7 +1007,12 @@ impl State {
                 self.retain_plans_for_history(thread_id, Some(self.sequence + 1));
             }
         }
-        self.emit(method, params.clone(), message.get("id").cloned());
+        let visible = if thread_id.is_none() {
+            json!({"requestId":params["requestId"]})
+        } else {
+            params.clone()
+        };
+        self.emit(method, visible, message.get("id").cloned());
     }
 
     /// Legacy history aliases and Core event IDs have no identity mapping.
@@ -2479,5 +2495,37 @@ mod tests {
         assert_eq!(items[2]["aggregatedOutput"], "output");
         assert_eq!(items[3]["changes"][0]["diff"], "+new");
         assert_eq!(snapshot["sequence"], 6);
+    }
+    #[test]
+    fn global_notifications_are_private_and_owned_resolution_is_sanitized() {
+        let mut state = State::connecting(vec![], "global-test".into());
+        state.connection = Connection::Connected;
+        state.subscribed.insert("owned".into());
+        let (_, events) = state.subscribe();
+        for method in [
+            "account/updated",
+            "account/login/completed",
+            "fuzzyFileSearch/sessionUpdated",
+            "command/exec/outputDelta",
+            "future/global",
+            "serverRequest/resolved",
+        ] {
+            state.reduce(
+                &json!({"method":method,"params":{"requestId":99,"secret":"private sentinel"}}),
+            );
+        }
+        assert!(events.try_recv().is_err());
+        state
+            .pending
+            .insert(id_key(&json!(7)), json!({"params":{"threadId":"owned"}}));
+        state.reduce(&json!({"method":"serverRequest/resolved","params":{"requestId":7,"secret":"private sentinel"}}));
+        let event = events.try_recv().unwrap();
+        assert_eq!(event["params"], json!({"requestId":7}));
+        assert!(!state.pending.contains_key(&id_key(&json!(7))));
+        state.reduce(&json!({"method":"thread/name/updated","params":{"threadId":"owned","threadName":"visible"}}));
+        assert_eq!(
+            events.try_recv().unwrap()["params"]["threadName"],
+            "visible"
+        );
     }
 }

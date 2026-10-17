@@ -1,5 +1,6 @@
 //! A single native WebSocket owner. HTTP handlers never read or write its socket.
 
+use super::auth::ServerToken;
 use super::state::{id_key, Connection, State};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -9,7 +10,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tungstenite::{
-    client::client_with_config, protocol::WebSocketConfig, Error, Message, WebSocket,
+    client::{client_with_config, IntoClientRequest},
+    protocol::WebSocketConfig,
+    Error, Message, WebSocket,
 };
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(20);
@@ -314,39 +317,95 @@ pub(super) fn respond(
     })
 }
 
-fn socket(endpoint: &str) -> Result<WebSocket<TcpStream>, String> {
-    let uri: tungstenite::http::Uri = endpoint
-        .parse()
-        .map_err(|e| format!("Invalid WebSocket endpoint: {e}"))?;
+enum ConnectError {
+    Unauthorized,
+    Other(String),
+}
+
+impl From<std::io::Error> for ConnectError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Other(error.to_string())
+    }
+}
+
+fn handshake(
+    endpoint: &str,
+    token: Option<&ServerToken>,
+) -> Result<WebSocket<TcpStream>, ConnectError> {
+    let mut request = endpoint
+        .into_client_request()
+        .map_err(|_| ConnectError::Other("Invalid WebSocket endpoint".into()))?;
+    let uri = request.uri();
     let host = uri
         .host()
-        .ok_or("WebSocket endpoint has no host")?
+        .ok_or_else(|| ConnectError::Other("WebSocket endpoint has no host".into()))?
         .trim_start_matches('[')
         .trim_end_matches(']');
     let port = uri.port_u16().unwrap_or(80);
     let address = (host, port)
-        .to_socket_addrs()
-        .map_err(|e| e.to_string())?
+        .to_socket_addrs()?
         .find(|address| address.ip().is_loopback())
-        .ok_or("WebSocket endpoint must resolve to loopback")?;
-    let stream =
-        TcpStream::connect_timeout(&address, Duration::from_secs(2)).map_err(|e| e.to_string())?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .map_err(|e| e.to_string())?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
-        .map_err(|e| e.to_string())?;
+        .ok_or_else(|| ConnectError::Other("WebSocket endpoint must resolve to loopback".into()))?;
+    let stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    if let Some(token) = token {
+        request
+            .headers_mut()
+            .insert(tungstenite::http::header::AUTHORIZATION, token.bearer());
+    }
     let config = WebSocketConfig::default()
         .max_frame_size(Some(NATIVE_RPC_BYTES))
         .max_message_size(Some(NATIVE_RPC_BYTES));
-    let (socket, _) =
-        client_with_config(endpoint, stream, Some(config)).map_err(|e| e.to_string())?;
+    let (socket, _) = client_with_config(request, stream, Some(config)).map_err(|error| {
+        // A peer can echo a credential in headers/body. Never include handshake data in logs.
+        match error {
+            tungstenite::HandshakeError::Failure(Error::Http(response))
+                if response.status() == tungstenite::http::StatusCode::UNAUTHORIZED =>
+            {
+                ConnectError::Unauthorized
+            }
+            tungstenite::HandshakeError::Failure(Error::Http(response)) => {
+                ConnectError::Other(format!(
+                    "Native WebSocket handshake refused with HTTP {}",
+                    response.status().as_u16()
+                ))
+            }
+            tungstenite::HandshakeError::Failure(Error::Io(error)) => {
+                ConnectError::Other(error.to_string())
+            }
+            _ => ConnectError::Other("Native WebSocket handshake failed".into()),
+        }
+    })?;
     socket
         .get_ref()
-        .set_read_timeout(Some(Duration::from_millis(40)))
-        .map_err(|e| e.to_string())?;
+        .set_read_timeout(Some(Duration::from_millis(40)))?;
     Ok(socket)
+}
+
+fn socket(endpoint: &str, token: &ServerToken) -> Result<WebSocket<TcpStream>, String> {
+    // Recheck on EVERY connection, including reconnects after a process replacement.
+    match handshake(endpoint, None) {
+        Ok(mut socket) => {
+            let _ = socket.close(None);
+            return Err(
+                "Refusing a Codex server that accepts unauthenticated WebSocket clients".into(),
+            );
+        }
+        Err(ConnectError::Unauthorized) => {}
+        Err(ConnectError::Other(error)) => return Err(error),
+    }
+    handshake(endpoint, Some(token)).map_err(|error| match error {
+        ConnectError::Unauthorized => "Native server rejected the Monitor credential".into(),
+        ConnectError::Other(error) => error,
+    })
+}
+
+pub(super) fn verify_auth(endpoint: &str, token: &ServerToken) -> Result<(), String> {
+    let mut socket = socket(endpoint, token)?;
+    socket
+        .close(None)
+        .map_err(|_| "Close native authentication probe".to_owned())
 }
 
 fn idle(error: &Error) -> bool {
@@ -404,8 +463,12 @@ fn bootstrap_call(
     )))
 }
 
-fn bootstrap(endpoint: &str, state: &Mutex<State>) -> Result<WebSocket<TcpStream>, String> {
-    let mut socket = socket(endpoint)?;
+fn bootstrap(
+    endpoint: &str,
+    token: &ServerToken,
+    state: &Mutex<State>,
+) -> Result<WebSocket<TcpStream>, String> {
+    let mut socket = socket(endpoint, token)?;
     bootstrap_call(
         &mut socket,
         state,
@@ -515,10 +578,15 @@ fn bootstrap(endpoint: &str, state: &Mutex<State>) -> Result<WebSocket<TcpStream
 
 /// Reconnect and recover subscriptions before accepting writes. Any call sent on a lost
 /// connection is uncertain, even when the server may already have committed its action.
-pub(super) fn run(endpoint: String, state: Arc<Mutex<State>>, receiver: Receiver<Command>) {
+pub(super) fn run(
+    endpoint: String,
+    token: ServerToken,
+    state: Arc<Mutex<State>>,
+    receiver: Receiver<Command>,
+) {
     let mut next_id = 0_u64;
     loop {
-        let mut socket = match bootstrap(&endpoint, &state) {
+        let mut socket = match bootstrap(&endpoint, &token, &state) {
             Ok(socket) => socket,
             Err(message) => {
                 state
@@ -811,21 +879,44 @@ mod tests {
         }
     }
 
-    // Tungstenite's Callback contract fixes the error type to its HTTP response.
+    // In-process fixture only: no Codex runtime or model is launched.
     #[allow(clippy::result_large_err)]
-    fn initialize(listener: &TcpListener) -> WebSocket<TcpStream> {
+    fn authenticated(listener: &TcpListener) -> WebSocket<TcpStream> {
+        let (probe, _) = listener.accept().unwrap();
+        probe
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        assert!(tungstenite::accept_hdr(
+            probe,
+            |request: &tungstenite::handshake::server::Request, _| {
+                assert!(request.headers().get("authorization").is_none());
+                Err(tungstenite::http::Response::builder()
+                    .status(401)
+                    .body(None)
+                    .unwrap())
+            }
+        )
+        .is_err());
         let (stream, _) = listener.accept().unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        let mut socket = tungstenite::accept_hdr(
+        tungstenite::accept_hdr(
             stream,
             |request: &tungstenite::handshake::server::Request, response| {
                 assert!(request.headers().get("origin").is_none());
+                assert_eq!(
+                    request.headers()["authorization"],
+                    ServerToken::fixture().bearer()
+                );
                 Ok(response)
             },
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    fn initialize(listener: &TcpListener) -> WebSocket<TcpStream> {
+        let mut socket = authenticated(listener);
         let init = request(&mut socket);
         assert_eq!(init["method"], "initialize");
         assert_eq!(init["params"]["capabilities"]["experimentalApi"], true);
@@ -899,7 +990,9 @@ mod tests {
         let state = Arc::new(Mutex::new(State::default()));
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
-        let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+        let worker = std::thread::spawn(move || {
+            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+        });
         await_epoch(&state, 1);
         let resumed = call(&sender, "thread/resume", json!({"threadId":"large"}), 1).unwrap();
         assert_eq!(resumed["thread"]["turns"][0]["items"][0]["text"], expected);
@@ -928,8 +1021,7 @@ mod tests {
             let (release, gate) = mpsc::channel();
             let fixture = std::thread::spawn(move || {
                 let mut first = if malformed_setup {
-                    let (stream, _) = listener.accept().unwrap();
-                    let mut first = tungstenite::accept(stream).unwrap();
+                    let mut first = authenticated(&listener);
                     assert_eq!(request(&mut first)["method"], "initialize");
                     first.send(Message::Text("{invalid-json".into())).unwrap();
                     first
@@ -951,7 +1043,14 @@ mod tests {
             let (commands, receiver) = mpsc::channel();
             let worker_state = Arc::clone(&state);
             let worker_endpoint = endpoint.clone();
-            let worker = std::thread::spawn(move || run(worker_endpoint, worker_state, receiver));
+            let worker = std::thread::spawn(move || {
+                run(
+                    worker_endpoint,
+                    ServerToken::fixture(),
+                    worker_state,
+                    receiver,
+                )
+            });
             let event = events.recv_timeout(Duration::from_secs(3)).unwrap();
             let event = if event["params"]["connection"] == "connected" {
                 events.recv_timeout(Duration::from_secs(3)).unwrap()
@@ -990,8 +1089,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("ws://{}", listener.local_addr().unwrap());
         let fixture = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut socket = tungstenite::accept(stream).unwrap();
+            let mut socket = authenticated(&listener);
             for packet in [
                 "null",
                 "[]",
@@ -1002,7 +1100,7 @@ mod tests {
                 socket.send(Message::Text(packet.into())).unwrap();
             }
         });
-        let mut native = socket(&endpoint).unwrap();
+        let mut native = socket(&endpoint, &ServerToken::fixture()).unwrap();
         for _ in 0..4 {
             assert_eq!(
                 receive(&mut native).unwrap_err(),
@@ -1022,15 +1120,14 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("ws://{}", listener.local_addr().unwrap());
         let fixture = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut socket = tungstenite::accept(stream).unwrap();
+            let mut socket = authenticated(&listener);
             // Advertise an oversized single text frame without allocating/sending its body.
             let mut header = vec![0x81, 127];
             header.extend_from_slice(&((NATIVE_RPC_BYTES as u64) + 1).to_be_bytes());
             socket.get_mut().write_all(&header).unwrap();
             let _ = socket.read();
         });
-        let mut native = socket(&endpoint).unwrap();
+        let mut native = socket(&endpoint, &ServerToken::fixture()).unwrap();
         assert_eq!(native.get_config().max_message_size, Some(NATIVE_RPC_BYTES));
         let error = receive(&mut native).unwrap_err();
         assert!(error.contains("67108865 > 67108864"), "{error}");
@@ -1077,7 +1174,9 @@ mod tests {
         let state = Arc::new(Mutex::new(State::default()));
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
-        let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+        let worker = std::thread::spawn(move || {
+            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+        });
         await_epoch(&state, 1);
         state.lock().unwrap().remember(
             &json!({"thread":{"id":"t","cwd":"/tmp","historyMode":"paginated","turns":[]}}),
@@ -1181,7 +1280,9 @@ mod tests {
             let state = Arc::new(Mutex::new(State::default()));
             let (sender, receiver) = mpsc::channel();
             let worker_state = Arc::clone(&state);
-            let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+            let worker = std::thread::spawn(move || {
+                run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            });
             await_epoch(&state, 1);
             let mut cached = canonical.clone();
             cached["thread"]["turns"][1]["status"] = json!("inProgress");
@@ -1316,7 +1417,9 @@ mod tests {
             )));
             let (sender, receiver) = mpsc::channel();
             let worker_state = Arc::clone(&state);
-            let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+            let worker = std::thread::spawn(move || {
+                run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            });
             await_epoch(&state, 1);
             let resume_sender = sender.clone();
             let resume = std::thread::spawn(move || {
@@ -1395,7 +1498,9 @@ mod tests {
         let state = Arc::new(Mutex::new(initial));
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
-        let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+        let worker = std::thread::spawn(move || {
+            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+        });
         wait_ready.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(state.lock().unwrap().connection != Connection::Connected);
         assert!(!state.lock().unwrap().threads["t"]
@@ -1457,7 +1562,9 @@ mod tests {
             let state = Arc::new(Mutex::new(initial));
             let (sender, receiver) = mpsc::channel();
             let worker_state = Arc::clone(&state);
-            let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+            let worker = std::thread::spawn(move || {
+                run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            });
             await_epoch(&state, 1);
             let resume_sender = sender.clone();
             let resume = std::thread::spawn(move || {
@@ -1517,7 +1624,9 @@ mod tests {
         let state = Arc::new(Mutex::new(State::default()));
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
-        let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+        let worker = std::thread::spawn(move || {
+            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+        });
         await_epoch(&state, 1);
         let (answer, result) = mpsc::channel();
         sender
@@ -1561,7 +1670,9 @@ mod tests {
         let state = Arc::new(Mutex::new(State::default()));
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
-        let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+        let worker = std::thread::spawn(move || {
+            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+        });
         await_epoch(&state, 1);
         assert_eq!(
             call(&sender, "thread/resume", json!({"threadId":"t"}), 1).unwrap(),
@@ -1606,7 +1717,9 @@ mod tests {
         let state = Arc::new(Mutex::new(State::default()));
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
-        let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+        let worker = std::thread::spawn(move || {
+            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+        });
         await_epoch(&state, 1);
         let error = call(&sender, "thread/resume", json!({"threadId":"t"}), 1).unwrap_err();
         assert_eq!(error.code(), "uncertain");
@@ -1654,7 +1767,9 @@ mod tests {
         state.lock().unwrap().subscribed.clear();
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
-        let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+        let worker = std::thread::spawn(move || {
+            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+        });
         await_epoch(&state, 1);
         state
             .lock()
@@ -1723,7 +1838,9 @@ mod tests {
             let (_, events) = state.lock().unwrap().subscribe();
             let (sender, receiver) = mpsc::channel();
             let worker_state = Arc::clone(&state);
-            let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+            let worker = std::thread::spawn(move || {
+                run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            });
             await_epoch(&state, 1);
             {
                 let mut current = state.lock().unwrap();
@@ -1818,7 +1935,9 @@ mod tests {
         )));
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
-        let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+        let worker = std::thread::spawn(move || {
+            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+        });
         await_epoch(&state, 1);
         {
             let mut current = state.lock().unwrap();
@@ -1864,7 +1983,9 @@ mod tests {
         let state = Arc::new(Mutex::new(State::default()));
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
-        let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+        let worker = std::thread::spawn(move || {
+            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+        });
         await_epoch(&state, 1);
         let response = call(&sender, "thread/resume", json!({"threadId":"t"}), 1).unwrap();
         assert_eq!(response["reasoningEffort"], "low");
@@ -1903,7 +2024,9 @@ mod tests {
         let state = Arc::new(Mutex::new(initial));
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
-        let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+        let worker = std::thread::spawn(move || {
+            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+        });
         await_epoch(&state, 1);
         for method in [
             "thread/settings/update",
@@ -1960,7 +2083,9 @@ mod tests {
         let state = Arc::new(Mutex::new(State::connecting(vec![], "instance".to_owned())));
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
-        let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+        let worker = std::thread::spawn(move || {
+            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+        });
         await_epoch(&state, 1);
         let (old_token, token) = {
             let mut current = state.lock().unwrap();
@@ -2024,7 +2149,9 @@ mod tests {
         let state = Arc::new(Mutex::new(initial));
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
-        let worker = std::thread::spawn(move || run(endpoint, worker_state, receiver));
+        let worker = std::thread::spawn(move || {
+            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+        });
         await_epoch(&state, 1);
         let resume_sender = sender.clone();
         let resume = std::thread::spawn(move || {
@@ -2050,6 +2177,50 @@ mod tests {
         assert_eq!(active["pending"][0]["id"], 9);
         sender.send(Command::Stop).unwrap();
         worker.join().unwrap();
+        fixture.join().unwrap();
+    }
+    #[test]
+    fn open_servers_are_refused_before_initialize_and_handshake_errors_do_not_echo_secrets() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            assert!(matches!(socket.read(), Ok(Message::Close(_))));
+        });
+        let error = socket(&endpoint, &ServerToken::fixture()).err().unwrap();
+        assert!(error.contains("unauthenticated"));
+        fixture.join().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for status in [401, 403] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = [0_u8; 4096];
+                let count = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..count]);
+                assert_eq!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer"),
+                    status == 403
+                );
+                let secret = "a".repeat(64);
+                let response = format!("HTTP/1.1 {status} Refused\r\nX-Echo: {secret}\r\nContent-Length: 64\r\nConnection: close\r\n\r\n{secret}");
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let error = socket(&endpoint, &ServerToken::fixture()).err().unwrap();
+        assert!(error.contains("403"));
+        assert!(!error.contains(&"a".repeat(64)));
         fixture.join().unwrap();
     }
 }

@@ -20,7 +20,7 @@ members = [
     "claude-replay-engine",
     "claude-replay-agents",
     "claude-monitor",
-    # Native control is optional; its tests run explicitly with the native feature.
+    # Separate library; default gates test it without linking it into Monitor binaries.
     "claude-monitor-codex",
     "claude-monitor-fleet",
     "claude-monitor-v2",
@@ -41,6 +41,7 @@ default-members = [
     "claude-replay-engine",
     "claude-replay-agents",
     "claude-monitor",
+    "claude-monitor-codex",
     "claude-monitor-fleet",
     "claude-monitor-v2",
     "vendor/mdrev",

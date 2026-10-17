@@ -4,6 +4,7 @@
 //! persisted history, project registry and pending requests. Browser writes use the
 //! monitor's existing POST/Origin/pairing gate before reaching the native actor.
 
+mod auth;
 mod client;
 mod history;
 mod input;
@@ -21,11 +22,14 @@ use state::{can_respond, id_key, Connection, State};
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::time::{Duration, Instant};
 
 /// Maximum native send body, including encoded image attachments.
+/// The HTTP caller must register `with_body_limit("api/codex/send", SEND_BODY_LIMIT)`
+/// and its AuthGate before body reads; this constant alone changes no HTTP limit.
 pub const SEND_BODY_LIMIT: usize = 12 * 1024 * 1024;
 
 /// Trusted loopback endpoint, canonical project scope and durable receipt location.
@@ -38,6 +42,7 @@ pub struct Config {
 /// A clonable process-local owner accessed by HTTP request handlers and the SSE writer.
 pub struct Gateway {
     lifecycle: RwLock<GatewayLifecycle>,
+    activity: AtomicU64,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     endpoint: String,
     allowed_roots: Vec<PathBuf>,
@@ -77,7 +82,11 @@ impl From<Failure> for RouteError {
 }
 impl From<anyhow::Error> for RouteError {
     fn from(error: anyhow::Error) -> Self {
-        Self::Internal(format!("{error:#}"))
+        if error.downcast_ref::<receipts::ReceiptCapacity>().is_some() {
+            Self::Conflict(format!("{error:#}"))
+        } else {
+            Self::Internal(format!("{error:#}"))
+        }
     }
 }
 type RouteResult = std::result::Result<Value, RouteError>;
@@ -204,6 +213,7 @@ impl Gateway {
                 config.state_path.display()
             )
         })?;
+        let token = auth::ServerToken::load_or_create(&config.state_path)?;
         // Native server request IDs restart at zero. A new Gateway instance must
         // also invalidate old browser controls even if its epoch restarts at one.
         let mut namespace = [0_u8; 16];
@@ -218,10 +228,11 @@ impl Gateway {
         let endpoint = config.endpoint.clone();
         let worker = std::thread::Builder::new()
             .name("codex-gateway-rpc".to_owned())
-            .spawn(move || client::run(endpoint, worker_state, receiver))
+            .spawn(move || client::run(endpoint, token, worker_state, receiver))
             .context("start Codex native RPC worker")?;
         Ok(Arc::new(Self {
             lifecycle: RwLock::new(GatewayLifecycle::Active),
+            activity: AtomicU64::new(0),
             worker: Mutex::new(Some(worker)),
             endpoint: config.endpoint,
             allowed_roots: roots,
@@ -233,7 +244,13 @@ impl Gateway {
 
     /// Match only attached native threads and their exact Monitor rollout aliases.
     pub fn owns_thread(&self, session_id: &str) -> bool {
-        if *self.lifecycle.read().unwrap_or_else(|e| e.into_inner()) != GatewayLifecycle::Active {
+        // A writer only holds this lock for the local transition, never an RPC or join.
+        // On contention retain exact ownership until deactivate clears it under state.
+        if self
+            .lifecycle
+            .try_read()
+            .is_ok_and(|guard| *guard == GatewayLifecycle::Disconnected)
+        {
             return false;
         }
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -249,69 +266,90 @@ impl Gateway {
             })
     }
 
-    /// Serialize disconnect against every HTTP action. An idle disconnect closes only
-    /// this gateway's WebSocket worker; it never terminates the shared Codex process.
+    /// Verify idleness without holding the lifecycle lock across RPC. The final local
+    /// transition rejects concurrent actions/events; the worker is joined after unlocking.
     pub fn disconnect(&self) -> std::result::Result<(), DisconnectError> {
-        let mut lifecycle = match self.lifecycle.try_write() {
-            Ok(guard) => guard,
-            Err(TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(TryLockError::WouldBlock) => {
-                return Err(DisconnectError::Busy(
-                    "A native request is still running; retry after it completes.".to_owned(),
-                ))
-            }
+        self.disconnect_inner(false)
+    }
+
+    /// Release a broken connection without killing Codex or replaying uncertain actions.
+    /// A connected gateway with known live work still refuses. When disconnected, cached
+    /// active flags are not proof of a live turn: the explicit caller accepts uncertainty.
+    /// Callers must enforce pairing, POST and Origin and explain this recovery boundary.
+    pub fn force_disconnect(&self) -> std::result::Result<(), DisconnectError> {
+        self.disconnect_inner(true)
+    }
+
+    fn disconnect_inner(&self, force: bool) -> std::result::Result<(), DisconnectError> {
+        let busy = || {
+            DisconnectError::Busy(
+                "Native work changed or a request is running; retry after it settles.".into(),
+            )
         };
-        if *lifecycle == GatewayLifecycle::Disconnected {
-            return Ok(());
-        }
-        let owned = {
+        let (owned, epoch, sequence, activity) = {
+            let lifecycle = self.lifecycle.try_write().map_err(|_| busy())?;
+            if *lifecycle == GatewayLifecycle::Disconnected {
+                return Ok(());
+            }
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.has_active_work() {
-                return Err(DisconnectError::Busy("A native turn or approval is active; finish or interrupt it before disconnecting.".to_owned()));
+            if state.has_active_work() && (!force || state.connection == Connection::Connected) {
+                return Err(DisconnectError::Busy("A native turn or approval is active; finish or interrupt it before disconnecting.".into()));
             }
-            if state.connection != Connection::Connected && !state.threads.is_empty() {
-                return Err(DisconnectError::Busy(
-                    "Reconnect and confirm owned threads are idle before disconnecting.".to_owned(),
-                ));
+            if !force && state.connection != Connection::Connected && !state.threads.is_empty() {
+                return Err(DisconnectError::Busy("Reconnect to verify idleness, or explicitly force disconnect without replaying uncertain actions.".into()));
             }
-            state
-                .threads
-                .keys()
-                .filter(|id| !state.archived_threads.contains(*id))
-                .cloned()
-                .collect::<Vec<_>>()
+            (
+                state
+                    .threads
+                    .keys()
+                    .filter(|id| !state.archived_threads.contains(*id))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                state.epoch,
+                state.sequence,
+                self.activity.load(Ordering::SeqCst),
+            )
         };
-        for id in owned {
-            let thread = self.ensure_thread(&id).map_err(|error| {
-                DisconnectError::Busy(format!(
-                    "Cannot confirm thread {id} is idle: {}",
-                    error.details().1
-                ))
-            })?;
-            if thread["status"]["type"] == "active" || thread["status"] == "active" {
-                return Err(DisconnectError::Busy(format!(
-                    "Thread {id} is active; finish or interrupt it before disconnecting."
-                )));
-            }
-            let queue = self.read_queue(&id).map_err(|error| {
-                DisconnectError::Busy(format!(
-                    "Cannot confirm thread {id} queue is empty: {}",
-                    error.details().1
-                ))
-            })?;
-            if !queue.entries.is_empty() {
-                return Err(DisconnectError::Busy(format!(
-                    "Thread {id} has queued input; finish or cancel it before disconnecting."
-                )));
+        if !force {
+            for id in &owned {
+                // Idleness is independent of whether the project's directory still exists.
+                let result = self.rpc("thread/read", json!({"threadId":id,"includeTurns":false}))
+                    .map_err(|error| DisconnectError::Busy(format!("Cannot confirm thread {id} is idle: {}. Reconnect or explicitly force disconnect.", error.details().1)))?;
+                let thread = &result["thread"];
+                if thread["id"].as_str() != Some(id) {
+                    return Err(DisconnectError::Busy(
+                        "Native thread/read returned a different thread".into(),
+                    ));
+                }
+                if thread["status"]["type"] == "active" || thread["status"] == "active" {
+                    return Err(DisconnectError::Busy(format!(
+                        "Thread {id} is active; finish or interrupt it before disconnecting."
+                    )));
+                }
+                let queue = self.read_queue(id).map_err(|error| DisconnectError::Busy(format!(
+                    "Cannot confirm thread {id} queue is empty: {}. Reconnect or explicitly force disconnect.", error.details().1)))?;
+                if !queue.entries.is_empty() {
+                    return Err(DisconnectError::Busy(format!(
+                        "Thread {id} has queued input; finish or cancel it before disconnecting."
+                    )));
+                }
             }
         }
         {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.has_active_work() {
-                return Err(DisconnectError::Busy("A native turn, queued request or approval is still active; finish or interrupt it before disconnecting.".to_owned()));
+            let mut lifecycle = self.lifecycle.try_write().map_err(|_| busy())?;
+            if *lifecycle == GatewayLifecycle::Disconnected {
+                return Ok(());
             }
-            if state.connection != Connection::Connected && !state.threads.is_empty() {
-                return Err(DisconnectError::Busy("The native connection is recovering; reconnect and confirm that owned threads are idle before disconnecting.".to_owned()));
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if self.activity.load(Ordering::SeqCst) != activity
+                || state.epoch != epoch
+                || state.sequence != sequence
+                || state.has_active_work() && (!force || state.connection == Connection::Connected)
+            {
+                return Err(busy());
+            }
+            if !force && state.connection != Connection::Connected && !state.threads.is_empty() {
+                return Err(busy());
             }
             *lifecycle = GatewayLifecycle::Disconnected;
             state.deactivate();
@@ -319,7 +357,7 @@ impl Gateway {
         let _ = self.commands.send(Command::Stop);
         if let Some(worker) = self.worker.lock().unwrap_or_else(|e| e.into_inner()).take() {
             worker.join().map_err(|_| {
-                DisconnectError::Worker("RPC worker panicked while disconnecting".to_owned())
+                DisconnectError::Worker("RPC worker panicked while disconnecting".into())
             })?;
         }
         Ok(())
@@ -334,8 +372,9 @@ impl Gateway {
             .subscribe()
     }
 
-    /// Dispatch the Codex API prefix. Every POST clears the monitor pairing and Origin
-    /// gate before parsing; reads require pairing because they contain private history.
+    /// Dispatch the Codex API prefix using Request authentication facts supplied by AuthGate.
+    /// The caller must install that gate before HTTP body reads and register SEND_BODY_LIMIT.
+    /// Every mutation requires POST, pairing and Origin; reads contain private history.
     pub fn route(&self, request: &Request<'_>) -> Option<HttpResponse> {
         let route = request.name.strip_prefix("api/codex/")?;
         let write = matches!(
@@ -370,12 +409,26 @@ impl Gateway {
                 return Some(HttpResponse::forbidden("cross-origin request refused"));
             }
         }
-        let lifecycle = self.lifecycle.read().unwrap_or_else(|e| e.into_inner());
+        if route == "status" {
+            let mut response = HttpResponse::json(self.status().to_string());
+            response.headers.push("Cache-Control: no-store".to_owned());
+            return Some(response);
+        }
+        let lifecycle = match self.lifecycle.try_read() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                let mut response = HttpResponse::json(json!({"ok":false,"error":{"code":"action_conflict","message":"Native lifecycle is changing; retry after it settles."}}).to_string());
+                response.code = "409 Conflict";
+                return Some(response);
+            }
+        };
         if *lifecycle == GatewayLifecycle::Disconnected {
             let mut response = HttpResponse::json(json!({"ok":false,"error":{"code":"native_not_enabled","message":"Native mode was disconnected; enable it again before sending."}}).to_string());
             response.code = "409 Conflict";
             return Some(response);
         }
+        self.activity.fetch_add(1, Ordering::SeqCst);
         let result = if write {
             self.write_route(route, request.body)
         } else {
@@ -387,7 +440,7 @@ impl Gateway {
                 if value["ok"] == false {
                     response.code = match value["error"]["code"].as_str() {
                         Some("invalid_input") => "400 Bad Request",
-                        Some("rejected" | "action_conflict") => "409 Conflict",
+                        Some("rejected" | "action_conflict" | "receipt_expired") => "409 Conflict",
                         Some("unavailable" | "uncertain") => "503 Service Unavailable",
                         _ => "500 Internal Server Error",
                     };
@@ -617,6 +670,11 @@ impl Gateway {
                     .unwrap_or_else(|| self.allowed_roots[0].to_string_lossy().into_owned());
                 let path = self.directory(&path)?;
                 let mut result = self.rpc("fs/readDirectory", json!({"path":path}))?;
+                if !result.is_object() || !result["entries"].is_array() {
+                    return Err(RouteError::Internal(
+                        "Runtime fs/readDirectory must return an object with entries".into(),
+                    ));
+                }
                 // Symlinks that escape an allowed root are omitted from the picker.
                 if let Some(entries) = result["entries"].as_array_mut() {
                     entries.retain_mut(|entry| {
@@ -765,7 +823,14 @@ impl Gateway {
             "sourceKinds":["cli","vscode","exec","appServer","subAgent","subAgentReview","subAgentCompact","subAgentThreadSpawn","subAgentOther","unknown"],
             "sortKey":"updated_at","sortDirection":"desc","useStateDbOnly":false});
         let mut cursors = std::collections::HashSet::new();
+        let mut pages = 0;
         let inventory_cwd = loop {
+            pages += 1;
+            if pages > QUEUE_MAX_PAGES {
+                return Err(RouteError::Internal(
+                    "Archived inventory exceeded the 100-page limit".into(),
+                ));
+            }
             let inventory = self.rpc("thread/list", params.clone())?;
             let threads = inventory["data"].as_array().ok_or_else(|| {
                 RouteError::Internal(
@@ -880,7 +945,14 @@ impl Gateway {
         let effort = string(payload, "effort", 32)?;
         let mut params = json!({"limit":100});
         let mut cursors = std::collections::HashSet::new();
+        let mut pages = 0;
         let selected = loop {
+            pages += 1;
+            if pages > QUEUE_MAX_PAGES {
+                return Err(RouteError::Internal(
+                    "Model catalog exceeded the 100-page limit".into(),
+                ));
+            }
             let catalog = self.rpc("model/list", params.clone())?;
             let models = catalog["data"].as_array().ok_or_else(|| {
                 RouteError::Internal("Runtime returned an invalid model catalog page".to_owned())
@@ -978,7 +1050,10 @@ impl Gateway {
         match claim {
             Ok(Some(response)) => return Ok(response),
             Ok(None) => {}
-            Err(error) if error.downcast_ref::<receipts::ActionConflict>().is_some() => {
+            Err(error)
+                if error.downcast_ref::<receipts::ActionConflict>().is_some()
+                    || error.downcast_ref::<receipts::ReceiptCapacity>().is_some() =>
+            {
                 return Err(RouteError::Conflict(format!("{error:#}")))
             }
             Err(error) => return Err(error.into()),
@@ -1733,6 +1808,7 @@ mod tests {
         (
             Arc::new(Gateway {
                 lifecycle: RwLock::new(GatewayLifecycle::Active),
+                activity: AtomicU64::new(0),
                 worker: Mutex::new(None),
                 endpoint: "ws://127.0.0.1:4500".to_owned(),
                 allowed_roots: state.allowed_roots.clone(),
@@ -3617,6 +3693,132 @@ mod tests {
             .send(Ok(json!({"data":[],"nextCursor":null})))
             .unwrap();
         assert_eq!(first.join().unwrap().code, "200 OK");
+        drop(gateway);
+        remove_test_scratch(&root);
+    }
+    #[test]
+    fn disconnect_probes_do_not_block_status_or_ownership_and_fence_concurrent_actions() {
+        let root =
+            std::env::temp_dir().join(format!("disconnect-nonblocking-{}", std::process::id()));
+        let (gateway, receiver) = command_fixture(&root);
+        let target = gateway.clone();
+        let closing = std::thread::spawn(move || target.disconnect());
+        let (_, answer) = queue_call(&receiver, "thread/read");
+        let start = Instant::now();
+        assert!(gateway.owns_thread("t"));
+        let status = gateway
+            .route(&Request {
+                method: "GET",
+                name: "api/codex/status",
+                query: "",
+                body: &[],
+                authenticated: true,
+                origin_ok: true,
+            })
+            .unwrap();
+        assert_eq!(status.code, "200 OK");
+        assert!(start.elapsed() < Duration::from_millis(250));
+        // A complete intervening action must invalidate the old idle proof too.
+        gateway.activity.fetch_add(1, Ordering::SeqCst);
+        answer
+            .send(Ok(
+                json!({"thread":{"id":"t","cwd":root,"status":{"type":"idle"}}}),
+            ))
+            .unwrap();
+        answer_call(
+            &receiver,
+            "thread/queue/list",
+            json!({"data":[],"nextCursor":null}),
+        );
+        assert!(matches!(
+            closing.join().unwrap(),
+            Err(DisconnectError::Busy(_))
+        ));
+        assert!(gateway.owns_thread("t"));
+        gateway.force_disconnect().unwrap();
+        drop(gateway);
+        remove_test_scratch(&root);
+    }
+
+    #[test]
+    fn disconnect_ignores_deleted_cwd_and_force_recovers_a_lost_server() {
+        for lost in [false, true] {
+            let root = std::env::temp_dir()
+                .join(format!("disconnect-recovery-{}-{lost}", std::process::id()));
+            let (gateway, receiver) = command_fixture(&root);
+            if lost {
+                let mut state = gateway.state.lock().unwrap();
+                state.threads.get_mut("t").unwrap()["status"] = json!({"type":"active"});
+                drop(state);
+                assert!(matches!(
+                    gateway.force_disconnect(),
+                    Err(DisconnectError::Busy(_))
+                ));
+                gateway.state.lock().unwrap().connection = Connection::Reconnecting;
+                gateway.force_disconnect().unwrap();
+            } else {
+                let target = gateway.clone();
+                let closing = std::thread::spawn(move || target.disconnect());
+                answer_call(
+                    &receiver,
+                    "thread/read",
+                    json!({"thread":{"id":"t","cwd":root.join("deleted"),"status":{"type":"idle"}}}),
+                );
+                answer_call(
+                    &receiver,
+                    "thread/queue/list",
+                    json!({"data":[],"nextCursor":null}),
+                );
+                closing.join().unwrap().unwrap();
+            }
+            assert!(!gateway.owns_thread("t"));
+            assert!(matches!(
+                receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Command::Stop
+            ));
+            drop(gateway);
+            remove_test_scratch(&root);
+        }
+    }
+
+    #[test]
+    fn malformed_directory_replies_are_errors_and_unending_catalogs_are_bounded() {
+        let root = std::env::temp_dir().join(format!("gateway-bounds-{}", std::process::id()));
+        let (gateway, receiver) = command_fixture(&root);
+        for value in [json!(null), json!([]), json!(7), json!({"entries":null})] {
+            let target = gateway.clone();
+            let read = std::thread::spawn(move || target.read_route("directories", ""));
+            answer_call(&receiver, "fs/readDirectory", value);
+            assert!(matches!(read.join().unwrap(), Err(RouteError::Internal(_))));
+        }
+        let target = gateway.clone();
+        let read = std::thread::spawn(move || {
+            target.model_effort(&json!({"model":"absent","effort":"low"}))
+        });
+        for page in 0..QUEUE_MAX_PAGES {
+            answer_call(
+                &receiver,
+                "model/list",
+                json!({"data":[],"nextCursor":format!("page-{page}")}),
+            );
+        }
+        assert!(
+            matches!(read.join().unwrap(), Err(RouteError::Internal(message)) if message.contains("100-page"))
+        );
+        assert!(receiver.try_recv().is_err());
+        let target = gateway.clone();
+        let read = std::thread::spawn(move || target.open_archived("absent", 1, 0));
+        for page in 0..QUEUE_MAX_PAGES {
+            answer_call(
+                &receiver,
+                "thread/list",
+                json!({"data":[],"nextCursor":format!("archive-{page}")}),
+            );
+        }
+        assert!(
+            matches!(read.join().unwrap(), Err(RouteError::Internal(message)) if message.contains("100-page"))
+        );
+        assert!(receiver.try_recv().is_err());
         drop(gateway);
         remove_test_scratch(&root);
     }

@@ -1,6 +1,6 @@
 //! Explicit activation of a shared Codex runtime. Construction and status never spawn work.
 
-use crate::{validate_endpoint, Config, Gateway};
+use crate::{auth::ServerToken, validate_endpoint, Config, Gateway};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
@@ -23,6 +23,7 @@ pub struct NativeRuntime {
     config: RuntimeConfig,
     addresses: Vec<SocketAddr>,
     state: Mutex<RuntimeState>,
+    transition: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -63,6 +64,7 @@ impl NativeRuntime {
             config,
             addresses,
             state: Mutex::new(RuntimeState::default()),
+            transition: Mutex::new(()),
         }))
     }
 
@@ -83,6 +85,7 @@ impl NativeRuntime {
 
     /// Observe a listener and current client state. A TCP probe is not a native handshake.
     pub fn status(&self) -> Value {
+        let listening = self.listening();
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(child) = state.child.as_mut() {
             match child.try_wait() {
@@ -98,7 +101,6 @@ impl NativeRuntime {
                 }
             }
         }
-        let listening = self.listening();
         let mut result = state.gateway.as_ref().map(|gateway| gateway.status()).unwrap_or_else(||
             json!({"ok":true,"connection":"disconnected","epoch":0,"allowedRoots":self.config.gateway.allowed_roots}));
         result["ok"] = json!(true);
@@ -119,7 +121,6 @@ impl NativeRuntime {
         });
         result["ownedServerPid"] = json!(state.child.as_ref().map(Child::id));
         result["lastStartupError"] = json!(state.last_error);
-        result["desktopHelp"] = self.desktop_help();
         result
     }
 
@@ -130,6 +131,7 @@ impl NativeRuntime {
     }
 
     /// Explicitly connect, starting a server only when requested and the endpoint is absent.
+    /// Callers must enforce authenticated POST and same-origin checks before this method.
     /// Serialized activation/retry never creates a second worker or process. A successfully
     /// started shared server outlives this client; closing Write/native mode does not kill it.
     pub fn activate(&self, start_if_missing: bool) -> Result<Value> {
@@ -144,59 +146,81 @@ impl NativeRuntime {
         Ok(self.status())
     }
 
-    /// Disconnect an idle gateway while retaining an independently running app-server.
+    /// Disconnect an idle gateway while retaining the server. The HTTP caller must
+    /// enforce pairing, POST and Origin before invoking this process-level method.
     pub fn deactivate(&self) -> std::result::Result<Value, crate::DisconnectError> {
-        {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(gateway) = &state.gateway {
+        self.deactivate_inner(false)
+    }
+
+    /// Explicit recovery when the server/project has disappeared. Never interrupts work
+    /// or kills a server; refuses known active turns and pending native requests.
+    /// The caller must apply the same gate as `deactivate` and explain uncertain delivery.
+    pub fn force_deactivate(&self) -> std::result::Result<Value, crate::DisconnectError> {
+        self.deactivate_inner(true)
+    }
+
+    fn deactivate_inner(&self, force: bool) -> std::result::Result<Value, crate::DisconnectError> {
+        let _transition = self.transition.try_lock().map_err(|_| {
+            crate::DisconnectError::Busy("A native lifecycle transition is already running".into())
+        })?;
+        if let Some(gateway) = self.gateway() {
+            if force {
+                gateway.force_disconnect()?;
+            } else {
                 gateway.disconnect()?;
             }
-            state.gateway = None;
+            self.state.lock().unwrap_or_else(|e| e.into_inner()).gateway = None;
         }
         Ok(self.status())
     }
 
     fn activate_inner(&self, start_if_missing: bool) -> Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let mut started_here = false;
-        if !self.listening() {
-            if !start_if_missing {
-                bail!("Codex server is not running. Choose Start and enable native mode.");
+        let _transition = self
+            .transition
+            .try_lock()
+            .map_err(|_| anyhow::anyhow!("A native lifecycle transition is already running"))?;
+        if self.gateway().is_some() {
+            return Ok(());
+        }
+        let listening = self.listening();
+        if !listening && !start_if_missing {
+            bail!("Codex server is not running. Choose Start and enable native mode.");
+        }
+        for root in &self.config.gateway.allowed_roots {
+            if !root
+                .canonicalize()
+                .with_context(|| format!("Resolve native project root {}", root.display()))?
+                .is_dir()
+            {
+                bail!("Native project root {} is not a directory", root.display());
             }
-            for root in &self.config.gateway.allowed_roots {
-                if !root
-                    .canonicalize()
-                    .with_context(|| format!("Resolve native project root {}", root.display()))?
-                    .is_dir()
-                {
-                    bail!("Native project root {} is not a directory", root.display());
+        }
+        let token = ServerToken::load_or_create(&self.config.gateway.state_path)?;
+        let mut startup = StartupChild(None);
+        if !listening {
+            {
+                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(child) = state.child.as_mut() {
+                    if child.try_wait()?.is_none() {
+                        bail!("The requested Codex server is still starting. Retry after it binds the configured endpoint.");
+                    }
+                    state.child = None;
                 }
             }
-            if let Some(child) = state.child.as_mut() {
-                if child.try_wait()?.is_none() {
-                    bail!("The requested Codex server is still starting. Retry after it binds the configured endpoint.");
-                }
-                state.child = None;
-            }
-            let mut child = self.spawn_server()?;
+            startup.0 = Some(self.spawn_server()?);
+            let child = startup.0.as_mut().expect("owned startup child");
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
-                if self.listening() {
-                    break;
-                }
                 if let Some(exit) = child.try_wait()? {
                     bail!(
                         "Codex server exited with {exit}; inspect {}",
                         self.config.log_path.display()
                     );
                 }
+                if self.listening() {
+                    break;
+                }
                 if Instant::now() >= deadline {
-                    child
-                        .kill()
-                        .context("Stop the owned Codex server after startup timeout")?;
-                    child
-                        .wait()
-                        .context("Reap the owned Codex startup process")?;
                     bail!(
                         "Codex server did not bind {} within 10 seconds; inspect {}",
                         self.config.gateway.endpoint,
@@ -205,33 +229,30 @@ impl NativeRuntime {
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            state.child = Some(child);
-            started_here = true;
         }
-        if state.gateway.is_none() {
-            let gateway = Gateway::start(Config {
+        let activated = (|| -> Result<Arc<Gateway>> {
+            crate::client::verify_auth(&self.config.gateway.endpoint, &token)
+                .map_err(anyhow::Error::msg)?;
+            Gateway::start(Config {
                 endpoint: self.config.gateway.endpoint.clone(),
                 allowed_roots: self.config.gateway.allowed_roots.clone(),
                 state_path: self.config.gateway.state_path.clone(),
-            });
-            match gateway {
-                Ok(gateway) => state.gateway = Some(gateway),
-                Err(error) => {
-                    if let Some(mut child) = if started_here {
-                        state.child.take()
-                    } else {
-                        None
-                    } {
-                        child.kill().context(
-                            "Stop owned Codex server after Gateway initialization failure",
-                        )?;
-                        child
-                            .wait()
-                            .context("Reap owned Codex initialization process")?;
-                    }
-                    return Err(error.context("Activate native Codex Gateway"));
-                }
+            })
+            .context("Activate native Codex Gateway")
+        })();
+        let gateway = match activated {
+            Ok(gateway) => gateway,
+            Err(error) => {
+                startup
+                    .stop()
+                    .context("Clean up newly started Codex process group")?;
+                return Err(error);
             }
+        };
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.gateway = Some(gateway);
+        if startup.0.is_some() {
+            state.child = startup.0.take();
         }
         state.last_error = None;
         Ok(())
@@ -273,9 +294,8 @@ impl NativeRuntime {
                 bail!("Native Codex log must be an owner-only file");
             }
         }
-        let mut command = Command::new(&self.config.binary);
+        let mut command = self.server_command()?;
         command
-            .args(["app-server", "--listen", &self.config.gateway.endpoint])
             .env("CODEX_HOME", &self.config.home)
             .env("CODEX_APP_SERVER_FORCE_CLI", "1")
             .stdin(Stdio::null())
@@ -284,7 +304,7 @@ impl NativeRuntime {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
-            // Desktop also uses the server: it must not inherit the Monitor terminal's lifetime.
+            // The authenticated server outlives Monitor; failed startup owns the whole group.
             unsafe {
                 command.pre_exec(|| {
                     if libc::setsid() < 0 {
@@ -303,15 +323,81 @@ impl NativeRuntime {
         })
     }
 
-    fn desktop_help(&self) -> Value {
-        json!({"title":"Share this server with Codex App",
-            "description":"Use the same live Codex sessions in Codex App and Agent Monitor, so you can switch between desktop and mobile without starting another task.",
-            "steps":["Close the conflicting conversation in the Codex App that owns it.",
-                "Quit that App instance after saving its work, then reopen it with this server endpoint and the same Codex home.",
-                "Return here and reconnect the conversation. Agent Monitor will not stop your App automatically."],
-            "endpoint":self.config.gateway.endpoint,
-            "prompt":format!("Create a Codex App launcher that uses Agent Monitor's existing codex app-server at {}. Detect the App path and the server's CODEX_HOME, set CODEX_APP_SERVER_WS_URL, and unset CODEX_APP_SERVER_FORCE_CLI.", self.config.gateway.endpoint),
-            "note":"The Desktop endpoint override is runtime-specific. Validate it when upgrading Codex App."})
+    fn server_command(&self) -> Result<Command> {
+        let mut command = Command::new(&self.config.binary);
+        command
+            .args([
+                "app-server",
+                "--listen",
+                &self.config.gateway.endpoint,
+                "--ws-auth",
+                "capability-token",
+                "--ws-token-file",
+            ])
+            .arg(ServerToken::path(&self.config.gateway.state_path)?)
+            .args(["-c", "service_tier=\"default\""])
+            .current_dir(&self.config.gateway.allowed_roots[0])
+            .env_clear();
+        // Explicit host environment contract; omit Monitor/session/agent-specific overrides.
+        for name in [
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "PATH",
+            "TMPDIR",
+            "LANG",
+            "LC_ALL",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+            "OPENAI_API_KEY",
+        ] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        Ok(command)
+    }
+}
+
+/// Only a child spawned by this activation may be reaped on failure.
+struct StartupChild(Option<Child>);
+
+impl StartupChild {
+    fn stop(&mut self) -> Result<()> {
+        if let Some(mut child) = self.0.take() {
+            #[cfg(unix)]
+            {
+                // spawn_server's setsid makes pid the group ID, including a launcher's children.
+                let result = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+                if result != 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() != Some(libc::ESRCH) {
+                        self.0 = Some(child);
+                        return Err(error).context("Kill owned startup process group");
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            child.kill().context("Kill owned startup process")?;
+            child.wait().context("Reap owned startup process")?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for StartupChild {
+    fn drop(&mut self) {
+        if let Err(error) = self.stop() {
+            eprintln!("Clean up owned Codex startup process: {error:#}");
+        }
     }
 }
 
@@ -428,27 +514,100 @@ mod tests {
     }
 
     #[test]
-    fn desktop_setup_prompt_is_generic_even_without_a_discovered_app() {
+    fn startup_command_is_authenticated_standard_speed_and_has_explicit_context() {
         let (root, runtime) = fixture();
-        let status = runtime.status();
-        let help = &status["desktopHelp"];
-        let prompt = help["prompt"].as_str().unwrap();
-        assert!(prompt.contains(status["endpoint"].as_str().unwrap()));
-        assert!(prompt.contains("CODEX_HOME"));
-        assert!(prompt.contains("CODEX_APP_SERVER_WS_URL"));
-        assert!(prompt.contains("CODEX_APP_SERVER_FORCE_CLI"));
-        assert!(!prompt.contains(root.to_str().unwrap()));
-        assert!(!prompt.to_ascii_lowercase().contains("fast"));
-        assert!(prompt.split_whitespace().count() <= 45);
-        assert!(help["description"]
-            .as_str()
-            .unwrap()
-            .contains("desktop and mobile"));
-        assert!(help.get("command").is_none());
-        assert!(help.get("codexHome").is_none());
-        assert!(status["ownedServerPid"].is_null());
-        assert!(runtime.gateway().is_none());
-        assert!(!root.join("receipts.sqlite3").exists());
+        let command = runtime.server_command().unwrap();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert!(args
+            .windows(2)
+            .any(|args| args == ["--ws-auth", "capability-token"]));
+        assert!(args.contains(&"--ws-token-file"));
+        assert!(args.contains(&"service_tier=\"default\""));
+        assert_eq!(command.get_current_dir(), Some(root.as_path()));
+        assert!(runtime.status().get("desktopHelp").is_none());
+        assert!(!root.join("codex-server.token").exists());
         crate::remove_test_scratch(&root);
+    }
+    #[test]
+    fn slow_activation_does_not_hold_runtime_state_mutex() {
+        let (root, runtime) = fixture();
+        let listener = std::net::TcpListener::bind(runtime.addresses[0]).unwrap();
+        let target = runtime.clone();
+        let activation = std::thread::spawn(move || target.activate(false));
+        // The first connection is only the listener probe. Hold the authentication
+        // exchange open while checking the independent state and status readers.
+        let (probe, _) = listener.accept().unwrap();
+        drop(probe);
+        let (handshake, _) = listener.accept().unwrap();
+        let start = Instant::now();
+        assert!(runtime.gateway().is_none());
+        assert!(runtime.status()["serverListening"].as_bool().unwrap());
+        assert!(start.elapsed() < Duration::from_millis(250));
+        assert!(runtime
+            .activate(false)
+            .unwrap_err()
+            .to_string()
+            .contains("transition"));
+        drop(handshake);
+        assert!(activation.join().unwrap().is_err());
+        drop(listener);
+        crate::remove_test_scratch(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_startup_reaps_the_owned_group_including_a_launchers_child() {
+        use std::io::Read;
+        use std::os::unix::process::CommandExt;
+        // A disposable shell/sleep process group; never invokes a Codex executable.
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "sleep 60 & echo $!; exit 7"])
+            .stdout(Stdio::piped());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        let leader = child.id();
+        let mut stdout = child.stdout.take().unwrap();
+        let mut pid = Vec::new();
+        loop {
+            let mut byte = [0];
+            stdout.read_exact(&mut byte).unwrap();
+            if byte[0] == b'\n' {
+                break;
+            }
+            pid.push(byte[0]);
+        }
+        let descendant: i32 = String::from_utf8(pid).unwrap().parse().unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(7));
+        let mut startup = StartupChild(Some(child));
+        startup.stop().unwrap();
+        assert!(startup.0.is_none());
+        assert_eq!(unsafe { libc::kill(leader as i32, 0) }, -1);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let output = Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &descendant.to_string()])
+                .output()
+                .unwrap();
+            let status = String::from_utf8(output.stdout).unwrap();
+            if status.trim().is_empty() || status.trim_start().starts_with('Z') {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Launcher descendant is still running: {status}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
