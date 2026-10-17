@@ -33618,6 +33618,7 @@ var SharedStore = class {
       ...extra.project ? { project: extra.project } : {},
       ...extra.server ? { server: extra.server } : {},
       ...extra.inTheOpen ? { inTheOpen: true } : {},
+      ...extra.by === "agent" ? { by: "agent" } : {},
       ...this.cache().root ? { root: this.cache().root } : {}
     };
     writeAtomic(join6(this.dir, "pairing.json"), JSON.stringify(pairing, null, 2));
@@ -33633,7 +33634,7 @@ var SharedStore = class {
     if (restamped > 0)
       logEvent("review.restamp", { store: this.pointer.remote, records: restamped, email: pairing.email, name: pairing.name });
     writeAtomic(join6(this.dir, "store.json"), JSON.stringify({ remote: this.pointer.remote, branch: this.pointer.branch }));
-    logEvent("review.pair", { store: this.pointer.remote, branch: this.pointer.branch, email: pairing.email, name: pairing.name, machine: pairing.machine, check: pairing.server?.check ?? "unconfirmed", ...pairing.server?.user ? { serverUser: pairing.server.user } : {} });
+    logEvent("review.pair", { store: this.pointer.remote, branch: this.pointer.branch, email: pairing.email, name: pairing.name, machine: pairing.machine, check: pairing.server?.check ?? "unconfirmed", ...pairing.server?.user ? { serverUser: pairing.server.user } : {}, ...pairing.by ? { by: pairing.by } : {} });
     return pairing;
   }
   /**
@@ -34186,12 +34187,14 @@ async function suggestedPointer(root5) {
     return { remote: origin, branch, source, remoteName: "origin" };
   return null;
 }
-async function writePointer(root5, storeUrl, change) {
+async function writePointer(root5, storeUrl, change, who) {
   const file = join6(root5, ".mdrev.json");
   const named = readPointer(root5);
   const p2 = storeUrl?.trim() ? { remote: storeUrl.trim(), branch: DEFAULT_BRANCH } : named ?? await suggestedPointer(root5);
   if (!p2)
     throw new StoreError("this checkout has no remote to suggest a review store from: name one with mdrev --review-pointer --store <URL>", "other");
+  if (who.via === "cli" && (change || storeUrl?.trim() || !named))
+    await agentMayName(root5, p2.remote, change);
   let doc = {};
   try {
     doc = JSON.parse(readFileSync3(file, "utf8"));
@@ -34215,6 +34218,24 @@ async function writePointer(root5, storeUrl, change) {
   const commit = c.code === 0 ? (await gitOk(["rev-parse", "--short", "HEAD"], { cwd: root5 })).trim() : null;
   logEvent("review.pointer-written", { store: p2.remote, branch: p2.branch, committed: commit ?? "no", ...change ? { channels: result.notify?.channels.join(",") ?? "none" } : {} });
   return { ...result, commit, already: false };
+}
+async function agentMayName(root5, remote, change) {
+  const yours = (what) => new StoreError(`${what}: that is your person's to decide, at their own terminal \u2014 they run mdrev --review-pointer${what.startsWith("how") ? " --notify \u2026" : ` --store ${remote}`} there (E1)`, "other");
+  if (change)
+    throw yours("how a push tells people (--notify, --link) is not for an agent to set");
+  const own12 = await suggestedPointer(root5);
+  const allowed = own12 ? [own12.remote, notesRepository(own12.remote)].filter((u) => !!u).map(sameRepository) : [];
+  if (!allowed.includes(sameRepository(remote))) {
+    throw yours(`an agent names only this project's own review store${own12 ? ` (${own12.remote}) or its private ${notesRepository(own12.remote) ?? "<repo>-notes"}` : ""}, and ${remote} is neither`);
+  }
+  const open = await publicRepository(remote, root5);
+  if (open === true) {
+    const notes = notesRepository(remote);
+    const create3 = createHint(notes ?? "");
+    throw new StoreError(`${remote} can be read by anyone, so every thread, and every reviewer's name and email, would be public (E0). A public project keeps its review store in a private repository of its own: ${notes ?? "<repo>-notes"}. Ask your person to create it, private and empty${create3 ? ` (${create3})` : ""}; then mdrev --review-pointer --store ${notes ?? "<URL>"} names it`, "other");
+  }
+  if (open === null)
+    throw yours(`mdrev cannot tell who can read ${remote} (a path on this machine, or a server it cannot reach), so an agent does not name it`);
 }
 function formatPointerWritten(w, root5) {
   const nothing = w.already && w.notify === void 0;
@@ -34588,8 +34609,10 @@ async function pairStore(root5, identity, who, opts = {}) {
     logEvent("review.pair-mismatch", { store: store.pointer.remote, email, serverUser: check.user });
     throw new StoreError(check.message, "mismatch");
   }
-  const server = check.result === "unknown" ? { check: "unconfirmed", ...check.why ? { why: check.why } : {} } : { check: check.result === "matched" ? "matched" : "overridden", user: check.user, ...check.emails?.length ? { emails: check.emails } : {}, ...check.via ? { via: check.via } : {} };
-  return store.pair(identity, { server, project: await commonDir(root5) ?? void 0, inTheOpen });
+  return store.pair(identity, { server: serverField(check), project: await commonDir(root5) ?? void 0, inTheOpen });
+}
+function serverField(check) {
+  return check.result === "unknown" ? { check: "unconfirmed", ...check.why ? { why: check.why } : {} } : { check: check.result === "matched" ? "matched" : "overridden", user: check.user, ...check.emails?.length ? { emails: check.emails } : {}, ...check.via ? { via: check.via } : {} };
 }
 async function requestPairing(root5, identity) {
   if (!identity.email.includes("@"))
@@ -34601,6 +34624,37 @@ async function requestPairing(root5, identity) {
   const check = await checkPairing(root5, identity.email);
   store.requestPairing(identity, check);
   return { store, check };
+}
+async function joinOrAsk(root5, identity) {
+  if (!identity.email.includes("@"))
+    throw new StoreError(`"${identity.email}" is not an email: a person is their email (C4)`, "other");
+  if (!identity.name.trim())
+    throw new StoreError('a pairing needs a display name for this machine, such as "Hong-on-laptop"', "other");
+  const store = await needStore(root5);
+  const open = await publicRepository(store.pointer.remote, root5);
+  if (open === true)
+    await refusePublic(store, root5, false);
+  const email = identity.email.trim().toLowerCase();
+  const check = await checkPairing(root5, email);
+  const ask = (why) => {
+    store.requestPairing(identity, check);
+    return { requested: { email, name: identity.name.trim() }, check, why };
+  };
+  if (store.pairing())
+    return ask("this machine is paired with this store already, and pairing it again, as anyone, is its person's to confirm");
+  const own12 = await suggestedPointer(root5);
+  const home = own12 ? [own12.remote, notesRepository(own12.remote)].filter((u) => !!u).map(sameRepository) : [];
+  if (!home.includes(sameRepository(store.pointer.remote)) || store.pointer.branch !== DEFAULT_BRANCH) {
+    return ask(`the store .mdrev.json names, ${store.pointer.remote} (${store.pointer.branch}), is not where this project keeps its review by default${own12 ? ` (${own12.remote} or its <repo>-notes, at ${DEFAULT_BRANCH})` : ""}, so only your person, who sees its address in the viewer, can pair with it`);
+  }
+  if (open === null)
+    return ask(`mdrev cannot tell who can read ${store.pointer.remote}, so only your person can pair with it`);
+  if (check.result === "mismatch")
+    return ask(check.message ?? "the server says this machine pushes as another account");
+  if (check.result === "unknown")
+    return ask(`the server could not say whose account this machine pushes as${check.why ? ` (${check.why})` : ""}`);
+  const paired = store.pair(identity, { server: serverField(check), project: await commonDir(root5) ?? void 0, by: "agent" });
+  return { paired, check };
 }
 function defaultDisplayName(gitName) {
   return `${gitName.trim() || userInfo().username}-on-${hostname().split(".")[0]}`;
@@ -34664,7 +34718,7 @@ ${offer.skipped ? `  (${offer.skipped})
 `);
       return null;
     }
-    const w = await writePointer(root5);
+    const w = await writePointer(root5, void 0, void 0, { via: "person" });
     io.say(`wrote .mdrev.json (${w.remote}, ${w.branch})${w.commit ? ` and committed it as ${w.commit} \u2014 push it with your code` : " \u2014 commit and push it with your code"}
 `);
     pointer = await pointerFor(root5);
@@ -34730,8 +34784,17 @@ ${confirm}`;
 but ${check.message}
 ask your person which email to write as and ask again, or they confirm the mismatch in the viewer`;
   return `${asked}
-not checked: mdrev could not tell which account this machine pushes to the store's server as (${check.why}), so it pairs as unconfirmed
+not checked: mdrev could not tell which account this machine pushes to the store's server as (${check.why}), so once confirmed it pairs as unconfirmed
 ${confirm}`;
+}
+function formatJoin(j) {
+  if ("paired" in j) {
+    return `paired: you write as ${j.paired.name} <${j.paired.email}>
+${j.check.message} \u2014 OK
+the store is where this project keeps its review by default; notes go only when your person pushes them (the viewer's Push, or mdrev --review-push in their own terminal)`;
+  }
+  return `${formatPairRequest(j.requested.email, j.requested.name, j.check)}
+(not paired yet: ${j.why})`;
 }
 async function confirmPairing(root5, who, shown, opts = {}) {
   if (who.via !== "viewer")
@@ -35048,7 +35111,7 @@ async function reviewStatus(source, opts = {}) {
     branch: store.pointer.branch,
     source: store.pointer.source ?? "pointer",
     destination: await store.destination().catch(() => `${store.pointer.remote} (branch ${store.pointer.branch})`),
-    paired: pairing ? { email: pairing.email, name: pairing.name, at: pairing.at, ...pairing.server ? { server: pairing.server } : {} } : false,
+    paired: pairing ? { email: pairing.email, name: pairing.name, at: pairing.at, ...pairing.server ? { server: pairing.server } : {}, ...pairing.by ? { by: pairing.by } : {} } : false,
     ...!pairing && store.pairRequest() ? { pairRequest: store.pairRequest() } : {},
     identity: git2.email ? `${git2.name} <${git2.email}>` : "none \u2014 git config user.email is not set",
     ...cache.fetchedAt ? { fetchedAt: cache.fetchedAt } : {},
@@ -35494,6 +35557,8 @@ function formatStatus(s2) {
       lines.push(`  paired anyway: this machine pushes to the store as ${sv.user}, whose email is not ${s2.paired.email}`);
     else
       lines.push("  not checked at pairing: mdrev could not tell which account this machine pushes to the store as");
+    if (s2.paired.by === "agent")
+      lines.push("  paired by your agent: the store is where this project keeps its review by default, and its server confirmed the email");
     lines.push(s2.fetchError ? `fetch failed: ${s2.fetchError}` : s2.fetchedAt ? `fetched: ${s2.fetchedAt}` : "never fetched");
   }
   if (s2.publicStore) {
@@ -36907,7 +36972,9 @@ var USAGE = `mdrev-cli \u2014 mdrev's store, from the command line, for a host a
   mdrev-cli review subscribers [--path P]       who is subscribed to the project, or to P, under which email
   mdrev-cli review lookup --email E             the name each of the project's channels has for E
   mdrev-cli review pair [--email E --name N]    pair this machine with the store: a person at their terminal
-                                                answers here; an agent can only ask, and its person confirms in the viewer
+                                                answers here; an agent pairs a store in the default location (the project's own
+                                                repository or its <repo>-notes) whose server confirms the email, else asks, and
+                                                its person confirms in the viewer; with --viewer, the viewer's form only asks
   mdrev-cli review pair --prepare               the checkout, email and display name a viewer offers; reads only
   mdrev-cli review pair --confirm [--keep-name] the person's click in the viewer; --keep-name, their tick: the
                                                 pairing's name becomes the machine's, when it has none
@@ -37052,7 +37119,7 @@ function need(value2, what) {
     throw new UsageError(`${what} is required`);
   return value2;
 }
-async function run3(argv, out = (s2) => process.stdout.write(s2), input = readStdin) {
+async function run3(argv, out = (s2) => process.stdout.write(s2), input = readStdin, as = {}) {
   let o;
   try {
     o = parse5(argv);
@@ -37081,7 +37148,7 @@ async function run3(argv, out = (s2) => process.stdout.write(s2), input = readSt
     o.viewer = false;
   }
   const who = o.viewer ? { via: "viewer" } : { via: "cli", ...o.for ? { for: o.for } : {} };
-  const personal = o.viewer ? who : personAtTerminal() ? { via: "person" } : who;
+  const personal = o.viewer ? who : as.person || personAtTerminal() ? { via: "person" } : who;
   const emit = (value2) => out(`${JSON.stringify(value2, null, 2)}
 `);
   const said = (what, path2, body3) => {
@@ -37442,18 +37509,29 @@ ${p2.machineName ? `this machine's display name is now ${p2.machineName}, for ev
           }
           const name = o.name ?? machineDisplayName() ?? void 0;
           if (!o.email || !name) {
-            throw new UsageError(`pairing is a person's to confirm. From an agent: ask your person which email to write as (their git email is ${git2.email || "not set"})${name ? "" : ` and a display name for this machine (such as ${defaultDisplayName(git2.name)}; mdrev --display-name NAME keeps it for every project)`}, then run this again with --email${name ? "" : " and --name"}; they confirm it in the viewer. Or they run mdrev --review-pair in their own terminal.`);
+            throw new UsageError(`an agent pairs with the email its person names. Ask your person which email to write as (their git email is ${git2.email || "not set"})${name ? "" : ` and a display name for this machine (such as ${defaultDisplayName(git2.name)}; mdrev --display-name NAME keeps it for every project)`}, then run this again with --email${name ? "" : " and --name"}. Or they run mdrev --review-pair in their own terminal.`);
           }
-          const { check } = await requestPairing(source.repoRoot, { email: o.email, name });
-          if (o.text)
-            out(`${describeStore(pointer, await storeVsOrigin(source.repoRoot, pointer))}${formatPairRequest(o.email, name, check)}
+          if (personal.via === "viewer") {
+            const { check } = await requestPairing(source.repoRoot, { email: o.email, name });
+            if (o.text)
+              out(`${describeStore(pointer, await storeVsOrigin(source.repoRoot, pointer))}${formatPairRequest(o.email, name, check)}
 `);
+            else
+              emit({ requested: { email: o.email.toLowerCase(), name }, store: pointer, check });
+            return 0;
+          }
+          const joined = await joinOrAsk(source.repoRoot, { email: o.email, name });
+          if (o.text)
+            out(`${describeStore(pointer, await storeVsOrigin(source.repoRoot, pointer))}${formatJoin(joined)}
+`);
+          else if ("paired" in joined)
+            emit({ paired: joined.paired, store: pointer, check: joined.check });
           else
-            emit({ requested: { email: o.email.toLowerCase(), name }, store: pointer, check });
+            emit({ requested: joined.requested, store: pointer, check: joined.check, why: joined.why });
           return 0;
         }
         case "pointer": {
-          const w = await writePointer(source.repoRoot, o.store, notifyChange(o.notify, o.link));
+          const w = await writePointer(source.repoRoot, o.store, notifyChange(o.notify, o.link), personal);
           if (o.text)
             out(formatPointerWritten(w, source.repoRoot));
           else
