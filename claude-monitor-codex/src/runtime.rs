@@ -34,8 +34,11 @@ struct RuntimeState {
 }
 
 impl NativeRuntime {
-    /// Validate inert configuration. This opens no connection, directory, database or process.
-    pub fn new(config: RuntimeConfig) -> Result<Arc<Self>> {
+    /// Validate inert configuration and anchor the receipt path to the current directory.
+    /// This opens no connection, directory, database or process.
+    pub fn new(mut config: RuntimeConfig) -> Result<Arc<Self>> {
+        config.gateway.state_path = std::path::absolute(&config.gateway.state_path)
+            .context("Resolve absolute native receipt path")?;
         validate_endpoint(&config.gateway.endpoint)?;
         let uri: tungstenite::http::Uri = config.gateway.endpoint.parse()?;
         let authority = uri.authority().context("Codex endpoint has no authority")?;
@@ -338,32 +341,43 @@ impl NativeRuntime {
             .args(["-c", "service_tier=\"default\""])
             .current_dir(&self.config.gateway.allowed_roots[0])
             .env_clear();
-        // Explicit host environment contract; omit Monitor/session/agent-specific overrides.
-        for name in [
-            "HOME",
-            "USER",
-            "LOGNAME",
-            "PATH",
-            "TMPDIR",
-            "LANG",
-            "LC_ALL",
-            "SSL_CERT_FILE",
-            "SSL_CERT_DIR",
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-            "NO_PROXY",
-            "http_proxy",
-            "https_proxy",
-            "all_proxy",
-            "no_proxy",
-            "OPENAI_API_KEY",
-        ] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
+        inherit_server_environment(&mut command, std::env::vars_os());
         Ok(command)
+    }
+}
+
+/// Preserve host execution context without inheriting Monitor/session/agent overrides.
+fn inherit_server_environment(
+    command: &mut Command,
+    environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) {
+    const ALLOWED: &[&str] = &[
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "PATH",
+        "SSH_AUTH_SOCK",
+        "SHELL",
+        "TERM",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "OPENAI_API_KEY",
+    ];
+    for (name, value) in environment {
+        if name.to_str().is_some_and(|name| ALLOWED.contains(&name)) {
+            command.env(name, value);
+        }
     }
 }
 
@@ -474,7 +488,113 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("missing-codex"));
+        let token =
+            std::fs::read_to_string(ServerToken::path(&runtime.config.gateway.state_path).unwrap())
+                .unwrap();
+        assert!(!format!("{error:#}").contains(&token));
+        assert!(!runtime.status().to_string().contains(&token));
         crate::remove_test_scratch(&root);
+    }
+
+    #[test]
+    fn reflected_handshake_credentials_never_enter_status_or_startup_error() {
+        use std::io::{Read, Write};
+        let (root, runtime) = fixture();
+        ServerToken::load_or_create(&runtime.config.gateway.state_path).unwrap();
+        let token =
+            std::fs::read_to_string(ServerToken::path(&runtime.config.gateway.state_path).unwrap())
+                .unwrap();
+        assert!(!runtime.status().to_string().contains(&token));
+        let listener = std::net::TcpListener::bind(runtime.addresses[0]).unwrap();
+        let reflected = token.clone();
+        let peer = std::thread::spawn(move || {
+            // Activation first makes an ordinary TCP availability probe.
+            drop(listener.accept().unwrap().0);
+            for status in [401, 403] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                    assert!(request.len() < 8192);
+                }
+                assert_eq!(
+                    String::from_utf8(request).unwrap().contains(&reflected),
+                    status == 403
+                );
+                write!(stream, "HTTP/1.1 {status} Refused\r\nX-Echo: {reflected}\r\nContent-Length: 64\r\nConnection: close\r\n\r\n{reflected}").unwrap();
+            }
+        });
+        let error = runtime.activate(false).unwrap_err();
+        peer.join().unwrap();
+        let status = runtime.status();
+        assert!(status["lastStartupError"].as_str().unwrap().contains("403"));
+        assert!(!format!("{error:#}").contains(&token));
+        assert!(!status.to_string().contains(&token));
+        assert!(!status.to_string().contains(&token[..16]));
+        assert!(runtime.gateway().is_none());
+        crate::remove_test_scratch(&root);
+    }
+
+    #[test]
+    fn relative_receipt_path_is_anchored_before_the_child_changes_directory() {
+        let (root, original) = fixture();
+        let relative = PathBuf::from("target/native-relative-state/receipts.sqlite3");
+        let runtime = NativeRuntime::new(RuntimeConfig {
+            gateway: Config {
+                endpoint: original.config.gateway.endpoint.clone(),
+                allowed_roots: vec![root.clone()],
+                state_path: relative.clone(),
+            },
+            binary: original.config.binary.clone(),
+            home: original.config.home.clone(),
+            log_path: original.config.log_path.clone(),
+        })
+        .unwrap();
+        let absolute = std::env::current_dir().unwrap().join(relative);
+        assert_eq!(runtime.config.gateway.state_path, absolute);
+        let command = runtime.server_command().unwrap();
+        let args: Vec<_> = command.get_args().collect();
+        let index = args
+            .iter()
+            .position(|arg| *arg == "--ws-token-file")
+            .unwrap();
+        assert_eq!(
+            args[index + 1],
+            ServerToken::path(&absolute).unwrap().as_os_str()
+        );
+        assert_eq!(command.get_current_dir(), Some(root.as_path()));
+        crate::remove_test_scratch(&root);
+    }
+
+    #[test]
+    fn server_environment_preserves_ssh_and_shell_without_session_overrides() {
+        let mut command = Command::new("unused");
+        command.env_clear();
+        inherit_server_environment(
+            &mut command,
+            [
+                ("SSH_AUTH_SOCK", "/synthetic/ssh-agent.sock"),
+                ("SHELL", "/bin/zsh"),
+                ("TERM", "xterm-256color"),
+                ("CODEX_THREAD_ID", "must-not-inherit"),
+                ("RUST_LOG", "trace"),
+            ]
+            .map(|(name, value)| (name.into(), value.into())),
+        );
+        let values: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        for (name, expected) in [
+            ("SSH_AUTH_SOCK", "/synthetic/ssh-agent.sock"),
+            ("SHELL", "/bin/zsh"),
+            ("TERM", "xterm-256color"),
+        ] {
+            assert_eq!(values[std::ffi::OsStr::new(name)].unwrap(), expected);
+        }
+        assert_eq!(values.len(), 3);
     }
 
     #[test]

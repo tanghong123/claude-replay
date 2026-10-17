@@ -23,6 +23,15 @@ snapshot, not `Last-Event-ID` replay. Thread-less native notifications are denie
 by default. Resolution of a pending request already owned by this gateway forwards
 only its request ID. No account, login, search or standalone-command data is broadcast.
 
+Before installing any host logging backend, cap the `tungstenite` target and all
+its child targets at DEBUG or below, regardless of a global TRACE setting. Version
+0.29 logs the serialized handshake at TRACE, including Authorization; marking the
+header sensitive does not redact those bytes. Reject logging configuration that
+can override this target cap, or filter those records before any sink. The wiring
+stage must verify this with a synthetic credential and captured logs before
+enabling native connections. This library installs no logger and cannot enforce
+the host's logging configuration; sanitized gateway errors alone are insufficient.
+
 ## Authority
 
 The owner pairs a browser using Monitor's existing credential. Every paired
@@ -43,11 +52,16 @@ thread's pending-request identity checks.
 On first explicit activation, Monitor generates an independent random 256-bit
 credential. It publishes `codex-server.token` atomically beside the receipt
 database in its private state directory (normally `~/.local/state/agent-monitor`).
-The directory is owned by the current user with mode 0700; the file is 0600.
+The directory is created with mode 0700 even under umask 002; an existing real
+directory is tightened to 0700 only after checking its owner. The file is 0600.
+Temporary names use an independent random nonce, never credential bytes. The
+fully written file and the containing directory are synced before publication
+returns, including when a concurrent creator supplied the winning hard link.
 Concurrent starts reuse the published value. Existing malformed, symlinked or
-non-private credentials fail closed. The credential is not the pairing token,
-is never returned in status/UI or included in diagnostics, and is never a setup
-step or user prompt. Unpairing does not rotate it: app-server loads it at startup.
+non-private credentials fail closed. The credential is not the pairing token.
+Gateway status/UI responses and its own diagnostic strings omit it; dependency
+logs also require the host logging cap above. It is never a setup step or user
+prompt. Unpairing does not rotate it: app-server loads it at startup.
 
 Monitor starts app-server with `--ws-auth capability-token --ws-token-file <path>`.
 Every WebSocket connection, including reconnect, first requires a 401 for a
@@ -75,9 +89,12 @@ and passcode rules.
 Startup selects the first configured allowed project root as cwd and explicitly
 sets `CODEX_HOME`, `CODEX_APP_SERVER_FORCE_CLI=1` and Standard service tier. The
 child environment is cleared and retains only HOME/USER/LOGNAME/PATH/TMPDIR,
+SSH_AUTH_SOCK/SHELL/TERM,
 LANG/LC_ALL, SSL_CERT_FILE/SSL_CERT_DIR, HTTP(S)/ALL/NO_PROXY (both spellings), and
 OPENAI_API_KEY when set. Custom provider environment variables are not implicitly
 inherited; their support needs explicit host configuration before enablement.
+`NativeRuntime::new` anchors a relative receipt path to the Monitor's current
+directory, so the token-file argument stays absolute when the child changes cwd.
 
 ## Disconnect and recovery
 
@@ -117,6 +134,16 @@ queue-steer bindings are not expired automatically. Each identity store is cappe
 at 100,000; new claims fail closed at capacity. Do not automatically rotate/delete
 this database to bypass the cap. Reconcile native history before any operator-led
 retirement. This bounds growth without weakening duplicate-delivery protection.
+
+Capacity recovery is deferred to the HTTP/UI wiring stage, not implemented in
+this library revision. Before exposing native writes, that stage must surface a
+warning before either identity store reaches its cap and provide a tested operator
+recovery path that preserves rejection of old action IDs and queued submissions.
+Stop all writers and reconcile uncertain deliveries before any operator operation;
+deleting tombstones, replacing the database or extending the cap without such a
+protocol is not a supported recovery path. The current hard cap remains a known
+operational limit. No automatic expiry is added here because it could turn an old
+retry into a second native delivery.
 
 Opening a legacy version-0 database transactionally compacts its response payloads,
 adds retention timestamps, sets the version and reclaims old snapshot pages.
