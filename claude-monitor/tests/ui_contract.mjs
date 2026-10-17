@@ -24,7 +24,7 @@ import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headSte
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { KEYMAP, bindKeymap, hintFor, inGuest, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { isMarkdownName, standaloneFacts, standaloneHref } from "../../claude-monitor/src/codex-ui/mdrev-pane.js";
-import { agentRecordTargets, currentTurnIndex, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
+import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
@@ -1619,10 +1619,31 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(directMask("user") & CLASS_BIT.u, CLASS_BIT.u);
   assert.match(recordText(records[2], stripTags), /skua-HD/, "a plain search finds the sender");
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
-  assert.match(comp, /class="turn peer" data-kind="peer" data-record-kind="peer"/, "its card is its own kind");
+  assert.match(comp, /class="turn peer" style="--peer-hue:\$\{peerHue\(peer\.from\)\}" data-kind="peer" data-record-kind="peer"/, "its card is its own kind, in its sender's hue (#s138)");
   const classic = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
   assert.match(classic, /function isTurnKind\(b\) \{ return b\.kind === "user" \|\| b\.kind === "command" \|\| b\.kind === "peer"; \}/, "the classic page counts it as a turn too");
   console.log("#s79 peer message cases passed");
+}
+
+// #s138, Hong: in the Turns pane a turn another session opened is told from the person's own, and
+// one sender from another. The hue is a hash of the sender's NAME, so it is stable everywhere.
+{
+  assert.equal(peerHue("skua-HD"), peerHue("skua-HD"), "a sender keeps its hue");
+  assert.notEqual(peerHue("skua-HD"), peerHue("tern-AB"), "two senders get two hues");
+  for (const name of ["skua-HD", "tern-AB", "", "another session", "petrel 号"]) {
+    const h = peerHue(name);
+    assert.ok(Number.isInteger(h) && h >= 0 && h < 360, `a hue is a whole degree: ${name} → ${h}`);
+  }
+  assert.equal(peerLabelRest("skua-HD: the release is out", "skua-HD"), "the release is out", "the chip carries the name, the label the rest");
+  assert.equal(peerLabelRest("skua-HD here: the release is out", "skua-HD"), "here: the release is out", "a body that opens with its own name keeps the rest");
+  assert.equal(peerLabelRest("the release is out", "skua-HD"), "the release is out", "a label without the name is left alone");
+  assert.equal(peerLabelRest("skua-HD", "skua-HD"), "skua-HD", "a label that is only the name stays, rather than go empty");
+  const appSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  const nav = appSrc.slice(appSrc.indexOf("function renderNavigator("), appSrc.indexOf("const tasks = recordState.meta?.tasks"));
+  assert.match(nav, /r\.unit\?\.view\?\.peer \? peerRow\(r\.unit\)/, "a peer turn's row is drawn by peerRow");
+  assert.match(nav, /class="outline-turn-row outline-peer" style="--peer-hue:\$\{peerHue\(from\)\}"/, "…in its sender's hue");
+  assert.match(nav, /class="outline-peer-from"/, "…with the sender as a chip");
+  console.log("#s138 peer row cases passed");
 }
 
 // #114: the reader's choices ride with the position and come back.

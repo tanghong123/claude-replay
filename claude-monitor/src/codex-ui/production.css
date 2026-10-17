@@ -1586,6 +1586,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .turn.peer .turn-time{margin:4px 2px 0;font-size:11px;color:var(--faint)}
 .turn.peer .spot-link{--spot-top:10px}
 @media(max-width:620px){.turn.peer .peer-card{max-width:100%}}
+/* #s138, Hong: each sender in a hue of its own — a stable hash of its name (view-model.js peerHue),
+   so it is the same in every session — on the card's rule and name and on its Turns pane row, where
+   the sender is a chip before the label. The person's own rows are unchanged. */
+.turn.peer[style*="--peer-hue"],#app .outline-peer{--peer:hsl(var(--peer-hue) 58% 33%)}
+:root[data-theme="dark"] .turn.peer[style*="--peer-hue"],:root[data-theme="dark"] #app .outline-peer{--peer:hsl(var(--peer-hue) 68% 70%)}
+#app .outline-turn-row.outline-peer{grid-template-columns:24px auto minmax(0,1fr)}
+#app .outline-peer-from{max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:1px 6px 1px 5px;border-radius:5px;background:color-mix(in srgb,var(--peer) 12%,transparent);color:var(--peer);font-size:10.5px;font-weight:650;line-height:1.35}
+#app .outline-peer-glyph{margin-right:3px}
+#app .phone-pane-body .outline-peer-from{font-size:13px}
 
 
 /* Border, typography and spacing are the existing .markdown blockquote/p rules.

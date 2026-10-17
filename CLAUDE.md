@@ -803,7 +803,11 @@ a paragraph addressed to the model. It folds to `Block::PeerText` (`peer` on the
 Turns pane, the sticky strip and every turn count include it (`Block::opens_turn` is the ONE turn
 predicate) — but never the person's: no `❯`, no right-hand bubble, not in `u:` (`directMask`
 claims no class for it), drawn as a card from the LEFT under `⇄` and the sender's name (the owner's
-choice), the message alone as Markdown. `origin.body` is read, never the prose; the tag is read
+choice), the message alone as Markdown. In the app shell each sender has a hue of its own (#s138,
+Hong: tell agent turns from the person's and one agent from another, in the Turns pane): `peerHue`
+(`view-model.js`, FNV-1a over the name, so stable everywhere) colours the card's rule and name and
+the sender's chip on its Turns pane row, the label going on after the name (`peerLabelRest`).
+`origin.body` is read, never the prose; the tag is read
 only for a meta record with no `origin` (none measured), so a person QUOTING the tag keeps their
 prompt. The mid-turn one used to render as the person's own prompt. A peer enqueue draws no `⧗
 queued` marker (that marker means the person typed it) but stays in the queue, popped at pickup by

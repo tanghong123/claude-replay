@@ -3,7 +3,7 @@
 import { attachmentCapability, besideAction, groupPointerRuns, isPointerAttachment, referenceAction, revealHere, revealQuery } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 import { fleetGroups } from "./shared/fleet.js";
-import { escapeText, literalText, partsHtml } from "./view-model.js";
+import { escapeText, literalText, partsHtml, peerHue } from "./view-model.js";
 import { rememberCap, resultBodyHtml } from "./shared/parts.js";
 import { interactionHtml } from "./shared/interaction.js";
 import { headStepOf, headStepState, nextHeadStep } from "./shared/tool-head.js";
@@ -324,7 +324,7 @@ export function renderUnit(unit, state) {
     // Another session's message (#s79, Hong's choice: a card from the left). It counts as a turn,
     // but it is not the person's: no right-hand bubble, no "exactly as typed" raw toggle.
     const peer = unit.view.peer;
-    html = `<div class="turn peer" data-kind="peer" data-record-kind="peer" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="peer-card"><div class="peer-head"><span class="peer-glyph" aria-hidden="true">⇄</span><span class="peer-from">${escapeText(peer.from)}</span><span class="peer-what">another session</span>${peer.mode ? `<span class="peer-mode" title="The sending session's permission mode">${escapeText(peer.mode)}</span>` : ""}</div><div class="body markdown">${unit.view.html}</div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}</div>`;
+    html = `<div class="turn peer" style="--peer-hue:${peerHue(peer.from)}" data-kind="peer" data-record-kind="peer" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="peer-card"><div class="peer-head"><span class="peer-glyph" aria-hidden="true">⇄</span><span class="peer-from">${escapeText(peer.from)}</span><span class="peer-what">another session</span>${peer.mode ? `<span class="peer-mode" title="The sending session's permission mode">${escapeText(peer.mode)}</span>` : ""}</div><div class="body markdown">${unit.view.html}</div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}</div>`;
   }
   else if (unit.type === "user") {
     const long = promptShouldCollapse(unit.view.html);

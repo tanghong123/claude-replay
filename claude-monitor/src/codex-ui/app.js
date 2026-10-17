@@ -17,7 +17,7 @@ import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, querySpans, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, prefixOf, CLASS_ORDER, wholeAt, toolMatches, recordHasTool, toolLetters as sessionToolLetters, resolveTools as resolveToolSpec } from "./shared/search.js";
 import { parseJumpQuery } from "./jump-query.js";
-import { agentRecordTargets, currentTurnIndex, escapeText, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
+import { agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRest, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 import { revealMermaidSource } from "./shared/mermaid.js";
 
@@ -1254,7 +1254,13 @@ function renderNavigator() {
   const epochs = [];
   recordState.records.forEach((record, i) => { if (record.kind === "compaction") epochs.push({ at: i, tick: compactionTick(record.head || {}) }); });
   const rows = [...turns.map(unit => ({ at: unit.from, unit })), ...epochs].sort((a, b) => a.at - b.at);
-  byId("navigatorTurns").innerHTML = (earlier > 0 ? `<div class="activity-empty outline-turns-loading" role="status">Turns 1–${earlier} are still loading</div>` : "") + rows.map(r => r.unit
+  // #s138, Hong: a turn another session opened is told from the person's own, and one sender from
+  // another — its row carries the sender as a chip in the sender's own hue (the card's too).
+  const peerRow = unit => {
+    const from = unit.view.peer.from;
+    return `<button class="outline-turn-row outline-peer" style="--peer-hue:${peerHue(from)}" data-turn-record="${unit.from}" data-peer-from="${escapeText(from)}" title="${escapeText(unit.label)}"><span class="outline-number">${String(unit.turn).padStart(2, "0")} ·</span><span class="outline-peer-from" title="Sent by ${escapeText(from)}, another session"><span class="outline-peer-glyph" aria-hidden="true">⇄</span>${escapeText(from)}</span><span class="outline-label">${escapeText(peerLabelRest(unit.label, from))}</span></button>`;
+  };
+  byId("navigatorTurns").innerHTML = (earlier > 0 ? `<div class="activity-empty outline-turns-loading" role="status">Turns 1–${earlier} are still loading</div>` : "") + rows.map(r => r.unit?.view?.peer ? peerRow(r.unit) : r.unit
     ? `<button class="outline-turn-row${r.unit.view?.reply ? " outline-quoted" : ""}" data-turn-record="${r.unit.from}" title="${escapeText(r.unit.label)}"><span class="outline-number">${String(r.unit.turn).padStart(2, "0")} ·</span>${r.unit.view?.reply ? `<span class="outline-quote-marker" role="img" aria-label="Quoted reply" title="Reply to selected text">│</span>` : ""}<span class="outline-label">${escapeText(r.unit.label)}</span>${r.unit.view?.reply?.items.length > 1 ? `<span class="outline-reply-count" aria-label="${r.unit.view.reply.items.length - 1} more annotations">+${r.unit.view.reply.items.length - 1}</span>` : ""}</button>`
     : `<button class="outline-epoch" type="button" data-turn-record="${r.at}" title="${escapeText(r.tick.title)}${r.tick.sizes ? ` · ${escapeText(r.tick.sizes)}` : ""} — jump to the compaction" aria-label="${escapeText(r.tick.title)}${r.tick.sizes ? `, ${escapeText(r.tick.sizes)}` : ""}"><span class="outline-epoch-line" aria-hidden="true"></span><span class="outline-epoch-glyph" aria-hidden="true">${r.tick.glyph}</span>${r.tick.sizes ? `<span class="outline-epoch-sizes">${escapeText(r.tick.sizes)}</span>` : ""}<span class="outline-epoch-line" aria-hidden="true"></span></button>`
   ).join("") || '<div class="activity-empty">No turns</div>';

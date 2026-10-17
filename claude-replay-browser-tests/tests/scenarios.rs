@@ -17933,6 +17933,108 @@ fn peer_fixture(name: &str) -> Fixture {
     }
 }
 
+/// Twelve turns, then messages from two other sessions, skua-HD twice and tern-AB once, with a
+/// prompt of the person's own between them — the peer record shape Claude Code writes, by hand.
+fn two_peers_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    let line = |v: serde_json::Value| format!("{v}\n");
+    let peer = |from: &str, body: &str, ts: String| {
+        line(serde_json::json!({
+            "type": "user", "cwd": "/r", "timestamp": ts, "isMeta": true,
+            "promptSource": "system", "turnOrigin": "peer",
+            "origin": {"kind": "peer", "from": "uds:/tmp/s.sock", "verifiedPeerPid": 1, "msg_id": format!("m-{from}-{body}"),
+                       "name": from, "fromMode": "bypass", "body": body},
+            "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/s.sock\" from-name=\"{from}\" from-mode=\"bypass\">\n{body}\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user.")}
+        }))
+    };
+    transcript += &peer("skua-HD", "the release is out", now_minus(90));
+    transcript += &assistant_at("noted the release", &now_minus(85));
+    transcript += &peer("tern-AB", "the colony count is in", now_minus(70));
+    transcript += &assistant_at("noted the count", &now_minus(65));
+    transcript += &user_at("ring the late chicks", &now_minus(50));
+    transcript += &assistant_at("ringed", &now_minus(45));
+    transcript += &peer("skua-HD", "the tap is updated", now_minus(30));
+    transcript += &assistant_at("noted the tap", &now_minus(25));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 16,
+    }
+}
+
+/// #s138, Hong: "distinguish agent-to-agent messages from plain user messages … easily
+/// distinguish different agents", in the Turns pane. A turn another session opened carries its
+/// sender as a chip in the sender's own colour — the same colour for both of skua-HD's turns, a
+/// different one for tern-AB's, and the same as the sender on the transcript's card — while the
+/// person's own turns carry no chip. The rows used to read like any prompt.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_turns_pane_marks_agent_turns_and_tells_senders_apart() {
+    let _serial = serial();
+    let fx = two_peers_fixture("scenario-two-peers-app");
+    let page = open(Surface::AppShell, &fx, 3082);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    let rows: serde_json::Value = serde_json::from_str(
+        eval(
+            tab,
+            "JSON.stringify([...document.querySelectorAll('#navigatorTurns .outline-turn-row')].map(r => { \
+               var chip = r.querySelector('.outline-peer-from'); var label = r.querySelector('.outline-label'); \
+               return { peer: r.classList.contains('outline-peer'), from: chip ? chip.textContent.replace('⇄', '').trim() : '', \
+                        colour: chip ? getComputedStyle(chip).color : '', label: label ? label.textContent : '' }; }))",
+        )
+        .as_str()
+        .unwrap_or("[]"),
+    )
+    .unwrap();
+    let rows = rows.as_array().cloned().unwrap_or_default();
+    assert_eq!(
+        rows.len(),
+        fx.turns as usize,
+        "every turn has a row: {rows:?}"
+    );
+    let peers: Vec<_> = rows.iter().filter(|r| r["peer"] == true).collect();
+    assert_eq!(
+        peers
+            .iter()
+            .map(|r| r["from"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>(),
+        vec!["skua-HD", "tern-AB", "skua-HD"],
+        "each agent's turn is marked and names its sender: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .filter(|r| r["peer"] != true)
+            .all(|r| r["from"] == ""),
+        "the person's own turns carry no chip: {rows:?}"
+    );
+    assert_eq!(
+        peers[0]["label"], "the release is out",
+        "the label goes on from what was said: {rows:?}"
+    );
+    assert_eq!(
+        peers[0]["colour"], peers[2]["colour"],
+        "a sender keeps its colour: {rows:?}"
+    );
+    assert_ne!(
+        peers[0]["colour"], peers[1]["colour"],
+        "two senders are told apart: {rows:?}"
+    );
+    let card = eval(
+        tab,
+        "(function(){ var c = [...document.querySelectorAll('.turn.peer .peer-from')].pop(); return c ? getComputedStyle(c).color : ''; })()",
+    );
+    assert_eq!(
+        card, peers[2]["colour"],
+        "the card names its sender in the row's colour: card {card}, rows {rows:?}"
+    );
+}
+
 // ── scenario: a Markdown link the transcript carries runs no script (#s108) ─────────────────
 
 /// A session whose last answer carries Markdown links: the three kinds a page opens (a web
