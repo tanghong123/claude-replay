@@ -74,3 +74,39 @@ fn monitor_fixture_overrides_inherited_configuration_and_store_paths() {
         );
     }
 }
+
+/// #s142: a case that passes removes the scratch roots it made, and a failed one keeps them for
+/// diagnosis. The roots used to stay until the release's sweep: a day's suites left 741 of them.
+#[test]
+fn a_passing_case_removes_its_scratch_and_a_failing_case_keeps_it() {
+    if std::env::var_os("CR_KEEP_SCRATCH").is_some() {
+        return;
+    }
+    let passed = std::thread::spawn(|| {
+        let _serial = harness::serial();
+        harness::base("scratch-passes")
+    })
+    .join()
+    .unwrap();
+    assert!(
+        !passed.exists(),
+        "a passing case leaves no root: {}",
+        passed.display()
+    );
+    let made = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let seen = made.clone();
+    let outcome = std::thread::spawn(move || {
+        let _serial = harness::serial();
+        *seen.lock().unwrap() = Some(harness::base("scratch-fails"));
+        panic!("the case fails");
+    })
+    .join();
+    assert!(outcome.is_err());
+    let failed = made.lock().unwrap().take().unwrap();
+    assert!(
+        failed.exists(),
+        "a failed case keeps its root: {}",
+        failed.display()
+    );
+    let _ = std::fs::remove_dir_all(&failed);
+}

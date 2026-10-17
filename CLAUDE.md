@@ -850,9 +850,11 @@ so all of it stays inside the repo and `cargo clean` (or `scripts/sweep.sh`) cle
 directories and 267 MB had accumulated there. A full run leaves ~3.4 MB — except the browser
 harness's roots (`cr-browser-follow-<pid>-<case>`, `cr-browser-state-<pid>`,
 `cr-browser-chrome-<pid>-<n>`), one per case per run and ~0.3 GB for a walk over a long
-session, which the sweep prunes by the LIVENESS of the pid in the name, not by age (#205: the
-age rule had kept 43 GB of them after one day's runs); a running suite's roots are never in
-range, so the sweep is safe beside a live run. Everything else goes by age.
+session. A case that PASSES removes its own as its `serial()` guard goes (#s142: a day's suites
+had left 741 of them, 13.6 GB); a failed case keeps its root for diagnosis, as `CR_KEEP_SCRATCH=1`
+keeps every root. What is left the sweep prunes by the LIVENESS of the pid in the name, not by
+age (#205: the age rule had kept 43 GB of them after one day's runs); a running suite's roots are
+never in range, so the sweep (or `scripts/sweep-scratch.sh` alone) is safe beside a live run. Everything else goes by age.
 Scratch inside the repo is scratch inside a GIT repo, so the same file sets
 `GIT_CEILING_DIRECTORIES=target` — a fixture that shells out to `git` sees no
 repository, exactly as it did in the system temp. A test that spawns a `tmux`
