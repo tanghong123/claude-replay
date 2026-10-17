@@ -289,7 +289,7 @@ link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.45, #s123), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.48, #s137), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor both binaries go through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
@@ -803,7 +803,11 @@ a paragraph addressed to the model. It folds to `Block::PeerText` (`peer` on the
 Turns pane, the sticky strip and every turn count include it (`Block::opens_turn` is the ONE turn
 predicate) — but never the person's: no `❯`, no right-hand bubble, not in `u:` (`directMask`
 claims no class for it), drawn as a card from the LEFT under `⇄` and the sender's name (the owner's
-choice), the message alone as Markdown. `origin.body` is read, never the prose; the tag is read
+choice), the message alone as Markdown. In the app shell each sender has a hue of its own (#s138,
+Hong: tell agent turns from the person's and one agent from another, in the Turns pane): `peerHue`
+(`view-model.js`, FNV-1a over the name, so stable everywhere) colours the card's rule and name and
+the sender's chip on its Turns pane row, the label going on after the name (`peerLabelRest`).
+`origin.body` is read, never the prose; the tag is read
 only for a meta record with no `origin` (none measured), so a person QUOTING the tag keeps their
 prompt. The mid-turn one used to render as the person's own prompt. A peer enqueue draws no `⧗
 queued` marker (that marker means the person typed it) but stays in the queue, popped at pickup by
@@ -846,9 +850,11 @@ so all of it stays inside the repo and `cargo clean` (or `scripts/sweep.sh`) cle
 directories and 267 MB had accumulated there. A full run leaves ~3.4 MB — except the browser
 harness's roots (`cr-browser-follow-<pid>-<case>`, `cr-browser-state-<pid>`,
 `cr-browser-chrome-<pid>-<n>`), one per case per run and ~0.3 GB for a walk over a long
-session, which the sweep prunes by the LIVENESS of the pid in the name, not by age (#205: the
-age rule had kept 43 GB of them after one day's runs); a running suite's roots are never in
-range, so the sweep is safe beside a live run. Everything else goes by age.
+session. A case that PASSES removes its own as its `serial()` guard goes (#s142: a day's suites
+had left 741 of them, 13.6 GB); a failed case keeps its root for diagnosis, as `CR_KEEP_SCRATCH=1`
+keeps every root. What is left the sweep prunes by the LIVENESS of the pid in the name, not by
+age (#205: the age rule had kept 43 GB of them after one day's runs); a running suite's roots are
+never in range, so the sweep (or `scripts/sweep-scratch.sh` alone) is safe beside a live run. Everything else goes by age.
 Scratch inside the repo is scratch inside a GIT repo, so the same file sets
 `GIT_CEILING_DIRECTORIES=target` — a fixture that shells out to `git` sees no
 repository, exactly as it did in the system temp. A test that spawns a `tmux`

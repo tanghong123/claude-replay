@@ -592,6 +592,29 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
     // session is ever seen running as a named agent, that is worth a look before it is a label.
     "agent-setting",
     "ai-title",
+    // #s134 (client 2.1.300): the client's log of every API call, three record types. Met
+    // 2026-10-16 in the 4 transcripts on this machine that carry them, every one a headless
+    // `claude -p` session (entrypoint `sdk-cli`, `querySource: "sdk"` on all 79 calls); 2.1.299
+    // writes none. `api-request` is one call as it is made, before its answer: the model, betas,
+    // effort, thinking display and context-management edits it asked for, its cache-control
+    // breakpoints, and `keep`/`tail` (how many of the previous request's messages it reuses, and
+    // the blob hashes of those it appends). `api-request-blob` is one message as sent,
+    // content-addressed and written once, just before the first request that uses it, and
+    // carries no timestamp; its content repeats what the transcript's own records already hold.
+    // `api-request-shape` is the system prompt and tool schemas, once per distinct `shapeHash`.
+    // Nothing is drawn: this is what was sent to the model, not something that happened in the
+    // session, and what a reader could want from it is drawn already (the model, the effort, the
+    // thinking display) or deliberately not (the system prompt, system reminders). The facts only
+    // these records hold, the cache breakpoints and what each request carried, would need a
+    // per-answer "what the model saw" inspector: a design question for the owner. Every such line
+    // puts its type first, which is how `turn_ended` and `local_role` pass it by. Measured on the
+    // four: 20 to 30% of each transcript's bytes, 11 to 31% of its last 512 KiB. REVISIT: an
+    // interactive session writing them or a `querySource` other than "sdk"; an `api-request`
+    // whose answer the transcript lacks (a call the page would not show, which could matter to
+    // the cost); the owner asking for the inspector.
+    "api-request",
+    "api-request-blob",
+    "api-request-shape",
     "artifact-autoreact-ledger",
     "artifact-comment-monitor",
     "assistant",
@@ -883,7 +906,17 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // arrives with an EMPTY `thinking` field, which the fold drops (a `redacted_thinking`
             // block keeps a placeholder), so a session on "omitted" would lose every reasoning
             // marker: a RENDER question for the owner, queued with the count and client version.
+            // MET (#s135, 2026-10-16): "omitted" on 282 thinking blocks in 9 headless (`sdk-cli`)
+            // sessions, clients 2.1.296 to 2.1.300, every one empty and signed. Answered by the
+            // `redacted_thinking` precedent: an empty signed block is drawn as a placeholder
+            // (`thinking_not_returned`), keyed on the block rather than on this key, so older
+            // clients' empty blocks are drawn too. The key itself stays unread.
             "thinkingDisplay",
+            // #s134 (client 2.1.300): a string on every assistant record, the `id` of the
+            // `api-request` that produced it (the records one answer is split into share it). Met
+            // on 115 records 2026-10-16, only in sessions that write the request log beside it
+            // (see `RECORD_TYPES_KNOWN`). It joins an answer to that log, which nothing draws.
+            "requestRef",
         ],
     ),
     (
@@ -2040,6 +2073,9 @@ pub(crate) fn tool_is_interactive(name: &str) -> bool {
 /// back) proves the conversation moved past whatever ended before. Field-level on
 /// purpose — this runs per tail line on the monitor's scan path, like the liveness scan.
 pub(crate) fn turn_ended(raw_line: &str) -> Option<bool> {
+    if request_log_line(raw_line) {
+        return None;
+    }
     if raw_line.contains("\"type\":\"assistant\"") {
         return Some(
             raw_line.contains("\"stop_reason\":\"end_turn\"")
@@ -2059,6 +2095,29 @@ pub(crate) fn turn_ended(raw_line: &str) -> Option<bool> {
         return Some(false);
     }
     None
+}
+
+/// What a reasoning block the API returned no text for is drawn as (#s135).
+const THINKING_NOT_RETURNED: &str = "[thinking not returned]";
+
+/// A `thinking` block with no text but a signature: the model reasoned and the API sent nothing
+/// to show (#s135). Under `display: "omitted"`, the default on every Claude 5 model, every block
+/// is one, and headless sessions ask for it (2.1.296 on, `thinkingDisplay`); older headless
+/// clients and a few interactive answers wrote them too. Like a `redacted_thinking` block it
+/// still marks reasoning time, so it joins the work span as a placeholder. Measured 2026-10-16
+/// on this machine: 504 such blocks in 46 sessions, and no empty block without a signature.
+fn thinking_not_returned(blk: &Value) -> bool {
+    blk.get("signature")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
+}
+
+/// A line of the client's API-call log (#s134): `api-request`, `api-request-blob` or
+/// `api-request-shape`, each with its type first (all of them on every transcript measured). A
+/// blob holds a whole message as sent, its JSON nested unescaped, so a tool call's input could
+/// carry `"type":"user"` and read, by substring, as the conversation it only copies.
+fn request_log_line(raw_line: &str) -> bool {
+    raw_line.starts_with("{\"type\":\"api-request")
 }
 
 /// Which of a tail window's raw lines were written BESIDE the conversation (#s68, #s70): a slash
@@ -2170,6 +2229,9 @@ impl LocalRole {
 /// [`LocalRole`] of one raw line. Field-level first, like [`turn_ended`]: only a line that could
 /// be a command, its output or a system record is parsed.
 fn local_role(raw_line: &str) -> LocalRole {
+    if request_log_line(raw_line) {
+        return LocalRole::Quiet;
+    }
     let candidate = [
         "\"type\":\"system\"",
         "local-command-",
@@ -2868,6 +2930,11 @@ pub(crate) fn decode_line_known(
                         if !t.trim().is_empty() {
                             msgs.push(Message::Thinking {
                                 text: t.to_string(),
+                                ts: ev_ts,
+                            });
+                        } else if thinking_not_returned(blk) {
+                            msgs.push(Message::Thinking {
+                                text: THINKING_NOT_RETURNED.to_string(),
                                 ts: ev_ts,
                             });
                         }
@@ -4038,7 +4105,14 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 .or_else(|| blk.get("text"))
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("");
-                            if !t.trim().is_empty() {
+                            let text = if !t.trim().is_empty() {
+                                Some(t)
+                            } else if thinking_not_returned(blk) {
+                                Some(THINKING_NOT_RETURNED)
+                            } else {
+                                None
+                            };
+                            if let Some(text) = text {
                                 let duration_secs = match (ev_ts, prev_ts) {
                                     (Some(end), Some(start)) if end >= start => {
                                         Some((end - start) as u64)
@@ -4046,7 +4120,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     _ => None,
                                 };
                                 out.push(Block::Thinking {
-                                    text: t.to_string(),
+                                    text: text.to_string(),
                                     duration_secs,
                                     tools: Vec::new(),
                                 });
@@ -6937,6 +7011,56 @@ mod tests {
         assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
     }
 
+    /// #s134: Claude Code 2.1.300's log of its API calls (`api-request`, `api-request-blob`,
+    /// `api-request-shape`, and `requestRef` on the answer) is known. The transcript folds to the
+    /// same blocks with the log as without it, and nothing is reported as new while the sweep
+    /// asks. Removing any of the four from its list turns this red.
+    #[test]
+    fn the_2_1_300_request_log_is_known() {
+        unknown_watch_keys(true);
+        let prompt = r#"{"type":"user","version":"2.1.300","sessionId":"s-s134","uuid":"u1","timestamp":"2026-10-16T01:00:00.000Z","message":{"role":"user","content":"list the notes"}}"#;
+        let shape = r#"{"type":"api-request-shape","sessionId":"s-s134","shapeHash":"sh1","timestamp":"2026-10-16T01:00:01.000Z","version":"2.1.300","shape":{"system":[{"type":"text","text":"You are a helpful assistant."}],"tools":[{"name":"Bash","input_schema":{"type":"object"}}]}}"#;
+        let blob = r#"{"type":"api-request-blob","sessionId":"s-s134","hash":"h1","message":{"role":"user","content":[{"type":"text","text":"list the notes"}]}}"#;
+        let request = r#"{"type":"api-request","sessionId":"s-s134","id":"q1","timestamp":"2026-10-16T01:00:01.000Z","version":"2.1.300","querySource":"sdk","shapeHash":"sh1","params":{"model":"claude-opus-5-5","max_tokens":32000,"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"high"}},"keep":0,"tail":["h1"],"cacheControl":[{"path":[0],"value":{"type":"ephemeral","ttl":"1h"}}],"requestDigest":"d1"}"#;
+        let answer = r#"{"type":"assistant","version":"2.1.300","sessionId":"s-s134","uuid":"a1","parentUuid":"u1","timestamp":"2026-10-16T01:00:03.000Z","requestId":"r1","requestRef":"q1","message":{"id":"m1","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"One note: a.md."}],"stop_reason":"end_turn"}}"#;
+        let with = [prompt, shape, blob, request, answer].join("\n");
+        let without = [prompt, answer].join("\n");
+        let blocks = parse(&with);
+        assert_eq!(
+            format!("{blocks:?}"),
+            format!("{:?}", parse(&without)),
+            "the log draws nothing"
+        );
+        assert_eq!(blocks.len(), 2, "the prompt and the answer: {blocks:?}");
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s134"))
+            .collect();
+        assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
+    }
+
+    /// #s134: a request-log line is never the conversation to the monitor's raw-line reads. A
+    /// blob carries a message as sent with its JSON nested unescaped, so a tool call's input can
+    /// hold `"type":"user"`: by substring, that blob read as a user record (the turn moved on) and
+    /// as a word between a command and its output (the command opened a turn). Without
+    /// `request_log_line` both answers below are wrong.
+    #[test]
+    fn turn_ended_reads_no_request_log_line_as_the_conversation() {
+        let blob = r#"{"type":"api-request-blob","sessionId":"s","hash":"h2","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Notify","input":{"to":{"type":"user","id":"u"}}}]}}"#;
+        let request = r#"{"type":"api-request","sessionId":"s","id":"q2","timestamp":"2026-10-16T01:00:01.000Z","version":"2.1.300","querySource":"sdk","shapeHash":"sh1","params":{"model":"claude-opus-5-5"},"keep":1,"tail":["h2"],"cacheControl":[],"requestDigest":"d2"}"#;
+        let shape = r#"{"type":"api-request-shape","sessionId":"s","shapeHash":"sh1","timestamp":"2026-10-16T01:00:01.000Z","version":"2.1.300","shape":{"system":[],"tools":[{"name":"Notify","input_schema":{"type":"object","properties":{"to":{"type":"object"}}}}]}}"#;
+        for line in [blob, request, shape] {
+            assert_eq!(turn_ended(line), None, "{line}");
+        }
+        let command = r#"{"type":"user","sessionId":"s","uuid":"c1","message":{"role":"user","content":"<command-name>/compact</command-name>\n<command-message>compact</command-message>"}}"#;
+        let output = r#"{"type":"user","sessionId":"s","uuid":"c2","message":{"role":"user","content":"<local-command-stdout>Compacted</local-command-stdout>"}}"#;
+        assert_eq!(
+            turn_aside(&[command, blob, output]),
+            vec![true, false, true],
+            "the client's own command is still answered by its output across a blob"
+        );
+    }
+
     #[test]
     fn the_2_1_283_shapes_are_known() {
         let unknown = |v: &Value| -> Vec<String> {
@@ -8154,6 +8278,49 @@ mod tests {
         // 03:00:12 − 03:00:03 (last tool_result) = 9s, floored.
         assert_eq!(*duration_secs, Some(9));
         assert_eq!(tools.len(), 1, "did not absorb the preceding Bash");
+    }
+
+    /// #s135: a thinking block the API returned no text for (empty `thinking`, a signature: the
+    /// `display: "omitted"` headless sessions ask for) is drawn as a placeholder in the work span,
+    /// as a redacted block is, through BOTH the fused `parse_main` and `replay(tokenize)`. An
+    /// empty block with no signature still draws nothing.
+    #[test]
+    fn an_empty_signed_thinking_block_is_drawn_as_not_returned() {
+        let prompt =
+            r#"{"type":"user","timestamp":"2026-10-16T03:00:00.000Z","message":{"content":"go"}}"#;
+        let signed = r#"{"type":"assistant","timestamp":"2026-10-16T03:00:04.000Z","thinkingDisplay":"omitted","message":{"id":"m1","content":[{"type":"thinking","thinking":"","signature":"c2lnbmVk"}]}}"#;
+        let unsigned = r#"{"type":"assistant","timestamp":"2026-10-16T03:00:04.000Z","message":{"id":"m1","content":[{"type":"thinking","thinking":""}]}}"#;
+        let call = r#"{"type":"assistant","timestamp":"2026-10-16T03:00:05.000Z","message":{"id":"m1","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}"#;
+        let result = r#"{"type":"user","timestamp":"2026-10-16T03:00:06.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}"#;
+        let both = |lines: &[&str]| {
+            let jsonl = lines.join("\n");
+            let via_main = parse_main(jsonl.lines(), &mut Vec::new());
+            let via_engine = replay(&tokenize(jsonl.lines()), &mut Vec::new(), &CLAUDE_SHAPING);
+            assert_eq!(
+                format!("{via_main:?}"),
+                format!("{via_engine:?}"),
+                "the two paths agree for:\n{jsonl}"
+            );
+            via_engine
+        };
+        let blocks = both(&[prompt, signed, call, result]);
+        assert_eq!(kinds(&blocks), vec!["user", "thinking"], "{blocks:?}");
+        let Block::Thinking {
+            text,
+            duration_secs,
+            tools,
+        } = &blocks[1]
+        else {
+            panic!("not a thinking run: {blocks:?}");
+        };
+        assert_eq!(text, THINKING_NOT_RETURNED);
+        assert_eq!(*duration_secs, Some(4), "03:00:04 − 03:00:00");
+        assert_eq!(kinds(tools), vec!["bash"], "the call joins its run");
+        assert_eq!(
+            format!("{:?}", both(&[prompt, unsigned, call, result])),
+            format!("{:?}", both(&[prompt, call, result])),
+            "an empty block with no signature draws nothing"
+        );
     }
 
     /// #s23: an Edit next to thinking JOINS its run (the owner, as the Claude app draws a run:

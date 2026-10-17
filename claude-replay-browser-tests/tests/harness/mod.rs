@@ -10,7 +10,8 @@
 //!
 //! Conventions the cases rely on:
 //! - A case takes [`serial`] first: every case binds fixed loopback ports and shares
-//!   `CLAUDE_MONITOR_STATE`, so two cannot overlap.
+//!   `CLAUDE_MONITOR_STATE`, so two cannot overlap. Its guard goes last, and takes a passing
+//!   case's scratch roots with it.
 //! - A case builds its world under [`base`] and points every store env var into it
 //!   ([`Stores`]); nothing a case measures comes from this machine's own sessions.
 //! - A monitor under test is a [`Monitor`]: it is reaped on drop, its token is read from its
@@ -30,13 +31,24 @@ use std::time::{Duration, Instant};
 
 // ── scratch, serialization, reaping ─────────────────────────────────────────────────────────
 
-/// A fresh scratch directory for one case, under the workspace's own temp dir.
+/// A fresh scratch directory for one case, under the workspace's own temp dir. Removed when the
+/// case passes ([`Serial`]).
 pub fn base(name: &str) -> PathBuf {
     hermetic_state();
     let d = std::env::temp_dir().join(format!("cr-browser-follow-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
+    case_root(&d);
     d
+}
+
+thread_local! {
+    /// The scratch roots the case on this thread made: its [`base`] and its browsers' profiles.
+    static CASE_ROOTS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn case_root(dir: &Path) {
+    CASE_ROOTS.with(|roots| roots.borrow_mut().push(dir.to_path_buf()));
 }
 
 /// The html server's state dir, once per process: a render policy that offers files, and
@@ -52,9 +64,32 @@ pub fn hermetic_state() {
 }
 
 /// Every case holds this: fixed ports and a shared state dir mean one case at a time.
-pub fn serial() -> std::sync::MutexGuard<'static, ()> {
+pub fn serial() -> Serial {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    Serial {
+        _lock: LOCK.lock().unwrap_or_else(|e| e.into_inner()),
+    }
+}
+
+/// [`serial`]'s guard. A case takes it first, so it goes last — after the case's monitor and
+/// browsers — and a case that PASSED then removes the scratch it made (#s142): one root per case
+/// per run, and a day's suites left 741 of them (13.6 GB) for the release's sweep. A failed case
+/// keeps its root for diagnosis, and `CR_KEEP_SCRATCH=1` keeps every root. The lock is still held
+/// while they go, so the next case never starts beside a deletion.
+pub struct Serial {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for Serial {
+    fn drop(&mut self) {
+        let roots = CASE_ROOTS.with(|roots| std::mem::take(&mut *roots.borrow_mut()));
+        if std::thread::panicking() || std::env::var_os("CR_KEEP_SCRATCH").is_some() {
+            return;
+        }
+        for root in roots {
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
 }
 
 /// A child process that dies with its guard — a panicking case never strands a server on
@@ -1714,23 +1749,97 @@ fn load_average() -> String {
 /// through `tailscale serve` does (#313's gzip is only for such a client).
 pub fn chrome_with(extra: &[&str]) -> headless_chrome::Browser {
     reap_stranded_browsers();
-    let mut args = vec![
-        std::ffi::OsStr::new("--disable-background-timer-throttling"),
-        std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-        std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-    ];
-    args.extend(extra.iter().map(std::ffi::OsStr::new));
-    headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .path(browser_path())
-            .headless(true)
-            .window_size(Some((1400, 900)))
-            .user_data_dir(Some(browser_profile()))
-            .args(args)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches")
+    const LAUNCHES: u32 = 3;
+    let mut last = String::new();
+    for attempt in 1..=LAUNCHES {
+        match launch_within(browser_path(), extra, Duration::from_secs(30)) {
+            Ok(browser) => return browser,
+            Err(why) => {
+                eprintln!("harness: {why} (launch {attempt}/{LAUNCHES}); launching again");
+                last = why;
+            }
+        }
+    }
+    panic!("chrome launches: {LAUNCHES} launches failed (last: {last})")
+}
+
+/// One Chrome launch, given up after `patience` (#s143). headless_chrome finds the DevTools
+/// address by a BLOCKING read of Chrome's stderr, so its own 30 s timeout is checked only between
+/// reads and never fires on a Chrome that starts and says nothing: a suite stood still for an
+/// hour on one, at 0% CPU. The launch runs on a worker; giving up kills exactly this launch's
+/// processes, the ones carrying its own profile directory, so the read ends. An explicit port
+/// stops headless_chrome relaunching behind our back, and a browser the worker produces after
+/// all is dropped, which kills it.
+pub fn launch_within(
+    path: Option<PathBuf>,
+    extra: &[&str],
+    patience: Duration,
+) -> Result<headless_chrome::Browser, String> {
+    let profile = browser_profile();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .map_err(|e| format!("no free port for chrome: {e}"))?;
+    let extra: Vec<String> = extra.iter().map(|s| s.to_string()).collect();
+    let dir = profile.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut args = vec![
+            std::ffi::OsStr::new("--disable-background-timer-throttling"),
+            std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
+            std::ffi::OsStr::new("--disable-renderer-backgrounding"),
+        ];
+        args.extend(extra.iter().map(std::ffi::OsStr::new));
+        let _ = tx.send(headless_chrome::Browser::new(
+            headless_chrome::LaunchOptions::default_builder()
+                .path(path)
+                .headless(true)
+                .window_size(Some((1400, 900)))
+                .user_data_dir(Some(dir))
+                .port(Some(port))
+                .args(args)
+                .build()
+                .unwrap(),
+        ));
+    });
+    match rx.recv_timeout(patience) {
+        Ok(Ok(browser)) => Ok(browser),
+        Ok(Err(e)) => Err(format!("chrome did not launch: {e}")),
+        Err(_) => Err(format!(
+            "chrome printed no DevTools address in {:.0}s; killed its {} process(es) (load {})",
+            patience.as_secs_f64(),
+            kill_launch(&profile),
+            load_average()
+        )),
+    }
+}
+
+/// Kill every process whose command line names `profile` as its user data dir: one launch's
+/// browser and helpers, never another run's or the developer's own Chrome.
+fn kill_launch(profile: &Path) -> usize {
+    let mark = format!("--user-data-dir={}", profile.display());
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-Awwo", "pid=,command="])
+        .output()
+    else {
+        return 0;
+    };
+    let mut killed = 0;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some((pid, command)) = line.trim().split_once(' ') else {
+            continue;
+        };
+        if command.split(' ').any(|arg| arg == mark)
+            && std::process::Command::new("kill")
+                .args(["-9", pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        {
+            killed += 1;
+        }
+    }
+    killed
 }
 
 /// This launch's own profile directory, under the workspace scratch (`.cargo/config.toml` points
@@ -1746,6 +1855,7 @@ fn browser_profile() -> PathBuf {
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
+    case_root(&dir);
     dir
 }
 

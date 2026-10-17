@@ -183,9 +183,24 @@
 .mdrev-host .ctl {height:26px;color:var(--ink-soft);border:1px solid var(--rule);background:0 0;border-radius:7px;align-items:center;gap:5px;padding:0 10px;font-size:12.5px;display:inline-flex}
 .mdrev-host .ctl:hover:not(:disabled) {color:var(--ink);background:var(--bg-soft)}
 .mdrev-host .ctl.on {background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
-.mdrev-host .ctl {position:relative}
-.mdrev-host .ctl:focus-visible:after {content:attr(title);z-index:60;border:1px solid var(--rule);background:var(--bg-soft);width:max-content;max-width:34ch;color:var(--ink);text-align:left;text-transform:none;letter-spacing:normal;white-space:normal;pointer-events:none;border-radius:6px;padding:5px 8px;font-size:11.5px;line-height:1.35;position:absolute;top:calc(100% + 6px);left:50%;transform:translate(-50%);box-shadow:0 4px 14px #00000024}
-.mdrev-host .topbar-tools .controls>.ctl:nth-last-child(-n+3):focus-visible:after {left:auto;right:0;transform:none}
+.mdrev-host .ctl, .mdrev-host .view-seg button {position:relative}
+.mdrev-host .view-seg {overflow:visible}
+.mdrev-host .view-seg button:first-child {border-radius:6px 0 0 6px}
+.mdrev-host .view-seg button:last-child {border-radius:0 6px 6px 0}
+.mdrev-host .ctl:focus-visible:after {content:attr(title)}
+.mdrev-host .ctl[data-tooltip]:after, .mdrev-host .view-seg button[data-tooltip]:after {content:attr(data-tooltip)}
+.mdrev-host .ctl:focus-visible:after, .mdrev-host .ctl[data-tooltip]:after, .mdrev-host .view-seg button[data-tooltip]:after {z-index:60;border:1px solid var(--rule);background:var(--bg-soft);width:max-content;max-width:34ch;color:var(--ink);text-align:left;text-transform:none;letter-spacing:normal;white-space:normal;pointer-events:none;border-radius:6px;padding:5px 8px;font-size:11.5px;line-height:1.35;position:absolute;top:calc(100% + 6px);left:50%;transform:translate(-50%);box-shadow:0 4px 14px #00000024}
+.mdrev-host .ctl[data-tooltip]:after, .mdrev-host .view-seg button[data-tooltip]:after {visibility:hidden;opacity:0;transition:opacity,visibility;display:none}
+@keyframes mdv-toolbar-tip {0%{opacity:0;visibility:hidden}to{opacity:1;visibility:visible}}
+@media (hover:hover) {
+.mdrev-host .ctl[data-tooltip]:hover:after, .mdrev-host .view-seg button[data-tooltip]:hover:after {visibility:visible;opacity:1;transition-delay:.4s;animation:1ms .4s both mdv-toolbar-tip;display:block}
+}
+.mdrev-host .ctl[data-tooltip]:focus-visible:after, .mdrev-host .view-seg button[data-tooltip]:focus-visible:after {visibility:visible;opacity:1;transition-delay:0s;animation:none;display:block}
+.mdrev-host .topbar-tools .reading .ctl:after, .mdrev-host .topbar-tools .display-wrap>.ctl:after {left:auto;right:0;transform:none}
+.mdrev-host .display-wrap>.ctl.on:after {display:none}
+.mdrev-host .display-menu .doc-tools {position:relative}
+.mdrev-host .display-menu .doc-tools .ctl {position:static}
+.mdrev-host .display-menu .doc-tools .ctl:after {box-sizing:border-box;width:auto;max-width:none;top:calc(100% + 4px);left:0;right:0;transform:none}
 .mdrev-host .note-hint {color:var(--ink-faint);white-space:nowrap;align-items:center;gap:5px;font-size:11.5px;display:inline-flex}
 .mdrev-host .warn-wrap {display:inline-flex;position:relative}
 .mdrev-host .warn-ctl {color:var(--mod-fg);cursor:pointer;background:0 0;border:none;border-radius:5px;align-items:center;padding:2px;display:inline-flex}

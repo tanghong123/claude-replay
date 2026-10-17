@@ -13,6 +13,27 @@ export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch =>
 // Character references preserve CR through HTML parser newline normalization.
 export const literalText = value => escapeText(value).replace(/\r/g, "&#13;");
 
+/** The hue (0–359) another session's messages are drawn in (#s138): FNV-1a over the sender's
+ *  name, so a sender keeps its colour in every session and on every machine, and two senders are
+ *  told apart at a glance. The card and its Turns pane row take the same one. */
+export function peerHue(name) {
+  let h = 0x811c9dc5;
+  for (const ch of String(name ?? "")) {
+    h ^= ch.codePointAt(0);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h % 360;
+}
+
+/** A peer turn's label with its sender's name taken off the front (#s138): the Turns pane draws
+ *  the name as a chip of its own, so the label goes on from what was said. */
+export function peerLabelRest(label, from) {
+  const text = String(label ?? "");
+  const name = String(from ?? "");
+  if (!name || !text.startsWith(name)) return text;
+  return text.slice(name.length).replace(/^[:：,\s]+/, "") || text;
+}
+
 /** Validate the complete additive v1 contract; unsupported data uses ordinary body parts. */
 export function replyContext(record) {
   const value = record?.reply_context;

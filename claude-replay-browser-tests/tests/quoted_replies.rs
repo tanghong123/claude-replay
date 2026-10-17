@@ -314,7 +314,8 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
                     "FINAL FOLLOWING TEXT\n\n\nREQUEST-LIKE PARAGRAPH\n```rust\nlet value = 1;"
                 );
             }
-            if std::env::var_os("CR_QUOTED_SCREENSHOTS").is_some() {
+            // `CR_QUOTED_SCREENSHOTS=<dir>`: a passing case removes its own root (#s142).
+            if let Some(dir) = std::env::var_os("CR_QUOTED_SCREENSHOTS") {
                 let png = tab
                     .capture_screenshot(
                         headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
@@ -323,7 +324,11 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
                         true,
                     )
                     .unwrap();
-                std::fs::write(base.join(format!("{agent}-{theme}.png")), png).unwrap();
+                std::fs::write(
+                    std::path::Path::new(&dir).join(format!("{agent}-{theme}.png")),
+                    png,
+                )
+                .unwrap();
             }
             // The native button's keyboard activation opens THIS reply's raw source.
             eval(
@@ -510,11 +515,12 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
                         ),
                     );
                     wait_target(&phone_tab, &selector);
-                    if std::env::var_os("CR_QUOTED_SCREENSHOTS").is_some() {
+                    if let Some(dir) = std::env::var_os("CR_QUOTED_SCREENSHOTS") {
                         let png=phone_tab.capture_screenshot(headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,None,None,true).unwrap();
                         let suffix = if item == 1 { "" } else { "-second" };
                         std::fs::write(
-                            base.join(format!("{agent}-{orientation}-{theme}{suffix}.png")),
+                            std::path::Path::new(&dir)
+                                .join(format!("{agent}-{orientation}-{theme}{suffix}.png")),
                             png,
                         )
                         .unwrap();

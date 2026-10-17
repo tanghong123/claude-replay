@@ -4983,6 +4983,72 @@ fn the_app_shell_theme_toggle_is_visible_and_works() {
     drop(monitor);
 }
 
+/// #s141: the browser's own colours (the selection, scrollbars, form controls) follow the shell's
+/// theme, never the OS. The head's `color-scheme: light dark` let Chrome follow macOS, so on a Mac
+/// in Dark mode the light shell drew a slate selection under dark text (the owner's screenshot).
+/// `CanvasText` is the browser's text colour for the scheme it is using, so it reads that scheme.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_s_browser_colours_follow_its_theme_not_the_os() {
+    use headless_chrome::protocol::cdp::Emulation;
+    let _serial = serial();
+    let base = base("appshell-color-scheme");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000014100".to_string();
+    stores.claude_session(&sid, &harness::long_session(4, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3080, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let os = |scheme: &str| {
+        tab.call_method(Emulation::SetEmulatedMedia {
+            media: None,
+            features: Some(vec![Emulation::MediaFeature {
+                name: "prefers-color-scheme".into(),
+                value: scheme.into(),
+            }]),
+        })
+        .unwrap();
+    };
+    let probe = "(function(){ var s = document.createElement('span'); s.style.color = 'CanvasText'; s.style.backgroundColor = 'Highlight'; document.body.appendChild(s); var c = getComputedStyle(s); var out = { theme: document.documentElement.dataset.theme || 'light', scheme: getComputedStyle(document.documentElement).colorScheme, text: c.color, highlight: c.backgroundColor }; s.remove(); return out; })()";
+    for (os_scheme, theme) in [
+        ("dark", "light"),
+        ("dark", "dark"),
+        ("light", "dark"),
+        ("light", "light"),
+    ] {
+        os(os_scheme);
+        tab.navigate_to(&format!("http://127.0.0.1:3080/?ui=app&session={sid}"))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(
+            &tab,
+            "!!document.getElementById('themeBtn')",
+            "the shell to render",
+            std::time::Duration::from_secs(30),
+            "document.body.innerText.slice(0, 120)",
+        );
+        if harness::probe(&tab, "document.documentElement.dataset.theme || 'light'") != theme {
+            harness::eval(&tab, "document.getElementById('themeBtn').click(); 'ok'");
+        }
+        let got = harness::probe(&tab, probe);
+        assert_eq!(
+            got["theme"], theme,
+            "the shell is in the {theme} theme: {got}"
+        );
+        // Black text is the light scheme's, white the dark scheme's.
+        let want = if theme == "dark" {
+            "rgb(255, 255, 255)"
+        } else {
+            "rgb(0, 0, 0)"
+        };
+        assert_eq!(
+            got["text"], want,
+            "OS {os_scheme}, shell {theme}: the browser draws in the shell's scheme: {got}"
+        );
+    }
+    drop(monitor);
+}
+
 /// #84: the records a session opens with are never "new". A fresh open lands at the tail with
 /// no count; scrolled up and reloaded, the remembered position comes back and still nothing is
 /// counted; eight records arriving afterwards are "8 new".

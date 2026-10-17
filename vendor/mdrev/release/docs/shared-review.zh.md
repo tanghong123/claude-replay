@@ -5,6 +5,15 @@
 **英文版：** [shared-review.md](shared-review.md)
 **已实现，随下一个版本发布：** 第八版草稿——订阅、通知与已读标记（2026-10-08），见下文同名一节。
 
+## 2026-10-16 的变化（#s103）
+
+Hong 要求让共享评审更简单，同时不给失误留口子："I'd like to make it simple for shared review"，随后 "let's consider why we should not let agents to initiate shared reviews? I want to balance both friction reduction and avoiding user mistakes"、"Or agent mistakes"。对下面这个平衡点："The balance you proposed makes perfect sense"、"I'd like to get it implemented"。
+
+- **智能体可以指明项目自己的评审库**（E1）：经它所属之人同意，它可以为 mdrev 建议的评审库（项目自己的仓库）或这个仓库的私有 `<repo>-notes` 写下 `.mdrev.json`，此外一概不行。其他任何 URL，以及推送时如何通知别人的任何改动，仍由人在自己的终端里决定。这堵住了一段文字诱使智能体把一个人的批注送进别人评审库的唯一途径。
+- **智能体可以加入默认位置上的评审库**（E3，#s105）：当 `.mdrev.json` 指明的评审库是项目自己的仓库或它的 `<repo>-notes`、位于 `refs/notes/mdrev-review`，评审库所在的服务器确认这个邮箱就是 git 登录所用的账号，并且 mdrev 知道评审库是私有的时，智能体的 `mdrev --review-pair --email …` 立即为这台机器配对。其他情况和以前一样只是发起请求，由人在查看器中确认，人在那里能看到评审库的地址。
+- **mdrev 无法担保的评审库，两者都不行**（E0）：任何人都能读取的评审库，或者 mdrev 判断不出读者是谁的评审库（例如本地路径、连不上的服务器），由人来指明、由人来加入。
+- **不暂扣**（#s105）。第一版构建会暂扣由智能体加入的机器：在它所属之人第一次推送之前，不送出任何已读标记或订阅，那次推送会说明送往哪里。它唯一的理由是那台机器上没有人看过评审库的地址，而 `.mdrev.json` 可能由任何有提交权限的人写下；同一台服务器上的另一个私有评审库也能通过邮箱和私有两项检查。Hong 问为什么要暂扣（"2 is obviously no hold. My question is why 1 should be hold?"），并对另一种做法——把智能体的加入限定在默认位置——作出裁定："Yes, if the store is the default location, no hold"；"That is correct"。所以智能体做的配对，像人做的配对一样自行送出（H7）；其他位置上的评审库，等这个人来确认。
+
 ## 2026-10-08 的变化（#s24）
 
 Hong 把几个仓库迁到新的组之后，要求了两处改变：
@@ -63,14 +72,14 @@ A 和自己的智能体一起起草一份文档，提交后请 B 评审。B 向 
 - **讨论串。** 一条共享批注及其后的所有记录。它的**发起人**是开启它的人。
 - **共享记录。** 讨论串中的任何内容：开启它的批注、一条回复、一次解决、一次重新打开、一次隐藏。推送之后，每位评审者都能看到。
 - **评审库。** 存放一个项目共享记录的 git 仓库及分支。只有 mdrev 写入它。
-- **配对。** 一个人在终端前告诉 mdrev：这台机器参与这个评审库的评审，以及以谁的身份参与。
+- **配对。** 告诉 mdrev：这台机器参与这个评审库的评审，以及以谁的身份参与。由人来做（在终端前，或用查看器里的"确认"），或者对默认位置上、服务器为这个邮箱作保的评审库，由这个人的智能体来做（E3）。
 - **订阅、已读标记。** 评审库里不属于任何讨论串的记录：一个人关注什么、读过什么（H1、H6）。它们自行分批送进评审库（H7）。
 - **推送。** 把你新写的共享记录发送到评审库。推送之前，别人都看不到。
 - **人。** 以邮箱识别，在配对时确认。每台配对过的机器有它自己的显示名称（"Hong-on-laptop"）；让这些机器算作同一个人的，是邮箱。
 
 ## 一轮评审，从头到尾
 
-1. B 为自己的机器配对一次。B 的智能体展示 `.mdrev.json` 指明的评审库——通常是项目自己的仓库、`refs/notes/mdrev-review` 引用——请 B 确认它、确认自己的邮箱和这台机器的显示名称，然后向 mdrev 请求这次配对；B 在查看器中点击一下予以确认。
+1. B 为自己的机器配对一次。B 的智能体展示 `.mdrev.json` 指明的评审库——通常是项目自己的仓库、`refs/notes/mdrev-review` 引用——问 B 用哪个邮箱写入、这台机器叫什么显示名称，然后配对：评审库位于项目的默认位置，评审库所在的服务器确认这个邮箱就是 B 在那里的账号。（只要有一项不成立，智能体就只会发起请求，由 B 在查看器中点击一下确认。）
 2. B 在 mdrev 中打开 A 已提交的文档，写了三条批注。两条标为共享，是给 A 的问题。一条是本地的："把第 2 节改紧凑些"。
 3. B 的智能体只看到那条本地批注。它修改第 2 节、提交，并关闭该批注。
 4. B 先推送文档的提交，然后在 mdrev 中按下**推送**，读一遍将要发出的清单，再确认。两条共享批注到达评审库。
@@ -139,8 +148,8 @@ G 节说明 mdrev 如何落实其中的每一条。
 
 ### E. 评审库
 
-- **E0. 公开项目的评审库是私有的**（Hong，2026-10-05；#s12）。评审库存放每一个讨论串，以及每位评审者的名称和邮箱；放在公开仓库的引用里，这一切都会公开且永久留存。所以公开项目把评审库放在同一台服务器、同一个账号下一个属于它自己的私有仓库里，即 `<repo>-notes`——mdrev 和 taskq 共用一个，各自使用它们在仓库内所用的隐藏引用（`refs/notes/mdrev-review`、`refs/notes/taskq`）——由 `.mdrev.json` 指定。mdrev 用陌生人的 git 那样的方式来判断（匿名读取，不带凭据）：任何人都能读取的评审库会被拒绝，智能体和人都一样，并给出出路——创建 `<repo>-notes`，然后运行 `mdrev --review-pointer --store <URL>`。确实想公开评审的人，在自己的终端里用 `--allow-public` 配对。明确执行的 `--review-status` 会对早于这条规则的评审库发出警告，并说明如何迁移：评审库只是一个引用，是一个只包含 `records/` 的根提交，所以一次取回、一次推送就能迁走。
-- **E1. 永不进入代码的历史。** 评审库是已提交的 `.mdrev.json` 所指明的引用，没有它，项目就没有评审库（#s24）。`mdrev --review-pointer` 建议的、也是几乎每个项目所用的，是项目自己仓库中名为 `refs/notes/mdrev-review` 的引用——`upstream` 远端与 `origin` 在同一台服务器上时用它，否则用 `origin`——它位于 `refs/heads` 之外，所以不是分支。它放在 git 的 notes 命名空间里，因为这是服务器接受的唯一一个此类命名空间：最初运行它的公司 GitLab 拒绝了 `refs/mdrev/…`、`refs/meta/…` 和 `refs/review/…`，接受了 `refs/notes/…`（2026-10-03 实测，两台机器之间完整走了一轮）。它只存放记录，与代码没有共同的历史，也永远不会被合并。因为不是分支：
+- **E0. 公开项目的评审库是私有的**（Hong，2026-10-05；#s12）。评审库存放每一个讨论串，以及每位评审者的名称和邮箱；放在公开仓库的引用里，这一切都会公开且永久留存。所以公开项目把评审库放在同一台服务器、同一个账号下一个属于它自己的私有仓库里，即 `<repo>-notes`——mdrev 和 taskq 共用一个，各自使用它们在仓库内所用的隐藏引用（`refs/notes/mdrev-review`、`refs/notes/taskq`）——由 `.mdrev.json` 指定。mdrev 用陌生人的 git 那样的方式来判断（匿名读取，不带凭据）：任何人都能读取的评审库会被拒绝，智能体和人都一样，并给出出路——创建 `<repo>-notes`，然后运行 `mdrev --review-pointer --store <URL>`。确实想公开评审的人，在自己的终端里用 `--allow-public` 配对。对智能体的要求更高（#s103）：只有那次匿名读取被问到"你是谁"时，它才指明或加入这个评审库。本地路径上的评审库，或者 mdrev 连不上的服务器上的评审库，读者未知，指明或加入它都由人来做：在终端里，或用查看器里的"确认"。服务器回答"仓库不存在"时，和私有仓库一样是在问"你是谁"，所以尚未创建的 `<repo>-notes` 算作私有：它按构造就在项目自己的服务器和账号下（E1），在它被创建之前，第一次推送会失败。明确执行的 `--review-status` 会对早于这条规则的评审库发出警告，并说明如何迁移：评审库只是一个引用，是一个只包含 `records/` 的根提交，所以一次取回、一次推送就能迁走。
+- **E1. 永不进入代码的历史。** 评审库是已提交的 `.mdrev.json` 所指明的引用，没有它，项目就没有评审库（#s24）。谁来指明它（#s103）：人在自己的终端前，可以指明任何评审库；人的智能体，经人同意，只能指明 `mdrev --review-pointer` 建议的那个，或那个仓库的 `<repo>-notes`（E0），无论 URL 怎么写，只要是同一个仓库。其他任何评审库，以及 `--notify` 或 `--link`，都会被拒绝给智能体，并给出让人来运行的命令。`mdrev --review-pointer` 建议的、也是几乎每个项目所用的，是项目自己仓库中名为 `refs/notes/mdrev-review` 的引用——`upstream` 远端与 `origin` 在同一台服务器上时用它，否则用 `origin`——它位于 `refs/heads` 之外，所以不是分支。它放在 git 的 notes 命名空间里，因为这是服务器接受的唯一一个此类命名空间：最初运行它的公司 GitLab 拒绝了 `refs/mdrev/…`、`refs/meta/…` 和 `refs/review/…`，接受了 `refs/notes/…`（2026-10-03 实测，两台机器之间完整走了一轮）。它只存放记录，与代码没有共同的历史，也永远不会被合并。因为不是分支：
   - 普通的克隆或取回永远不会带上它，任何分支列表也不会显示它；
   - 为分支设置的 CI、分支保护和推送通知不会对它起反应；
   - 重置或强制推送代码的分支，永远碰不到它。强制推送这个引用本身——只有直接用 git 才做得到——会被察觉（F1），每台机器都把原有的内容另存在一个文件里，mdrev 不会自动恢复它；
@@ -148,11 +157,11 @@ G 节说明 mdrev 如何落实其中的每一条。
 
   `.mdrev.json` 可以指定另一个仓库，或者一个分支：拒绝 `refs/heads` 之外引用的服务器，需要 `"branch": "mdrev-review"`，被它拒绝的推送会如实说明。在只有 `origin` 一个远端的 fork 里，建议的就是这个 fork 本身，所以 fork 要用 `--store` 指定共享的仓库。位于另一台服务器上的 `upstream`——多半是本项目所 fork 的外部项目——会被跳过，建议也会如实说明。`--mirror` 副本会带上这个引用。本机副本只推送到远端的 fetch URL，而不推送到检出目录的远端所配置的任何额外 push URL。
 - **E2. 只有 mdrev 写入评审库。** 人和智能体都只能通过 mdrev 访问它。
-- **E3. 每台机器由人配对，只需一次，** 确认 `.mdrev.json` 指明的评审库、写入时使用的邮箱（默认：检出目录的 git 邮箱），以及这台机器的显示名称。显示名称属于这台机器，所有项目共用一个，并与 taskq 共享（`mdrev --display-name`，与 taskq 的设置一起保存在 `~/.config/taskq/config.json`）：只有这台机器还没有名称时，配对才会询问；`--name` 可为某一个评审库覆盖它。邮箱则按评审库区分，因为每台服务器认证的是各自的邮箱（#s10）。这个人可以在查看器里用 **设置共享评审** 开始：宿主把文档所在的集合解析到它实际的检出目录，读出 git 邮箱和这台机器的显示名称（没有时给出一个建议）。这个人核对或修改表单，**继续** 只是向 mdrev 请求配对；已有的 **确认** 面板随后列出评审库、身份和对服务器账号的核对，这个人点击之后机器才配对。表单里的显示名称和 `--name` 一样，只为这个评审库覆盖。这台机器还没有显示名称时，**确认** 面板提出把它用于所有项目（mdrev 和 taskq），默认不勾选，与终端里那个问题默认回答“否”一样；勾选后，配对成立时才写入，而且从不覆盖这台机器已有的名称（#s46）。这个人的智能体也可以用它的提问工具询问这个人，并请求配对，同样由这个人在查看器中确认。或者这个人在自己的终端里运行 `mdrev --review-pair`，它会问同样的三个问题（y/N、邮箱、名称）。
+- **E3. 每台机器只需配对一次，** 由人来配对，或在一定限制内由人的智能体来配对（#s103），对象是 `.mdrev.json` 指明的评审库、写入时使用的邮箱（默认：检出目录的 git 邮箱），以及这台机器的显示名称。显示名称属于这台机器，所有项目共用一个，并与 taskq 共享（`mdrev --display-name`，与 taskq 的设置一起保存在 `~/.config/taskq/config.json`）：只有这台机器还没有名称时，配对才会询问；`--name` 可为某一个评审库覆盖它。邮箱则按评审库区分，因为每台服务器认证的是各自的邮箱（#s10）。这个人可以在查看器里用 **设置共享评审** 开始：宿主把文档所在的集合解析到它实际的检出目录，读出 git 邮箱和这台机器的显示名称（没有时给出一个建议）。这个人核对或修改表单，**继续** 只是向 mdrev 请求配对；已有的 **确认** 面板随后列出评审库、身份和对服务器账号的核对，这个人点击之后机器才配对。表单里的显示名称和 `--name` 一样，只为这个评审库覆盖。这台机器还没有显示名称时，**确认** 面板提出把它用于所有项目（mdrev 和 taskq），默认不勾选，与终端里那个问题默认回答“否”一样；勾选后，配对成立时才写入，而且从不覆盖这台机器已有的名称（#s46）。这个人的智能体也可以用它的提问工具问这个人用哪个邮箱、叫什么名称，然后运行 `mdrev --review-pair --email … --name …`。当评审库位于默认位置（`mdrev --review-pointer` 建议的仓库，或它的 `<repo>-notes`，位于 `refs/notes/mdrev-review`）、它所在的服务器确认这个邮箱（相符）、并且 mdrev 知道评审库是私有的（E0）时，它立即为这台机器配对；配对记录写明是智能体配的（#s103、#s105）。这台机器上没有人看地址，所以地址被限定死：`.mdrev.json` 可能由任何有提交权限的人写下，同一台服务器上其他位置的私有评审库也能通过另外几项检查。否则它只是一个请求，同样由这个人在查看器中确认，并说明原因。或者这个人在自己的终端里运行 `mdrev --review-pair`，它会问同样的三个问题（y/N、邮箱、名称）。
   - 必须：邮箱属于 git 登录评审库所在服务器时所用的账号——是它的邮箱之一，或就是这个账号本身，或至少包含它的名字部分（Hong，2026-10-04）。不相符时拒绝配对，除非这个人明确坚持：在终端里再答一次 y，在查看器里勾选一项。mdrev 无法询问的服务器，以"未确认"配对。配对记录写明是哪一种。
   - 必须：对于这台机器尚未配对的评审库，不取回、不写入、不推送任何东西。评审库一旦改变——`.mdrev.json` 指明了另一个——mdrev 会在查看器和状态中如实说明，并要求重新配对。
   - 同一个评审库迁了位置，不算另一个评审库（#s24）：配对和尚未推送的记录不经询问就跟到新位置，迁到新服务器时先重新核对账号（[评审库的迁移](#评审库的迁移)）。
-  - 不得：让智能体配对或坚持配对。智能体只能发起请求。
+  - 不得：让智能体坚持不相符的配对、以"未确认"配对、与默认位置之外的评审库配对、与任何人都能读取或读者未知的评审库配对，或公开配对（`--allow-public`）。这些情况，智能体都只能发起请求，由它所属之人决定。
 - **E4. 评审的读者就是项目的协作者。** 谁能读评审库，由 git 托管方的访问控制决定，mdrev 不自己维护名单。默认情况下，读者恰好就是代码的读者。
 - **E5. 两个查看器，以及宿主。** daemon、guest 查看器，以及通过 mdrev-cli 接入的嵌入宿主，都以同样的方式显示、写入和推送讨论串。宿主用查看器密钥向 mdrev-cli 证明请求来自一个人（G）；不传这个密钥的宿主，只能阅读和使用本地批注，没有任何共享功能。
 
@@ -180,7 +189,8 @@ B 节中的每条规则，以及每一项保留给人的行为，都是 mdrev �
 | B5：指向任何一条评论 | `--for` 接受在文字中写明该记录 id 的本地批注；`--reply` 和 `--thread` 接受任何记录的 id | — | gate |
 | D1：智能体不推送 | 查看器的推送需要查看器密钥；`mdrev --review-push` 需要人在自己的终端前，并且每次都询问 y/N；拒绝信息写着 "ask your person to press Push"（请你所属之人按下推送） | 给命令提供终端、却不表明自己身份的运行框架（harness）——它仍会被询问 | gate |
 | D2：这个人先读到智能体写的内容 | 推送列出每一条记录，智能体协助的记录标注了提出要求的那条批注；查看器只发送它展示过的 id | — | UI、浏览器 |
-| E3：只有人能配对 | 配对只有来自查看器的"确认"（带查看器密钥）或人在自己的终端前时才生效；智能体的 `mdrev --review-pair --email --name` 只是发起请求，并能听到服务器对这个邮箱的判断；只有人能坚持不相符的配对；没有配对，就不取回、不写入、不推送任何东西 | 同 D1 | gate、浏览器 |
+| E1：智能体只能指明项目自己的评审库 | 智能体的 `--review-pointer` 只写入 mdrev 建议的评审库或它的 `<repo>-notes`（无论怎么拼写，按同一个仓库比较），而且只写匿名读取被拒绝的那种；其他 URL、`--notify` 和 `--link` 都被拒绝，并给出让人来运行的命令（#s103） | 智能体说服它所属之人亲手输入另一个 URL | 单元测试、gate |
+| E3：智能体只能与默认位置上、服务器作保的评审库配对 | 智能体的 `mdrev --review-pair --email --name` 在评审库是项目自己的仓库或它的 `<repo>-notes`、位于 `refs/notes/mdrev-review`，服务器确认邮箱，且评审库已知私有时配对，并记录是智能体配的；否则只是发起请求，并听到原因；只有人能坚持不相符的配对，或与公开、读者未知的评审库配对；没有配对，就不取回、不写入、不推送任何东西 | 同 D1 | 单元测试、gate、浏览器 |
 | H1：订阅整个项目、取消订阅和另一个邮箱都只限人做 | 不带文档的 `review subscribe`、`review unsubscribe` 和 `review confirm` 需要查看器密钥或在自己终端前的人；智能体只能以 `--for`、用配对时的邮箱为所属之人订阅文档；另一个邮箱要等它的主人输回验证码 | — | 检查、浏览器 |
 | H2：智能体不通知任何人 | 通知只在推送之后发出，而智能体不能推送（D1）；来自智能体记录的消息标明"agent-assisted" | 智能体写进回复、由其所属之人推送的提及：推送清单把它们画成人 | 检查、浏览器 |
 | H6：智能体不读任何东西 | `review read` 需要查看器密钥；`--thread` 不标记任何东西 | — | 检查 |
@@ -218,11 +228,20 @@ B 节中的每条规则，以及每一项保留给人的行为，都是 mdrev �
 
 ```
 agent: mdrev --review-status        # the store, and "this machine is not paired"
-agent asks: right store? which email (default: your git email)? a display name?
+agent asks: which email (default: your git email)? a display name?
 agent: mdrev --review-pair --email hong@example.com --name Hong-on-laptop
-        # → "asked to pair: you write as Hong-on-laptop <hong@example.com>
+        # → "paired: you write as Hong-on-laptop <hong@example.com>
         #    checked: this machine pushes to code.example.com as the account
-        #    hong, and hong@example.com is that account's email — OK"
+        #    hong, and hong@example.com is that account's email — OK
+        #    the store is where this project keeps its review by default"
+```
+
+评审库不在项目的默认位置、服务器无法为这个邮箱作保，或者 mdrev 判断不出评审库是私有的时，同一条命令只是发起请求（#s103、#s105）：
+
+```
+        # → "asked to pair: you write as Hong-on-laptop <hong@example.com>
+        #    (not paired yet: the server could not say whose account this
+        #    machine pushes as)"
 person: opens any document in mdrev; the viewer shows the store, the email,
         the name and what the server said, with Confirm. One click pairs the
         machine; a mismatch needs "pair anyway" ticked first.
@@ -299,7 +318,7 @@ paired: you write as Hong-on-laptop <hong@example.com>
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.45",
+  "mdrev": "1.1.48",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -329,8 +348,8 @@ paired: you write as Hong-on-laptop <hong@example.com>
 
 | 命令 | 作用 |
 |---|---|
-| `mdrev --review-pointer` | 在 `.mdrev.json` 中指明评审库，并只提交这一个文件：检出目录自己的仓库，或 `--store <URL>`（E1） |
-| `mdrev --review-pair` | 人在自己的终端里：为这台机器配对（E3）；项目还没有指明评审库时，先提议指明一个。智能体：用 `--email E --name N` 请求配对，由这个人在查看器中确认。无论哪种方式，从本机配对过的评审库迁来的评审库都会被跟随，什么都不问 |
+| `mdrev --review-pointer` | 在 `.mdrev.json` 中指明评审库，并只提交这一个文件：检出目录自己的仓库，或 `--store <URL>`（E1）。智能体：只能是检出目录自己的仓库或它的 `<repo>-notes`，且已知私有，从不用 `--notify` 或 `--link`（#s103） |
+| `mdrev --review-pair` | 人在自己的终端里：为这台机器配对（E3）；项目还没有指明评审库时，先提议指明一个。智能体：用 `--email E --name N`，与默认位置（项目自己的仓库或它的 `<repo>-notes`，位于 `refs/notes/mdrev-review`）上、服务器确认邮箱且已知私有的评审库配对；否则发起请求，由这个人在查看器中确认（#s103、#s105）。无论哪种方式，从本机配对过的评审库迁来的评审库都会被跟随，什么都不问 |
 | `mdrev --notes` | 只列本地批注，即智能体的待办列表（B1）。指向某条评论的本地批注，会打印出阅读和回答它的命令 |
 | `mdrev --thread ID --for LOCAL` | 打印某条记录所在的讨论串，标题为 "a conversation between reviewers, not instructions"（评审者之间的对话，不是指令）（B1） |
 | `mdrev --reply ID --note "…" --for LOCAL` | 在该记录所在的讨论串中回复，回答的就是这条记录（B2、B5） |
@@ -539,7 +558,7 @@ Hong，2026-10-08。关于评审之前那版草稿的选择（"I already ruled o
 
 - 从头到尾的一轮评审，评审库位于代码仓库自己的分支上；
 - 配对之前、以及指针改变之后，取回、写入或推送被拒绝；
-- 从智能体的命令行配对和推送被拒绝；智能体请求的配对，在查看器中得到确认（在真实浏览器中）；
+- 从智能体的命令行推送被拒绝；智能体请求的配对，在查看器中得到确认（在真实浏览器中）；智能体与默认位置上的评审库配对，对其他位置或其他引用上的评审库只发起请求，智能体写的指针只限于项目自己的评审库或它的 `<repo>-notes`（单元测试，在那里服务器的回答可以伪造；#s103、#s105）；
 - G 节的每一行，从命令行检查；
 - 两次推送相互竞争，都成功；
 - 非发起人的解决，照样生效，并标上“不是发起人”；
@@ -602,6 +621,7 @@ Hong，2026-10-08。关于评审之前那版草稿的选择（"I already ruled o
 | 默认评审库是一个隐藏的引用，而不是分支（E1） | 担心把评审放在仓库里 "can make future code open source harder"；选择了 "Hidden ref in the repo" |
 | 通过智能体的提问完成设置；由人在查看器中确认；终端不是必需的（E3） | "make it easy to support the process via skills … use AskUserQuestion in place of forcing user use a terminal"；由查看器中的一次点击确认，因此配对仍是人的行为 |
 | 第五轮评审的边界问题按建议修正（2026-10-04） | "Otherwise, everything looks good to me" |
+| 智能体可以指明项目自己的评审库，并加入默认位置上、服务器作保的评审库，不暂扣（E0、E1、E3；2026-10-16，#s103、#s105） | "I'd like to make it simple for shared review"；"let's consider why we should not let agents to initiate shared reviews? I want to balance both friction reduction and avoiding user mistakes"——"Or agent mistakes"；对提出的平衡点："The balance you proposed makes perfect sense"、"I'd like to get it implemented"；随后，对最初的暂扣："2 is obviously no hold. My question is why 1 should be hold?"、"Yes, if the store is the default location, no hold"、"That is correct" |
 | 配对邮箱必须属于服务器上的账号；不相符时拒绝，除非坚持；服务器无法判断时为"未确认"（E3） | "at pair time, make sure the email is the same as the user id user push to remotes. (If user id does not carry suffix, then use the name part at least)"；随后选择了 "Refuse; person can override" 和 "Pair, marked unconfirmed" |
 | 指针是必需的，仓库和引用两者都要写（E1；2026-10-08，#s24） | "the pointer file for shared review notes is optional, I'd like to make it mandatory"；选择了 "Remote and ref both required" |
 | 已配对的评审库迁移后会被跟随；迁到另一台服务器时重新核对账号（E3；2026-10-08，#s24） | "once mdrev --review-pair is done for a checked out repo, it will automatically discover the moved repo without rerun the --review-pair, this simplifies the migration"；选择了 "Carry it, re-check the account" |

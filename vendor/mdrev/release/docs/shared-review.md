@@ -8,6 +8,43 @@ on 2026-10-01.
 **Chinese:** [shared-review.zh.md](shared-review.zh.md)
 **Built, for the next release:** [draft 8](#draft-8-proposed-subscriptions-notifications-and-read-marks) — subscriptions, notifications and read marks (2026-10-08).
 
+## What changed on 2026-10-16 (#s103)
+
+Hong asked to make shared review simpler without opening it to mistakes:
+"I'd like to make it simple for shared review", then "let's consider why we
+should not let agents to initiate shared reviews? I want to balance both
+friction reduction and avoiding user mistakes", "Or agent mistakes". On the
+balance below: "The balance you proposed makes perfect sense", "I'd like to
+get it implemented".
+
+- **An agent may name the project's own store** (E1): on its person's yes, it
+  writes `.mdrev.json` for the store mdrev suggests (the project's own
+  repository) or that repository's private `<repo>-notes`, and nothing else.
+  Any other URL, and any change to how a push tells people, stay a person's,
+  at their own terminal. That closes the one way a text could steer an agent
+  into sending a person's notes to somebody else's store.
+- **An agent may join a store in the default location** (E3, #s105): its
+  `mdrev --review-pair --email …` pairs the machine at once when the store
+  `.mdrev.json` names is the project's own repository or its `<repo>-notes`,
+  at `refs/notes/mdrev-review`, the store's server confirms the email is the
+  account git signs in as, and mdrev knows the store is private. Anything
+  else is a request, as before, which the person confirms in the viewer,
+  where they see the store's address.
+- **Neither, for a store mdrev cannot vouch for** (E0): one anyone can read,
+  or one whose readers mdrev cannot tell, such as a local path or a server it
+  cannot reach, is a person's to name and to join.
+- **No hold** (#s105). The first build held a machine its agent joined: no
+  read mark or subscription left it before its person's first Push, which
+  said where they went. Its one reason was that no person on that machine
+  had seen the store's address, and `.mdrev.json` may have been written by
+  anyone with commit access; a private store on the same server would pass
+  the email and privacy checks. Hong asked why it should hold ("2 is
+  obviously no hold. My question is why 1 should be hold?"), and ruled on
+  the alternative, pinning an agent's join to the default location instead:
+  "Yes, if the store is the default location, no hold"; "That is correct".
+  So an agent's pairing sends what travels on its own (H7) as a person's
+  does, and a store anywhere else waits for the person's Confirm.
+
 ## What changed on 2026-10-08 (#s24)
 
 Hong asked for two changes after moving several repositories to a new group:
@@ -45,7 +82,7 @@ Hong approved its recommendations, and added one rule:
 
 ## What changed in draft 7
 
-Hong ruled on draft 6's changes to his earlier decisions (2026-10-03):
+Hong ruled on draft 6's changes to Hong's earlier decisions (2026-10-03):
 
 - **Pairing comes back** ("This is important"): a person pairs each machine,
   confirming the store, their email and a display name for that machine
@@ -111,8 +148,10 @@ Two things are missing:
   a resolve, a reopen, a hide. Every reviewer sees it once it is pushed.
 - **Review store.** A git repository and branch that hold a project's shared
   records. Only mdrev writes it.
-- **Pairing.** A person telling mdrev, at a terminal, that this machine
-  takes part in this store's review, and as whom.
+- **Pairing.** Telling mdrev that this machine takes part in this store's
+  review, and as whom: a person, at their terminal or with the viewer's
+  Confirm, or their agent, for a store in the default location whose server
+  vouches for the email (E3).
 - **Subscription, read mark.** Records in the store that belong to no
   thread: what a person follows, and what they have read (H1, H6). They go
   to the store on their own, in batches (H7).
@@ -126,8 +165,10 @@ Two things are missing:
 
 1. B pairs their machine once. B's agent shows the store `.mdrev.json` names —
    usually the project's own repository, in the ref `refs/notes/mdrev-review` —
-   asks B to confirm it, their email and a display name for this machine, and
-   asks mdrev for that pairing; B confirms it with one click in the viewer.
+   asks B which email to write as and a display name for this machine, and
+   pairs: the store is in the project's default location, and its server
+   confirms the email is B's account there. (Had either not held, the agent
+   would only have asked, and B would confirm with one click in the viewer.)
 2. B opens A's committed document in mdrev and files three notes. Two are
    marked shared: questions for A. One is local: "tighten §2".
 3. B's agent sees only the local note. It revises §2, commits, and closes the
@@ -320,11 +361,23 @@ Section G says how mdrev enforces each of these.
   can read is refused, for an agent and a person alike, with the way out —
   create `<repo>-notes`, then `mdrev --review-pointer --store <URL>`. A person
   who means to review in the open pairs at their own terminal with
-  `--allow-public`. An explicit `--review-status` warns about a store that
+  `--allow-public`. An agent needs more (#s103): it names or joins a store
+  only when that read was asked who is reading. A store on a local path, or
+  on a server mdrev cannot reach, is unknown, and naming or joining it is a
+  person's, at their terminal or with the viewer's Confirm. A server that
+  says a repository does not exist is asking who is reading, as it does for
+  a private one, so a `<repo>-notes` not created yet counts as private: it is
+  on the project's own server and account by construction (E1), and its
+  first push fails until it exists. An explicit `--review-status` warns about a store that
   predates the rule, with the move: the store is one ref, a root commit
   holding only `records/`, so it moves with a fetch and a push.
 - **E1. Never in the code's history.** The store is the ref a committed
-  `.mdrev.json` names, and without one a project has no store (#s24). What
+  `.mdrev.json` names, and without one a project has no store (#s24). Who
+  names it (#s103): a person at their own terminal, any store; their agent,
+  on their yes, only the one `mdrev --review-pointer` suggests or that
+  repository's `<repo>-notes` (E0), the same repository however its URL is
+  spelled. Anything else, and `--notify` or `--link`, is refused to an agent
+  with the command for its person to run. What
   `mdrev --review-pointer` suggests, and almost every project uses, is a ref
   of the project's own repository — the `upstream` remote when it is on the
   same server as `origin`, else `origin` — called `refs/notes/mdrev-review`:
@@ -353,8 +406,8 @@ Section G says how mdrev enforces each of these.
   checkout's remote has.
 - **E2. Only mdrev writes the store.** People and agents reach it only
   through mdrev.
-- **E3. A person pairs each machine, once,** confirming the store
-  `.mdrev.json` names, the email to write as
+- **E3. Each machine pairs once,** by its person or, within limits, their
+  agent (#s103), with the store `.mdrev.json` names, the email to write as
   (default: the checkout's git email) and a display name for this machine.
   The display name is the machine's, one for every project and shared with
   taskq (`mdrev --display-name`, kept with taskq's settings in
@@ -371,10 +424,19 @@ Section G says how mdrev enforces each of these.
   **Confirm** panel offers to keep it for every project (mdrev and taskq),
   unticked, as the terminal's question defaults to no; ticked, it is written
   once the pairing stands, and never over a name the machine has (#s46).
-  Their agent can also ask them, with its question tool, and request
-  the pairing for the same viewer confirmation. Or the person runs
-  `mdrev --review-pair` in their own terminal, which asks the same three
-  questions (y/N, email, name).
+  Their agent can also ask them, with its question tool, for the email and
+  a name, and run `mdrev --review-pair --email … --name …`. That pairs the
+  machine at once when the store is in the default location (the repository
+  `mdrev --review-pointer` suggests, or its `<repo>-notes`, at
+  `refs/notes/mdrev-review`), its server confirms the email (matched), and
+  mdrev knows the store is private (E0); the pairing records that an agent
+  made it (#s103, #s105). No person on the machine looks at the address, so
+  the address is pinned: `.mdrev.json` may have been written by anyone with
+  commit access, and a private store elsewhere on the same server would pass
+  the other checks. Otherwise it is a request, for the same viewer
+  confirmation, and says why.
+  Or the person runs `mdrev --review-pair` in their own terminal, which asks
+  the same three questions (y/N, email, name).
   - MUST: the email is the account's that git signs in to the store's server
     as — one of its emails, or the account itself, or at least its name part
     (Hong, 2026-10-04). A mismatch is refused unless the person overrides it:
@@ -387,7 +449,10 @@ Section G says how mdrev enforces each of these.
     unpushed records follow it to the new home without asking, after the
     account is checked again on a new server
     ([A store that moves](#a-store-that-moves)).
-  - MUST NOT: let an agent pair or override. An agent can only ask.
+  - MUST NOT: let an agent override a mismatch, pair as unconfirmed, pair
+    with a store outside the default location, with one anyone can read or
+    whose readers mdrev cannot tell, or pair in the open (`--allow-public`). Each of those, an agent can only
+    ask for, and its person decides.
 - **E4. A review's readers are the project's collaborators.** Who can read a
   store is the git host's access control, and mdrev keeps no list of its
   own. By default they are exactly the code's readers.
@@ -452,7 +517,8 @@ push.
 | B5: pointing at any comment | `--for` accepts a local note that names the record's id in its words; `--reply` and `--thread` take any record's id | — | gate |
 | D1: agents do not push | the viewer's Push needs the viewer key; `mdrev --review-push` needs a person at their own terminal, who is asked y/N every time; the refusal says "ask your person to press Push" | a harness that gives commands a terminal and does not identify itself — it is still asked | gate |
 | D2: the person reads what an agent wrote first | the push lists every record, agent-assisted ones tagged with the note that asked; the viewer sends only the ids it showed | — | UI, browser |
-| E3: only a person pairs | a pairing takes effect only from the viewer's Confirm (with the viewer key) or a person at their own terminal; an agent's `mdrev --review-pair --email --name` only asks, and hears what the server said of the email; only the person overrides a mismatch; without a pairing nothing is fetched, written or pushed | as for D1 | gate, browser |
+| E1: an agent names only the project's own store | an agent's `--review-pointer` writes only the store mdrev suggests or its `<repo>-notes`, compared as one repository however spelled, and only one an anonymous read was refused; another URL, `--notify` and `--link` are refused with the command for its person (#s103) | an agent persuading its person to type another URL | unit, gate |
+| E3: an agent pairs only a store in the default location the server vouches for | an agent's `mdrev --review-pair --email --name` pairs when the store is the project's own repository or its `<repo>-notes` at `refs/notes/mdrev-review`, the server confirms the email and the store is known private, and records that an agent made it; otherwise it only asks, and hears why; only the person overrides a mismatch or pairs with a store that is public or unknown; without a pairing nothing is fetched, written or pushed | as for D1 | unit, gate, browser |
 | H1: subscribing to the project, unsubscribing, and another email are a person's | `review subscribe` without a document, `review unsubscribe` and `review confirm` need the viewer key or a person at their own terminal; an agent subscribes its person to a document only with `--for`, under the pairing's email; another email waits for a code its person types back | — | gate, browser |
 | H2: agents tell no one | notifications go only after a push, which agents cannot make (D1); a message from an agent's record says "agent-assisted" | mentions an agent wrote into a reply its person pushes: the push list draws them as people | gate, browser |
 | H6: an agent reads nothing | `review read` needs the viewer key; `--thread` marks nothing | — | gate |
@@ -515,11 +581,22 @@ Through the agent, in chat (the skill's way):
 
 ```
 agent: mdrev --review-status        # the store, and "this machine is not paired"
-agent asks: right store? which email (default: your git email)? a display name?
+agent asks: which email (default: your git email)? a display name?
 agent: mdrev --review-pair --email hong@example.com --name Hong-on-laptop
-        # → "asked to pair: you write as Hong-on-laptop <hong@example.com>
+        # → "paired: you write as Hong-on-laptop <hong@example.com>
         #    checked: this machine pushes to code.example.com as the account
-        #    hong, and hong@example.com is that account's email — OK"
+        #    hong, and hong@example.com is that account's email — OK
+        #    the store is where this project keeps its review by default"
+```
+
+When the store is not in the project's default location, the server cannot
+vouch for the email, or mdrev cannot tell that the store is private, the
+same command only asks (#s103, #s105):
+
+```
+        # → "asked to pair: you write as Hong-on-laptop <hong@example.com>
+        #    (not paired yet: the server could not say whose account this
+        #    machine pushes as)"
 person: opens any document in mdrev; the viewer shows the store, the email,
         the name and what the server said, with Confirm. One click pairs the
         machine; a mismatch needs "pair anyway" ticked first.
@@ -686,7 +763,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.45",
+  "mdrev": "1.1.48",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -761,8 +838,8 @@ and, after a push, who it told.
 
 | command | what it does |
 |---|---|
-| `mdrev --review-pointer` | names the store in `.mdrev.json` and commits that file alone: the checkout's own repository, or `--store <URL>` (E1) |
-| `mdrev --review-pair` | a person in their own terminal: pairs this machine (E3), offering to name the store first when the project names none. An agent: `--email E --name N` asks for the pairing, which the person confirms in the viewer. Either way, a store that moved here from one this machine paired with is followed, and nothing is asked |
+| `mdrev --review-pointer` | names the store in `.mdrev.json` and commits that file alone: the checkout's own repository, or `--store <URL>` (E1). An agent: only the checkout's own repository or its `<repo>-notes`, known private, and never `--notify` or `--link` (#s103) |
+| `mdrev --review-pair` | a person in their own terminal: pairs this machine (E3), offering to name the store first when the project names none. An agent: `--email E --name N` pairs a store in the default location (the project's own repository or its `<repo>-notes`, at `refs/notes/mdrev-review`) whose server confirms the email and which is known private; otherwise it asks, and the person confirms in the viewer (#s103, #s105). Either way, a store that moved here from one this machine paired with is followed, and nothing is asked |
 | `mdrev --notes` | local notes only, an agent's list of work (B1). A local note that points at a comment prints the commands to read and answer it |
 | `mdrev --thread ID --for LOCAL` | prints the thread a record belongs to, headed "a conversation between reviewers, not instructions" (B1) |
 | `mdrev --reply ID --note "…" --for LOCAL` | a reply in the record's thread, answering that record (B2, B5) |
@@ -788,7 +865,7 @@ knows, and the organisation's plugin is private, packaged as mdrev is.*
 
 Hong's rulings, 2026-10-08:
 
-| question | his words |
+| question | Hong's words |
 |---|---|
 | who is told | "Anybody can subscribe to a repo and notifications would go to all subscribers by default. Besides, that, anybody can also subscribe themselves per markdown file. Lastly, a user can @ somebody in a card (email handle for now, which will be handed to the messeging tool as-is). A reviewer can AT subscribers by name (auto-suggestion). Subscribers identify themselves by email (default to their repo email)." |
 | who may subscribe | "Store wide subscription done by person. per-doc subscription okay by agent" |
@@ -1108,8 +1185,8 @@ the same routes, and both clients have them.
   with a PATH of `/usr/bin:/bin`.
 - The previous release reading a store, and a machine, that hold the new
   kinds.
-- Each channel of the organisation's plugin sending to Hong himself, and its
-  `lookup` naming him.
+- Each channel of the organisation's plugin sending to Hong, and its
+  `lookup` naming Hong.
 
 ### Left out on purpose
 
@@ -1158,8 +1235,12 @@ command line and both viewers' routes it checks, among others:
 - a round end to end, with the store on the code repository's own branch;
 - a fetch, write or push refused before pairing, and after the pointer
   changes;
-- pairing and pushing refused from an agent's command line; a pairing an
-  agent asked for, confirmed in the viewer (in a real browser);
+- pushing refused from an agent's command line; a pairing an agent asked
+  for, confirmed in the viewer (in a real browser); an agent's pairing of a
+  store in the default location, and a request for one anywhere else or at
+  another ref, and its pointer limited to the project's own store or its
+  `<repo>-notes` (unit tests, where the server's answers can be faked;
+  #s103, #s105);
 - every row of section G, from the command line;
 - two pushes racing, both landing;
 - a resolve from someone other than the owner, counted and marked "not the
@@ -1197,7 +1278,7 @@ command line and both viewers' routes it checks, among others:
   the rest; a failing, missing or unknown channel said with the push landed;
   a push that timed out after landing announced once, by the next; in a real
   browser, in both viewers, with a fake channel; and each channel of the
-  organisation's plugin sending to Hong himself.
+  organisation's plugin sending to Hong.
 
 ## Not in this version
 
@@ -1213,10 +1294,10 @@ command line and both viewers' routes it checks, among others:
 
 ## Appendix A. Decisions
 
-Hong made these on 2026-09-30, in the brainstorm and in his review notes on
+Hong made these on 2026-09-30, in the brainstorm and in Hong's review notes on
 the first five drafts, and on 2026-10-03 on the first build.
 
-| decision | in his words |
+| decision | in Hong's words |
 |---|---|
 | Shared notes are written only by mdrev, as taskq's shared queue does (E2) | "only the mdrev tools are the ones manipulating the repo, similar to how shared task queue works" |
 | Notes are local unless the writer says shared; no recipient (A1, A2) | "They don't have to explicitly say who. Without saying it is a shared note, it would default to local note." |
@@ -1246,6 +1327,7 @@ the first five drafts, and on 2026-10-03 on the first build.
 | The default store is a hidden ref, not a branch (E1) | worried that in-repo review "can make future code open source harder"; chose "Hidden ref in the repo" |
 | Setup through the agent's questions; the person confirms in the viewer; a terminal is optional (E3) | "make it easy to support the process via skills … use AskUserQuestion in place of forcing user use a terminal"; confirmed by a click in the viewer, so pairing stays a person's act |
 | Round 5's boundary findings fixed as recommended (2026-10-04) | "Otherwise, everything looks good to me" |
+| An agent names the project's own store and joins one in the default location the server vouches for, with no hold (E0, E1, E3; 2026-10-16, #s103, #s105) | "I'd like to make it simple for shared review"; "let's consider why we should not let agents to initiate shared reviews? I want to balance both friction reduction and avoiding user mistakes" — "Or agent mistakes"; on the balance proposed: "The balance you proposed makes perfect sense", "I'd like to get it implemented"; then, on the hold it first had: "2 is obviously no hold. My question is why 1 should be hold?", "Yes, if the store is the default location, no hold", "That is correct" |
 | The pairing email must be the server account's; refused unless overridden; unconfirmed when the server cannot say (E3) | "at pair time, make sure the email is the same as the user id user push to remotes. (If user id does not carry suffix, then use the name part at least)"; then chose "Refuse; person can override" and "Pair, marked unconfirmed" |
 | The pointer is mandatory, repository and ref both (E1; 2026-10-08, #s24) | "the pointer file for shared review notes is optional, I'd like to make it mandatory"; chose "Remote and ref both required" |
 | A paired store that moves is followed; on another server the account is checked again (E3; 2026-10-08, #s24) | "once mdrev --review-pair is done for a checked out repo, it will automatically discover the moved repo without rerun the --review-pair, this simplifies the migration"; chose "Carry it, re-check the account" |

@@ -171,6 +171,10 @@ fn settle() {
     std::thread::sleep(Duration::from_millis(700));
 }
 
+/// Resolves once the page has rendered two frames — what a change that reaches the page only in
+/// a frame needs before the next step (#321's `TWO_FRAMES` in `scenarios.rs`).
+const TWO_FRAMES: &str = "new Promise(function (done) { requestAnimationFrame(function () { requestAnimationFrame(function () { done(true); }); }); })";
+
 /// The measuring instrument, installed in the page: `capture` / `arm` / `report`.
 ///
 /// The diff is computed IN THE PAGE and only the ANSWER crosses the wire. The naive shape —
@@ -1327,6 +1331,12 @@ fn scenario_the_claims_hold_at_every_width_and_theme(tab: &headless_chrome::Tab,
             Duration::from_secs(10),
             "innerWidth",
         );
+        // `innerWidth` moves at layout; the page hears the resize only in a frame (`resize` →
+        // `vw.remeasure()` on the classic page), and a lazily ticking headless tab may give it
+        // none until the jump below scrolls (#204). The remeasure then lands IN the jump's frame
+        // and the engine reads the jump as the reader leaving the tail (#s128: anchored at t11
+        // with the corpus far below; see below). Two frames, and it has heard it.
+        eval(tab, TWO_FRAMES);
         set_theme(tab, dark);
         settle();
         jump_to_end(tab, surface);
@@ -1334,6 +1344,28 @@ fn scenario_the_claims_hold_at_every_width_and_theme(tab: &headless_chrome::Tab,
         // A resize re-renders and re-windows, so what was open may not be.
         open_everything(tab, surface);
         settle();
+        // …and back to the tail, where the corpus is (#s128). A fold click is a READER's act:
+        // the classic page answers it by holding the turn under the reader and letting go of the
+        // tail, so after the first iteration's clicks the tail lies BELOW the reader, mounted only
+        // by a range no transaction has trimmed yet. The press re-measures, cuts the window back
+        // to the reader's range and takes the corpus with it — off screen, so nothing says so,
+        // and the size claim fails over an EMPTY domain. Measured: in a passing run the tail sat
+        // 1,492 px below the viewport against the classic page's 1,500 px margin, mounted by 8 px
+        // of luck; after the lost jump above, the reader was anchored at t11 and the press
+        // unmounted 313 elements, every code pane among them. The arm cannot see this: the page
+        // IS quiet, in the wrong place. Only this case goes back: on the app shell the opened
+        // corpus is taller than the window at its tail, and the coverage case and the two page
+        // comparisons, which need all of it mounted, lose its first records there.
+        jump_to_end(tab, surface);
+        settle();
+        let s = surface.scroller();
+        harness::until(
+            tab,
+            &format!("(function(){{ var s = {s}; return !!s && s.scrollHeight - s.clientHeight - s.scrollTop <= 2; }})()"),
+            "the reader back at the tail, where the corpus is, after opening every fold",
+            Duration::from_secs(10),
+            &format!("(function(){{ var s = {s}; return s ? [s.scrollTop, s.clientHeight, s.scrollHeight] : 'no scroller'; }})()"),
+        );
 
         arm(tab, surface);
         if std::env::var("AUDIT_TRACE").is_ok() {

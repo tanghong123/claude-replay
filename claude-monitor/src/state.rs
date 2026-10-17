@@ -70,8 +70,8 @@ const CHILD_AGE_SLACK_SECS: u64 = 180;
 
 #[derive(Default)]
 pub(crate) struct StateTracker {
-    /// Content-derived facts, keyed by the tree mtime that produced them — a quiet
-    /// session's tick costs zero reads.
+    /// Content-derived facts, keyed by the tree mtime and the transcript's length that
+    /// produced them — a quiet session's tick costs one `stat` and no reads.
     content: HashMap<String, ContentFacts>,
     /// Hysteresis staging + the last PUBLISHED verdict per session.
     staged: HashMap<String, Staged>,
@@ -79,6 +79,10 @@ pub(crate) struct StateTracker {
 
 struct ContentFacts {
     at: Option<SystemTime>,
+    /// The transcript's length when read. The mtime alone misses an append made in the same
+    /// clock tick as the last read: Linux stamps mtimes from a coarse clock (a few ms), and a
+    /// session whose final append landed so stayed `wait` after its turn ended (#s136).
+    len: Option<u64>,
     pending: Vec<PendingTool>,
     last: claude_replay_core::state::TailLast,
     final_text: Option<String>,
@@ -257,12 +261,14 @@ impl StateTracker {
         write_current(&dir.join("current.json"), &now_ts, &snapshot);
     }
 
-    /// The content-derived facts, recomputed only when the tree mtime moved.
+    /// The content-derived facts, recomputed only when the tree mtime or the transcript's
+    /// length moved.
     fn content_facts(&mut self, f: &RowFacts) -> &ContentFacts {
+        let len = std::fs::metadata(&f.path).map(|m| m.len()).ok();
         let stale = self
             .content
             .get(&f.sid)
-            .is_none_or(|c| c.at != f.tree_mtime);
+            .is_none_or(|c| c.at != f.tree_mtime || c.len != len);
         if stale {
             let a = adapter(f.agent);
             let pending: Vec<PendingTool> = inflight_tools_in_tail(&f.path)
@@ -282,6 +288,7 @@ impl StateTracker {
                 f.sid.clone(),
                 ContentFacts {
                     at: f.tree_mtime,
+                    len,
                     pending,
                     last: pulse.last,
                     final_text: pulse.final_text,
@@ -586,6 +593,42 @@ mod tests {
         assert!(cur["scanned_at"].as_str().is_some_and(|s| !s.is_empty()));
         assert_eq!(cur["sessions"][0]["sid"], "s1");
         assert_eq!(cur["sessions"][0]["state"], "idle");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #s136: an append that leaves the mtime where it was is still read. Linux stamps mtimes
+    /// from a coarse clock, so a turn's last append inside the tick of the previous read kept
+    /// the cached content: the session stayed `wait · question` after its turn ended (a Code
+    /// runner failed the case above this way). The mtime is held here, so it fails anywhere.
+    #[test]
+    fn an_append_within_one_mtime_tick_is_read() {
+        let root = scratch("tick");
+        let t = root.join("s1.jsonl");
+        std::fs::write(&t, concat!(
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-14T10:00:00Z"}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":null,"content":[{"type":"text","text":"Which color?"},{"type":"tool_use","id":"toolu_q1","name":"AskUserQuestion","input":{"questions":[{"question":"Which color?"}]}}]},"timestamp":"2026-08-14T10:00:05Z"}"#, "\n",
+        )).unwrap();
+        let held = std::fs::metadata(&t).unwrap().modified().unwrap();
+
+        let mut tr = StateTracker::default();
+        tr.tick(&root, &[facts("s1", &t, Some(4242), 5)]);
+
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+        writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_q1","content":"blue","is_error":false}}]}},"timestamp":"2026-08-14T10:00:30Z"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{{"type":"text","text":"Blue it is."}}]}},"timestamp":"2026-08-14T10:00:35Z"}}"#).unwrap();
+        // The append landed in the same tick as the first read.
+        f.set_modified(held).unwrap();
+        drop(f);
+        let fresh = facts("s1", &t, Some(4242), 5);
+        assert_eq!(fresh.tree_mtime, Some(held), "the mtime is held");
+        tr.tick(&root, std::slice::from_ref(&fresh));
+        tr.tick(&root, std::slice::from_ref(&fresh));
+
+        let ev = std::fs::read_to_string(root.join("state/events.jsonl")).unwrap();
+        assert_eq!(ev.lines().count(), 2, "the idle transition landed:\n{ev}");
+        let e: StateEvent = serde_json::from_str(ev.lines().nth(1).unwrap()).unwrap();
+        assert_eq!((e.state, e.reason), (AgentState::Idle, StateReason::Done));
         let _ = std::fs::remove_dir_all(&root);
     }
 
