@@ -5049,6 +5049,196 @@ fn the_app_shell_s_browser_colours_follow_its_theme_not_the_os() {
     drop(monitor);
 }
 
+/// #s139: a long prompt collapses by its MEASURED lines, and only when that buys real room. It
+/// used to collapse by characters (over 560) to a fixed 246px, so in a desktop bubble a 600-character
+/// prompt — seven lines, under the clamp — wore a "Show fewer" that hid one faded line (the owner's
+/// screenshots). Now: that prompt is drawn whole with no band on a desktop; a long one collapses to
+/// eight lines, its control naming the lines it hides and a click giving them back; and on a phone,
+/// where the same 620 characters run to twice the lines, it collapses with a 44px control.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_collapses_a_prompt_only_when_that_hides_several_lines() {
+    let _serial = serial();
+    let base = base("appshell-prompt-clamp");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000013900".to_string();
+    let sentence = "The quick brown fox jumps over the lazy dog by the river while the sun sets. ";
+    let medium = sentence.repeat(8); // ~620 characters, one paragraph
+    assert!(medium.len() > 560, "over the old character rule");
+    let long = vec![sentence.repeat(5); 6].join("\\n\\n");
+    let mut jsonl = String::new();
+    jsonl += &user(&medium, 1);
+    jsonl += &assistant("Noted.", 2);
+    jsonl += &user(&long, 3);
+    jsonl += &assistant("Noted again.", 4);
+    jsonl += &user("ok", 5);
+    jsonl += &assistant("Done.", 6);
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3084, &base, Some(&stores), true);
+    let url = format!("http://127.0.0.1:3084/?ui=app&session={sid}");
+    let probe = "(function(){ var out = {}; document.querySelectorAll('.turn.user').forEach(function(t){ var p = t.querySelector('.user-prompt'), sh = t.querySelector('.prompt-copy-shell'), b = sh.firstElementChild, e = t.querySelector('.prompt-expand'), cs = getComputedStyle(b), r = null, hit = null; if (e) { e.scrollIntoView({block: 'center'}); r = e.getBoundingClientRect(); var at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); hit = !!at && e.contains(at); } out[t.dataset.turn] = { collapsible: p.classList.contains('prompt-collapsible'), collapsed: sh.classList.contains('collapsed'), label: e ? e.textContent : null, expanded: e ? e.getAttribute('aria-expanded') : null, h: b.getBoundingClientRect().height, lines: (b.scrollHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)) / parseFloat(cs.lineHeight), lh: parseFloat(cs.lineHeight), padTop: parseFloat(cs.paddingTop), padBottom: parseFloat(cs.paddingBottom), btnH: r ? r.height : null, hit: hit, font: e ? getComputedStyle(e).fontFamily : null }; }); return out; })()";
+    let open = |tab: &headless_chrome::Tab| {
+        monitor.pair(tab);
+        tab.navigate_to(&url).unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(
+            tab,
+            "document.querySelectorAll('.turn.user').length === 3",
+            "the three prompts to render",
+            Duration::from_secs(30),
+            "document.body.innerText.slice(0, 160)",
+        );
+    };
+    let hidden_of = |label: &serde_json::Value| -> f64 {
+        let label = label.as_str().unwrap_or("");
+        label
+            .strip_prefix("Show ")
+            .and_then(|rest| rest.strip_suffix(" more lines"))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("the collapsed control names the lines it hides: {label:?}"))
+    };
+
+    // A desktop: the 620 characters fit, the long prompt collapses.
+    let (_browser, tab) = harness::chrome_tab();
+    open(&tab);
+    let got = harness::probe(&tab, probe);
+    let medium_turn = &got["1"];
+    assert_eq!(
+        medium_turn["collapsible"], false,
+        "a prompt the clamp would barely cut is drawn whole: {got}"
+    );
+    assert!(medium_turn["label"].is_null(), "…with no expander: {got}");
+    assert!(
+        medium_turn["padBottom"].as_f64().unwrap() <= medium_turn["padTop"].as_f64().unwrap() + 1.0,
+        "…and no band reserved for one: {got}"
+    );
+    let long_turn = &got["2"];
+    assert_eq!(
+        long_turn["collapsed"], true,
+        "the long prompt collapses: {got}"
+    );
+    let hidden = hidden_of(&long_turn["label"]);
+    assert!(hidden >= 4.0, "a collapse hides several lines: {got}");
+    let lh = long_turn["lh"].as_f64().unwrap();
+    assert_eq!(long_turn["hit"], true, "the control takes a click: {got}");
+    assert!(
+        !long_turn["font"].as_str().unwrap_or("").contains("Mono"),
+        "#s140: the control is set in the bubble's face: {got}"
+    );
+    let collapsed_h = long_turn["h"].as_f64().unwrap();
+    harness::eval(
+        &tab,
+        "document.querySelector('.turn.user[data-turn=\"2\"] .prompt-expand').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var e = document.querySelector('.turn.user[data-turn=\"2\"] .prompt-expand'); return !!e && e.getAttribute('aria-expanded') === 'true'; })()",
+        "the click to show the whole prompt",
+        Duration::from_secs(5),
+        "document.querySelector('.turn.user[data-turn=\"2\"]').outerHTML.slice(0, 300)",
+    );
+    let open_now = harness::probe(&tab, probe);
+    assert_eq!(open_now["2"]["label"], "Show fewer", "{open_now}");
+    let grown = open_now["2"]["h"].as_f64().unwrap() - collapsed_h;
+    assert!(
+        grown >= (hidden - 0.75) * lh,
+        "expanding gives back the {hidden} lines it named ({grown}px at {lh}px a line): {open_now}"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('.turn.user[data-turn=\"2\"] .prompt-expand').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var e = document.querySelector('.turn.user[data-turn=\"2\"] .prompt-expand'); return !!e && e.getAttribute('aria-expanded') === 'false'; })()",
+        "the second click to collapse it again",
+        Duration::from_secs(5),
+        "document.querySelector('.turn.user[data-turn=\"2\"]').outerHTML.slice(0, 300)",
+    );
+    assert_eq!(
+        harness::probe(&tab, probe)["3"]["collapsible"],
+        false,
+        "a short prompt never collapses"
+    );
+    prompt_screenshots(&tab, "desktop", &["1", "2"]);
+
+    // A phone: the same 620 characters are long there.
+    let (_phone_browser, phone) = harness::chrome_tab();
+    harness::phone(&phone, 390, 844);
+    open(&phone);
+    let got = harness::probe(&phone, probe);
+    let medium_turn = &got["1"];
+    assert_eq!(
+        medium_turn["collapsed"], true,
+        "on a phone the 620 characters collapse: {got}"
+    );
+    assert!(hidden_of(&medium_turn["label"]) >= 4.0, "{got}");
+    assert!(
+        medium_turn["btnH"].as_f64().unwrap() >= 44.0,
+        "a phone's control is a 44px target: {got}"
+    );
+    assert_eq!(medium_turn["hit"], true, "…that takes a tap: {got}");
+    prompt_screenshots(&phone, "phone", &["1"]);
+    drop(monitor);
+}
+
+/// `CR_PROMPT_SCREENSHOTS=<dir>` saves the prompt bubbles of #s139/#s140 as PNGs, in both themes,
+/// collapsed and expanded, for a person to judge the look; the case itself asserts the geometry.
+fn prompt_screenshots(tab: &headless_chrome::Tab, prefix: &str, turns: &[&str]) {
+    use headless_chrome::protocol::cdp::Page;
+    let Some(dir) = std::env::var_os("CR_PROMPT_SCREENSHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for theme in ["light", "dark"] {
+        harness::eval(tab, &format!("(function(){{ if ((document.documentElement.dataset.theme || 'light') !== '{theme}') document.getElementById('themeBtn').click(); return 'ok'; }})()"));
+        for turn in turns {
+            let sel = format!(".turn.user[data-turn=\"{turn}\"]");
+            for want in ["false", "true"] {
+                let has = harness::eval(tab, &format!("(function(){{ var e = document.querySelector('{sel} .prompt-expand'); if (!e) return 'none'; if (e.getAttribute('aria-expanded') !== '{want}') e.click(); return 'ok'; }})()"));
+                if has.as_str() == Some("none") && want == "true" {
+                    continue;
+                }
+                std::thread::sleep(Duration::from_millis(400));
+                // The control is at the bubble's foot: bring that to 60% of the transcript (a tall
+                // bubble's head is cut), then frame at most the last 420px. The clip is in page
+                // coordinates, and a phone's page scrolls too.
+                harness::eval(tab, &format!("(function(){{ var t = document.querySelector('{sel} .user-prompt'), s = document.querySelector('.transcript'), r = t.getBoundingClientRect(), sr = s.getBoundingClientRect(); s.scrollTop += r.bottom - (sr.top + sr.height * 0.6); return 'ok'; }})()"));
+                std::thread::sleep(Duration::from_millis(400));
+                let r = harness::probe(tab, &format!("(function(){{ var t = document.querySelector('{sel} .user-prompt'), sr = document.querySelector('.transcript').getBoundingClientRect(), r = t.getBoundingClientRect(), top = Math.max(r.top, sr.top, r.bottom - 420); return {{x: r.left + scrollX, y: top + scrollY, w: r.width, h: r.bottom - top}}; }})()"));
+                let at = |k: &str| r[k].as_f64().unwrap();
+                let clip = Page::Viewport {
+                    x: (at("x") - 14.0).max(0.0),
+                    y: (at("y") - 14.0).max(0.0),
+                    width: at("w") + 28.0,
+                    height: at("h") + 28.0,
+                    scale: 1.0,
+                };
+                let png = tab
+                    .capture_screenshot(
+                        Page::CaptureScreenshotFormatOption::Png,
+                        None,
+                        // A phone is shown whole: its top bar and dock are part of the look.
+                        (prefix != "phone").then_some(clip),
+                        true,
+                    )
+                    .unwrap();
+                let state = match (has.as_str(), want) {
+                    (Some("none"), _) => "whole",
+                    (_, "true") => "expanded",
+                    _ => "collapsed",
+                };
+                std::fs::write(
+                    dir.join(format!("{prefix}-turn{turn}-{theme}-{state}.png")),
+                    png,
+                )
+                .unwrap();
+            }
+        }
+    }
+}
+
 /// #84: the records a session opens with are never "new". A fresh open lands at the tail with
 /// no count; scrolled up and reloaded, the remembered position comes back and still nothing is
 /// counted; eight records arriving afterwards are "8 new".
