@@ -110,3 +110,51 @@ fn a_passing_case_removes_its_scratch_and_a_failing_case_keeps_it() {
     );
     let _ = std::fs::remove_dir_all(&failed);
 }
+
+/// #s143: a Chrome that starts and never prints its DevTools address no longer stops the run.
+/// headless_chrome waits for that line with a blocking read, and a suite stood still on one for
+/// an hour; the launch is now given up on time, and that launch's own processes are killed.
+#[test]
+fn a_mute_chrome_launch_is_given_up_and_killed() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+    let _serial = harness::serial();
+    let root = harness::base("mute-chrome");
+    let draft = root.join("mute-chrome.draft");
+    std::fs::write(&draft, "#!/bin/sh\nwhile :; do sleep 1; done\n").unwrap();
+    std::fs::set_permissions(&draft, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Copied into place by a child, so the script is never open for writing in this process:
+    // on Linux a fork while it is would make its exec fail with ETXTBSY.
+    let fake = root.join("mute-chrome");
+    assert!(Command::new("cp")
+        .arg(&draft)
+        .arg(&fake)
+        .status()
+        .unwrap()
+        .success());
+    let t0 = Instant::now();
+    let launched = harness::launch_within(Some(fake.clone()), &[], Duration::from_secs(2));
+    let waited = t0.elapsed();
+    let err = launched
+        .err()
+        .expect("a Chrome that says nothing never launches");
+    assert!(
+        err.contains("no DevTools address") && waited < Duration::from_secs(10),
+        "the launch is given up on time: {err} after {waited:?}"
+    );
+    assert!(
+        !err.contains("killed its 0 "),
+        "…and its process is killed: {err}"
+    );
+    let ps = Command::new("ps")
+        .args(["-Awwo", "command="])
+        .output()
+        .unwrap();
+    let fake = fake.display().to_string();
+    let left: Vec<String> = String::from_utf8_lossy(&ps.stdout)
+        .lines()
+        .filter(|line| line.contains(&fake))
+        .map(str::to_string)
+        .collect();
+    assert!(left.is_empty(), "nothing of that launch is left: {left:?}");
+}
