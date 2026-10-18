@@ -1449,10 +1449,20 @@ const GLOB_SHAPE: &[&str] = &[
     "truncated",
 ];
 
-/// Every key an Artifact create-from-type result was met with (#306, client 2.1.280).
+/// Every key an Artifact create-from-type result was met with (#306, client 2.1.280). Since client
+/// 2.1.296 a create can also end with `init_references` and `after_quickstart` (#s152, the one such
+/// result on aries-black in 14 days, measured 2026-10-18, without `warnings` or `provisioned`).
+/// `init_references` is `{docs: [{path, text, chars}]}`, 2 entries of about 11,200 and 12,100
+/// characters, each `path` a type release file under `artifact-type/reference/` that `type_files`
+/// also lists: the type's reference documents handed to the agent at creation, the same class as
+/// `instructions`. `after_quickstart` was `{}`, the last key, on a create that followed an Artifact
+/// quickstart call in the same turn. REVISIT: an `after_quickstart` that arrives non-empty, or an
+/// `init_references` with a key other than `docs`.
 const ARTIFACT_CREATE_SHAPE: &[&str] = &[
+    "after_quickstart",
     "auto_open",
     "created_from_type",
+    "init_references",
     "instructions",
     "instructions_chars",
     "liveSubscription",
@@ -1485,6 +1495,40 @@ const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
     "path",
     "seq",
     "title",
+    "updated",
+    "url",
+    "version",
+];
+
+/// Every key an Artifact publish INTO an artifact made from a type was met with (#s152, client
+/// 2.1.296, 10 records in one session on aries-black, measured 2026-10-18; the call input carries
+/// `url`, `root`, `file_path` and, on 4 of 10, a `files` map). All 10 share one key set, the
+/// publish shape without `icon` plus `capabilities`, `stored`, `type` (`{url, release, latest}`),
+/// `own_files` and `type_files`, with `updated` true in all 10. `files_written` is `{path,
+/// sha256}` per file, as in [`ARTIFACT_PUBLISH_SHAPE`]: 1 entry where the input has no `files` map
+/// and 2 where it has one path-valued key, the input's `file_path` (relative to `root`) plus each
+/// `files` key whose value is a path, entry for entry. One of the 10 adds `files_removed` after
+/// `files_written`: 4 relative paths, exactly the `files` keys whose value is null (a null deletes
+/// that file from the artifact), in the same order. `own_files` and `type_files` are what the
+/// instance owns and the type release's bundled files, as in a create. The card links the
+/// recorded `url` and drops the output, so none of these reaches the reader; the removal shows only
+/// in the raw toggle, since the result text names none (#s152 answers whether the card should).
+/// REVISIT: a `files_written` or `files_removed` that differs from the call input's `files` map.
+const ARTIFACT_TYPED_PUBLISH_SHAPE: &[&str] = &[
+    "artifact_id",
+    "audience",
+    "capabilities",
+    "contract",
+    "files_removed",
+    "files_written",
+    "liveSubscription",
+    "own_files",
+    "path",
+    "seq",
+    "stored",
+    "title",
+    "type",
+    "type_files",
     "updated",
     "url",
     "version",
@@ -1630,6 +1674,13 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     ("own_files", ARTIFACT_CREATE_SHAPE),
     ("provisioned", ARTIFACT_CREATE_SHAPE),
     ("type_files", ARTIFACT_CREATE_SHAPE),
+    // #s152 (client 2.1.296): a create's `init_references` is the type's reference documents for
+    // the agent, the same class as `instructions`, and `after_quickstart` an empty marker that the
+    // create followed a quickstart. Both generic enough to mean something else on another tool, so
+    // each is known only in the create's shape; adding them also silences the five above again,
+    // which came back beside them.
+    ("after_quickstart", ARTIFACT_CREATE_SHAPE),
+    ("init_references", ARTIFACT_CREATE_SHAPE),
     // Grep (#285, #315): `mode` is a generic word, and `totalFiles` could mean anything in another
     // tool, so each is known only when every key of the result is Grep's; a key that is not is
     // reported with them beside it.
@@ -1652,6 +1703,14 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // `files_written` in the publish shape also silences `icon` again, which came back beside it.
     ("files_written", ARTIFACT_PUBLISH_SHAPE),
     ("opened", ARTIFACT_OPEN_SHAPE),
+    // #s152 (client 2.1.296): a publish into an artifact made from a type. `files_written` is the
+    // call input again with a digest per file, `files_removed` the input's null-valued `files`
+    // keys, `own_files` and `type_files` the instance's files and the type's, as in a create. Each
+    // known only in this shape, beside the publish's own keys and the flat-known three.
+    ("files_written", ARTIFACT_TYPED_PUBLISH_SHAPE),
+    ("files_removed", ARTIFACT_TYPED_PUBLISH_SHAPE),
+    ("own_files", ARTIFACT_TYPED_PUBLISH_SHAPE),
+    ("type_files", ARTIFACT_TYPED_PUBLISH_SHAPE),
     // Artifact's list result (#s62): `pins_enabled` is an account's feature flag, and a word
     // another tool could use for anything, so it is known only in the list's own shape.
     ("pins_enabled", ARTIFACT_LIST_SHAPE),
@@ -8505,6 +8564,78 @@ mod tests {
             unknown_tool_result_keys(&serde_json::json!({"opened": true, "stdout": "ok"})),
             vec!["opened"],
             "outside the open shape, opened is reported"
+        );
+    }
+
+    /// #s152: a create from a type as client 2.1.296 writes it, ending with the type's reference
+    /// documents and an empty quickstart marker, is known whole; either new key beside a key from
+    /// outside the create's shape is reported. Hand-written: no real ids, URLs or paths.
+    #[test]
+    fn an_artifact_create_with_reference_documents_is_known_in_its_own_shape() {
+        let create = serde_json::json!({
+            "created_from_type": true, "url": "https://example.test/artifact/new-1", "version": "1",
+            "title": "Notes", "type": {"url": "https://example.test/types/doc", "release": "r1"},
+            "own_files": [],
+            "type_files": ["artifact-type/index.js", "artifact-type/reference/editing.md"],
+            "auto_open": "after_first_write", "liveSubscription": "none",
+            "instructions": "Agent: fill it through the store.", "instructions_chars": 33,
+            "init_references": {"docs": [
+                {"path": "artifact-type/reference/editing.md", "text": "# Editing", "chars": 9}
+            ]},
+            "after_quickstart": {}
+        });
+        assert!(
+            unknown_tool_result_keys(&create).is_empty(),
+            "a whole create with reference documents is known: {:?}",
+            unknown_tool_result_keys(&create)
+        );
+        assert_eq!(
+            unknown_tool_result_keys(
+                &serde_json::json!({"init_references": {"docs": []}, "stdout": "ok"})
+            ),
+            vec!["init_references"],
+            "outside the create shape, init_references is reported"
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({"after_quickstart": {}, "stdout": "ok"})),
+            vec!["after_quickstart"],
+            "outside the create shape, after_quickstart is reported"
+        );
+    }
+
+    /// #s152: a publish INTO an artifact made from a type (client 2.1.296) is known whole, with
+    /// and without the `files_removed` a null in the input's `files` map brings; `files_removed`,
+    /// `own_files` and `type_files` beside a key from outside that shape are reported.
+    #[test]
+    fn an_artifact_publish_into_a_typed_artifact_is_known_in_its_own_shape() {
+        let publish = serde_json::json!({
+            "url": "https://example.test/artifact/x", "path": "/w/data.json", "artifact_id": "x",
+            "title": "X", "updated": true, "audience": "private", "seq": 3, "version": "v3",
+            "capabilities": {}, "stored": {}, "contract": "1.0.0", "liveSubscription": "none",
+            "files_written": [
+                {"path": "data.json", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+            ],
+            "type": {"url": "https://example.test/types/deck", "release": "r1", "latest": "r1"},
+            "own_files": ["data.json"], "type_files": ["artifact-type/index.js"]
+        });
+        assert!(
+            unknown_tool_result_keys(&publish).is_empty(),
+            "a whole publish into a typed artifact is known: {:?}",
+            unknown_tool_result_keys(&publish)
+        );
+        let mut removing = publish.clone();
+        removing["files_removed"] = serde_json::json!(["old/a.json", "old/b.json"]);
+        assert!(
+            unknown_tool_result_keys(&removing).is_empty(),
+            "…and so is one that removed files: {:?}",
+            unknown_tool_result_keys(&removing)
+        );
+        assert_eq!(
+            unknown_tool_result_keys(
+                &serde_json::json!({"files_removed": [], "own_files": [], "type_files": [], "stdout": "ok"})
+            ),
+            vec!["files_removed", "own_files", "type_files"],
+            "outside the typed publish's shape, its keys are reported"
         );
     }
 
