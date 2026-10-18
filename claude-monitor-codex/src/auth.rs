@@ -188,6 +188,9 @@ impl CredentialDirectory {
         Ok(())
     }
 
+    /// On Unix, creation requests mode 0600, filtered by umask. The caller must restore
+    /// exact permissions through the returned descriptor inside its cleanup
+    /// boundary before writing credential bytes.
     fn open_file(&self, name: &str, create: bool) -> Result<File> {
         #[cfg(unix)]
         let result = {
@@ -305,9 +308,33 @@ mod tests {
     #[test]
     fn replaced_directory_path_cannot_redirect_permissions_or_credential_operations() {
         use std::os::unix::fs::PermissionsExt;
+        if std::env::var("NATIVE_TOKEN_REPLACED_DIRECTORY_UMASK_TEST").as_deref() == Ok("child") {
+            // Only this test runs in the child; do not change the parent suite's umask.
+            unsafe {
+                libc::umask(0o277);
+            }
+        } else {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "auth::tests::replaced_directory_path_cannot_redirect_permissions_or_credential_operations",
+                    "--nocapture",
+                ])
+                .env("NATIVE_TOKEN_REPLACED_DIRECTORY_UMASK_TEST", "child")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed;"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         let root =
             std::env::temp_dir().join(format!("native-auth-replaced-{}", std::process::id()));
         crate::remove_test_scratch(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         let state = root.join("state");
         let moved = root.join("original");
         let unrelated = root.join("unrelated");
@@ -321,6 +348,8 @@ mod tests {
         directory.restrict().unwrap();
         let temporary = ".codex-server-token-0123456789abcdef0123456789abcdef";
         let mut file = directory.open_file(temporary, true).unwrap();
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .unwrap();
         file.write_all("a".repeat(64).as_bytes()).unwrap();
         file.sync_all().unwrap();
         directory.publish(temporary).unwrap();
