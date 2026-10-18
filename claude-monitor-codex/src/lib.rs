@@ -36,7 +36,35 @@ pub const SEND_BODY_LIMIT: usize = 12 * 1024 * 1024;
 pub struct Config {
     pub endpoint: String,
     pub allowed_roots: Vec<PathBuf>,
+    /// Absolute receipt database path in a dedicated, trusted private state directory.
+    /// Both entrypoints reject relative paths before any filesystem operation.
     pub state_path: PathBuf,
+}
+
+/// Persistent identities consuming the two independent receipt-store limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReceiptUsage {
+    pub action_identities: u64,
+    pub queue_steer_identities: u64,
+    pub limit_per_store: u64,
+    pub warning_at: u64,
+}
+
+impl ReceiptUsage {
+    /// Warn when either store has consumed at least 90% of its identity capacity.
+    pub fn should_warn(&self) -> bool {
+        self.action_identities >= self.warning_at || self.queue_steer_identities >= self.warning_at
+    }
+}
+
+fn validate_state_path(path: &Path) -> Result<()> {
+    if !path.is_absolute() {
+        bail!(
+            "Native receipt state_path must be absolute: {}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// A clonable process-local owner accessed by HTTP request handlers and the SSE writer.
@@ -176,6 +204,17 @@ impl RouteError {
 }
 
 impl Gateway {
+    /// Read receipt identity counts without RPC, pruning or changing delivery state.
+    /// This explicit SQLite observation may wait for a receipt operation; `status()`
+    /// remains independent of database I/O. Errors retain the SQLite operation cause.
+    pub fn receipt_usage(&self) -> Result<ReceiptUsage> {
+        self.receipts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .usage()
+            .context("Read native receipt identity usage")
+    }
+
     /// Read current native connection metadata without issuing RPC or opening history.
     pub fn status(&self) -> Value {
         let mut status = self
@@ -191,6 +230,7 @@ impl Gateway {
     /// writer. This returns while the configured server is unreachable; status exposes
     /// the connection and every write is refused until initialization/recovery completes.
     pub fn start(config: Config) -> Result<Arc<Self>> {
+        validate_state_path(&config.state_path)?;
         validate_endpoint(&config.endpoint)?;
         if config.allowed_roots.is_empty() {
             bail!("Codex Gateway requires at least one allowed project root");
@@ -2494,6 +2534,35 @@ mod tests {
         assert!(validate_endpoint("ws://remote.example:4500").is_err());
         assert!(validate_endpoint("ws://127.0.0.1:4500?token=secret").is_err());
         assert!(validate_endpoint("http://127.0.0.1:4500").is_err());
+    }
+
+    #[test]
+    fn receipt_usage_is_available_without_a_native_server_and_does_not_claim_an_action() {
+        let root = std::env::temp_dir().join(format!("gateway-usage-{}", std::process::id()));
+        remove_test_scratch(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let gateway = Gateway::start(Config {
+            endpoint: "ws://127.0.0.1:1".into(),
+            allowed_roots: vec![root.clone()],
+            state_path: root.join("receipts.sqlite3"),
+        })
+        .unwrap();
+        assert_eq!(gateway.receipt_usage().unwrap().action_identities, 0);
+        gateway
+            .receipts
+            .lock()
+            .unwrap()
+            .claim("claimed", "endpoint", "send", &json!({}))
+            .unwrap();
+        let usage = gateway.receipt_usage().unwrap();
+        assert_eq!(
+            (usage.action_identities, usage.queue_steer_identities),
+            (1, 0)
+        );
+        assert!(!usage.should_warn());
+        assert_eq!(gateway.receipt_usage().unwrap(), usage);
+        drop(gateway);
+        remove_test_scratch(&root);
     }
 
     #[test]

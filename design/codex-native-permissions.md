@@ -54,9 +54,23 @@ credential. It publishes `codex-server.token` atomically beside the receipt
 database in its private state directory (normally `~/.local/state/agent-monitor`).
 The directory is created with mode 0700 even under umask 002; an existing real
 directory is tightened to 0700 only after checking its owner. The file is 0600.
+On Unix, the directory is opened with O_DIRECTORY and O_NOFOLLOW. Ownership
+inspection and permission changes use that descriptor; token reads, temporary
+creation, linking, removal and directory sync are relative to the same handle.
+Replacing its pathname with a symlink cannot redirect these operations. The host
+must still choose a trusted state directory and ancestors for SQLite and the
+server's later token-path lookup; this is not a sandbox for arbitrary paths.
 Temporary names use an independent random nonce, never credential bytes. The
 fully written file and the containing directory are synced before publication
 returns, including when a concurrent creator supplied the winning hard link.
+Directory fsync returning EINVAL or ENOTSUP is tolerated for filesystems without
+that operation; other errors and all token-file sync failures remain fatal.
+Such filesystems do not provide a confirmed power-loss durability guarantee for
+the directory entry. A crash can leave a private 0600 temporary token file.
+Automatic stale-file cleanup remains deferred: an unlocked sweep could delete
+another creator's live temporary file. The wiring stage must establish exclusive
+initialization/cleanup ownership and compatibility with older writers before
+adding cleanup; never remove the canonical token or rotate it as cleanup.
 Concurrent starts reuse the published value. Existing malformed, symlinked or
 non-private credentials fail closed. The credential is not the pairing token.
 Gateway status/UI responses and its own diagnostic strings omit it; dependency
@@ -93,8 +107,14 @@ SSH_AUTH_SOCK/SHELL/TERM,
 LANG/LC_ALL, SSL_CERT_FILE/SSL_CERT_DIR, HTTP(S)/ALL/NO_PROXY (both spellings), and
 OPENAI_API_KEY when set. Custom provider environment variables are not implicitly
 inherited; their support needs explicit host configuration before enablement.
-`NativeRuntime::new` anchors a relative receipt path to the Monitor's current
-directory, so the token-file argument stays absolute when the child changes cwd.
+Preserving SSH_AUTH_SOCK grants app-server access to the user's SSH agent,
+including its available signing/authentication operations; it is an explicit
+capability of the host execution context, not merely a display preference.
+Both `NativeRuntime::new` and `Gateway::start` require an absolute `state_path`
+and reject relative paths before filesystem operations. The host must select a
+dedicated private state directory, not infer one from the current working
+directory or point it at a project checkout. Existing callers supplying relative
+paths must choose that explicit location; there is no automatic cwd migration.
 
 ## Disconnect and recovery
 
@@ -135,9 +155,20 @@ at 100,000; new claims fail closed at capacity. Do not automatically rotate/dele
 this database to bypass the cap. Reconcile native history before any operator-led
 retirement. This bounds growth without weakening duplicate-delivery protection.
 
-Capacity recovery is deferred to the HTTP/UI wiring stage, not implemented in
-this library revision. Before exposing native writes, that stage must surface a
-warning before either identity store reaches its cap and provide a tested operator
+`Gateway::receipt_usage()` returns a typed `ReceiptUsage` with action identities
+(active plus retired), queue-steer identities, the per-store limit of 100,000,
+and `warning_at=90,000`. `should_warn()` is true at or above that threshold in
+either store. Counts come from one read-only SQLite snapshot; they do not prune,
+claim, or issue native RPC. This explicit method may wait for a receipt operation;
+ordinary `status()` remains independent of database I/O. The host must call this
+method after activation and completed actions and periodically while activated,
+report observation failures rather than inventing remaining capacity, and show
+a persistent warning whenever `should_warn()` is true. Counts can change after
+the snapshot; transactional claim limits remain authoritative.
+
+Warning UI and capacity recovery are deferred to the HTTP/UI wiring stage, not
+implemented in this library revision. Before exposing native writes, that stage
+must consume the usage interface above and provide a tested operator
 recovery path that preserves rejection of old action IDs and queued submissions.
 Stop all writers and reconcile uncertain deliveries before any operator operation;
 deleting tombstones, replacing the database or extending the cap without such a

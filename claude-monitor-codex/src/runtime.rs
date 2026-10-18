@@ -1,6 +1,6 @@
 //! Explicit activation of a shared Codex runtime. Construction and status never spawn work.
 
-use crate::{auth::ServerToken, validate_endpoint, Config, Gateway};
+use crate::{auth::ServerToken, validate_endpoint, validate_state_path, Config, Gateway};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
@@ -34,11 +34,10 @@ struct RuntimeState {
 }
 
 impl NativeRuntime {
-    /// Validate inert configuration and anchor the receipt path to the current directory.
+    /// Validate inert configuration, including the absolute receipt database path.
     /// This opens no connection, directory, database or process.
-    pub fn new(mut config: RuntimeConfig) -> Result<Arc<Self>> {
-        config.gateway.state_path = std::path::absolute(&config.gateway.state_path)
-            .context("Resolve absolute native receipt path")?;
+    pub fn new(config: RuntimeConfig) -> Result<Arc<Self>> {
+        validate_state_path(&config.gateway.state_path)?;
         validate_endpoint(&config.gateway.endpoint)?;
         let uri: tungstenite::http::Uri = config.gateway.endpoint.parse()?;
         let authority = uri.authority().context("Codex endpoint has no authority")?;
@@ -541,21 +540,20 @@ mod tests {
     }
 
     #[test]
-    fn relative_receipt_path_is_anchored_before_the_child_changes_directory() {
+    fn absolute_receipt_path_is_preserved_when_the_child_changes_directory() {
         let (root, original) = fixture();
-        let relative = PathBuf::from("target/native-relative-state/receipts.sqlite3");
+        let absolute = root.join("private-state/receipts.sqlite3");
         let runtime = NativeRuntime::new(RuntimeConfig {
             gateway: Config {
                 endpoint: original.config.gateway.endpoint.clone(),
                 allowed_roots: vec![root.clone()],
-                state_path: relative.clone(),
+                state_path: absolute.clone(),
             },
             binary: original.config.binary.clone(),
             home: original.config.home.clone(),
             log_path: original.config.log_path.clone(),
         })
         .unwrap();
-        let absolute = std::env::current_dir().unwrap().join(relative);
         assert_eq!(runtime.config.gateway.state_path, absolute);
         let command = runtime.server_command().unwrap();
         let args: Vec<_> = command.get_args().collect();
@@ -572,20 +570,27 @@ mod tests {
     }
 
     #[test]
-    fn server_environment_preserves_ssh_and_shell_without_session_overrides() {
-        let mut command = Command::new("unused");
-        command.env_clear();
-        inherit_server_environment(
-            &mut command,
-            [
-                ("SSH_AUTH_SOCK", "/synthetic/ssh-agent.sock"),
-                ("SHELL", "/bin/zsh"),
-                ("TERM", "xterm-256color"),
-                ("CODEX_THREAD_ID", "must-not-inherit"),
-                ("RUST_LOG", "trace"),
-            ]
-            .map(|(name, value)| (name.into(), value.into())),
-        );
+    fn server_command_preserves_ssh_and_shell_without_session_overrides() {
+        if std::env::var("NATIVE_COMMAND_ENV_TEST").as_deref() != Ok("child") {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "runtime::tests::server_command_preserves_ssh_and_shell_without_session_overrides", "--nocapture"])
+                .env("NATIVE_COMMAND_ENV_TEST", "child")
+                .env("SSH_AUTH_SOCK", "/synthetic/ssh-agent.sock")
+                .env("SHELL", "/bin/zsh")
+                .env("TERM", "xterm-256color")
+                .env("CODEX_THREAD_ID", "must-not-inherit")
+                .env("RUST_LOG", "trace")
+                .output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let (root, runtime) = fixture();
+        let command = runtime.server_command().unwrap();
         let values: std::collections::BTreeMap<_, _> = command.get_envs().collect();
         for (name, expected) in [
             ("SSH_AUTH_SOCK", "/synthetic/ssh-agent.sock"),
@@ -594,7 +599,10 @@ mod tests {
         ] {
             assert_eq!(values[std::ffi::OsStr::new(name)].unwrap(), expected);
         }
-        assert_eq!(values.len(), 3);
+        for name in ["CODEX_THREAD_ID", "RUST_LOG", "NATIVE_COMMAND_ENV_TEST"] {
+            assert!(!values.contains_key(std::ffi::OsStr::new(name)));
+        }
+        crate::remove_test_scratch(&root);
     }
 
     #[test]

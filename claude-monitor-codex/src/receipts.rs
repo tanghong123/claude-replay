@@ -104,6 +104,29 @@ impl std::fmt::Display for ActionConflict {
 impl std::error::Error for ActionConflict {}
 
 impl Receipts {
+    /// Count both stores in one SQLite read snapshot, including retired action identities.
+    pub fn usage(&self) -> Result<crate::ReceiptUsage> {
+        let (actions, queue_steers): (i64, i64) = self
+            .0
+            .query_row(
+                "SELECT (SELECT count(*) FROM actions)+(SELECT count(*) FROM retired_actions),
+                    (SELECT count(*) FROM queue_steers)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .context("Count active/retired action and queue-steer identities")?;
+        Ok(crate::ReceiptUsage {
+            action_identities: actions
+                .try_into()
+                .context("Negative native action identity count")?,
+            queue_steer_identities: queue_steers
+                .try_into()
+                .context("Negative native queue-steer identity count")?,
+            limit_per_store: MAX_IDENTITIES as u64,
+            warning_at: (MAX_IDENTITIES * 9 / 10) as u64,
+        })
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -523,8 +546,27 @@ mod tests {
         store
             .claim("existing", "endpoint", "send", &json!({}))
             .unwrap();
+        let initial = store.usage().unwrap();
+        assert_eq!(
+            (initial.action_identities, initial.queue_steer_identities),
+            (1, 0)
+        );
+        assert_eq!(
+            (initial.warning_at, initial.limit_per_store),
+            (90_000, 100_000)
+        );
+        store.0.execute("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n < 89998)
+            INSERT INTO retired_actions SELECT 'old-' || n, 'hash' FROM numbers", []).unwrap();
+        assert_eq!(store.usage().unwrap().action_identities, 89_999);
+        assert!(!store.usage().unwrap().should_warn());
+        store
+            .0
+            .execute("INSERT INTO retired_actions VALUES('old-89999','hash')", [])
+            .unwrap();
+        assert!(store.usage().unwrap().should_warn());
         store.0.execute("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n < ?1)
-            INSERT INTO retired_actions SELECT 'old-' || n, 'hash' FROM numbers", [MAX_IDENTITIES-1]).unwrap();
+            INSERT OR IGNORE INTO retired_actions SELECT 'old-' || n, 'hash' FROM numbers", [MAX_IDENTITIES-1]).unwrap();
+        assert_eq!(store.usage().unwrap().action_identities, 100_000);
         assert!(store
             .claim("new", "endpoint", "send", &json!({}))
             .unwrap_err()
@@ -545,6 +587,14 @@ mod tests {
             .claim_queue_steer("endpoint", "t", "new", "new-action")
             .unwrap_err()
             .is::<ReceiptCapacity>());
+        store.0.execute("DELETE FROM actions", []).unwrap();
+        store.0.execute("DELETE FROM retired_actions", []).unwrap();
+        let queued = store.usage().unwrap();
+        assert_eq!(
+            (queued.action_identities, queued.queue_steer_identities),
+            (0, 100_000)
+        );
+        assert!(queued.should_warn());
         drop(store);
         crate::remove_test_scratch(&root);
     }

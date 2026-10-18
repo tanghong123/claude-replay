@@ -5,51 +5,29 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+const TOKEN_NAME: &str = "codex-server.token";
+
 // Deliberately has no Debug/Display implementation: credentials must not enter diagnostics.
 pub(super) struct ServerToken(String);
 
 impl ServerToken {
     pub fn path(receipts: &Path) -> Result<PathBuf> {
+        crate::validate_state_path(receipts)?;
         Ok(receipts
             .parent()
             .context("Receipt database needs a state directory")?
-            .join("codex-server.token"))
+            .join(TOKEN_NAME))
     }
 
     pub fn load_or_create(receipts: &Path) -> Result<Self> {
         let path = Self::path(receipts)?;
         let parent = path.parent().expect("token has a state directory");
-        let mut directories = fs::DirBuilder::new();
-        directories.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            directories.mode(0o700);
-        }
-        directories
-            .create(parent)
-            .with_context(|| format!("Create native credential directory {}", parent.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            let metadata = fs::symlink_metadata(parent).with_context(|| {
-                format!("Inspect native credential directory {}", parent.display())
-            })?;
-            if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
-                bail!(
-                    "Native credential directory {} must be a real directory owned by this user",
-                    parent.display()
-                );
-            }
-            // Existing owner-controlled state directories may have inherited umask 002.
-            fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).with_context(|| {
-                format!("Restrict native credential directory {}", parent.display())
-            })?;
-        }
-        match Self::read(&path) {
+        let directory = CredentialDirectory::open(parent)?;
+        directory.restrict()?;
+        match Self::read(&directory) {
             Ok(token) => {
-                // Another creator may have linked this file but not synced the directory yet.
-                sync_directory(parent)?;
+                // A concurrent creator may have linked the file but not synced yet.
+                directory.sync()?;
                 return Ok(token);
             }
             Err(error)
@@ -58,8 +36,7 @@ impl ServerToken {
                     .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {}
             Err(error) => return Err(error),
         }
-        // The filename nonce is independent of the secret; directory listings must
-        // not reveal even a prefix of the credential.
+        // Directory listings must not reveal even a prefix of the credential.
         let mut random = [0_u8; 48];
         File::open("/dev/urandom")?.read_exact(&mut random)?;
         let value: String = random[..32]
@@ -70,45 +47,28 @@ impl ServerToken {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        // Publish only a fully written token. Concurrent Monitors reuse the winner.
-        let temporary = parent.join(format!(".codex-server-token-{nonce}"));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&temporary)
-            .context("Create native credential")?;
+        let temporary = format!(".codex-server-token-{nonce}");
+        let mut file = directory.open_file(&temporary, true)?;
         let publish = (|| -> Result<()> {
             file.write_all(value.as_bytes())?;
             file.sync_all()?;
-            match fs::hard_link(&temporary, &path) {
+            match directory.publish(&temporary) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error).context("Publish native credential"),
-            };
-            // Sync even when another creator won: it may not have synced its link yet.
-            sync_directory(parent)
+            }
+            directory.sync()
         })();
-        fs::remove_file(&temporary).context("Remove temporary native credential")?;
+        directory
+            .remove(&temporary)
+            .context("Remove temporary native credential")?;
         publish?;
-        Self::read(&path)
+        Self::read(&directory)
     }
 
-    fn read(path: &Path) -> Result<Self> {
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-        }
-        let file = options
-            .open(path)
-            .with_context(|| format!("Open native credential {}", path.display()))?;
+    fn read(directory: &CredentialDirectory) -> Result<Self> {
+        let path = directory.path.join(TOKEN_NAME);
+        let file = directory.open_file(TOKEN_NAME, false)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() || metadata.len() != 64 {
             bail!(
@@ -147,15 +107,225 @@ impl ServerToken {
     }
 }
 
-fn sync_directory(path: &Path) -> Result<()> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .with_context(|| format!("Persist native credential directory {}", path.display()))
+/// Pin credential operations to the directory inspected, even if its pathname is replaced.
+struct CredentialDirectory {
+    file: File,
+    path: PathBuf,
+}
+
+impl CredentialDirectory {
+    fn open(path: &Path) -> Result<Self> {
+        let mut directories = fs::DirBuilder::new();
+        directories.recursive(true);
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+            directories.mode(0o700);
+            options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        directories
+            .create(path)
+            .with_context(|| format!("Create native credential directory {}", path.display()))?;
+        let file = options
+            .open(path)
+            .with_context(|| format!("Open native credential directory {}", path.display()))?;
+        Ok(Self {
+            file,
+            path: path.to_owned(),
+        })
+    }
+
+    fn restrict(&self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let metadata = self.file.metadata().with_context(|| {
+                format!(
+                    "Inspect native credential directory {}",
+                    self.path.display()
+                )
+            })?;
+            if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+                bail!(
+                    "Native credential directory {} must be a real directory owned by this user",
+                    self.path.display()
+                );
+            }
+            // File::set_permissions uses this descriptor, not a second pathname lookup.
+            self.file
+                .set_permissions(fs::Permissions::from_mode(0o700))
+                .with_context(|| {
+                    format!(
+                        "Restrict native credential directory {}",
+                        self.path.display()
+                    )
+                })?;
+        }
+        Ok(())
+    }
+
+    fn open_file(&self, name: &str, create: bool) -> Result<File> {
+        #[cfg(unix)]
+        let result = {
+            use std::os::fd::{AsRawFd, FromRawFd};
+            let name = std::ffi::CString::new(name).expect("generated credential basename");
+            let flags = if create {
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL
+            } else {
+                libc::O_RDONLY
+            };
+            // SAFETY: the directory descriptor and NUL-terminated basename remain live.
+            let fd = unsafe {
+                libc::openat(
+                    self.file.as_raw_fd(),
+                    name.as_ptr(),
+                    flags | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                    0o600,
+                )
+            };
+            if fd < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                // SAFETY: openat returned a new owned descriptor; File closes it exactly once.
+                Ok(unsafe { File::from_raw_fd(fd) })
+            }
+        };
+        #[cfg(not(unix))]
+        let result = OpenOptions::new()
+            .read(!create)
+            .write(create)
+            .create_new(create)
+            .open(self.path.join(name));
+        result.with_context(|| format!("Open native credential {}", self.path.join(name).display()))
+    }
+
+    fn publish(&self, temporary: &str) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let name = std::ffi::CString::new(temporary).expect("generated credential basename");
+            // SAFETY: both names are valid basenames relative to the same live directory.
+            if unsafe {
+                libc::linkat(
+                    self.file.as_raw_fd(),
+                    name.as_ptr(),
+                    self.file.as_raw_fd(),
+                    c"codex-server.token".as_ptr(),
+                    0,
+                )
+            } != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        fs::hard_link(self.path.join(temporary), self.path.join(TOKEN_NAME))
+    }
+
+    fn remove(&self, temporary: &str) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let name = std::ffi::CString::new(temporary).expect("generated credential basename");
+            // SAFETY: unlinkat removes only this basename in the live directory, without following links.
+            if unsafe { libc::unlinkat(self.file.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        fs::remove_file(self.path.join(temporary))
+    }
+
+    fn sync(&self) -> Result<()> {
+        supported_directory_sync(self.file.sync_all()).with_context(|| {
+            format!(
+                "Persist native credential directory {}",
+                self.path.display()
+            )
+        })
+    }
+}
+
+fn supported_directory_sync(result: std::io::Result<()>) -> std::io::Result<()> {
+    match result {
+        #[cfg(unix)]
+        Err(error)
+            if error
+                .raw_os_error()
+                .is_some_and(|code| code == libc::EINVAL || code == libc::ENOTSUP) =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn replaced_directory_path_cannot_redirect_permissions_or_credential_operations() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("native-auth-replaced-{}", std::process::id()));
+        crate::remove_test_scratch(&root);
+        let state = root.join("state");
+        let moved = root.join("original");
+        let unrelated = root.join("unrelated");
+        fs::create_dir_all(&unrelated).unwrap();
+        fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o2775)).unwrap();
+        let directory = CredentialDirectory::open(&state).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o775)).unwrap();
+        fs::rename(&state, &moved).unwrap();
+        std::os::unix::fs::symlink(&unrelated, &state).unwrap();
+        directory.restrict().unwrap();
+        let temporary = ".codex-server-token-0123456789abcdef0123456789abcdef";
+        let mut file = directory.open_file(temporary, true).unwrap();
+        file.write_all("a".repeat(64).as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        directory.publish(temporary).unwrap();
+        directory.sync().unwrap();
+        directory.remove(temporary).unwrap();
+        assert_eq!(
+            ServerToken::read(&directory).unwrap().bearer(),
+            ServerToken::fixture().bearer()
+        );
+        assert_eq!(
+            fs::metadata(&moved).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&unrelated).unwrap().permissions().mode() & 0o7777,
+            0o2775
+        );
+        assert_eq!(fs::read_dir(&unrelated).unwrap().count(), 0);
+        assert!(moved.join(TOKEN_NAME).exists());
+        assert!(!moved.join(temporary).exists());
+        crate::remove_test_scratch(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_sync_tolerates_only_unsupported_operations() {
+        for code in [libc::EINVAL, libc::ENOTSUP] {
+            assert!(supported_directory_sync(Err(std::io::Error::from_raw_os_error(code))).is_ok());
+        }
+        for code in [libc::EIO, libc::EACCES, libc::ENOSPC] {
+            assert_eq!(
+                supported_directory_sync(Err(std::io::Error::from_raw_os_error(code)))
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(code)
+            );
+        }
+        assert!(supported_directory_sync(Ok(())).is_ok());
+    }
 
     #[cfg(unix)]
     #[test]
