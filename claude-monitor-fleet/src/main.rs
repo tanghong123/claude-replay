@@ -327,6 +327,12 @@ fn resolve_port(env: &Env) -> Result<(u16, Option<String>)> {
     }
 }
 
+/// The port a health probe names in `Host` (#s150): the monitor's own, which through a forward is
+/// the remote port the tunnel was opened to, not the local end the probe connects to.
+fn probe_authority(local: u16, spec: Option<&Reopen>) -> u16 {
+    spec.map_or(local, |s| s.remote_port)
+}
+
 fn health_json(live: &Mutex<Vec<Live>>) -> String {
     let mut envs = Vec::new();
     if let Ok(mut guard) = live.lock() {
@@ -336,7 +342,10 @@ fn health_json(live: &Mutex<Vec<Live>>) -> String {
                 None => true,
             };
             let code = if forward_up {
-                tunnel::status_code(l.port)
+                tunnel::status_code_as(
+                    l.port,
+                    probe_authority(l.port, l.forward.as_ref().map(|f| &f.spec)),
+                )
             } else {
                 None
             };
@@ -811,6 +820,24 @@ mod tests {
         assert_eq!(env["up"], false);
         assert_eq!(env["why"], "the monitor is not answering");
         assert_eq!(env["url"], format!("http://127.0.0.1:{dead}/"));
+    }
+
+    /// #s150: a probe names the monitor's own port, which through a forward is the remote one the
+    /// tunnel was opened to and on this machine is the port it connects to.
+    #[test]
+    fn a_probe_names_the_monitor_s_own_port() {
+        let spec = Reopen {
+            host: "far".into(),
+            ssh_options: Vec::new(),
+            remote_port: 2727,
+        };
+        assert_eq!(probe_authority(41234, Some(&spec)), 2727, "forwarded");
+        assert_eq!(probe_authority(2727, None), 2727, "this machine");
+        assert_eq!(
+            probe_authority(41234, None),
+            41234,
+            "this machine, another port"
+        );
     }
 
     /// A machine that is simply gone must not be hammered once a tick, and one that comes back must

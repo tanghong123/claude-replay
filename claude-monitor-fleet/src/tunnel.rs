@@ -54,6 +54,8 @@ pub struct Tunnel {
     /// by the kernel when this process ends however it ends.
     _stdin: ChildStdin,
     local_port: u16,
+    /// The monitor's own port on the far side, which its health probe names in `Host` (#s150).
+    remote_port: u16,
 }
 
 /// Why one attempt failed, and with it whether another local port could help.
@@ -174,6 +176,7 @@ impl Tunnel {
             child,
             _stdin: stdin,
             local_port,
+            remote_port,
         };
         if tunnel.wait_until_serving(Duration::from_secs(20)) {
             return Ok(tunnel);
@@ -211,7 +214,7 @@ impl Tunnel {
             if self.child.try_wait().ok().flatten().is_some() {
                 return false;
             }
-            if serves_http(self.local_port) {
+            if status_code_as(self.local_port, self.remote_port).is_some() {
                 return true;
             }
             std::thread::sleep(Duration::from_millis(120));
@@ -260,6 +263,13 @@ pub fn serves_http(port: u16) -> bool {
 
 /// The status code from `GET /` on a loopback port, if it replies like HTTP at all.
 pub fn status_code(port: u16) -> Option<u16> {
+    status_code_as(port, port)
+}
+
+/// [`status_code`] on `port`, naming `authority` as the port in `Host`: through a forward the
+/// local port is not the monitor's own, and the far monitor answers its own authority at once
+/// (#s150), as a local one does for [`status_code`].
+pub fn status_code_as(port: u16, authority: u16) -> Option<u16> {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(400)).ok()?;
     s.set_read_timeout(Some(Duration::from_millis(1500))).ok()?;
@@ -268,7 +278,8 @@ pub fn status_code(port: u16) -> Option<u16> {
     // but the monitor checks any other Host against its trusted hosts before it replies, and that
     // lookup can run `tailscale` (#s148, #s151); with the port its answer (a 401 when paired)
     // comes at once. Connection: close avoids retaining a health-check connection.
-    let request = format!("GET / HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    let request =
+        format!("GET / HTTP/1.0\r\nHost: 127.0.0.1:{authority}\r\nConnection: close\r\n\r\n");
     s.write_all(request.as_bytes()).ok()?;
     let mut head = [0u8; 64];
     let n = s.read(&mut head).ok()?;
@@ -411,6 +422,47 @@ mod tests {
             Some(401),
             "a pairing challenge proves HTTP is available"
         );
+    }
+
+    /// #s150: through a forward the probe connects to the LOCAL port and names the monitor's own,
+    /// remote port in `Host`, so the far monitor answers at once as a local one does.
+    #[test]
+    fn a_forwarded_probe_names_the_remote_monitor_s_port() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let remote = if port == 2727 { 2728 } else { 2727 };
+        let seen = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 128];
+            while !request.ends_with(b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).unwrap();
+                assert!(count > 0, "the probe closed before its request ended");
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            if request
+                .lines()
+                .any(|l| l == format!("Host: 127.0.0.1:{remote}"))
+            {
+                stream
+                    .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                    .unwrap();
+            }
+            request
+        });
+        let status = status_code_as(port, remote);
+        let request = seen.join().unwrap();
+        assert!(
+            request
+                .lines()
+                .any(|l| l == format!("Host: 127.0.0.1:{remote}")),
+            "names the remote port, not the local {port}: {request:?}"
+        );
+        assert_eq!(status, Some(401));
     }
 
     #[test]
