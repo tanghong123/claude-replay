@@ -148,9 +148,9 @@ pub fn listed_hosts(value: &str) -> Vec<String> {
 /// costs one `tailscale` read per half-minute, whatever the rate.
 ///
 /// No request waits on `tailscale` (#s151): the names are read in the background, starting now,
-/// each read bounded by [`TAILSCALE_TIMEOUT`], and a check answers from the last names read. Only
-/// a check in the first [`FIRST_WAIT`] after this call waits for the first read, and no longer; a
-/// read that timed out keeps the names read before it.
+/// each read bounded at 3 s (`TAILSCALE_TIMEOUT`), and a check answers from the last names read.
+/// Only a check in the first 2 s after this call (`FIRST_WAIT`) waits for the first read, and no
+/// longer; a read that timed out keeps the names read before it.
 pub fn trusted_hosts(port: u16) -> claude_replay_html::HostCheck {
     let listed = std::env::var("AGENT_MONITOR_TRUSTED_HOSTS")
         .map(|v| listed_hosts(&v))
