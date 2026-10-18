@@ -75,8 +75,7 @@ The [quoted-user-reply validation cases](../docs/adapter-rendering-validation.md
 contain the complete synthetic examples, exact envelopes, version evidence, and
 positive/negative controls. Their prose and identifiers are invented for public
 documentation; the packaging follows the observed clients. They are not real
-conversations. The implementation landed separately in
-[MR 30504564](https://code.alibaba-inc.com/project-h/claude-replay/codereview/30504564);
+conversations. The implementation shipped in v1.381.0 (commit `60afaed0`);
 the examples themselves are format evidence, not a runtime verification receipt.
 The guide also records key-only capture inventories and a reproduction procedure.
 
