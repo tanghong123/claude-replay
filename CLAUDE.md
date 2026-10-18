@@ -191,8 +191,11 @@ monitor — so the local desktop is byte-for-byte what it was; the case
 why the gate must know the tailnet name (#331): `origin_ok` (the DNS-rebinding and cross-site guard
 every file read and every write asks) knew only the loopback, so a PAIRED phone was told "reading
 local files requires pairing". Both binaries now hand the gate `pair_phone::trusted_hosts(port)`: the
-names this machine's `tailscale serve` relays to THIS port (read lazily, again on a miss at most every
-30 s), plus any `AGENT_MONITOR_TRUSTED_HOSTS` lists — never a `*.ts.net` wildcard. On Linux the gate
+names this machine's `tailscale serve` relays to THIS port, plus any `AGENT_MONITOR_TRUSTED_HOSTS`
+lists — never a `*.ts.net` wildcard. No reply waits on `tailscale` (#s151): the names are read in the
+background from startup and again on a miss at most every 30 s, each read bounded at 3 s and a timed-out
+one keeping the names before it; only a check in the first 2 s waits, for the first read. And the
+verdict is asked only for a request a route answers — a refusal or a public file goes out without it. On Linux the gate
 also admits a VERIFIED same-user loopback peer without the cookie (D3b, `/proc/net/tcp`); macOS cannot
 verify one. `AGENT_MONITOR_TOKEN_ONLY=1` turns that leg off for a paired gate — stricter only — and
 the browser suite sets it on every paired monitor, so a case's unpaired browser is refused on Linux
