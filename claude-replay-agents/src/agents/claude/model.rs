@@ -2801,6 +2801,22 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
                     (created, Some(url)) => {
                         p.url = url;
                         *output = None;
+                        // #s155: what the publish REMOVED from the artifact, as the result
+                        // recorded it — never the input's null-valued `files` keys, which are
+                        // what was asked for. The text never says it, and with the output dropped
+                        // this is all that carries it.
+                        p.removed = tur
+                            .get("files_removed")
+                            .and_then(Value::as_array)
+                            .map(|files| {
+                                files
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .filter(|f| !f.is_empty())
+                                    .map(str::to_string)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                         if created == Some(true) {
                             p.description = tur
                                 .get("warnings")
@@ -3854,6 +3870,7 @@ fn artifact_publish(name: &str, input: &Value) -> Option<Published> {
             )
         },
         icon: artifact_icon(input),
+        removed: Vec::new(), // filled from the result
     })
 }
 
@@ -8600,6 +8617,44 @@ mod tests {
             unknown_tool_result_keys(&serde_json::json!({"after_quickstart": {}, "stdout": "ok"})),
             vec!["after_quickstart"],
             "outside the create shape, after_quickstart is reported"
+        );
+    }
+
+    /// #s155: a publish that removed files from its artifact carries what the RESULT recorded as
+    /// removed, never the input's null-valued `files` keys: here the input asks to remove three
+    /// and the result lists two. A publish whose result lists none carries none. Hand-written.
+    #[test]
+    fn an_artifact_publish_carries_the_files_its_result_says_it_removed() {
+        let jsonl = r#"
+{"type":"user","timestamp":"2026-10-18T10:00:00.000Z","message":{"content":"tidy the deck"}}
+{"type":"assistant","timestamp":"2026-10-18T10:00:01.000Z","message":{"content":[{"type":"tool_use","id":"t1","name":"Artifact","input":{"url":"https://example.test/artifact/x","root":"/w/deck","file_path":"data.json","files":{"data.json":"data.json","old/a.json":null,"old/b.json":null,"old/c.json":null}}}]}}
+{"type":"user","timestamp":"2026-10-18T10:00:02.000Z","toolUseResult":{"url":"https://example.test/artifact/x","path":"/w/deck/data.json","artifact_id":"x","title":"Deck","updated":true,"audience":"private","seq":4,"version":"v4","capabilities":{},"stored":{},"contract":"1.0.0","liveSubscription":"none","files_written":[{"path":"data.json","sha256":"00"}],"files_removed":["old/a.json","old/b.json"],"type":{"url":"https://example.test/types/deck","release":"r1","latest":"r1"},"own_files":["data.json"],"type_files":["artifact-type/index.js"]},"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Updated https://example.test/artifact/x; the own files you did not send were kept."}]}}
+{"type":"assistant","timestamp":"2026-10-18T10:00:03.000Z","message":{"content":[{"type":"tool_use","id":"t2","name":"Artifact","input":{"url":"https://example.test/artifact/x","root":"/w/deck","file_path":"data.json"}}]}}
+{"type":"user","timestamp":"2026-10-18T10:00:04.000Z","toolUseResult":{"url":"https://example.test/artifact/x","path":"/w/deck/data.json","artifact_id":"x","title":"Deck","updated":true,"files_written":[{"path":"data.json","sha256":"00"}]},"message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Updated https://example.test/artifact/x"}]}}
+"#;
+        let blocks = parse(jsonl);
+        let removed: Vec<Vec<String>> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolUse {
+                    name, published, ..
+                } if name == "Artifact" => Some(
+                    published
+                        .as_deref()
+                        .expect("both calls published")
+                        .removed
+                        .clone(),
+                ),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            removed,
+            vec![
+                vec!["old/a.json".to_string(), "old/b.json".to_string()],
+                vec![]
+            ],
+            "the removal is the result's two files, not the input's three; the second removed none"
         );
     }
 

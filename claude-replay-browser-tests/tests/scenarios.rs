@@ -7033,6 +7033,174 @@ fn app_shell_an_artifact_icon_word_is_drawn_as_its_emoji() {
     scenario_an_artifact_icon_word_is_drawn_as_its_emoji(&page.tab, Surface::AppShell);
 }
 
+// ── scenario: an Artifact publish says what it removed (#s155) ────────────────────────────────
+
+/// #s155's fixture: "Deck", an artifact made from a type, republished with a `files` map whose
+/// nulls ask to remove three files; the result (Claude Code 2.1.296) records two as removed. Then
+/// a plain republish that removes nothing. Hand-written: no real ids, URLs or paths.
+fn fixture_artifact_removed(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(6, Shape::default());
+    let url = "https://claude.ai/code/artifact/cccc-s155";
+    let publish = |id: &str, ts: &str, input: serde_json::Value, result: serde_json::Value| {
+        let call = serde_json::json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant", "content": [{"type": "tool_use", "id": id, "name": "Artifact", "input": input}]}});
+        let reply = serde_json::json!({"type": "user", "timestamp": ts, "toolUseResult": result, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": format!("Updated {url}; the own files you did not send were kept.")}]}});
+        format!("{call}\n{reply}\n")
+    };
+    let result = |removed: Option<serde_json::Value>| {
+        let mut r = serde_json::json!({"url": url, "path": "/w/deck/data.json", "artifact_id": "cccc-s155", "title": "Deck", "updated": true, "files_written": [{"path": "data.json", "sha256": "00"}]});
+        if let Some(removed) = removed {
+            r["files_removed"] = removed;
+        }
+        r
+    };
+    jsonl += &user_at(
+        "question 6: tidy the deck's data",
+        "2026-09-01T04:00:00.000Z",
+    );
+    jsonl += &publish(
+        "r1",
+        "2026-09-01T04:00:01.000Z",
+        serde_json::json!({"url": url, "root": "/w/deck", "file_path": "data.json", "title": "Deck", "files": {"data.json": "data.json", "old/a.json": null, "old/b.json": null, "old/c.json": null}}),
+        result(Some(serde_json::json!(["old/a.json", "old/b.json"]))),
+    );
+    jsonl += &publish(
+        "r2",
+        "2026-09-01T04:00:02.000Z",
+        serde_json::json!({"url": url, "root": "/w/deck", "file_path": "data.json", "title": "Deck again"}),
+        result(None),
+    );
+    jsonl += &assistant_at("answer 6: tidied", "2026-09-01T04:00:05.000Z");
+    for i in 7..12u32 {
+        jsonl += &user_at(
+            &format!("question {i}: {}", "lorem ipsum dolor sit amet. ".repeat(6)),
+            &format!("2026-09-01T04:0{}:00.000Z", i - 6),
+        );
+        jsonl += &assistant_at(
+            &format!("answer {i}: {}", "sed do eiusmod tempor. ".repeat(8)),
+            &format!("2026-09-01T04:0{}:05.000Z", i - 6),
+        );
+    }
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture {
+        base,
+        path,
+        turns: 12,
+    }
+}
+
+/// #s155: a publish that REMOVED files from its artifact says so on its card — the count on its
+/// head, as a change's is, and the names in its body — while the republish that removed nothing
+/// carries neither. Neither the link nor the result's prose says it, so before this the removal
+/// showed only in the raw toggle.
+fn scenario_an_artifact_publish_says_what_it_removed(tab: &headless_chrome::Tab, surface: Surface) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    // Each publish's card as [its head's change chips, its body's text], in order.
+    let cards_js = match surface {
+        Surface::Classic => "JSON.stringify([...document.querySelectorAll('#stream .fold')].filter(function (f) { return !!f.querySelector('.fold-h .artifact-link'); }).map(function (f) { return [[...f.querySelectorAll('.fold-h .chip.del')].map(function (c) { return c.textContent; }).join(' '), f.querySelector('.fold-b').textContent]; }))".to_string(),
+        Surface::AppShell => {
+            // The shell folds a publish into its process: the roster's jump opens the chain.
+            eval(tab, "document.getElementById('previewBtn').click(); 'ok'");
+            until(
+                tab,
+                "document.querySelectorAll('#previewBody .artifacts-row .artifacts-jump').length === 1",
+                "the roster to list the artifact",
+                Duration::from_secs(20),
+                "document.getElementById('previewBody').textContent.slice(0, 200)",
+            );
+            eval(tab, "document.querySelector('#previewBody .artifacts-row .artifacts-jump').click(); 'ok'");
+            "JSON.stringify([...document.querySelectorAll('[data-renderer][data-renderer-kind=\"tool\"]')].filter(function (r) { var t = r.querySelector('.renderer-title'); return t && t.textContent === 'Artifact'; }).map(function (r) { return [[...r.querySelectorAll('.renderer-head .renderer-change .del')].map(function (c) { return c.textContent; }).join(' '), (r.querySelector('.renderer-output') || {}).textContent || '']; }))".to_string()
+        }
+    };
+    until(
+        tab,
+        &format!("JSON.parse({cards_js}).length === 2"),
+        "both publishes' cards to render",
+        Duration::from_secs(20),
+        &cards_js,
+    );
+    let cards: serde_json::Value =
+        serde_json::from_str(eval(tab, &cards_js).as_str().unwrap()).unwrap();
+    let removal = &cards[0];
+    assert_eq!(
+        removal[0], "−2 files",
+        "{surface:?}: the publish that removed files counts them on its head: {cards}"
+    );
+    assert!(
+        removal[1]
+            .as_str()
+            .unwrap_or("")
+            .contains("Removed from the artifact: old/a.json, old/b.json"),
+        "{surface:?}: …and names the two the result recorded, not the three the input asked for: {cards}"
+    );
+    assert!(
+        !removal[1].as_str().unwrap_or("").contains("old/c.json"),
+        "{surface:?}: a file the input asked to remove and the result did not is never claimed: {cards}"
+    );
+    assert_eq!(
+        cards[1],
+        serde_json::json!(["", ""]),
+        "{surface:?}: the republish that removed nothing carries neither: {cards}"
+    );
+    artifact_removed_screenshots(tab, surface);
+}
+
+/// `CR_ARTIFACT_SCREENSHOTS=<dir>` saves the removal's card on each page, closed and open, for
+/// the owner to look at (#s155). Off, the case only asserts.
+fn artifact_removed_screenshots(tab: &headless_chrome::Tab, surface: Surface) {
+    use headless_chrome::protocol::cdp::Page;
+    let Some(dir) = std::env::var_os("CR_ARTIFACT_SCREENSHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (card, head) = match surface {
+        Surface::Classic => (
+            "[...document.querySelectorAll('#stream .fold')].find(function (f) { return !!f.querySelector('.fold-h .chip.del'); })",
+            ".fold-h",
+        ),
+        Surface::AppShell => (
+            "[...document.querySelectorAll('[data-renderer]')].find(function (r) { return !!r.querySelector('.renderer-head .renderer-change .del'); })",
+            ".renderer-head",
+        ),
+    };
+    for (want, state) in [("false", "closed"), ("true", "open")] {
+        eval(tab, &format!("(function(){{ var c = {card}, h = c.querySelector('{head}'); if (h.getAttribute('aria-expanded') !== '{want}') h.click(); return 'ok'; }})()"));
+        std::thread::sleep(Duration::from_millis(400));
+        eval(
+            tab,
+            &format!(
+                "(function(){{ {card}.scrollIntoView({{block: 'center'}}); return 'ok'; }})()"
+            ),
+        );
+        std::thread::sleep(Duration::from_millis(600));
+        let png = tab
+            .capture_screenshot(Page::CaptureScreenshotFormatOption::Png, None, None, true)
+            .unwrap();
+        std::fs::write(dir.join(format!("{surface:?}-{state}.png")), png).unwrap();
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_an_artifact_publish_says_what_it_removed() {
+    let _serial = serial();
+    let fx = fixture_artifact_removed("scenario-art-removed-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_an_artifact_publish_says_what_it_removed(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_an_artifact_publish_says_what_it_removed() {
+    let _serial = serial();
+    let fx = fixture_artifact_removed("scenario-art-removed-app");
+    let page = open(Surface::AppShell, &fx, 3097);
+    scenario_an_artifact_publish_says_what_it_removed(&page.tab, Surface::AppShell);
+}
+
 // ── scenario: descending from a fleet row leaves a way back (#143) ────────────────────────────
 
 /// #143: the app shell navigates IN-PAGE, so the way back to a parent is a hint recorded at the
