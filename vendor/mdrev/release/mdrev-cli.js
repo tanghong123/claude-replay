@@ -53,49 +53,73 @@ __export(annotations_exports, {
   listAllAnnotations: () => listAllAnnotations,
   listAnnotations: () => listAnnotations,
   placeAnnotation: () => placeAnnotation,
+  readSidecar: () => readSidecar,
   sidecarPath: () => sidecarPath,
-  updateAnnotation: () => updateAnnotation
+  updateAnnotation: () => updateAnnotation,
+  writeSidecar: () => writeSidecar
 });
-import { mkdir, readFile as readFile2, readdir as readdir2, writeFile as writeFile2, appendFile } from "node:fs/promises";
-import { dirname as dirname2, join as join3, relative as relative2 } from "node:path";
-function sidecarPath(repoRoot, relPath) {
-  return join3(repoRoot, ".mdrev", "annotations", `${relPath}.jsonl`);
+import { mkdir, readFile as readFile2, readdir as readdir2, rename, writeFile as writeFile2, appendFile } from "node:fs/promises";
+import { dirname as dirname2, join as join4, relative as relative2 } from "node:path";
+function sidecarPath(home, relPath) {
+  return join4(notesBase(home), `${relPath}.jsonl`);
 }
-async function ensureNotesIgnored(repoRoot) {
-  const marker = join3(repoRoot, ".mdrev", ".gitignore");
+async function ensureNotesIgnored(home) {
+  if (typeof home !== "string")
+    return;
+  const marker = join4(home, ".mdrev", ".gitignore");
   try {
     await writeFile2(marker, "# mdrev keeps review local; delete this file to commit notes\n*\n", { flag: "wx" });
   } catch {
   }
 }
-async function listAnnotations(repoRoot, relPath) {
-  try {
-    const raw2 = await readFile2(sidecarPath(repoRoot, relPath), "utf8");
-    return raw2.split("\n").filter((l) => l.trim().length > 0).map((l) => JSON.parse(l));
-  } catch {
-    return [];
-  }
+async function listAnnotations(home, relPath) {
+  return await readSidecar(home, relPath) ?? [];
 }
-async function appendAnnotation(repoRoot, relPath, ann) {
+async function readSidecar(home, relPath) {
+  let raw2;
+  try {
+    raw2 = await readFile2(sidecarPath(home, relPath), "utf8");
+  } catch (e) {
+    return e.code === "ENOENT" ? [] : null;
+  }
+  const out = [];
+  for (const l of raw2.split("\n")) {
+    if (!l.trim())
+      continue;
+    try {
+      out.push(JSON.parse(l));
+    } catch {
+    }
+  }
+  return out;
+}
+async function writeSidecar(home, relPath, records) {
+  const file = sidecarPath(home, relPath);
+  await mkdir(dirname2(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  await writeFile2(tmp, records.length > 0 ? records.map((a) => JSON.stringify(a)).join("\n") + "\n" : "", "utf8");
+  await rename(tmp, file);
+}
+async function appendAnnotation(home, relPath, ann) {
   const full = {
     ...ann,
     id: `ann-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     created: (/* @__PURE__ */ new Date()).toISOString()
   };
-  const file = sidecarPath(repoRoot, relPath);
+  const file = sidecarPath(home, relPath);
   await mkdir(dirname2(file), { recursive: true });
-  await ensureNotesIgnored(repoRoot);
+  await ensureNotesIgnored(home);
   await appendFile(file, JSON.stringify(full) + "\n", "utf8");
   return full;
 }
-async function placeAnnotation(repoRoot, relPath, full) {
-  const file = sidecarPath(repoRoot, relPath);
+async function placeAnnotation(home, relPath, full) {
+  const file = sidecarPath(home, relPath);
   await mkdir(dirname2(file), { recursive: true });
-  await ensureNotesIgnored(repoRoot);
+  await ensureNotesIgnored(home);
   await appendFile(file, JSON.stringify(full) + "\n", "utf8");
 }
-async function listAllAnnotations(repoRoot) {
-  const base3 = join3(repoRoot, ".mdrev", "annotations");
+async function listAllAnnotations(home) {
+  const base3 = notesBase(home);
   const out = [];
   const walk = async (dir) => {
     let entries;
@@ -105,12 +129,12 @@ async function listAllAnnotations(repoRoot) {
       return;
     }
     for (const e of entries) {
-      const full = join3(dir, e.name);
+      const full = join4(dir, e.name);
       if (e.isDirectory()) {
         await walk(full);
       } else if (e.name.endsWith(".jsonl")) {
         const path2 = relative2(base3, full).replace(/\.jsonl$/, "");
-        const annotations = await listAnnotations(repoRoot, path2);
+        const annotations = await listAnnotations(home, path2);
         if (annotations.length > 0)
           out.push({ path: path2, annotations });
       }
@@ -120,16 +144,16 @@ async function listAllAnnotations(repoRoot) {
   out.sort((a, b) => a.path.localeCompare(b.path));
   return out;
 }
-async function findAnnotation(repoRoot, id) {
-  for (const { path: path2, annotations } of await listAllAnnotations(repoRoot)) {
+async function findAnnotation(home, id) {
+  for (const { path: path2, annotations } of await listAllAnnotations(home)) {
     const annotation = annotations.find((a) => a.id === id);
     if (annotation)
       return { path: path2, annotation };
   }
   return null;
 }
-async function appendReply(repoRoot, relPath, id, reply) {
-  const all4 = await listAnnotations(repoRoot, relPath);
+async function appendReply(home, relPath, id, reply) {
+  const all4 = await listAnnotations(home, relPath);
   const idx = all4.findIndex((a) => a.id === id);
   if (idx === -1)
     return null;
@@ -139,11 +163,11 @@ async function appendReply(repoRoot, relPath, id, reply) {
     at = new Date(Date.parse(last) + 1).toISOString();
   const full = { ...reply, at };
   all4[idx] = { ...all4[idx], replies: [...all4[idx].replies ?? [], full] };
-  await writeFile2(sidecarPath(repoRoot, relPath), all4.map((a) => JSON.stringify(a)).join("\n") + "\n", "utf8");
+  await writeSidecar(home, relPath, all4);
   return all4[idx];
 }
-async function deleteReply(repoRoot, relPath, id, at) {
-  const all4 = await listAnnotations(repoRoot, relPath);
+async function deleteReply(home, relPath, id, at) {
+  const all4 = await listAnnotations(home, relPath);
   const idx = all4.findIndex((a) => a.id === id);
   if (idx === -1)
     return null;
@@ -151,30 +175,32 @@ async function deleteReply(repoRoot, relPath, id, at) {
   if (!replies.some((r) => r.at === at))
     return null;
   all4[idx] = { ...all4[idx], replies: replies.filter((r) => r.at !== at) };
-  await writeFile2(sidecarPath(repoRoot, relPath), all4.map((a) => JSON.stringify(a)).join("\n") + "\n", "utf8");
+  await writeSidecar(home, relPath, all4);
   return all4[idx];
 }
-async function deleteAnnotation(repoRoot, relPath, id) {
-  const all4 = await listAnnotations(repoRoot, relPath);
+async function deleteAnnotation(home, relPath, id) {
+  const all4 = await listAnnotations(home, relPath);
   const gone = all4.find((a) => a.id === id);
   if (!gone)
     return null;
   const kept = all4.filter((a) => a.id !== id);
-  await writeFile2(sidecarPath(repoRoot, relPath), kept.length > 0 ? kept.map((a) => JSON.stringify(a)).join("\n") + "\n" : "", "utf8");
+  await writeSidecar(home, relPath, kept);
   return gone;
 }
-async function updateAnnotation(repoRoot, relPath, id, patch4) {
-  const all4 = await listAnnotations(repoRoot, relPath);
+async function updateAnnotation(home, relPath, id, patch4) {
+  const all4 = await listAnnotations(home, relPath);
   const idx = all4.findIndex((a) => a.id === id);
   if (idx === -1)
     return null;
   all4[idx] = { ...all4[idx], ...patch4 };
-  await writeFile2(sidecarPath(repoRoot, relPath), all4.map((a) => JSON.stringify(a)).join("\n") + "\n", "utf8");
+  await writeSidecar(home, relPath, all4);
   return all4[idx];
 }
+var notesBase;
 var init_annotations = __esm({
   "packages/core/dist/annotations.js"() {
     "use strict";
+    notesBase = (home) => typeof home === "string" ? join4(home, ".mdrev", "annotations") : home.dir;
   }
 });
 
@@ -368,9 +394,9 @@ var require_format = __commonJS({
 });
 
 // packages/cli/dist/cli.js
-import { homedir as homedir2, hostname as hostname4, userInfo as userInfo4 } from "node:os";
-import { readFileSync as readFileSync5 } from "node:fs";
-import { join as join8 } from "node:path";
+import { homedir as homedir3, hostname as hostname5, userInfo as userInfo4 } from "node:os";
+import { readFileSync as readFileSync6 } from "node:fs";
+import { join as join11 } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { timingSafeEqual } from "node:crypto";
 import { resolve as resolvePath2 } from "node:path";
@@ -438,7 +464,7 @@ function buildRenameMap(log, staged = "") {
   let sha = "";
   let date = 0;
   let lines = [];
-  const flush = () => {
+  const flush2 = () => {
     if (sha)
       steps.push(stepOf(sha, date, lines));
     lines = [];
@@ -446,7 +472,7 @@ function buildRenameMap(log, staged = "") {
   for (const raw2 of log.split("\n")) {
     const head2 = /^([0-9a-f]{40})\t(.+)$/.exec(raw2);
     if (head2) {
-      flush();
+      flush2();
       sha = head2[1];
       date = Date.parse(head2[2]);
       continue;
@@ -454,7 +480,7 @@ function buildRenameMap(log, staged = "") {
     if (raw2.startsWith(":"))
       lines.push(raw2);
   }
-  flush();
+  flush2();
   steps.reverse();
   const stagedLines = staged.split("\n").filter((l) => l.startsWith(":"));
   if (stagedLines.length > 0)
@@ -680,9 +706,59 @@ var GitBlobSource = class {
   bodies = /* @__PURE__ */ new Map();
   /** The rename map (renames.ts), built once per HEAD and index state — one git call for every note. */
   renames = null;
-  constructor(repoRoot) {
+  /**
+   * A BARE COPY AT A BRANCH, or a checkout (#s122; docs/personal-service.md,
+   * "Repositories"). The service keeps one bare copy of a repository and reads
+   * it at the branch a page shows: there is no working tree and no index, and
+   * the copy's own HEAD names whatever branch it was cloned with, which is not
+   * the page's. So in copy mode `head` is the branch's ref and stands wherever
+   * a checkout's code says HEAD; WORKTREE ("as it stands") means that
+   * branch's tip, and so does a revision a host spells from HEAD (`HEAD~2` is
+   * `<branch>~2`); and nothing is ever written into the copy, which is every
+   * reader's.
+   */
+  copyRef;
+  /** What "the current commit" is called: HEAD in a checkout, the branch's ref in a copy. */
+  head;
+  /** The same, for a git command that would otherwise default to HEAD: nothing in a checkout, the ref in a copy. */
+  tip;
+  notesAt;
+  /**
+   * @param opts.ref read a bare copy at this branch (`main`, or a full
+   * `refs/...` name) instead of a checkout; `openCopy` checks both.
+   * @param opts.notes keep notes in this directory, a per-person tree apart
+   * from any checkout (annotations.ts), instead of the checkout's sidecars.
+   */
+  constructor(repoRoot, opts = {}) {
     this.repoRoot = repoRoot;
     this.batch = new CatFile(repoRoot);
+    this.copyRef = opts.ref ? opts.ref.startsWith("refs/") ? opts.ref : `refs/heads/${opts.ref}` : null;
+    this.head = this.copyRef ?? "HEAD";
+    this.tip = this.copyRef ? [this.copyRef] : [];
+    this.notesAt = opts.notes ? { dir: opts.notes } : this.copyRef ? null : repoRoot;
+  }
+  /** Where this repository's notes are kept (annotations.ts): the checkout's sidecars, or the directory given. */
+  get notesHome() {
+    if (this.notesAt === null)
+      throw new GitError("a bare copy keeps no notes: name the directory that holds them (mdrev-cli --notes-dir)");
+    return this.notesAt;
+  }
+  /** The branch a copy is read at, as a full ref, or null for a checkout. */
+  get copyBranch() {
+    return this.copyRef;
+  }
+  /** In a copy, its branch for WORKTREE and for a revision spelled from HEAD; anything else as given. */
+  standing(rev) {
+    if (!this.copyRef)
+      return rev;
+    if (rev === WORKTREE2)
+      return this.copyRef;
+    return /^HEAD(?=$|[~^])/.test(rev) ? this.copyRef + rev.slice(4) : rev;
+  }
+  /** What a copy answers to a command that writes into a working tree: there is none, and the copy is not ours. */
+  noWorkTree() {
+    if (this.copyRef)
+      throw new GitError("a bare copy has no working tree, and is every reader's: nothing is written into it");
   }
   async git(...args) {
     try {
@@ -700,8 +776,9 @@ var GitBlobSource = class {
    * that reads the machine-local reflog and answers a different question.
    */
   async resolve(spec) {
-    if (spec === WORKTREE2)
+    if (spec === WORKTREE2 && !this.copyRef)
       return { rev: WORKTREE2 };
+    spec = this.standing(spec);
     if (spec === EMPTY)
       return { rev: EMPTY };
     let sha;
@@ -716,7 +793,7 @@ var GitBlobSource = class {
       if (!await this.readsAsDate(spec)) {
         throw new GitError(`'${spec}' is neither a revision this repository has nor a date git can read`);
       }
-      sha = (await this.git("rev-list", "-1", `--before=${spec}`, "HEAD")).trim() || void 0;
+      sha = (await this.git("rev-list", "-1", `--before=${spec}`, this.head)).trim() || void 0;
       if (!sha)
         throw new GitError(`no commit found for spec '${spec}' (not a rev, and no commit at or before that date)`);
     }
@@ -756,6 +833,7 @@ var GitBlobSource = class {
   async readBlob(rev, path2) {
     if (rev === EMPTY)
       return "";
+    rev = this.standing(rev);
     if (rev === WORKTREE2)
       return readFile(join(this.repoRoot, path2), "utf8");
     const name = await this.nameAt(rev, path2) ?? path2;
@@ -906,12 +984,12 @@ var GitBlobSource = class {
     const mark3 = await this.repoMark();
     if (this.renames && mark3 !== null && this.renames.mark === mark3)
       return this.renames;
-    const head2 = (await this.git("rev-parse", "HEAD").catch(() => "")).trim();
-    const staged = await this.git("diff", "--cached", "--raw", "--no-abbrev", "-M", "HEAD", "--", "*.md").catch(() => "");
+    const head2 = (await this.git("rev-parse", this.head).catch(() => "")).trim();
+    const staged = this.copyRef ? "" : await this.git("diff", "--cached", "--raw", "--no-abbrev", "-M", "HEAD", "--", "*.md").catch(() => "");
     const key2 = `${head2}
 ${staged}`;
     if (this.renames?.key !== key2) {
-      const log = this.git("log", "--first-parent", "--raw", "--no-abbrev", "-M", "--format=%H%x09%aI", "--", "*.md").catch(() => "");
+      const log = this.git("log", "--first-parent", "--raw", "--no-abbrev", "-M", "--format=%H%x09%aI", ...this.tip, "--", "*.md").catch(() => "");
       this.renames = { key: key2, mark: mark3 ?? "", map: log.then((out) => buildRenameMap(out, staged)), named: /* @__PURE__ */ new Map() };
     } else {
       this.renames.mark = mark3 ?? "";
@@ -938,7 +1016,7 @@ ${staged}`;
       return null;
     let head2;
     try {
-      head2 = (await readFile(join(dirs.dir, "HEAD"), "utf8")).trim();
+      head2 = this.copyRef ? `ref: ${this.copyRef}` : (await readFile(join(dirs.dir, "HEAD"), "utf8")).trim();
     } catch {
       return null;
     }
@@ -955,7 +1033,7 @@ ${staged}`;
   }
   /** Every commit on the first-parent chain, oldest first, and its position; one call per HEAD. */
   trunkPositions(cache) {
-    cache.trunk ??= this.git("rev-list", "--first-parent", "--reverse", "HEAD").catch(() => "").then((out) => {
+    cache.trunk ??= this.git("rev-list", "--first-parent", "--reverse", this.head).catch(() => "").then((out) => {
       const shas = out.split("\n").map((l) => l.trim()).filter(Boolean);
       return { shas, at: new Map(shas.map((sha, i) => [sha, i])) };
     });
@@ -967,7 +1045,7 @@ ${staged}`;
   async commitsFor(path2) {
     const format = "--format=%H%x09%aI%x09%an%x09%s";
     if (path2 === ".") {
-      const out2 = await this.git("log", format, "--", "*.md");
+      const out2 = await this.git("log", format, ...this.tip, "--", "*.md");
       return out2.split("\n").filter((line) => line.length > 0).map(parseCommitLine);
     }
     const map3 = await this.renameMap();
@@ -978,7 +1056,7 @@ ${staged}`;
       const until = w.until === null ? null : map3.steps[w.until].sha;
       if (since === "INDEX")
         continue;
-      const top = until === null || until === "INDEX" ? "HEAD" : until;
+      const top = until === null || until === "INDEX" ? this.head : until;
       const range = since === null ? top : `${since}^1..${top}`;
       const text9 = await this.git("log", format, range, "--", w.name).catch(() => "");
       for (const line of text9.split("\n")) {
@@ -1031,6 +1109,10 @@ ${staged}`;
    * stays out.
    */
   async documents() {
+    if (this.copyRef) {
+      const tree = await this.git("ls-tree", "-r", "--name-only", this.copyRef);
+      return [...new Set(tree.split("\n").filter((p2) => p2.endsWith(".md")))].sort();
+    }
     const out = await this.git("ls-files", "--cached", "--others", "--exclude-standard", "--", "*.md", "**/*.md");
     return [...new Set(out.split("\n").filter(Boolean))].sort();
   }
@@ -1063,6 +1145,8 @@ ${staged}`;
    * rendering moves); only the LIST beside it changes its question.
    */
   async changedFiles(fromRev, toRev, since) {
+    toRev = this.standing(toRev);
+    fromRev = this.standing(fromRev);
     const fromStart = fromRev === EMPTY;
     if (fromStart)
       fromRev = await this.emptyTree();
@@ -1106,7 +1190,7 @@ ${staged}`;
    * change is newer than anything committed, and no `--since` can find it.
    */
   async changedSince(since, toRev, diffed, untracked) {
-    const end = toRev === WORKTREE2 ? "HEAD" : toRev;
+    const end = toRev === WORKTREE2 ? this.head : toRev;
     const when = /* @__PURE__ */ new Map();
     const newest = /* @__PURE__ */ new Map();
     const oldest = /* @__PURE__ */ new Map();
@@ -1191,7 +1275,7 @@ ${staged}`;
    */
   async recentlyChanged(atRev) {
     const now = Math.floor(Date.now() / 1e3);
-    const pinned = atRev && atRev !== WORKTREE2 && atRev !== EMPTY ? atRev : null;
+    const pinned = atRev && atRev !== WORKTREE2 && atRev !== EMPTY ? this.standing(atRev) : null;
     let anchor = now;
     let anchorSha = "";
     if (pinned) {
@@ -1203,7 +1287,7 @@ ${staged}`;
       anchor = Number(ct) || now;
     }
     const window = RECENT_DAYS * 86400;
-    const walk = (since) => this.git("log", since, `--until=@${pinned ? anchor + window : now}`, "--format=%x00%ct %H", "--name-status", "--find-renames", "HEAD", "--", "*.md");
+    const walk = (since) => this.git("log", since, `--until=@${pinned ? anchor + window : now}`, "--format=%x00%ct %H", "--name-status", "--find-renames", this.head, "--", "*.md");
     let log = "";
     try {
       log = await walk(`--since-as-filter=@${anchor - window}`);
@@ -1229,7 +1313,7 @@ ${staged}`;
       const status = parts[0][0];
       seen.set(path2, { path: path2, status, at, side: pinned && at > anchor ? "after" : "before" });
     }
-    if (!pinned) {
+    if (!pinned && !this.copyRef) {
       const dirty = await this.git("diff", "--name-only", "HEAD", "--", "*.md").catch(() => "");
       const born = await this.git("ls-files", "--others", "--exclude-standard", "--", "*.md", "**/*.md").catch(() => "");
       for (const [list4, status] of [
@@ -1260,7 +1344,7 @@ ${staged}`;
    * so the whole history up to the other end is the range.
    */
   async touchedAt(fromRev, toRev) {
-    const end = toRev === WORKTREE2 ? "HEAD" : toRev;
+    const end = toRev === WORKTREE2 ? this.head : toRev;
     const when = /* @__PURE__ */ new Map();
     let log;
     try {
@@ -1299,6 +1383,10 @@ ${staged}`;
    * so a rebase that drops the commit does not take the snapshot with it.
    */
   async snapshotBlob(path2, rev) {
+    if (this.copyRef) {
+      const sha = (await this.git("rev-parse", "--verify", "--quiet", `${this.standing(rev ?? WORKTREE2)}:${path2}`).catch(() => "")).trim();
+      return sha || void 0;
+    }
     try {
       const sha = (rev && rev !== WORKTREE2 ? await this.git("rev-parse", "--verify", "--quiet", `${rev}:${path2}`) : await this.git("hash-object", "-w", "--", path2)).trim();
       if (!sha)
@@ -1325,7 +1413,8 @@ ${staged}`;
    * WORKTREE sentinel itself, since only it knows whether that is in scope.
    */
   async revsBetween(fromRev, toRev) {
-    const to = toRev === WORKTREE2 ? "HEAD" : toRev;
+    const to = toRev === WORKTREE2 ? this.head : this.standing(toRev);
+    fromRev = this.standing(fromRev);
     if (fromRev === EMPTY) {
       const all4 = await this.git("rev-list", to);
       return new Set(all4.split("\n").filter(Boolean));
@@ -1337,6 +1426,7 @@ ${staged}`;
   }
   /** Write the working-tree copy of a file. */
   async writeBlob(path2, text9) {
+    this.noWorkTree();
     await writeFile(join(this.repoRoot, path2), text9, "utf8");
   }
   /**
@@ -1361,6 +1451,8 @@ ${staged}`;
    * keeps publishing notes with every push and nothing says so.
    */
   async trackedNotes() {
+    if (this.copyRef)
+      return [];
     try {
       const out = (await this.git("ls-files", "-z", "--", ".mdrev")).trim();
       return out.length === 0 ? [] : out.split("\0").filter(Boolean);
@@ -1376,6 +1468,7 @@ ${staged}`;
    * deliberately, because a commit in somebody's repository is theirs to make.
    */
   async untrackNotes() {
+    this.noWorkTree();
     const tracked = await this.trackedNotes();
     if (tracked.length === 0)
       return [];
@@ -1384,6 +1477,8 @@ ${staged}`;
   }
   /** Paths with staged changes, so a repair never sweeps up somebody's work. */
   async stagedPaths() {
+    if (this.copyRef)
+      return [];
     try {
       const out = (await this.git("diff", "--cached", "--name-only", "-z")).trim();
       return out.length === 0 ? [] : out.split("\0").filter(Boolean);
@@ -1392,10 +1487,20 @@ ${staged}`;
     }
   }
   async commit(message) {
+    this.noWorkTree();
     await this.git("commit", "-q", "-m", message);
     return (await this.git("rev-parse", "HEAD")).trim();
   }
   async relPath(absOrRelPath) {
+    if (this.copyRef) {
+      const rel2 = absOrRelPath.replace(/^(\.\/)+/, "");
+      if (rel2.length === 0 || rel2.startsWith("/") || rel2.split("/").includes(".."))
+        throw new GitError(`'${absOrRelPath}' is not a path in the repository`);
+      const there = await this.git("cat-file", "-e", `${this.copyRef}:${rel2}`).then(() => true, () => false);
+      if (!there)
+        throw new GitError(`'${rel2}' does not exist on ${this.copyRef.replace(/^refs\/heads\//, "")}`);
+      return rel2;
+    }
     const out = (await this.git("ls-files", "--full-name", "--", absOrRelPath)).trim();
     if (out)
       return out.split("\n")[0];
@@ -1416,8 +1521,11 @@ function parseCommitLine(line) {
 var FileSource = class {
   repoRoot;
   isGit = false;
+  /** Beside the file, as a checkout's are (annotations.ts). */
+  notesHome;
   constructor(repoRoot) {
     this.repoRoot = repoRoot;
+    this.notesHome = repoRoot;
   }
   async resolve(spec) {
     if (spec === EMPTY)
@@ -1528,6 +1636,15 @@ var FileSource = class {
     return basename(absOrRelPath);
   }
 };
+async function openCopy(dir, ref, notesDir) {
+  const ask2 = (...args) => run("git", args, { cwd: dir }).then((r) => r.stdout.trim(), () => "");
+  if (await ask2("rev-parse", "--is-bare-repository") !== "true")
+    throw new GitError(`${dir} is not a bare repository: a copy is a bare clone (git clone --bare)`);
+  const full = ref.startsWith("refs/") ? ref : `refs/heads/${ref}`;
+  if (!await ask2("rev-parse", "--verify", "--quiet", `${full}^{commit}`))
+    throw new GitError(`${dir} has no branch '${ref}'`);
+  return new GitBlobSource(dir, { ref: full, ...notesDir ? { notes: notesDir } : {} });
+}
 async function openRepo(path2) {
   try {
     const { stdout } = await run("git", ["rev-parse", "--show-toplevel"], { cwd: path2 });
@@ -1539,13 +1656,40 @@ async function openRepo(path2) {
 
 // packages/core/dist/notify.js
 import { spawn as spawn2 } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { delimiter, dirname, isAbsolute, join as join2 } from "node:path";
+import { readdirSync, statSync } from "node:fs";
+
+// packages/core/dist/project-file.js
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join as join2 } from "node:path";
+var copies = /* @__PURE__ */ new Map();
+function useCopyPointer(dir, ref) {
+  if (ref)
+    copies.set(dir, ref.startsWith("refs/") ? ref : `refs/heads/${ref}`);
+  else
+    copies.delete(dir);
+}
+var isCopy = (root5) => copies.has(root5);
+function projectFileName(root5, name) {
+  const ref = copies.get(root5);
+  return ref ? `${name} on ${ref.replace(/^refs\/heads\//, "")} in ${root5}` : join2(root5, name);
+}
+function readProjectFile(root5, name) {
+  const ref = copies.get(root5);
+  try {
+    return ref ? execFileSync("git", [`--git-dir=${root5}`, "show", `${ref}:${name}`], { stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1024 * 1024 }).toString("utf8") : readFileSync(join2(root5, name), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// packages/core/dist/notify.js
+import { delimiter, dirname, isAbsolute, join as join3 } from "node:path";
 var CHANNEL_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 function readNotify(root5) {
   let doc;
   try {
-    doc = JSON.parse(readFileSync(join2(root5, ".mdrev.json"), "utf8"));
+    doc = JSON.parse(readProjectFile(root5, ".mdrev.json") ?? "");
   } catch {
     return { channels: [], refused: [] };
   }
@@ -1580,7 +1724,7 @@ function launcherDirs(script = process.argv[1] ?? "") {
   const dirs = [];
   const brew = /^(.*)\/Cellar\/[^/]+\/[^/]+\/libexec\//.exec(script);
   if (brew)
-    dirs.push(join2(brew[1], "bin"));
+    dirs.push(join3(brew[1], "bin"));
   dirs.push(dirname(script));
   return dirs;
 }
@@ -1597,7 +1741,7 @@ function toolFor(name, path2 = process.env.PATH ?? "", script) {
   if (!CHANNEL_NAME.test(name))
     return null;
   for (const dir of toolDirs(path2, script)) {
-    const at = join2(dir, `mdrev-notify-${name}`);
+    const at = join3(dir, `mdrev-notify-${name}`);
     if (executable(at))
       return at;
   }
@@ -1614,7 +1758,7 @@ function channelsHere(path2 = process.env.PATH ?? "", script) {
     }
     for (const n of names) {
       const name = n.startsWith("mdrev-notify-") ? n.slice("mdrev-notify-".length) : "";
-      if (CHANNEL_NAME.test(name) && name !== "none" && executable(join2(dir, n)))
+      if (CHANNEL_NAME.test(name) && name !== "none" && executable(join3(dir, n)))
         found.add(name);
     }
   }
@@ -1725,9 +1869,9 @@ function isPlainObject(value2) {
 // node_modules/trough/lib/index.js
 function trough() {
   const fns = [];
-  const pipeline = { run: run4, use };
+  const pipeline = { run: run5, use };
   return pipeline;
-  function run4(...values) {
+  function run5(...values) {
     let middlewareIndex = -1;
     const callback = values.pop();
     if (typeof callback !== "function") {
@@ -2098,9 +2242,9 @@ var VFile = class {
    * @returns {undefined}
    *   Nothing.
    */
-  set dirname(dirname5) {
+  set dirname(dirname6) {
     assertPath(this.basename, "dirname");
-    this.path = default2.join(dirname5 || "", this.basename);
+    this.path = default2.join(dirname6 || "", this.basename);
   }
   /**
    * Get the extname (including dot) (example: `'.js'`).
@@ -15860,7 +16004,7 @@ function parseEntities(value2, options) {
         }
       }
       if (reference) {
-        flush();
+        flush2();
         previous5 = now();
         index2 = end - 1;
         column += end - start + 1;
@@ -15889,7 +16033,7 @@ function parseEntities(value2, options) {
         column = 0;
       }
       if (Number.isNaN(character)) {
-        flush();
+        flush2();
       } else {
         queue += String.fromCharCode(character);
         column++;
@@ -15918,7 +16062,7 @@ function parseEntities(value2, options) {
       );
     }
   }
-  function flush() {
+  function flush2() {
     if (queue) {
       result.push(queue);
       if (settings.text) {
@@ -17588,6 +17732,15 @@ function wrapped(type, inner, span2, innerSpan, like) {
     node2.position = position4;
   return node2;
 }
+function tildesInAName(value2, i, j, inner) {
+  const from = i - (/\S*$/.exec(value2.slice(0, i))?.[0].length ?? 0);
+  const space2 = value2.slice(j).search(/\s/);
+  const word = value2.slice(from, space2 < 0 ? value2.length : j + space2);
+  if (/[/\\]/.test(word))
+    return true;
+  const wordy = /[\p{L}\p{N}]/u;
+  return wordy.test(value2[i - 1] ?? "") && wordy.test(value2[j] ?? "") && !new RegExp("^\\p{N}+$", "u").test(inner) && [...inner].length > 1;
+}
 function splitText(node2) {
   const value2 = node2.value;
   INLINE.lastIndex = 0;
@@ -17605,6 +17758,8 @@ function splitText(node2) {
     const i = m.index;
     const whole = m[0];
     const j = i + whole.length;
+    if (m[5] !== void 0 && tildesInAName(value2, i, j, m[5]))
+      continue;
     if (i > last)
       out.push(textNode(value2.slice(last, i), at(last, i), node2));
     if (m[2] !== void 0) {
@@ -18516,7 +18671,7 @@ function delChildren(tokens, pieces) {
   const out = [];
   let buf = "";
   let bufFrom = null;
-  const flush = () => {
+  const flush2 = () => {
     if (buf) {
       const at = bufFrom ? positionOf(bufFrom.piece.node) : null;
       const exact = at !== null && bufFrom !== null && at.end - at.start === bufFrom.piece.end - bufFrom.piece.start;
@@ -18533,18 +18688,18 @@ function delChildren(tokens, pieces) {
     const piece = pieces[p2];
     if (t.text === ATOMIC || t.key !== (isWs(t) ? " " : t.text)) {
       if (piece && piece.kind === "atomic") {
-        flush();
+        flush2();
         out.push(deepClone(piece.node));
         continue;
       }
     }
     if (bufFrom && piece && bufFrom.piece !== piece)
-      flush();
+      flush2();
     if (!bufFrom && piece && piece.kind === "text")
       bufFrom = { piece, local: t.start - piece.start };
     buf += t.text;
   }
-  flush();
+  flush2();
   return out;
 }
 function positionOf(node2) {
@@ -18802,7 +18957,7 @@ function collapseRegions(parts, landsTopLevel) {
   const marked = (p2) => Boolean(p2 && (p2.added || p2.removed));
   const out = [];
   let from = 0;
-  const flush = (to) => {
+  const flush2 = (to) => {
     const seg = parts.slice(from, to);
     let last = seg.length - 1;
     while (last >= 0 && !marked(seg[last]))
@@ -18842,12 +18997,12 @@ function collapseRegions(parts, landsTopLevel) {
   for (let i = 0; i < parts.length; i++) {
     const p2 = parts[i];
     if (!marked(p2) && (realWords(p2.value) >= REGION_GAP || sentenceLandmark(p2.value, parts[i + 1]?.value[0]))) {
-      flush(i);
+      flush2(i);
       out.push(p2);
       from = i + 1;
     }
   }
-  flush(parts.length);
+  flush2(parts.length);
   return out;
 }
 var TERMINAL = /^[.!?]$/;
@@ -19065,15 +19220,15 @@ function similarity(a, b) {
 }
 function coalesceRewriteRuns(ops, aInfos, bInfos) {
   const out = [];
-  let run4 = [];
+  let run5 = [];
   const changed = (op) => op.op === "del" || op.op === "ins" || op.op === "pair" && aInfos[op.i].text !== bInfos[op.j].text;
-  const flush = () => {
-    if (run4.length === 0)
+  const flush2 = () => {
+    if (run5.length === 0)
       return;
     const aIdx = [];
     const bIdx = [];
-    let coalescable = run4.length > 1;
-    for (const op of run4) {
+    let coalescable = run5.length > 1;
+    for (const op of run5) {
       if (op.op === "pair") {
         aIdx.push(op.i);
         bIdx.push(op.j);
@@ -19094,35 +19249,35 @@ function coalesceRewriteRuns(ops, aInfos, bInfos) {
       const bText = bIdx.map((j) => bInfos[j].text).join(" ");
       if (Math.max(aText.length, bText.length) >= RUN_MIN_LEN && isRegionRewrite(textShape(aText, bText))) {
         out.push({ op: "rewrite", aIdx, bIdx });
-        run4 = [];
+        run5 = [];
         return;
       }
     }
-    out.push(...run4);
-    run4 = [];
+    out.push(...run5);
+    run5 = [];
   };
   for (const op of ops) {
     if (changed(op))
-      run4.push(op);
+      run5.push(op);
     else {
-      flush();
+      flush2();
       out.push(op);
     }
   }
-  flush();
+  flush2();
   return out;
 }
 function alignOps(a, b) {
-  const same = (x, y) => x.type === y.type && x.text === y.text;
+  const same2 = (x, y) => x.type === y.type && x.text === y.text;
   const ops = [];
   let lo = 0;
-  while (lo < a.length && lo < b.length && same(a[lo], b[lo])) {
+  while (lo < a.length && lo < b.length && same2(a[lo], b[lo])) {
     ops.push({ op: "pair", i: lo, j: lo });
     lo++;
   }
   let hiA = a.length;
   let hiB = b.length;
-  while (hiA > lo && hiB > lo && same(a[hiA - 1], b[hiB - 1])) {
+  while (hiA > lo && hiB > lo && same2(a[hiA - 1], b[hiB - 1])) {
     hiA--;
     hiB--;
   }
@@ -22316,7 +22471,7 @@ function walkWordDiff(before, after) {
   };
   let removed = "";
   let added = "";
-  const flush = () => {
+  const flush2 = () => {
     if (removed && added) {
       for (const part of diffWordsWithSpace(removed, added))
         emit(part.added ? "ins" : part.removed ? "del" : "same", part.value);
@@ -22333,11 +22488,11 @@ function walkWordDiff(before, after) {
     else if (part.added)
       added += part.value;
     else {
-      flush();
+      flush2();
       emit("same", part.value);
     }
   }
-  flush();
+  flush2();
   return steps;
 }
 function textHunks(before, after) {
@@ -22466,7 +22621,7 @@ function mergeDiagramLabels(before, after) {
       return null;
     let k = 0;
     let tooLong = false;
-    const join9 = (from, to) => {
+    const join12 = (from, to) => {
       const body3 = markChangedWords(from.trim(), to.trim());
       if (body3.split(LABEL_SEAM).join("").length > MAX_MERGED_LABEL)
         tooLong = true;
@@ -22479,7 +22634,7 @@ function mergeDiagramLabels(before, after) {
       }
       changed++;
       const i2 = colonAt(lineB);
-      const body3 = join9(was[0], now[0]);
+      const body3 = join12(was[0], now[0]);
       const line2 = `${lineB.slice(0, i2 + 1)} ${grammar === "quoted-colon" ? `"${body3.replace(/"/g, "'")}"` : body3}`;
       if (tooLong)
         return null;
@@ -22498,7 +22653,7 @@ function mergeDiagramLabels(before, after) {
         if (id)
           nodes.add(id[1]);
       }
-      return `${open}"${join9(from, to).replace(/"/g, "'")}"${close2}`;
+      return `${open}"${join12(from, to).replace(/"/g, "'")}"${close2}`;
     });
     if (tooLong)
       return null;
@@ -32317,17 +32472,17 @@ function sanitizeUrls(node2) {
 function htmlUnits(root5) {
   const units = [];
   const walk = (node2) => {
-    let run4 = null;
+    let run5 = null;
     for (const raw2 of node2.children ?? []) {
       const child = raw2;
       if (child.type === "html" && typeof child.value === "string") {
-        if (run4)
-          run4.push(child);
+        if (run5)
+          run5.push(child);
         else
-          units.push(run4 = [child]);
+          units.push(run5 = [child]);
         continue;
       }
-      run4 = null;
+      run5 = null;
       walk(child);
     }
   };
@@ -32705,19 +32860,40 @@ function renderPlain(src, opts = {}) {
 // packages/core/dist/notes.js
 init_annotations();
 import { unlink } from "node:fs/promises";
-import { hostname as hostname2, userInfo as userInfo2 } from "node:os";
+import { hostname as hostname3, userInfo as userInfo2 } from "node:os";
+
+// packages/core/dist/agents.js
+import { hostname } from "node:os";
+var HARNESSES = [{ name: "claude", vars: ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"] }];
+function harnessHere(env2 = process.env) {
+  const named = env2.MDREV_AGENT?.trim();
+  if (named)
+    return named;
+  for (const h2 of HARNESSES)
+    if (h2.vars.some((v) => env2[v]))
+      return h2.name;
+  return null;
+}
+var thisHost = () => hostname().split(".")[0] || hostname();
+function agentMark(env2 = process.env) {
+  const name = harnessHere(env2);
+  return { ...name ? { name } : {}, host: thisHost() };
+}
+function agentLabel(a) {
+  return `${a.name ?? "an agent"} on ${a.host}`;
+}
 
 // packages/core/dist/shared.js
 init_annotations();
 import { spawn as spawn5 } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync as mkdirSync2, readFileSync as readFileSync3, readdirSync as readdirSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync3, unlinkSync as unlinkSync2, writeFileSync } from "node:fs";
-import { homedir, hostname, userInfo } from "node:os";
-import { basename as basename2, join as join6 } from "node:path";
+import { homedir, hostname as hostname2, userInfo } from "node:os";
+import { basename as basename2, join as join7 } from "node:path";
 
 // packages/core/dist/events.js
 import { appendFileSync, mkdirSync, readdirSync as readdirSync2, readFileSync as readFileSync2, renameSync, statSync as statSync2, unlinkSync } from "node:fs";
-import { join as join4 } from "node:path";
+import { join as join5 } from "node:path";
 var EVENTS_FILE = "events.jsonl";
 var EVENTS_MAX_BYTES = 1e6;
 var EVENTS_KEEP = 2;
@@ -32761,14 +32937,14 @@ function rotate(stateDir, file) {
   if (size < EVENTS_MAX_BYTES)
     return;
   try {
-    renameSync(file, join4(stateDir, `events.${Date.now()}.jsonl`));
+    renameSync(file, join5(stateDir, `events.${Date.now()}.jsonl`));
   } catch {
     return;
   }
   const archives = readdirSync2(stateDir).filter((f) => ARCHIVE.test(f)).sort((a, b) => Number(ARCHIVE.exec(b)[1]) - Number(ARCHIVE.exec(a)[1]));
   for (const old of archives.slice(EVENTS_KEEP)) {
     try {
-      unlinkSync(join4(stateDir, old));
+      unlinkSync(join5(stateDir, old));
     } catch {
     }
   }
@@ -32781,7 +32957,7 @@ function appendEvent(stateDir, line) {
       text9 = JSON.stringify({ at, from, v, pid, via, was, kind, cut: true });
     }
     mkdirSync(stateDir, { recursive: true, mode: 448 });
-    const file = join4(stateDir, EVENTS_FILE);
+    const file = join5(stateDir, EVENTS_FILE);
     rotate(stateDir, file);
     appendFileSync(file, `${text9}
 `, { encoding: "utf8", mode: 384 });
@@ -32828,6 +33004,25 @@ function matches(email, server) {
   if (user.includes("@"))
     return user === e;
   return e.split("@")[0] === user;
+}
+function linkedCredential() {
+  const user = process.env.MDREV_GIT_USER?.trim();
+  const token = process.env.MDREV_GIT_TOKEN;
+  return user && token ? { user, token } : null;
+}
+function credentialEnv() {
+  if (!linkedCredential())
+    return {};
+  return helperConfig();
+}
+function helperConfig() {
+  return {
+    GIT_CONFIG_COUNT: "2",
+    GIT_CONFIG_KEY_0: "credential.helper",
+    GIT_CONFIG_VALUE_0: "",
+    GIT_CONFIG_KEY_1: "credential.helper",
+    GIT_CONFIG_VALUE_1: '!f() { test "$1" = get || exit 0; printf "username=%s\\npassword=%s\\n" "$MDREV_GIT_USER" "$MDREV_GIT_TOKEN"; }; f'
+  };
 }
 function runQuiet(cmd, args, o = {}) {
   return new Promise((done) => {
@@ -32897,6 +33092,9 @@ var defaultLookup = async (remote, cwd) => {
     return { unknown: "the store is not on a server mdrev can ask (a local path)" };
   let user = null;
   let via = "";
+  const linked = linkedCredential();
+  if (where.kind === "https" && linked)
+    return { user: linked.user, host: where.host, emails: [], via: "the linked credential" };
   if (where.kind === "https") {
     const r = await runQuiet("git", ["-C", cwd, "credential", "fill"], { input: `protocol=https
 host=${where.host}
@@ -32945,7 +33143,7 @@ function checkedLine(email, server) {
 import { spawn as spawn4 } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join as join5 } from "node:path";
+import { join as join6 } from "node:path";
 function anonymousUrl(url) {
   const u = url.trim();
   let m = /^(https?):\/\/(?:[^@/]*@)?([^/]+)(\/.+)$/i.exec(u);
@@ -33011,7 +33209,7 @@ async function anonymousRead(url, cwd) {
     if (sp > 0 && REPLAY.test(line.slice(0, sp)))
       keep.push([line.slice(0, sp), line.slice(sp + 1)]);
   }
-  const home = mkdtempSync(join5(tmpdir(), "mdrev-public-"));
+  const home = mkdtempSync(join6(tmpdir(), "mdrev-public-"));
   try {
     const env2 = {};
     for (const [k, v] of Object.entries(process.env))
@@ -33069,12 +33267,12 @@ function setSharedStamp(s2) {
   if (s2.from)
     stamp.from = s2.from;
 }
-var stateHome = () => process.env.MDREV_STATE_DIR ?? join6(homedir(), ".mdrev");
+var stateHome = () => process.env.MDREV_STATE_DIR ?? join7(homedir(), ".mdrev");
 function logEvent(kind, fields) {
   appendEvent(stateHome(), eventLine({ from: stamp.from, v: stamp.version, pid: process.pid }, kind, fields));
 }
 function machineId() {
-  const file = join6(stateHome(), "machine-id");
+  const file = join7(stateHome(), "machine-id");
   try {
     const id2 = readFileSync3(file, "utf8").trim();
     if (/^[0-9a-f]{12}$/.test(id2))
@@ -33098,17 +33296,14 @@ function machineId() {
   }
 }
 function readPointer(root5) {
-  let raw2;
-  try {
-    raw2 = readFileSync3(join6(root5, ".mdrev.json"), "utf8");
-  } catch {
+  const raw2 = readProjectFile(root5, ".mdrev.json");
+  if (raw2 === null)
     return null;
-  }
   let parsed;
   try {
     parsed = JSON.parse(raw2);
   } catch {
-    throw new StoreError(`${join6(root5, ".mdrev.json")} is not JSON`, "other");
+    throw new StoreError(`${projectFileName(root5, ".mdrev.json")} is not JSON`, "other");
   }
   const review = parsed?.review;
   if (!review)
@@ -33116,9 +33311,16 @@ function readPointer(root5) {
   const remote = typeof review.remote === "string" ? review.remote.trim() : "";
   const branch = typeof review.branch === "string" ? review.branch.trim() : "";
   if (!remote || !branch) {
-    throw new StoreError(`${join6(root5, ".mdrev.json")}: "review" must name both "remote", the review store's git URL, and "branch", its ref (such as ${DEFAULT_BRANCH}) \u2014 mdrev --review-pointer writes both`, "other");
+    throw new StoreError(`${projectFileName(root5, ".mdrev.json")}: "review" must name both "remote", the review store's git URL, and "branch", its ref (such as ${DEFAULT_BRANCH}) \u2014 mdrev --review-pointer writes both`, "other");
   }
   return { remote, branch };
+}
+function readPointerOrNull(root5) {
+  try {
+    return readPointer(root5);
+  } catch {
+    return { remote: "", branch: "" };
+  }
 }
 function sameRepository(remote) {
   const r = remote.trim().replace(/^file:\/\//i, "");
@@ -33129,9 +33331,9 @@ function sameRepository(remote) {
   return host ? `${host}/${tidy}`.toLowerCase() : tidy;
 }
 function storeKey(p2) {
-  const same = sameRepository(p2.remote);
-  const readable2 = same.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(-60);
-  const hash = createHash("sha1").update(`${same}\0${p2.branch}`).digest("hex").slice(0, 8);
+  const same2 = sameRepository(p2.remote);
+  const readable2 = same2.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(-60);
+  const hash = createHash("sha1").update(`${same2}\0${p2.branch}`).digest("hex").slice(0, 8);
   return `${readable2}-${p2.branch.replace(/[^A-Za-z0-9._-]+/g, "-")}-${hash}`;
 }
 var SCRUB = [
@@ -33150,7 +33352,7 @@ function git(args, o = {}) {
   const env2 = { ...process.env };
   for (const k of SCRUB)
     delete env2[k];
-  Object.assign(env2, { GIT_TERMINAL_PROMPT: "0", SSH_ASKPASS_REQUIRE: "never", LC_ALL: "C" }, o.env);
+  Object.assign(env2, { GIT_TERMINAL_PROMPT: "0", SSH_ASKPASS_REQUIRE: "never", LC_ALL: "C" }, credentialEnv(), o.env);
   const argv = [...o.gitDir ? [`--git-dir=${o.gitDir}`] : [], "-c", "core.quotePath=false", ...args];
   return new Promise((done) => {
     const child = spawn5("git", argv, { cwd: o.cwd, env: env2, detached: true, stdio: ["pipe", "pipe", "pipe"] });
@@ -33228,7 +33430,7 @@ function clearGitLocks(dir) {
     for (const n of names) {
       if (n === "objects")
         continue;
-      const p2 = join6(d, n);
+      const p2 = join7(d, n);
       if (n.endsWith(".lock")) {
         if (Date.now() - (statSync3(p2, { throwIfNoEntry: false })?.mtimeMs ?? 0) > 6e4)
           rmSync2(p2, { force: true });
@@ -33239,8 +33441,8 @@ function clearGitLocks(dir) {
   walk(dir);
 }
 async function withLock(dir, fn, waitMs = 75e3) {
-  const file = join6(dir, "lock");
-  const me = JSON.stringify({ pid: process.pid, host: hostname(), at: (/* @__PURE__ */ new Date()).toISOString() });
+  const file = join7(dir, "lock");
+  const me = JSON.stringify({ pid: process.pid, host: hostname2(), at: (/* @__PURE__ */ new Date()).toISOString() });
   const until = Date.now() + waitMs;
   for (; ; ) {
     try {
@@ -33256,10 +33458,10 @@ async function withLock(dir, fn, waitMs = 75e3) {
     } catch {
     }
     const age = Date.now() - (statSync3(file, { throwIfNoEntry: false })?.mtimeMs ?? Date.now());
-    const dead = age > 5 * 6e4 || typeof holder.pid === "number" && holder.host === hostname() && !alive(holder.pid);
+    const dead = age > 5 * 6e4 || typeof holder.pid === "number" && holder.host === hostname2() && !alive(holder.pid);
     if (dead) {
       rmSync2(file, { force: true });
-      clearGitLocks(join6(dir, "store.git"));
+      clearGitLocks(join7(dir, "store.git"));
       logEvent("review.lock-taken", { store: dir, holder: holder.pid ?? "unknown", since: holder.at ?? "" });
       continue;
     }
@@ -33345,22 +33547,22 @@ var SharedStore = class {
   gitDir;
   constructor(pointer) {
     this.pointer = pointer;
-    this.dir = join6(stateHome(), "review", storeKey(pointer));
-    this.gitDir = join6(this.dir, "store.git");
+    this.dir = join7(stateHome(), "review", storeKey(pointer));
+    this.gitDir = join7(this.dir, "store.git");
   }
   get outboxDir() {
-    return join6(this.dir, "outbox");
+    return join7(this.dir, "outbox");
   }
   get cacheFile() {
-    return join6(this.dir, "cache.json");
+    return join7(this.dir, "cache.json");
   }
   /** Subscriptions and read marks waiting to go (H7): a directory no older mdrev reads, and nothing that lists the push reads either. */
   get quietDir() {
-    return join6(this.outboxDir, "quiet");
+    return join7(this.outboxDir, "quiet");
   }
   ensureDirs() {
-    mkdirSync2(join6(this.outboxDir, "deleted"), { recursive: true, mode: 448 });
-    mkdirSync2(join6(this.outboxDir, "sent"), { recursive: true, mode: 448 });
+    mkdirSync2(join7(this.outboxDir, "deleted"), { recursive: true, mode: 448 });
+    mkdirSync2(join7(this.outboxDir, "sent"), { recursive: true, mode: 448 });
     mkdirSync2(this.quietDir, { recursive: true, mode: 448 });
   }
   /**
@@ -33370,14 +33572,14 @@ var SharedStore = class {
    */
   keepSent(id) {
     try {
-      renameSync2(join6(this.outboxDir, `${id}.json`), join6(this.outboxDir, "sent", `${id}.json`));
+      renameSync2(join7(this.outboxDir, `${id}.json`), join7(this.outboxDir, "sent", `${id}.json`));
     } catch {
     }
   }
   /** The ids taken back before a push (not edits that came too late), newest last. */
   takenBack() {
     try {
-      return readdirSync3(join6(this.outboxDir, "deleted")).filter((n) => n.endsWith(".json") && !n.endsWith(".diverged.json")).map((n) => n.replace(/\.\d+\.json$/, ""));
+      return readdirSync3(join7(this.outboxDir, "deleted")).filter((n) => n.endsWith(".json") && !n.endsWith(".diverged.json")).map((n) => n.replace(/\.\d+\.json$/, ""));
     } catch {
       return [];
     }
@@ -33405,7 +33607,7 @@ var SharedStore = class {
     const out = [];
     for (const n of names) {
       try {
-        const e = JSON.parse(readFileSync3(join6(this.outboxDir, n), "utf8"));
+        const e = JSON.parse(readFileSync3(join7(this.outboxDir, n), "utf8"));
         if (e?.record?.id)
           out.push(e);
       } catch {
@@ -33424,7 +33626,7 @@ var SharedStore = class {
     const out = [];
     for (const n of names) {
       try {
-        const e = JSON.parse(readFileSync3(join6(this.quietDir, n), "utf8"));
+        const e = JSON.parse(readFileSync3(join7(this.quietDir, n), "utf8"));
         if (e?.record?.id)
           out.push(e);
       } catch {
@@ -33435,8 +33637,8 @@ var SharedStore = class {
   /** Save a subscription or a read mark: it counts here at once, and goes with the next send (H7). */
   writeQuiet(record, local2) {
     this.ensureDirs();
-    writeAtomic(join6(this.dir, "store.json"), JSON.stringify(this.pointer));
-    writeAtomic(join6(this.quietDir, `${record.id}.json`), JSON.stringify({ record, local: local2 }, null, 2));
+    writeAtomic(join7(this.dir, "store.json"), JSON.stringify(this.pointer));
+    writeAtomic(join7(this.quietDir, `${record.id}.json`), JSON.stringify({ record, local: local2 }, null, 2));
     if (record.kind !== "read")
       logEvent(`review.${record.kind}`, { store: this.pointer.remote, id: record.id, path: record.path ?? "(project)", email: record.email ?? "", entry: local2.via, ...local2.for ? { asked: local2.for } : {} });
   }
@@ -33523,7 +33725,7 @@ var SharedStore = class {
           writeAtomic(this.cacheFile, JSON.stringify({ ...cache, tip: commit, fetchedAt: (/* @__PURE__ */ new Date()).toISOString(), quiet }, null, 2));
           for (const e of send)
             this.keepQuietSent(e.record.id);
-          rmSync2(join6(this.quietDir, "failed.json"), { force: true });
+          rmSync2(join7(this.quietDir, "failed.json"), { force: true });
           const kinds = [...new Set(send.map((e) => e.record.kind))].join(" ");
           logEvent("review.quiet-sent", { store: this.pointer.remote, commit, records: send.length, kinds, entry: who.via });
           return { sent: send.length };
@@ -33539,13 +33741,13 @@ var SharedStore = class {
   /** A pushed record of this machine's that its push has already announced (H2): told once, whichever push found it in the store. */
   wasNotified(id) {
     try {
-      return JSON.parse(readFileSync3(join6(this.outboxDir, "sent", `${id}.json`), "utf8")).notified === true;
+      return JSON.parse(readFileSync3(join7(this.outboxDir, "sent", `${id}.json`), "utf8")).notified === true;
     } catch {
       return false;
     }
   }
   markNotified(id) {
-    const file = join6(this.outboxDir, "sent", `${id}.json`);
+    const file = join7(this.outboxDir, "sent", `${id}.json`);
     try {
       const e = JSON.parse(readFileSync3(file, "utf8"));
       writeAtomic(file, JSON.stringify({ ...e, notified: true }, null, 2));
@@ -33554,20 +33756,20 @@ var SharedStore = class {
   }
   keepQuietSent(id) {
     try {
-      renameSync2(join6(this.quietDir, `${id}.json`), join6(this.outboxDir, "sent", `${id}.json`));
+      renameSync2(join7(this.quietDir, `${id}.json`), join7(this.outboxDir, "sent", `${id}.json`));
     } catch {
     }
   }
   quietFailedAt() {
     try {
-      return Date.parse(JSON.parse(readFileSync3(join6(this.quietDir, "failed.json"), "utf8")).at) || null;
+      return Date.parse(JSON.parse(readFileSync3(join7(this.quietDir, "failed.json"), "utf8")).at) || null;
     } catch {
       return null;
     }
   }
   quietFailed(e) {
     try {
-      writeAtomic(join6(this.quietDir, "failed.json"), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), message: e.message }));
+      writeAtomic(join7(this.quietDir, "failed.json"), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), message: e.message }));
     } catch {
     }
     logEvent("review.quiet-failed", { store: this.pointer.remote, failure: e instanceof StoreError ? e.kind : "other", message: e.message });
@@ -33591,7 +33793,7 @@ var SharedStore = class {
    */
   pairing() {
     try {
-      const p2 = JSON.parse(readFileSync3(join6(this.dir, "pairing.json"), "utf8"));
+      const p2 = JSON.parse(readFileSync3(join7(this.dir, "pairing.json"), "utf8"));
       return sameRepository(p2.remote) === sameRepository(this.pointer.remote) && p2.branch === this.pointer.branch && typeof p2.email === "string" && p2.email ? p2 : null;
     } catch {
       return null;
@@ -33602,7 +33804,7 @@ var SharedStore = class {
     const p2 = this.pairing();
     if (!p2 || p2.root === root5)
       return;
-    writeAtomic(join6(this.dir, "pairing.json"), JSON.stringify({ ...p2, root: root5 }, null, 2));
+    writeAtomic(join7(this.dir, "pairing.json"), JSON.stringify({ ...p2, root: root5 }, null, 2));
   }
   /** Pair this machine with the store, as this person (E3). The CLI asks; this records. */
   pair(identity, extra = {}) {
@@ -33613,7 +33815,7 @@ var SharedStore = class {
       email: identity.email.trim().toLowerCase(),
       name: identity.name.trim() || identity.email.trim(),
       at: (/* @__PURE__ */ new Date()).toISOString(),
-      host: hostname(),
+      host: hostname2(),
       machine: machineId(),
       ...extra.project ? { project: extra.project } : {},
       ...extra.server ? { server: extra.server } : {},
@@ -33621,19 +33823,19 @@ var SharedStore = class {
       ...extra.by === "agent" ? { by: "agent" } : {},
       ...this.cache().root ? { root: this.cache().root } : {}
     };
-    writeAtomic(join6(this.dir, "pairing.json"), JSON.stringify(pairing, null, 2));
-    rmSync2(join6(this.dir, "pairing.moved.json"), { force: true });
+    writeAtomic(join7(this.dir, "pairing.json"), JSON.stringify(pairing, null, 2));
+    rmSync2(join7(this.dir, "pairing.moved.json"), { force: true });
     this.dropPairRequest();
     let restamped = 0;
     for (const e of this.outbox()) {
       if (e.record.author.email === pairing.email && e.record.author.name === pairing.name)
         continue;
-      writeAtomic(join6(this.outboxDir, `${e.record.id}.json`), JSON.stringify({ ...e, record: { ...e.record, author: { name: pairing.name, email: pairing.email } } }, null, 2));
+      writeAtomic(join7(this.outboxDir, `${e.record.id}.json`), JSON.stringify({ ...e, record: { ...e.record, author: { name: pairing.name, email: pairing.email } } }, null, 2));
       restamped++;
     }
     if (restamped > 0)
       logEvent("review.restamp", { store: this.pointer.remote, records: restamped, email: pairing.email, name: pairing.name });
-    writeAtomic(join6(this.dir, "store.json"), JSON.stringify({ remote: this.pointer.remote, branch: this.pointer.branch }));
+    writeAtomic(join7(this.dir, "store.json"), JSON.stringify({ remote: this.pointer.remote, branch: this.pointer.branch }));
     logEvent("review.pair", { store: this.pointer.remote, branch: this.pointer.branch, email: pairing.email, name: pairing.name, machine: pairing.machine, check: pairing.server?.check ?? "unconfirmed", ...pairing.server?.user ? { serverUser: pairing.server.user } : {}, ...pairing.by ? { by: pairing.by } : {} });
     return pairing;
   }
@@ -33643,7 +33845,7 @@ var SharedStore = class {
    */
   pairRequest() {
     try {
-      const r = JSON.parse(readFileSync3(join6(this.dir, "pair-request.json"), "utf8"));
+      const r = JSON.parse(readFileSync3(join7(this.dir, "pair-request.json"), "utf8"));
       if (Date.now() - Date.parse(r.at) > 24 * 36e5)
         return null;
       return sameRepository(r.remote) === sameRepository(this.pointer.remote) && r.branch === this.pointer.branch ? { email: r.email, name: r.name, at: r.at, ...r.check ? { check: r.check } : {} } : null;
@@ -33654,11 +33856,11 @@ var SharedStore = class {
   /** Record the requested identity with the server's check for the viewer to show; confirming checks again. */
   requestPairing(identity, check) {
     this.ensureDirs();
-    writeAtomic(join6(this.dir, "pair-request.json"), JSON.stringify({ remote: this.pointer.remote, branch: this.pointer.branch, email: identity.email.trim().toLowerCase(), name: identity.name.trim(), at: (/* @__PURE__ */ new Date()).toISOString(), ...check ? { check } : {} }, null, 2));
+    writeAtomic(join7(this.dir, "pair-request.json"), JSON.stringify({ remote: this.pointer.remote, branch: this.pointer.branch, email: identity.email.trim().toLowerCase(), name: identity.name.trim(), at: (/* @__PURE__ */ new Date()).toISOString(), ...check ? { check } : {} }, null, 2));
     logEvent("review.pair-requested", { store: this.pointer.remote, email: identity.email, name: identity.name, check: check?.result ?? "unknown" });
   }
   dropPairRequest() {
-    rmSync2(join6(this.dir, "pair-request.json"), { force: true });
+    rmSync2(join7(this.dir, "pair-request.json"), { force: true });
   }
   /**
    * Edit an unpushed record's words (C5), keeping the earlier ones on this
@@ -33668,7 +33870,7 @@ var SharedStore = class {
   async edit(id, body3, by = { agent: false }) {
     this.ensureDirs();
     return withLock(this.dir, async () => {
-      const file = join6(this.outboxDir, `${id}.json`);
+      const file = join7(this.outboxDir, `${id}.json`);
       let entry;
       try {
         entry = JSON.parse(readFileSync3(file, "utf8"));
@@ -33693,8 +33895,8 @@ var SharedStore = class {
   /** Save a record to the outbox: one new file, so no two writers can collide. */
   write(record, local2) {
     this.ensureDirs();
-    writeAtomic(join6(this.dir, "store.json"), JSON.stringify(this.pointer));
-    writeAtomic(join6(this.outboxDir, `${record.id}.json`), JSON.stringify({ record, local: local2 }, null, 2));
+    writeAtomic(join7(this.dir, "store.json"), JSON.stringify(this.pointer));
+    writeAtomic(join7(this.outboxDir, `${record.id}.json`), JSON.stringify({ record, local: local2 }, null, 2));
     logEvent("review.write", { store: this.pointer.remote, id: record.id, recordKind: record.kind, thread: record.thread, entry: local2.via, ...local2.for ? { asked: local2.for } : {} });
   }
   /**
@@ -33708,7 +33910,7 @@ var SharedStore = class {
       const moved = [];
       for (const id of ids) {
         try {
-          renameSync2(join6(this.outboxDir, `${id}.json`), join6(this.outboxDir, "deleted", `${id}.${Date.now()}.json`));
+          renameSync2(join7(this.outboxDir, `${id}.json`), join7(this.outboxDir, "deleted", `${id}.${Date.now()}.json`));
           moved.push(id);
         } catch {
         }
@@ -33720,7 +33922,7 @@ var SharedStore = class {
   }
   async ensureRepo() {
     this.ensureDirs();
-    if (statSync3(join6(this.gitDir, "HEAD"), { throwIfNoEntry: false })) {
+    if (statSync3(join7(this.gitDir, "HEAD"), { throwIfNoEntry: false })) {
       const now = await git(["remote", "get-url", "origin"], { gitDir: this.gitDir });
       if (now.code === 0 && now.out.trim() !== this.pointer.remote)
         await gitOk(["remote", "set-url", "origin", this.pointer.remote], { gitDir: this.gitDir });
@@ -33731,7 +33933,7 @@ var SharedStore = class {
   }
   /** The URL git will really use, after any `insteadOf` in the person's config (E3). */
   async destination() {
-    if (!statSync3(join6(this.gitDir, "HEAD"), { throwIfNoEntry: false }))
+    if (!statSync3(join7(this.gitDir, "HEAD"), { throwIfNoEntry: false }))
       return `${this.pointer.remote} (${this.pointer.branch.startsWith("refs/") ? "ref" : "branch"} ${this.pointer.branch})`;
     const r = await git(["ls-remote", "--get-url", "origin"], { gitDir: this.gitDir });
     const url = r.code === 0 ? r.out.trim() : this.pointer.remote;
@@ -33783,13 +33985,13 @@ var SharedStore = class {
     if (root5)
       this.rememberRoot(root5);
     if (tip === before.tip && before.fetchedAt) {
-      const same = { ...before, ...root5 ? { root: root5 } : {}, fetchedAt: (/* @__PURE__ */ new Date()).toISOString() };
-      writeAtomic(this.cacheFile, JSON.stringify(same, null, 2));
-      return same;
+      const same2 = { ...before, ...root5 ? { root: root5 } : {}, fetchedAt: (/* @__PURE__ */ new Date()).toISOString() };
+      writeAtomic(this.cacheFile, JSON.stringify(same2, null, 2));
+      return same2;
     }
     let rewritten = before.rewritten;
     if (before.tip && (tip === null || (await git(["merge-base", "--is-ancestor", before.tip, tip], { gitDir: this.gitDir })).code !== 0)) {
-      const aside = join6(this.dir, `cache.${before.tip.slice(0, 12)}.json`);
+      const aside = join7(this.dir, `cache.${before.tip.slice(0, 12)}.json`);
       writeAtomic(aside, JSON.stringify(before, null, 2));
       rewritten = { from: before.tip, to: tip, aside, at: (/* @__PURE__ */ new Date()).toISOString() };
       logEvent("review.rewritten", { store: this.pointer.remote, from: before.tip, to: tip ?? "nothing", aside });
@@ -33940,7 +34142,7 @@ var SharedStore = class {
             continue;
           }
           try {
-            renameSync2(join6(this.outboxDir, `${e2.record.id}.json`), join6(this.outboxDir, "deleted", `${e2.record.id}.${Date.now()}.diverged.json`));
+            renameSync2(join7(this.outboxDir, `${e2.record.id}.json`), join7(this.outboxDir, "deleted", `${e2.record.id}.${Date.now()}.diverged.json`));
           } catch {
           }
           diverged.push(e2.record.id);
@@ -33951,7 +34153,7 @@ var SharedStore = class {
           logEvent("review.push-diverged", { store: this.pointer.remote, ids: diverged.join(" "), entry });
           result.warnings = [
             ...stranded,
-            ...diverged.map((id) => `${id} had already arrived when you changed it: the reviewers have the earlier words \u2014 reply to correct it (your change is kept in ${join6(this.outboxDir, "deleted")})`)
+            ...diverged.map((id) => `${id} had already arrived when you changed it: the reviewers have the earlier words \u2014 reply to correct it (your change is kept in ${join7(this.outboxDir, "deleted")})`)
           ];
         }
         const send = entries.filter((e2) => !known.has(e2.record.id));
@@ -33984,13 +34186,13 @@ var SharedStore = class {
   }
   /** One commit on `tip` adding these records, built through a temporary index. */
   async commitOn(tip, records) {
-    const tmp = join6(this.dir, `push.${process.pid}.${randomBytes(3).toString("hex")}`);
+    const tmp = join7(this.dir, `push.${process.pid}.${randomBytes(3).toString("hex")}`);
     mkdirSync2(tmp, { recursive: true });
     try {
-      const env2 = { GIT_INDEX_FILE: join6(tmp, "index") };
+      const env2 = { GIT_INDEX_FILE: join7(tmp, "index") };
       await gitOk(tip ? ["read-tree", tip] : ["read-tree", "--empty"], { gitDir: this.gitDir, env: env2 });
       const paths = records.map((r) => {
-        const p2 = join6(tmp, `${r.id}.json`);
+        const p2 = join7(tmp, `${r.id}.json`);
         writeFileSync(p2, canonical(r), "utf8");
         return p2;
       });
@@ -34005,7 +34207,7 @@ var SharedStore = class {
       const pairing = this.pairing();
       const server = pairing?.server;
       const message = [
-        `mdrev: ${records.length} record${records.length === 1 ? "" : "s"} from ${authors.join(", ")} on ${hostname()} (mdrev ${stamp.version})`,
+        `mdrev: ${records.length} record${records.length === 1 ? "" : "s"} from ${authors.join(", ")} on ${hostname2()} (mdrev ${stamp.version})`,
         "",
         ...records.map((r) => `${r.id} ${r.kind}${isQuiet(r) ? r.path ? ` ${r.path}` : "" : r.kind === "note" ? ` ${r.path}` : ` in ${r.thread}`}`),
         "",
@@ -34162,8 +34364,8 @@ function foldThreads(records, me, read) {
   return order2.map((id) => roots.get(id));
 }
 var serverOf = (remote) => {
-  const same = sameRepository(remote);
-  return same.startsWith("/") || !same.includes("/") ? "" : same.split("/")[0];
+  const same2 = sameRepository(remote);
+  return same2.startsWith("/") || !same2.includes("/") ? "" : same2.split("/")[0];
 };
 async function remoteUrl(root5, name) {
   const r = await git(["remote", "get-url", name], { cwd: root5 });
@@ -34188,7 +34390,9 @@ async function suggestedPointer(root5) {
   return null;
 }
 async function writePointer(root5, storeUrl, change, who) {
-  const file = join6(root5, ".mdrev.json");
+  if (isCopy(root5))
+    throw new StoreError("a bare copy has no working tree to commit .mdrev.json in: name the store from a checkout of the project, and push it", "other");
+  const file = join7(root5, ".mdrev.json");
   const named = readPointer(root5);
   const p2 = storeUrl?.trim() ? { remote: storeUrl.trim(), branch: DEFAULT_BRANCH } : named ?? await suggestedPointer(root5);
   if (!p2)
@@ -34325,7 +34529,7 @@ async function storeVsOrigin(root5, p2) {
   return { kind: "elsewhere", origin };
 }
 async function pairedElsewhere(root5, now) {
-  const home = join6(stateHome(), "review");
+  const home = join7(stateHome(), "review");
   let names;
   try {
     names = readdirSync3(home);
@@ -34340,11 +34544,11 @@ async function pairedElsewhere(root5, now) {
       remotes.add(sameRepository(u));
   }
   for (const n of names) {
-    const dir = join6(home, n);
+    const dir = join7(home, n);
     if (dir === now.dir)
       continue;
     try {
-      const p2 = JSON.parse(readFileSync3(join6(dir, "pairing.json"), "utf8"));
+      const p2 = JSON.parse(readFileSync3(join7(dir, "pairing.json"), "utf8"));
       if (p2.project && p2.project === project2 || !p2.project && remotes.has(sameRepository(p2.remote)))
         return { remote: p2.remote, branch: p2.branch };
     } catch {
@@ -34365,7 +34569,7 @@ async function probeStore(p2) {
     return { kind: "unreachable" };
   if (!ls.out.trim())
     return { kind: "absent" };
-  const dir = join6(stateHome(), "review", `.probe-${randomBytes(4).toString("hex")}`);
+  const dir = join7(stateHome(), "review", `.probe-${randomBytes(4).toString("hex")}`);
   try {
     await gitOk(["init", "--bare", "--quiet", dir]);
     const r = await git(["fetch", "--no-tags", "--quiet", p2.remote, `+${ref}:refs/probe`], { gitDir: dir, timeoutMs: 15e3 });
@@ -34378,7 +34582,7 @@ async function probeStore(p2) {
   }
 }
 async function projectPairings(root5, except) {
-  const home = join6(stateHome(), "review");
+  const home = join7(stateHome(), "review");
   let names;
   try {
     names = readdirSync3(home).filter((n) => !n.startsWith("."));
@@ -34388,11 +34592,11 @@ async function projectPairings(root5, except) {
   const project2 = await commonDir(root5);
   const out = [];
   for (const n of names) {
-    const dir = join6(home, n);
+    const dir = join7(home, n);
     if (dir === except)
       continue;
     try {
-      const p2 = JSON.parse(readFileSync3(join6(dir, "pairing.json"), "utf8"));
+      const p2 = JSON.parse(readFileSync3(join7(dir, "pairing.json"), "utf8"));
       if (p2.email && p2.project && p2.project === project2)
         out.push({ dir, pairing: p2 });
     } catch {
@@ -34431,7 +34635,7 @@ async function follow(root5, store, opts = {}) {
 }
 var PROBE_KEPT = { root: 36e5, absent: 3e5, unreachable: 6e4 };
 async function probeKept(p2, fresh) {
-  const file = join6(stateHome(), "review", ".probes.json");
+  const file = join7(stateHome(), "review", ".probes.json");
   let memo = {};
   try {
     memo = JSON.parse(readFileSync3(file, "utf8"));
@@ -34456,7 +34660,7 @@ async function carryMoved(root5, store, fresh) {
   const probe = await probeKept(store.pointer, fresh);
   if (probe.kind === "unreachable")
     return { pairing: null };
-  const roots = await Promise.all(candidates.map(async (c2) => c2.pairing.root ?? await rootOf(join6(c2.dir, "store.git"), TIP)));
+  const roots = await Promise.all(candidates.map(async (c2) => c2.pairing.root ?? await rootOf(join7(c2.dir, "store.git"), TIP)));
   let pick3 = -1;
   if (probe.kind === "root") {
     pick3 = roots.indexOf(probe.root);
@@ -34472,7 +34676,7 @@ async function carryMoved(root5, store, fresh) {
       const had = roots.findIndex((r) => r !== null);
       const c2 = candidates[had];
       if (c2)
-        return { pairing: null, leftBehind: { from: c2.pairing.remote, branch: c2.pairing.branch, copy: join6(c2.dir, "store.git") } };
+        return { pairing: null, leftBehind: { from: c2.pairing.remote, branch: c2.pairing.branch, copy: join7(c2.dir, "store.git") } };
       return { pairing: null };
     }
   }
@@ -34500,14 +34704,14 @@ async function carryMoved(root5, store, fresh) {
   }
   const { root: _was, ...kept } = old;
   const next2 = { ...kept, remote: now.remote, branch: now.branch, ...probe.kind === "root" ? { root: probe.root } : {}, moved: [...old.moved ?? [], { from: old.remote, branch: old.branch, at: (/* @__PURE__ */ new Date()).toISOString() }], ...server ? { server } : {} };
-  writeAtomic(join6(store.dir, "store.json"), JSON.stringify({ remote: now.remote, branch: now.branch }));
+  writeAtomic(join7(store.dir, "store.json"), JSON.stringify({ remote: now.remote, branch: now.branch }));
   if (why) {
-    writeAtomic(join6(store.dir, "pairing.moved.json"), JSON.stringify({ ...next2, why }, null, 2));
-    rmSync2(join6(store.dir, "pairing.json"), { force: true });
+    writeAtomic(join7(store.dir, "pairing.moved.json"), JSON.stringify({ ...next2, why }, null, 2));
+    rmSync2(join7(store.dir, "pairing.json"), { force: true });
     logEvent("review.moved", { from: old.remote, to: now.remote, carried: "records only", why });
     return { pairing: null };
   }
-  writeAtomic(join6(store.dir, "pairing.json"), JSON.stringify(next2, null, 2));
+  writeAtomic(join7(store.dir, "pairing.json"), JSON.stringify(next2, null, 2));
   logEvent("review.moved", { from: old.remote, to: now.remote, carried: "pairing", by: probe.kind === "root" ? "root commit" : "checkout remote", check: next2.server?.check ?? "unconfirmed" });
   return { pairing: next2 };
 }
@@ -34523,7 +34727,7 @@ function formatFollowed(p2) {
 }
 function movedAwaitingPairing(store) {
   try {
-    const p2 = JSON.parse(readFileSync3(join6(store.dir, "pairing.moved.json"), "utf8"));
+    const p2 = JSON.parse(readFileSync3(join7(store.dir, "pairing.moved.json"), "utf8"));
     const last = p2.moved?.at(-1);
     return last ? { from: last.from, why: p2.why ?? "" } : null;
   } catch {
@@ -34562,7 +34766,7 @@ async function identityOf(root5) {
   return { name, email };
 }
 function personAtTerminal() {
-  return Boolean(process.stdin.isTTY && process.stdout.isTTY) && !process.env.CLAUDECODE && !process.env.CLAUDE_CODE_ENTRYPOINT;
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY) && harnessHere() === null;
 }
 function toPairCheck(email, c) {
   if (c.result === "unknown")
@@ -34636,31 +34840,31 @@ async function joinOrAsk(root5, identity) {
     await refusePublic(store, root5, false);
   const email = identity.email.trim().toLowerCase();
   const check = await checkPairing(root5, email);
-  const ask = (why) => {
+  const ask2 = (why) => {
     store.requestPairing(identity, check);
     return { requested: { email, name: identity.name.trim() }, check, why };
   };
   if (store.pairing())
-    return ask("this machine is paired with this store already, and pairing it again, as anyone, is its person's to confirm");
+    return ask2("this machine is paired with this store already, and pairing it again, as anyone, is its person's to confirm");
   const own12 = await suggestedPointer(root5);
   const home = own12 ? [own12.remote, notesRepository(own12.remote)].filter((u) => !!u).map(sameRepository) : [];
   if (!home.includes(sameRepository(store.pointer.remote)) || store.pointer.branch !== DEFAULT_BRANCH) {
-    return ask(`the store .mdrev.json names, ${store.pointer.remote} (${store.pointer.branch}), is not where this project keeps its review by default${own12 ? ` (${own12.remote} or its <repo>-notes, at ${DEFAULT_BRANCH})` : ""}, so only your person, who sees its address in the viewer, can pair with it`);
+    return ask2(`the store .mdrev.json names, ${store.pointer.remote} (${store.pointer.branch}), is not where this project keeps its review by default${own12 ? ` (${own12.remote} or its <repo>-notes, at ${DEFAULT_BRANCH})` : ""}, so only your person, who sees its address in the viewer, can pair with it`);
   }
   if (open === null)
-    return ask(`mdrev cannot tell who can read ${store.pointer.remote}, so only your person can pair with it`);
+    return ask2(`mdrev cannot tell who can read ${store.pointer.remote}, so only your person can pair with it`);
   if (check.result === "mismatch")
-    return ask(check.message ?? "the server says this machine pushes as another account");
+    return ask2(check.message ?? "the server says this machine pushes as another account");
   if (check.result === "unknown")
-    return ask(`the server could not say whose account this machine pushes as${check.why ? ` (${check.why})` : ""}`);
+    return ask2(`the server could not say whose account this machine pushes as${check.why ? ` (${check.why})` : ""}`);
   const paired = store.pair(identity, { server: serverField(check), project: await commonDir(root5) ?? void 0, by: "agent" });
   return { paired, check };
 }
 function defaultDisplayName(gitName) {
-  return `${gitName.trim() || userInfo().username}-on-${hostname().split(".")[0]}`;
+  return `${gitName.trim() || userInfo().username}-on-${hostname2().split(".")[0]}`;
 }
 function machineConfigPath() {
-  return join6(process.env.XDG_CONFIG_HOME || join6(homedir(), ".config"), "taskq", "config.json");
+  return join7(process.env.XDG_CONFIG_HOME || join7(homedir(), ".config"), "taskq", "config.json");
 }
 function machineConfig() {
   try {
@@ -34675,8 +34879,8 @@ function machineDisplayName() {
   return typeof name === "string" && name.trim() ? name.trim() : null;
 }
 async function pairingDefaults(root5) {
-  const git2 = await identityOf(root5);
-  return { root: root5, email: git2.email, name: machineDisplayName() ?? defaultDisplayName(git2.name) };
+  const git3 = await identityOf(root5);
+  return { root: root5, email: git3.email, name: machineDisplayName() ?? defaultDisplayName(git3.name) };
 }
 function setMachineDisplayName(name) {
   const cfg = machineConfig();
@@ -34686,7 +34890,7 @@ function setMachineDisplayName(name) {
     delete cfg.display_name;
   const sorted = Object.fromEntries(Object.keys(cfg).sort().map((k) => [k, cfg[k]]));
   const file = machineConfigPath();
-  mkdirSync2(join6(file, ".."), { recursive: true });
+  mkdirSync2(join7(file, ".."), { recursive: true });
   writeAtomic(file, `${JSON.stringify(sorted, null, 1)}
 `);
   logEvent("review.display-name", { name: name.trim() || "(cleared)", file });
@@ -34731,15 +34935,15 @@ ${offer.skipped ? `  (${offer.skipped})
 `);
     return carried;
   }
-  const git2 = await identityOf(root5);
+  const git3 = await identityOf(root5);
   io.say(describeStore(pointer, await storeVsOrigin(root5, pointer)));
   if (!yes(await io.ask("Pair this machine with it? [y/N] "))) {
     io.say("not paired\n");
     return null;
   }
-  const email = (await io.ask(`Email [${given.email ?? git2.email}]: `)).trim() || given.email || git2.email;
+  const email = (await io.ask(`Email [${given.email ?? git3.email}]: `)).trim() || given.email || git3.email;
   const machine = machineDisplayName();
-  const offered = given.name ?? machine ?? defaultDisplayName(git2.name);
+  const offered = given.name ?? machine ?? defaultDisplayName(git3.name);
   const name = given.name ?? machine ?? ((await io.ask(`Display name on this machine [${offered}]: `)).trim() || offered);
   if (!given.name && machine)
     io.say(`display name: ${machine} (this machine's, for every project \u2014 mdrev --display-name changes it)
@@ -34818,10 +35022,10 @@ async function headOf(root5) {
   return r.code === 0 ? r.out.trim() : void 0;
 }
 function sharedReviewInPlay(root5) {
-  if (statSync3(join6(root5, ".mdrev.json"), { throwIfNoEntry: false }))
+  if (isCopy(root5) ? readPointerOrNull(root5) !== null : statSync3(join7(root5, ".mdrev.json"), { throwIfNoEntry: false }))
     return true;
   try {
-    return readdirSync3(join6(stateHome(), "review")).length > 0;
+    return readdirSync3(join7(stateHome(), "review")).length > 0;
   } catch {
     return false;
   }
@@ -34868,22 +35072,22 @@ async function checkAsked(source, store, who, thread, act) {
     return null;
   if (who.via === "person")
     throw new StoreError("threads are answered in the viewer, or by an agent asked through a local note", "other");
-  const ask = 'ask your person to leave a local note pointing at it \u2014 "look at <id> and respond" \u2014 then name that note with --for';
+  const ask2 = 'ask your person to leave a local note pointing at it \u2014 "look at <id> and respond" \u2014 then name that note with --for';
   if (!who.for)
-    throw new StoreError(`${thread.id} is a shared thread: from the command line it is read and answered only for the local note that points at it (--for ID) \u2014 ${ask}`, "other");
-  const found = await findAnnotation(source.repoRoot, who.for);
+    throw new StoreError(`${thread.id} is a shared thread: from the command line it is read and answered only for the local note that points at it (--for ID) \u2014 ${ask2}`, "other");
+  const found = await findAnnotation(source.notesHome, who.for);
   if (!found)
-    throw new StoreError(`--for ${who.for}: no such local note here \u2014 ${ask}`, "other");
+    throw new StoreError(`--for ${who.for}: no such local note here \u2014 ${ask2}`, "other");
   const local2 = found.annotation;
   const ids = /* @__PURE__ */ new Set([thread.id, ...(thread.replies ?? []).map((r) => r.id).filter((x) => !!x)]);
   const named = [...local2.about ? [local2.about] : [], ...local2.body.match(SHARED_ID) ?? []];
   if (!named.some((id) => ids.has(id))) {
-    throw new StoreError(`--for ${who.for}: that local note does not point at ${thread.id} \u2014 it names ${named.length ? named.join(", ") : "no shared record"} \u2014 ${ask}`, "other");
+    throw new StoreError(`--for ${who.for}: that local note does not point at ${thread.id} \u2014 it names ${named.length ? named.join(", ") : "no shared record"} \u2014 ${ask2}`, "other");
   }
   if (act === "read")
     return { path: found.path, note: local2 };
   if (local2.status !== "open")
-    throw new StoreError(`--for ${who.for}: that local note is closed \u2014 ${ask}`, "other");
+    throw new StoreError(`--for ${who.for}: that local note is closed \u2014 ${ask2}`, "other");
   if (act === "reply") {
     const given = local2.answered?.[thread.id];
     if (given && store.records().some((r) => r.id === given)) {
@@ -34894,7 +35098,7 @@ async function checkAsked(source, store, who, thread, act) {
 }
 async function noteAnswered(source, asked, threadId, replyId) {
   const { updateAnnotation: updateAnnotation2 } = await Promise.resolve().then(() => (init_annotations(), annotations_exports));
-  await updateAnnotation2(source.repoRoot, asked.path, asked.note.id, { answered: { ...asked.note.answered, [threadId]: replyId } });
+  await updateAnnotation2(source.notesHome, asked.path, asked.note.id, { answered: { ...asked.note.answered, [threadId]: replyId } });
 }
 function base2(kind, id, thread, re2, me, body3, who, commit) {
   return {
@@ -34906,7 +35110,7 @@ function base2(kind, id, thread, re2, me, body3, who, commit) {
     ...commit ? { commit } : {},
     author: { name: me.name, email: me.email },
     at: (/* @__PURE__ */ new Date()).toISOString(),
-    host: hostname(),
+    host: hostname2(),
     machine: machineId(),
     mdrev: stamp.version,
     body: body3,
@@ -34989,6 +35193,154 @@ async function setSharedState(source, recordId, kind, why, who) {
   store.write(base2(kind, id, thread.id, last?.id ?? thread.id, me, (why ?? "").trim(), who, await headOf(source.repoRoot)), local(who, source.repoRoot));
   return foldThreads(store.records(), me.email).find((t) => t.id === thread.id);
 }
+var mintDraft = () => `dft-${Date.now().toString(36)}-${randomBytes(3).toString("hex").slice(0, 4)}`;
+function draftsOn(note) {
+  return (note.replies ?? []).flatMap((r) => r.draft ? [{ at: r.at, draft: r.draft, body: r.body }] : []);
+}
+function draftReady(note) {
+  const replies = note.replies ?? [];
+  const last = replies.findLastIndex((r) => r.draft && !r.draft.shared);
+  return last >= 0 && !replies.slice(last + 1).some((r) => !r.agent && !r.draft);
+}
+async function draftShared(source, kind, target, body3, author, who) {
+  if (who.via !== "cli" || !who.agent)
+    throw new StoreError("a draft is an agent's answer, for its person to share", "other");
+  const head2 = source.isGit ? await headOf(source.repoRoot) : void 0;
+  let note;
+  let re2 = null;
+  if (kind === "thread") {
+    const found = await findAnnotation(source.notesHome, target);
+    if (!found)
+      throw new StoreError(`no note '${target}' here`, "other");
+    if (found.annotation.status !== "open")
+      throw new StoreError(`${target} is ${found.annotation.status}: a draft answers an open note`, "other");
+    if (draftsOn(found.annotation).some((d) => d.draft.kind === "thread" && !d.draft.shared))
+      throw new StoreError(`${target} has its draft of a new thread already: take it back (mdrev --delete <dft-id>) and draft again`, "other");
+    if (!body3.trim())
+      throw new StoreError("a draft needs words", "other");
+    note = found;
+  } else {
+    const { store, me } = await pairedStore(source.repoRoot);
+    const found = threadFor(store, me.email, target);
+    if (!found)
+      throw new StoreError(`no shared record '${target}' \u2014 fetch first (mdrev --review-status)`, "other");
+    const asked = await checkAsked(source, store, who, found.thread, kind === "reply" ? "reply" : "state");
+    if (!asked)
+      throw new StoreError("a draft is written for the note that asked (--for)", "other");
+    if (kind === "reply" && found.thread.status === "resolved") {
+      throw new StoreError(`${found.thread.id} is resolved, and a resolved thread takes no replies until it is reopened \u2014 if your person's note asked to reopen it: mdrev --reopen ${found.thread.id} --for ${who.for}`, "other");
+    }
+    if (kind === "reply" && !body3.trim())
+      throw new StoreError("a reply needs a body", "other");
+    const fresh = await findAnnotation(source.notesHome, asked.note.id);
+    const inThread = /* @__PURE__ */ new Set([found.thread.id, ...(found.thread.replies ?? []).map((r) => r.id).filter((x) => !!x)]);
+    const before = draftsOn(fresh?.annotation ?? asked.note).find((d) => d.draft.re && inThread.has(d.draft.re) && (!d.draft.shared || store.records().some((r) => r.id === d.draft.shared)));
+    if (before)
+      throw new StoreError(`--for ${who.for}: that note has its answer in ${found.thread.id} already (${before.draft.id}) \u2014 take it back (mdrev --delete ${before.draft.id}) and draft again, or ask your person`, "other");
+    re2 = target;
+    note = fresh ?? { path: asked.path, annotation: asked.note };
+  }
+  const draft = { id: mintDraft(), kind, re: re2, ...head2 ? { commit: head2 } : {} };
+  const updated = await appendReply(source.notesHome, note.path, note.annotation.id, { author, body: body3.trim(), agent: who.agent, draft });
+  if (!updated)
+    throw new StoreError(`no note '${note.annotation.id}' here`, "other");
+  return { path: note.path, annotation: updated };
+}
+async function dropDraft(source, draftId, who) {
+  for (const { path: path2, annotations } of await listAllAnnotations(source.notesHome)) {
+    for (const a of annotations) {
+      const reply = (a.replies ?? []).find((r) => r.draft?.id === draftId);
+      if (!reply)
+        continue;
+      if (reply.draft.shared)
+        throw new StoreError(`${draftId} was shared as ${reply.draft.shared}: it is in the thread now \u2014 answer there, or ask your person`, "other");
+      if (who.via === "cli" && !reply.agent)
+        throw new StoreError(`${draftId} is not an agent's draft`, "other");
+      const left = await deleteReply(source.notesHome, path2, a.id, reply.at);
+      return left ? { path: path2, annotation: left } : null;
+    }
+  }
+  return null;
+}
+async function shareDrafts(source, noteId, edits, who) {
+  if (who.via !== "viewer")
+    throw new StoreError("Share is a person's press, in a viewer: an agent drafts, its person shares (B11)", "other");
+  const found = await findAnnotation(source.notesHome, noteId);
+  if (!found)
+    throw new StoreError(`no note '${noteId}' here`, "other");
+  const note = found.annotation;
+  const drafts = (note.replies ?? []).filter((r) => r.draft && !r.draft.shared).sort((a, b) => a.at.localeCompare(b.at));
+  if (drafts.length === 0)
+    throw new StoreError(`${noteId} has no draft to share`, "other");
+  const { store, me } = await pairedStore(source.repoRoot);
+  const records = store.records();
+  const hidden = hiddenByWriter(records);
+  const threads = foldThreads(records, me.email);
+  const derived = (dft) => dft.replace(/^dft-/, "shr-");
+  const ordered = [...drafts.filter((d) => d.draft.kind !== "resolve" && d.draft.kind !== "reopen"), ...drafts.filter((d) => d.draft.kind === "resolve" || d.draft.kind === "reopen")];
+  const planned = [];
+  const refused = [];
+  for (const r of ordered) {
+    const d = r.draft;
+    const id = derived(d.id);
+    const body3 = (edits[d.id] ?? r.body).trim();
+    const drafted = r.device ?? (typeof r.agent === "object" ? r.agent.host : void 0);
+    const from = drafted ? { drafted } : {};
+    if (records.some((x) => x.id === id)) {
+      planned.push(records.find((x) => x.id === id));
+      continue;
+    }
+    if (d.kind === "thread") {
+      const commit = note.anchor.side === "from" ? note.fromRev : note.rev;
+      if (!commit || commit === WORKTREE2 || !note.blob)
+        refused.push(`${d.id}: the note is not on committed text, so the reviewers would not have its words (D5)`);
+      else if (!body3)
+        refused.push(`${d.id}: a new thread needs words`);
+      else
+        planned.push({ ...base2("note", id, id, null, me, body3, { via: "cli" }, commit), ...from, path: found.path, blob: note.blob, ...note.anchor.side === "from" && note.fromRev ? { fromRev: note.fromRev } : {}, anchor: note.anchor });
+      continue;
+    }
+    const t = d.re ? threadFor(store, me.email, d.re) : null;
+    if (!t) {
+      refused.push(`${d.id}: ${d.re} is not in this device's copy of the store \u2014 fetch first`);
+      continue;
+    }
+    const thread = threads.find((x) => x.id === t.thread.id) ?? t.thread;
+    if (d.re && hidden.has(d.re))
+      refused.push(`${d.id}: the record it answers (${d.re}) was hidden by its writer`);
+    else if (d.kind === "reply" && thread.status === "resolved")
+      refused.push(`${d.id}: ${thread.id} was resolved meanwhile, and a resolved thread takes no replies until it is reopened (C3)`);
+    else if (d.kind === "resolve" && thread.status === "resolved")
+      refused.push(`${d.id}: ${thread.id} is resolved already`);
+    else if (d.kind === "reopen" && thread.status !== "resolved")
+      refused.push(`${d.id}: ${thread.id} is open already`);
+    else if (d.kind === "reply" && !body3)
+      refused.push(`${d.id}: a reply needs words`);
+    else {
+      const last = d.kind === "reply" ? d.re : thread.replies?.filter((x) => x.event !== "unreadable").at(-1)?.id ?? thread.id;
+      planned.push({ ...base2(d.kind, id, thread.id, last ?? thread.id, me, body3, { via: "cli" }, d.commit), ...from });
+    }
+  }
+  if (refused.length)
+    throw new StoreError(`nothing was shared: ${refused.join("; ")}`, "other");
+  for (const rec of planned) {
+    if (!records.some((x) => x.id === rec.id))
+      store.write(rec, { via: "viewer", for: noteId, root: source.repoRoot });
+  }
+  const shared = new Map(ordered.map((r) => [r.draft.id, derived(r.draft.id)]));
+  const all4 = await listAnnotations(source.notesHome, found.path);
+  const at = all4.findIndex((a) => a.id === noteId);
+  const current = all4[at];
+  const replies = (current.replies ?? []).map((r) => r.draft && shared.has(r.draft.id) ? { ...r, draft: { ...r.draft, shared: shared.get(r.draft.id) } } : r);
+  const answered = { ...current.answered ?? {} };
+  for (const rec of planned)
+    if (rec.kind !== "note")
+      answered[rec.thread] = rec.id;
+  const allShared = replies.every((r) => !r.draft || r.draft.shared);
+  all4[at] = { ...current, replies, answered, ...allShared ? { status: "resolved", resolvedBy: { note: `shared: ${planned.map((p2) => p2.id).join(", ")}`, at: (/* @__PURE__ */ new Date()).toISOString(), by: me.email } } : {} };
+  await writeSidecar(source.notesHome, found.path, all4);
+  return { path: found.path, annotation: all4[at], records: planned.map((p2) => p2.id) };
+}
 async function hideShared(source, recordId, hide, who) {
   if (who.via !== "viewer")
     throw new StoreError("hiding is a person's act, in the viewer (B3)", "other");
@@ -35024,15 +35376,15 @@ async function editShared(source, recordId, body3, who) {
   return foldThreads(store.records(), me.email).find((t) => t.id === entry.record.thread);
 }
 async function checkRevise(source, who, recordId) {
-  const ask = 'ask your person to leave a local note naming the record to revise \u2014 "revise my reply <id>: \u2026" \u2014 then name that note with --for';
+  const ask2 = 'ask your person to leave a local note naming the record to revise \u2014 "revise my reply <id>: \u2026" \u2014 then name that note with --for';
   if (!who.for)
-    throw new StoreError(`revising ${recordId} from the command line needs the local note that asked (--for ID) \u2014 ${ask}`, "other");
-  const found = await findAnnotation(source.repoRoot, who.for);
+    throw new StoreError(`revising ${recordId} from the command line needs the local note that asked (--for ID) \u2014 ${ask2}`, "other");
+  const found = await findAnnotation(source.notesHome, who.for);
   if (!found || found.annotation.status !== "open")
-    throw new StoreError(`--for ${who.for}: no open local note by that id \u2014 ${ask}`, "other");
+    throw new StoreError(`--for ${who.for}: no open local note by that id \u2014 ${ask2}`, "other");
   const named = [...found.annotation.about ? [found.annotation.about] : [], ...found.annotation.body.match(SHARED_ID) ?? []];
   if (!named.includes(recordId))
-    throw new StoreError(`--for ${who.for}: that note does not name ${recordId} \u2014 ${ask}`, "other");
+    throw new StoreError(`--for ${who.for}: that note does not name ${recordId} \u2014 ${ask2}`, "other");
 }
 async function takeBackShared(source, id, who = { via: "cli" }) {
   const { store, me } = await pairedStore(source.repoRoot);
@@ -35091,7 +35443,7 @@ async function reviewStatus(source, opts = {}) {
   const moved = pairing || followed.leftBehind ? null : await pairedElsewhere(source.repoRoot, store);
   const lastMove = pairing?.moved?.at(-1);
   const awaiting = pairing ? null : movedAwaitingPairing(store);
-  const git2 = await identityOf(source.repoRoot);
+  const git3 = await identityOf(source.repoRoot);
   let fetchError;
   if (opts.fetch && pairing) {
     try {
@@ -35113,7 +35465,7 @@ async function reviewStatus(source, opts = {}) {
     destination: await store.destination().catch(() => `${store.pointer.remote} (branch ${store.pointer.branch})`),
     paired: pairing ? { email: pairing.email, name: pairing.name, at: pairing.at, ...pairing.server ? { server: pairing.server } : {}, ...pairing.by ? { by: pairing.by } : {} } : false,
     ...!pairing && store.pairRequest() ? { pairRequest: store.pairRequest() } : {},
-    identity: git2.email ? `${git2.name} <${git2.email}>` : "none \u2014 git config user.email is not set",
+    identity: git3.email ? `${git3.name} <${git3.email}>` : "none \u2014 git config user.email is not set",
     ...cache.fetchedAt ? { fetchedAt: cache.fetchedAt } : {},
     ...fetchError ? { fetchError } : {},
     ...cache.rewritten ? { rewritten: cache.rewritten } : {},
@@ -35157,7 +35509,7 @@ async function commonDir(root5) {
   return r.code === 0 ? r.out.trim() : null;
 }
 async function otherOutboxes(root5, except) {
-  const home = join6(stateHome(), "review");
+  const home = join7(stateHome(), "review");
   let names;
   try {
     names = readdirSync3(home);
@@ -35169,12 +35521,12 @@ async function otherOutboxes(root5, except) {
     return [];
   const out = [];
   for (const n of names) {
-    const dir = join6(home, n);
+    const dir = join7(home, n);
     if (dir === except)
       continue;
     let files;
     try {
-      files = readdirSync3(join6(dir, "outbox")).filter((f) => f.endsWith(".json"));
+      files = readdirSync3(join7(dir, "outbox")).filter((f) => f.endsWith(".json"));
     } catch {
       continue;
     }
@@ -35182,7 +35534,7 @@ async function otherOutboxes(root5, except) {
       continue;
     let theirs = null;
     try {
-      const e = JSON.parse(readFileSync3(join6(dir, "outbox", files[0]), "utf8"));
+      const e = JSON.parse(readFileSync3(join7(dir, "outbox", files[0]), "utf8"));
       theirs = await commonDir(e.local.root);
     } catch {
       continue;
@@ -35191,7 +35543,7 @@ async function otherOutboxes(root5, except) {
       continue;
     let store = n;
     try {
-      store = JSON.parse(readFileSync3(join6(dir, "store.json"), "utf8")).remote ?? n;
+      store = JSON.parse(readFileSync3(join7(dir, "store.json"), "utf8")).remote ?? n;
     } catch {
     }
     out.push({ store, count: files.length });
@@ -35281,7 +35633,7 @@ async function subscribe(source, opts, who) {
   return { subscribed: { author: me.email.toLowerCase(), name: me.name, email, ...opts.path ? { path: opts.path } : {}, at: record.at } };
 }
 async function sendCode(source, store, me, want) {
-  const file = join6(store.dir, "subscribe-request.json");
+  const file = join7(store.dir, "subscribe-request.json");
   try {
     const was = JSON.parse(readFileSync3(file, "utf8"));
     if (was.email === want.email && Date.now() - Date.parse(was.at) < CODE_LIFE_MS) {
@@ -35312,7 +35664,7 @@ async function confirmSubscription(source, code4, who) {
   if (who.via !== "viewer" && who.via !== "person")
     throw new StoreError("a code is typed back by its person, in the viewer or at their terminal", "other");
   const { store, me } = await pairedStore(source.repoRoot);
-  const file = join6(store.dir, "subscribe-request.json");
+  const file = join7(store.dir, "subscribe-request.json");
   let want;
   try {
     want = JSON.parse(readFileSync3(file, "utf8"));
@@ -35639,9 +35991,9 @@ function formatThread(t, focus, asked) {
 var CLI = { via: "cli" };
 async function docsByDestination(source, only) {
   if (!("renameMap" in source)) {
-    return only !== void 0 ? [{ path: only, annotations: await listAnnotations(source.repoRoot, only) }] : listAllAnnotations(source.repoRoot);
+    return only !== void 0 ? [{ path: only, annotations: await listAnnotations(source.notesHome, only) }] : listAllAnnotations(source.notesHome);
   }
-  const [all4, map3] = await Promise.all([listAllAnnotations(source.repoRoot), source.renameMap()]);
+  const [all4, map3] = await Promise.all([listAllAnnotations(source.notesHome), source.renameMap()]);
   const groups = /* @__PURE__ */ new Map();
   for (const { path: path2, annotations } of all4) {
     for (const a of annotations) {
@@ -35662,7 +36014,7 @@ async function docsByDestination(source, only) {
   return docs;
 }
 async function consolidateNotes(source, opts = {}) {
-  const root5 = source.repoRoot;
+  const root5 = source.notesHome;
   const out = { moved: [], removed: [] };
   const plan = [];
   if (opts.from !== void 0 || opts.to !== void 0) {
@@ -35741,9 +36093,9 @@ async function upgradeAnchors(source, path2, annotations) {
   if (upgraded.size === 0)
     return annotations;
   for (const [id, anchor] of upgraded) {
-    const found = await findAnnotation(source.repoRoot, id).catch(() => null);
+    const found = await findAnnotation(source.notesHome, id).catch(() => null);
     if (found)
-      await updateAnnotation(source.repoRoot, found.path, id, { anchor }).catch(() => void 0);
+      await updateAnnotation(source.notesHome, found.path, id, { anchor }).catch(() => void 0);
   }
   return annotations.map((a) => upgraded.has(a.id) ? { ...a, anchor: upgraded.get(a.id) } : a);
 }
@@ -35852,7 +36204,7 @@ async function closeNote(source, id, status, note, by, who = CLI) {
     const t = await setSharedState(source, id, "resolve", note, who);
     return { path: t.path, annotation: t };
   }
-  const found = await findAnnotation(source.repoRoot, id);
+  const found = await findAnnotation(source.notesHome, id);
   if (!found)
     return null;
   let commit;
@@ -35861,14 +36213,16 @@ async function closeNote(source, id, status, note, by, who = CLI) {
       commit = (await source.resolve("HEAD")).rev;
   } catch {
   }
+  const { agent: _was, ...before } = found.annotation.resolvedBy ?? {};
   const resolvedBy = {
-    ...found.annotation.resolvedBy,
+    ...before,
     ...note ? { note } : {},
     ...commit ? { commit } : {},
-    by: by ?? `${userInfo2().username}@${hostname2()}`,
-    at: (/* @__PURE__ */ new Date()).toISOString()
+    by: by ?? `${userInfo2().username}@${hostname3()}`,
+    at: (/* @__PURE__ */ new Date()).toISOString(),
+    ...who.agent ? { agent: who.agent } : {}
   };
-  const updated = await updateAnnotation(source.repoRoot, found.path, id, {
+  const updated = await updateAnnotation(source.notesHome, found.path, id, {
     status,
     ...Object.keys(resolvedBy).length > 0 ? { resolvedBy } : {}
   });
@@ -35879,10 +36233,10 @@ async function replyToNote(source, id, body3, author, who = CLI) {
     const t = await replyShared(source, id, body3, who);
     return { path: t.path, annotation: t };
   }
-  const found = await findAnnotation(source.repoRoot, id);
+  const found = await findAnnotation(source.notesHome, id);
   if (!found)
     return null;
-  const updated = await appendReply(source.repoRoot, found.path, id, { author, body: body3 });
+  const updated = await appendReply(source.notesHome, found.path, id, { author, body: body3, ...who.agent ? { agent: who.agent } : {} });
   return updated ? { path: found.path, annotation: updated } : null;
 }
 async function reopenNote(source, id, why, author, who = CLI) {
@@ -35890,30 +36244,28 @@ async function reopenNote(source, id, why, author, who = CLI) {
     const t = await setSharedState(source, id, "reopen", why, who);
     return { path: t.path, annotation: t };
   }
-  const found = await findAnnotation(source.repoRoot, id);
+  const found = await findAnnotation(source.notesHome, id);
   if (!found)
     return null;
   if (found.annotation.status === "open")
     return { path: found.path, annotation: found.annotation };
-  const updated = await updateAnnotation(source.repoRoot, found.path, id, { status: "open" });
+  const updated = await updateAnnotation(source.notesHome, found.path, id, { status: "open" });
   if (!updated)
     return null;
-  if (why) {
-    const withReply = await appendReply(source.repoRoot, found.path, id, { author, body: why });
-    if (withReply)
-      return { path: found.path, annotation: withReply };
-  }
-  return { path: found.path, annotation: updated };
+  if (!why && !who.agent)
+    return { path: found.path, annotation: updated };
+  const withReply = await appendReply(source.notesHome, found.path, id, { author, body: why ?? "", event: "reopened", ...who.agent ? { agent: who.agent } : {} });
+  return { path: found.path, annotation: withReply ?? updated };
 }
 async function dropNote(source, id, who = CLI) {
   if (isSharedId(id)) {
     const { thread } = await takeBackShared(source, id, who);
     return { path: thread?.path ?? "", annotation: thread ?? { id } };
   }
-  const found = await findAnnotation(source.repoRoot, id);
+  const found = await findAnnotation(source.notesHome, id);
   if (!found)
     return null;
-  const gone = await deleteAnnotation(source.repoRoot, found.path, id);
+  const gone = await deleteAnnotation(source.notesHome, found.path, id);
   return gone ? { path: found.path, annotation: gone } : null;
 }
 async function editNote(source, id, body3, who = CLI) {
@@ -35923,7 +36275,7 @@ async function editNote(source, id, body3, who = CLI) {
   }
   if (who.via !== "viewer")
     throw new StoreError("editing a local note is a person's act, in the viewer (B3)", "other");
-  const found = await findAnnotation(source.repoRoot, id);
+  const found = await findAnnotation(source.notesHome, id);
   if (!found)
     return null;
   const was = found.annotation;
@@ -35933,7 +36285,7 @@ async function editNote(source, id, body3, who = CLI) {
     throw new StoreError("an edit needs words; delete the note to remove it", "other");
   if (body3.trim() === was.body)
     return found;
-  const updated = await updateAnnotation(source.repoRoot, found.path, id, {
+  const updated = await updateAnnotation(source.notesHome, found.path, id, {
     body: body3.trim(),
     edits: [...was.edits ?? [], { at: (/* @__PURE__ */ new Date()).toISOString(), body: was.body }]
   });
@@ -35944,10 +36296,10 @@ async function dropReply(source, id, at, who = CLI) {
     const t = await takeBackSharedReply(source, id, at, who);
     return t ? { path: t.path, annotation: t } : null;
   }
-  const found = await findAnnotation(source.repoRoot, id);
+  const found = await findAnnotation(source.notesHome, id);
   if (!found)
     return null;
-  const left = await deleteReply(source.repoRoot, found.path, id, at);
+  const left = await deleteReply(source.notesHome, found.path, id, at);
   return left ? { path: found.path, annotation: left } : null;
 }
 var STATE_LABEL = {
@@ -35958,7 +36310,7 @@ var STATE_LABEL = {
 };
 var hang = (text9, col) => text9.replace(/\r?\n/g, `
 ${" ".repeat(col)}`);
-function formatNotes(views) {
+function formatNotes(views, o = {}) {
   if (views.length === 0)
     return "no open notes";
   const lines = [];
@@ -35988,17 +36340,32 @@ function formatNotes(views) {
       lines.push(`    (was closed: ${hang(a.resolvedBy.note, 17)})`);
     }
     for (const r of a.replies ?? []) {
-      const by = `${r.author.split("@")[0]}: `;
+      const name = typeof r.agent === "object" ? `${agentLabel(r.agent)}, for ${r.author.split("@")[0]}` : r.author.split("@")[0];
+      if (r.draft) {
+        const what = r.draft.kind === "thread" ? "a new thread here" : `a ${r.draft.kind} in ${r.draft.re}`;
+        lines.push(`    draft ${r.draft.id} by ${name}: ${what}${r.draft.shared ? `, shared as ${r.draft.shared}` : ""}${r.body ? `: ${hang(r.body, 12 + r.draft.id.length + name.length)}` : ""}`);
+        continue;
+      }
+      if (r.event === "reopened") {
+        lines.push(`    reopened by ${name}${r.body ? `: ${hang(r.body, 18 + name.length)}` : ""}`);
+        continue;
+      }
+      const by = `${name}: `;
       lines.push(`    reply: ${by}${hang(r.body, 11 + by.length)}`);
     }
+    if (draftReady(a))
+      lines.push(`    draft waiting for ${a.author.split("@")[0]} to share \u2014 nothing to do here until they answer it`);
     const where = (a.anchor?.trail ?? []).filter(Boolean).join(" \u203A ");
     const when = a.created?.slice(0, 10) ?? "undated";
     const rev = !a.rev ? "nothing recorded" : a.rev === WORKTREE2 ? "working tree" : a.rev.slice(0, 8);
     lines.push(`    where: ${where || "(no heading)"} \xB7 ${when} \xB7 against ${rev}`);
+    if (a.device && a.device !== o.device)
+      lines.push(`    from:  ${a.device}`);
     if (a.status !== "open") {
       const said = a.resolvedBy?.note;
       const commit = a.resolvedBy?.commit;
-      lines.push(`    status: ${a.status}${commit ? ` in ${commit.slice(0, 8)}` : ""}`);
+      const closer = a.resolvedBy?.agent ? `, by ${agentLabel(a.resolvedBy.agent)}${a.resolvedBy.by ? `, for ${a.resolvedBy.by.split("@")[0]}` : ""}` : "";
+      lines.push(`    status: ${a.status}${commit ? ` in ${commit.slice(0, 8)}` : ""}${closer}`);
       if (v.closingSubject)
         lines.push(`    why:   ${v.closingSubject}`);
       if (said)
@@ -36020,7 +36387,7 @@ function ellipsis(s2, n) {
 }
 
 // packages/core/dist/review.js
-import { hostname as hostname3, userInfo as userInfo3 } from "node:os";
+import { hostname as hostname4, userInfo as userInfo3 } from "node:os";
 import { dirname as dirname3, extname, resolve as resolvePath, sep } from "node:path";
 init_annotations();
 var Lru = class {
@@ -36319,8 +36686,8 @@ var Review = class {
         body: String(args.annotation.body ?? "")
       }, args.who ?? { via: "viewer" });
     }
-    return appendAnnotation(source.repoRoot, args.path, {
-      author: `${userInfo3().username}@${hostname3()}`,
+    return appendAnnotation(source.notesHome, args.path, {
+      author: `${userInfo3().username}@${hostname4()}`,
       status: "open",
       ...args.annotation,
       ...base3,
@@ -36344,9 +36711,9 @@ var Review = class {
     }
     delete patch4.body;
     if (patch4.status === "resolved" || patch4.status === "wontfix") {
-      patch4.resolvedBy = { ...patch4.resolvedBy, by: `${userInfo3().username}@${hostname3()}`, at: (/* @__PURE__ */ new Date()).toISOString() };
+      patch4.resolvedBy = { ...patch4.resolvedBy, by: `${userInfo3().username}@${hostname4()}`, at: (/* @__PURE__ */ new Date()).toISOString() };
     }
-    const ann = await updateAnnotation(source.repoRoot, args.path, args.id, patch4);
+    const ann = await updateAnnotation(source.notesHome, args.path, args.id, patch4);
     if (!ann)
       throw new GitError(`no annotation '${args.id}' on ${args.path}`);
     return ann;
@@ -36357,8 +36724,8 @@ var Review = class {
       throw new GitError("a reply needs a body");
     if (isSharedId(args.id))
       return replyShared(source, args.id, args.body, { via: "viewer" });
-    const ann = await appendReply(source.repoRoot, args.path, args.id, {
-      author: `${userInfo3().username}@${hostname3()}`,
+    const ann = await appendReply(source.notesHome, args.path, args.id, {
+      author: `${userInfo3().username}@${hostname4()}`,
       body: args.body.trim()
     });
     if (!ann)
@@ -36371,7 +36738,7 @@ var Review = class {
       await takeBackShared(source, args.id, { via: "viewer" });
       return { deleted: args.id };
     }
-    const gone = await deleteAnnotation(source.repoRoot, args.path, args.id);
+    const gone = await deleteAnnotation(source.notesHome, args.path, args.id);
     if (!gone)
       throw new GitError(`no annotation '${args.id}' on ${args.path}`);
     return { deleted: gone.id };
@@ -36381,7 +36748,7 @@ var Review = class {
     const source = await this.registry.get(args.root);
     if (isSharedId(args.id))
       return { annotation: await takeBackSharedReply(source, args.id, args.at, { via: "viewer" }) };
-    const left = await deleteReply(source.repoRoot, args.path, args.id, args.at);
+    const left = await deleteReply(source.notesHome, args.path, args.id, args.at);
     if (!left)
       throw new GitError(`no reply at ${args.at} on '${args.id}' (${args.path})`);
     return { annotation: left };
@@ -36471,6 +36838,491 @@ async function canonicalAnchor(source, blob, anchor) {
   } catch {
     return null;
   }
+}
+
+// packages/core/dist/note-ops.js
+init_annotations();
+import { randomBytes as randomBytes2 } from "node:crypto";
+var opId = () => `op-${Date.now().toString(36)}-${randomBytes2(5).toString("hex")}`;
+var same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+function opsFor(path2, before, after) {
+  if (!before && !after)
+    return [];
+  const id = (after ?? before).id;
+  const base3 = { id, path: path2 };
+  if (!before)
+    return [{ ...base3, op: opId(), kind: "add", record: after }];
+  if (!after)
+    return [{ ...base3, op: opId(), kind: "delete" }];
+  const out = [];
+  const had = new Set((before.replies ?? []).map((r) => r.at));
+  const has = new Set((after.replies ?? []).map((r) => r.at));
+  for (const r of before.replies ?? [])
+    if (!has.has(r.at))
+      out.push({ ...base3, op: opId(), kind: "delete-reply", at: r.at });
+  for (const r of after.replies ?? [])
+    if (!had.has(r.at))
+      out.push({ ...base3, op: opId(), kind: "reply", reply: r });
+  for (const r of after.replies ?? []) {
+    const was2 = (before.replies ?? []).find((b) => b.at === r.at);
+    if (was2?.draft && !was2.draft.shared && r.draft?.shared)
+      out.push({ ...base3, op: opId(), kind: "draft-shared", at: r.at, shared: r.draft.shared, ...after.answered ? { answered: after.answered } : {} });
+  }
+  const was = { status: before.status, body: before.body };
+  if (after.body !== before.body) {
+    const edit = (after.edits ?? []).find((e) => !(before.edits ?? []).some((b) => b.at === e.at));
+    out.push({ ...base3, op: opId(), kind: "edit", body: after.body, ...edit ? { edit } : {}, was });
+  }
+  if (after.status !== before.status || !same(after.resolvedBy, before.resolvedBy)) {
+    out.push({ ...base3, op: opId(), kind: "status", status: after.status, ...after.resolvedBy ? { resolvedBy: after.resolvedBy } : {}, was: { status: before.status, body: after.body } });
+  }
+  return out;
+}
+async function applyOp(home, op) {
+  const all4 = await listAnnotations(home, op.path);
+  const at = all4.findIndex((a) => a.id === op.id);
+  if (op.kind === "add") {
+    if (at === -1)
+      await placeAnnotation(home, op.path, { ...op.record, id: op.id });
+    return { op: op.op, applied: true };
+  }
+  if (at === -1)
+    return op.kind === "delete" ? { op: op.op, applied: true } : { op: op.op, dropped: `${op.id} was deleted on another device` };
+  const note = all4[at];
+  if ((op.kind === "status" || op.kind === "edit") && op.was) {
+    const done = op.kind === "status" ? note.status === op.status && same(note.resolvedBy, op.resolvedBy) : note.body === op.body;
+    if (done)
+      return { op: op.op, applied: true };
+    if (note.status !== op.was.status || note.body !== op.was.body) {
+      const now = note.body !== op.was.body ? "its words were changed" : `it was ${note.status === "open" ? "reopened" : note.status}`;
+      return { op: op.op, dropped: `${op.id} changed on another device since this was done (${now}): read it again` };
+    }
+  }
+  switch (op.kind) {
+    case "delete":
+      all4.splice(at, 1);
+      break;
+    case "reply": {
+      const replies = note.replies ?? [];
+      if (replies.some((r) => r.at === op.reply.at))
+        return { op: op.op, applied: true };
+      all4[at] = { ...note, replies: [...replies, op.reply].sort((a, b) => a.at.localeCompare(b.at)) };
+      break;
+    }
+    case "delete-reply":
+      all4[at] = { ...note, replies: (note.replies ?? []).filter((r) => r.at !== op.at) };
+      break;
+    case "draft-shared": {
+      const replies = (note.replies ?? []).map((r) => r.at === op.at && r.draft && !r.draft.shared ? { ...r, draft: { ...r.draft, shared: op.shared } } : r);
+      all4[at] = { ...note, replies, ...op.answered ? { answered: { ...note.answered ?? {}, ...op.answered } } : {} };
+      break;
+    }
+    case "edit": {
+      const edits = note.edits ?? [];
+      all4[at] = { ...note, body: op.body, ...op.edit && !edits.some((e) => e.at === op.edit.at) ? { edits: [...edits, op.edit] } : {} };
+      break;
+    }
+    case "status": {
+      const { resolvedBy: _was, ...rest } = note;
+      all4[at] = { ...rest, status: op.status, ...op.resolvedBy ? { resolvedBy: op.resolvedBy } : {} };
+      break;
+    }
+  }
+  await writeSidecar(home, op.path, all4);
+  return { op: op.op, applied: true };
+}
+function isNoteOp(v) {
+  const o = v;
+  if (!o || typeof o !== "object" || typeof o.op !== "string" || typeof o.id !== "string" || typeof o.path !== "string")
+    return false;
+  if (!/^ann-[\w-]+$/.test(o.id) || o.path.split("/").some((p2) => p2 === ".." || p2 === "") || o.path.startsWith("/"))
+    return false;
+  switch (o.kind) {
+    case "add":
+      return typeof o.record === "object" && o.record?.id === o.id;
+    case "reply":
+      return typeof o.reply?.at === "string";
+    case "status":
+      return ["open", "resolved", "wontfix"].includes(o.status ?? "");
+    case "edit":
+      return typeof o.body === "string";
+    case "delete":
+      return true;
+    case "delete-reply":
+      return typeof o.at === "string";
+    case "draft-shared":
+      return typeof o.at === "string" && /^shr-[\w-]+$/.test(String(o.shared ?? ""));
+    default:
+      return false;
+  }
+}
+
+// packages/core/dist/service-mode.js
+init_annotations();
+import { execFile as execFile2 } from "node:child_process";
+import { createHash as createHash2 } from "node:crypto";
+import { chmodSync, closeSync, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync4, readdirSync as readdirSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync4, writeFileSync as writeFileSync2 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { dirname as dirname4, join as join8 } from "node:path";
+var ASK_MS = 2e3;
+var QUIET_MS = 6e4;
+var REPOS_MAX_AGE_MS = 10 * 6e4;
+var joinedFile = () => join8(homedir2(), ".config", "mdrev", "service");
+var serviceDir = () => join8(process.env.MDREV_STATE_DIR ?? join8(homedir2(), ".mdrev"), "service");
+var repoDir = (id) => join8(serviceDir(), String(id));
+function readJoined() {
+  try {
+    const j = JSON.parse(readFileSync4(joinedFile(), "utf8"));
+    return typeof j.url === "string" && typeof j.token === "string" && typeof j.device === "string" ? j : null;
+  } catch {
+    return null;
+  }
+}
+function readJson(file) {
+  try {
+    return JSON.parse(readFileSync4(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function writeJson(file, value2) {
+  mkdirSync3(dirname4(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
+  writeFileSync2(tmp, `${JSON.stringify(value2)}
+`);
+  renameSync3(tmp, file);
+}
+async function withLock2(id, fn, waitMs = 5e3) {
+  const file = join8(repoDir(id), "lock");
+  mkdirSync3(dirname4(file), { recursive: true });
+  const until = Date.now() + waitMs;
+  for (; ; ) {
+    try {
+      closeSync(openSync(file, "wx"));
+      break;
+    } catch {
+      try {
+        if (Date.now() - statSync4(file).mtimeMs > LOCK_STALE_MS)
+          rmSync3(file, { force: true });
+      } catch {
+      }
+      if (Date.now() > until)
+        throw new Error(`another mdrev holds ${file}; try again`);
+      await new Promise((done) => setTimeout(done, 25));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    rmSync3(file, { force: true });
+  }
+}
+var LOCK_STALE_MS = 1e4;
+var ServiceError = class extends Error {
+  status;
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+};
+async function ask(joined, method, path2, body3, timeoutMs = ASK_MS) {
+  let r;
+  try {
+    r = await fetch(new URL(path2, joined.url), {
+      method,
+      headers: { authorization: `Bearer ${joined.token}`, ...body3 !== void 0 ? { "content-type": "application/json" } : {} },
+      ...body3 !== void 0 ? { body: JSON.stringify(body3) } : {},
+      signal: AbortSignal.timeout(Math.max(1, timeoutMs))
+    });
+  } catch (e) {
+    throw new ServiceError(0, `the service did not answer (${e.name === "TimeoutError" ? "timed out" : e.message})`);
+  }
+  let parsed = null;
+  try {
+    parsed = await r.json();
+  } catch {
+  }
+  if (r.status >= 500)
+    throw new ServiceError(0, `the service answered ${r.status}`);
+  if (!r.ok)
+    throw new ServiceError(r.status, parsed?.error ?? `the service answered ${r.status}`);
+  return parsed;
+}
+async function registeredRepos(joined, o = {}) {
+  const file = join8(serviceDir(), "repos.json");
+  const quiet = join8(serviceDir(), "quiet.json");
+  const kept = readJson(file);
+  const usable = kept && kept.url === joined.url ? kept : null;
+  if (usable && !o.refresh && Date.now() - usable.at < REPOS_MAX_AGE_MS)
+    return usable.repos;
+  if (o.timeoutMs === 0)
+    return usable?.repos ?? null;
+  const q = readJson(quiet);
+  if (q && Date.now() - q.at < QUIET_MS)
+    return usable?.repos ?? null;
+  try {
+    const { repos } = await ask(joined, "GET", "/api/device/repos", void 0, o.timeoutMs ?? ASK_MS);
+    writeJson(file, { at: Date.now(), url: joined.url, repos });
+    rmSync3(quiet, { force: true });
+    return repos;
+  } catch (e) {
+    if (e instanceof ServiceError && e.status === 401) {
+      writeJson(file, { at: Date.now(), url: joined.url, repos: [], revoked: true });
+      return [];
+    }
+    if (e instanceof ServiceError && e.status === 0)
+      writeJson(quiet, { at: Date.now() });
+    return usable?.repos ?? null;
+  }
+}
+var run3 = (cwd, args) => new Promise((done) => execFile2("git", args, { cwd, maxBuffer: 16 << 20 }, (e, out, err) => done({ code: e ? typeof e.code === "number" ? e.code : 1 : 0, out: String(out), err: String(err) })));
+function addressOf(url) {
+  const a = url.trim();
+  const scp = /^(?:[\w.-]+@)?([\w.-]+):(?!\/\/)(.+)$/.exec(a);
+  let host;
+  let path2;
+  if (/^[a-z+]+:\/\//i.test(a)) {
+    try {
+      const u = new URL(a);
+      if (u.protocol === "file:")
+        return null;
+      host = u.hostname;
+      path2 = u.pathname;
+    } catch {
+      return null;
+    }
+  } else if (scp) {
+    host = scp[1];
+    path2 = scp[2];
+  } else
+    return null;
+  path2 = path2.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
+  return host && path2 ? { host: host.toLowerCase(), path: path2.toLowerCase() } : null;
+}
+async function serviceRemote(root5, repos) {
+  for (const remote of ["origin", "upstream"]) {
+    const r = await run3(root5, ["config", "--get", `remote.${remote}.url`]);
+    const at = r.code === 0 ? addressOf(r.out) : null;
+    if (!at)
+      continue;
+    const repo = repos.find((x) => x.path.toLowerCase() === at.path && x.hosts.some((h2) => h2.toLowerCase() === at.host));
+    if (repo)
+      return { remote, repo };
+  }
+  return null;
+}
+async function notesOutOfGit(root5) {
+  try {
+    statSync4(join8(root5, ".mdrev"));
+  } catch {
+    mkdirSync3(join8(root5, ".mdrev"), { recursive: true });
+    await ensureNotesIgnored(root5);
+  }
+  const tracked = await run3(root5, ["ls-files", "--", ".mdrev/annotations"]);
+  if (tracked.code === 0 && tracked.out.trim()) {
+    const n = tracked.out.trim().split("\n").length;
+    return `notes here are committed to git (${n} file${n === 1 ? "" : "s"} under .mdrev/annotations); \`mdrev --untrack-notes\` untracks them`;
+  }
+  const ignored = await run3(root5, ["check-ignore", "-q", ".mdrev/annotations/probe.md.jsonl"]);
+  if (ignored.code !== 0)
+    return "git does not ignore .mdrev/ here, so a note could go out with a commit; restore .mdrev/.gitignore (a line `*`) to use the service";
+  return null;
+}
+async function serviceModeOf(root5, o = {}) {
+  const joined = readJoined();
+  if (!joined)
+    return null;
+  const repos = await registeredRepos(joined, { timeoutMs: o.offline ? 0 : o.timeoutMs });
+  if (repos === null)
+    return { not: `${joined.url} has not listed your repositories yet, and did not answer`, joined };
+  const found = await serviceRemote(root5, repos);
+  if (!found)
+    return { not: `this repository is not on your list on ${joined.url} (origin or upstream)`, joined };
+  const why = await notesOutOfGit(root5);
+  if (why)
+    return { not: why, joined };
+  return { mode: { joined, repo: found.repo, remote: found.remote, root: root5 } };
+}
+function modeLine(a) {
+  if (!a)
+    return null;
+  if ("mode" in a)
+    return `service mode: ${a.mode.joined.url}; end the round with \`mdrev --push\``;
+  return `not in service mode: ${a.not}`;
+}
+var queueDir = (id) => join8(repoDir(id), "queue");
+function enqueue(id, ops) {
+  if (ops.length === 0)
+    return;
+  const dir = queueDir(id);
+  mkdirSync3(dir, { recursive: true });
+  for (const op of ops)
+    writeJson(join8(dir, `${Date.now().toString(36).padStart(10, "0")}-${op.op}.json`), op);
+}
+function queued(id) {
+  const dir = queueDir(id);
+  let names;
+  try {
+    names = readdirSync4(dir).filter((n) => n.endsWith(".json")).sort();
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const n of names) {
+    const op = readJson(join8(dir, n));
+    if (op)
+      out.push({ file: join8(dir, n), op });
+  }
+  return out;
+}
+var BATCH = 200;
+async function flush(mode, timeoutMs = ASK_MS) {
+  const until = Date.now() + timeoutMs;
+  const dropped = [];
+  let sent = 0;
+  let cursor;
+  let waiting = queued(mode.repo.id);
+  while (waiting.length > 0) {
+    const batch = waiting.slice(0, BATCH);
+    let answer;
+    try {
+      answer = await ask(mode.joined, "POST", `/api/device/notes/${mode.repo.id}`, { ops: batch.map((w) => w.op) }, Math.max(1, until - Date.now()));
+    } catch (e) {
+      if (e instanceof ServiceError && e.status >= 400 && e.status !== 401 && e.status !== 404) {
+        const aside = join8(queueDir(mode.repo.id), "refused");
+        mkdirSync3(aside, { recursive: true });
+        for (const w of batch) {
+          renameSync3(w.file, join8(aside, w.file.split("/").pop()));
+          dropped.push({ op: w.op, why: `the service refused it (${e.message}); kept in ${aside}` });
+        }
+        waiting = queued(mode.repo.id);
+        continue;
+      }
+      throw e;
+    }
+    const byOp = new Map(answer.results.map((r) => [r.op, r]));
+    for (const w of batch) {
+      const r = byOp.get(w.op.op);
+      if (!r)
+        continue;
+      sent++;
+      if ("dropped" in r)
+        dropped.push({ op: w.op, why: r.dropped });
+      rmSync3(w.file, { force: true });
+    }
+    if (answer.cursor)
+      cursor = answer.cursor;
+    const left = queued(mode.repo.id);
+    if (left.length >= waiting.length)
+      break;
+    waiting = left;
+  }
+  return { sent, dropped, ...cursor ? { cursor } : {} };
+}
+var checkoutFile = (id, root5) => join8(repoDir(id), "checkouts", `${createHash2("sha256").update(root5).digest("hex").slice(0, 16)}.json`);
+async function pull(mode, timeoutMs = ASK_MS) {
+  if (queued(mode.repo.id).length > 0)
+    return 0;
+  const until = Date.now() + timeoutMs;
+  const file = checkoutFile(mode.repo.id, mode.root);
+  const state = readJson(file) ?? { root: mode.root, cursor: "0" };
+  const from = (since) => ask(mode.joined, "GET", `/api/device/notes/${mode.repo.id}?since=${encodeURIComponent(since)}`, void 0, Math.max(1, until - Date.now()));
+  let got = await from(state.cursor);
+  if (!got.reset && state.generation && got.generation && got.generation !== state.generation)
+    got = { ...await from("0"), reset: true };
+  return withLock2(mode.repo.id, async () => {
+    if (queued(mode.repo.id).length > 0)
+      return 0;
+    const byPath = /* @__PURE__ */ new Map();
+    const of = (p2) => byPath.get(p2) ?? (byPath.set(p2, { put: [], gone: /* @__PURE__ */ new Set() }), byPath.get(p2));
+    for (const n of got.notes)
+      if (typeof n?.path === "string" && typeof n.id === "string")
+        of(n.path).put.push(n);
+    for (const d of got.deleted)
+      if (typeof d?.path === "string")
+        of(d.path).gone.add(d.id);
+    if (got.reset) {
+      const has = /* @__PURE__ */ new Set([...got.notes.map((n) => n.id), ...got.deleted.map((d) => d.id)]);
+      for (const s2 of await stampedNotes(mode.root))
+        if (!has.has(s2.note.id))
+          enqueue(mode.repo.id, opsFor(s2.path, null, s2.note));
+    }
+    let changed = 0;
+    for (const [path2, { put, gone }] of byPath) {
+      const all4 = await listAnnotations(mode.root, path2);
+      const next2 = all4.filter((a) => !(a.personal && (gone.has(a.id) || put.some((p2) => p2.id === a.id))));
+      const kept = all4.filter((a) => !a.personal && put.some((p2) => p2.id === a.id)).map((a) => a.id);
+      for (const p2 of put)
+        if (!kept.includes(p2.id))
+          next2.push({ ...p2, personal: true });
+      if (JSON.stringify(next2) === JSON.stringify(all4))
+        continue;
+      changed++;
+      await writeSidecar(mode.root, path2, next2);
+    }
+    writeJson(file, { root: mode.root, cursor: got.cursor, ...got.generation ? { generation: got.generation } : {}, answered: Date.now() });
+    return changed;
+  });
+}
+var quietFile = (id) => join8(repoDir(id), "quiet.json");
+async function sync(mode, o = {}) {
+  const quiet = readJson(quietFile(mode.repo.id));
+  const state = readJson(checkoutFile(mode.repo.id, mode.root));
+  const asOf = () => {
+    const s2 = readJson(checkoutFile(mode.repo.id, mode.root));
+    return s2?.answered ? new Date(s2.answered).toISOString().replace(/\.\d+Z$/, "Z") : "never";
+  };
+  if (o.minGapMs && state?.answered && Date.now() - state.answered < o.minGapMs && queued(mode.repo.id).length === 0)
+    return { said: null, dropped: [] };
+  if (quiet && Date.now() - quiet.at < QUIET_MS)
+    return { said: `as of ${asOf()}: the service did not answer`, dropped: [] };
+  const until = Date.now() + (o.timeoutMs ?? ASK_MS);
+  try {
+    const sent = await flush(mode, until - Date.now());
+    if (o.pull !== false)
+      await pull(mode, until - Date.now());
+    rmSync3(quietFile(mode.repo.id), { force: true });
+    return { said: null, dropped: sent.dropped };
+  } catch (e) {
+    if (e instanceof ServiceError && e.status !== 0)
+      return { said: `the service refused: ${e.message}`, dropped: [] };
+    writeJson(quietFile(mode.repo.id), { at: Date.now() });
+    return { said: `as of ${asOf()}: the service did not answer`, dropped: [] };
+  }
+}
+async function recordChange(mode, path2, before, after) {
+  const stamped = (after ?? before)?.personal;
+  if (!stamped)
+    return [];
+  const ops = opsFor(path2, before, after);
+  enqueue(mode.repo.id, ops);
+  return ops;
+}
+async function stampedNotes(root5) {
+  const out = [];
+  for (const { path: path2, annotations } of await listAllAnnotations(root5))
+    for (const note of annotations)
+      if (note.personal)
+        out.push({ path: path2, note });
+  return out;
+}
+async function waitingForPush(mode) {
+  const sym = await run3(mode.root, ["symbolic-ref", "--short", "-q", "HEAD"]);
+  const branch = sym.code === 0 ? sym.out.trim() : null;
+  const theirs = branch ? (await run3(mode.root, ["rev-parse", "-q", "--verify", `refs/remotes/${mode.remote}/${branch}`])).out.trim() : "";
+  const out = [];
+  for (const s2 of await stampedNotes(mode.root)) {
+    const draft = (s2.note.replies ?? []).findLast((r) => r.draft && !r.draft.shared)?.draft;
+    const commit = s2.note.status !== "open" ? s2.note.resolvedBy?.commit : draft?.commit;
+    if (!commit)
+      continue;
+    if ((await run3(mode.root, ["merge-base", "--is-ancestor", commit, "HEAD"])).code !== 0)
+      continue;
+    if (theirs && (await run3(mode.root, ["merge-base", "--is-ancestor", commit, theirs])).code === 0)
+      continue;
+    out.push(s2);
+  }
+  return out;
 }
 
 // packages/cli/dist/conform.js
@@ -36921,15 +37773,278 @@ function formatChecks(checks2, opts) {
   return lines.join("\n");
 }
 
+// packages/cli/dist/notes-follow.js
+import { readFile as readFile3, readdir as readdir3, stat as stat3 } from "node:fs/promises";
+import { join as join9 } from "node:path";
+var FOLLOW_INTERVAL_MS = 1e3;
+function isAgentReply(reply) {
+  return Boolean(reply.agent);
+}
+var replyKey = (reply) => JSON.stringify([reply.at, reply.author, reply.body, reply.agent ?? null]);
+var sidecarBase = (home) => typeof home === "string" ? join9(home, ".mdrev", "annotations") : home.dir;
+async function sidecarFingerprint(source) {
+  let home;
+  try {
+    home = source.notesHome;
+  } catch {
+    return null;
+  }
+  const parts = [];
+  const walk = async (dir, rel) => {
+    let entries;
+    try {
+      entries = await readdir3(dir, { withFileTypes: true });
+    } catch (e) {
+      if (e.code !== "ENOENT")
+        throw e;
+      return;
+    }
+    for (const e of entries) {
+      if (e.isDirectory())
+        await walk(join9(dir, e.name), `${rel}${e.name}/`);
+      else if (e.name.endsWith(".jsonl")) {
+        try {
+          const s2 = await stat3(join9(dir, e.name), { bigint: true });
+          parts.push(`${rel}${e.name} ${s2.size} ${s2.mtimeNs} ${s2.ctimeNs}`);
+        } catch (e2) {
+          if (e2.code !== "ENOENT")
+            throw e2;
+        }
+      }
+    }
+  };
+  try {
+    await walk(sidecarBase(home), "");
+  } catch {
+    return null;
+  }
+  return parts.sort().join("\0");
+}
+function createFollower(source, query) {
+  const state = /* @__PURE__ */ new Map();
+  let scanned = null;
+  return {
+    async poll() {
+      const mark3 = await sidecarFingerprint(source);
+      if (mark3 !== null && mark3 === scanned)
+        return [];
+      let views;
+      try {
+        views = await collectNotes(source, query);
+      } catch {
+        return [];
+      }
+      const seen = new Set(views.map((v) => v.annotation.id));
+      const lost = [...state.entries()].filter(([id, t]) => t.phase === "open" && !seen.has(id));
+      if (lost.length > 0 && await scanLooksBroken(source, lost.map(([id, t]) => ({ id, path: t.path })))) {
+        return [];
+      }
+      const emitted = [];
+      for (const v of views) {
+        const replies = (v.annotation.replies ?? []).map(replyKey);
+        const prev = state.get(v.annotation.id);
+        if (!prev || prev.phase === "closed" || prev.closedAt !== v.annotation.resolvedBy?.at) {
+          emitted.push(v);
+        } else {
+          const had = new Set(prev.replies);
+          const fresh = (v.annotation.replies ?? []).filter((r) => !had.has(replyKey(r)));
+          if (fresh.some((r) => !isAgentReply(r)))
+            emitted.push(v);
+        }
+        state.set(v.annotation.id, { phase: "open", path: v.path, replies, closedAt: v.annotation.resolvedBy?.at });
+      }
+      for (const [id, t] of state) {
+        if (t.phase === "open" && !seen.has(id))
+          state.set(id, { ...t, phase: "closed" });
+      }
+      if (mark3 !== null)
+        scanned = mark3;
+      return emitted;
+    }
+  };
+}
+async function scanLooksBroken(source, lost) {
+  let home;
+  try {
+    home = source.notesHome;
+  } catch {
+    return true;
+  }
+  try {
+    await readdir3(sidecarBase(home));
+  } catch (e) {
+    return e.code !== "ENOENT";
+  }
+  for (const { id, path: path2 } of lost) {
+    try {
+      const raw2 = await readFile3(sidecarPath(home, path2), "utf8");
+      const records = raw2.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
+      if (records.some((a) => a.id === id && a.status === "open"))
+        return true;
+    } catch (e) {
+      if (e.code !== "ENOENT")
+        return true;
+    }
+  }
+  return false;
+}
+async function followNotes(o) {
+  const wait = o.delay ?? sleep;
+  const interval = o.intervalMs ?? FOLLOW_INTERVAL_MS;
+  const follower = createFollower(o.source, o.query);
+  let first = true;
+  while (!o.signal?.aborted) {
+    await o.beforePoll?.();
+    const fresh = await follower.poll();
+    if (o.signal?.aborted)
+      break;
+    if (first) {
+      first = false;
+      o.write(o.text ? `${formatNotes(fresh)}
+` : fresh.map((v) => `${JSON.stringify(v)}
+`).join(""));
+    } else {
+      for (const v of fresh)
+        o.write(o.text ? `${formatNotes([v])}
+` : `${JSON.stringify(v)}
+`);
+    }
+    if (o.signal?.aborted)
+      break;
+    await wait(interval, o.signal);
+  }
+}
+function sleep(ms, signal) {
+  return new Promise((resolve2) => {
+    if (signal?.aborted) {
+      resolve2();
+      return;
+    }
+    let timer;
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve2();
+    };
+    timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+
+// packages/cli/dist/service-notes.js
+import { execFile as execFile3 } from "node:child_process";
+var git2 = (cwd, args) => new Promise((done) => execFile3("git", args, { cwd }, (e, out) => done({ code: e ? 1 : 0, out: String(out) })));
+var InService = class _InService {
+  mode;
+  source;
+  sent = false;
+  constructor(mode, source) {
+    this.mode = mode;
+    this.source = source;
+  }
+  /** Whether this command's checkout is in service mode; a copy or a host's own tree never is. */
+  static async of(source, o) {
+    if (o.copy || o.notesDir || !(source instanceof GitBlobSource))
+      return { answer: null, side: null };
+    const answer = await serviceModeOf(source.repoRoot);
+    return { answer, side: answer && "mode" in answer ? new _InService(answer.mode, source) : null };
+  }
+  static line = modeLine;
+  /** The branch the checkout is on, which a note filed here records; null when HEAD is detached. */
+  async branch() {
+    const r = await git2(this.mode.root, ["symbolic-ref", "--short", "-q", "HEAD"]);
+    return r.code === 0 ? r.out.trim() : null;
+  }
+  /** Whether a document has changes not committed, which a resolve in service mode refuses ("Commit, then resolve"). */
+  async uncommitted(path2) {
+    return (await git2(this.mode.root, ["status", "--porcelain", "--", path2])).out.trim() !== "";
+  }
+  /** A note's record, for a refusal that depends on whose it is. */
+  async note(id) {
+    return isSharedId(id) ? null : findAnnotation(this.source.notesHome, id);
+  }
+  /**
+   * Around a verb on one note: its record before and after, queued for the
+   * service when it is a personal note — all under the repository's lock, so
+   * a pull rewriting the sidecar meanwhile cannot swallow the change (#s143).
+   */
+  async changing(id, act) {
+    if (isSharedId(id))
+      return act();
+    return withLock2(this.mode.repo.id, async () => {
+      const before = await findAnnotation(this.source.notesHome, id);
+      const done = await act();
+      if (!before)
+        return done;
+      const after = await findAnnotation(this.source.notesHome, id);
+      if ((await recordChange(this.mode, before.path, before.annotation, after?.annotation ?? null)).length)
+        this.sent = true;
+      return done;
+    });
+  }
+  /** A note filed here, under the lock: written, then queued whole. */
+  async adding(file) {
+    return withLock2(this.mode.repo.id, async () => {
+      const made = await file();
+      if (made && (await recordChange(this.mode, made.path, null, made.note)).length)
+        this.sent = true;
+      return made?.note ?? null;
+    });
+  }
+  /**
+   * After a command: send what it queued, and say what the service would not
+   * take — then read the note back as the service has it, so the change that
+   * was not kept does not stay on this computer either.
+   */
+  async send(say) {
+    if (!this.sent)
+      return;
+    const r = await sync(this.mode, { pull: false });
+    for (const d of r.dropped)
+      say(`${d.op.id}: ${d.why}; this change was not kept`);
+    if (r.dropped.length)
+      await sync(this.mode);
+  }
+  /** Before a listing: what waits goes, and what changed comes — unless the service answered within `minGapMs`. */
+  async listing(say, o = {}) {
+    const r = await sync(this.mode, { timeoutMs: o.timeoutMs ?? ASK_MS, ...o.minGapMs ? { minGapMs: o.minGapMs } : {} });
+    if (r.said)
+      say(r.said);
+    for (const d of r.dropped)
+      say(`${d.op.id}: ${d.why}; this change was not kept`);
+  }
+  /**
+   * A viewer's records, each closed note whose commit its service remote
+   * lacks marked "not pushed" — in the answer, never the record — so the
+   * laptop's page says what the service's does ("Pushing the round" 2).
+   */
+  async markNotPushed(records) {
+    const waiting = new Set((await waitingForPush(this.mode)).map((w) => w.note.id));
+    if (waiting.size === 0)
+      return records;
+    return records.map((r) => {
+      if (!waiting.has(r.id))
+        return r;
+      const on = r.resolvedBy?.agent?.host ?? r.device ?? this.mode.joined.device;
+      return { ...r, notPushed: { on, ...r.resolvedBy?.at ? { at: r.resolvedBy.at } : {} } };
+    });
+  }
+  /** The line a listing ends with: what waits for `mdrev --push`. */
+  async waiting() {
+    const n = (await waitingForPush(this.mode)).length;
+    return n ? `${n} closed note${n === 1 ? "" : "s"} wait${n === 1 ? "s" : ""} for \`mdrev --push\`` : null;
+  }
+};
+
 // packages/cli/dist/version.js
-import { readFileSync as readFileSync4 } from "node:fs";
-import { dirname as dirname4, join as join7 } from "node:path";
+import { readFileSync as readFileSync5 } from "node:fs";
+import { dirname as dirname5, join as join10 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function mdrevVersion() {
-  const here = dirname4(fileURLToPath2(import.meta.url));
-  for (const candidate of [join7(here, "package.json"), join7(here, "..", "package.json")]) {
+  const here = dirname5(fileURLToPath2(import.meta.url));
+  for (const candidate of [join10(here, "package.json"), join10(here, "..", "package.json")]) {
     try {
-      const { version } = JSON.parse(readFileSync4(candidate, "utf8"));
+      const { version } = JSON.parse(readFileSync5(candidate, "utf8"));
       if (typeof version === "string" && version)
         return version;
     } catch {
@@ -36943,12 +38058,29 @@ function versionLine(program) {
 }
 
 // packages/cli/dist/cli.js
+var FOLLOW_SERVICE_MS = 3e3;
+function throttled(ms, task) {
+  let last = Date.now();
+  return async () => {
+    if (Date.now() - last < ms)
+      return;
+    last = Date.now();
+    await task().catch(() => {
+    });
+  };
+}
 var USAGE = `mdrev-cli \u2014 mdrev's store, from the command line, for a host application
 
   mdrev-cli notes list   [--path P] [--all]            open notes (--all: closed too), as JSON
                          [--from REV [--to REV]]       only notes filed against that range
                          [--records]                   the records alone, not judged against the file:
                                                        what a viewer's route returns (it places notes itself)
+                         [--follow]                    keep running: the open notes printed once, then each
+                                                       note as it arrives \u2014 new, reopened, or answered by a
+                                                       person \u2014 one JSON NoteView per line (--text: the
+                                                       prose), until Ctrl-C or TERM. --all, --records and
+                                                       --viewer do not combine with it, and no other verb
+                                                       takes --follow
   mdrev-cli notes add    --path P  < record.json       file a note; the record is {body, anchor, type?, rev?}
   mdrev-cli notes reply  ID --body "\u2026"
   mdrev-cli notes resolve ID [--note "\u2026"]
@@ -36956,6 +38088,10 @@ var USAGE = `mdrev-cli \u2014 mdrev's store, from the command line, for a host a
   mdrev-cli notes reopen  ID [--note "\u2026"]
   mdrev-cli notes delete  ID
   mdrev-cli notes delete-reply ID --at WHEN     one reply out of the thread; WHEN is the reply's "at"
+  mdrev-cli notes share NOTE --viewer [< edits]  a person's Share: the note's drafts become their records in this
+                                                device's outbox, for Push; {edits: {dft-id: words}} on stdin
+  mdrev-cli notes apply --notes-dir DIR < ops   a host's: apply a joined computer's note operations to a
+                                                person's tree, in order, each once (docs/service-devices.md)
   mdrev-cli notes thread ID                     a shared thread (docs/shared-review.md beside mdrev-cli), as a note
   mdrev-cli review status [--fetch]             the review store: where, as whom, what is unpushed
   mdrev-cli review push [--ids A,B]             send the unpushed shared records (only these, given --ids); lists them and the destination
@@ -36992,6 +38128,14 @@ var USAGE = `mdrev-cli \u2014 mdrev's store, from the command line, for a host a
 
 Options:
   --root DIR      the checkout (default: the one the working directory is in)
+  --copy DIR      instead of a checkout, a bare copy of the repository (git clone --bare), read at --ref:
+  --ref BRANCH    the branch a copy is read at; "as it stands" (no --rev) is its tip, and so is a
+                  revision spelled from HEAD (HEAD~1). Nothing is written into a copy
+  --notes-dir DIR keep the notes in DIR, a per-person tree apart from any checkout
+                  (DIR/<document>.jsonl, the same records), instead of the checkout's sidecars.
+                  A copy keeps no notes of its own: its notes verbs need it
+  --state-dir DIR mdrev's state, for shared review and the viewer key, in DIR instead of ~/.mdrev
+                  (as MDREV_STATE_DIR): a host acting for many people gives each their own
   --json          for conform: the checks as JSON (notes and revisions are always JSON)
   --text          for the notes verbs: the prose a person reads, not the JSON
   --author NAME   who is acting (default: user@host)
@@ -37003,10 +38147,18 @@ Options:
   --cap C         for conform: the capability the host minted for --path, if it gates reads
   --version       print the version and exit
 
+Environment:
+  MDREV_AGENT     the agent this harness runs (codex, qoder, \u2026), for one mdrev does not know by its own
+                  variables: a note write from it is marked as that agent's, and it is never taken for
+                  a person at their terminal. Claude Code's CLAUDECODE is known already
+  MDREV_GIT_USER, MDREV_GIT_TOKEN   a host acting for a person: the person's code server account and
+                  token, which a review store's fetch and push use instead of this machine's git
+                  credentials, and the account a pairing is checked against. Never on the command line
+
 Exit codes: 0 done \xB7 1 error (message on stderr) \xB7 2 no such note or document
 `;
 function parse5(argv) {
-  const o = { all: false, json: false, text: false, records: false, headers: {}, version: false, viewer: false, fetch: false, confirm: false, prepare: false, override: false, keepName: false, quick: false, now: false, withCode: false, positional: [] };
+  const o = { all: false, json: false, text: false, records: false, follow: false, headers: {}, version: false, viewer: false, fetch: false, confirm: false, prepare: false, override: false, keepName: false, quick: false, now: false, withCode: false, positional: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next2 = () => {
@@ -37017,6 +38169,14 @@ function parse5(argv) {
     };
     if (a === "--root")
       o.root = next2();
+    else if (a === "--copy")
+      o.copy = next2();
+    else if (a === "--ref")
+      o.ref = next2();
+    else if (a === "--notes-dir")
+      o.notesDir = next2();
+    else if (a === "--state-dir")
+      process.env.MDREV_STATE_DIR = resolvePath2(next2());
     else if (a === "--path")
       o.path = next2();
     else if (a === "--rev")
@@ -37041,6 +38201,10 @@ function parse5(argv) {
       o.text = true;
     else if (a === "--records")
       o.records = true;
+    else if (a === "--follow")
+      o.follow = true;
+    else if (a === "--draft")
+      o.draft = true;
     else if (a === "--url")
       o.url = next2();
     else if (a === "--review")
@@ -37114,12 +38278,30 @@ async function readStdin() {
     chunks.push(chunk);
   return Buffer.concat(chunks).toString("utf8");
 }
+async function openSource(o) {
+  const notes = o.notesDir ? resolvePath2(o.notesDir) : void 0;
+  if (o.copy || o.ref) {
+    if (!o.copy || !o.ref)
+      throw new UsageError("--copy DIR and --ref BRANCH go together: a bare copy is read at one of its branches");
+    if (o.root)
+      throw new UsageError("--copy reads a bare copy, --root a checkout: name one");
+    const copy = await openCopy(resolvePath2(o.copy), o.ref, notes);
+    useCopyPointer(copy.repoRoot, o.ref);
+    return copy;
+  }
+  const source = await openRepo(resolvePath2(o.root ?? "."));
+  if (!notes)
+    return source;
+  if (!(source instanceof GitBlobSource))
+    throw new UsageError("--notes-dir keeps the notes of a repository: this is not one");
+  return new GitBlobSource(source.repoRoot, { notes });
+}
 function need(value2, what) {
   if (!value2)
     throw new UsageError(`${what} is required`);
   return value2;
 }
-async function run3(argv, out = (s2) => process.stdout.write(s2), input = readStdin, as = {}) {
+async function run4(argv, out = (s2) => process.stdout.write(s2), input = readStdin, as = {}) {
   let o;
   try {
     o = parse5(argv);
@@ -37138,17 +38320,26 @@ async function run3(argv, out = (s2) => process.stdout.write(s2), input = readSt
     process.stderr.write(USAGE);
     return 1;
   }
-  const author = o.author ?? `${userInfo4().username}@${hostname4()}`;
+  const author = o.author ?? `${userInfo4().username}@${hostname5()}`;
   setSharedStamp({ version: mdrevVersion(), from: "cli" });
   const listing = command === "notes" && sub === "list";
+  if (o.follow && !listing) {
+    process.stderr.write("mdrev-cli: --follow belongs to notes list\n");
+    return 1;
+  }
+  if (o.follow && (o.viewer || o.all || o.records)) {
+    process.stderr.write("mdrev-cli: --follow streams the open notes as they change; --all, --records and --viewer do not combine with it\n");
+    return 1;
+  }
   if (o.viewer && !viewerKeyOk()) {
     process.stderr.write("mdrev-cli: --viewer is for a viewer's host, and needs its key (MDREV_VIEWER_KEY); from the command line, an agent answers a thread with --for\n");
     if (!listing)
       return 1;
     o.viewer = false;
   }
-  const who = o.viewer ? { via: "viewer" } : { via: "cli", ...o.for ? { for: o.for } : {} };
-  const personal = o.viewer ? who : as.person || personAtTerminal() ? { via: "person" } : who;
+  const atTerminal = Boolean(as.person || personAtTerminal());
+  const who = o.viewer ? { via: "viewer" } : { via: "cli", ...o.for ? { for: o.for } : {}, ...atTerminal ? {} : { agent: agentMark() } };
+  const personal = o.viewer ? who : atTerminal ? { via: "person" } : who;
   const emit = (value2) => out(`${JSON.stringify(value2, null, 2)}
 `);
   const said = (what, path2, body3) => {
@@ -37176,14 +38367,14 @@ async function run3(argv, out = (s2) => process.stdout.write(s2), input = readSt
 `);
       return checks2.some((c) => c.status === "fail") ? 1 : 0;
     }
-    const source = await openRepo(resolvePath2(o.root ?? "."));
+    const source = await openSource(o);
     if (command === "text") {
       const path2 = need(o.path, "--path");
       const rev = o.rev && o.rev !== "current" ? o.rev : WORKTREE2;
       try {
         out(await source.readBlob(rev, path2));
       } catch {
-        throw new NotFound(`no ${path2} at ${rev === WORKTREE2 ? "the working tree" : rev}`);
+        throw new NotFound(`no ${path2} at ${rev !== WORKTREE2 ? rev : o.copy ? `the tip of ${o.ref}` : "the working tree"}`);
       }
       return 0;
     }
@@ -37203,170 +38394,311 @@ async function run3(argv, out = (s2) => process.stdout.write(s2), input = readSt
       return 0;
     }
     if (command === "notes") {
-      switch (sub) {
-        case "list": {
-          let revs = null;
-          if (o.from) {
-            const from = await source.resolve(o.from);
-            const to = await source.resolve(o.to ?? WORKTREE2);
-            revs = await source.revsBetween(from.rev, to.rev);
-          }
-          if (o.records) {
-            const local2 = await recordsFor(source, { path: o.path, all: o.all, revs, upgrade: o.path !== void 0 });
-            emit([...local2, ...o.viewer ? await threadsFor(source, { path: o.path, all: o.all }) : []]);
+      const { answer: modeAnswer, side } = sub === "apply" ? { answer: null, side: null } : await InService.of(source, o);
+      const say = (line) => process.stderr.write(`mdrev: ${line}
+`);
+      const agentHere = !o.viewer && !atTerminal;
+      if (side && agentHere && id && isSharedId(id) && ["edit", "delete", "delete-reply"].includes(sub ?? "")) {
+        throw new UsageError("in service mode an agent changes nothing in a shared thread: it drafts a reply on its person's note (--reply ID --for NOTE), which the person shares");
+      }
+      if (o.draft && !side)
+        throw new UsageError("--draft writes a draft for your person to share, which only service mode has; elsewhere an agent opens no thread (shared-review.md B3)");
+      if (side && agentHere && id && (isSharedId(id) && ["reply", "resolve", "reopen"].includes(sub ?? "") || o.draft && sub === "reply")) {
+        const kind = o.draft ? "thread" : sub;
+        const noteId = o.draft ? id : need(o.for, "--for (the note that asked)");
+        const words = sub === "reply" ? need(o.body, "--body") : o.note ?? "";
+        const done = await side.changing(noteId, () => draftShared(source, kind, id, words, author, who));
+        const d = done.annotation.replies?.at(-1)?.draft;
+        if (o.text)
+          said(`${d?.id ?? "draft"} written on ${noteId}, for your person to share`, done.path, words || kind);
+        else
+          emit(done.annotation);
+        await side.send(say);
+        return 0;
+      }
+      if (side && id?.startsWith("dft-") && sub === "delete") {
+        const holder = (await stampedNotes(side.mode.root)).find((s2) => (s2.note.replies ?? []).some((r) => r.draft?.id === id));
+        if (!holder)
+          throw new NotFound(`no draft '${id}' here`);
+        const left = await side.changing(holder.note.id, () => dropDraft(source, id, who));
+        if (o.text)
+          said(`${id} taken back`, holder.path, holder.note.body);
+        else
+          emit(left?.annotation ?? { deleted: id });
+        await side.send(say);
+        return 0;
+      }
+      try {
+        switch (sub) {
+          case "list": {
+            let revs = null;
+            if (o.from) {
+              const from = await source.resolve(o.from);
+              const to = await source.resolve(o.to ?? WORKTREE2);
+              revs = await source.revsBetween(from.rev, to.rev);
+            }
+            const line = !o.records && !o.viewer ? InService.line(modeAnswer) : null;
+            if (line)
+              say(line);
+            if (side)
+              await side.listing(say, o.records ? { timeoutMs: 1e3, minGapMs: 5e3 } : {});
+            if (o.follow) {
+              const wired = as.signal ? { signal: as.signal, off: () => {
+              } } : followSignals();
+              try {
+                await followNotes({
+                  source,
+                  query: { path: o.path, revs, upgrade: o.path !== void 0 },
+                  write: out,
+                  text: o.text,
+                  intervalMs: FOLLOW_INTERVAL_MS,
+                  signal: wired.signal,
+                  // in service mode a note filed on the phone comes from the service: asked every few seconds
+                  ...side ? { beforePoll: throttled(FOLLOW_SERVICE_MS, () => side.listing(() => {
+                  })) } : {}
+                });
+              } finally {
+                wired.off();
+              }
+              const left2 = side ? await side.waiting() : null;
+              if (left2)
+                say(left2);
+              return 0;
+            }
+            if (o.records) {
+              const records = await recordsFor(source, { path: o.path, all: o.all, revs, upgrade: o.path !== void 0 });
+              const local2 = side ? await side.markNotPushed(records) : records;
+              emit([...local2, ...o.viewer ? await threadsFor(source, { path: o.path, all: o.all }) : []]);
+              return 0;
+            }
+            const views = await collectNotes(source, { path: o.path, all: o.all, revs, upgrade: o.path !== void 0 });
+            if (o.text)
+              out(`${formatNotes(views, side ? { device: side.mode.joined.device } : {})}
+`);
+            else
+              emit(views);
+            const left = side ? await side.waiting() : null;
+            if (left)
+              say(left);
             return 0;
           }
-          const views = await collectNotes(source, { path: o.path, all: o.all, revs, upgrade: o.path !== void 0 });
-          if (o.text)
-            out(`${formatNotes(views)}
-`);
-          else
-            emit(views);
-          return 0;
-        }
-        case "add": {
-          const path2 = need(o.path, "--path");
-          const raw2 = (await input()).trim();
-          if (!raw2)
-            throw new UsageError("notes add reads the record from stdin");
-          let record;
-          try {
-            record = JSON.parse(raw2);
-          } catch {
-            throw new UsageError("the record on stdin is not JSON");
-          }
-          if (typeof record.body !== "string")
-            throw new UsageError("the record needs a body");
-          if (!record.anchor || typeof record.anchor !== "object")
-            throw new UsageError("the record needs an anchor");
-          const anchor = record.anchor;
-          if (typeof anchor.exact !== "string" || anchor.exact === "") {
-            throw new UsageError('the anchor needs "exact": the text the note points at');
-          }
-          for (const [field, ok3] of [
-            ["prefix", (v) => typeof v === "string"],
-            ["suffix", (v) => typeof v === "string"],
-            ["trail", (v) => Array.isArray(v)]
-          ]) {
-            if (anchor[field] !== void 0 && !ok3(anchor[field])) {
-              throw new UsageError(`the anchor's "${field}" is the wrong shape`);
+          case "add": {
+            const path2 = need(o.path, "--path");
+            const raw2 = (await input()).trim();
+            if (!raw2)
+              throw new UsageError("notes add reads the record from stdin");
+            let record;
+            try {
+              record = JSON.parse(raw2);
+            } catch {
+              throw new UsageError("the record on stdin is not JSON");
             }
+            if (typeof record.body !== "string")
+              throw new UsageError("the record needs a body");
+            if (!record.anchor || typeof record.anchor !== "object")
+              throw new UsageError("the record needs an anchor");
+            const anchor = record.anchor;
+            if (typeof anchor.exact !== "string" || anchor.exact === "") {
+              throw new UsageError('the anchor needs "exact": the text the note points at');
+            }
+            for (const [field, ok3] of [
+              ["prefix", (v) => typeof v === "string"],
+              ["suffix", (v) => typeof v === "string"],
+              ["trail", (v) => Array.isArray(v)]
+            ]) {
+              if (anchor[field] !== void 0 && !ok3(anchor[field])) {
+                throw new UsageError(`the anchor's "${field}" is the wrong shape`);
+              }
+            }
+            const quoteOnly = anchor.start === void 0 && anchor.end === void 0;
+            record.anchor = {
+              ...anchor,
+              prefix: anchor.prefix ?? "",
+              suffix: anchor.suffix ?? "",
+              trail: anchor.trail ?? [],
+              ...quoteOnly ? { start: 0, end: 0, space: "source" } : {}
+            };
+            if (side && agentHere)
+              throw new UsageError("in service mode an agent does not file notes: it replies to and closes its person's (B10)");
+            const personalNote = side && record.shared !== true;
+            if (personalNote) {
+              const ref = await side.branch();
+              Object.assign(record, { personal: true, device: side.mode.joined.device, ...ref ? { ref } : {} });
+            }
+            const review = new Review(new SourceRegistry(source));
+            const create3 = () => review.createAnnotation({ path: path2, annotation: { author, type: "comment", ...record }, who });
+            if (!personalNote) {
+              emit(await create3());
+              return 0;
+            }
+            let refused = false;
+            const made = await side.adding(async () => {
+              const note = await create3();
+              if (note.uncommitted) {
+                await dropNote(source, note.id, who);
+                refused = true;
+                return null;
+              }
+              return { path: path2, note };
+            });
+            if (refused || !made)
+              throw new UsageError(`in service mode a note is filed on committed text, and ${path2} has changes not committed: commit them, then file the note`);
+            emit(made);
+            return 0;
           }
-          const quoteOnly = anchor.start === void 0 && anchor.end === void 0;
-          record.anchor = {
-            ...anchor,
-            prefix: anchor.prefix ?? "",
-            suffix: anchor.suffix ?? "",
-            trail: anchor.trail ?? [],
-            ...quoteOnly ? { start: 0, end: 0, space: "source" } : {}
-          };
-          const review = new Review(new SourceRegistry(source));
-          emit(await review.createAnnotation({ path: path2, annotation: { author, type: "comment", ...record }, who }));
-          return 0;
-        }
-        case "reply": {
-          const which = need(id, "the note id");
-          const body3 = need(o.body, "--body");
-          const answer = await replyToNote(source, which, body3, author, who);
-          if (!answer)
-            throw new NotFound(`no note '${which}'`);
-          if (o.text)
-            said(`${which} answered`, answer.path, body3);
-          else
-            emit(answer.annotation);
-          return 0;
-        }
-        case "resolve":
-        case "wontfix": {
-          const which = need(id, "the note id");
-          const done = await closeNote(source, which, sub === "resolve" ? "resolved" : "wontfix", o.note, author, who);
-          if (!done)
-            throw new NotFound(`no note '${which}'`);
-          if (o.text)
-            said(`${which} ${sub === "resolve" ? "resolved" : "wontfix"}`, done.path, done.annotation.body);
-          else
-            emit(done.annotation);
-          return 0;
-        }
-        case "reopen": {
-          const which = need(id, "the note id");
-          const back = await reopenNote(source, which, o.note, author, who);
-          if (!back)
-            throw new NotFound(`no note '${which}'`);
-          if (o.text)
-            said(`${which} reopened`, back.path, back.annotation.body);
-          else
-            emit(back.annotation);
-          return 0;
-        }
-        case "delete-reply": {
-          const which = need(id, "the note id");
-          const when = need(o.at, "--at");
-          const left = await dropReply(source, which, when, who);
-          if (!left)
-            throw new NotFound(`no reply at ${when} on '${which}'`);
-          if (o.text)
-            said(`${which} reply at ${when} deleted`, left.path, left.annotation.body);
-          else
-            emit(left.annotation);
-          return 0;
-        }
-        case "thread": {
-          const which = need(id, "the thread id");
-          if (!isSharedId(which))
-            throw new UsageError(`${which} is a local note, not a shared thread: notes list shows it`);
-          const found = await threadById(source, which, who);
-          const t = found?.thread ?? null;
-          if (!t)
-            throw new NotFound(`no shared thread '${which}' \u2014 fetch the store first (mdrev --review-status)`);
-          if (o.text)
-            out(`${formatThread(t, which, found?.asked)}
+          case "reply": {
+            const which = need(id, "the note id");
+            const body3 = need(o.body, "--body");
+            const answer = side ? await side.changing(which, () => replyToNote(source, which, body3, author, who)) : await replyToNote(source, which, body3, author, who);
+            if (!answer)
+              throw new NotFound(`no note '${which}'`);
+            if (o.text)
+              said(`${which} answered`, answer.path, body3);
+            else
+              emit(answer.annotation);
+            return 0;
+          }
+          case "resolve":
+          case "wontfix": {
+            const which = need(id, "the note id");
+            if (side && sub === "resolve" && !o.viewer && !isSharedId(which)) {
+              const found = await side.note(which);
+              if (found && await side.uncommitted(found.path))
+                throw new UsageError(`${found.path} has changes not committed: in service mode a resolve records the commit at HEAD as the one that closed the note \u2014 commit first, then resolve`);
+            }
+            const close2 = () => closeNote(source, which, sub === "resolve" ? "resolved" : "wontfix", o.note, author, who);
+            const done = side ? await side.changing(which, close2) : await close2();
+            if (!done)
+              throw new NotFound(`no note '${which}'`);
+            if (o.text)
+              said(`${which} ${sub === "resolve" ? "resolved" : "wontfix"}`, done.path, done.annotation.body);
+            else
+              emit(done.annotation);
+            return 0;
+          }
+          case "reopen": {
+            const which = need(id, "the note id");
+            const back = side ? await side.changing(which, () => reopenNote(source, which, o.note, author, who)) : await reopenNote(source, which, o.note, author, who);
+            if (!back)
+              throw new NotFound(`no note '${which}'`);
+            if (o.text)
+              said(`${which} reopened`, back.path, back.annotation.body);
+            else
+              emit(back.annotation);
+            return 0;
+          }
+          case "delete-reply": {
+            const which = need(id, "the note id");
+            const when = need(o.at, "--at");
+            const left = side ? await side.changing(which, () => dropReply(source, which, when, who)) : await dropReply(source, which, when, who);
+            if (!left)
+              throw new NotFound(`no reply at ${when} on '${which}'`);
+            if (o.text)
+              said(`${which} reply at ${when} deleted`, left.path, left.annotation.body);
+            else
+              emit(left.annotation);
+            return 0;
+          }
+          case "thread": {
+            const which = need(id, "the thread id");
+            if (!isSharedId(which))
+              throw new UsageError(`${which} is a local note, not a shared thread: notes list shows it`);
+            const found = await threadById(source, which, who);
+            const t = found?.thread ?? null;
+            if (!t)
+              throw new NotFound(`no shared thread '${which}' \u2014 fetch the store first (mdrev --review-status)`);
+            if (o.text)
+              out(`${formatThread(t, which, found?.asked)}
 `);
-          else
-            emit(t);
-          return 0;
-        }
-        case "edit": {
-          const which = need(id, "the note id");
-          const edited = await editNote(source, which, need(o.body, "--body"), who);
-          if (!edited)
-            throw new NotFound(`no note '${which}'`);
-          emit(edited.annotation);
-          return 0;
-        }
-        case "hide":
-        case "unhide": {
-          emit(await hideShared(source, need(id, "the record id"), sub === "hide", who));
-          return 0;
-        }
-        case "follow-renames": {
-          const done = await consolidateNotes(source, { path: o.path, from: o.from, to: o.to });
-          if (o.text) {
-            if (done.moved.length === 0)
-              out("nothing to move\n");
-            for (const m of done.moved)
-              out(`moved ${m.id} \xB7 ${m.from} \u2192 ${m.to}${m.told ? " (told)" : m.rev ? ` (renamed in ${m.rev === "INDEX" ? "the index" : m.rev.slice(0, 7)})` : ""}
+            else
+              emit(t);
+            return 0;
+          }
+          case "edit": {
+            const which = need(id, "the note id");
+            const edited = side ? await side.changing(which, () => editNote(source, which, need(o.body, "--body"), who)) : await editNote(source, which, need(o.body, "--body"), who);
+            if (!edited)
+              throw new NotFound(`no note '${which}'`);
+            emit(edited.annotation);
+            return 0;
+          }
+          case "hide":
+          case "unhide": {
+            emit(await hideShared(source, need(id, "the record id"), sub === "hide", who));
+            return 0;
+          }
+          case "follow-renames": {
+            const done = await consolidateNotes(source, { path: o.path, from: o.from, to: o.to });
+            if (o.text) {
+              if (done.moved.length === 0)
+                out("nothing to move\n");
+              for (const m of done.moved)
+                out(`moved ${m.id} \xB7 ${m.from} \u2192 ${m.to}${m.told ? " (told)" : m.rev ? ` (renamed in ${m.rev === "INDEX" ? "the index" : m.rev.slice(0, 7)})` : ""}
 `);
-            for (const r of done.removed)
-              out(`removed the empty sidecar of ${r}
+              for (const r of done.removed)
+                out(`removed the empty sidecar of ${r}
 `);
-          } else
-            emit(done);
-          return 0;
+            } else
+              emit(done);
+            return 0;
+          }
+          case "delete": {
+            const which = need(id, "the note id");
+            if (side && agentHere && !isSharedId(which) && (await side.note(which))?.annotation.personal)
+              throw new UsageError("in service mode an agent does not delete its person's note: close it, with --wontfix and why");
+            const gone = side ? await side.changing(which, () => dropNote(source, which, who)) : await dropNote(source, which, who);
+            if (!gone)
+              throw new NotFound(`no note '${which}'`);
+            if (o.text)
+              said(`${which} deleted`, gone.path, gone.annotation.body);
+            else
+              emit({ deleted: which, path: gone.path });
+            return 0;
+          }
+          case "share": {
+            const which = need(id, "the note id");
+            const raw2 = (await input()).trim();
+            let edits = {};
+            if (raw2) {
+              let parsed;
+              try {
+                parsed = JSON.parse(raw2);
+              } catch {
+                throw new UsageError("the edits on stdin are not JSON");
+              }
+              const given = parsed?.edits;
+              if (given && typeof given === "object")
+                edits = Object.fromEntries(Object.entries(given).filter((e) => typeof e[1] === "string"));
+            }
+            const act = () => shareDrafts(source, which, edits, who);
+            const done = side ? await side.changing(which, act) : await act();
+            emit({ ...done.annotation, sharedAs: done.records });
+            return 0;
+          }
+          case "apply": {
+            if (!o.notesDir)
+              throw new UsageError("notes apply is for a host keeping a person's notes in a tree of its own (--notes-dir)");
+            const raw2 = (await input()).trim();
+            let ops;
+            try {
+              ops = JSON.parse(raw2 || "[]");
+            } catch {
+              throw new UsageError("the operations on stdin are not JSON");
+            }
+            if (!Array.isArray(ops))
+              throw new UsageError("notes apply reads a JSON array of operations");
+            const results = [];
+            for (const op of ops)
+              results.push(isNoteOp(op) ? await applyOp(source.notesHome, op) : { op: String(op?.op ?? ""), dropped: "not an operation this mdrev applies" });
+            emit(results);
+            return 0;
+          }
+          default:
+            throw new UsageError(`notes ${sub ?? ""}: not a command`.trim());
         }
-        case "delete": {
-          const which = need(id, "the note id");
-          const gone = await dropNote(source, which, who);
-          if (!gone)
-            throw new NotFound(`no note '${which}'`);
-          if (o.text)
-            said(`${which} deleted`, gone.path, gone.annotation.body);
-          else
-            emit({ deleted: which, path: gone.path });
-          return 0;
-        }
-        default:
-          throw new UsageError(`notes ${sub ?? ""}: not a command`.trim());
+      } finally {
+        if (side)
+          await side.send(say);
       }
     }
     if (command === "review") {
@@ -37481,7 +38813,7 @@ ${p2.machineName ? `this machine's display name is now ${p2.machineName}, for ev
             throw new UsageError("--keep-name goes with --confirm, in the viewer; at a terminal, pairing asks");
           if (o.allowPublic && personal.via !== "person")
             throw new UsageError("--allow-public is a person's, at their own terminal: a store anyone can read makes every thread public");
-          const git2 = await identityOf(source.repoRoot);
+          const git3 = await identityOf(source.repoRoot);
           if (personal.via === "person") {
             const rl = createInterface({ input: process.stdin, output: process.stdout });
             try {
@@ -37509,7 +38841,7 @@ ${p2.machineName ? `this machine's display name is now ${p2.machineName}, for ev
           }
           const name = o.name ?? machineDisplayName() ?? void 0;
           if (!o.email || !name) {
-            throw new UsageError(`an agent pairs with the email its person names. Ask your person which email to write as (their git email is ${git2.email || "not set"})${name ? "" : ` and a display name for this machine (such as ${defaultDisplayName(git2.name)}; mdrev --display-name NAME keeps it for every project)`}, then run this again with --email${name ? "" : " and --name"}. Or they run mdrev --review-pair in their own terminal.`);
+            throw new UsageError(`an agent pairs with the email its person names. Ask your person which email to write as (their git email is ${git3.email || "not set"})${name ? "" : ` and a display name for this machine (such as ${defaultDisplayName(git3.name)}; mdrev --display-name NAME keeps it for every project)`}, then run this again with --email${name ? "" : " and --name"}. Or they run mdrev --review-pair in their own terminal.`);
           }
           if (personal.via === "viewer") {
             const { check } = await requestPairing(source.repoRoot, { email: o.email, name });
@@ -37612,18 +38944,31 @@ function viewerKeyOk() {
   const given = process.env.MDREV_VIEWER_KEY ?? "";
   let token = "";
   try {
-    token = readFileSync5(join8(process.env.MDREV_STATE_DIR ?? join8(homedir2(), ".mdrev"), "token"), "utf8").trim();
+    token = readFileSync6(join11(process.env.MDREV_STATE_DIR ?? join11(homedir3(), ".mdrev"), "token"), "utf8").trim();
   } catch {
     return false;
   }
   return token.length > 0 && given.length === token.length && timingSafeEqual(Buffer.from(given), Buffer.from(token));
+}
+function followSignals() {
+  const stop = new AbortController();
+  const onSignal = () => stop.abort();
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  return {
+    signal: stop.signal,
+    off: () => {
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+    }
+  };
 }
 
 // packages/cli/dist/cli-bin.js
 var leave = (code4) => {
   process.stdout.write("", () => process.exit(code4));
 };
-run3(process.argv.slice(2)).then(leave, (e) => {
+run4(process.argv.slice(2)).then(leave, (e) => {
   process.stderr.write(`mdrev-cli: ${e instanceof Error ? e.message : String(e)}
 `);
   leave(1);

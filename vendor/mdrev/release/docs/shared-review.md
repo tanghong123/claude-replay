@@ -500,10 +500,32 @@ the guest's host passes that same key to mdrev-cli in its environment;
 is an agent's, even when a person types it — so a person replying from a
 terminal with `--for` is marked agent-assisted. Pairing and pushing may also
 come from a person at their own terminal: the `mdrev` command checks for a
-terminal on both ends and no agent's environment (Claude Code sets
-`CLAUDECODE`). That check lives in the command line's entry point only, never
+terminal on both ends and no agent's environment — one table of the harnesses'
+own variables (Claude Code sets `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT`), and
+`MDREV_AGENT=<name>` for a harness the table lacks, which its launcher sets. The
+same table names the agent on a reply to a local note ("claude on aries-black,
+for Hong"). That check lives in the command line's entry point only, never
 in a viewer or its host, so a viewer an agent started still lets its person
 push.
+
+**On a computer joined to a team's mdrev service** (`mdrev --join`), in a
+checkout of a repository its person registered there, an agent writes nothing to
+a thread at all. Its answer is a DRAFT on the local note that asked: `--reply`,
+`--resolve` and `--reopen` with `--for` keep their form and their checks (B1–B5,
+one answer per note and thread, a draft counting) and write a reply on that
+note carrying `draft`, with nothing in the store; `--reply NOTE --draft` drafts
+the opening of a new thread where the note sits, which B3 otherwise forbids an
+agent; `--delete <dft-id>` takes back its draft while unshared. The note stays
+open, "draft waiting" for its person, who reads the drafts, edits them if they
+like, and presses **Share**, in any viewer: each becomes the person's record —
+a reply, a resolve, a reopen, or a new thread at the note — in that device's
+outbox, waiting for Push like any record (D1 holds: there are drafts now, but no
+record is pushed that its person did not share and push). Every record made
+from a draft is agent-assisted, through the person's edits too (B3, G), and
+names the computer that drafted it (`drafted`). Its id is the draft's, so a
+draft shared on two devices is one record in the store. An agent there still
+edits and deletes nothing in a thread. Everywhere else this document's rules
+for agents are unchanged.
 
 | rule | how mdrev enforces it | what no check can stop | checked by |
 |---|---|---|---|
@@ -763,7 +785,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.48",
+  "mdrev": "1.1.53",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }

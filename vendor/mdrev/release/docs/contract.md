@@ -4,7 +4,7 @@
 
 A host application that serves Markdown over HTTP can carry mdrev inside its own pages by serving the guest bundle as static files and answering the routes below under a prefix of its choosing. Everything else — the redline, anchors, diagrams, math, highlighting — happens in the reader's browser. The design and its reasons are in [embedding.md](embedding.md); this page is only what to build, and `mdrev-cli conform` checks it.
 
-Two things to hold on to. **Texts and revisions come from the host's own store**, however it keeps them, in whatever language it is written in. **Notes are mdrev's**: they live in mdrev's sidecar in the checkout, and the host writes them by calling `mdrev-cli` rather than by reimplementing the format, so that a note filed in the host's page is a note in `mdrev` on any clone that carries the file.
+Two things to hold on to. **Texts and revisions come from the host's own store**, however it keeps them, in whatever language it is written in. **Notes are mdrev's**: they live in mdrev's sidecar in the checkout — or, for a host that keeps no checkout, in a per-person tree of the host's own (below) — and the host writes them by calling `mdrev-cli` rather than by reimplementing the format, so that a note filed in the host's page is a note in `mdrev` on any clone that carries the file.
 
 ## What needs a checkout, and what does not
 
@@ -33,6 +33,18 @@ and refuse the writes, and the reader gets the document, its history, its
 redline and every list — everything except notes. That is a real and useful
 viewer, and it is what most embedders will want first.
 
+**Or keep notes without a checkout.** A host that serves a bare copy of a
+repository rather than a checkout — a team's service, one copy per repository,
+read at the branch a page shows — reads it with `mdrev-cli … --copy DIR --ref
+BRANCH`, and keeps each person's notes in a tree of its own with `--notes-dir
+DIR`: the same verbs, the same record format, in a directory the host chooses
+per person, never inside the copy. A host serving several branches of one
+repository says which in its prefix, so no route needs a parameter the contract
+lacks. Such a host can also take a person's changes from a computer of theirs:
+`mdrev-cli notes apply --notes-dir DIR` applies note operations (an add, a
+reply, a status, an edit, a delete), each with an id of its own, in order and
+each once.
+
 ## A document is (collection, path), and a reader moves without a page load
 
 Every route below takes an optional `root`, and a host that holds more than one
@@ -52,7 +64,7 @@ lifetime to say which is which:
 |---|---|---|
 | **Host facts** | `contract`, `credentials`, `trustHtml` | true of the application; survive every move |
 | **Collection facts** | `root`, `isGit`, `caps`, `review`, `annotate` | true of ONE folder; **replaced** on every move, never inherited |
-| **Opening facts** | `path`, `range`, `rangeAsked` | `path` and `range` are set at mount and **replaced** by `open()`; `rangeAsked` is read once, at mount, and never again |
+| **Opening facts** | `path`, `range`, `rangeAsked`, `note` | `path` and `range` are set at mount and **replaced** by `open()`; `rangeAsked` and `note` are read once, at mount, and never again |
 
 `rangeAsked` is the third lifetime, and the only one worth a paragraph. mdrev
 remembers the mode each document was last read in, and that memory outranks the
@@ -86,8 +98,8 @@ page says `review: false`, which is the one power the routes cannot express.
 Declaring a part the routes cannot serve gets nothing. Left out, both are
 discovered, exactly as today; a host that says nothing is unchanged. And they
 are collection facts for the same reason `isGit` is: say them for the
-collection being moved to, or say none. mdrev's own two hosts — the daemon and
-mdrev-v2 — declare both, and are the worked example. (`docs/what-a-host-takes.md` is the
+collection being moved to, or say none. mdrev's own host, mdrev-v2, declares
+both, and is the worked example. (`docs/what-a-host-takes.md` is the
 design.)
 
 For a host writing against this contract the rule is short: **anything you tell
@@ -350,6 +362,28 @@ changed" and is a different statement. In a checkout the answer is one `git log
 --since-as-filter=@<t> --until=@<t> --name-status --find-renames -- '*.md'`
 around the anchor, plus the working copy when the reader is at the tip.
 
+### `GET {prefix}/branches?path=` · `POST {prefix}/branch` · `GET {prefix}/notes-elsewhere?path=` — optional
+
+For a host that keeps more than one line of history and gives each its own
+page — the personal service, one page per repository and branch
+(docs/personal-service.md, "Branches"). `GET branches` answers `{branches:
+[{name, current, page}]}`: the branches the document is on, the default first,
+the one on screen marked `current`, and for each the **host's own address** of
+this document there. The revision picker then has a Branch section, and a pick
+calls the mount's `onOpenPage(page)` with that address, exactly as given.
+`POST branch` with `{name}` makes a review branch from the newest revision of the branch on screen:
+`201 {branch, from, page}`, or `403 {error, git}` when the reader may not, with
+the git command that would. `GET notes-elsewhere` answers `{notes: [{id, body,
+status, effective: {branch, mark?}, page}]}`, the notes this page does not
+draw, which the viewer lists in its off-page panel, each opening its branch's
+page the same way; `mark` (`approximate`, `several`, `squashed`) says how the
+branch was decided, and a note whose branch is the one on screen opens nothing.
+
+The viewer never builds these addresses and never navigates itself: it hands
+`page` back. A host without the routes answers 404 and the viewer offers none
+of it; a host that leaves `onOpenPage` out gets none of it either, and is not
+asked, since a branch it cannot open is a dead end. mdrev-v2 answers none of these.
+
 ### `GET {prefix}/recents` — optional
 
 What this reader has opened lately, as `[{root, path, at, cap?}]`, newest
@@ -497,6 +531,8 @@ Shared review (docs/shared-review.md): the project's review store — the one `.
 
 Subscriptions (draft 8): `GET review/subscribers` runs `review subscribers --path P` and answers the list — who is subscribed to the project, and to that document, under which email, with the name they subscribed under; `POST review/subscribe` with `{doc, email?}` runs `review subscribe [--path P] [--email E] --viewer` and answers `{subscribed}`, or `{confirm: {email, via}}` when a code went to that email first; `POST review/confirm` with `{code}` runs `review confirm --code C --viewer`; `POST review/unsubscribe` with `{doc}` runs `review unsubscribe [--path P] --viewer`; `GET review/lookup?email=` runs `review lookup --email E` — the name each of the project's channels has for it. Each answers 400 with mdrev-cli's words when it refuses. A push's answer carries `notified`: who it told, and what failed. **A host that offers draft 8 answers `review/subscribers`**: one that answers 404 or 501 there is taken for a host from before it, and the viewer draws nothing as new and offers no subscribing — rather than badges it could never clear and a control that fails. Such a host should also leave `review fetch` without `--viewer`, as it always did, so no read mark is ever written for it. A `PATCH annotations/{id}` carrying `{body}` alone is an edit: `notes edit ID --body "…" --viewer`. A failure is the store's own words, with 502 for fetch and push. The threads themselves come and go through the note routes above: they arrive in `GET annotations` (with `--records --viewer`), drawn as notes with ids starting `shr-` and a `shared` field, and a note filed with `shared: true` opens one.
 
+**Share** (optional): `POST annotations/{id}/share` with `{edits}` — the reader's press under a note's drafts, its agent's answers written for them to share (`draft` on a reply, below) — runs `notes share ID --viewer` with the body on stdin, and answers with the note as it now is plus `sharedAs`, the records made. Each draft becomes the reader's record in this host's outbox, waiting for Push like any other, its id derived from the draft's, so a draft shared twice, or on two hosts, is one record; the reader's edits go into the records only. It answers 400, writing nothing, when any draft would be refused — the thread resolved meanwhile, the record answered hidden, the host not paired. A host without the route answers 404, and the viewer shows the drafts with no Share.
+
 **The viewer key.** `--viewer` says a person acted in the page — what may open a thread, edit, hide, pair or push — and mdrev-cli believes it only with the viewer key in its environment: `MDREV_VIEWER_KEY` set to the token in mdrev's state directory (`MDREV_STATE_DIR`, default `~/.mdrev`, file `token`), which is the key mdrev's own viewers use. Pass both on every mdrev-cli call your routes make, and `--viewer` on every note write and on the annotations listing. A host that does not gets reading and local notes, and nothing shared; a host without these routes answers 404, and the viewer offers no Share control and no Push.
 
 **Starting a pairing in the viewer.** `GET review/pair?path=` runs `mdrev-cli review pair --prepare --root <collection>` and returns `{root, email, name}`: the actual checkout root, its git email, and the machine's existing display name or a suggested name. It reads only: no server account check, pairing request, pairing or machine-setting write. `POST review/pair/request?path=` accepts `{email, name}` after the reader has reviewed or edited those defaults, runs `mdrev-cli review pair --email E --name N --viewer --root <collection>`, and returns `review status`. The email must be a string containing one `@` and no whitespace after trimming; the display name must be a non-empty string after trimming. This checks the store's server account and leaves a request for the existing Confirm panel. The reader's later `POST review/pair` confirms it, with the same identity and mismatch override rules as an agent's request. The display name belongs to this store's pairing; neither new route changes the machine-wide taskq setting — only the reader's `keepName` tick at Confirm does. The host resolves the collection to its checkout, and applies its normal session and document-capability checks before either route. These initiation routes are optional even for hosts that already support confirmation: the viewer asks `GET review/pair` as the unpaired notice opens (it only reads), and on 404 or 501 shows the terminal instructions, with no setup button that would lead nowhere.
@@ -536,6 +572,10 @@ One JSON object per note, the same on the wire and in the sidecar:
 - `fromRev` — only on a note on struck text (`anchor.side: "from"`): the older revision of the redline it was taken on. Its offsets index that revision's text, and `blob` is that text; `rev` stays the revision on screen. The viewer sends it and the CLI snapshots it.
 - `anchor` — `exact` is the quoted text; `start`/`end` are offsets into the Markdown **source** (`space: "source"`); `prefix`/`suffix` are the 32 characters around it; `trail` is the heading path; `side` is `to` for text in the newer revision of a redline and `from` for struck text, which exists only in the older one. A host filing a note by hand may send `exact` alone with zero offsets; the CLI locates it.
 - `status` — `open`, `resolved`, `wontfix`. `resolvedBy.note` is what the closer said; `resolvedBy.commit` is the commit that answered it, which is where the reasoning lives.
+- An agent's words say so: a reply an agent wrote carries `agent: {name, host}` — which agent, on which computer — and so does a close (`resolvedBy.agent`); the viewer draws them as the agent's, "claude on aries-black, for Hong", never as the person's. A reopen with something to say is a reply with `event: "reopened"`.
+- Optional, and kept by every mdrev that rewrites a record it did not write: `ref`, the branch the note was filed on; `personal: true` on a note filed on a computer joined to a team's service, which syncs it with that service for its owner alone; `device`, the computer that filed it when that was not a signed-in browser — on a note, a reply, a close (`resolvedBy.device`) and an edit, stamped by the host that knows which computer sent it, never taken from the sender's word. A record keeps any field it does not know, whichever mdrev rewrites it.
+- `draft` on a reply: an agent's answer to a shared thread, written in service mode on the note that asked, for its person to share — `{id: "dft-…", kind: "reply" | "resolve" | "reopen" | "thread", re, commit, shared?}`: what it would be, the record it answers (none for a new thread at the note), the commit at HEAD when it was written, and, once shared, the record it became.
+- `notPushed: {on, at}` is in a listing's answer, never in the record: the note was closed with a commit the host does not have yet — answered on that computer, at that time — and the viewer says "answered on <computer>, not pushed" until the commit arrives.
 
 ## The sidecar, and whether it travels
 
